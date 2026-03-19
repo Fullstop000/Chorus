@@ -1,0 +1,38 @@
+# Rust build artifacts
+target
+_old/
+
+# Cargo lock (keep for binaries, ignore for libraries — this is a binary)
+# Cargo.lock  # uncomment to ignore
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Runtime data
+.chorus/
+*.db
+*.db-shm
+*.db-wal
+
+# MCP config written by Claude driver at runtime
+.chorus-mcp.json
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+
+# Test output
+/tmp/chorus-test/
