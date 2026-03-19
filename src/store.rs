@@ -523,6 +523,14 @@ impl Store {
         let has_more = rows.len() as i64 > limit;
         let mut msgs: Vec<HistoryMessage> = rows.into_iter().take(limit as usize).collect();
 
+        // Populate attachments for each message
+        for msg in &mut msgs {
+            let atts = Self::get_message_attachments(&conn, &msg.id)?;
+            if !atts.is_empty() {
+                msg.attachments = Some(atts);
+            }
+        }
+
         if needs_reverse {
             msgs.reverse();
         }
@@ -641,6 +649,7 @@ impl Store {
         &self,
         channel_id: &str,
         thread_parent_id: Option<&str>,
+        for_name: &str,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
@@ -649,8 +658,18 @@ impl Store {
         let base = match channel.channel_type {
             ChannelType::Channel => format!("#{}", channel.name),
             ChannelType::Dm => {
-                // Extract the other party's name from dm-name1-name2
-                format!("dm:@{}", channel.name.strip_prefix("dm-").unwrap_or(&channel.name))
+                // DM channel name is dm-{sorted_name1}-{sorted_name2}
+                // Find the other party by looking at channel members
+                let members: Vec<String> = conn
+                    .prepare("SELECT member_name FROM channel_members WHERE channel_id = ?1")?
+                    .query_map(params![channel_id], |row| row.get(0))?
+                    .filter_map(|r| r.ok())
+                    .collect();
+                let other = members.iter()
+                    .find(|m| m.as_str() != for_name)
+                    .cloned()
+                    .unwrap_or_else(|| channel.name.strip_prefix("dm-").unwrap_or(&channel.name).to_string());
+                format!("dm:@{}", other)
             }
         };
 
