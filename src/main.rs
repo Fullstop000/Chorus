@@ -69,8 +69,8 @@ enum Commands {
         name: String,
         #[arg(long)]
         description: Option<String>,
-        #[arg(long, default_value = "http://localhost:3001")]
-        server_url: String,
+        #[arg(long)]
+        data_dir: Option<String>,
     },
 }
 
@@ -85,14 +85,14 @@ enum AgentCommands {
         model: String,
         #[arg(long)]
         description: Option<String>,
-        #[arg(long, default_value = "http://localhost:3001")]
-        server_url: String,
+        #[arg(long)]
+        data_dir: Option<String>,
     },
     /// Stop a running agent
     Stop {
         name: String,
-        #[arg(long, default_value = "http://localhost:3001")]
-        server_url: String,
+        #[arg(long)]
+        data_dir: Option<String>,
     },
     /// List all agents
     List {
@@ -207,9 +207,9 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Some(Commands::Channel { name, description, server_url: _ }) => {
+        Some(Commands::Channel { name, description, data_dir }) => {
             let username = whoami::username();
-            let data_dir = default_data_dir();
+            let data_dir = data_dir.unwrap_or_else(default_data_dir);
             let db_path = format!("{data_dir}/chorus.db");
             let store = Store::open(&db_path)?;
             store.create_channel(&name, description.as_deref(), ChannelType::Channel)?;
@@ -220,8 +220,8 @@ async fn main() -> anyhow::Result<()> {
 
         Some(Commands::Agent { cmd }) => {
             match cmd {
-                AgentCommands::Create { name, runtime, model, description, server_url: _ } => {
-                    let data_dir = default_data_dir();
+                AgentCommands::Create { name, runtime, model, description, data_dir } => {
+                    let data_dir = data_dir.unwrap_or_else(default_data_dir);
                     let db_path = format!("{data_dir}/chorus.db");
                     let store = Store::open(&db_path)?;
                     store.create_agent_record(&name, &name, description.as_deref(), &runtime, &model)?;
@@ -233,9 +233,9 @@ async fn main() -> anyhow::Result<()> {
                     println!("Start it by running the server: `chorus serve`");
                     Ok(())
                 }
-                AgentCommands::Stop { name, server_url: _ } => {
+                AgentCommands::Stop { name, data_dir } => {
                     println!("Stopping agent @{name}...");
-                    let data_dir = default_data_dir();
+                    let data_dir = data_dir.unwrap_or_else(default_data_dir);
                     let db_path = format!("{data_dir}/chorus.db");
                     let store = Store::open(&db_path)?;
                     store.update_agent_status(&name, AgentStatus::Inactive)?;
