@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useApp } from '../store'
 import { useTasks } from '../hooks/useTasks'
-import { createTasks, updateTaskStatus } from '../api'
+import { createTasks, updateTaskStatus, claimTasks } from '../api'
 import type { TaskInfo, TaskStatus } from '../types'
 import './TasksPanel.css'
 
@@ -34,6 +34,10 @@ function TaskCard({
   async function advance() {
     if (!next) return
     try {
+      // Auto-claim when starting a task (backend requires claim before status update)
+      if (task.status === 'todo') {
+        await claimTasks(currentUser, channel, [task.taskNumber])
+      }
       await updateTaskStatus(currentUser, channel, task.taskNumber, next)
       onRefresh()
     } catch (e) {
