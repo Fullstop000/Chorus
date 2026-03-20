@@ -6,6 +6,8 @@ use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use tower_http::cors::{Any, CorsLayer};
+use tower_http::services::{ServeDir, ServeFile};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -32,8 +34,18 @@ fn internal_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
     )
 }
 
+async fn handle_whoami() -> Json<serde_json::Value> {
+    Json(serde_json::json!({ "username": whoami::username() }))
+}
+
 pub fn build_router(store: Arc<Store>) -> Router {
+    let cors = CorsLayer::new()
+        .allow_origin(Any)
+        .allow_methods(Any)
+        .allow_headers(Any);
+
     Router::new()
+        // ── Existing API routes (unchanged) ──
         .route("/internal/agent/{agent_id}/send", post(handle_send))
         .route("/internal/agent/{agent_id}/receive", get(handle_receive))
         .route("/internal/agent/{agent_id}/history", get(handle_history))
@@ -62,6 +74,15 @@ pub fn build_router(store: Arc<Store>) -> Router {
         .route(
             "/api/attachments/{attachment_id}",
             get(handle_get_attachment),
+        )
+        // ── New: whoami ──
+        .route("/api/whoami", get(handle_whoami))
+        // ── CORS middleware ──
+        .layer(cors)
+        // ── Static file serving (must be last — fallback for all non-API paths) ──
+        .fallback_service(
+            ServeDir::new("ui/dist")
+                .fallback(ServeFile::new("ui/dist/index.html")),
         )
         .with_state(store)
 }
