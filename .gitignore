@@ -2,6 +2,7 @@
 target
 _old/
 shared/
+.design
 
 # Cargo lock (keep for binaries, ignore for libraries — this is a binary)
 # Cargo.lock  # uncomment to ignore
