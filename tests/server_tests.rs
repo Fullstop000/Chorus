@@ -94,6 +94,75 @@ async fn test_task_workflow() {
 }
 
 #[tokio::test]
+async fn test_whoami() {
+    let (_store, app) = setup();
+    let resp = app.oneshot(
+        Request::builder()
+            .uri("/api/whoami")
+            .body(Body::empty())
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(val["username"].as_str().is_some(), "username field missing");
+}
+
+#[tokio::test]
+async fn test_create_agent_via_api() {
+    let (store, app) = setup();
+
+    // Create a new agent via POST /api/agents
+    let req = serde_json::json!({
+        "name": "new-bot",
+        "description": "A test agent",
+        "runtime": "codex",
+        "model": "gpt-5.4"
+    });
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/agents")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&req).unwrap()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(val["name"], "new-bot");
+
+    // Verify agent exists in store
+    let agent = store.get_agent("new-bot").unwrap().expect("agent should exist");
+    assert_eq!(agent.runtime, "codex");
+    assert_eq!(agent.model, "gpt-5.4");
+    assert_eq!(agent.description, Some("A test agent".to_string()));
+
+    // Duplicate name should fail
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/agents")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&req).unwrap()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    // Empty name should fail
+    let bad_req = serde_json::json!({ "name": "  " });
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/agents")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_vec(&bad_req).unwrap()))
+            .unwrap()
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn test_history() {
     let (store, app) = setup();
     store.send_message("general", None, "alice", SenderType::Human, "msg 1", &[]).unwrap();
