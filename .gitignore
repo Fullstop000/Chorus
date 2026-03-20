@@ -1,6 +1,7 @@
 # Rust build artifacts
 target
 _old/
+shared/
 
 # Cargo lock (keep for binaries, ignore for libraries — this is a binary)
 # Cargo.lock  # uncomment to ignore
