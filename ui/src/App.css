@@ -1,1 +1,54 @@
-/* Chorus UI */
+/* ── Design tokens ── */
+:root {
+  --sidebar-bg: #FFD700;
+  --sidebar-hover: #FFC800;
+  --sidebar-active: #1a1a1a;
+  --sidebar-active-text: #FFD700;
+  --header-bg: #1a1a1a;
+  --header-text: #ffffff;
+  --content-bg: #FFFFF0;
+  --border: #e0e0e0;
+  --accent: #FF2D55;
+  --badge-claude: #2563EB;
+  --badge-sonnet: #7C3AED;
+  --status-online: #22C55E;
+  --status-sleeping: #F59E0B;
+  --status-inactive: #9CA3AF;
+  --text-primary: #1a1a1a;
+  --text-muted: #666;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SF Mono", "Fira Code", monospace;
+  --sidebar-width: 240px;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: var(--font);
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--content-bg);
+}
+
+.app-shell {
+  display: flex;
+  height: 100vh;
+  overflow: hidden;
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  background: none;
+  font-family: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+}
