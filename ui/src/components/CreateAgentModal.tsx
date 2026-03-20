@@ -11,6 +11,23 @@ interface EnvVar {
   value: string
 }
 
+const MODELS: Record<string, { value: string; label: string }[]> = {
+  claude: [
+    { value: 'sonnet', label: 'claude-sonnet-4-5' },
+    { value: 'opus', label: 'claude-opus-4-5' },
+    { value: 'haiku', label: 'claude-haiku-4-5' },
+  ],
+  codex: [
+    { value: 'gpt-5.4', label: 'gpt-5.4' },
+    { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
+    { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
+    { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex' },
+    { value: 'gpt-5.2', label: 'gpt-5.2' },
+    { value: 'gpt-5.1-codex-max', label: 'gpt-5.1-codex-max' },
+    { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
+  ],
+}
+
 export function CreateAgentModal({ onClose, onCreated }: Props) {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
@@ -84,7 +101,14 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
 
         <div className="modal-field">
           <label>Runtime</label>
-          <select value={runtime} onChange={(e) => setRuntime(e.target.value)}>
+          <select
+            value={runtime}
+            onChange={(e) => {
+              const r = e.target.value
+              setRuntime(r)
+              setModel(MODELS[r][0].value)
+            }}
+          >
             <option value="claude">Claude Code</option>
             <option value="codex">Codex CLI</option>
           </select>
@@ -93,9 +117,9 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
         <div className="modal-field">
           <label>Model</label>
           <select value={model} onChange={(e) => setModel(e.target.value)}>
-            <option value="sonnet">Sonnet</option>
-            <option value="opus">Opus</option>
-            <option value="haiku">Haiku</option>
+            {(MODELS[runtime] ?? []).map((m) => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
           </select>
         </div>
 
