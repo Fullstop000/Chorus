@@ -607,7 +607,7 @@ async fn handle_agent_activity(
 async fn handle_agent_workspace(
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let workspace_dir = home_dir().join(".chorus").join(&name);
+    let workspace_dir = home_dir().join(".chorus").join("agents").join(&name);
     if !workspace_dir.exists() {
         return Ok(Json(serde_json::json!({ "files": serde_json::json!([]) })));
     }
