@@ -231,6 +231,17 @@ pub struct HistoryMessage {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct ActivityMessage {
+    pub id: String,
+    pub seq: i64,
+    pub content: String,
+    #[serde(rename = "channelName")]
+    pub channel_name: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub channels: Vec<ChannelInfo>,
     pub agents: Vec<AgentInfo>,
@@ -248,6 +259,16 @@ pub struct ChannelInfo {
 pub struct AgentInfo {
     pub name: String,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

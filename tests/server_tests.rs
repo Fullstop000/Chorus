@@ -1,8 +1,11 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chorus::server::build_router;
+use chorus::server::{build_router, build_router_with_lifecycle, AgentLifecycle};
 use chorus::store::Store;
 use chorus::models::*;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::Mutex;
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -17,9 +20,59 @@ fn setup() -> (Arc<Store>, axum::Router) {
     (store, router)
 }
 
+#[derive(Default)]
+struct MockLifecycle {
+    started: Mutex<Vec<String>>,
+    notified: Mutex<Vec<String>>,
+}
+
+impl MockLifecycle {
+    fn started_names(&self) -> Vec<String> {
+        self.started.lock().unwrap().clone()
+    }
+
+    fn notified_names(&self) -> Vec<String> {
+        self.notified.lock().unwrap().clone()
+    }
+}
+
+impl AgentLifecycle for MockLifecycle {
+    fn start_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.started.lock().unwrap().push(agent_name.to_string());
+            Ok(())
+        })
+    }
+
+    fn notify_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.notified.lock().unwrap().push(agent_name.to_string());
+            Ok(())
+        })
+    }
+}
+
+fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store.create_channel("general", Some("General"), ChannelType::Channel).unwrap();
+    store.add_human("alice").unwrap();
+    store.join_channel("general", "alice", SenderType::Human).unwrap();
+    store.create_agent_record("bot1", "Bot 1", None, "claude", "sonnet").unwrap();
+    store.join_channel("general", "bot1", SenderType::Agent).unwrap();
+    let lifecycle = Arc::new(MockLifecycle::default());
+    let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
+    (store, router, lifecycle)
+}
+
 #[tokio::test]
 async fn test_send_and_receive() {
-    let (store, app) = setup();
+    let (_store, app) = setup();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "hello" });
     let resp = app.clone().oneshot(
@@ -110,7 +163,7 @@ async fn test_whoami() {
 
 #[tokio::test]
 async fn test_create_agent_via_api() {
-    let (store, app) = setup();
+    let (store, app, lifecycle) = setup_with_lifecycle();
 
     // Create a new agent via POST /api/agents
     let req = serde_json::json!({
@@ -137,6 +190,41 @@ async fn test_create_agent_via_api() {
     assert_eq!(agent.runtime, "codex");
     assert_eq!(agent.model, "gpt-5.4");
     assert_eq!(agent.description, Some("A test agent".to_string()));
+    assert!(
+        store.is_member("general", "new-bot").unwrap(),
+        "API-created agents should join existing channels"
+    );
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/new-bot/server")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(info["channels"][0]["name"], "general");
+    assert_eq!(info["channels"][0]["joined"], true);
+
+    let new_bot = info["agents"]
+        .as_array()
+        .and_then(|agents| {
+            agents
+                .iter()
+                .find(|agent_info| agent_info["name"] == "new-bot")
+        })
+        .expect("new agent should be present in server info");
+    assert_eq!(new_bot["display_name"], "new-bot");
+    assert_eq!(new_bot["description"], "A test agent");
+    assert_eq!(new_bot["runtime"], "codex");
+    assert_eq!(new_bot["model"], "gpt-5.4");
+    assert_eq!(new_bot["status"], "inactive");
+    assert_eq!(lifecycle.started_names(), vec!["new-bot".to_string()]);
 
     // Duplicate name should fail
     let resp = app.clone().oneshot(
@@ -163,6 +251,53 @@ async fn test_create_agent_via_api() {
 }
 
 #[tokio::test]
+async fn test_send_starts_inactive_agent_recipients() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .unwrap();
+    store.join_channel("general", "bot2", SenderType::Agent).unwrap();
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "wake bot2" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string(), "bot2".to_string()]);
+    assert!(lifecycle.notified_names().is_empty());
+}
+
+#[tokio::test]
+async fn test_send_notifies_active_agents() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store.update_agent_status("bot1", AgentStatus::Active).unwrap();
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "ping active bot" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(lifecycle.started_names().is_empty());
+    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()]);
+}
+
+#[tokio::test]
 async fn test_history() {
     let (store, app) = setup();
     store.send_message("general", None, "alice", SenderType::Human, "msg 1", &[]).unwrap();
@@ -178,4 +313,40 @@ async fn test_history() {
     let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
     let hist: HistoryResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(hist.messages.len(), 2);
+}
+
+#[tokio::test]
+async fn test_history_accepts_dm_target() {
+    let (_store, app) = setup();
+
+    let send_req = serde_json::json!({ "target": "dm:@alice", "content": "hello in dm" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot1/history?channel=dm%3A%40alice&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let hist: HistoryResponse = serde_json::from_slice(&body).unwrap();
+    assert_eq!(hist.messages.len(), 1);
+    assert_eq!(hist.messages[0].content, "hello in dm");
 }

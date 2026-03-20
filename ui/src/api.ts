@@ -6,6 +6,8 @@ import type {
   UploadResponse,
   ResolveChannelResponse,
   WhoamiResponse,
+  ActivityResponse,
+  WorkspaceResponse,
 } from './types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
@@ -163,4 +165,12 @@ export async function resolveChannel(
 
 export function attachmentUrl(id: string): string {
   return `${BASE}/api/attachments/${id}`
+}
+
+export async function getAgentActivity(agentName: string, limit = 50): Promise<ActivityResponse> {
+  return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/activity?limit=${limit}`))
+}
+
+export async function getAgentWorkspace(agentName: string): Promise<WorkspaceResponse> {
+  return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/workspace`))
 }

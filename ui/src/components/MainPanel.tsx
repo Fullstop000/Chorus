@@ -3,6 +3,8 @@ import { TabBar } from './TabBar'
 import { ChatPanel } from './ChatPanel'
 import { TasksPanel } from './TasksPanel'
 import { ProfilePanel } from './ProfilePanel'
+import { ActivityPanel } from './ActivityPanel'
+import { WorkspacePanel } from './WorkspacePanel'
 import { MessageInput } from './MessageInput'
 import { useHistory } from '../hooks/useHistory'
 
@@ -34,20 +36,8 @@ export function MainPanel() {
         )}
         {activeTab === 'tasks' && <TasksPanel />}
         {activeTab === 'profile' && <ProfilePanel />}
-        {(activeTab === 'workspace' || activeTab === 'activity') && (
-          <div
-            style={{
-              flex: 1,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              color: 'var(--text-muted)',
-              fontSize: 14,
-            }}
-          >
-            {activeTab.charAt(0).toUpperCase() + activeTab.slice(1)} — coming soon
-          </div>
-        )}
+        {activeTab === 'activity' && selectedAgent && <ActivityPanel agentName={selectedAgent.name} />}
+        {activeTab === 'workspace' && selectedAgent && <WorkspacePanel agentName={selectedAgent.name} />}
         {!showHeader && (
           <div
             style={{

@@ -6,11 +6,6 @@ interface Props {
   onCreated: () => void
 }
 
-interface EnvVar {
-  key: string
-  value: string
-}
-
 const MODELS: Record<string, { value: string; label: string }[]> = {
   claude: [
     { value: 'sonnet', label: 'claude-sonnet-4-6' },
@@ -33,18 +28,8 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
   const [description, setDescription] = useState('')
   const [runtime, setRuntime] = useState('claude')
   const [model, setModel] = useState('sonnet')
-  const [showAdvanced, setShowAdvanced] = useState(false)
-  const [envVars, setEnvVars] = useState<EnvVar[]>([])
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  function addEnvVar() {
-    setEnvVars((prev) => [...prev, { key: '', value: '' }])
-  }
-
-  function updateEnvVar(i: number, field: 'key' | 'value', val: string) {
-    setEnvVars((prev) => prev.map((e, j) => (j === i ? { ...e, [field]: val } : e)))
-  }
 
   async function handleCreate() {
     if (!name.trim()) {
@@ -129,34 +114,9 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           </select>
         </div>
 
-        <button
-          className="modal-accordion-trigger"
-          onClick={() => setShowAdvanced((v) => !v)}
-        >
-          {showAdvanced ? '▾' : '▸'} Advanced
-        </button>
-
-        {showAdvanced && (
-          <div className="env-var-editor">
-            {envVars.map((ev, i) => (
-              <div key={i} className="env-var-editor-row">
-                <input
-                  placeholder="KEY"
-                  value={ev.key}
-                  onChange={(e) => updateEnvVar(i, 'key', e.target.value)}
-                />
-                <input
-                  placeholder="value"
-                  value={ev.value}
-                  onChange={(e) => updateEnvVar(i, 'value', e.target.value)}
-                />
-              </div>
-            ))}
-            <button className="env-add-btn" onClick={addEnvVar}>
-              + Add Variable
-            </button>
-          </div>
-        )}
+        <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+          Environment variables are not supported in the UI yet.
+        </div>
 
         {error && (
           <div style={{ color: 'var(--accent)', fontSize: 13, marginTop: 8 }}>{error}</div>

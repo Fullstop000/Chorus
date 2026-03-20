@@ -41,3 +41,4 @@ shared/
 # UI build artifacts
 ui/dist/
 ui/node_modules/
+.gstack/

@@ -10,7 +10,7 @@ mod bridge;
 
 use models::*;
 use store::Store;
-use server::build_router;
+use server::build_router_with_lifecycle;
 use agent_manager::AgentManager;
 
 #[derive(Parser)]
@@ -286,14 +286,14 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
 
     let server_url = format!("http://localhost:{port}");
     let bridge_binary = std::env::current_exe()?.to_string_lossy().into_owned();
-    let _manager = Arc::new(AgentManager::new(
+    let manager = Arc::new(AgentManager::new(
         store.clone(),
         data_dir.join("agents"),
         bridge_binary,
         server_url.clone(),
     ));
 
-    let router = build_router(store.clone());
+    let router = build_router_with_lifecycle(store.clone(), manager.clone());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("Chorus running at {server_url}");
     println!("Human user: @{username}");

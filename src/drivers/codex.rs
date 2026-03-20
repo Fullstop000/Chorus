@@ -1,7 +1,6 @@
 use std::process::{Child, Command, Stdio};
 
 use super::{Driver, ParsedEvent, SpawnContext};
-use crate::drivers::prompt::{build_base_system_prompt, PromptOptions};
 use crate::models::AgentConfig;
 
 pub struct CodexDriver;
@@ -109,7 +108,7 @@ impl Driver for CodexDriver {
         let child = Command::new("codex")
             .args(&args)
             .current_dir(&ctx.working_directory)
-            .stdin(Stdio::piped())
+            .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .envs(&env_vars)
@@ -297,19 +296,32 @@ impl Driver for CodexDriver {
     }
 
     fn build_system_prompt(&self, config: &AgentConfig, _agent_id: &str) -> String {
-        build_base_system_prompt(
-            config,
-            &PromptOptions {
-                tool_prefix: String::new(),
-                extra_critical_rules: vec![
-                    "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- ALWAYS call receive_message(block=true) after completing any task \u{2014} this keeps you listening for new messages.".to_string(),
-                ],
-                post_startup_notes: vec![
-                    "**IMPORTANT**: Your process exits after each turn completes. You will be automatically restarted when new messages arrive. Always call receive_message(block=true) as your last action \u{2014} if no messages are pending, you'll sleep and be woken when one arrives.".to_string(),
-                ],
-                include_stdin_notification_section: false,
-            },
+        let identity = if !config.display_name.is_empty() {
+            config.display_name.as_str()
+        } else {
+            config.name.as_str()
+        };
+        let role = config
+            .description
+            .as_deref()
+            .unwrap_or("You are a helpful Chorus agent.");
+
+        format!(
+            concat!(
+                "You are {identity}. {role}\n\n",
+                "Rules:\n",
+                "- Use only MCP chat tools for messaging.\n",
+                "- Do not output chat text directly; send replies with mcp_chat_send_message.\n",
+                "- Reuse the exact target from received messages when replying.\n",
+                "- Read MEMORY.md for persistent context after you have received work to do.\n\n",
+                "Wake-up flow:\n",
+                "1. Immediately call mcp_chat_receive_message(block=false).\n",
+                "2. If messages are returned, read MEMORY.md if it is relevant, do the requested work, and reply with mcp_chat_send_message.\n",
+                "3. If no messages are returned, exit without waiting.\n",
+                "4. Do not wait for future messages in this run; the server will start you again when needed."
+            ),
+            identity = identity,
+            role = role,
         )
     }
 

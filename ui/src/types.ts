@@ -92,6 +92,26 @@ export interface WhoamiResponse {
   username: string
 }
 
+// ── Agent Activity ──
+
+export interface ActivityMessage {
+  id: string
+  seq: number
+  content: string
+  channelName: string
+  createdAt: string
+}
+
+export interface ActivityResponse {
+  messages: ActivityMessage[]
+}
+
+// ── Agent Workspace ──
+
+export interface WorkspaceResponse {
+  files: string[]
+}
+
 // ── App-level target union ──
 
 // A "target" is the encoded channel/DM string passed to send/history

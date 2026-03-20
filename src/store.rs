@@ -701,6 +701,17 @@ impl Store {
         Ok(id)
     }
 
+    /// Remove an agent and its memberships when provisioning fails.
+    pub fn delete_agent_record(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM channel_members WHERE member_name = ?1",
+            params![name],
+        )?;
+        conn.execute("DELETE FROM agents WHERE name = ?1", params![name])?;
+        Ok(())
+    }
+
     pub fn list_agents(&self) -> Result<Vec<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -1062,6 +1073,7 @@ impl Store {
 
     // ── Server info ──
 
+    /// Build the sidebar payload for the given human or agent name.
     pub fn get_server_info(&self, for_agent: &str) -> Result<ServerInfo> {
         let conn = self.conn.lock().unwrap();
 
@@ -1081,12 +1093,19 @@ impl Store {
             .collect();
 
         // Agents
-        let mut ag_stmt = conn.prepare("SELECT name, status FROM agents ORDER BY name")?;
+        let mut ag_stmt = conn.prepare(
+            "SELECT name, display_name, description, runtime, model, status, session_id FROM agents ORDER BY name",
+        )?;
         let agents: Vec<AgentInfo> = ag_stmt
             .query_map([], |row| {
                 Ok(AgentInfo {
                     name: row.get(0)?,
-                    status: row.get(1)?,
+                    display_name: row.get(1)?,
+                    description: row.get(2)?,
+                    runtime: row.get(3)?,
+                    model: row.get(4)?,
+                    status: row.get(5)?,
+                    session_id: row.get(6)?,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -1107,6 +1126,31 @@ impl Store {
     }
 
     // ── Unread summary ──
+
+    pub fn get_agent_activity(&self, agent_name: &str, limit: i64) -> Result<Vec<ActivityMessage>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.seq, m.content, c.name, m.created_at
+             FROM messages m
+             JOIN channels c ON c.id = m.channel_id
+             WHERE m.sender_name = ?1
+             ORDER BY m.created_at DESC
+             LIMIT ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![agent_name, limit], |row| {
+                Ok(ActivityMessage {
+                    id: row.get(0)?,
+                    seq: row.get(1)?,
+                    content: row.get(2)?,
+                    channel_name: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(rows)
+    }
 
     pub fn get_unread_summary(&self, agent_name: &str) -> Result<HashMap<String, i64>> {
         let conn = self.conn.lock().unwrap();

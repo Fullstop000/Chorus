@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::extract::{Multipart, Path, Query, State};
@@ -15,6 +17,44 @@ use crate::models::*;
 use crate::store::Store;
 
 type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
+
+/// Runtime lifecycle operations the HTTP server can trigger for agents.
+pub trait AgentLifecycle: Send + Sync {
+    fn start_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn notify_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+}
+
+struct NoopAgentLifecycle;
+
+impl AgentLifecycle for NoopAgentLifecycle {
+    fn start_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn notify_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// Shared application state for HTTP handlers.
+#[derive(Clone)]
+pub struct AppState {
+    pub store: Arc<Store>,
+    pub lifecycle: Arc<dyn AgentLifecycle>,
+}
 
 fn api_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
     (
@@ -55,9 +95,10 @@ fn default_runtime() -> String { "claude".to_string() }
 fn default_model() -> String { "sonnet".to_string() }
 
 async fn handle_create_agent(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Json(req): Json<CreateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
+    let store = &state.store;
     let name = req.name.trim().to_string();
     if name.is_empty() {
         return Err(api_err("name is required"));
@@ -67,14 +108,32 @@ async fn handle_create_agent(
     store
         .create_agent_record(&name, &display_name, description, &req.runtime, &req.model)
         .map_err(|e| api_err(e.to_string()))?;
+    for channel in store.list_channels().map_err(|e| internal_err(e.to_string()))? {
+        store
+            .join_channel(&channel.name, &name, SenderType::Agent)
+            .map_err(|e| internal_err(e.to_string()))?;
+    }
+    if let Err(err) = state.lifecycle.start_agent(&name).await {
+        let _ = store.delete_agent_record(&name);
+        return Err(internal_err(format!("failed to start agent: {err}")));
+    }
     Ok(Json(serde_json::json!({ "name": name })))
 }
 
 pub fn build_router(store: Arc<Store>) -> Router {
+    build_router_with_lifecycle(store, Arc::new(NoopAgentLifecycle))
+}
+
+/// Build the HTTP router with a concrete agent lifecycle implementation.
+pub fn build_router_with_lifecycle(
+    store: Arc<Store>,
+    lifecycle: Arc<dyn AgentLifecycle>,
+) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
         .allow_headers(Any);
+    let state = AppState { store, lifecycle };
 
     Router::new()
         // ── Existing API routes (unchanged) ──
@@ -110,6 +169,8 @@ pub fn build_router(store: Arc<Store>) -> Router {
         // ── New: whoami + agent management ──
         .route("/api/whoami", get(handle_whoami))
         .route("/api/agents", post(handle_create_agent))
+        .route("/api/agents/{name}/activity", get(handle_agent_activity))
+        .route("/api/agents/{name}/workspace", get(handle_agent_workspace))
         // ── CORS middleware ──
         .layer(cors)
         // ── Static file serving (must be last — fallback for all non-API paths) ──
@@ -117,16 +178,17 @@ pub fn build_router(store: Arc<Store>) -> Router {
             ServeDir::new("ui/dist")
                 .fallback(ServeFile::new("ui/dist/index.html")),
         )
-        .with_state(store)
+        .with_state(state)
 }
 
 // ── Send ──
 
 async fn handle_send(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Json(req): Json<SendRequest>,
 ) -> ApiResult<SendResponse> {
+    let store = &state.store;
     let sender_type = store
         .lookup_sender_type(&agent_id)
         .map_err(|e| api_err(e.to_string()))?
@@ -152,6 +214,10 @@ async fn handle_send(
         )
         .map_err(|e| api_err(e.to_string()))?;
 
+    deliver_message_to_agents(&state, &channel.id, &agent_id)
+        .await
+        .map_err(|e| internal_err(e.to_string()))?;
+
     Ok(Json(SendResponse { message_id }))
 }
 
@@ -164,10 +230,11 @@ struct ReceiveParams {
 }
 
 async fn handle_receive(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Query(params): Query<ReceiveParams>,
 ) -> ApiResult<ReceiveResponse> {
+    let store = &state.store;
     let blocking = params.block.as_deref() != Some("false");
     let timeout_secs = params.timeout.unwrap_or(30);
 
@@ -229,27 +296,32 @@ struct HistoryParams {
 }
 
 async fn handle_history(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> ApiResult<HistoryResponse> {
+    let store = &state.store;
     let channel_target = params
         .channel
         .ok_or_else(|| api_err("missing channel parameter"))?;
-
-    // The channel param comes URL-encoded, e.g. %23general -> #general
-    // axum's Query extractor already decodes it.
-    // Strip leading # if present to get the channel name
-    let channel_name = channel_target.strip_prefix('#').unwrap_or(&channel_target);
+    let (channel_name, thread_parent_id) =
+        resolve_history_target(&store, &agent_id, &channel_target)
+            .map_err(|e| api_err(e.to_string()))?;
 
     let limit = params.limit.unwrap_or(50);
 
     let (messages, has_more) = store
-        .get_history(channel_name, None, limit, params.before, params.after)
+        .get_history(
+            &channel_name,
+            thread_parent_id.as_deref(),
+            limit,
+            params.before,
+            params.after,
+        )
         .map_err(|e| api_err(e.to_string()))?;
 
     let last_read_seq = store
-        .get_last_read_seq(channel_name, &agent_id)
+        .get_last_read_seq(&channel_name, &agent_id)
         .unwrap_or(0);
 
     Ok(Json(HistoryResponse {
@@ -259,13 +331,31 @@ async fn handle_history(
     }))
 }
 
+/// Resolve a history target into the persisted channel name and optional thread parent ID.
+fn resolve_history_target(
+    store: &Store,
+    agent_id: &str,
+    channel_target: &str,
+) -> anyhow::Result<(String, Option<String>)> {
+    if channel_target.starts_with('#') || channel_target.starts_with("dm:@") {
+        let (channel_id, thread_parent_id) = store.resolve_target(channel_target, agent_id)?;
+        let channel = store
+            .find_channel_by_id(&channel_id)?
+            .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel_target))?;
+        return Ok((channel.name, thread_parent_id));
+    }
+
+    Ok((channel_target.to_string(), None))
+}
+
 // ── Server Info ──
 
 async fn handle_server_info(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
-    let info = store
+    let info = state
+        .store
         .get_server_info(&agent_id)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(info))
@@ -274,11 +364,12 @@ async fn handle_server_info(
 // ── Resolve Channel ──
 
 async fn handle_resolve_channel(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Json(req): Json<ResolveChannelRequest>,
 ) -> ApiResult<ResolveChannelResponse> {
-    let (channel_id, _thread_parent_id) = store
+    let (channel_id, _thread_parent_id) = state
+        .store
         .resolve_target(&req.target, &agent_id)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(ResolveChannelResponse { channel_id }))
@@ -293,7 +384,7 @@ struct ListTasksParams {
 }
 
 async fn handle_list_tasks(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(_agent_id): Path<String>,
     Query(params): Query<ListTasksParams>,
 ) -> ApiResult<serde_json::Value> {
@@ -307,7 +398,8 @@ async fn handle_list_tasks(
         .as_deref()
         .and_then(TaskStatus::from_str);
 
-    let tasks = store
+    let tasks = state
+        .store
         .list_tasks(channel_name, status_filter)
         .map_err(|e| api_err(e.to_string()))?;
 
@@ -315,14 +407,15 @@ async fn handle_list_tasks(
 }
 
 async fn handle_create_tasks(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Json(req): Json<CreateTasksRequest>,
 ) -> ApiResult<serde_json::Value> {
     let channel_name = req.channel.strip_prefix('#').unwrap_or(&req.channel);
     let titles: Vec<&str> = req.tasks.iter().map(|t| t.title.as_str()).collect();
 
-    let tasks = store
+    let tasks = state
+        .store
         .create_tasks(channel_name, &agent_id, &titles)
         .map_err(|e| api_err(e.to_string()))?;
 
@@ -330,13 +423,14 @@ async fn handle_create_tasks(
 }
 
 async fn handle_claim_tasks(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Json(req): Json<ClaimTasksRequest>,
 ) -> ApiResult<serde_json::Value> {
     let channel_name = req.channel.strip_prefix('#').unwrap_or(&req.channel);
 
-    let results = store
+    let results = state
+        .store
         .claim_tasks(channel_name, &agent_id, &req.task_numbers)
         .map_err(|e| api_err(e.to_string()))?;
 
@@ -344,13 +438,14 @@ async fn handle_claim_tasks(
 }
 
 async fn handle_unclaim_task(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Json(req): Json<UnclaimTaskRequest>,
 ) -> ApiResult<serde_json::Value> {
     let channel_name = req.channel.strip_prefix('#').unwrap_or(&req.channel);
 
-    store
+    state
+        .store
         .unclaim_task(channel_name, &agent_id, req.task_number)
         .map_err(|e| api_err(e.to_string()))?;
 
@@ -358,7 +453,7 @@ async fn handle_unclaim_task(
 }
 
 async fn handle_update_task_status(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(agent_id): Path<String>,
     Json(req): Json<UpdateTaskStatusRequest>,
 ) -> ApiResult<serde_json::Value> {
@@ -366,7 +461,8 @@ async fn handle_update_task_status(
     let new_status = TaskStatus::from_str(&req.status)
         .ok_or_else(|| api_err(format!("invalid status: {}", req.status)))?;
 
-    store
+    state
+        .store
         .update_task_status(channel_name, req.task_number, &agent_id, new_status)
         .map_err(|e| api_err(e.to_string()))?;
 
@@ -376,10 +472,11 @@ async fn handle_update_task_status(
 // ── Upload ──
 
 async fn handle_upload(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(_agent_id): Path<String>,
     mut multipart: Multipart,
 ) -> ApiResult<serde_json::Value> {
+    let store = &state.store;
     let field = multipart
         .next_field()
         .await
@@ -432,10 +529,11 @@ async fn handle_upload(
 // ── Get Attachment ──
 
 async fn handle_get_attachment(
-    State(store): State<Arc<Store>>,
+    State(state): State<AppState>,
     Path(attachment_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let attachment = store
+    let attachment = state
+        .store
         .get_attachment(&attachment_id)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| {
@@ -455,6 +553,90 @@ async fn handle_get_attachment(
         [(header::CONTENT_TYPE, attachment.mime_type)],
         data,
     ))
+}
+
+/// Start sleeping/inactive agents or notify active ones when a new message arrives.
+async fn deliver_message_to_agents(
+    state: &AppState,
+    channel_id: &str,
+    sender_name: &str,
+) -> anyhow::Result<()> {
+    let members = state.store.get_channel_members(channel_id)?;
+    for member in members {
+        if member.member_type != SenderType::Agent || member.member_name == sender_name {
+            continue;
+        }
+
+        let Some(agent) = state.store.get_agent(&member.member_name)? else {
+            continue;
+        };
+
+        match agent.status {
+            AgentStatus::Active => state.lifecycle.notify_agent(&member.member_name).await?,
+            AgentStatus::Sleeping | AgentStatus::Inactive => {
+                state.lifecycle.start_agent(&member.member_name).await?
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── Agent Activity ──
+
+#[derive(Deserialize)]
+struct ActivityParams {
+    limit: Option<i64>,
+}
+
+async fn handle_agent_activity(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(params): Query<ActivityParams>,
+) -> ApiResult<serde_json::Value> {
+    let limit = params.limit.unwrap_or(50).min(200);
+    let messages = state
+        .store
+        .get_agent_activity(&name, limit)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "messages": messages })))
+}
+
+// ── Agent Workspace ──
+
+async fn handle_agent_workspace(
+    Path(name): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    let workspace_dir = home_dir().join(".chorus").join(&name);
+    if !workspace_dir.exists() {
+        return Ok(Json(serde_json::json!({ "files": serde_json::json!([]) })));
+    }
+    let mut files: Vec<String> = Vec::new();
+    collect_workspace_files(&workspace_dir, &workspace_dir, &mut files, 0);
+    Ok(Json(serde_json::json!({ "files": files })))
+}
+
+fn collect_workspace_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>, depth: usize) {
+    if depth > 5 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut sorted: Vec<_> = entries.filter_map(|e| e.ok()).collect();
+    sorted.sort_by_key(|e| e.file_name());
+    for entry in sorted {
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue;
+        }
+        let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+        if path.is_dir() {
+            out.push(format!("{}/", rel));
+            collect_workspace_files(root, &path, out, depth + 1);
+        } else {
+            out.push(rel);
+        }
+    }
 }
 
 fn home_dir() -> PathBuf {

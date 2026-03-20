@@ -1,5 +1,6 @@
 use crate::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::models::*;
+use crate::server::AgentLifecycle;
 use crate::store::Store;
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -65,6 +66,7 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
 
         let driver = get_driver(&agent.runtime)?;
+        let is_codex_driver = driver.id() == "codex";
 
         // Build AgentConfig
         let config = AgentConfig {
@@ -73,7 +75,11 @@ impl AgentManager {
             description: agent.description.clone(),
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
-            session_id: agent.session_id.clone(),
+            session_id: if is_codex_driver {
+                None
+            } else {
+                agent.session_id.clone()
+            },
             env_vars: None,
         };
 
@@ -102,13 +108,13 @@ impl AgentManager {
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
 
         // Determine if this is a resume
-        let is_resume = agent.session_id.is_some();
+        let is_resume = !is_codex_driver && agent.session_id.is_some();
 
         // Get unread summary
         let unread_summary = self.store.get_unread_summary(agent_name)?;
 
         // Build the initial prompt
-        let prompt = if !is_resume {
+        let prompt = if is_codex_driver || !is_resume {
             // Fresh start
             driver.build_system_prompt(&config, &agent.id)
         } else if !unread_summary.is_empty() {
@@ -148,7 +154,7 @@ impl AgentManager {
 
         // Spawn the agent process
         let ctx = SpawnContext {
-            agent_id: agent.id.clone(),
+            agent_id: agent.name.clone(),
             agent_name: agent.name.clone(),
             config,
             prompt,
@@ -436,5 +442,21 @@ impl AgentManager {
                 eprintln!("[Agent {agent_name}] Error event: {message}");
             }
         }
+    }
+}
+
+impl AgentLifecycle for AgentManager {
+    fn start_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move { AgentManager::start_agent(self, agent_name).await })
+    }
+
+    fn notify_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move { AgentManager::notify_agent(self, agent_name).await })
     }
 }
