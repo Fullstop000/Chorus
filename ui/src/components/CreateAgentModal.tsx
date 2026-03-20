@@ -13,8 +13,8 @@ interface EnvVar {
 
 const MODELS: Record<string, { value: string; label: string }[]> = {
   claude: [
-    { value: 'sonnet', label: 'claude-sonnet-4-5' },
-    { value: 'opus', label: 'claude-opus-4-5' },
+    { value: 'sonnet', label: 'claude-sonnet-4-6' },
+    { value: 'opus', label: 'claude-opus-4-6' },
     { value: 'haiku', label: 'claude-haiku-4-5' },
   ],
   codex: [
