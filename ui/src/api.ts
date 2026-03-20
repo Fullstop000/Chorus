@@ -1,0 +1,176 @@
+import type {
+  ServerInfo,
+  HistoryResponse,
+  TasksResponse,
+  TaskStatus,
+  UploadResponse,
+  ResolveChannelResponse,
+  WhoamiResponse,
+  ActivityResponse,
+  WorkspaceResponse,
+} from './types'
+
+const BASE = ''  // same origin in prod; Vite proxy in dev
+
+async function json<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ error: res.statusText }))
+    throw new Error((err as { error?: string }).error ?? res.statusText)
+  }
+  return res.json() as Promise<T>
+}
+
+export async function getWhoami(): Promise<WhoamiResponse> {
+  return json(await fetch(`${BASE}/api/whoami`))
+}
+
+export async function getServerInfo(username: string): Promise<ServerInfo> {
+  return json(await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/server`))
+}
+
+export async function sendMessage(
+  username: string,
+  target: string,
+  content: string,
+  attachmentIds?: string[]
+): Promise<{ messageId: string }> {
+  return json(
+    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, content, attachmentIds: attachmentIds ?? [] }),
+    })
+  )
+}
+
+export async function getHistory(
+  username: string,
+  channel: string,
+  limit = 50,
+  before?: number,
+  after?: number
+): Promise<HistoryResponse> {
+  const params = new URLSearchParams({ channel, limit: String(limit) })
+  if (before != null) params.set('before', String(before))
+  if (after != null) params.set('after', String(after))
+  return json(
+    await fetch(
+      `${BASE}/internal/agent/${encodeURIComponent(username)}/history?${params}`
+    )
+  )
+}
+
+export async function getTasks(
+  username: string,
+  channel: string,
+  status: 'all' | TaskStatus = 'all'
+): Promise<TasksResponse> {
+  const params = new URLSearchParams({ channel, status })
+  return json(
+    await fetch(
+      `${BASE}/internal/agent/${encodeURIComponent(username)}/tasks?${params}`
+    )
+  )
+}
+
+export async function createTasks(
+  username: string,
+  channel: string,
+  titles: string[]
+): Promise<TasksResponse> {
+  return json(
+    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/tasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, tasks: titles.map((title) => ({ title })) }),
+    })
+  )
+}
+
+export async function claimTasks(
+  username: string,
+  channel: string,
+  taskNumbers: number[]
+): Promise<{ results: Array<{ taskNumber: number; success: boolean; reason?: string }> }> {
+  return json(
+    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/tasks/claim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, task_numbers: taskNumbers }),
+    })
+  )
+}
+
+export async function unclaimTask(
+  username: string,
+  channel: string,
+  taskNumber: number
+): Promise<void> {
+  await json(
+    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/tasks/unclaim`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel, task_number: taskNumber }),
+    })
+  )
+}
+
+export async function updateTaskStatus(
+  username: string,
+  channel: string,
+  taskNumber: number,
+  status: TaskStatus
+): Promise<void> {
+  await json(
+    await fetch(
+      `${BASE}/internal/agent/${encodeURIComponent(username)}/tasks/update-status`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ channel, task_number: taskNumber, status }),
+      }
+    )
+  )
+}
+
+export async function uploadFile(
+  username: string,
+  file: File
+): Promise<UploadResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  return json(
+    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/upload`, {
+      method: 'POST',
+      body: form,
+    })
+  )
+}
+
+export async function resolveChannel(
+  username: string,
+  target: string
+): Promise<ResolveChannelResponse> {
+  return json(
+    await fetch(
+      `${BASE}/internal/agent/${encodeURIComponent(username)}/resolve-channel`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target }),
+      }
+    )
+  )
+}
+
+export function attachmentUrl(id: string): string {
+  return `${BASE}/api/attachments/${id}`
+}
+
+export async function getAgentActivity(agentName: string, limit = 50): Promise<ActivityResponse> {
+  return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/activity?limit=${limit}`))
+}
+
+export async function getAgentWorkspace(agentName: string): Promise<WorkspaceResponse> {
+  return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/workspace`))
+}
