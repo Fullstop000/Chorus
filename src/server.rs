@@ -38,6 +38,38 @@ async fn handle_whoami() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "username": whoami::username() }))
 }
 
+#[derive(Deserialize)]
+struct CreateAgentRequest {
+    name: String,
+    #[serde(default)]
+    display_name: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default = "default_runtime")]
+    runtime: String,
+    #[serde(default = "default_model")]
+    model: String,
+}
+
+fn default_runtime() -> String { "claude".to_string() }
+fn default_model() -> String { "sonnet".to_string() }
+
+async fn handle_create_agent(
+    State(store): State<Arc<Store>>,
+    Json(req): Json<CreateAgentRequest>,
+) -> ApiResult<serde_json::Value> {
+    let name = req.name.trim().to_string();
+    if name.is_empty() {
+        return Err(api_err("name is required"));
+    }
+    let display_name = if req.display_name.is_empty() { name.clone() } else { req.display_name };
+    let description = if req.description.is_empty() { None } else { Some(req.description.as_str()) };
+    store
+        .create_agent_record(&name, &display_name, description, &req.runtime, &req.model)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "name": name })))
+}
+
 pub fn build_router(store: Arc<Store>) -> Router {
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -75,8 +107,9 @@ pub fn build_router(store: Arc<Store>) -> Router {
             "/api/attachments/{attachment_id}",
             get(handle_get_attachment),
         )
-        // ── New: whoami ──
+        // ── New: whoami + agent management ──
         .route("/api/whoami", get(handle_whoami))
+        .route("/api/agents", post(handle_create_agent))
         // ── CORS middleware ──
         .layer(cors)
         // ── Static file serving (must be last — fallback for all non-API paths) ──

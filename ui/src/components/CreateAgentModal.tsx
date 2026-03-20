@@ -54,9 +54,15 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
     setCreating(true)
     setError(null)
     try {
-      alert(
-        `To create agent, run:\nchorus agent create ${name.trim()} --runtime ${runtime} --model ${model}`
-      )
+      const res = await fetch('/api/agents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: name.trim(), description, runtime, model }),
+      })
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText }))
+        throw new Error((body as { error?: string }).error ?? res.statusText)
+      }
       onCreated()
     } catch (e) {
       setError(String(e))
