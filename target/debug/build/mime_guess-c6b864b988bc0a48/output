@@ -1,1 +1,0 @@
-cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/Users/bytedance/slock-daemon/Chorus/target/debug/build/mime_guess-c6b864b988bc0a48/out/mime_types_generated.rs
