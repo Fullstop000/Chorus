@@ -306,13 +306,13 @@ impl Store {
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
 
             let mut msg_stmt = conn.prepare(
-                "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq
+                "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id
                  FROM messages m
-                 WHERE m.channel_id = ?1 AND m.seq > ?2 AND m.thread_parent_id IS NULL
+                 WHERE m.channel_id = ?1 AND m.seq > ?2
                  ORDER BY m.seq ASC",
             )?;
 
-            let msgs: Vec<(String, String, String, String, String, i64)> = msg_stmt
+            let msgs: Vec<(String, String, String, String, String, i64, Option<String>)> = msg_stmt
                 .query_map(params![channel_id, last_read_seq], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -321,13 +321,14 @@ impl Store {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, i64>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
 
             let mut max_seq = *last_read_seq;
-            for (msg_id, sender_name, sender_type, content, created_at, seq) in &msgs {
+            for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id) in &msgs {
                 if *seq > max_seq {
                     max_seq = *seq;
                 }
@@ -340,21 +341,36 @@ impl Store {
                     Some(attachments)
                 };
 
-                // Determine parent channel info for DMs
-                let (parent_channel_name, parent_channel_type) =
-                    if channel.channel_type == ChannelType::Dm {
-                        (None, None)
+                let (msg_channel_name, msg_channel_type, parent_channel_name, parent_channel_type) =
+                    if let Some(parent_id) = thread_parent_id {
+                        // Thread message — build "thread-<short_id>" channel name
+                        let short = if parent_id.len() >= 8 { &parent_id[..8] } else { parent_id.as_str() };
+                        let parent_type = match channel.channel_type {
+                            ChannelType::Channel => "channel",
+                            ChannelType::Dm => "dm",
+                        };
+                        (
+                            format!("thread-{}", short),
+                            "thread".to_string(),
+                            Some(channel.name.clone()),
+                            Some(parent_type.to_string()),
+                        )
                     } else {
-                        (None, None)
+                        (
+                            channel.name.clone(),
+                            match channel.channel_type {
+                                ChannelType::Channel => "channel".to_string(),
+                                ChannelType::Dm => "dm".to_string(),
+                            },
+                            None,
+                            None,
+                        )
                     };
 
                 result.push(ReceivedMessage {
                     message_id: msg_id.clone(),
-                    channel_name: channel.name.clone(),
-                    channel_type: match channel.channel_type {
-                        ChannelType::Channel => "channel".to_string(),
-                        ChannelType::Dm => "dm".to_string(),
-                    },
+                    channel_name: msg_channel_name,
+                    channel_type: msg_channel_type,
                     parent_channel_name,
                     parent_channel_type,
                     sender_name: sender_name.clone(),

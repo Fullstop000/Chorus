@@ -293,6 +293,23 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
         server_url.clone(),
     ));
 
+    // Auto-restart agents that were active before server restart
+    {
+        let active_agents: Vec<String> = store
+            .list_agents()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a.status == crate::models::AgentStatus::Active)
+            .map(|a| a.name)
+            .collect();
+        for agent_name in active_agents {
+            eprintln!("[Startup] Restarting active agent @{agent_name}");
+            if let Err(e) = manager.start_agent(&agent_name).await {
+                eprintln!("[Startup] Failed to restart @{agent_name}: {e}");
+            }
+        }
+    }
+
     let router = build_router_with_lifecycle(store.clone(), manager.clone());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("Chorus running at {server_url}");
