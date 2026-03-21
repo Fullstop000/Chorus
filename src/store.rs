@@ -471,6 +471,7 @@ impl Store {
                         sender_type: row.get(4)?,
                         created_at: row.get(5)?,
                         attachments: None,
+                        reply_count: None,
                     })
                 })?
                 .filter_map(|r| r.ok())
@@ -485,6 +486,7 @@ impl Store {
                         sender_type: row.get(4)?,
                         created_at: row.get(5)?,
                         attachments: None,
+                        reply_count: None,
                     })
                 })?
                 .filter_map(|r| r.ok())
@@ -500,6 +502,7 @@ impl Store {
                     sender_type: row.get(4)?,
                     created_at: row.get(5)?,
                     attachments: None,
+                    reply_count: None,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -514,6 +517,7 @@ impl Store {
                     sender_type: row.get(4)?,
                     created_at: row.get(5)?,
                     attachments: None,
+                    reply_count: None,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -528,6 +532,20 @@ impl Store {
             let atts = Self::get_message_attachments(&conn, &msg.id)?;
             if !atts.is_empty() {
                 msg.attachments = Some(atts);
+            }
+        }
+
+        // Populate reply counts for top-level messages only
+        if thread_parent_id.is_none() {
+            for msg in &mut msgs {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND thread_parent_id = ?2",
+                    params![channel.id, msg.id],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+                if count > 0 {
+                    msg.reply_count = Some(count);
+                }
             }
         }
 

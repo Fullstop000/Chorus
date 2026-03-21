@@ -9,11 +9,28 @@ export function ChatPanel() {
   const target = useTarget()
   const { messages, loading } = useHistory(currentUser, target)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const prevTargetRef = useRef<string | null>(null)
 
-  // Scroll to bottom when messages change
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const targetChanged = prevTargetRef.current !== target
+    prevTargetRef.current = target
+
+    // Always scroll to bottom on initial channel/agent switch
+    if (targetChanged) {
+      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+      return
+    }
+
+    // Only auto-scroll on new messages if already near the bottom (within 100px)
+    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distFromBottom < 100) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [messages, target])
 
   const channelInfo = selectedChannel
     ? serverInfo?.channels.find((c) => `#${c.name}` === selectedChannel)
@@ -40,7 +57,7 @@ export function ChatPanel() {
         </div>
       </div>
 
-      <div className="chat-messages">
+      <div className="chat-messages" ref={scrollContainerRef}>
         {loading && messages.length === 0 && (
           <div className="chat-messages-empty">Loading messages...</div>
         )}

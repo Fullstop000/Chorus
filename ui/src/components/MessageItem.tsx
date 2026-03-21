@@ -1,7 +1,12 @@
-import React, { useState } from 'react'
+import React from 'react'
 import ReactMarkdown from 'react-markdown'
+import { MessageSquare, Copy } from 'lucide-react'
 import type { HistoryMessage } from '../types'
 import { attachmentUrl } from '../api'
+
+function replyLabel(n: number) {
+  return n === 1 ? '1 reply' : `${n} replies`
+}
 
 // Render message content with markdown + @mention pills
 function renderContent(content: string) {
@@ -81,7 +86,6 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
   const isMe = message.senderName === currentUser
   const initial = message.senderName[0]?.toUpperCase() ?? '?'
   const color = senderColor(message.senderName)
-  const [hovered, setHovered] = useState(false)
 
   // Group messages from the same sender within 5 minutes
   const isGrouped =
@@ -95,12 +99,7 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
   }
 
   return (
-    <div
-      className={`message-item${isGrouped ? ' grouped' : ''}`}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{ position: 'relative' }}
-    >
+    <div className={`message-item${isGrouped ? ' grouped' : ''} message-group`}>
       {!isGrouped && (
         <div
           className="message-avatar"
@@ -134,18 +133,16 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
           </div>
         )}
         <div className="message-content">{renderContent(message.content)}</div>
-        {hovered && (
-          <div className="message-actions">
-            <button className="message-action-btn" title="Copy markdown" onClick={handleCopy}>
-              📋
+        <div className="message-actions">
+          {onReply && (
+            <button className="message-action-btn" title="Reply in thread" onClick={() => onReply(message)}>
+              <MessageSquare size={13} />
             </button>
-            {onReply && (
-              <button className="message-action-btn" title="Reply in thread" onClick={() => onReply(message)}>
-                ↩
-              </button>
-            )}
-          </div>
-        )}
+          )}
+          <button className="message-action-btn" title="Copy markdown" onClick={handleCopy}>
+            <Copy size={13} />
+          </button>
+        </div>
         {message.attachments && message.attachments.length > 0 && (
           <div className="message-attachments">
             {message.attachments.map((att) => (
@@ -160,6 +157,15 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
               </a>
             ))}
           </div>
+        )}
+        {onReply && (message.replyCount ?? 0) > 0 && (
+          <button
+            className="message-reply-count"
+            onClick={() => onReply(message)}
+          >
+            <MessageSquare size={12} />
+            {replyLabel(message.replyCount!)}
+          </button>
         )}
       </div>
     </div>

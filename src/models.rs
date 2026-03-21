@@ -228,6 +228,8 @@ pub struct HistoryMessage {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentRef>>,
+    #[serde(rename = "replyCount", skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

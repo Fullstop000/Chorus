@@ -47,6 +47,7 @@ export interface HistoryMessage {
   createdAt: string
   thread_parent_id?: string
   attachments?: AttachmentRef[]
+  replyCount?: number
 }
 
 export interface HistoryResponse {

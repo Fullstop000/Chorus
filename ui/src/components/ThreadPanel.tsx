@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, type KeyboardEvent } from 'react'
+import { X, Paperclip } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
@@ -20,6 +21,11 @@ export function ThreadPanel() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
+
+  // Reset input when switching thread
+  useEffect(() => {
+    setContent('')
+  }, [openThreadMsg?.id])
 
   async function handleSend() {
     if (!threadTarget || !currentUser || !content.trim()) return
@@ -46,54 +52,65 @@ export function ThreadPanel() {
 
   return (
     <div className="thread-panel">
+      {/* Header */}
       <div className="thread-header">
         <span className="thread-title">Thread</span>
         <button className="thread-close-btn" onClick={() => setOpenThreadMsg(null)} title="Close thread">
-          ×
+          <X size={16} strokeWidth={2} />
         </button>
       </div>
 
-      <div className="thread-parent">
-        <MessageItem
-          message={openThreadMsg}
-          currentUser={currentUser}
-        />
-      </div>
-
-      <div className="thread-replies-label">
-        {messages.length === 0 ? 'No replies yet' : `${messages.length} ${messages.length === 1 ? 'reply' : 'replies'}`}
-      </div>
-
-      <div className="thread-messages">
-        {messages.map((msg, i) => (
+      <div className="thread-body">
+        {/* Parent message (copy only, no reply) */}
+        <div className="thread-parent-wrapper">
           <MessageItem
-            key={msg.id}
-            message={msg}
+            message={openThreadMsg}
             currentUser={currentUser}
-            prevMessage={messages[i - 1]}
           />
-        ))}
-        <div ref={bottomRef} />
+        </div>
+
+        {/* Replies */}
+        <div className="thread-replies">
+          {messages.length === 0 ? (
+            <div className="thread-empty">No replies yet</div>
+          ) : (
+            messages.map((msg, i) => (
+              <MessageItem
+                key={msg.id}
+                message={msg}
+                currentUser={currentUser}
+                prevMessage={messages[i - 1]}
+              />
+            ))
+          )}
+          <div ref={bottomRef} />
+        </div>
       </div>
 
+      {/* Input */}
       <div className="thread-input-area">
         <div className="thread-input-row">
           <textarea
             className="thread-input-textarea"
-            placeholder="Reply in thread…"
+            placeholder="Message thread"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             onKeyDown={handleKeyDown}
             disabled={sending}
             rows={1}
           />
-          <button
-            className="thread-input-send"
-            onClick={handleSend}
-            disabled={sending || !content.trim()}
-          >
-            {sending ? '...' : 'Reply'}
-          </button>
+          <div className="thread-input-footer">
+            <button className="thread-attach-btn" title="Attach" disabled>
+              <Paperclip size={16} />
+            </button>
+            <button
+              className="thread-send-btn"
+              onClick={handleSend}
+              disabled={sending || !content.trim()}
+            >
+              Send
+            </button>
+          </div>
         </div>
       </div>
     </div>
