@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import type { ServerInfo, AgentInfo } from './types'
 import { getWhoami, getServerInfo } from './api'
 
@@ -26,6 +26,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null)
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
+  // Ref so refreshServerInfo can check selectedAgent without re-creating the callback
+  const selectedAgentRef = useRef<AgentInfo | null>(null)
 
   // Fetch current user once on mount
   useEffect(() => {
@@ -40,9 +42,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     getServerInfo(currentUser)
       .then((info) => {
         setServerInfo(info)
-        // Auto-select first joined channel if nothing selected
+        // Auto-select first joined channel only if nothing is selected (no channel AND no agent)
         setSelectedChannel((prev) => {
-          if (prev) return prev
+          if (prev || selectedAgentRef.current) return prev
           const first = info.channels.find((c) => c.joined)
           return first ? `#${first.name}` : null
         })
@@ -58,6 +60,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const id = setInterval(refreshServerInfo, 5_000)
     return () => clearInterval(id)
   }, [currentUser, refreshServerInfo])
+
+  // Keep ref in sync so refreshServerInfo can read it without stale closure
+  useEffect(() => { selectedAgentRef.current = selectedAgent }, [selectedAgent])
 
   // When selecting an agent, switch to chat tab
   const handleSetSelectedAgent = useCallback((agent: AgentInfo | null) => {
