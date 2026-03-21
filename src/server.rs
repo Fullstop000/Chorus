@@ -29,6 +29,17 @@ pub trait AgentLifecycle: Send + Sync {
         &'a self,
         agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn stop_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    /// Get the in-memory activity log for an agent.
+    fn get_activity_log_data(&self, agent_name: &str, after_seq: Option<u64>) -> ActivityLogResponse;
+
+    /// Get current activity state for all agents: (name, activity, detail).
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)>;
 }
 
 struct NoopAgentLifecycle;
@@ -46,6 +57,25 @@ impl AgentLifecycle for NoopAgentLifecycle {
         _agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn stop_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_activity_log_data(&self, _agent_name: &str, _after_seq: Option<u64>) -> ActivityLogResponse {
+        ActivityLogResponse {
+            entries: vec![],
+            agent_activity: "offline".to_string(),
+            agent_detail: String::new(),
+        }
+    }
+
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
+        vec![]
     }
 }
 
@@ -168,9 +198,14 @@ pub fn build_router_with_lifecycle(
         )
         // ── New: whoami + agent management ──
         .route("/api/whoami", get(handle_whoami))
+        .route("/api/channels", post(handle_create_channel))
         .route("/api/agents", post(handle_create_agent))
+        .route("/api/agents/{name}/start", post(handle_agent_start))
+        .route("/api/agents/{name}/stop", post(handle_agent_stop))
         .route("/api/agents/{name}/activity", get(handle_agent_activity))
+        .route("/api/agents/{name}/activity-log", get(handle_agent_activity_log))
         .route("/api/agents/{name}/workspace", get(handle_agent_workspace))
+        .route("/api/server-info", get(handle_ui_server_info))
         // ── CORS middleware ──
         .layer(cors)
         // ── Static file serving (must be last — fallback for all non-API paths) ──
@@ -600,6 +635,93 @@ async fn handle_agent_activity(
         .get_agent_activity(&name, limit)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
+}
+
+// ── Create Channel ──
+
+#[derive(Deserialize)]
+struct CreateChannelRequest {
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn handle_create_channel(
+    State(state): State<AppState>,
+    Json(req): Json<CreateChannelRequest>,
+) -> ApiResult<serde_json::Value> {
+    let name = req.name.trim().to_lowercase();
+    let name = name.trim_start_matches('#');
+    if name.is_empty() {
+        return Err(api_err("name is required"));
+    }
+    let description = if req.description.is_empty() { None } else { Some(req.description.as_str()) };
+    state.store.create_channel(name, description, ChannelType::Channel)
+        .map_err(|e| api_err(e.to_string()))?;
+    // Auto-join all agents
+    let username = whoami::username();
+    let _ = state.store.join_channel(name, &username, SenderType::Human);
+    for agent in state.store.list_agents().unwrap_or_default() {
+        let _ = state.store.join_channel(name, &agent.name, SenderType::Agent);
+    }
+    Ok(Json(serde_json::json!({ "name": name })))
+}
+
+// ── Agent Start/Stop ──
+
+async fn handle_agent_start(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    state.lifecycle.start_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn handle_agent_stop(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    state.lifecycle.stop_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Agent Activity Log (living log) ──
+
+#[derive(Deserialize)]
+struct ActivityLogParams {
+    after: Option<u64>,
+}
+
+async fn handle_agent_activity_log(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(params): Query<ActivityLogParams>,
+) -> ApiResult<ActivityLogResponse> {
+    let resp = state.lifecycle.get_activity_log_data(&name, params.after);
+    Ok(Json(resp))
+}
+
+// ── UI Server Info (enriched with activity states) ──
+
+async fn handle_ui_server_info(
+    State(state): State<AppState>,
+) -> ApiResult<serde_json::Value> {
+    let username = whoami::username();
+    let mut info = state
+        .store
+        .get_server_info(&username)
+        .map_err(|e| api_err(e.to_string()))?;
+
+    // Enrich agent list with live activity states
+    let activity_states = state.lifecycle.get_all_agent_activity_states();
+    for agent in &mut info.agents {
+        if let Some((_, activity, detail)) = activity_states.iter().find(|(n, _, _)| n == &agent.name) {
+            agent.activity = Some(activity.clone());
+            agent.activity_detail = Some(detail.clone());
+        }
+    }
+
+    Ok(Json(serde_json::to_value(info).unwrap()))
 }
 
 // ── Agent Workspace ──

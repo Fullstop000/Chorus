@@ -7,6 +7,7 @@ import type {
   ResolveChannelResponse,
   WhoamiResponse,
   ActivityResponse,
+  ActivityLogResponse,
   WorkspaceResponse,
 } from './types'
 
@@ -24,8 +25,8 @@ export async function getWhoami(): Promise<WhoamiResponse> {
   return json(await fetch(`${BASE}/api/whoami`))
 }
 
-export async function getServerInfo(username: string): Promise<ServerInfo> {
-  return json(await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/server`))
+export async function getServerInfo(_username: string): Promise<ServerInfo> {
+  return json(await fetch(`${BASE}/api/server-info`))
 }
 
 export async function sendMessage(
@@ -169,6 +170,19 @@ export function attachmentUrl(id: string): string {
 
 export async function getAgentActivity(agentName: string, limit = 50): Promise<ActivityResponse> {
   return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/activity?limit=${limit}`))
+}
+
+export async function startAgent(agentName: string): Promise<void> {
+  await json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/start`, { method: 'POST' }))
+}
+
+export async function stopAgent(agentName: string): Promise<void> {
+  await json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/stop`, { method: 'POST' }))
+}
+
+export async function getAgentActivityLog(agentName: string, afterSeq?: number): Promise<ActivityLogResponse> {
+  const params = afterSeq != null ? `?after=${afterSeq}` : ''
+  return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/activity-log${params}`))
 }
 
 export async function getAgentWorkspace(agentName: string): Promise<WorkspaceResponse> {

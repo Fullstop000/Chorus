@@ -1,17 +1,43 @@
+import React from 'react'
+import ReactMarkdown from 'react-markdown'
 import type { HistoryMessage } from '../types'
 import { attachmentUrl } from '../api'
 
-// Parse @mentions and render as colored inline pills
+// Render message content with markdown + @mention pills
 function renderContent(content: string) {
-  const parts = content.split(/(@\w+)/g)
+  return (
+    <ReactMarkdown
+      components={{
+        // Intercept text nodes to highlight @mentions
+        p({ children }) {
+          return <p>{processChildren(children)}</p>
+        },
+        li({ children }) {
+          return <li>{processChildren(children)}</li>
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
+}
+
+function processChildren(children: React.ReactNode): React.ReactNode {
+  if (typeof children === 'string') return injectMentions(children)
+  if (Array.isArray(children)) return children.map((c, i) => {
+    if (typeof c === 'string') return <span key={i}>{injectMentions(c)}</span>
+    return c
+  })
+  return children
+}
+
+function injectMentions(text: string): React.ReactNode {
+  const parts = text.split(/(@\w+)/g)
+  if (parts.length === 1) return text
   return parts.map((part, i) =>
     part.startsWith('@') ? (
-      <span key={i} className="mention-pill">
-        {part}
-      </span>
-    ) : (
-      <span key={i}>{part}</span>
-    )
+      <span key={i} className="mention-pill">{part}</span>
+    ) : part
   )
 }
 

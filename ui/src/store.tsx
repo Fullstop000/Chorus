@@ -55,7 +55,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!currentUser) return
     refreshServerInfo()
-    const id = setInterval(refreshServerInfo, 10_000)
+    const id = setInterval(refreshServerInfo, 5_000)
     return () => clearInterval(id)
   }, [currentUser, refreshServerInfo])
 

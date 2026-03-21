@@ -39,6 +39,31 @@
   font-family: var(--font-mono);
 }
 
+.profile-activity-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.profile-activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.profile-controls {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  padding-bottom: 20px;
+  border-bottom: var(--border);
+  margin-bottom: 20px;
+}
+
 .profile-section {
   margin-bottom: 20px;
 }
@@ -72,8 +97,9 @@
 
 .profile-config-grid {
   display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 6px 12px;
+  grid-template-columns: auto auto;
+  justify-content: start;
+  gap: 6px 16px;
   font-size: 13px;
 }
 
@@ -82,20 +108,9 @@
   font-weight: 500;
 }
 
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 600;
-  color: #fff;
-}
-
-.badge-claude { background: var(--badge-claude); }
-.badge-sonnet { background: var(--badge-sonnet); }
-.badge-connected { background: var(--status-online); }
+/* badges use global .badge class from App.css */
+.badge-claude { background: var(--cyan); }
+.badge-connected { background: var(--lime); }
 
 .env-var-row {
   display: flex;

@@ -1106,6 +1106,8 @@ impl Store {
                     model: row.get(4)?,
                     status: row.get(5)?,
                     session_id: row.get(6)?,
+                    activity: None,
+                    activity_detail: None,
                 })
             })?
             .filter_map(|r| r.ok())
