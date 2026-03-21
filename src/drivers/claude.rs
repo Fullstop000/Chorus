@@ -214,6 +214,8 @@ impl Driver for ClaudeDriver {
 
     fn tool_display_name(&self, name: &str) -> String {
         match name {
+            "mcp__chat__send_message" => "Sending message\u{2026}".to_string(),
+            "mcp__chat__receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp__chat__upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp__chat__view_file" => "Viewing file\u{2026}".to_string(),
             "mcp__chat__list_tasks" => "Listing tasks\u{2026}".to_string(),
@@ -223,7 +225,10 @@ impl Driver for ClaudeDriver {
             "mcp__chat__update_task_status" => "Updating task status\u{2026}".to_string(),
             "mcp__chat__list_server" => "Listing server\u{2026}".to_string(),
             "mcp__chat__read_history" => "Reading history\u{2026}".to_string(),
-            n if n.starts_with("mcp__chat__") => String::new(),
+            n if n.starts_with("mcp__chat__") => {
+                let op = n.trim_start_matches("mcp__chat__").replace('_', " ");
+                format!("Using {op}\u{2026}")
+            }
             "Read" | "read_file" => "Reading file\u{2026}".to_string(),
             "Write" | "write_file" => "Writing file\u{2026}".to_string(),
             "Edit" | "edit_file" => "Editing file\u{2026}".to_string(),

@@ -62,31 +62,73 @@
 .activity-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 4px 6px;
+  gap: 10px;
+  padding: 8px 10px;
   font-size: 12px;
-  font-family: var(--font-mono);
   line-height: 1.5;
-  border-radius: 2px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--line, #d4d4d8) 65%, transparent);
+  background: color-mix(in srgb, var(--panel-bg, #fff) 92%, transparent);
 }
 
 .activity-item:hover {
-  background: rgba(0,0,0,0.04);
+  background: color-mix(in srgb, var(--panel-bg, #fff) 85%, var(--cyan, #22d3ee) 6%);
 }
 
 .activity-item-icon {
   flex-shrink: 0;
-  width: 16px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-bg, #fff) 80%, var(--text-muted) 8%);
 }
 
-.activity-item-text {
+.activity-item-main {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.activity-item-heading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.activity-item-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary, #555);
+}
+
+.activity-item-meta {
+  color: var(--text-secondary, #555);
+  font-family: var(--font-mono);
+}
+
+.activity-item-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--panel-bg, #fff) 76%, var(--text-muted) 10%);
+}
+
+.activity-item-body {
+  color: var(--text-primary, #111);
   word-break: break-word;
 }
 
@@ -98,13 +140,14 @@
   flex-shrink: 0;
   color: var(--text-muted);
   font-size: 10px;
-  margin-top: 2px;
+  margin-top: 3px;
+  font-family: var(--font-mono);
 }
 
 /* ── Status row ──────────────────────────────────────────────────── */
 
 .activity-item-status {
-  opacity: 0.7;
+  background: color-mix(in srgb, var(--panel-bg, #fff) 88%, var(--line, #d4d4d8) 12%);
 }
 
 .activity-status-dot {
@@ -112,19 +155,51 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 18px;
+  width: 24px;
+  height: 24px;
   margin-top: 1px;
+}
+
+.activity-status-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: inherit;
+}
+
+.activity-tone-online {
+  color: var(--lime, #84cc16);
+}
+
+.activity-tone-offline {
+  color: var(--gray-400, #9ca3af);
+}
+
+.activity-tone-thinking,
+.activity-tone-working {
+  color: var(--orange, #f97316);
+}
+
+.activity-tone-error {
+  color: var(--pink, #ec4899);
 }
 
 /* ── Thinking row ────────────────────────────────────────────────── */
 
 .activity-icon-think {
-  color: var(--text-muted);
+  color: var(--orange, #f97316);
+  background: color-mix(in srgb, var(--orange, #f97316) 12%, transparent);
 }
 
-.activity-item-thinking .activity-item-text {
-  color: rgba(0,0,0,0.5);
+.activity-item-thinking .activity-item-body {
+  color: rgba(0,0,0,0.62);
   font-style: italic;
 }
 
@@ -132,11 +207,7 @@
 
 .activity-icon-tool {
   color: var(--text-secondary, #555);
-}
-
-.activity-tool-label {
-  font-weight: 600;
-  margin-right: 6px;
+  background: color-mix(in srgb, var(--text-secondary, #555) 10%, transparent);
 }
 
 .activity-tool-input {
@@ -146,11 +217,32 @@
 /* ── Text / response row ─────────────────────────────────────────── */
 
 .activity-item-text-entry {
-  background: color-mix(in srgb, var(--cyan, #22d3ee) 8%, transparent);
+  background: color-mix(in srgb, var(--cyan, #22d3ee) 10%, var(--panel-bg, #fff) 90%);
 }
 
 .activity-icon-text {
   color: var(--cyan, #22d3ee);
+  background: color-mix(in srgb, var(--cyan, #22d3ee) 14%, transparent);
+}
+
+/* ── Message rows ────────────────────────────────────────────────── */
+
+.activity-item-message-received {
+  background: color-mix(in srgb, var(--lime, #84cc16) 8%, var(--panel-bg, #fff) 92%);
+}
+
+.activity-item-message-sent {
+  background: color-mix(in srgb, var(--cyan, #22d3ee) 8%, var(--panel-bg, #fff) 92%);
+}
+
+.activity-icon-message-received {
+  color: var(--lime, #84cc16);
+  background: color-mix(in srgb, var(--lime, #84cc16) 14%, transparent);
+}
+
+.activity-icon-message-sent {
+  color: var(--cyan, #22d3ee);
+  background: color-mix(in srgb, var(--cyan, #22d3ee) 14%, transparent);
 }
 
 /* ── Expandable text ─────────────────────────────────────────────── */

@@ -33,6 +33,9 @@ impl AgentActivityLog {
     }
 
     pub fn set_state(&mut self, activity: &str, detail: &str) {
+        if self.activity == activity && self.detail == detail {
+            return;
+        }
         self.activity = activity.to_string();
         self.detail = detail.to_string();
         self.push(ActivityEntry::Status {
@@ -104,4 +107,20 @@ pub fn all_activity_states(
         .iter()
         .map(|(name, log)| (name.clone(), log.activity.clone(), log.detail.clone()))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_activity_state_skips_duplicate_entries() {
+        let logs = ActivityLogMap::default();
+
+        set_activity_state(&logs, "bot1", "online", "Idle");
+        set_activity_state(&logs, "bot1", "online", "Idle");
+
+        let resp = get_activity_log(&logs, "bot1", None);
+        assert_eq!(resp.entries.len(), 1, "duplicate state transitions should not create duplicate log rows");
+    }
 }

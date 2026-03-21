@@ -335,8 +335,9 @@ async fn handle_parsed_event(
                 running.is_in_receive_message = true;
                 running.pending_notification_count = 0;
                 info!(agent = %agent_name, "waiting for messages");
+                let display_name = driver.tool_display_name(name);
                 activity_log::push_activity(logs, agent_name, ActivityEntry::ToolStart {
-                    tool_name: name.clone(),
+                    tool_name: display_name,
                     tool_input: String::new(),
                 });
                 activity_log::set_activity_state(logs, agent_name, "online", "Waiting for messages");
@@ -399,6 +400,10 @@ impl AgentLifecycle for AgentManager {
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         activity_log::all_activity_states(&self.activity_logs)
+    }
+
+    fn push_activity_entry(&self, agent_name: &str, entry: ActivityEntry) {
+        activity_log::push_activity(&self.activity_logs, agent_name, entry);
     }
 }
 

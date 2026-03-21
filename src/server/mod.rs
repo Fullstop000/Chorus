@@ -35,6 +35,9 @@ pub trait AgentLifecycle: Send + Sync {
     fn get_activity_log_data(&self, agent_name: &str, after_seq: Option<u64>) -> ActivityLogResponse;
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)>;
+
+    /// Append a UI-visible activity entry for an agent.
+    fn push_activity_entry(&self, agent_name: &str, entry: ActivityEntry);
 }
 
 struct NoopAgentLifecycle;
@@ -72,6 +75,8 @@ impl AgentLifecycle for NoopAgentLifecycle {
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         vec![]
     }
+
+    fn push_activity_entry(&self, _agent_name: &str, _entry: ActivityEntry) {}
 }
 
 pub fn build_router(store: Arc<Store>) -> Router {

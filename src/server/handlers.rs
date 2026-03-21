@@ -33,6 +33,47 @@ fn strip_channel_prefix(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
 
+/// Build a compact preview suitable for activity log rows and tracing.
+fn content_preview(text: &str) -> String {
+    let preview: String = text.chars().take(120).collect();
+    if text.chars().count() > 120 {
+        format!("{preview}…")
+    } else {
+        preview
+    }
+}
+
+/// Convert a delivered message into the label shown in the activity timeline.
+fn activity_channel_label(message: &ReceivedMessage) -> String {
+    match message.channel_type.as_str() {
+        "channel" => format!("#{}", message.channel_name),
+        "dm" => format!("dm:@{}", message.channel_name),
+        "thread" => {
+            let parent_type = message.parent_channel_type.as_deref().unwrap_or("channel");
+            let parent_name = message.parent_channel_name.as_deref().unwrap_or(&message.channel_name);
+            match parent_type {
+                "dm" => format!("dm:@{} thread", parent_name),
+                _ => format!("#{} thread", parent_name),
+            }
+        }
+        _ => message.channel_name.clone(),
+    }
+}
+
+/// Record received messages in the activity log so the UI can show communication flow.
+fn push_received_activity(state: &AppState, agent_id: &str, messages: &[ReceivedMessage]) {
+    for message in messages {
+        state.lifecycle.push_activity_entry(
+            agent_id,
+            ActivityEntry::MessageReceived {
+                channel_label: activity_channel_label(message),
+                sender_name: message.sender_name.clone(),
+                content: content_preview(&message.content),
+            },
+        );
+    }
+}
+
 // ── Whoami ──
 
 pub async fn handle_whoami() -> Json<serde_json::Value> {
@@ -61,8 +102,7 @@ pub async fn handle_send(
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
 
-    let preview: String = req.content.chars().take(120).collect();
-    let preview = if req.content.chars().count() > 120 { format!("{preview}…") } else { preview };
+    let preview = content_preview(&req.content);
     info!(agent = %agent_id, target = %req.target, content = %preview, "send_message");
 
     let message_id = store
@@ -78,6 +118,15 @@ pub async fn handle_send(
 
     let short_id = if message_id.len() >= 8 { &message_id[..8] } else { &message_id };
     info!(agent = %agent_id, msg = %short_id, "send_message ok");
+    if sender_type == SenderType::Agent {
+        state.lifecycle.push_activity_entry(
+            &agent_id,
+            ActivityEntry::MessageSent {
+                target: req.target.clone(),
+                content: preview,
+            },
+        );
+    }
 
     deliver_message_to_agents(&state, &channel.id, &agent_id)
         .await
@@ -112,6 +161,7 @@ pub async fn handle_receive(
         for m in &messages {
             info!(agent = %agent_id, target = %format!("{}:{}", m.channel_type, m.channel_name), sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
         }
+        push_received_activity(&state, &agent_id, &messages);
         return Ok(Json(ReceiveResponse { messages }));
     }
     if !blocking {
@@ -139,6 +189,7 @@ pub async fn handle_receive(
                     for m in &messages {
                         info!(agent = %agent_id, target = %format!("{}:{}", m.channel_type, m.channel_name), sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
                     }
+                    push_received_activity(&state, &agent_id, &messages);
                     return Ok(Json(ReceiveResponse { messages }));
                 }
             }

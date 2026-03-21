@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   BrainCircuit,
+  ArrowDownLeft,
+  ArrowUpRight,
   MessageSquare,
   FileText,
   FilePen,
@@ -103,6 +105,21 @@ function fmtTime(ms: number): string {
   })
 }
 
+function formatActivityLabel(activity: string): string {
+  switch (activity) {
+    case 'online': return 'Online'
+    case 'offline': return 'Offline'
+    case 'thinking': return 'Thinking'
+    case 'working': return 'Working'
+    case 'error': return 'Error'
+    default: return activity ? activity.charAt(0).toUpperCase() + activity.slice(1) : 'Unknown'
+  }
+}
+
+function activityClassName(activity: string): string {
+  return `activity-tone-${activity || 'offline'}`
+}
+
 // ── Expandable text block ─────────────────────────────────────────
 
 const COLLAPSE_LINES = 3
@@ -142,15 +159,19 @@ function ExpandableText({ text, maxLines = COLLAPSE_LINES }: { text: string; max
 function StatusRow({ item }: { item: ActivityLogEntry }) {
   const { entry, timestamp_ms } = item
   const color = statusColor(entry.activity ?? '')
+  const activity = entry.activity ?? 'offline'
   return (
-    <div className="activity-item activity-item-status">
+    <div className={`activity-item activity-item-status ${activityClassName(activity)}`}>
       <span className="activity-status-dot" style={{ color }}>
         <Circle size={8} fill="currentColor" />
       </span>
-      <span className="activity-item-text activity-item-muted">
-        {entry.activity}
-        {entry.detail ? <span className="activity-status-detail"> · {entry.detail}</span> : null}
-      </span>
+      <div className="activity-item-main">
+        <div className="activity-item-heading">
+          <span className="activity-status-pill">{formatActivityLabel(activity)}</span>
+          {entry.detail ? <span className="activity-item-meta">{entry.detail}</span> : null}
+        </div>
+        <div className="activity-item-body activity-item-muted">State transition</div>
+      </div>
       <span className="activity-item-time">{fmtTime(timestamp_ms)}</span>
     </div>
   )
@@ -163,9 +184,14 @@ function ThinkingRow({ item }: { item: ActivityLogEntry }) {
       <span className="activity-item-icon activity-icon-think">
         <BrainCircuit size={13} />
       </span>
-      <span className="activity-item-text">
-        <ExpandableText text={entry.text ?? ''} maxLines={2} />
-      </span>
+      <div className="activity-item-main">
+        <div className="activity-item-heading">
+          <span className="activity-item-label">Thinking</span>
+        </div>
+        <div className="activity-item-body">
+          <ExpandableText text={entry.text ?? ''} maxLines={2} />
+        </div>
+      </div>
       <span className="activity-item-time">{fmtTime(timestamp_ms)}</span>
     </div>
   )
@@ -183,16 +209,19 @@ function ToolRow({ item }: { item: ActivityLogEntry }) {
       <span className="activity-item-icon activity-icon-tool">
         {meta.icon}
       </span>
-      <span className="activity-item-text">
-        <span className="activity-tool-label">
-          {entry.tool_name || meta.label}
-        </span>
-        {input && (
-          <span className="activity-tool-input">
-            <ExpandableText text={input} maxLines={1} />
+      <div className="activity-item-main">
+        <div className="activity-item-heading">
+          <span className="activity-item-label">
+            Tool
           </span>
+          <span className="activity-item-meta">{entry.tool_name || meta.label}</span>
+        </div>
+        {input && (
+          <div className="activity-item-body activity-tool-input">
+            <ExpandableText text={input} maxLines={1} />
+          </div>
         )}
-      </span>
+      </div>
       <span className="activity-item-time">{fmtTime(timestamp_ms)}</span>
     </div>
   )
@@ -205,9 +234,57 @@ function TextRow({ item }: { item: ActivityLogEntry }) {
       <span className="activity-item-icon activity-icon-text">
         <MessageSquare size={13} />
       </span>
-      <span className="activity-item-text">
-        <ExpandableText text={entry.text ?? ''} maxLines={3} />
+      <div className="activity-item-main">
+        <div className="activity-item-heading">
+          <span className="activity-item-label">Output</span>
+        </div>
+        <div className="activity-item-body">
+          <ExpandableText text={entry.text ?? ''} maxLines={3} />
+        </div>
+      </div>
+      <span className="activity-item-time">{fmtTime(timestamp_ms)}</span>
+    </div>
+  )
+}
+
+function MessageReceivedRow({ item }: { item: ActivityLogEntry }) {
+  const { entry, timestamp_ms } = item
+  return (
+    <div className="activity-item activity-item-message activity-item-message-received">
+      <span className="activity-item-icon activity-icon-message-received">
+        <ArrowDownLeft size={13} />
       </span>
+      <div className="activity-item-main">
+        <div className="activity-item-heading">
+          <span className="activity-item-label">Received</span>
+          <span className="activity-item-meta">from {entry.sender_name}</span>
+          {entry.channel_label ? <span className="activity-item-chip">{entry.channel_label}</span> : null}
+        </div>
+        <div className="activity-item-body">
+          <ExpandableText text={entry.content ?? ''} maxLines={2} />
+        </div>
+      </div>
+      <span className="activity-item-time">{fmtTime(timestamp_ms)}</span>
+    </div>
+  )
+}
+
+function MessageSentRow({ item }: { item: ActivityLogEntry }) {
+  const { entry, timestamp_ms } = item
+  return (
+    <div className="activity-item activity-item-message activity-item-message-sent">
+      <span className="activity-item-icon activity-icon-message-sent">
+        <ArrowUpRight size={13} />
+      </span>
+      <div className="activity-item-main">
+        <div className="activity-item-heading">
+          <span className="activity-item-label">Sent</span>
+          {entry.target ? <span className="activity-item-chip">{entry.target}</span> : null}
+        </div>
+        <div className="activity-item-body">
+          <ExpandableText text={entry.content ?? ''} maxLines={2} />
+        </div>
+      </div>
       <span className="activity-item-time">{fmtTime(timestamp_ms)}</span>
     </div>
   )
@@ -215,11 +292,13 @@ function TextRow({ item }: { item: ActivityLogEntry }) {
 
 function ActivityRow({ item }: { item: ActivityLogEntry }) {
   switch (item.entry.kind) {
-    case 'status':     return <StatusRow item={item} />
-    case 'thinking':   return <ThinkingRow item={item} />
+    case 'status': return <StatusRow item={item} />
+    case 'thinking': return <ThinkingRow item={item} />
     case 'tool_start': return <ToolRow item={item} />
-    case 'text':       return <TextRow item={item} />
-    default:           return null
+    case 'text': return <TextRow item={item} />
+    case 'message_received': return <MessageReceivedRow item={item} />
+    case 'message_sent': return <MessageSentRow item={item} />
+    default: return null
   }
 }
 
@@ -317,7 +396,7 @@ function ActivityHeader({
       <span className="activity-title">ACTIVITY LOG — {agentName.toUpperCase()}</span>
       <span className="activity-status" style={{ color: dotColor }}>
         <Circle size={8} fill="currentColor" />
-        <span>{activity}</span>
+        <span>{formatActivityLabel(activity)}</span>
         {detail && <span className="activity-status-detail"> · {detail}</span>}
       </span>
     </div>

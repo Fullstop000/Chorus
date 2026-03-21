@@ -327,6 +327,8 @@ impl Driver for CodexDriver {
 
     fn tool_display_name(&self, name: &str) -> String {
         match name {
+            "mcp_chat_send_message" => "Sending message\u{2026}".to_string(),
+            "mcp_chat_receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp_chat_upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp_chat_view_file" => "Viewing file\u{2026}".to_string(),
             "mcp_chat_list_tasks" => "Listing tasks\u{2026}".to_string(),
@@ -336,7 +338,10 @@ impl Driver for CodexDriver {
             "mcp_chat_update_task_status" => "Updating task status\u{2026}".to_string(),
             "mcp_chat_list_server" => "Listing server\u{2026}".to_string(),
             "mcp_chat_read_history" => "Reading history\u{2026}".to_string(),
-            n if n.starts_with("mcp_chat_") => String::new(),
+            n if n.starts_with("mcp_chat_") => {
+                let op = n.trim_start_matches("mcp_chat_").replace('_', " ");
+                format!("Using {op}\u{2026}")
+            }
             "shell" | "command_execution" => "Running command\u{2026}".to_string(),
             "file_change" => "Editing file\u{2026}".to_string(),
             "file_read" => "Reading file\u{2026}".to_string(),

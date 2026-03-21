@@ -353,6 +353,15 @@ pub enum ActivityEntry {
     Thinking { text: String },
     ToolStart { tool_name: String, tool_input: String },
     Text { text: String },
+    MessageReceived {
+        channel_label: String,
+        sender_name: String,
+        content: String,
+    },
+    MessageSent {
+        target: String,
+        content: String,
+    },
     Status { activity: String, detail: String },
 }
 

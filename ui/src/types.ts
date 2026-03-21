@@ -112,15 +112,27 @@ export interface ActivityResponse {
 
 // ── Agent Activity Log (living log) ──
 
-export type ActivityEntryKind = 'thinking' | 'tool_start' | 'text' | 'status'
+export type ActivityEntryKind =
+  | 'thinking'
+  | 'tool_start'
+  | 'text'
+  | 'message_received'
+  | 'message_sent'
+  | 'status'
 
 export interface ActivityEntry {
   kind: ActivityEntryKind
   // thinking / text
   text?: string
+  content?: string
   // tool_start
   tool_name?: string
   tool_input?: string
+  // message_received
+  channel_label?: string
+  sender_name?: string
+  // message_sent
+  target?: string
   // status
   activity?: string
   detail?: string
