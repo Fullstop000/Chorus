@@ -1,13 +1,19 @@
-import { useState, useEffect, useRef, type KeyboardEvent } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { X, Paperclip } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
+import { MentionTextarea } from './MentionTextarea'
+import type { MentionMember } from './MentionTextarea'
 import { sendMessage } from '../api'
 import './ThreadPanel.css'
 
 export function ThreadPanel() {
-  const { currentUser, openThreadMsg, setOpenThreadMsg } = useApp()
+  const { currentUser, openThreadMsg, setOpenThreadMsg, serverInfo } = useApp()
+  const members: MentionMember[] = [
+    ...(serverInfo?.agents ?? []).map((a) => ({ name: a.name, type: 'agent' as const })),
+    ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
+  ]
   const mainTarget = useTarget()
   const threadTarget = mainTarget && openThreadMsg
     ? `${mainTarget}:${openThreadMsg.id}`
@@ -38,13 +44,6 @@ export function ThreadPanel() {
       console.error('Thread send failed:', e)
     } finally {
       setSending(false)
-    }
-  }
-
-  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
     }
   }
 
@@ -90,14 +89,15 @@ export function ThreadPanel() {
       {/* Input */}
       <div className="thread-input-area">
         <div className="thread-input-row">
-          <textarea
+          <MentionTextarea
             className="thread-input-textarea"
             placeholder="Message thread"
             value={content}
-            onChange={(e) => setContent(e.target.value)}
-            onKeyDown={handleKeyDown}
+            onChange={setContent}
+            onEnter={handleSend}
             disabled={sending}
             rows={1}
+            members={members}
           />
           <div className="thread-input-footer">
             <button className="thread-attach-btn" title="Attach" disabled>
