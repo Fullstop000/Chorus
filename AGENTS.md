@@ -35,6 +35,29 @@ When the user explicitly asks to implement a new feature or do a refactor:
 - Backend integration tests alone are not sufficient when the user-visible flow changed.
 - If the required headless-browser e2e verification cannot be run, say so clearly and do not present the work as fully verified.
 
+### Regression Testing Spec
+
+- Treat `qa/` as the operational regression-testing source of truth:
+  - [`qa/README.md`](qa/README.md)
+  - [`qa/QA_CASES.md`](qa/QA_CASES.md)
+  - [`qa/QA_REPORT_TEMPLATE.md`](qa/QA_REPORT_TEMPLATE.md)
+- Use the static case catalog for repeatable browser QA. Do not invent an ad hoc checklist each time a core workflow changes.
+- For messaging and agent-collaboration verification, do not rely on a single-agent happy path. The standard regression setup must include at least 3 agents in one shared channel:
+  - `bot-a`
+  - `bot-b`
+  - `bot-c`
+- The shared-channel regression pass must prove multi-agent fan-out, sender correctness, ordering sanity, and activity visibility under concurrent replies.
+- When the change touches a Tier 0 workflow in `qa/QA_CASES.md`, run the relevant browser cases and record the results in a run report derived from `qa/QA_REPORT_TEMPLATE.md`.
+- When the change touches startup, persistence, session restore, runtime integration, workspace, uploads, tasks, or lifecycle state, include the relevant Tier 1 reliability cases as well.
+- Every QA run should capture evidence for failures:
+  - screenshot
+  - console error output when relevant
+  - network or API evidence when relevant
+- Every escaped bug must feed back into the QA system. After fixing a bug, either:
+  - add a new static case, or
+  - tighten an existing case so the same failure would be caught next time
+- Do not mark a core workflow as regression-tested unless the browser pass exercised the real user path end to end and the final report names the exact case IDs that were run.
+
 ## Architecture
 
 ```
@@ -221,6 +244,7 @@ Use this minimum verification bar:
 3. For any core user-facing workflow change, start the app and verify the real behavior with a headless browser e2e pass.
 
 Headless-browser e2e must exercise the critical path end to end, not just load the page. At minimum, verify the primary happy-path flow the user relies on, and include the exact flow you checked in the final report.
+For regression work, prefer the reusable cases in [`qa/QA_CASES.md`](qa/QA_CASES.md) and record the run with [`qa/QA_REPORT_TEMPLATE.md`](qa/QA_REPORT_TEMPLATE.md).
 
 ## UI Conventions
 

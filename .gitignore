@@ -44,3 +44,4 @@ ui/dist/
 ui/node_modules/
 ui/.vite/
 .gstack/
+qa/runs/
