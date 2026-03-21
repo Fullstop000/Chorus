@@ -327,6 +327,18 @@ impl Store {
                 .filter_map(|r| r.ok())
                 .collect();
 
+            // For DM channels, resolve the peer's name so format_target() can
+            // produce "dm:@peer" instead of "dm:@dm-a-b".
+            let dm_peer_name: Option<String> = if channel.channel_type == ChannelType::Dm {
+                conn.prepare(
+                    "SELECT member_name FROM channel_members WHERE channel_id = ?1 AND member_name != ?2 LIMIT 1",
+                )?
+                .query_row(params![channel_id, agent_name], |row| row.get(0))
+                .ok()
+            } else {
+                None
+            };
+
             let mut max_seq = *last_read_seq;
             for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id) in &msgs {
                 if *seq > max_seq {
@@ -341,6 +353,14 @@ impl Store {
                     Some(attachments)
                 };
 
+                // The canonical name to use for this channel in ReceivedMessage.
+                // For DMs: use the peer's name so format_target() produces "dm:@peer".
+                // For channels: use the channel name as-is.
+                let effective_channel_name = match &dm_peer_name {
+                    Some(peer) => peer.clone(),
+                    None => channel.name.clone(),
+                };
+
                 let (msg_channel_name, msg_channel_type, parent_channel_name, parent_channel_type) =
                     if let Some(parent_id) = thread_parent_id {
                         // Thread message — build "thread-<short_id>" channel name
@@ -352,12 +372,12 @@ impl Store {
                         (
                             format!("thread-{}", short),
                             "thread".to_string(),
-                            Some(channel.name.clone()),
+                            Some(effective_channel_name),
                             Some(parent_type.to_string()),
                         )
                     } else {
                         (
-                            channel.name.clone(),
+                            effective_channel_name,
                             match channel.channel_type {
                                 ChannelType::Channel => "channel".to_string(),
                                 ChannelType::Dm => "dm".to_string(),
