@@ -298,6 +298,49 @@ async fn test_send_starts_inactive_agent_recipients() {
 }
 
 #[tokio::test]
+async fn test_dm_send_starts_inactive_agent() {
+    let (_store, app, lifecycle) = setup_with_lifecycle();
+
+    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey bot1 via dm" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()], "DM to inactive agent must trigger start_agent");
+    assert!(lifecycle.notified_names().is_empty());
+}
+
+#[tokio::test]
+async fn test_dm_send_notifies_active_agent() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store.update_agent_status("bot1", AgentStatus::Active).unwrap();
+
+    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey active bot1 via dm" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(lifecycle.started_names().is_empty());
+    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()], "DM to active agent must trigger notify_agent");
+}
+
+#[tokio::test]
 async fn test_send_notifies_active_agents() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store.update_agent_status("bot1", AgentStatus::Active).unwrap();

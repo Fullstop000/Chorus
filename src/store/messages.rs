@@ -3,7 +3,7 @@ use rusqlite::{params, Connection};
 use uuid::Uuid;
 
 use crate::models::*;
-use super::{Store, channel_from_row, sender_type_str};
+use super::{Store, sender_type_str};
 
 impl Store {
     pub fn send_message(

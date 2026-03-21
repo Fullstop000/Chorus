@@ -1,18 +1,11 @@
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
-mod activity_log;
-mod agent_manager;
-mod bridge;
-mod drivers;
-mod models;
-mod server;
-mod store;
-
-use models::*;
-use store::Store;
-use server::build_router_with_lifecycle;
-use agent_manager::AgentManager;
+use chorus::agent_manager::AgentManager;
+use chorus::bridge;
+use chorus::models::*;
+use chorus::server::build_router_with_lifecycle;
+use chorus::store::Store;
 
 #[derive(Parser)]
 #[command(name = "chorus", about = "Local AI agent collaboration platform")]
@@ -308,7 +301,7 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
             .list_agents()
             .unwrap_or_default()
             .into_iter()
-            .filter(|a| a.status == crate::models::AgentStatus::Active)
+            .filter(|a| a.status == AgentStatus::Active)
             .map(|a| a.name)
             .collect();
         for agent_name in active_agents {

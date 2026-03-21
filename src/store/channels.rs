@@ -28,7 +28,7 @@ impl Store {
     pub fn list_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels ORDER BY created_at",
+            "SELECT id, name, description, channel_type, created_at FROM channels WHERE channel_type = 'channel' ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], channel_from_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())

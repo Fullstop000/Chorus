@@ -110,6 +110,47 @@ fn test_resolve_target() {
 }
 
 #[test]
+fn test_list_channels_excludes_dm() {
+    let (store, _dir) = make_store();
+    store.create_channel("general", None, ChannelType::Channel).unwrap();
+    store.add_human("alice").unwrap();
+    store.create_agent_record("bot1", "Bot 1", None, "claude", "sonnet").unwrap();
+    // Create a DM channel via resolve_target
+    store.resolve_target("dm:@alice", "bot1").unwrap();
+
+    let channels = store.list_channels().unwrap();
+    assert_eq!(channels.len(), 1, "list_channels must not return DM channels");
+    assert_eq!(channels[0].name, "general");
+}
+
+#[test]
+fn test_dm_only_has_two_members() {
+    let (store, _dir) = make_store();
+    store.create_channel("general", None, ChannelType::Channel).unwrap();
+    store.add_human("alice").unwrap();
+    store.create_agent_record("bot1", "Bot 1", None, "claude", "sonnet").unwrap();
+    store.create_agent_record("bot2", "Bot 2", None, "claude", "sonnet").unwrap();
+
+    // Create DM between alice and bot1
+    let (dm_id, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
+
+    // Simulate old bug: manually add bot2 as a spurious member
+    store.join_channel("dm-alice-bot1", "bot2", SenderType::Agent).unwrap();
+
+    let members = store.get_channel_members(&dm_id).unwrap();
+    assert_eq!(members.len(), 3, "precondition: spurious member added");
+
+    // Re-open store to trigger the migration
+    let db_path = _dir.path().join("test.db");
+    let store2 = Store::open(db_path.to_str().unwrap()).unwrap();
+    let members2 = store2.get_channel_members(&dm_id).unwrap();
+    assert_eq!(members2.len(), 2, "migration must remove spurious DM members");
+    let names: Vec<_> = members2.iter().map(|m| m.member_name.as_str()).collect();
+    assert!(names.contains(&"alice"), "alice must remain");
+    assert!(names.contains(&"bot1"), "bot1 must remain");
+}
+
+#[test]
 fn test_dm_channels() {
     let (store, _dir) = make_store();
     store.add_human("alice").unwrap();

@@ -9,7 +9,6 @@ use std::sync::Mutex;
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use tokio::sync::broadcast;
-use uuid::Uuid;
 
 use crate::models::*;
 
@@ -23,6 +22,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Self::init_schema(&conn)?;
+        Self::migrate_remove_spurious_dm_members(&conn)?;
         let (msg_tx, _) = broadcast::channel(256);
         Ok(Self {
             conn: Mutex::new(conn),
@@ -100,6 +100,53 @@ impl Store {
             );
             ",
         )?;
+        Ok(())
+    }
+
+    /// One-time migration: remove agents that were incorrectly added to DM channels
+    /// via `handle_create_agent`. A DM channel `dm-X-Y` must have exactly two members
+    /// whose sorted names form the channel name. All other members are spurious.
+    fn migrate_remove_spurious_dm_members(conn: &Connection) -> Result<()> {
+        let dm_channels: Vec<(String, String)> = conn
+            .prepare("SELECT id, name FROM channels WHERE channel_type = 'dm'")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for (channel_id, channel_name) in dm_channels {
+            let members: Vec<String> = conn
+                .prepare("SELECT member_name FROM channel_members WHERE channel_id = ?1")?
+                .query_map(params![channel_id], |row| row.get(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+
+            if members.len() <= 2 {
+                continue;
+            }
+
+            // Find the pair (m1, m2) whose sorted join equals the channel name.
+            let mut correct: Option<(String, String)> = None;
+            'outer: for i in 0..members.len() {
+                for j in (i + 1)..members.len() {
+                    let mut pair = [members[i].as_str(), members[j].as_str()];
+                    pair.sort_unstable();
+                    if format!("dm-{}-{}", pair[0], pair[1]) == channel_name {
+                        correct = Some((members[i].clone(), members[j].clone()));
+                        break 'outer;
+                    }
+                }
+            }
+
+            if let Some((m1, m2)) = correct {
+                let removed = conn.execute(
+                    "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name NOT IN (?2, ?3)",
+                    params![channel_id, m1, m2],
+                )?;
+                if removed > 0 {
+                    tracing::info!(channel = %channel_name, removed, "removed spurious members from DM channel");
+                }
+            }
+        }
         Ok(())
     }
 
