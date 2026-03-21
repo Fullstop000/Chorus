@@ -56,6 +56,25 @@ impl AgentLifecycle for MockLifecycle {
             Ok(())
         })
     }
+
+    fn stop_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_activity_log_data(&self, _agent_name: &str, _after_seq: Option<u64>) -> ActivityLogResponse {
+        ActivityLogResponse {
+            entries: vec![],
+            agent_activity: "offline".to_string(),
+            agent_detail: String::new(),
+        }
+    }
+
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
+        vec![]
+    }
 }
 
 fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
