@@ -163,18 +163,14 @@ impl AgentManager {
         let driver = get_driver(&agent.runtime)?;
         let is_codex_driver = driver.id() == "codex";
 
-        // Build AgentConfig
+        // Build AgentConfig — session_id applies to both drivers (codex uses thread_id, claude uses session_id)
         let config = AgentConfig {
             name: agent.name.clone(),
             display_name: agent.display_name.clone(),
             description: agent.description.clone(),
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
-            session_id: if is_codex_driver {
-                None
-            } else {
-                agent.session_id.clone()
-            },
+            session_id: agent.session_id.clone(),
             env_vars: None,
         };
 
@@ -202,8 +198,8 @@ impl AgentManager {
         // Create notes directory
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
 
-        // Determine if this is a resume
-        let is_resume = !is_codex_driver && agent.session_id.is_some();
+        // Determine if this is a resume (codex uses its own prompt regardless, but session_id is still passed)
+        let is_resume = agent.session_id.is_some();
 
         // Get unread summary
         let unread_summary = self.store.get_unread_summary(agent_name)?;
