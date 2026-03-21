@@ -1,12 +1,13 @@
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
-mod models;
-mod store;
-mod server;
+mod activity_log;
 mod agent_manager;
-mod drivers;
 mod bridge;
+mod drivers;
+mod models;
+mod server;
+mod store;
 
 use models::*;
 use store::Store;
