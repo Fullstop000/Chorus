@@ -1,4 +1,4 @@
-import React from 'react'
+import React, { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import type { HistoryMessage } from '../types'
 import { attachmentUrl } from '../api'
@@ -74,12 +74,14 @@ interface MessageItemProps {
   message: HistoryMessage
   currentUser: string
   prevMessage?: HistoryMessage
+  onReply?: (msg: HistoryMessage) => void
 }
 
-export function MessageItem({ message, currentUser, prevMessage }: MessageItemProps) {
+export function MessageItem({ message, currentUser, prevMessage, onReply }: MessageItemProps) {
   const isMe = message.senderName === currentUser
   const initial = message.senderName[0]?.toUpperCase() ?? '?'
   const color = senderColor(message.senderName)
+  const [hovered, setHovered] = useState(false)
 
   // Group messages from the same sender within 5 minutes
   const isGrouped =
@@ -88,8 +90,17 @@ export function MessageItem({ message, currentUser, prevMessage }: MessageItemPr
       new Date(message.createdAt).getTime() - new Date(prevMessage.createdAt).getTime()
     ) < 5 * 60 * 1000
 
+  function handleCopy() {
+    navigator.clipboard.writeText(message.content).catch(() => {})
+  }
+
   return (
-    <div className={`message-item${isGrouped ? ' grouped' : ''}`}>
+    <div
+      className={`message-item${isGrouped ? ' grouped' : ''}`}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+      style={{ position: 'relative' }}
+    >
       {!isGrouped && (
         <div
           className="message-avatar"
@@ -123,6 +134,18 @@ export function MessageItem({ message, currentUser, prevMessage }: MessageItemPr
           </div>
         )}
         <div className="message-content">{renderContent(message.content)}</div>
+        {hovered && (
+          <div className="message-actions">
+            <button className="message-action-btn" title="Copy markdown" onClick={handleCopy}>
+              📋
+            </button>
+            {onReply && (
+              <button className="message-action-btn" title="Reply in thread" onClick={() => onReply(message)}>
+                ↩
+              </button>
+            )}
+          </div>
+        )}
         {message.attachments && message.attachments.length > 0 && (
           <div className="message-attachments">
             {message.attachments.map((att) => (

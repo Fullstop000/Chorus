@@ -5,7 +5,7 @@ import { MessageItem } from './MessageItem'
 import './ChatPanel.css'
 
 export function ChatPanel() {
-  const { currentUser, selectedChannel, selectedAgent, serverInfo } = useApp()
+  const { currentUser, selectedChannel, selectedAgent, serverInfo, setOpenThreadMsg } = useApp()
   const target = useTarget()
   const { messages, loading } = useHistory(currentUser, target)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -58,6 +58,7 @@ export function ChatPanel() {
             message={msg}
             currentUser={currentUser}
             prevMessage={messages[i - 1]}
+            onReply={setOpenThreadMsg}
           />
         ))}
         <div ref={bottomRef} />

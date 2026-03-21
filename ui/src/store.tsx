@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
-import type { ServerInfo, AgentInfo } from './types'
+import type { ServerInfo, AgentInfo, HistoryMessage } from './types'
 import { getWhoami, getServerInfo } from './api'
 
 export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
@@ -11,9 +11,11 @@ export interface AppState {
   selectedChannel: string | null       // e.g. "#general"
   selectedAgent: AgentInfo | null      // non-null when viewing a DM with an agent
   activeTab: ActiveTab
+  openThreadMsg: HistoryMessage | null // non-null when thread panel is open
   setSelectedChannel: (ch: string | null) => void
   setSelectedAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
+  setOpenThreadMsg: (msg: HistoryMessage | null) => void
   refreshServerInfo: () => void
 }
 
@@ -26,6 +28,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null)
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
+  const [openThreadMsg, setOpenThreadMsg] = useState<HistoryMessage | null>(null)
   // Ref so refreshServerInfo can check selectedAgent without re-creating the callback
   const selectedAgentRef = useRef<AgentInfo | null>(null)
 
@@ -64,9 +67,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Keep ref in sync so refreshServerInfo can read it without stale closure
   useEffect(() => { selectedAgentRef.current = selectedAgent }, [selectedAgent])
 
-  // When selecting an agent, switch to chat tab
+  // When selecting an agent, switch to chat tab and close thread
   const handleSetSelectedAgent = useCallback((agent: AgentInfo | null) => {
     setSelectedAgent(agent)
+    setOpenThreadMsg(null)
     if (agent) {
       setSelectedChannel(null)
       setActiveTab('chat')
@@ -75,6 +79,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const handleSetSelectedChannel = useCallback((ch: string | null) => {
     setSelectedChannel(ch)
+    setOpenThreadMsg(null)
     if (ch) {
       setSelectedAgent(null)
       setActiveTab('chat')
@@ -93,6 +98,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setSelectedChannel: handleSetSelectedChannel,
         setSelectedAgent: handleSetSelectedAgent,
         setActiveTab,
+        openThreadMsg,
+        setOpenThreadMsg,
         refreshServerInfo,
       }}
     >
