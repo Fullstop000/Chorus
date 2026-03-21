@@ -1,17 +1,48 @@
+import React from 'react'
+import ReactMarkdown from 'react-markdown'
+import { MessageSquare, Copy } from 'lucide-react'
 import type { HistoryMessage } from '../types'
 import { attachmentUrl } from '../api'
 
-// Parse @mentions and render as colored inline pills
+function replyLabel(n: number) {
+  return n === 1 ? '1 reply' : `${n} replies`
+}
+
+// Render message content with markdown + @mention pills
 function renderContent(content: string) {
-  const parts = content.split(/(@\w+)/g)
+  return (
+    <ReactMarkdown
+      components={{
+        // Intercept text nodes to highlight @mentions
+        p({ children }) {
+          return <p>{processChildren(children)}</p>
+        },
+        li({ children }) {
+          return <li>{processChildren(children)}</li>
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  )
+}
+
+function processChildren(children: React.ReactNode): React.ReactNode {
+  if (typeof children === 'string') return injectMentions(children)
+  if (Array.isArray(children)) return children.map((c, i) => {
+    if (typeof c === 'string') return <span key={i}>{injectMentions(c)}</span>
+    return c
+  })
+  return children
+}
+
+function injectMentions(text: string): React.ReactNode {
+  const parts = text.split(/(@\w+)/g)
+  if (parts.length === 1) return text
   return parts.map((part, i) =>
     part.startsWith('@') ? (
-      <span key={i} className="mention-pill">
-        {part}
-      </span>
-    ) : (
-      <span key={i}>{part}</span>
-    )
+      <span key={i} className="mention-pill">{part}</span>
+    ) : part
   )
 }
 
@@ -48,9 +79,10 @@ interface MessageItemProps {
   message: HistoryMessage
   currentUser: string
   prevMessage?: HistoryMessage
+  onReply?: (msg: HistoryMessage) => void
 }
 
-export function MessageItem({ message, currentUser, prevMessage }: MessageItemProps) {
+export function MessageItem({ message, currentUser, prevMessage, onReply }: MessageItemProps) {
   const isMe = message.senderName === currentUser
   const initial = message.senderName[0]?.toUpperCase() ?? '?'
   const color = senderColor(message.senderName)
@@ -62,8 +94,12 @@ export function MessageItem({ message, currentUser, prevMessage }: MessageItemPr
       new Date(message.createdAt).getTime() - new Date(prevMessage.createdAt).getTime()
     ) < 5 * 60 * 1000
 
+  function handleCopy() {
+    navigator.clipboard.writeText(message.content).catch(() => {})
+  }
+
   return (
-    <div className={`message-item${isGrouped ? ' grouped' : ''}`}>
+    <div className={`message-item${isGrouped ? ' grouped' : ''} message-group`}>
       {!isGrouped && (
         <div
           className="message-avatar"
@@ -97,6 +133,16 @@ export function MessageItem({ message, currentUser, prevMessage }: MessageItemPr
           </div>
         )}
         <div className="message-content">{renderContent(message.content)}</div>
+        <div className="message-actions">
+          {onReply && (
+            <button className="message-action-btn" title="Reply in thread" onClick={() => onReply(message)}>
+              <MessageSquare size={13} />
+            </button>
+          )}
+          <button className="message-action-btn" title="Copy markdown" onClick={handleCopy}>
+            <Copy size={13} />
+          </button>
+        </div>
         {message.attachments && message.attachments.length > 0 && (
           <div className="message-attachments">
             {message.attachments.map((att) => (
@@ -111,6 +157,15 @@ export function MessageItem({ message, currentUser, prevMessage }: MessageItemPr
               </a>
             ))}
           </div>
+        )}
+        {onReply && (message.replyCount ?? 0) > 0 && (
+          <button
+            className="message-reply-count"
+            onClick={() => onReply(message)}
+          >
+            <MessageSquare size={12} />
+            {replyLabel(message.replyCount!)}
+          </button>
         )}
       </div>
     </div>

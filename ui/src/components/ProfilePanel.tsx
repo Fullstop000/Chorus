@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import { useApp } from '../store'
+import { startAgent, stopAgent } from '../api'
 import './ProfilePanel.css'
 
 function agentColor(name: string): string {
@@ -8,8 +10,25 @@ function agentColor(name: string): string {
   return colors[Math.abs(h) % colors.length]
 }
 
+function activityLabel(activity?: string, detail?: string): string {
+  if (!activity || activity === 'offline') return 'Offline'
+  if (detail) return detail
+  return activity.charAt(0).toUpperCase() + activity.slice(1)
+}
+
+function activityDotColor(activity?: string): string {
+  switch (activity) {
+    case 'online': return 'var(--lime)'
+    case 'thinking': return 'var(--orange)'
+    case 'working': return 'var(--orange)'
+    default: return 'var(--gray-400)'
+  }
+}
+
 export function ProfilePanel() {
-  const { selectedAgent } = useApp()
+  const { selectedAgent, refreshServerInfo } = useApp()
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   if (!selectedAgent) {
     return (
@@ -21,6 +40,31 @@ export function ProfilePanel() {
 
   const color = agentColor(selectedAgent.name)
   const initial = selectedAgent.name[0]?.toUpperCase() ?? '?'
+  const isActive = selectedAgent.status === 'active'
+
+  async function handleStart() {
+    setBusy(true); setError(null)
+    try {
+      await startAgent(selectedAgent!.name)
+      refreshServerInfo()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleStop() {
+    setBusy(true); setError(null)
+    try {
+      await stopAgent(selectedAgent!.name)
+      refreshServerInfo()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="profile-panel">
@@ -30,13 +74,29 @@ export function ProfilePanel() {
         </div>
         <div className="profile-name">{selectedAgent.display_name ?? selectedAgent.name}</div>
         <div className="profile-handle">@{selectedAgent.name}</div>
+        <div className="profile-activity-status">
+          <span className="profile-activity-dot" style={{ background: activityDotColor(selectedAgent.activity) }} />
+          {activityLabel(selectedAgent.activity, selectedAgent.activity_detail)}
+        </div>
+      </div>
+
+      {error && <div className="error-banner">{error}</div>}
+
+      <div className="profile-controls">
+        {isActive ? (
+          <button className="btn-brutal btn-orange" onClick={handleStop} disabled={busy}>
+            {busy ? '…' : '⏹ Stop'}
+          </button>
+        ) : (
+          <button className="btn-brutal btn-lime" onClick={handleStart} disabled={busy}>
+            {busy ? '…' : '▶ Start'}
+          </button>
+        )}
       </div>
 
       {selectedAgent.description && (
         <div className="profile-section">
-          <div className="profile-section-label">
-            Role <button title="Edit role">✎</button>
-          </div>
+          <div className="profile-section-label">Role</div>
           <div className="profile-role-text">{selectedAgent.description}</div>
         </div>
       )}
@@ -45,32 +105,22 @@ export function ProfilePanel() {
         <div className="profile-section-label">Configuration</div>
         <div className="profile-config-grid">
           <span className="profile-config-key">Runtime</span>
-          <span>
-            <span className="badge badge-claude">
-              {selectedAgent.runtime ?? 'Claude Code'}
-            </span>
-          </span>
+          <span className="badge badge-claude">{selectedAgent.runtime ?? 'claude'}</span>
           <span className="profile-config-key">Model</span>
-          <span>
-            <span className="badge badge-sonnet">
-              {selectedAgent.model ?? 'Sonnet'}
-            </span>
-          </span>
+          <span className="badge">{selectedAgent.model ?? 'sonnet'}</span>
           <span className="profile-config-key">Status</span>
-          <span>
-            <span
-              className="badge"
-              style={{
-                background:
-                  selectedAgent.status === 'active'
-                    ? 'var(--status-online)'
-                    : selectedAgent.status === 'sleeping'
-                    ? 'var(--status-sleeping)'
-                    : 'var(--status-inactive)',
-              }}
-            >
-              {selectedAgent.status}
-            </span>
+          <span
+            className="badge"
+            style={{
+              background:
+                selectedAgent.status === 'active'
+                  ? 'var(--lime)'
+                  : selectedAgent.status === 'sleeping'
+                  ? 'var(--orange)'
+                  : 'var(--gray-400)',
+            }}
+          >
+            {selectedAgent.status}
           </span>
         </div>
       </div>

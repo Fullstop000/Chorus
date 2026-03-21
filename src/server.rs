@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::{debug, info};
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -29,6 +30,17 @@ pub trait AgentLifecycle: Send + Sync {
         &'a self,
         agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    fn stop_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
+
+    /// Get the in-memory activity log for an agent.
+    fn get_activity_log_data(&self, agent_name: &str, after_seq: Option<u64>) -> ActivityLogResponse;
+
+    /// Get current activity state for all agents: (name, activity, detail).
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)>;
 }
 
 struct NoopAgentLifecycle;
@@ -46,6 +58,25 @@ impl AgentLifecycle for NoopAgentLifecycle {
         _agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn stop_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_activity_log_data(&self, _agent_name: &str, _after_seq: Option<u64>) -> ActivityLogResponse {
+        ActivityLogResponse {
+            entries: vec![],
+            agent_activity: "offline".to_string(),
+            agent_detail: String::new(),
+        }
+    }
+
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
+        vec![]
     }
 }
 
@@ -168,9 +199,14 @@ pub fn build_router_with_lifecycle(
         )
         // ── New: whoami + agent management ──
         .route("/api/whoami", get(handle_whoami))
+        .route("/api/channels", post(handle_create_channel))
         .route("/api/agents", post(handle_create_agent))
+        .route("/api/agents/{name}/start", post(handle_agent_start))
+        .route("/api/agents/{name}/stop", post(handle_agent_stop))
         .route("/api/agents/{name}/activity", get(handle_agent_activity))
+        .route("/api/agents/{name}/activity-log", get(handle_agent_activity_log))
         .route("/api/agents/{name}/workspace", get(handle_agent_workspace))
+        .route("/api/server-info", get(handle_ui_server_info))
         // ── CORS middleware ──
         .layer(cors)
         // ── Static file serving (must be last — fallback for all non-API paths) ──
@@ -203,6 +239,10 @@ async fn handle_send(
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
 
+    let preview: String = req.content.chars().take(120).collect();
+    let preview = if req.content.chars().count() > 120 { format!("{preview}…") } else { preview };
+    info!(agent = %agent_id, target = %req.target, content = %preview, "send_message");
+
     let message_id = store
         .send_message(
             &channel.name,
@@ -213,6 +253,9 @@ async fn handle_send(
             &req.attachment_ids,
         )
         .map_err(|e| api_err(e.to_string()))?;
+
+    let short_id = if message_id.len() >= 8 { &message_id[..8] } else { &message_id };
+    info!(agent = %agent_id, msg = %short_id, "send_message ok");
 
     deliver_message_to_agents(&state, &channel.id, &agent_id)
         .await
@@ -243,10 +286,20 @@ async fn handle_receive(
         .get_messages_for_agent(&agent_id, true)
         .map_err(|e| api_err(e.to_string()))?;
 
-    if !messages.is_empty() || !blocking {
+    if !messages.is_empty() {
+        info!(agent = %agent_id, count = messages.len(), "receive_message: got messages immediately");
+        for m in &messages {
+            let target = format!("{}:{}", m.channel_type, m.channel_name);
+            info!(agent = %agent_id, target = %target, sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
+        }
+        return Ok(Json(ReceiveResponse { messages }));
+    }
+    if !blocking {
+        debug!(agent = %agent_id, "receive_message: non-blocking, no messages");
         return Ok(Json(ReceiveResponse { messages }));
     }
 
+    debug!(agent = %agent_id, timeout_secs, "receive_message: long-polling");
     // Long-poll: subscribe and wait
     let mut rx = store.subscribe();
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs);
@@ -265,6 +318,11 @@ async fn handle_receive(
                     .get_messages_for_agent(&agent_id, true)
                     .map_err(|e| api_err(e.to_string()))?;
                 if !messages.is_empty() {
+                    info!(agent = %agent_id, count = messages.len(), "receive_message: woke up with messages");
+                    for m in &messages {
+                        let target = format!("{}:{}", m.channel_type, m.channel_name);
+                        info!(agent = %agent_id, target = %target, sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
+                    }
                     return Ok(Json(ReceiveResponse { messages }));
                 }
                 // Not for us, keep waiting
@@ -300,6 +358,9 @@ async fn handle_history(
     Path(agent_id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> ApiResult<HistoryResponse> {
+    if let Some(ref ch) = params.channel {
+        debug!(agent = %agent_id, channel = %ch, "read_history");
+    }
     let store = &state.store;
     let channel_target = params
         .channel
@@ -354,6 +415,7 @@ async fn handle_server_info(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
+    debug!(agent = %agent_id, "list_server");
     let info = state
         .store
         .get_server_info(&agent_id)
@@ -600,6 +662,97 @@ async fn handle_agent_activity(
         .get_agent_activity(&name, limit)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
+}
+
+// ── Create Channel ──
+
+#[derive(Deserialize)]
+struct CreateChannelRequest {
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+async fn handle_create_channel(
+    State(state): State<AppState>,
+    Json(req): Json<CreateChannelRequest>,
+) -> ApiResult<serde_json::Value> {
+    let name = req.name.trim().to_lowercase();
+    let name = name.trim_start_matches('#');
+    if name.is_empty() {
+        return Err(api_err("name is required"));
+    }
+    let description = if req.description.is_empty() { None } else { Some(req.description.as_str()) };
+    state.store.create_channel(name, description, ChannelType::Channel)
+        .map_err(|e| api_err(e.to_string()))?;
+    // Auto-join all agents
+    let username = whoami::username();
+    let _ = state.store.join_channel(name, &username, SenderType::Human);
+    for agent in state.store.list_agents().unwrap_or_default() {
+        let _ = state.store.join_channel(name, &agent.name, SenderType::Agent);
+    }
+    Ok(Json(serde_json::json!({ "name": name })))
+}
+
+// ── Agent Start/Stop ──
+
+async fn handle_agent_start(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    info!(agent = %name, "starting agent");
+    state.lifecycle.start_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    info!(agent = %name, "agent started");
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn handle_agent_stop(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<serde_json::Value> {
+    info!(agent = %name, "stopping agent");
+    state.lifecycle.stop_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    info!(agent = %name, "agent stopped");
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+// ── Agent Activity Log (living log) ──
+
+#[derive(Deserialize)]
+struct ActivityLogParams {
+    after: Option<u64>,
+}
+
+async fn handle_agent_activity_log(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(params): Query<ActivityLogParams>,
+) -> ApiResult<ActivityLogResponse> {
+    let resp = state.lifecycle.get_activity_log_data(&name, params.after);
+    Ok(Json(resp))
+}
+
+// ── UI Server Info (enriched with activity states) ──
+
+async fn handle_ui_server_info(
+    State(state): State<AppState>,
+) -> ApiResult<serde_json::Value> {
+    let username = whoami::username();
+    let mut info = state
+        .store
+        .get_server_info(&username)
+        .map_err(|e| api_err(e.to_string()))?;
+
+    // Enrich agent list with live activity states
+    let activity_states = state.lifecycle.get_all_agent_activity_states();
+    for agent in &mut info.agents {
+        if let Some((_, activity, detail)) = activity_states.iter().find(|(n, _, _)| n == &agent.name) {
+            agent.activity = Some(activity.clone());
+            agent.activity_detail = Some(detail.clone());
+        }
+    }
+
+    Ok(Json(serde_json::to_value(info).unwrap()))
 }
 
 // ── Agent Workspace ──

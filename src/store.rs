@@ -306,13 +306,13 @@ impl Store {
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
 
             let mut msg_stmt = conn.prepare(
-                "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq
+                "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id
                  FROM messages m
-                 WHERE m.channel_id = ?1 AND m.seq > ?2 AND m.thread_parent_id IS NULL
+                 WHERE m.channel_id = ?1 AND m.seq > ?2
                  ORDER BY m.seq ASC",
             )?;
 
-            let msgs: Vec<(String, String, String, String, String, i64)> = msg_stmt
+            let msgs: Vec<(String, String, String, String, String, i64, Option<String>)> = msg_stmt
                 .query_map(params![channel_id, last_read_seq], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
@@ -321,13 +321,26 @@ impl Store {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, i64>(5)?,
+                        row.get::<_, Option<String>>(6)?,
                     ))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
 
+            // For DM channels, resolve the peer's name so format_target() can
+            // produce "dm:@peer" instead of "dm:@dm-a-b".
+            let dm_peer_name: Option<String> = if channel.channel_type == ChannelType::Dm {
+                conn.prepare(
+                    "SELECT member_name FROM channel_members WHERE channel_id = ?1 AND member_name != ?2 LIMIT 1",
+                )?
+                .query_row(params![channel_id, agent_name], |row| row.get(0))
+                .ok()
+            } else {
+                None
+            };
+
             let mut max_seq = *last_read_seq;
-            for (msg_id, sender_name, sender_type, content, created_at, seq) in &msgs {
+            for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id) in &msgs {
                 if *seq > max_seq {
                     max_seq = *seq;
                 }
@@ -340,21 +353,44 @@ impl Store {
                     Some(attachments)
                 };
 
-                // Determine parent channel info for DMs
-                let (parent_channel_name, parent_channel_type) =
-                    if channel.channel_type == ChannelType::Dm {
-                        (None, None)
+                // The canonical name to use for this channel in ReceivedMessage.
+                // For DMs: use the peer's name so format_target() produces "dm:@peer".
+                // For channels: use the channel name as-is.
+                let effective_channel_name = match &dm_peer_name {
+                    Some(peer) => peer.clone(),
+                    None => channel.name.clone(),
+                };
+
+                let (msg_channel_name, msg_channel_type, parent_channel_name, parent_channel_type) =
+                    if let Some(parent_id) = thread_parent_id {
+                        // Thread message — build "thread-<short_id>" channel name
+                        let short = if parent_id.len() >= 8 { &parent_id[..8] } else { parent_id.as_str() };
+                        let parent_type = match channel.channel_type {
+                            ChannelType::Channel => "channel",
+                            ChannelType::Dm => "dm",
+                        };
+                        (
+                            format!("thread-{}", short),
+                            "thread".to_string(),
+                            Some(effective_channel_name),
+                            Some(parent_type.to_string()),
+                        )
                     } else {
-                        (None, None)
+                        (
+                            effective_channel_name,
+                            match channel.channel_type {
+                                ChannelType::Channel => "channel".to_string(),
+                                ChannelType::Dm => "dm".to_string(),
+                            },
+                            None,
+                            None,
+                        )
                     };
 
                 result.push(ReceivedMessage {
                     message_id: msg_id.clone(),
-                    channel_name: channel.name.clone(),
-                    channel_type: match channel.channel_type {
-                        ChannelType::Channel => "channel".to_string(),
-                        ChannelType::Dm => "dm".to_string(),
-                    },
+                    channel_name: msg_channel_name,
+                    channel_type: msg_channel_type,
                     parent_channel_name,
                     parent_channel_type,
                     sender_name: sender_name.clone(),
@@ -471,6 +507,7 @@ impl Store {
                         sender_type: row.get(4)?,
                         created_at: row.get(5)?,
                         attachments: None,
+                        reply_count: None,
                     })
                 })?
                 .filter_map(|r| r.ok())
@@ -485,6 +522,7 @@ impl Store {
                         sender_type: row.get(4)?,
                         created_at: row.get(5)?,
                         attachments: None,
+                        reply_count: None,
                     })
                 })?
                 .filter_map(|r| r.ok())
@@ -500,6 +538,7 @@ impl Store {
                     sender_type: row.get(4)?,
                     created_at: row.get(5)?,
                     attachments: None,
+                    reply_count: None,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -514,6 +553,7 @@ impl Store {
                     sender_type: row.get(4)?,
                     created_at: row.get(5)?,
                     attachments: None,
+                    reply_count: None,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -528,6 +568,20 @@ impl Store {
             let atts = Self::get_message_attachments(&conn, &msg.id)?;
             if !atts.is_empty() {
                 msg.attachments = Some(atts);
+            }
+        }
+
+        // Populate reply counts for top-level messages only
+        if thread_parent_id.is_none() {
+            for msg in &mut msgs {
+                let count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND thread_parent_id = ?2",
+                    params![channel.id, msg.id],
+                    |row| row.get(0),
+                ).unwrap_or(0);
+                if count > 0 {
+                    msg.reply_count = Some(count);
+                }
             }
         }
 
@@ -1106,6 +1160,8 @@ impl Store {
                     model: row.get(4)?,
                     status: row.get(5)?,
                     session_id: row.get(6)?,
+                    activity: None,
+                    activity_detail: None,
                 })
             })?
             .filter_map(|r| r.ok())

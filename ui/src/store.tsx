@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
-import type { ServerInfo, AgentInfo } from './types'
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
+import type { ServerInfo, AgentInfo, HistoryMessage } from './types'
 import { getWhoami, getServerInfo } from './api'
 
 export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
@@ -11,9 +11,11 @@ export interface AppState {
   selectedChannel: string | null       // e.g. "#general"
   selectedAgent: AgentInfo | null      // non-null when viewing a DM with an agent
   activeTab: ActiveTab
+  openThreadMsg: HistoryMessage | null // non-null when thread panel is open
   setSelectedChannel: (ch: string | null) => void
   setSelectedAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
+  setOpenThreadMsg: (msg: HistoryMessage | null) => void
   refreshServerInfo: () => void
 }
 
@@ -26,6 +28,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null)
   const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null)
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
+  const [openThreadMsg, setOpenThreadMsg] = useState<HistoryMessage | null>(null)
+  // Ref so refreshServerInfo can check selectedAgent without re-creating the callback
+  const selectedAgentRef = useRef<AgentInfo | null>(null)
 
   // Fetch current user once on mount
   useEffect(() => {
@@ -40,9 +45,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     getServerInfo(currentUser)
       .then((info) => {
         setServerInfo(info)
-        // Auto-select first joined channel if nothing selected
+        // Auto-select first joined channel only if nothing is selected (no channel AND no agent)
         setSelectedChannel((prev) => {
-          if (prev) return prev
+          if (prev || selectedAgentRef.current) return prev
           const first = info.channels.find((c) => c.joined)
           return first ? `#${first.name}` : null
         })
@@ -55,13 +60,17 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!currentUser) return
     refreshServerInfo()
-    const id = setInterval(refreshServerInfo, 10_000)
+    const id = setInterval(refreshServerInfo, 5_000)
     return () => clearInterval(id)
   }, [currentUser, refreshServerInfo])
 
-  // When selecting an agent, switch to chat tab
+  // Keep ref in sync so refreshServerInfo can read it without stale closure
+  useEffect(() => { selectedAgentRef.current = selectedAgent }, [selectedAgent])
+
+  // When selecting an agent, switch to chat tab and close thread
   const handleSetSelectedAgent = useCallback((agent: AgentInfo | null) => {
     setSelectedAgent(agent)
+    setOpenThreadMsg(null)
     if (agent) {
       setSelectedChannel(null)
       setActiveTab('chat')
@@ -70,6 +79,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const handleSetSelectedChannel = useCallback((ch: string | null) => {
     setSelectedChannel(ch)
+    setOpenThreadMsg(null)
     if (ch) {
       setSelectedAgent(null)
       setActiveTab('chat')
@@ -88,6 +98,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setSelectedChannel: handleSetSelectedChannel,
         setSelectedAgent: handleSetSelectedAgent,
         setActiveTab,
+        openThreadMsg,
+        setOpenThreadMsg,
         refreshServerInfo,
       }}
     >

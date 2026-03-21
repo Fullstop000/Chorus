@@ -110,6 +110,14 @@ fn default_data_dir() -> String {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Initialize tracing. Default level: chorus=info (override with RUST_LOG).
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("chorus=info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+
     match cli.command {
         Some(Commands::Bridge { agent_id, server_url }) => {
             bridge::run_bridge(agent_id, server_url).await
@@ -292,6 +300,23 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
         bridge_binary,
         server_url.clone(),
     ));
+
+    // Auto-restart agents that were active before server restart
+    {
+        let active_agents: Vec<String> = store
+            .list_agents()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|a| a.status == crate::models::AgentStatus::Active)
+            .map(|a| a.name)
+            .collect();
+        for agent_name in active_agents {
+            tracing::info!(agent = %agent_name, "auto-restarting active agent");
+            if let Err(e) = manager.start_agent(&agent_name).await {
+                tracing::warn!(agent = %agent_name, err = %e, "failed to restart agent");
+            }
+        }
+    }
 
     let router = build_router_with_lifecycle(store.clone(), manager.clone());
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;

@@ -276,10 +276,22 @@ impl Driver for ClaudeDriver {
             "WebSearch" | "web_search" => str_field("query"),
             "mcp__chat__send_message" => {
                 let t = str_field("target");
-                if t.is_empty() {
-                    str_field("channel")
+                let target = if t.is_empty() { str_field("channel") } else { t };
+                let content = str_field("content");
+                if content.is_empty() {
+                    target
                 } else {
-                    t
+                    let preview: String = content.chars().take(80).collect();
+                    let preview = if content.chars().count() > 80 {
+                        format!("{preview}\u{2026}")
+                    } else {
+                        preview
+                    };
+                    if target.is_empty() {
+                        preview
+                    } else {
+                        format!("{target}: {preview}")
+                    }
                 }
             }
             "mcp__chat__read_history" => {

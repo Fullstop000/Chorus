@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useApp } from '../store'
 import type { AgentInfo } from '../types'
 import { CreateAgentModal } from './CreateAgentModal'
+import { CreateChannelModal } from './CreateChannelModal'
 import './Sidebar.css'
 
 function agentColor(name: string): string {
@@ -11,11 +12,16 @@ function agentColor(name: string): string {
   return colors[Math.abs(h) % colors.length]
 }
 
-function AgentAvatar({ name, status }: { name: string; status: string }) {
+function agentDotClass(status: string, activity?: string): string {
+  if (status !== 'active') return status === 'sleeping' ? 'offline' : 'offline'
+  if (activity === 'thinking' || activity === 'working') return activity
+  return 'online'
+}
+
+function AgentAvatar({ name, status, activity }: { name: string; status: string; activity?: string }) {
   const color = agentColor(name)
   const initial = name[0]?.toUpperCase() ?? '?'
-  const dotClass =
-    status === 'active' ? 'online' : status === 'sleeping' ? 'sleeping' : 'inactive'
+  const dotClass = agentDotClass(status, activity)
   return (
     <div className="agent-avatar" style={{ position: 'relative' }}>
       <div
@@ -49,6 +55,7 @@ export function Sidebar() {
     refreshServerInfo,
   } = useApp()
   const [showCreateAgent, setShowCreateAgent] = useState(false)
+  const [showCreateChannel, setShowCreateChannel] = useState(false)
 
   const channels = serverInfo?.channels.filter((c) => c.joined) ?? []
   const agents = serverInfo?.agents ?? []
@@ -73,7 +80,7 @@ export function Sidebar() {
           <div className="sidebar-section">
             <div className="sidebar-section-header">
               <span className="sidebar-section-label">Channels</span>
-              <button className="sidebar-add-btn" title="Add channel">+</button>
+              <button className="sidebar-add-btn" title="Add channel" onClick={() => setShowCreateChannel(true)}>+</button>
             </div>
             {channels.map((ch) => {
               const target = `#${ch.name}`
@@ -110,7 +117,7 @@ export function Sidebar() {
                 }`}
                 onClick={() => setSelectedAgent(agent as AgentInfo)}
               >
-                <AgentAvatar name={agent.name} status={agent.status} />
+                <AgentAvatar name={agent.name} status={agent.status} activity={agent.activity} />
                 <span className="sidebar-item-text">{agent.display_name ?? agent.name}</span>
               </div>
             ))}
@@ -174,6 +181,15 @@ export function Sidebar() {
           onClose={() => setShowCreateAgent(false)}
           onCreated={() => {
             setShowCreateAgent(false)
+            refreshServerInfo()
+          }}
+        />
+      )}
+      {showCreateChannel && (
+        <CreateChannelModal
+          onClose={() => setShowCreateChannel(false)}
+          onCreated={() => {
+            setShowCreateChannel(false)
             refreshServerInfo()
           }}
         />

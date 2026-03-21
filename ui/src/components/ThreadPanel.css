@@ -1,0 +1,158 @@
+.thread-panel {
+  width: 400px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 3px solid var(--black);
+  background: var(--cream);
+  overflow: hidden;
+}
+
+/* ── Header ── */
+.thread-header {
+  height: 62px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  border-bottom: 2px solid var(--black);
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.thread-title {
+  flex: 1;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--black);
+}
+
+.thread-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 2px solid transparent;
+  border-radius: 3px;
+  color: var(--black);
+  transition: border-color 0.1s, background 0.1s;
+}
+
+.thread-close-btn:hover {
+  border-color: var(--black);
+  background: rgba(0,0,0,0.05);
+}
+
+/* ── Body (scrollable) ── */
+.thread-body {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Parent message shown at top with bottom separator */
+.thread-parent-wrapper {
+  background: #fff;
+  border-bottom: 2px solid var(--black);
+  padding: 4px 12px 4px;
+}
+
+/* In thread panel, the parent message has no reply button, just tighter padding */
+.thread-parent-wrapper .message-item {
+  padding: 4px 4px;
+}
+
+/* Replies section */
+.thread-replies {
+  flex: 1;
+  padding: 8px 0 12px;
+}
+
+.thread-empty {
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 40px 20px;
+}
+
+/* ── Input ── */
+.thread-input-area {
+  border-top: 2px solid var(--black);
+  padding: 10px 12px 12px;
+  background: #fff;
+  flex-shrink: 0;
+}
+
+.thread-input-row {
+  border: 2px solid var(--black);
+  background: var(--cream);
+}
+
+.thread-input-textarea {
+  width: 100%;
+  border: none;
+  outline: none;
+  resize: none;
+  font-size: 13px;
+  line-height: 1.5;
+  max-height: 100px;
+  overflow-y: auto;
+  background: transparent;
+  padding: 8px 10px;
+  font-family: var(--font);
+}
+
+.thread-input-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 6px;
+  border-top: 2px solid var(--black);
+}
+
+.thread-attach-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  color: rgba(0,0,0,0.35);
+}
+
+.thread-attach-btn:hover:not(:disabled) {
+  color: var(--black);
+}
+
+.thread-send-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border: 2px solid var(--black);
+  background: var(--yellow);
+  color: var(--black);
+  transition: box-shadow 0.1s, transform 0.1s;
+  box-shadow: var(--shadow-sm);
+}
+
+.thread-send-btn:hover:not(:disabled) {
+  box-shadow: var(--shadow);
+  transform: translate(-1px, -1px);
+}
+
+.thread-send-btn:active:not(:disabled) {
+  box-shadow: none;
+  transform: translate(1px, 1px);
+}
+
+.thread-send-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  box-shadow: none;
+}

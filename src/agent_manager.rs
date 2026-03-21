@@ -1,3 +1,4 @@
+use tracing::{debug, error, info, warn};
 use crate::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::models::*;
 use crate::server::AgentLifecycle;
@@ -7,7 +8,10 @@ use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Child;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
+
+const ACTIVITY_LOG_MAX: usize = 500;
 
 struct RunningAgent {
     process: Child,
@@ -17,8 +21,50 @@ struct RunningAgent {
     pending_notification_count: u32,
 }
 
+/// Per-agent in-memory activity log (ring buffer, up to ACTIVITY_LOG_MAX entries).
+#[derive(Default)]
+struct AgentActivityLog {
+    entries: std::collections::VecDeque<ActivityLogEntry>,
+    next_seq: u64,
+    /// Current activity state: online | thinking | working | offline
+    activity: String,
+    detail: String,
+}
+
+impl AgentActivityLog {
+    fn push(&mut self, entry: ActivityEntry) {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.entries.push_back(ActivityLogEntry {
+            seq: self.next_seq,
+            timestamp_ms,
+            entry,
+        });
+        self.next_seq += 1;
+        if self.entries.len() > ACTIVITY_LOG_MAX {
+            self.entries.pop_front();
+        }
+    }
+
+    fn since(&self, after_seq: u64) -> Vec<ActivityLogEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.seq > after_seq)
+            .cloned()
+            .collect()
+    }
+
+    fn all(&self) -> Vec<ActivityLogEntry> {
+        self.entries.iter().cloned().collect()
+    }
+}
+
 pub struct AgentManager {
     agents: Arc<Mutex<HashMap<String, RunningAgent>>>,
+    /// Activity logs keyed by agent name
+    pub activity_logs: Arc<std::sync::Mutex<HashMap<String, AgentActivityLog>>>,
     store: Arc<Store>,
     data_dir: PathBuf,
     bridge_binary: String,
@@ -42,11 +88,60 @@ impl AgentManager {
     ) -> Self {
         Self {
             agents: Arc::new(Mutex::new(HashMap::new())),
+            activity_logs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             store,
             data_dir,
             bridge_binary,
             server_url,
         }
+    }
+
+    /// Get activity log entries for an agent (optionally after a seq number).
+    pub fn get_activity_log(
+        &self,
+        agent_name: &str,
+        after_seq: Option<u64>,
+    ) -> ActivityLogResponse {
+        let logs = self.activity_logs.lock().unwrap();
+        let log = logs.get(agent_name);
+        let (entries, activity, detail) = match log {
+            Some(l) => {
+                let entries = match after_seq {
+                    Some(seq) => l.since(seq),
+                    None => l.all(),
+                };
+                (entries, l.activity.clone(), l.detail.clone())
+            }
+            None => (vec![], "offline".to_string(), String::new()),
+        };
+        ActivityLogResponse { entries, agent_activity: activity, agent_detail: detail }
+    }
+
+    fn push_activity(
+        activity_logs: &Arc<std::sync::Mutex<HashMap<String, AgentActivityLog>>>,
+        agent_name: &str,
+        entry: ActivityEntry,
+    ) {
+        let mut logs = activity_logs.lock().unwrap();
+        let log = logs.entry(agent_name.to_string()).or_default();
+        log.push(entry);
+    }
+
+    fn set_activity_state(
+        activity_logs: &Arc<std::sync::Mutex<HashMap<String, AgentActivityLog>>>,
+        agent_name: &str,
+        activity: &str,
+        detail: &str,
+    ) {
+        let mut logs = activity_logs.lock().unwrap();
+        let log = logs.entry(agent_name.to_string()).or_default();
+        log.activity = activity.to_string();
+        log.detail = detail.to_string();
+        let entry = ActivityEntry::Status {
+            activity: activity.to_string(),
+            detail: detail.to_string(),
+        };
+        log.push(entry);
     }
 
     /// Start an agent process. Creates workspace dir, writes MEMORY.md, spawns CLI.
@@ -68,18 +163,14 @@ impl AgentManager {
         let driver = get_driver(&agent.runtime)?;
         let is_codex_driver = driver.id() == "codex";
 
-        // Build AgentConfig
+        // Build AgentConfig — session_id applies to both drivers (codex uses thread_id, claude uses session_id)
         let config = AgentConfig {
             name: agent.name.clone(),
             display_name: agent.display_name.clone(),
             description: agent.description.clone(),
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
-            session_id: if is_codex_driver {
-                None
-            } else {
-                agent.session_id.clone()
-            },
+            session_id: agent.session_id.clone(),
             env_vars: None,
         };
 
@@ -107,8 +198,8 @@ impl AgentManager {
         // Create notes directory
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
 
-        // Determine if this is a resume
-        let is_resume = !is_codex_driver && agent.session_id.is_some();
+        // Determine if this is a resume (codex uses its own prompt regardless, but session_id is still passed)
+        let is_resume = agent.session_id.is_some();
 
         // Get unread summary
         let unread_summary = self.store.get_unread_summary(agent_name)?;
@@ -188,9 +279,15 @@ impl AgentManager {
             );
         }
 
-        // Update status to active
+        // Update status to active + emit activity log entry
         self.store
             .update_agent_status(agent_name, AgentStatus::Active)?;
+        Self::set_activity_state(
+            &self.activity_logs,
+            agent_name,
+            "working",
+            "Starting…",
+        );
 
         // Spawn stdout reader task
         self.spawn_output_reader(agent_name.to_string(), stdout, driver);
@@ -228,7 +325,7 @@ impl AgentManager {
             }
         };
 
-        eprintln!("[Agent {agent_name}] Hibernating (sleeping)");
+        info!(agent = %agent_name, "hibernating (sleeping)");
 
         // Kill the process
         let _ = running.process.kill();
@@ -296,9 +393,7 @@ impl AgentManager {
                      Call receive_message to read {them} when you're ready.]"
                 );
 
-                eprintln!(
-                    "[Agent {name}] Sending stdin notification: {current_count} message(s)"
-                );
+                info!(agent = %name, count = current_count, "sending stdin notification");
 
                 if let Some(encoded) = running.driver.encode_stdin_message(&notification, &sid) {
                     if let Some(stdin) = running.process.stdin.as_mut() {
@@ -336,6 +431,7 @@ impl AgentManager {
         driver: Arc<dyn Driver>,
     ) {
         let agents = self.agents.clone();
+        let activity_logs = self.activity_logs.clone();
         let store = self.store.clone();
         let name = agent_name.clone();
 
@@ -347,7 +443,7 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        eprintln!("[Agent {name}] stdout read error: {e}");
+                        error!(agent = %name, err = %e, "stdout read error");
                         break;
                     }
                 };
@@ -358,39 +454,44 @@ impl AgentManager {
 
                 let events = driver.parse_line(&line);
                 for event in events {
-                    // We need to block on the async lock
                     let rt = tokio::runtime::Handle::current();
                     rt.block_on(async {
-                        Self::handle_parsed_event(&agents, &store, &name, event, &driver).await;
+                        Self::handle_parsed_event(
+                            &agents,
+                            &activity_logs,
+                            &store,
+                            &name,
+                            event,
+                            &driver,
+                        )
+                        .await;
                     });
                 }
             }
 
             // Process exited — stdout closed
-            eprintln!("[Agent {name}] stdout reader ended, checking exit status");
+            info!(agent = %name, "stdout reader ended — checking exit status");
+            Self::set_activity_state(&activity_logs, &name, "offline", "Process stopped");
 
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async {
                 let mut agents_map = agents.lock().await;
                 if let Some(mut running) = agents_map.remove(&name) {
-                    // Wait for exit code
                     match running.process.wait() {
                         Ok(status) => {
                             let code = status.code().unwrap_or(-1);
-                            eprintln!("[Agent {name}] Process exited with code {code}");
                             if code == 0 {
+                                info!(agent = %name, code, "process exited cleanly — sleeping");
                                 let _ =
                                     store.update_agent_status(&name, AgentStatus::Sleeping);
                             } else {
-                                eprintln!(
-                                    "[Agent {name}] Process crashed (exit code {code}) — marking inactive"
-                                );
+                                warn!(agent = %name, code, "process crashed — marking inactive");
                                 let _ =
                                     store.update_agent_status(&name, AgentStatus::Inactive);
                             }
                         }
                         Err(e) => {
-                            eprintln!("[Agent {name}] Failed to get exit status: {e}");
+                            error!(agent = %name, err = %e, "failed to get exit status");
                             let _ =
                                 store.update_agent_status(&name, AgentStatus::Inactive);
                         }
@@ -403,6 +504,7 @@ impl AgentManager {
     /// Handle a single parsed event from an agent's stdout.
     async fn handle_parsed_event(
         agents: &Arc<Mutex<HashMap<String, RunningAgent>>>,
+        activity_logs: &Arc<std::sync::Mutex<HashMap<String, AgentActivityLog>>>,
         store: &Arc<Store>,
         agent_name: &str,
         event: ParsedEvent,
@@ -416,30 +518,84 @@ impl AgentManager {
 
         match event {
             ParsedEvent::SessionInit { session_id } => {
+                info!(agent = %agent_name, session = %session_id, "session started");
                 running.session_id = Some(session_id.clone());
                 let _ = store.update_agent_session(agent_name, Some(&session_id));
+                Self::set_activity_state(activity_logs, agent_name, "online", "Ready");
             }
-            ParsedEvent::ToolCall { ref name, .. } => {
+            ParsedEvent::Thinking { ref text } => {
+                running.is_in_receive_message = false;
+                let preview: String = text.chars().take(120).collect();
+                let preview = if text.chars().count() > 120 { format!("{preview}…") } else { preview };
+                debug!(agent = %agent_name, text = %preview, "thinking");
+                Self::push_activity(
+                    activity_logs,
+                    agent_name,
+                    ActivityEntry::Thinking { text: text.clone() },
+                );
+                Self::set_activity_state(activity_logs, agent_name, "thinking", "Thinking…");
+            }
+            ParsedEvent::Text { ref text } => {
+                running.is_in_receive_message = false;
+                let preview: String = text.chars().take(120).collect();
+                let preview = if text.chars().count() > 120 { format!("{preview}…") } else { preview };
+                info!(agent = %agent_name, text = %preview, "text output");
+                Self::push_activity(
+                    activity_logs,
+                    agent_name,
+                    ActivityEntry::Text { text: text.clone() },
+                );
+            }
+            ParsedEvent::ToolCall { ref name, ref input } => {
                 let receive_tool = format!("{}receive_message", driver.mcp_tool_prefix());
                 if *name == receive_tool {
                     running.is_in_receive_message = true;
                     running.pending_notification_count = 0;
+                    info!(agent = %agent_name, "waiting for messages");
+                    Self::push_activity(
+                        activity_logs,
+                        agent_name,
+                        ActivityEntry::ToolStart {
+                            tool_name: name.clone(),
+                            tool_input: String::new(),
+                        },
+                    );
+                    Self::set_activity_state(activity_logs, agent_name, "online", "Waiting for messages");
                 } else {
                     running.is_in_receive_message = false;
+                    let display_name = driver.tool_display_name(name);
+                    let tool_input = driver.summarize_tool_input(name, input);
+                    info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
+                    Self::push_activity(
+                        activity_logs,
+                        agent_name,
+                        ActivityEntry::ToolStart {
+                            tool_name: display_name.clone(),
+                            tool_input,
+                        },
+                    );
+                    Self::set_activity_state(activity_logs, agent_name, "working", &display_name);
                 }
             }
-            ParsedEvent::Thinking { .. } | ParsedEvent::Text { .. } => {
-                running.is_in_receive_message = false;
-            }
             ParsedEvent::TurnEnd { session_id } => {
+                info!(agent = %agent_name, "turn ended");
                 running.is_in_receive_message = false;
                 if let Some(ref sid) = session_id {
                     running.session_id = Some(sid.clone());
                     let _ = store.update_agent_session(agent_name, Some(sid));
                 }
+                Self::set_activity_state(activity_logs, agent_name, "online", "Idle");
             }
             ParsedEvent::Error { ref message } => {
-                eprintln!("[Agent {agent_name}] Error event: {message}");
+                error!(agent = %agent_name, message = %message, "agent error");
+                Self::push_activity(
+                    activity_logs,
+                    agent_name,
+                    ActivityEntry::Status {
+                        activity: "error".to_string(),
+                        detail: message.clone(),
+                    },
+                );
             }
         }
     }
@@ -458,5 +614,23 @@ impl AgentLifecycle for AgentManager {
         agent_name: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move { AgentManager::notify_agent(self, agent_name).await })
+    }
+
+    fn stop_agent<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move { AgentManager::stop_agent(self, agent_name).await })
+    }
+
+    fn get_activity_log_data(&self, agent_name: &str, after_seq: Option<u64>) -> ActivityLogResponse {
+        AgentManager::get_activity_log(self, agent_name, after_seq)
+    }
+
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
+        let logs = self.activity_logs.lock().unwrap();
+        logs.iter()
+            .map(|(name, log)| (name.clone(), log.activity.clone(), log.detail.clone()))
+            .collect()
     }
 }

@@ -1,19 +1,26 @@
-import { useState, useRef, type KeyboardEvent } from 'react'
+import { useState, useRef } from 'react'
 import { useApp, useTarget } from '../store'
 import { sendMessage, createTasks, uploadFile } from '../api'
+import { MentionTextarea } from './MentionTextarea'
+import type { MentionMember } from './MentionTextarea'
 
 interface Props {
   onMessageSent?: () => void
 }
 
 export function MessageInput({ onMessageSent }: Props) {
-  const { currentUser, selectedChannel } = useApp()
+  const { currentUser, selectedChannel, serverInfo } = useApp()
   const target = useTarget()
   const [content, setContent] = useState('')
   const [alsoTask, setAlsoTask] = useState(false)
   const [sending, setSending] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const members: MentionMember[] = [
+    ...(serverInfo?.agents ?? []).map((a) => ({ name: a.name, type: 'agent' as const })),
+    ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
+  ]
 
   const placeholder = target
     ? `Message ${target}`
@@ -44,13 +51,6 @@ export function MessageInput({ onMessageSent }: Props) {
       console.error('Send failed:', e)
     } finally {
       setSending(false)
-    }
-  }
-
-  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
     }
   }
 
@@ -92,14 +92,15 @@ export function MessageInput({ onMessageSent }: Props) {
           style={{ display: 'none' }}
           onChange={handleFileChange}
         />
-        <textarea
+        <MentionTextarea
           className="message-input-textarea"
           placeholder={placeholder}
           value={content}
-          onChange={(e) => setContent(e.target.value)}
-          onKeyDown={handleKeyDown}
+          onChange={setContent}
+          onEnter={handleSend}
           disabled={!target || sending}
           rows={1}
+          members={members}
         />
         <button
           className="message-input-send"

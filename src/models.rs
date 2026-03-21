@@ -228,6 +228,8 @@ pub struct HistoryMessage {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentRef>>,
+    #[serde(rename = "replyCount", skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -269,6 +271,11 @@ pub struct AgentInfo {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// Live activity state: online | thinking | working | offline
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_detail: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -336,6 +343,31 @@ pub struct ResolveChannelRequest {
 pub struct ResolveChannelResponse {
     #[serde(rename = "channelId")]
     pub channel_id: String,
+}
+
+// ── Activity log (in-memory living log per agent) ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActivityEntry {
+    Thinking { text: String },
+    ToolStart { tool_name: String, tool_input: String },
+    Text { text: String },
+    Status { activity: String, detail: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityLogEntry {
+    pub seq: u64,
+    pub timestamp_ms: u64,
+    pub entry: ActivityEntry,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActivityLogResponse {
+    pub entries: Vec<ActivityLogEntry>,
+    pub agent_activity: String,
+    pub agent_detail: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

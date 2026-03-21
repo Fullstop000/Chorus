@@ -16,6 +16,9 @@ export interface AgentInfo {
   model?: string
   description?: string
   session_id?: string
+  /** Live activity state: online | thinking | working | offline */
+  activity?: string
+  activity_detail?: string
 }
 
 export interface HumanInfo {
@@ -44,6 +47,7 @@ export interface HistoryMessage {
   createdAt: string
   thread_parent_id?: string
   attachments?: AttachmentRef[]
+  replyCount?: number
 }
 
 export interface HistoryResponse {
@@ -92,7 +96,7 @@ export interface WhoamiResponse {
   username: string
 }
 
-// ── Agent Activity ──
+// ── Agent Activity (legacy message history) ──
 
 export interface ActivityMessage {
   id: string
@@ -104,6 +108,34 @@ export interface ActivityMessage {
 
 export interface ActivityResponse {
   messages: ActivityMessage[]
+}
+
+// ── Agent Activity Log (living log) ──
+
+export type ActivityEntryKind = 'thinking' | 'tool_start' | 'text' | 'status'
+
+export interface ActivityEntry {
+  kind: ActivityEntryKind
+  // thinking / text
+  text?: string
+  // tool_start
+  tool_name?: string
+  tool_input?: string
+  // status
+  activity?: string
+  detail?: string
+}
+
+export interface ActivityLogEntry {
+  seq: number
+  timestamp_ms: number
+  entry: ActivityEntry
+}
+
+export interface ActivityLogResponse {
+  entries: ActivityLogEntry[]
+  agent_activity: string
+  agent_detail: string
 }
 
 // ── Agent Workspace ──
