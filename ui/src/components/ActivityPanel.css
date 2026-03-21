@@ -26,9 +26,16 @@
 }
 
 .activity-status {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 12px;
   font-weight: 600;
   font-family: var(--font-mono);
+}
+
+.activity-status-detail {
+  opacity: 0.65;
 }
 
 .activity-empty {
@@ -50,7 +57,8 @@
   gap: 2px;
 }
 
-/* Base row */
+/* ── Base row ────────────────────────────────────────────────────── */
+
 .activity-item {
   display: flex;
   align-items: flex-start;
@@ -69,7 +77,11 @@
 .activity-item-icon {
   flex-shrink: 0;
   width: 16px;
-  text-align: center;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
 }
 
 .activity-item-text {
@@ -89,23 +101,85 @@
   margin-top: 2px;
 }
 
-/* Status row */
+/* ── Status row ──────────────────────────────────────────────────── */
+
 .activity-item-status {
   opacity: 0.7;
 }
 
-/* Thinking row */
-.activity-item-thinking-text {
+.activity-status-dot {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 18px;
+  margin-top: 1px;
+}
+
+/* ── Thinking row ────────────────────────────────────────────────── */
+
+.activity-icon-think {
+  color: var(--text-muted);
+}
+
+.activity-item-thinking .activity-item-text {
   color: rgba(0,0,0,0.5);
   font-style: italic;
 }
 
-/* Tool row */
+/* ── Tool row ────────────────────────────────────────────────────── */
+
+.activity-icon-tool {
+  color: var(--text-secondary, #555);
+}
+
+.activity-tool-label {
+  font-weight: 600;
+  margin-right: 6px;
+}
+
 .activity-tool-input {
   color: var(--text-muted);
 }
 
-/* Text/response row */
+/* ── Text / response row ─────────────────────────────────────────── */
+
 .activity-item-text-entry {
-  background: color-mix(in srgb, var(--cyan) 8%, transparent);
+  background: color-mix(in srgb, var(--cyan, #22d3ee) 8%, transparent);
+}
+
+.activity-icon-text {
+  color: var(--cyan, #22d3ee);
+}
+
+/* ── Expandable text ─────────────────────────────────────────────── */
+
+.activity-expandable {
+  display: inline;
+}
+
+.activity-expandable-text {
+  white-space: pre-wrap;
+}
+
+.activity-expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: 6px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  cursor: pointer;
+  vertical-align: middle;
+  opacity: 0.7;
+}
+
+.activity-expand-btn:hover {
+  opacity: 1;
 }

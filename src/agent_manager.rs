@@ -551,6 +551,14 @@ impl AgentManager {
                 if *name == receive_tool {
                     running.is_in_receive_message = true;
                     running.pending_notification_count = 0;
+                    Self::push_activity(
+                        activity_logs,
+                        agent_name,
+                        ActivityEntry::ToolStart {
+                            tool_name: name.clone(),
+                            tool_input: String::new(),
+                        },
+                    );
                     Self::set_activity_state(activity_logs, agent_name, "online", "Waiting for messages");
                 } else {
                     running.is_in_receive_message = false;
