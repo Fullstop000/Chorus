@@ -1,3 +1,4 @@
+use tracing::{debug, error, info, warn};
 use crate::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::models::*;
 use crate::server::AgentLifecycle;
@@ -328,7 +329,7 @@ impl AgentManager {
             }
         };
 
-        eprintln!("[Agent {agent_name}] Hibernating (sleeping)");
+        info!(agent = %agent_name, "hibernating (sleeping)");
 
         // Kill the process
         let _ = running.process.kill();
@@ -396,9 +397,7 @@ impl AgentManager {
                      Call receive_message to read {them} when you're ready.]"
                 );
 
-                eprintln!(
-                    "[Agent {name}] Sending stdin notification: {current_count} message(s)"
-                );
+                info!(agent = %name, count = current_count, "sending stdin notification");
 
                 if let Some(encoded) = running.driver.encode_stdin_message(&notification, &sid) {
                     if let Some(stdin) = running.process.stdin.as_mut() {
@@ -448,7 +447,7 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        eprintln!("[Agent {name}] stdout read error: {e}");
+                        error!(agent = %name, err = %e, "stdout read error");
                         break;
                     }
                 };
@@ -475,7 +474,7 @@ impl AgentManager {
             }
 
             // Process exited — stdout closed
-            eprintln!("[Agent {name}] stdout reader ended, checking exit status");
+            info!(agent = %name, "stdout reader ended — checking exit status");
             Self::set_activity_state(&activity_logs, &name, "offline", "Process stopped");
 
             let rt = tokio::runtime::Handle::current();
@@ -485,20 +484,18 @@ impl AgentManager {
                     match running.process.wait() {
                         Ok(status) => {
                             let code = status.code().unwrap_or(-1);
-                            eprintln!("[Agent {name}] Process exited with code {code}");
                             if code == 0 {
+                                info!(agent = %name, code, "process exited cleanly — sleeping");
                                 let _ =
                                     store.update_agent_status(&name, AgentStatus::Sleeping);
                             } else {
-                                eprintln!(
-                                    "[Agent {name}] Process crashed (exit code {code}) — marking inactive"
-                                );
+                                warn!(agent = %name, code, "process crashed — marking inactive");
                                 let _ =
                                     store.update_agent_status(&name, AgentStatus::Inactive);
                             }
                         }
                         Err(e) => {
-                            eprintln!("[Agent {name}] Failed to get exit status: {e}");
+                            error!(agent = %name, err = %e, "failed to get exit status");
                             let _ =
                                 store.update_agent_status(&name, AgentStatus::Inactive);
                         }
@@ -525,12 +522,16 @@ impl AgentManager {
 
         match event {
             ParsedEvent::SessionInit { session_id } => {
+                info!(agent = %agent_name, session = %session_id, "session started");
                 running.session_id = Some(session_id.clone());
                 let _ = store.update_agent_session(agent_name, Some(&session_id));
                 Self::set_activity_state(activity_logs, agent_name, "online", "Ready");
             }
             ParsedEvent::Thinking { ref text } => {
                 running.is_in_receive_message = false;
+                let preview: String = text.chars().take(120).collect();
+                let preview = if text.chars().count() > 120 { format!("{preview}…") } else { preview };
+                debug!(agent = %agent_name, text = %preview, "thinking");
                 Self::push_activity(
                     activity_logs,
                     agent_name,
@@ -540,6 +541,9 @@ impl AgentManager {
             }
             ParsedEvent::Text { ref text } => {
                 running.is_in_receive_message = false;
+                let preview: String = text.chars().take(120).collect();
+                let preview = if text.chars().count() > 120 { format!("{preview}…") } else { preview };
+                info!(agent = %agent_name, text = %preview, "text output");
                 Self::push_activity(
                     activity_logs,
                     agent_name,
@@ -551,6 +555,7 @@ impl AgentManager {
                 if *name == receive_tool {
                     running.is_in_receive_message = true;
                     running.pending_notification_count = 0;
+                    info!(agent = %agent_name, "waiting for messages");
                     Self::push_activity(
                         activity_logs,
                         agent_name,
@@ -564,6 +569,7 @@ impl AgentManager {
                     running.is_in_receive_message = false;
                     let display_name = driver.tool_display_name(name);
                     let tool_input = driver.summarize_tool_input(name, input);
+                    info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
                     Self::push_activity(
                         activity_logs,
                         agent_name,
@@ -576,6 +582,7 @@ impl AgentManager {
                 }
             }
             ParsedEvent::TurnEnd { session_id } => {
+                info!(agent = %agent_name, "turn ended");
                 running.is_in_receive_message = false;
                 if let Some(ref sid) = session_id {
                     running.session_id = Some(sid.clone());
@@ -584,7 +591,7 @@ impl AgentManager {
                 Self::set_activity_state(activity_logs, agent_name, "online", "Idle");
             }
             ParsedEvent::Error { ref message } => {
-                eprintln!("[Agent {agent_name}] Error event: {message}");
+                error!(agent = %agent_name, message = %message, "agent error");
                 Self::push_activity(
                     activity_logs,
                     agent_name,

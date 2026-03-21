@@ -110,6 +110,14 @@ fn default_data_dir() -> String {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Initialize tracing. Default level: chorus=info (override with RUST_LOG).
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("chorus=info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+
     match cli.command {
         Some(Commands::Bridge { agent_id, server_url }) => {
             bridge::run_bridge(agent_id, server_url).await
@@ -303,9 +311,9 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
             .map(|a| a.name)
             .collect();
         for agent_name in active_agents {
-            eprintln!("[Startup] Restarting active agent @{agent_name}");
+            tracing::info!(agent = %agent_name, "auto-restarting active agent");
             if let Err(e) = manager.start_agent(&agent_name).await {
-                eprintln!("[Startup] Failed to restart @{agent_name}: {e}");
+                tracing::warn!(agent = %agent_name, err = %e, "failed to restart agent");
             }
         }
     }

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tracing::{debug, info};
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -238,6 +239,10 @@ async fn handle_send(
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
 
+    let preview: String = req.content.chars().take(120).collect();
+    let preview = if req.content.chars().count() > 120 { format!("{preview}…") } else { preview };
+    info!(agent = %agent_id, target = %req.target, content = %preview, "send_message");
+
     let message_id = store
         .send_message(
             &channel.name,
@@ -248,6 +253,9 @@ async fn handle_send(
             &req.attachment_ids,
         )
         .map_err(|e| api_err(e.to_string()))?;
+
+    let short_id = if message_id.len() >= 8 { &message_id[..8] } else { &message_id };
+    info!(agent = %agent_id, msg = %short_id, "send_message ok");
 
     deliver_message_to_agents(&state, &channel.id, &agent_id)
         .await
@@ -278,10 +286,20 @@ async fn handle_receive(
         .get_messages_for_agent(&agent_id, true)
         .map_err(|e| api_err(e.to_string()))?;
 
-    if !messages.is_empty() || !blocking {
+    if !messages.is_empty() {
+        info!(agent = %agent_id, count = messages.len(), "receive_message: got messages immediately");
+        for m in &messages {
+            let target = format!("{}:{}", m.channel_type, m.channel_name);
+            info!(agent = %agent_id, target = %target, sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
+        }
+        return Ok(Json(ReceiveResponse { messages }));
+    }
+    if !blocking {
+        debug!(agent = %agent_id, "receive_message: non-blocking, no messages");
         return Ok(Json(ReceiveResponse { messages }));
     }
 
+    debug!(agent = %agent_id, timeout_secs, "receive_message: long-polling");
     // Long-poll: subscribe and wait
     let mut rx = store.subscribe();
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs);
@@ -300,6 +318,11 @@ async fn handle_receive(
                     .get_messages_for_agent(&agent_id, true)
                     .map_err(|e| api_err(e.to_string()))?;
                 if !messages.is_empty() {
+                    info!(agent = %agent_id, count = messages.len(), "receive_message: woke up with messages");
+                    for m in &messages {
+                        let target = format!("{}:{}", m.channel_type, m.channel_name);
+                        info!(agent = %agent_id, target = %target, sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
+                    }
                     return Ok(Json(ReceiveResponse { messages }));
                 }
                 // Not for us, keep waiting
@@ -335,6 +358,9 @@ async fn handle_history(
     Path(agent_id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> ApiResult<HistoryResponse> {
+    if let Some(ref ch) = params.channel {
+        debug!(agent = %agent_id, channel = %ch, "read_history");
+    }
     let store = &state.store;
     let channel_target = params
         .channel
@@ -389,6 +415,7 @@ async fn handle_server_info(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
+    debug!(agent = %agent_id, "list_server");
     let info = state
         .store
         .get_server_info(&agent_id)
@@ -673,7 +700,9 @@ async fn handle_agent_start(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    info!(agent = %name, "starting agent");
     state.lifecycle.start_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    info!(agent = %name, "agent started");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -681,7 +710,9 @@ async fn handle_agent_stop(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    info!(agent = %name, "stopping agent");
     state.lifecycle.stop_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    info!(agent = %name, "agent stopped");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
