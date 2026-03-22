@@ -83,6 +83,8 @@ Recommended preset:
 Required cases:
 - all Tier 0 cases
 - all Tier 1 cases marked `release-sensitive`
+- `MSG-004` when DM routing, DM reply rendering, or agent wake behavior changed
+- `ACT-002` when lifecycle or activity aggregation changed
 - `AGT-002` when the agent create flow, runtime list, model list, defaults, or driver registration changed
 - `CHN-002`, `CHN-003`, and `CHN-004` when channel management or channel membership behavior changed
 
@@ -98,8 +100,10 @@ Required cases:
 - `LFC-002`
 - `REC-001`
 - `REC-002`
+- `MSG-004`
 - `WRK-001`
 - `ACT-001`
+- `ACT-002`
 - `PRF-001`
 
 ### Agent Matrix

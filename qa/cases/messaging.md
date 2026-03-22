@@ -32,21 +32,30 @@
 - Tier: 0
 - Release-sensitive: yes
 - Goal:
-  - verify DM send/receive works independently of channel traffic
+  - verify DM send and agent reply rendering work independently of channel traffic
 - Preconditions:
   - at least one test agent exists
+  - the selected agent is reachable and not already mid-turn
 - Steps:
   1. Open a DM with `bot-a`.
-  2. Send a human DM.
-  3. Wait for the reply.
-  4. Refresh the page.
-  5. Re-open the same DM and verify the history is preserved.
+  2. Send a human DM that asks for an exact short token such as `dm-check-1`.
+  3. Verify the human DM appears once in the DM timeline immediately after send.
+  4. Wait for the agent reply.
+  5. Verify the reply appears in the same DM timeline, not in `#general` or another target.
+  6. Verify the reply text matches the requested token closely enough to prove it is the response to this DM.
+  7. Refresh the page.
+  8. Re-open the same DM and verify both the human message and the agent reply are still visible.
+  9. Switch to another target and return to the DM once to confirm the reply remains attached to the DM.
 - Expected:
   - DM target is clearly identified
+  - human send is visible immediately in the DM
   - reply arrives in the DM, not in a channel
   - refresh does not lose DM history
+  - target switching does not hide or relocate the reply
 - Common failure signals:
+  - human DM sends successfully but no agent reply row ever appears
   - DM routes to wrong target
+  - agent processes the DM but the reply renders in a channel or disappears after refresh
   - refresh loses conversation
   - a failed composer state leaks from another target
 
@@ -73,6 +82,35 @@
   - thread reply appears as a top-level message
   - thread history disappears after reload
   - wrong agent responds
+
+### MSG-004 Direct Message Wake And Reply Visibility
+
+- Tier: 1
+- Release-sensitive: yes when touching lifecycle, runtime integration, DM routing, or restart/wake behavior
+- Goal:
+  - verify a sleeping or inactive agent can wake from a DM and render its reply back into the same DM timeline
+- Preconditions:
+  - at least one test agent exists
+  - the selected agent can be moved into a sleeping or inactive state through the shipped product flow
+- Steps:
+  1. Open a DM with `bot-a`.
+  2. Move `bot-a` into a non-active state such as `sleeping` or `inactive`.
+  3. Confirm the profile or sidebar reflects the non-active state before sending.
+  4. Return to the DM and send a message asking for an exact short token such as `dm-wake-1`.
+  5. Wait for the agent to wake and reply.
+  6. Verify the reply appears in the same DM timeline as the triggering message.
+  7. Verify the UI does not jump to another target while the agent wakes.
+  8. Open the agent profile or activity view and confirm the wake/reply lifecycle is coherent.
+  9. Return to the DM and verify the visible reply still matches the DM that triggered the wake-up.
+- Expected:
+  - a non-active agent can wake from a DM
+  - the reply renders in the correct DM without manual page repair
+  - lifecycle surfaces and DM history tell the same story
+- Common failure signals:
+  - DM to sleeping agent never produces a visible reply
+  - agent wakes according to profile or activity but the DM timeline never updates
+  - reply appears under the wrong DM or in `#general`
+  - UI target changes unexpectedly during the wake-up flow
 
 ### HIS-001 History Reload And Selection Stability
 

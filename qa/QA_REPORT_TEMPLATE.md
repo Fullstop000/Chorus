@@ -68,13 +68,13 @@ Companion fix report when bugs are addressed:
 | Agent lifecycle | Tier 0/1 | `LFC-001`, `LFC-002`, `PRF-001` |  |  |
 | Channel CRUD and membership | Tier 0/1 | `CHN-001`, `CHN-002`, `CHN-003`, `CHN-004` |  |  |
 | Channel messaging | Tier 0 | `MSG-001` |  |  |
-| DM messaging | Tier 0 | `MSG-002` |  |  |
+| DM messaging | Tier 0/1 | `MSG-002`, `MSG-004` |  |  |
 | Thread messaging | Tier 0 | `MSG-003` |  |  |
 | History reload and selection stability | Tier 0 | `HIS-001` |  |  |
 | Tasks | Tier 0 | `TSK-001`, `TSK-002` |  |  |
 | Attachments | Tier 0 | `ATT-001` |  |  |
 | Profile and lifecycle accuracy | Tier 0 | `PRF-001` |  |  |
-| Activity timeline | Tier 1 | `ACT-001` |  |  |
+| Activity timeline | Tier 1 | `ACT-001`, `ACT-002` |  |  |
 | Workspace browsing | Tier 1 | `WRK-001` |  |  |
 | Navigation and target selection | Tier 1 | `NAV-001` |  |  |
 | Error handling and recovery | Tier 1 | `ERR-001` |  |  |
@@ -97,12 +97,14 @@ Companion fix report when bugs are addressed:
 | `MSG-001` |  |  |  |
 | `MSG-002` |  |  |  |
 | `MSG-003` |  |  |  |
+| `MSG-004` |  |  |  |
 | `HIS-001` |  |  |  |
 | `TSK-001` |  |  |  |
 | `TSK-002` |  |  |  |
 | `ATT-001` |  |  |  |
 | `PRF-001` |  |  |  |
 | `ACT-001` |  |  |  |
+| `ACT-002` |  |  |  |
 | `WRK-001` |  |  |  |
 | `NAV-001` |  |  |  |
 | `ERR-001` |  |  |  |

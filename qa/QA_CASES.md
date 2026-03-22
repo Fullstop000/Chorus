@@ -56,9 +56,9 @@ Cases are split into focused modules under [`cases/`](./cases/):
 
 | Module | Cases |
 | ------ | ----- |
-| [`cases/agents.md`](./cases/agents.md) | ENV-001, AGT-001, AGT-002, AGT-003, PRF-001, LFC-001, LFC-002, ACT-001, NAV-001, WRK-001, REC-001, REC-002 |
+| [`cases/agents.md`](./cases/agents.md) | ENV-001, AGT-001, AGT-002, AGT-003, PRF-001, LFC-001, LFC-002, ACT-001, ACT-002, NAV-001, WRK-001, REC-001, REC-002 |
 | [`cases/channels.md`](./cases/channels.md) | CHN-001, CHN-002, CHN-003, CHN-004 |
-| [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, HIS-001, ATT-001, ERR-001 |
+| [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, HIS-001, ATT-001, ERR-001 |
 | [`cases/tasks.md`](./cases/tasks.md) | TSK-001, TSK-002 |
 
 ## Maintenance Notes

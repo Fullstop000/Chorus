@@ -328,7 +328,10 @@ pub async fn handle_list_tasks(
         .channel
         .ok_or_else(|| api_err("missing channel parameter"))?;
     let channel_name = strip_channel_prefix(&channel_target);
-    let status_filter = params.status.as_deref().and_then(TaskStatus::from_status_str);
+    let status_filter = params
+        .status
+        .as_deref()
+        .and_then(TaskStatus::from_status_str);
     let tasks = state
         .store
         .list_tasks(channel_name, status_filter)

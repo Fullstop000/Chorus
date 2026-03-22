@@ -214,21 +214,65 @@
   - run `MSG-001`, `MSG-003`, and `MSG-002` first
 - Steps:
   1. Open `bot-a` activity tab.
-  2. Verify there are clear entries for:
+  2. Verify the most recent entries include all of these row types when they occurred in the run:
      - status changes
      - received messages
      - sent messages
-     - tool/thinking/output events when available
-  3. Verify entries are visually distinguishable at a glance.
-  4. Verify there is no flood of duplicate unchanged status transitions.
+     - tool or tool-like work
+     - thinking or output text when available
+  3. Pick one received-message row and verify:
+     - sender name is shown
+     - target label is shown
+     - content preview is recognizable and not empty
+  4. Pick one sent-message row and verify the target label matches where the message was actually sent.
+  5. Pick one tool row and verify the label is specific enough to distinguish waiting, checking, sending, or file/tool work.
+  6. Verify entries are visually distinguishable at a glance.
+  7. Verify there is no flood of duplicate unchanged status transitions.
+  8. Refresh the page and verify the activity log still loads with the same recent story.
 - Expected:
   - activity tells a coherent story of what happened
   - message send and receive are visible
   - state changes are meaningful and not noisy
+  - refresh does not blank or scramble recent activity
 - Common failure signals:
   - missing message events
+  - rows exist but omit sender, target, or meaningful preview text
   - unreadable grouping
   - duplicate status spam
+  - refresh loses recent activity or changes entry order unexpectedly
+
+### ACT-002 Activity Timeline Ordering During Wake And Recovery
+
+- Tier: 1
+- Release-sensitive: yes when touching lifecycle, restart, driver wake behavior, or activity aggregation
+- Goal:
+  - verify the activity timeline preserves the order and meaning of a wake-up flow, especially for DM-triggered recovery
+- Preconditions:
+  - run `MSG-004` first
+  - if restart behavior changed, run `LFC-002` or `REC-001` first
+- Steps:
+  1. Open the activity tab for the agent used in `MSG-004`.
+  2. Locate the portion of the timeline covering the DM-triggered wake-up.
+  3. Verify the sequence is coherent, for example:
+     - non-active or offline state
+     - startup or working state
+     - received message
+     - tool/check/wait work
+     - sent reply
+     - idle or waiting state
+  4. Verify the triggering DM content preview appears before or alongside the follow-up send, not after unrelated work.
+  5. Verify the sent-reply row content matches the DM reply that was actually rendered in chat.
+  6. If the case includes a server restart, verify the timeline does not fabricate phantom active periods after the restart.
+  7. Refresh the page and verify the same wake-up segment remains visible and ordered.
+- Expected:
+  - wake-up activity appears in a defensible order
+  - received and sent DM rows can be matched back to the visible chat
+  - restart and wake transitions do not produce contradictory states
+- Common failure signals:
+  - sent reply appears before the triggering received message
+  - wake-up shows tool activity but no received-message row
+  - timeline shows the agent as active while the profile or process state is offline
+  - refresh changes the order or hides the critical wake-up segment
 
 ### NAV-001 Sidebar Navigation And Selection Persistence
 
