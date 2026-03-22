@@ -126,6 +126,18 @@
   white-space: nowrap;
 }
 
+/* System channel items — muted appearance to distinguish from regular channels */
+.sidebar-item--system .sidebar-item-hash,
+.sidebar-item--system .sidebar-item-text {
+  opacity: 0.65;
+  font-style: italic;
+}
+
+.sidebar-item--system:hover .sidebar-item-hash,
+.sidebar-item--system:hover .sidebar-item-text {
+  opacity: 1;
+}
+
 /* Agent / Human rows */
 .agent-avatar {
   width: 24px;

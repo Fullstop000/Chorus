@@ -27,6 +27,8 @@ export interface HumanInfo {
 
 export interface ServerInfo {
   channels: ChannelInfo[]
+  /** System-managed channels (e.g. #shared-memory). Shown separately; read-only. */
+  system_channels: ChannelInfo[]
   agents: AgentInfo[]
   humans: HumanInfo[]
 }

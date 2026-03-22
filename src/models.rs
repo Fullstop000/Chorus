@@ -297,6 +297,8 @@ pub struct ActivityMessage {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ServerInfo {
     pub channels: Vec<ChannelInfo>,
+    /// System-managed channels (e.g. #shared-memory). Excluded from the regular channel list.
+    pub system_channels: Vec<ChannelInfo>,
     pub agents: Vec<AgentInfo>,
     pub humans: Vec<HumanInfo>,
 }

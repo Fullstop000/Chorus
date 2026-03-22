@@ -284,6 +284,20 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
 
+        let mut sys_stmt = conn.prepare(
+            "SELECT name, description FROM channels WHERE channel_type = 'system' ORDER BY name",
+        )?;
+        let system_channels: Vec<ChannelInfo> = sys_stmt
+            .query_map([], |row| {
+                Ok(ChannelInfo {
+                    name: row.get(0)?,
+                    description: row.get(1)?,
+                    joined: true,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
         let mut hu_stmt = conn.prepare("SELECT name FROM humans ORDER BY name")?;
         let humans: Vec<HumanInfo> = hu_stmt
             .query_map([], |row| Ok(HumanInfo { name: row.get(0)? }))?
@@ -292,6 +306,7 @@ impl Store {
 
         Ok(ServerInfo {
             channels,
+            system_channels,
             agents,
             humans,
         })
