@@ -45,7 +45,11 @@ impl AgentActivityLog {
     }
 
     pub fn entries_since(&self, after_seq: u64) -> Vec<ActivityLogEntry> {
-        self.entries.iter().filter(|e| e.seq > after_seq).cloned().collect()
+        self.entries
+            .iter()
+            .filter(|e| e.seq > after_seq)
+            .cloned()
+            .collect()
     }
 
     pub fn all_entries(&self) -> Vec<ActivityLogEntry> {
@@ -58,7 +62,8 @@ pub type ActivityLogMap = std::sync::Mutex<std::collections::HashMap<String, Age
 
 /// Push a new entry for an agent (creates the log if absent).
 pub fn push_activity(logs: &ActivityLogMap, agent_name: &str, entry: ActivityEntry) {
-    logs.lock().unwrap()
+    logs.lock()
+        .unwrap()
         .entry(agent_name.to_string())
         .or_default()
         .push(entry);
@@ -66,7 +71,8 @@ pub fn push_activity(logs: &ActivityLogMap, agent_name: &str, entry: ActivityEnt
 
 /// Update the activity state for an agent (also appends a Status entry).
 pub fn set_activity_state(logs: &ActivityLogMap, agent_name: &str, activity: &str, detail: &str) {
-    logs.lock().unwrap()
+    logs.lock()
+        .unwrap()
         .entry(agent_name.to_string())
         .or_default()
         .set_state(activity, detail);
@@ -100,10 +106,9 @@ pub fn get_activity_log(
 }
 
 /// Snapshot of all agents' current activity states: `(name, activity, detail)`.
-pub fn all_activity_states(
-    logs: &ActivityLogMap,
-) -> Vec<(String, String, String)> {
-    logs.lock().unwrap()
+pub fn all_activity_states(logs: &ActivityLogMap) -> Vec<(String, String, String)> {
+    logs.lock()
+        .unwrap()
         .iter()
         .map(|(name, log)| (name.clone(), log.activity.clone(), log.detail.clone()))
         .collect()
@@ -121,6 +126,10 @@ mod tests {
         set_activity_state(&logs, "bot1", "online", "Idle");
 
         let resp = get_activity_log(&logs, "bot1", None);
-        assert_eq!(resp.entries.len(), 1, "duplicate state transitions should not create duplicate log rows");
+        assert_eq!(
+            resp.entries.len(),
+            1,
+            "duplicate state transitions should not create duplicate log rows"
+        );
     }
 }

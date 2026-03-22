@@ -2,8 +2,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+use super::{channel_from_row, parse_sender_type, sender_type_str, Store};
 use crate::models::*;
-use super::{Store, channel_from_row, sender_type_str, parse_sender_type};
 
 impl Store {
     pub fn create_channel(
@@ -39,7 +39,10 @@ impl Store {
         Self::find_channel_by_name_inner(&conn, name)
     }
 
-    pub(crate) fn find_channel_by_name_inner(conn: &Connection, name: &str) -> Result<Option<Channel>> {
+    pub(crate) fn find_channel_by_name_inner(
+        conn: &Connection,
+        name: &str,
+    ) -> Result<Option<Channel>> {
         let mut stmt = conn.prepare(
             "SELECT id, name, description, channel_type, created_at FROM channels WHERE name = ?1",
         )?;

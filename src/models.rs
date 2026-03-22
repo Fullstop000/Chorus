@@ -354,9 +354,16 @@ pub struct ResolveChannelResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEntry {
-    Thinking { text: String },
-    ToolStart { tool_name: String, tool_input: String },
-    Text { text: String },
+    Thinking {
+        text: String,
+    },
+    ToolStart {
+        tool_name: String,
+        tool_input: String,
+    },
+    Text {
+        text: String,
+    },
     MessageReceived {
         channel_label: String,
         sender_name: String,
@@ -366,7 +373,10 @@ pub enum ActivityEntry {
         target: String,
         content: String,
     },
-    Status { activity: String, detail: String },
+    Status {
+        activity: String,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

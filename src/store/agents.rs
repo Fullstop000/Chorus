@@ -2,8 +2,8 @@ use anyhow::Result;
 use rusqlite::params;
 use uuid::Uuid;
 
+use super::{parse_agent_status, parse_datetime, Store};
 use crate::models::*;
-use super::{Store, parse_datetime, parse_agent_status};
 
 impl Store {
     pub fn create_agent_record(
@@ -25,7 +25,10 @@ impl Store {
 
     pub fn delete_agent_record(&self, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("DELETE FROM channel_members WHERE member_name = ?1", params![name])?;
+        conn.execute(
+            "DELETE FROM channel_members WHERE member_name = ?1",
+            params![name],
+        )?;
         conn.execute("DELETE FROM agents WHERE name = ?1", params![name])?;
         Ok(())
     }
@@ -82,7 +85,10 @@ impl Store {
             AgentStatus::Sleeping => "sleeping",
             AgentStatus::Inactive => "inactive",
         };
-        conn.execute("UPDATE agents SET status = ?1 WHERE name = ?2", params![s, name])?;
+        conn.execute(
+            "UPDATE agents SET status = ?1 WHERE name = ?2",
+            params![s, name],
+        )?;
         Ok(())
     }
 
@@ -97,7 +103,10 @@ impl Store {
 
     pub fn add_human(&self, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        conn.execute("INSERT OR IGNORE INTO humans (name) VALUES (?1)", params![name])?;
+        conn.execute(
+            "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
+            params![name],
+        )?;
         Ok(())
     }
 

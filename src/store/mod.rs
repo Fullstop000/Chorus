@@ -1,7 +1,7 @@
+mod agents;
 mod channels;
 mod messages;
 mod tasks;
-mod agents;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

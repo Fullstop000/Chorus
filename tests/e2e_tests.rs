@@ -14,9 +14,7 @@ async fn start_test_server() -> (String, Arc<Store>) {
         .join_channel("general", "testuser", SenderType::Human)
         .unwrap();
     let router = build_router(store.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{addr}");
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -49,9 +47,7 @@ async fn test_human_to_agent_message_flow() {
         .unwrap();
 
     let resp: serde_json::Value = client
-        .get(format!(
-            "{url}/internal/agent/bot1/receive?block=false"
-        ))
+        .get(format!("{url}/internal/agent/bot1/receive?block=false"))
         .send()
         .await
         .unwrap()
@@ -334,10 +330,7 @@ async fn test_multi_agent_channel_communication() {
         .unwrap();
     let messages = resp["messages"].as_array().unwrap();
     assert_eq!(messages.len(), 1);
-    assert_eq!(
-        messages[0]["sender_name"].as_str().unwrap(),
-        "claude_bot"
-    );
+    assert_eq!(messages[0]["sender_name"].as_str().unwrap(), "claude_bot");
 
     // Human also sees it in history
     let resp: serde_json::Value = client

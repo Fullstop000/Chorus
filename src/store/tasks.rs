@@ -2,8 +2,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::params;
 use uuid::Uuid;
 
-use crate::models::*;
 use super::Store;
+use crate::models::*;
 
 impl Store {
     pub fn create_tasks(
@@ -104,7 +104,11 @@ impl Store {
                         "UPDATE tasks SET claimed_by = ?1, status = 'in_progress', updated_at = datetime('now') WHERE channel_id = ?2 AND task_number = ?3",
                         params![claimer_name, channel.id, tn],
                     )?;
-                    results.push(ClaimResult { task_number: tn, success: true, reason: None });
+                    results.push(ClaimResult {
+                        task_number: tn,
+                        success: true,
+                        reason: None,
+                    });
                 }
                 Some(_) => {
                     results.push(ClaimResult {
