@@ -158,3 +158,153 @@
   - `#shared-memory` does not appear in the sidebar at all
   - `#shared-memory` appears in the normal channel list mixed with user channels
   - `/api/server-info` includes `#shared-memory` in the channels array
+
+---
+
+## Behavioral Cases — Autonomous Tool Usage
+
+These cases verify that agents call `remember` and `recall` **without being explicitly
+told to** in the prompt. They test the mandatory-trigger guidance added to the system
+prompt. Pass criteria are always observable facts (DB rows, breadcrumb count, absence
+of re-explanation in chat), not agent self-reports.
+
+### MEM-007 Recall On Task Assignment (Trigger: assigned a task)
+
+- Tier: 0
+- Release-sensitive: yes when touching system prompt or agent lifecycle
+- Goal:
+  - verify an agent calls `recall` unprompted when assigned a task via the task board,
+    and uses the retrieved context in its reply — without the human mentioning recall
+- Preconditions:
+  - at least one active agent exists (use `qa-test-agent` or any claude agent)
+  - the `shared_knowledge` table is pre-seeded with a fact the agent will need
+    (use `POST /internal/agent/{id}/remember` directly or run MEM-001 first)
+- Steps:
+  1. Pre-seed a fact into shared knowledge via the API:
+     ```
+     POST /internal/agent/qa-test-agent/remember
+     { "key": "design-decision", "value": "use-sqlite-fts5-not-elastic", "tags": "task-beh-001" }
+     ```
+  2. Assign a task to the agent that requires that knowledge:
+     In `#general`, send:
+     `@qa-test-agent — I've assigned you task #BEH-001: write a one-line summary of
+     our search implementation decision. Check shared memory for prior research on
+     tag 'task-beh-001' before answering.`
+     (Note: mention tag but do NOT say "call recall")
+  3. Wait for the agent's turn to complete.
+  4. Check `shared_knowledge` is unchanged (agent should read, not re-write).
+  5. Check `#shared-memory` breadcrumb count has NOT increased (recall is read-only).
+  6. Verify the agent's reply in `#general` references `sqlite-fts5` — proving it
+     retrieved and used the stored fact rather than guessing.
+  7. Check agent activity log or message content for evidence of a `recall` tool call
+     (agent will typically mention "I recalled..." or the reply will contain exact
+     stored wording).
+- Expected:
+  - agent calls `recall` with `tags="task-beh-001"` before composing reply
+  - reply contains the stored value (`use-sqlite-fts5-not-elastic`) or derived content
+  - no new rows added to `shared_knowledge` by this agent for this task
+  - agent does not ask "what search implementation?" — it found the answer itself
+- Common failure signals:
+  - agent replies without mentioning the stored fact (did not call recall)
+  - agent asks the human to clarify what was decided (forgot to recall)
+  - agent calls `remember` instead of `recall` (confused the direction)
+  - recall is called but ignored — reply contradicts stored value
+
+### MEM-008 Remember Before Handoff (Trigger: research complete, about to assign)
+
+- Tier: 0
+- Release-sensitive: yes when touching system prompt or agent lifecycle
+- Goal:
+  - verify an agent calls `remember` to persist research findings **before** or
+    **during** handing off work, without the human saying "use remember"
+- Preconditions:
+  - at least one active agent exists
+  - `shared_knowledge` row count is known before the test (record the baseline)
+- Steps:
+  1. Record baseline: `SELECT COUNT(*) FROM shared_knowledge;`
+  2. In `#general`, ask an agent to research a concrete answerable question and
+     then assign the follow-up to another agent. Do NOT mention `remember`:
+     `@qa-test-agent — please find out what port Chorus runs the API on, then
+     assign the task of writing a curl example to @test-agent.`
+  3. Wait for `qa-test-agent`'s turn to complete (it replies and/or assigns the task).
+  4. Check `shared_knowledge` row count — it must be > baseline.
+  5. Verify the new row(s) contain relevant content (port number, API info).
+  6. Check `#shared-memory` for a new breadcrumb from `qa-test-agent`.
+  7. Navigate to `#shared-memory` in the UI and verify the breadcrumb is visible
+     with correct key/value and agent name.
+- Expected:
+  - `shared_knowledge` gains at least one new row before or alongside the handoff
+  - new row contains the researched fact (e.g. port `3001`)
+  - breadcrumb appears in `#shared-memory` from `qa-test-agent`
+  - `qa-test-agent` does NOT just describe the port in a long message to `test-agent`
+    and rely on `test-agent` reading chat history
+- Common failure signals:
+  - `shared_knowledge` row count unchanged after agent replies (did not remember)
+  - agent only described findings in chat message, no `remember` call
+  - breadcrumb missing from `#shared-memory`
+  - `test-agent` receives the task but has no entry to recall — pure chat handoff
+
+### MEM-009 Two-Agent Handoff Without Human Mediation (Tier 1)
+
+- Tier: 1
+- Release-sensitive: yes when touching system prompt, agent wakeup, task board, or knowledge store
+- Goal:
+  - verify the full autonomous cycle: agent A researches and stores findings,
+    agent B wakes from a task assignment, calls recall unprompted, and completes
+    the work — with zero human prompts to B about what was found
+- Preconditions:
+  - two active claude agents exist (e.g. `qa-test-agent` and `test-agent`)
+  - task board is accessible in the UI
+- Steps:
+  1. Record baseline `shared_knowledge` row count.
+  2. In `#general`, send a single prompt to agent A only — do NOT address agent B:
+     `@qa-test-agent — research what HTTP method is used to send a message in Chorus
+     (hint: check the bridge or API code), store your findings in shared memory
+     tagged 'task-beh-009', then assign the curl-example task to @test-agent.`
+  3. Wait for `qa-test-agent` to complete its turn (reply + task assignment).
+  4. Verify `shared_knowledge` has new row(s) tagged `task-beh-009` from `qa-test-agent`.
+  5. Verify `#shared-memory` shows breadcrumb from `qa-test-agent`.
+  6. Wait for `test-agent` to wake and complete its turn (task board notification or message).
+  7. Verify `test-agent`'s reply includes a `curl` example with the correct HTTP method.
+  8. Verify `test-agent` did NOT ask the human "what method is used?" — it found the
+     answer via `recall`, not via re-asking.
+  9. (Optional) Check agent activity log for `test-agent` showing a `recall` tool call.
+- Expected:
+  - `qa-test-agent` stores at least one finding before assigning the task
+  - `test-agent` wakes, calls recall with tag `task-beh-009` or the subject keyword
+  - `test-agent` produces a correct curl example referencing the stored method (POST)
+  - no human message addresses `test-agent` before it replies
+  - the human needed to send exactly **one** message to drive the whole cycle
+- Common failure signals:
+  - `qa-test-agent` assigns the task but skips `remember` (pure chat handoff)
+  - `test-agent` wakes and asks the human for clarification (missed recall)
+  - `test-agent` produces a wrong answer (recalled nothing, guessed)
+  - neither agent's activity shows a knowledge store tool call
+
+### MEM-010 No Re-Explanation In Chat When Shared Memory Exists
+
+- Tier: 1
+- Release-sensitive: yes when touching system prompt
+- Goal:
+  - verify that when shared memory contains context an agent needs, the agent
+    uses it rather than sending a verbose re-explanation to another agent via chat
+- Preconditions:
+  - MEM-009 completed (findings stored under `task-beh-009`)
+  - both agents are active
+- Steps:
+  1. In `#general`, ask `test-agent` the same research question that `qa-test-agent`
+     already answered in MEM-009 — without referencing the prior work:
+     `@test-agent — what HTTP method does Chorus use to send a message? Brief answer only.`
+  2. Wait for `test-agent`'s reply.
+  3. Verify `test-agent` answers correctly and concisely.
+  4. Verify `test-agent` did NOT re-investigate (no file reads, no code searches) —
+     it should have used stored knowledge.
+  5. Verify NO new `remember` call was made (row count unchanged from MEM-009 end state).
+- Expected:
+  - `test-agent` answers correctly from recalled memory
+  - reply is concise — no wall-of-text re-explanation of how the codebase works
+  - `shared_knowledge` row count unchanged (read-only turn)
+- Common failure signals:
+  - `test-agent` re-searches the codebase instead of recalling
+  - answer is wrong (recall not used or returned wrong entry)
+  - agent calls `remember` again for the same fact (redundant write)
