@@ -1,0 +1,6 @@
+#!/bin/sh
+cargo fmt --check || {
+  echo ""
+  echo "  cargo fmt found unformatted code. Run 'cargo fmt' and re-stage."
+  exit 1
+}
