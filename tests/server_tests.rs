@@ -952,6 +952,35 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
 }
 
 #[tokio::test]
+async fn test_workspace_file_returns_content_from_configured_data_dir() {
+    let (_store, app, dir) = setup_with_data_dir();
+    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    std::fs::write(workspace_dir.join("plan.md"), "# plan\nship it\n").unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents/bot1/workspace/file?path=notes%2Fplan.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(val["path"].as_str(), Some("notes/plan.md"));
+    assert_eq!(val["content"].as_str(), Some("# plan\nship it\n"));
+    assert_eq!(val["truncated"].as_bool(), Some(false));
+    assert_eq!(val["sizeBytes"].as_u64(), Some(15));
+    assert!(val["modifiedMs"].as_u64().is_some());
+}
+
+#[tokio::test]
 async fn test_send_can_skip_agent_delivery() {
     let (_store, app, lifecycle) = setup_with_lifecycle();
 

@@ -157,6 +157,14 @@ export interface WorkspaceResponse {
   files: string[]
 }
 
+export interface WorkspaceFileResponse {
+  path: string
+  content: string
+  truncated: boolean
+  sizeBytes: number
+  modifiedMs?: number
+}
+
 // ── App-level target union ──
 
 // A "target" is the encoded channel/DM string passed to send/history

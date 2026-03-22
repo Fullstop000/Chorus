@@ -227,7 +227,64 @@ async fn test_task_board_e2e() {
     assert_eq!(tasks[1]["status"].as_str().unwrap(), "todo");
 }
 
-/// Test 5: DM and thread flow
+/// Test 5: Workspace listing and file preview flow over HTTP
+#[tokio::test]
+async fn test_workspace_e2e_lists_and_reads_markdown_file() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let workspace_dir = store.agents_dir().join("bot1");
+    let notes_dir = workspace_dir.join("notes");
+    std::fs::create_dir_all(&notes_dir).unwrap();
+    std::fs::write(workspace_dir.join("MEMORY.md"), "# Memory
+").unwrap();
+    std::fs::write(notes_dir.join("work-log.md"), "# Work Log
+
+- first entry
+").unwrap();
+
+    let workspace: serde_json::Value = client
+        .get(format!("{url}/api/agents/bot1/workspace"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(workspace["path"].as_str(), Some(workspace_dir.to_string_lossy().as_ref()));
+    let files = workspace["files"].as_array().unwrap();
+    assert!(files.iter().any(|entry| entry == "notes/"));
+    assert!(files.iter().any(|entry| entry == "notes/work-log.md"));
+    assert!(files.iter().any(|entry| entry == "MEMORY.md"));
+
+    let preview: serde_json::Value = client
+        .get(format!("{url}/api/agents/bot1/workspace/file?path=notes%2Fwork-log.md"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(preview["path"].as_str(), Some("notes/work-log.md"));
+    assert_eq!(preview["content"].as_str(), Some("# Work Log
+
+- first entry
+"));
+    assert_eq!(preview["sizeBytes"].as_u64(), Some(26));
+    assert_eq!(preview["truncated"].as_bool(), Some(false));
+    assert!(preview["modifiedMs"].as_u64().is_some());
+}
+
+/// Test 6: DM and thread flow
 #[tokio::test]
 async fn test_dm_and_thread_flow() {
     let (url, store) = start_test_server().await;

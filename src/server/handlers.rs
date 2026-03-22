@@ -650,6 +650,11 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
 
 // ── Workspace ──
 
+#[derive(Deserialize)]
+pub struct WorkspaceFileParams {
+    path: String,
+}
+
 pub async fn handle_agent_workspace(
     State(state): State<AppState>,
     Path(name): Path<String>,
@@ -667,6 +672,63 @@ pub async fn handle_agent_workspace(
         "path": workspace_dir.to_string_lossy(),
         "files": files
     })))
+}
+
+pub async fn handle_agent_workspace_file(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Query(params): Query<WorkspaceFileParams>,
+) -> ApiResult<serde_json::Value> {
+    let workspace_dir = state.store.agents_dir().join(&name);
+    let relative = sanitize_workspace_path(&params.path)?;
+    let file_path = workspace_dir.join(&relative);
+
+    if !file_path.is_file() {
+        return Err(api_err("workspace file not found"));
+    }
+
+    let metadata = std::fs::metadata(&file_path).map_err(|e| internal_err(e.to_string()))?;
+    let bytes = std::fs::read(&file_path).map_err(|e| internal_err(e.to_string()))?;
+    let limit = 100_000usize;
+    let truncated = bytes.len() > limit;
+    let content = if truncated {
+        String::from_utf8_lossy(&bytes[..limit]).into_owned()
+    } else {
+        String::from_utf8_lossy(&bytes).into_owned()
+    };
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64);
+
+    Ok(Json(serde_json::json!({
+        "path": relative.to_string_lossy(),
+        "content": content,
+        "truncated": truncated,
+        "sizeBytes": metadata.len(),
+        "modifiedMs": modified_ms
+    })))
+}
+
+fn sanitize_workspace_path(path: &str) -> Result<std::path::PathBuf, (StatusCode, Json<ErrorResponse>)> {
+    use std::path::{Component, PathBuf};
+
+    let candidate = std::path::Path::new(path);
+    let mut cleaned = PathBuf::new();
+    for component in candidate.components() {
+        match component {
+            Component::Normal(part) => cleaned.push(part),
+            Component::CurDir => {}
+            _ => return Err(api_err("invalid workspace path")),
+        }
+    }
+
+    if cleaned.as_os_str().is_empty() {
+        return Err(api_err("invalid workspace path"));
+    }
+
+    Ok(cleaned)
 }
 
 fn collect_workspace_files(
