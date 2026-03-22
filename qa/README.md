@@ -6,6 +6,8 @@ This directory contains the reusable QA operating docs for Chorus.
 
 - `QA_CASES.md`
   Static and versioned browser QA case catalog.
+- `QA_PRESETS.md`
+  Reusable agent/runtime setup presets for runs that need consistent coverage across Claude and Codex.
 - `QA_REPORT_TEMPLATE.md`
   Fill-in template for each QA run.
 - `BUG_FIX_REPORT_TEMPLATE.md`
@@ -55,6 +57,10 @@ This `qa/` directory is the execution layer:
 
 Run before merging medium or large product changes.
 
+Recommended preset:
+- `claude-trio` for generic UI changes
+- `mixed-runtime-trio` when agent, driver, lifecycle, prompt, or bridge code changed
+
 Required cases:
 - `ENV-001`
 - `AGT-001`
@@ -71,6 +77,9 @@ Required cases:
 
 Run before release or after touching messaging, lifecycle, tasks, upload, or workspace logic.
 
+Recommended preset:
+- `mixed-runtime-trio`
+
 Required cases:
 - all Tier 0 cases
 - all Tier 1 cases marked `release-sensitive`
@@ -80,6 +89,10 @@ Required cases:
 ### Recovery / Reliability
 
 Run after changes to startup, persistence, session restore, or runtime integration.
+
+Recommended preset:
+- `codex-lifecycle-pair`
+- plus `mixed-runtime-trio` when the bug could depend on multi-agent channel fan-out
 
 Required cases:
 - `LFC-002`
@@ -92,6 +105,9 @@ Required cases:
 ### Agent Matrix
 
 Run before releases that touch runtime support, model options, driver registration, or the create-agent modal.
+
+Recommended preset:
+- `agent-matrix`
 
 Required cases:
 - `AGT-002`
@@ -120,6 +136,9 @@ Unless a case says otherwise, create these agents for the run:
 This is intentional. Single-agent testing hides fan-out, ordering, activity, and stale-state bugs.
 The main messaging suite should prove that the app behaves correctly when multiple agents share the
 same channel and respond in the same window.
+
+When runtime-specific behavior matters, do not assume this trio is all-Claude. Use one of the
+documented presets in [`QA_PRESETS.md`](./QA_PRESETS.md) and record which preset was used.
 
 ## Evidence Naming
 

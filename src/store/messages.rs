@@ -2,8 +2,8 @@ use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
 
+use super::{sender_type_str, Store};
 use crate::models::*;
-use super::{Store, sender_type_str};
 
 impl Store {
     pub fn send_message(
@@ -85,13 +85,19 @@ impl Store {
             };
 
             let mut max_seq = *last_read_seq;
-            for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id) in &msgs {
+            for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id) in
+                &msgs
+            {
                 if *seq > max_seq {
                     max_seq = *seq;
                 }
 
                 let attachments = Self::get_message_attachments(&conn, msg_id)?;
-                let atts = if attachments.is_empty() { None } else { Some(attachments) };
+                let atts = if attachments.is_empty() {
+                    None
+                } else {
+                    Some(attachments)
+                };
 
                 let effective_channel_name = match &dm_peer_name {
                     Some(peer) => peer.clone(),
@@ -100,7 +106,11 @@ impl Store {
 
                 let (msg_channel_name, msg_channel_type, parent_channel_name, parent_channel_type) =
                     if let Some(parent_id) = thread_parent_id {
-                        let short = if parent_id.len() >= 8 { &parent_id[..8] } else { parent_id.as_str() };
+                        let short = if parent_id.len() >= 8 {
+                            &parent_id[..8]
+                        } else {
+                            parent_id.as_str()
+                        };
                         let parent_type = match channel.channel_type {
                             ChannelType::Channel => "channel",
                             ChannelType::Dm => "dm",
@@ -146,6 +156,20 @@ impl Store {
         }
 
         Ok(result)
+    }
+
+    /// Resolve a specific unread message using the same shaping logic the normal
+    /// receive path uses, so wake-up prompts match what the agent will later see
+    /// from `check_messages()` or `wait_for_message()`.
+    pub fn get_received_message_for_agent(
+        &self,
+        agent_name: &str,
+        message_id: &str,
+    ) -> Result<Option<ReceivedMessage>> {
+        let unread_messages = self.get_messages_for_agent(agent_name, false)?;
+        Ok(unread_messages
+            .into_iter()
+            .find(|message| message.message_id == message_id))
     }
 
     pub fn get_history(
@@ -211,7 +235,7 @@ impl Store {
 
         // Bind exactly the parameters the SQL expects: ?1=channel_id, optionally ?2=cursor, optionally ?3=thread
         let rows: Vec<HistoryMessage> = match (has_cursor, thread_parent_id.is_some()) {
-            (true, true)  => stmt.query_map(params![channel.id, cursor_val, thread_val], map_row)?,
+            (true, true) => stmt.query_map(params![channel.id, cursor_val, thread_val], map_row)?,
             (true, false) => stmt.query_map(params![channel.id, cursor_val], map_row)?,
             (false, true) => stmt.query_map(params![channel.id, thread_val], map_row)?,
             (false, false) => stmt.query_map(params![channel.id], map_row)?,
@@ -333,14 +357,14 @@ impl Store {
                 }
             };
 
-            let thread_parent_id = thread_short
-                .and_then(|short| {
-                    conn.query_row(
-                        "SELECT id FROM messages WHERE channel_id = ?1 AND id LIKE ?2",
-                        params![channel.id, format!("{}%", short)],
-                        |row| row.get(0),
-                    ).ok()
-                });
+            let thread_parent_id = thread_short.and_then(|short| {
+                conn.query_row(
+                    "SELECT id FROM messages WHERE channel_id = ?1 AND id LIKE ?2",
+                    params![channel.id, format!("{}%", short)],
+                    |row| row.get(0),
+                )
+                .ok()
+            });
 
             Ok((channel.id, thread_parent_id))
         } else if let Some(rest) = target.strip_prefix('#') {
@@ -351,14 +375,14 @@ impl Store {
             let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
                 .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-            let thread_parent_id = thread_short
-                .and_then(|short| {
-                    conn.query_row(
-                        "SELECT id FROM messages WHERE channel_id = ?1 AND id LIKE ?2",
-                        params![channel.id, format!("{}%", short)],
-                        |row| row.get(0),
-                    ).ok()
-                });
+            let thread_parent_id = thread_short.and_then(|short| {
+                conn.query_row(
+                    "SELECT id FROM messages WHERE channel_id = ?1 AND id LIKE ?2",
+                    params![channel.id, format!("{}%", short)],
+                    |row| row.get(0),
+                )
+                .ok()
+            });
 
             Ok((channel.id, thread_parent_id))
         } else {
@@ -373,7 +397,10 @@ impl Store {
                  JOIN attachments a ON ma.attachment_id = a.id WHERE ma.message_id = ?1",
             )?
             .query_map(params![message_id], |row| {
-                Ok(AttachmentRef { id: row.get(0)?, filename: row.get(1)? })
+                Ok(AttachmentRef {
+                    id: row.get(0)?,
+                    filename: row.get(1)?,
+                })
             })?
             .filter_map(|r| r.ok())
             .collect();

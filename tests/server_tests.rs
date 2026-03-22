@@ -1,8 +1,8 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use chorus::models::*;
 use chorus::server::{build_router, build_router_with_lifecycle, AgentLifecycle};
 use chorus::store::Store;
-use chorus::models::*;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -14,11 +14,19 @@ use tower::ServiceExt;
 
 fn setup() -> (Arc<Store>, axum::Router) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.create_channel("general", Some("General"), ChannelType::Channel).unwrap();
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
     store.add_human("alice").unwrap();
-    store.join_channel("general", "alice", SenderType::Human).unwrap();
-    store.create_agent_record("bot1", "Bot 1", None, "claude", "sonnet").unwrap();
-    store.join_channel("general", "bot1", SenderType::Agent).unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
     let router = build_router(store.clone());
     (store, router)
 }
@@ -27,29 +35,46 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("chorus.db");
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
-    store.create_channel("general", Some("General"), ChannelType::Channel).unwrap();
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
     store.add_human("alice").unwrap();
-    store.join_channel("general", "alice", SenderType::Human).unwrap();
-    store.create_agent_record("bot1", "Bot 1", None, "claude", "sonnet").unwrap();
-    store.join_channel("general", "bot1", SenderType::Agent).unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
     let router = build_router(store.clone());
     (store, router, dir)
 }
 
 #[derive(Default)]
 struct MockLifecycle {
-    started: Mutex<Vec<String>>,
+    started: Mutex<Vec<(String, Option<ReceivedMessage>)>>,
     notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
 }
 
 impl MockLifecycle {
     fn started_names(&self) -> Vec<String> {
-        self.started.lock().unwrap().clone()
+        self.started
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(name, _)| name.clone())
+            .collect()
     }
 
     fn notified_names(&self) -> Vec<String> {
         self.notified.lock().unwrap().clone()
+    }
+
+    fn started_calls(&self) -> Vec<(String, Option<ReceivedMessage>)> {
+        self.started.lock().unwrap().clone()
     }
 }
 
@@ -57,9 +82,13 @@ impl AgentLifecycle for MockLifecycle {
     fn start_agent<'a>(
         &'a self,
         agent_name: &'a str,
+        wake_message: Option<ReceivedMessage>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            self.started.lock().unwrap().push(agent_name.to_string());
+            self.started
+                .lock()
+                .unwrap()
+                .push((agent_name.to_string(), wake_message));
             Ok(())
         })
     }
@@ -81,7 +110,11 @@ impl AgentLifecycle for MockLifecycle {
         Box::pin(async { Ok(()) })
     }
 
-    fn get_activity_log_data(&self, _agent_name: &str, _after_seq: Option<u64>) -> ActivityLogResponse {
+    fn get_activity_log_data(
+        &self,
+        _agent_name: &str,
+        _after_seq: Option<u64>,
+    ) -> ActivityLogResponse {
         activity_log::get_activity_log(&self.activity_logs, _agent_name, _after_seq)
     }
 
@@ -96,11 +129,19 @@ impl AgentLifecycle for MockLifecycle {
 
 fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.create_channel("general", Some("General"), ChannelType::Channel).unwrap();
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
     store.add_human("alice").unwrap();
-    store.join_channel("general", "alice", SenderType::Human).unwrap();
-    store.create_agent_record("bot1", "Bot 1", None, "claude", "sonnet").unwrap();
-    store.join_channel("general", "bot1", SenderType::Agent).unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
     let lifecycle = Arc::new(MockLifecycle::default());
     let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
     (store, router, lifecycle)
@@ -111,36 +152,137 @@ async fn test_send_and_receive() {
     let (_store, app) = setup();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "hello" });
-    let resp = app.clone().oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/internal/agent/bot1/send")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let resp = app.clone().oneshot(
-        Request::builder()
-            .uri("/internal/agent/bot1/receive?block=false")
-            .body(Body::empty())
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot1/receive?block=false")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn test_receive_timeout_is_interpreted_in_milliseconds() {
+    let (_store, app) = setup();
+
+    let started = std::time::Instant::now();
+    let response = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        app.oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot1/receive?block=true&timeout=50")
+                .body(Body::empty())
+                .unwrap(),
+        ),
+    )
+    .await
+    .expect("50ms receive timeout should complete quickly")
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(500),
+        "receive timeout should use millisecond semantics end-to-end"
+    );
+}
+
+#[tokio::test]
+async fn test_send_starts_sleeping_agent_with_wake_message() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .update_agent_status("bot1", AgentStatus::Sleeping)
+        .unwrap();
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "wake up from sleep" });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let started = lifecycle.started_calls();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].0, "bot1");
+    let wake_message = started[0]
+        .1
+        .as_ref()
+        .expect("sleeping agent restart should include wake message");
+    assert_eq!(wake_message.content, "wake up from sleep");
+    assert_eq!(wake_message.sender_name, "alice");
+    assert_eq!(wake_message.channel_name, "general");
+    assert_eq!(wake_message.channel_type, "channel");
+    assert!(lifecycle.notified_names().is_empty());
+}
+
+#[tokio::test]
+async fn test_send_notifies_active_agent_without_restart() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "stay online" });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(lifecycle.started_names().is_empty());
+    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()]);
 }
 
 #[tokio::test]
 async fn test_server_info() {
     let (_store, app) = setup();
-    let resp = app.oneshot(
-        Request::builder()
-            .uri("/internal/agent/bot1/server")
-            .body(Body::empty())
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot1/server")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let info: ServerInfo = serde_json::from_slice(&body).unwrap();
     assert_eq!(info.channels.len(), 1);
     assert_eq!(info.agents.len(), 1);
@@ -152,47 +294,64 @@ async fn test_task_workflow() {
     let (_store, app) = setup();
 
     let req = serde_json::json!({ "channel": "#general", "tasks": [{"title": "Fix bug"}] });
-    let resp = app.clone().oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/internal/agent/bot1/tasks")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&req).unwrap()))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/tasks")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let resp = app.clone().oneshot(
-        Request::builder()
-            .uri("/internal/agent/bot1/tasks?channel=%23general")
-            .body(Body::empty())
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot1/tasks?channel=%23general")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
     let req = serde_json::json!({ "channel": "#general", "task_numbers": [1] });
-    let resp = app.clone().oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/internal/agent/bot1/tasks/claim")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&req).unwrap()))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/tasks/claim")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
 #[tokio::test]
 async fn test_whoami() {
     let (_store, app) = setup();
-    let resp = app.oneshot(
-        Request::builder()
-            .uri("/api/whoami")
-            .body(Body::empty())
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/whoami")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(val["username"].as_str().is_some(), "username field missing");
 }
@@ -208,21 +367,30 @@ async fn test_create_agent_via_api() {
         "runtime": "codex",
         "model": "gpt-5.4"
     });
-    let resp = app.clone().oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/agents")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&req).unwrap()))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(val["name"], "new-bot");
 
     // Verify agent exists in store
-    let agent = store.get_agent("new-bot").unwrap().expect("agent should exist");
+    let agent = store
+        .get_agent("new-bot")
+        .unwrap()
+        .expect("agent should exist");
     assert_eq!(agent.runtime, "codex");
     assert_eq!(agent.model, "gpt-5.4");
     assert_eq!(agent.description, Some("A test agent".to_string()));
@@ -242,7 +410,9 @@ async fn test_create_agent_via_api() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(info["channels"][0]["name"], "general");
     assert_eq!(info["channels"][0]["joined"], true);
@@ -263,26 +433,33 @@ async fn test_create_agent_via_api() {
     assert_eq!(lifecycle.started_names(), vec!["new-bot".to_string()]);
 
     // Duplicate name should fail
-    let resp = app.clone().oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/agents")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&req).unwrap()))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     // Empty name should fail
     let bad_req = serde_json::json!({ "name": "  " });
-    let resp = app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/agents")
-            .header("content-type", "application/json")
-            .body(Body::from(serde_json::to_vec(&bad_req).unwrap()))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&bad_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -292,7 +469,9 @@ async fn test_send_starts_inactive_agent_recipients() {
     store
         .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
         .unwrap();
-    store.join_channel("general", "bot2", SenderType::Agent).unwrap();
+    store
+        .join_channel("general", "bot2", SenderType::Agent)
+        .unwrap();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "wake bot2" });
     let resp = app
@@ -307,7 +486,10 @@ async fn test_send_starts_inactive_agent_recipients() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string(), "bot2".to_string()]);
+    assert_eq!(
+        lifecycle.started_names(),
+        vec!["bot1".to_string(), "bot2".to_string()]
+    );
     assert!(lifecycle.notified_names().is_empty());
 }
 
@@ -328,14 +510,20 @@ async fn test_dm_send_starts_inactive_agent() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()], "DM to inactive agent must trigger start_agent");
+    assert_eq!(
+        lifecycle.started_names(),
+        vec!["bot1".to_string()],
+        "DM to inactive agent must trigger start_agent"
+    );
     assert!(lifecycle.notified_names().is_empty());
 }
 
 #[tokio::test]
 async fn test_dm_send_notifies_active_agent() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store.update_agent_status("bot1", AgentStatus::Active).unwrap();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
 
     let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey active bot1 via dm" });
     let resp = app
@@ -351,13 +539,19 @@ async fn test_dm_send_notifies_active_agent() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(lifecycle.started_names().is_empty());
-    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()], "DM to active agent must trigger notify_agent");
+    assert_eq!(
+        lifecycle.notified_names(),
+        vec!["bot1".to_string()],
+        "DM to active agent must trigger notify_agent"
+    );
 }
 
 #[tokio::test]
 async fn test_send_notifies_active_agents() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store.update_agent_status("bot1", AgentStatus::Active).unwrap();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "ping active bot" });
     let resp = app
@@ -379,17 +573,26 @@ async fn test_send_notifies_active_agents() {
 #[tokio::test]
 async fn test_history() {
     let (store, app) = setup();
-    store.send_message("general", None, "alice", SenderType::Human, "msg 1", &[]).unwrap();
-    store.send_message("general", None, "alice", SenderType::Human, "msg 2", &[]).unwrap();
+    store
+        .send_message("general", None, "alice", SenderType::Human, "msg 1", &[])
+        .unwrap();
+    store
+        .send_message("general", None, "alice", SenderType::Human, "msg 2", &[])
+        .unwrap();
 
-    let resp = app.oneshot(
-        Request::builder()
-            .uri("/internal/agent/bot1/history?channel=%23general&limit=10")
-            .body(Body::empty())
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot1/history?channel=%23general&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let hist: HistoryResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(hist.messages.len(), 2);
 }
@@ -424,7 +627,9 @@ async fn test_history_accepts_dm_target() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let hist: HistoryResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(hist.messages.len(), 1);
     assert_eq!(hist.messages[0].content, "hello in dm");
@@ -433,10 +638,19 @@ async fn test_history_accepts_dm_target() {
 #[tokio::test]
 async fn test_activity_log_includes_message_send_and_receive_events() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store.update_agent_status("bot1", AgentStatus::Active).unwrap();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
 
     store
-        .send_message("general", None, "alice", SenderType::Human, "hello bot1", &[])
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "hello bot1",
+            &[],
+        )
         .unwrap();
 
     let recv_resp = app
@@ -503,7 +717,10 @@ async fn test_upload_uses_configured_data_dir() {
             Request::builder()
                 .method("POST")
                 .uri("/internal/agent/alice/upload")
-                .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -511,13 +728,20 @@ async fn test_upload_uses_configured_data_dir() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let attachment_id = val["id"].as_str().expect("attachment id");
-    let attachment = store.get_attachment(attachment_id).unwrap().expect("attachment record");
+    let attachment = store
+        .get_attachment(attachment_id)
+        .unwrap()
+        .expect("attachment record");
 
     assert!(
-        attachment.stored_path.starts_with(dir.path().join("attachments").to_string_lossy().as_ref()),
+        attachment
+            .stored_path
+            .starts_with(dir.path().join("attachments").to_string_lossy().as_ref()),
         "attachment should be stored under the configured data dir"
     );
 }
@@ -540,11 +764,19 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         val["path"].as_str(),
-        Some(dir.path().join("agents").join("bot1").to_string_lossy().as_ref())
+        Some(
+            dir.path()
+                .join("agents")
+                .join("bot1")
+                .to_string_lossy()
+                .as_ref()
+        )
     );
     let files = val["files"].as_array().expect("files array");
     assert!(files.iter().any(|entry| entry == "notes/"));

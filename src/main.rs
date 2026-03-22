@@ -113,23 +113,27 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     match cli.command {
-        Some(Commands::Bridge { agent_id, server_url }) => {
-            bridge::run_bridge(agent_id, server_url).await
-        }
+        Some(Commands::Bridge {
+            agent_id,
+            server_url,
+        }) => bridge::run_bridge(agent_id, server_url).await,
 
         Some(Commands::Serve { port, data_dir }) => {
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
             serve(port, data_dir_str).await
         }
 
-        None => {
-            serve(3001, default_data_dir()).await
-        }
+        None => serve(3001, default_data_dir()).await,
 
-        Some(Commands::Send { target, content, server_url }) => {
+        Some(Commands::Send {
+            target,
+            content,
+            server_url,
+        }) => {
             let username = whoami::username();
             let client = reqwest::Client::new();
-            let res = client.post(format!("{server_url}/internal/agent/{username}/send"))
+            let res = client
+                .post(format!("{server_url}/internal/agent/{username}/send"))
                 .json(&serde_json::json!({ "target": target, "content": content }))
                 .send()
                 .await?;
@@ -137,21 +141,29 @@ async fn main() -> anyhow::Result<()> {
             if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
                 eprintln!("Error: {err}");
             } else {
-                let msg_id = data.get("messageId").and_then(|v| v.as_str()).unwrap_or("-");
+                let msg_id = data
+                    .get("messageId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("-");
                 println!("Message sent to {target}. ID: {msg_id}");
             }
             Ok(())
         }
 
-        Some(Commands::History { channel, limit, server_url }) => {
+        Some(Commands::History {
+            channel,
+            limit,
+            server_url,
+        }) => {
             let username = whoami::username();
             let client = reqwest::Client::new();
-            let res = client.get(format!(
-                "{server_url}/internal/agent/{username}/history?channel={}&limit={limit}",
-                urlencoding::encode(&channel)
-            ))
-            .send()
-            .await?;
+            let res = client
+                .get(format!(
+                    "{server_url}/internal/agent/{username}/history?channel={}&limit={limit}",
+                    urlencoding::encode(&channel)
+                ))
+                .send()
+                .await?;
             let data: serde_json::Value = res.json().await?;
             if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
                 eprintln!("Error: {err}");
@@ -173,7 +185,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Status { server_url }) => {
             let username = whoami::username();
             let client = reqwest::Client::new();
-            let res = client.get(format!("{server_url}/internal/agent/{username}/server"))
+            let res = client
+                .get(format!("{server_url}/internal/agent/{username}/server"))
                 .send()
                 .await?;
             let data: serde_json::Value = res.json().await?;
@@ -209,7 +222,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
 
-        Some(Commands::Channel { name, description, data_dir }) => {
+        Some(Commands::Channel {
+            name,
+            description,
+            data_dir,
+        }) => {
             let username = whoami::username();
             let data_dir = data_dir.unwrap_or_else(default_data_dir);
             let db_path = format!("{data_dir}/chorus.db");
@@ -222,11 +239,23 @@ async fn main() -> anyhow::Result<()> {
 
         Some(Commands::Agent { cmd }) => {
             match cmd {
-                AgentCommands::Create { name, runtime, model, description, data_dir } => {
+                AgentCommands::Create {
+                    name,
+                    runtime,
+                    model,
+                    description,
+                    data_dir,
+                } => {
                     let data_dir = data_dir.unwrap_or_else(default_data_dir);
                     let db_path = format!("{data_dir}/chorus.db");
                     let store = Store::open(&db_path)?;
-                    store.create_agent_record(&name, &name, description.as_deref(), &runtime, &model)?;
+                    store.create_agent_record(
+                        &name,
+                        &name,
+                        description.as_deref(),
+                        &runtime,
+                        &model,
+                    )?;
                     // Join default channels
                     for ch in store.list_channels()? {
                         let _ = store.join_channel(&ch.name, &name, SenderType::Agent);
@@ -247,7 +276,8 @@ async fn main() -> anyhow::Result<()> {
                 AgentCommands::List { server_url } => {
                     let client = reqwest::Client::new();
                     let username = whoami::username();
-                    let res = client.get(format!("{server_url}/internal/agent/{username}/server"))
+                    let res = client
+                        .get(format!("{server_url}/internal/agent/{username}/server"))
                         .send()
                         .await?;
                     let data: serde_json::Value = res.json().await?;
@@ -257,8 +287,10 @@ async fn main() -> anyhow::Result<()> {
                         } else {
                             for a in agents {
                                 let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                let status = a.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                                let runtime = a.get("runtime").and_then(|v| v.as_str()).unwrap_or("?");
+                                let status =
+                                    a.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                                let runtime =
+                                    a.get("runtime").and_then(|v| v.as_str()).unwrap_or("?");
                                 println!("  @{name} [{status}] (runtime: {runtime})");
                             }
                         }
@@ -282,7 +314,11 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
 
     // Create default #general channel if none exist
     if store.list_channels()?.is_empty() {
-        store.create_channel("general", Some("General channel for all members"), ChannelType::Channel)?;
+        store.create_channel(
+            "general",
+            Some("General channel for all members"),
+            ChannelType::Channel,
+        )?;
         store.join_channel("general", &username, SenderType::Human)?;
     }
 
@@ -306,7 +342,7 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
             .collect();
         for agent_name in active_agents {
             tracing::info!(agent = %agent_name, "auto-restarting active agent");
-            if let Err(e) = manager.start_agent(&agent_name).await {
+            if let Err(e) = manager.start_agent(&agent_name, None).await {
                 tracing::warn!(agent = %agent_name, err = %e, "failed to restart agent");
             }
         }

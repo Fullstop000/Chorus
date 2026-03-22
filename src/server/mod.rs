@@ -19,6 +19,7 @@ pub trait AgentLifecycle: Send + Sync {
     fn start_agent<'a>(
         &'a self,
         agent_name: &'a str,
+        wake_message: Option<ReceivedMessage>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn notify_agent<'a>(
@@ -31,7 +32,11 @@ pub trait AgentLifecycle: Send + Sync {
         agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    fn get_activity_log_data(&self, agent_name: &str, after_seq: Option<u64>) -> ActivityLogResponse;
+    fn get_activity_log_data(
+        &self,
+        agent_name: &str,
+        after_seq: Option<u64>,
+    ) -> ActivityLogResponse;
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)>;
 
@@ -45,6 +50,7 @@ impl AgentLifecycle for NoopAgentLifecycle {
     fn start_agent<'a>(
         &'a self,
         _agent_name: &'a str,
+        _wake_message: Option<ReceivedMessage>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
@@ -63,7 +69,11 @@ impl AgentLifecycle for NoopAgentLifecycle {
         Box::pin(async { Ok(()) })
     }
 
-    fn get_activity_log_data(&self, _agent_name: &str, _after_seq: Option<u64>) -> ActivityLogResponse {
+    fn get_activity_log_data(
+        &self,
+        _agent_name: &str,
+        _after_seq: Option<u64>,
+    ) -> ActivityLogResponse {
         ActivityLogResponse {
             entries: vec![],
             agent_activity: "offline".to_string(),
@@ -101,13 +111,31 @@ pub fn build_router_with_lifecycle(
         .route("/internal/agent/{agent_id}/receive", get(handle_receive))
         .route("/internal/agent/{agent_id}/history", get(handle_history))
         .route("/internal/agent/{agent_id}/server", get(handle_server_info))
-        .route("/internal/agent/{agent_id}/resolve-channel", post(handle_resolve_channel))
-        .route("/internal/agent/{agent_id}/tasks", get(handle_list_tasks).post(handle_create_tasks))
-        .route("/internal/agent/{agent_id}/tasks/claim", post(handle_claim_tasks))
-        .route("/internal/agent/{agent_id}/tasks/unclaim", post(handle_unclaim_task))
-        .route("/internal/agent/{agent_id}/tasks/update-status", post(handle_update_task_status))
+        .route(
+            "/internal/agent/{agent_id}/resolve-channel",
+            post(handle_resolve_channel),
+        )
+        .route(
+            "/internal/agent/{agent_id}/tasks",
+            get(handle_list_tasks).post(handle_create_tasks),
+        )
+        .route(
+            "/internal/agent/{agent_id}/tasks/claim",
+            post(handle_claim_tasks),
+        )
+        .route(
+            "/internal/agent/{agent_id}/tasks/unclaim",
+            post(handle_unclaim_task),
+        )
+        .route(
+            "/internal/agent/{agent_id}/tasks/update-status",
+            post(handle_update_task_status),
+        )
         .route("/internal/agent/{agent_id}/upload", post(handle_upload))
-        .route("/api/attachments/{attachment_id}", get(handle_get_attachment))
+        .route(
+            "/api/attachments/{attachment_id}",
+            get(handle_get_attachment),
+        )
         // UI / management endpoints
         .route("/api/whoami", get(handle_whoami))
         .route("/api/channels", post(handle_create_channel))
@@ -115,12 +143,13 @@ pub fn build_router_with_lifecycle(
         .route("/api/agents/{name}/start", post(handle_agent_start))
         .route("/api/agents/{name}/stop", post(handle_agent_stop))
         .route("/api/agents/{name}/activity", get(handle_agent_activity))
-        .route("/api/agents/{name}/activity-log", get(handle_agent_activity_log))
+        .route(
+            "/api/agents/{name}/activity-log",
+            get(handle_agent_activity_log),
+        )
         .route("/api/agents/{name}/workspace", get(handle_agent_workspace))
         .route("/api/server-info", get(handle_ui_server_info))
         .layer(cors)
-        .fallback_service(
-            ServeDir::new("ui/dist").fallback(ServeFile::new("ui/dist/index.html")),
-        )
+        .fallback_service(ServeDir::new("ui/dist").fallback(ServeFile::new("ui/dist/index.html")))
         .with_state(state)
 }

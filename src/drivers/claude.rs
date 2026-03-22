@@ -30,14 +30,12 @@ impl Driver for ClaudeDriver {
                 }
             }
         });
-        let mcp_config_path =
-            std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
+        let mcp_config_path = std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)?;
 
         let mut args = vec![
             "--allow-dangerously-skip-permissions".to_string(),
             "--dangerously-skip-permissions".to_string(),
-            "--print".to_string(),
             "--verbose".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
@@ -45,6 +43,8 @@ impl Driver for ClaudeDriver {
             "stream-json".to_string(),
             "--mcp-config".to_string(),
             mcp_config_path.to_string_lossy().into_owned(),
+            "--disallowed-tools".to_string(),
+            "EnterPlanMode,ExitPlanMode".to_string(),
             "--model".to_string(),
             if ctx.config.model.is_empty() {
                 "sonnet".to_string()
@@ -78,8 +78,6 @@ impl Driver for ClaudeDriver {
 
         // Send initial user message via stdin
         let stdin_msg = if ctx.config.session_id.is_some() {
-            // `claude --resume <session>` already selects the prior session. Re-sending the
-            // session ID inside the stdin payload can cause the resumed process to exit early.
             serde_json::json!({
                 "type": "user",
                 "message": {
@@ -133,9 +131,7 @@ impl Driver for ClaudeDriver {
                     for block in content {
                         match block.get("type").and_then(|v| v.as_str()) {
                             Some("thinking") => {
-                                if let Some(text) =
-                                    block.get("thinking").and_then(|v| v.as_str())
-                                {
+                                if let Some(text) = block.get("thinking").and_then(|v| v.as_str()) {
                                     events.push(ParsedEvent::Thinking {
                                         text: text.to_string(),
                                     });
@@ -217,6 +213,8 @@ impl Driver for ClaudeDriver {
     fn tool_display_name(&self, name: &str) -> String {
         match name {
             "mcp__chat__send_message" => "Sending message\u{2026}".to_string(),
+            "mcp__chat__check_messages" => "Checking messages\u{2026}".to_string(),
+            "mcp__chat__wait_for_message" => "Waiting for messages\u{2026}".to_string(),
             "mcp__chat__receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp__chat__upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp__chat__view_file" => "Viewing file\u{2026}".to_string(),
@@ -281,9 +279,14 @@ impl Driver for ClaudeDriver {
             "Glob" | "glob" | "Grep" | "grep" => str_field("pattern"),
             "WebFetch" | "web_fetch" => str_field("url"),
             "WebSearch" | "web_search" => str_field("query"),
+            "mcp__chat__check_messages" | "mcp__chat__wait_for_message" => String::new(),
             "mcp__chat__send_message" => {
                 let t = str_field("target");
-                let target = if t.is_empty() { str_field("channel") } else { t };
+                let target = if t.is_empty() {
+                    str_field("channel")
+                } else {
+                    t
+                };
                 let content = str_field("content");
                 if content.is_empty() {
                     target

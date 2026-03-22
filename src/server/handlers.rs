@@ -8,9 +8,9 @@ use serde::Deserialize;
 use tracing::{debug, info};
 use uuid::Uuid;
 
+use super::AgentLifecycle;
 use crate::models::*;
 use crate::store::Store;
-use super::AgentLifecycle;
 
 pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
@@ -22,11 +22,17 @@ pub struct AppState {
 }
 
 fn api_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
-    (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: msg.into() }))
+    (
+        StatusCode::BAD_REQUEST,
+        Json(ErrorResponse { error: msg.into() }),
+    )
 }
 
 fn internal_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: msg.into() }))
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse { error: msg.into() }),
+    )
 }
 
 fn strip_channel_prefix(s: &str) -> &str {
@@ -50,7 +56,10 @@ fn activity_channel_label(message: &ReceivedMessage) -> String {
         "dm" => format!("dm:@{}", message.channel_name),
         "thread" => {
             let parent_type = message.parent_channel_type.as_deref().unwrap_or("channel");
-            let parent_name = message.parent_channel_name.as_deref().unwrap_or(&message.channel_name);
+            let parent_name = message
+                .parent_channel_name
+                .as_deref()
+                .unwrap_or(&message.channel_name);
             match parent_type {
                 "dm" => format!("dm:@{} thread", parent_name),
                 _ => format!("#{} thread", parent_name),
@@ -116,7 +125,11 @@ pub async fn handle_send(
         )
         .map_err(|e| api_err(e.to_string()))?;
 
-    let short_id = if message_id.len() >= 8 { &message_id[..8] } else { &message_id };
+    let short_id = if message_id.len() >= 8 {
+        &message_id[..8]
+    } else {
+        &message_id
+    };
     info!(agent = %agent_id, msg = %short_id, "send_message ok");
     if sender_type == SenderType::Agent {
         state.lifecycle.push_activity_entry(
@@ -129,7 +142,7 @@ pub async fn handle_send(
     }
 
     if !req.suppress_agent_delivery {
-        deliver_message_to_agents(&state, &channel.id, &agent_id)
+        deliver_message_to_agents(&state, &channel.id, &agent_id, &message_id)
             .await
             .map_err(|e| internal_err(e.to_string()))?;
     }
@@ -152,7 +165,7 @@ pub async fn handle_receive(
 ) -> ApiResult<ReceiveResponse> {
     let store = &state.store;
     let blocking = params.block.as_deref() != Some("false");
-    let timeout_secs = params.timeout.unwrap_or(30);
+    let timeout_ms = params.timeout.unwrap_or(30_000);
 
     let messages = store
         .get_messages_for_agent(&agent_id, true)
@@ -171,14 +184,16 @@ pub async fn handle_receive(
         return Ok(Json(ReceiveResponse { messages }));
     }
 
-    debug!(agent = %agent_id, timeout_secs, "receive_message: long-polling");
+    debug!(agent = %agent_id, timeout_ms, "receive_message: long-polling");
     let mut rx = store.subscribe();
-    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(timeout_secs);
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
 
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Ok(Json(ReceiveResponse { messages: Vec::new() }));
+            return Ok(Json(ReceiveResponse {
+                messages: Vec::new(),
+            }));
         }
 
         match tokio::time::timeout(remaining, rx.recv()).await {
@@ -195,7 +210,11 @@ pub async fn handle_receive(
                     return Ok(Json(ReceiveResponse { messages }));
                 }
             }
-            _ => return Ok(Json(ReceiveResponse { messages: Vec::new() })),
+            _ => {
+                return Ok(Json(ReceiveResponse {
+                    messages: Vec::new(),
+                }))
+            }
         }
     }
 }
@@ -229,12 +248,24 @@ pub async fn handle_history(
 
     let limit = params.limit.unwrap_or(50);
     let (messages, has_more) = store
-        .get_history(&channel_name, thread_parent_id.as_deref(), limit, params.before, params.after)
+        .get_history(
+            &channel_name,
+            thread_parent_id.as_deref(),
+            limit,
+            params.before,
+            params.after,
+        )
         .map_err(|e| api_err(e.to_string()))?;
 
-    let last_read_seq = store.get_last_read_seq(&channel_name, &agent_id).unwrap_or(0);
+    let last_read_seq = store
+        .get_last_read_seq(&channel_name, &agent_id)
+        .unwrap_or(0);
 
-    Ok(Json(HistoryResponse { messages, has_more, last_read_seq }))
+    Ok(Json(HistoryResponse {
+        messages,
+        has_more,
+        last_read_seq,
+    }))
 }
 
 fn resolve_history_target(
@@ -259,7 +290,10 @@ pub async fn handle_server_info(
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
     debug!(agent = %agent_id, "list_server");
-    let info = state.store.get_server_info(&agent_id).map_err(|e| api_err(e.to_string()))?;
+    let info = state
+        .store
+        .get_server_info(&agent_id)
+        .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(info))
 }
 
@@ -290,10 +324,15 @@ pub async fn handle_list_tasks(
     Path(_agent_id): Path<String>,
     Query(params): Query<ListTasksParams>,
 ) -> ApiResult<serde_json::Value> {
-    let channel_target = params.channel.ok_or_else(|| api_err("missing channel parameter"))?;
+    let channel_target = params
+        .channel
+        .ok_or_else(|| api_err("missing channel parameter"))?;
     let channel_name = strip_channel_prefix(&channel_target);
     let status_filter = params.status.as_deref().and_then(TaskStatus::from_str);
-    let tasks = state.store.list_tasks(channel_name, status_filter).map_err(|e| api_err(e.to_string()))?;
+    let tasks = state
+        .store
+        .list_tasks(channel_name, status_filter)
+        .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
 
@@ -304,7 +343,10 @@ pub async fn handle_create_tasks(
 ) -> ApiResult<serde_json::Value> {
     let channel_name = strip_channel_prefix(&req.channel);
     let titles: Vec<&str> = req.tasks.iter().map(|t| t.title.as_str()).collect();
-    let tasks = state.store.create_tasks(channel_name, &agent_id, &titles).map_err(|e| api_err(e.to_string()))?;
+    let tasks = state
+        .store
+        .create_tasks(channel_name, &agent_id, &titles)
+        .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
 
@@ -314,7 +356,10 @@ pub async fn handle_claim_tasks(
     Json(req): Json<ClaimTasksRequest>,
 ) -> ApiResult<serde_json::Value> {
     let channel_name = strip_channel_prefix(&req.channel);
-    let results = state.store.claim_tasks(channel_name, &agent_id, &req.task_numbers).map_err(|e| api_err(e.to_string()))?;
+    let results = state
+        .store
+        .claim_tasks(channel_name, &agent_id, &req.task_numbers)
+        .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "results": results })))
 }
 
@@ -324,7 +369,10 @@ pub async fn handle_unclaim_task(
     Json(req): Json<UnclaimTaskRequest>,
 ) -> ApiResult<serde_json::Value> {
     let channel_name = strip_channel_prefix(&req.channel);
-    state.store.unclaim_task(channel_name, &agent_id, req.task_number).map_err(|e| api_err(e.to_string()))?;
+    state
+        .store
+        .unclaim_task(channel_name, &agent_id, req.task_number)
+        .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -336,7 +384,10 @@ pub async fn handle_update_task_status(
     let channel_name = strip_channel_prefix(&req.channel);
     let new_status = TaskStatus::from_str(&req.status)
         .ok_or_else(|| api_err(format!("invalid status: {}", req.status)))?;
-    state.store.update_task_status(channel_name, req.task_number, &agent_id, new_status).map_err(|e| api_err(e.to_string()))?;
+    state
+        .store
+        .update_task_status(channel_name, req.task_number, &agent_id, new_status)
+        .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -348,11 +399,16 @@ pub async fn handle_upload(
     mut multipart: Multipart,
 ) -> ApiResult<serde_json::Value> {
     let field = multipart
-        .next_field().await.map_err(|e| api_err(e.to_string()))?
+        .next_field()
+        .await
+        .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("no file uploaded"))?;
 
     let filename = field.file_name().unwrap_or("upload").to_string();
-    let content_type = field.content_type().unwrap_or("application/octet-stream").to_string();
+    let content_type = field
+        .content_type()
+        .unwrap_or("application/octet-stream")
+        .to_string();
     let data = field.bytes().await.map_err(|e| api_err(e.to_string()))?;
 
     let ext = std::path::Path::new(&filename)
@@ -368,24 +424,44 @@ pub async fn handle_upload(
     std::fs::write(&stored_path, &data).map_err(|e| internal_err(e.to_string()))?;
 
     let size = data.len() as i64;
-    let att_id = state.store
-        .store_attachment(&filename, &content_type, size, stored_path.to_string_lossy().as_ref())
+    let att_id = state
+        .store
+        .store_attachment(
+            &filename,
+            &content_type,
+            size,
+            stored_path.to_string_lossy().as_ref(),
+        )
         .map_err(|e| api_err(e.to_string()))?;
 
-    Ok(Json(serde_json::json!({ "id": att_id, "filename": filename, "sizeBytes": size })))
+    Ok(Json(
+        serde_json::json!({ "id": att_id, "filename": filename, "sizeBytes": size }),
+    ))
 }
 
 pub async fn handle_get_attachment(
     State(state): State<AppState>,
     Path(attachment_id): Path<String>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<ErrorResponse>)> {
-    let attachment = state.store
+    let attachment = state
+        .store
         .get_attachment(&attachment_id)
         .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| (StatusCode::NOT_FOUND, Json(ErrorResponse { error: "attachment not found".to_string() })))?;
+        .ok_or_else(|| {
+            (
+                StatusCode::NOT_FOUND,
+                Json(ErrorResponse {
+                    error: "attachment not found".to_string(),
+                }),
+            )
+        })?;
 
     let data = std::fs::read(&attachment.stored_path).map_err(|e| internal_err(e.to_string()))?;
-    Ok((StatusCode::OK, [(header::CONTENT_TYPE, attachment.mime_type)], data))
+    Ok((
+        StatusCode::OK,
+        [(header::CONTENT_TYPE, attachment.mime_type)],
+        data,
+    ))
 }
 
 // ── Channel management ──
@@ -406,13 +482,21 @@ pub async fn handle_create_channel(
     if name.is_empty() {
         return Err(api_err("name is required"));
     }
-    let description = if req.description.is_empty() { None } else { Some(req.description.as_str()) };
-    state.store.create_channel(name, description, ChannelType::Channel)
+    let description = if req.description.is_empty() {
+        None
+    } else {
+        Some(req.description.as_str())
+    };
+    state
+        .store
+        .create_channel(name, description, ChannelType::Channel)
         .map_err(|e| api_err(e.to_string()))?;
     let username = whoami::username();
     let _ = state.store.join_channel(name, &username, SenderType::Human);
     for agent in state.store.list_agents().unwrap_or_default() {
-        let _ = state.store.join_channel(name, &agent.name, SenderType::Agent);
+        let _ = state
+            .store
+            .join_channel(name, &agent.name, SenderType::Agent);
     }
     Ok(Json(serde_json::json!({ "name": name })))
 }
@@ -432,8 +516,12 @@ pub struct CreateAgentRequest {
     model: String,
 }
 
-fn default_runtime() -> String { "claude".to_string() }
-fn default_model() -> String { "sonnet".to_string() }
+fn default_runtime() -> String {
+    "claude".to_string()
+}
+fn default_model() -> String {
+    "sonnet".to_string()
+}
 
 pub async fn handle_create_agent(
     State(state): State<AppState>,
@@ -443,15 +531,30 @@ pub async fn handle_create_agent(
     if name.is_empty() {
         return Err(api_err("name is required"));
     }
-    let display_name = if req.display_name.is_empty() { name.clone() } else { req.display_name };
-    let description = if req.description.is_empty() { None } else { Some(req.description.as_str()) };
-    state.store
+    let display_name = if req.display_name.is_empty() {
+        name.clone()
+    } else {
+        req.display_name
+    };
+    let description = if req.description.is_empty() {
+        None
+    } else {
+        Some(req.description.as_str())
+    };
+    state
+        .store
         .create_agent_record(&name, &display_name, description, &req.runtime, &req.model)
         .map_err(|e| api_err(e.to_string()))?;
-    for channel in state.store.list_channels().map_err(|e| internal_err(e.to_string()))? {
-        let _ = state.store.join_channel(&channel.name, &name, SenderType::Agent);
+    for channel in state
+        .store
+        .list_channels()
+        .map_err(|e| internal_err(e.to_string()))?
+    {
+        let _ = state
+            .store
+            .join_channel(&channel.name, &name, SenderType::Agent);
     }
-    if let Err(err) = state.lifecycle.start_agent(&name).await {
+    if let Err(err) = state.lifecycle.start_agent(&name, None).await {
         let _ = state.store.delete_agent_record(&name);
         return Err(internal_err(format!("failed to start agent: {err}")));
     }
@@ -463,7 +566,11 @@ pub async fn handle_agent_start(
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
     info!(agent = %name, "starting agent");
-    state.lifecycle.start_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    state
+        .lifecycle
+        .start_agent(&name, None)
+        .await
+        .map_err(|e| internal_err(e.to_string()))?;
     info!(agent = %name, "agent started");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -473,7 +580,11 @@ pub async fn handle_agent_stop(
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
     info!(agent = %name, "stopping agent");
-    state.lifecycle.stop_agent(&name).await.map_err(|e| internal_err(e.to_string()))?;
+    state
+        .lifecycle
+        .stop_agent(&name)
+        .await
+        .map_err(|e| internal_err(e.to_string()))?;
     info!(agent = %name, "agent stopped");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -491,7 +602,10 @@ pub async fn handle_agent_activity(
     Query(params): Query<ActivityParams>,
 ) -> ApiResult<serde_json::Value> {
     let limit = params.limit.unwrap_or(50).min(200);
-    let messages = state.store.get_agent_activity(&name, limit).map_err(|e| api_err(e.to_string()))?;
+    let messages = state
+        .store
+        .get_agent_activity(&name, limit)
+        .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
 
@@ -511,15 +625,18 @@ pub async fn handle_agent_activity_log(
 
 // ── UI Server Info ──
 
-pub async fn handle_ui_server_info(
-    State(state): State<AppState>,
-) -> ApiResult<serde_json::Value> {
+pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
     let username = whoami::username();
-    let mut info = state.store.get_server_info(&username).map_err(|e| api_err(e.to_string()))?;
+    let mut info = state
+        .store
+        .get_server_info(&username)
+        .map_err(|e| api_err(e.to_string()))?;
 
     let activity_states = state.lifecycle.get_all_agent_activity_states();
     for agent in &mut info.agents {
-        if let Some((_, activity, detail)) = activity_states.iter().find(|(n, _, _)| n == &agent.name) {
+        if let Some((_, activity, detail)) =
+            activity_states.iter().find(|(n, _, _)| n == &agent.name)
+        {
             agent.activity = Some(activity.clone());
             agent.activity_detail = Some(detail.clone());
         }
@@ -558,7 +675,9 @@ fn collect_workspace_files(
     if depth > 5 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     let mut sorted: Vec<_> = entries.filter_map(|e| e.ok()).collect();
     sorted.sort_by_key(|e| e.file_name());
     for entry in sorted {
@@ -567,7 +686,11 @@ fn collect_workspace_files(
         if name.starts_with('.') {
             continue;
         }
-        let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().into_owned();
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
         if path.is_dir() {
             out.push(format!("{}/", rel));
             collect_workspace_files(root, &path, out, depth + 1);
@@ -583,6 +706,7 @@ pub async fn deliver_message_to_agents(
     state: &AppState,
     channel_id: &str,
     sender_name: &str,
+    message_id: &str,
 ) -> anyhow::Result<()> {
     let members = state.store.get_channel_members(channel_id)?;
     for member in members {
@@ -595,7 +719,13 @@ pub async fn deliver_message_to_agents(
         match agent.status {
             AgentStatus::Active => state.lifecycle.notify_agent(&member.member_name).await?,
             AgentStatus::Sleeping | AgentStatus::Inactive => {
-                state.lifecycle.start_agent(&member.member_name).await?
+                let wake_message = state
+                    .store
+                    .get_received_message_for_agent(&member.member_name, message_id)?;
+                state
+                    .lifecycle
+                    .start_agent(&member.member_name, wake_message)
+                    .await?
             }
         }
     }

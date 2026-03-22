@@ -19,6 +19,12 @@ Companion fix report when bugs are addressed:
   - `Core Regression`
   - `Recovery / Reliability`
   - custom:
+- QA preset:
+  - `claude-trio`
+  - `mixed-runtime-trio`
+  - `codex-lifecycle-pair`
+  - `agent-matrix`
+  - custom:
 - Browser:
 - Server URL:
 - Data dir mode:
@@ -40,9 +46,15 @@ Companion fix report when bugs are addressed:
 - Current user:
 - Test channel:
 - Test agents:
-  - `bot-a`
-  - `bot-b`
-  - `bot-c`
+  - name:
+  - runtime:
+  - model:
+  - name:
+  - runtime:
+  - model:
+  - name:
+  - runtime:
+  - model:
 - Attachment file used:
 - Notes about environment:
 

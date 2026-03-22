@@ -15,10 +15,11 @@ The explicit `Tier:` field on each case is authoritative. Nearby placement in th
 For each run:
 
 1. pick the run mode from [`README.md`](./README.md)
-2. create a fresh run report from [`QA_REPORT_TEMPLATE.md`](./QA_REPORT_TEMPLATE.md)
-3. execute cases in the browser
-4. mark each case `Pass`, `Fail`, `Blocked`, or `Not Run`
-5. attach evidence for every failure
+2. pick the agent/runtime preset from [`QA_PRESETS.md`](./QA_PRESETS.md) when the run touches driver or lifecycle behavior
+3. create a fresh run report from [`QA_REPORT_TEMPLATE.md`](./QA_REPORT_TEMPLATE.md)
+4. execute cases in the browser
+5. mark each case `Pass`, `Fail`, `Blocked`, or `Not Run`
+6. attach evidence for every failure
 
 ## Shared Preconditions
 
@@ -28,10 +29,7 @@ Apply these unless a case overrides them:
 - browser opened to the real app shell
 - data dir is fresh
 - current human user confirmed by `whoami`
-- 3 agents created:
-  - `bot-a`
-  - `bot-b`
-  - `bot-c`
+- 3 agents created according to the selected preset from [`QA_PRESETS.md`](./QA_PRESETS.md)
 - one text file prepared for attachment upload testing
 - default working channel is `#general` or a dedicated `#qa-multi-agent`
 
