@@ -100,10 +100,8 @@ impl Driver for CodexDriver {
         let mut env_vars: std::collections::HashMap<String, String> = std::env::vars().collect();
         env_vars.insert("FORCE_COLOR".to_string(), "0".to_string());
         env_vars.insert("NO_COLOR".to_string(), "1".to_string());
-        if let Some(ref extra) = ctx.config.env_vars {
-            for (k, v) in extra {
-                env_vars.insert(k.clone(), v.clone());
-            }
+        for extra in &ctx.config.env_vars {
+            env_vars.insert(extra.key.clone(), extra.value.clone());
         }
 
         let child = Command::new("codex")

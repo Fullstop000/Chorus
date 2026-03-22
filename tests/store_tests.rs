@@ -43,7 +43,7 @@ fn test_send_and_receive_messages() {
     assert!(msgs.is_empty());
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -99,13 +99,58 @@ fn test_message_history_pagination() {
 }
 
 #[test]
+fn test_agent_env_vars_persist_in_agent_record() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    let env_vars = vec![
+        AgentEnvVar {
+            key: "OPENAI_API_KEY".to_string(),
+            value: "secret".to_string(),
+            position: 0,
+        },
+        AgentEnvVar {
+            key: "DEBUG".to_string(),
+            value: "1".to_string(),
+            position: 1,
+        },
+    ];
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &env_vars)
+        .unwrap();
+
+    let agent = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(agent.env_vars, env_vars);
+}
+
+#[test]
+fn test_mark_agent_messages_deleted_marks_history_rows() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .unwrap();
+
+    store.mark_agent_messages_deleted("bot1").unwrap();
+    let (history, _) = store.get_history("general", None, 10, None, None).unwrap();
+    assert_eq!(history.len(), 1);
+    assert!(history[0].sender_deleted);
+}
+
+#[test]
 fn test_tasks_crud() {
     let (store, _dir) = make_store();
     store
         .create_channel("eng", None, ChannelType::Channel)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
 
     let tasks = store
@@ -126,10 +171,10 @@ fn test_task_claim_and_status() {
         .create_channel("eng", None, ChannelType::Channel)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "o3")
+        .create_agent_record("bot2", "Bot 2", None, "codex", "o3", &[])
         .unwrap();
     store.create_tasks("eng", "bot1", &["Task A"]).unwrap();
 
@@ -154,7 +199,7 @@ fn test_resolve_target() {
         .unwrap();
     store.add_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
 
     let (ch_id, thread_parent) = store.resolve_target("#general", "bot1").unwrap();
@@ -173,7 +218,7 @@ fn test_list_channels_excludes_dm() {
         .unwrap();
     store.add_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     // Create a DM channel via resolve_target
     store.resolve_target("dm:@alice", "bot1").unwrap();
@@ -195,10 +240,10 @@ fn test_dm_only_has_two_members() {
         .unwrap();
     store.add_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "claude", "sonnet")
+        .create_agent_record("bot2", "Bot 2", None, "claude", "sonnet", &[])
         .unwrap();
 
     // Create DM between alice and bot1
@@ -231,7 +276,7 @@ fn test_dm_channels() {
     let (store, _dir) = make_store();
     store.add_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
 
     let (ch_id, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
@@ -250,13 +295,13 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)

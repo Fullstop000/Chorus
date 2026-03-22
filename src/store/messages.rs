@@ -31,7 +31,7 @@ impl Store {
         let st = sender_type_str(sender_type);
 
         conn.execute(
-            "INSERT INTO messages (id, channel_id, thread_parent_id, sender_name, sender_type, content, seq) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
             params![msg_id, channel.id, thread_parent_id, sender_name, st, content, seq],
         )?;
 
@@ -255,7 +255,7 @@ impl Store {
         }
 
         let sql = format!(
-            "SELECT id, seq, content, sender_name, sender_type, created_at \
+            "SELECT id, seq, content, sender_name, sender_type, sender_deleted, created_at \
              FROM messages WHERE channel_id = ?1 {thread_clause} {cursor_clause} \
              ORDER BY seq {order} LIMIT {fetch_limit}"
         );
@@ -271,7 +271,8 @@ impl Store {
                 content: row.get(2)?,
                 sender_name: row.get(3)?,
                 sender_type: row.get(4)?,
-                created_at: row.get(5)?,
+                sender_deleted: row.get::<_, i64>(5)? > 0,
+                created_at: row.get(6)?,
                 attachments: None,
                 reply_count: None,
             })
@@ -315,6 +316,15 @@ impl Store {
         }
 
         Ok((msgs, has_more))
+    }
+
+    pub fn mark_agent_messages_deleted(&self, name: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE messages SET sender_deleted = 1 WHERE sender_type = 'agent' AND sender_name = ?1",
+            params![name],
+        )?;
+        Ok(())
     }
 
     pub fn get_last_read_seq(&self, channel_name: &str, member_name: &str) -> Result<i64> {

@@ -123,6 +123,40 @@
   - recreated agent inherits stale profile or channel state
   - name cannot be reused after successful delete
 
+### AGT-004 Agent Control Center Edit, Restart, Delete, And Deleted History
+
+- Tier: 1
+- Release-sensitive: yes when touching profile controls, agent edit flows, restart modes, delete flows, environment variables, or deleted-agent history rendering
+- Execution mode: browser
+- Goal:
+  - verify the profile control center can edit config, run each restart mode coherently, delete an agent with explicit workspace handling, and preserve deleted-history attribution
+- Preconditions:
+  - at least one test agent exists
+  - a shared channel or DM contains at least one visible historical message from that agent before delete
+- Steps:
+  1. Open a test agent profile and record its runtime, model, and current role text.
+  2. Use the edit control to change the role text and add one environment variable.
+  3. Save the change and verify the profile reflects the new role and environment state.
+  4. Use the restart control in plain `Restart` mode and verify the agent returns to a usable state without losing workspace files.
+  5. Use the restart control in `Reset Session & Restart` mode and verify the agent still has workspace files but behaves like a fresh conversation session.
+  6. Send at least one visible message from the agent in a channel or DM so there is history to inspect after delete.
+  7. Delete the agent using the `keep workspace` option.
+  8. Verify the agent disappears from navigation, the workspace files still exist, and historical messages remain readable with deleted styling.
+  9. Recreate an agent with the same name if the product still allows clean name reuse after delete.
+  10. Verify the recreated agent does not silently remove the deleted styling from the old history rows.
+- Expected:
+  - profile edit persists correctly
+  - restart modes behave differently but coherently
+  - delete removes the live record while preserving readable history
+  - deleted messages remain attributed but visibly historical
+  - name reuse does not reattach old messages to the recreated live identity
+- Common failure signals:
+  - edit saves but does not actually apply
+  - restart mode effects are indistinguishable
+  - workspace keep/delete choice is ignored
+  - deleted history rows lose attribution or look live
+  - recreated agent makes old deleted history look active again
+
 ### PRF-001 Agent Profile Accuracy During Lifecycle Changes
 
 - Tier: 0

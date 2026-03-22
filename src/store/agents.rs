@@ -13,6 +13,7 @@ impl Store {
         description: Option<&str>,
         runtime: &str,
         model: &str,
+        env_vars: &[AgentEnvVar],
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
@@ -20,6 +21,7 @@ impl Store {
             "INSERT INTO agents (id, name, display_name, description, runtime, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![id, name, display_name, description, runtime, model],
         )?;
+        Self::replace_agent_env_vars_inner(&conn, name, env_vars)?;
         Ok(id)
     }
 
@@ -47,12 +49,17 @@ impl Store {
                     description: row.get(3)?,
                     runtime: row.get(4)?,
                     model: row.get(5)?,
+                    env_vars: Vec::new(),
                     status: parse_agent_status(&row.get::<_, String>(6)?),
                     session_id: row.get(7)?,
                     created_at: parse_datetime(&row.get::<_, String>(8)?),
                 })
             })?
             .filter_map(|r| r.ok())
+            .map(|mut agent: Agent| {
+                agent.env_vars = Self::list_agent_env_vars_inner(&conn, &agent.name).unwrap_or_default();
+                agent
+            })
             .collect();
         Ok(rows)
     }
@@ -70,12 +77,35 @@ impl Store {
                 description: row.get(3)?,
                 runtime: row.get(4)?,
                 model: row.get(5)?,
+                env_vars: Vec::new(),
                 status: parse_agent_status(&row.get::<_, String>(6)?),
                 session_id: row.get(7)?,
                 created_at: parse_datetime(&row.get::<_, String>(8)?),
             })
         })?;
-        Ok(rows.next().transpose()?)
+        let mut agent = rows.next().transpose()?;
+        if let Some(ref mut agent) = agent {
+            agent.env_vars = Self::list_agent_env_vars_inner(&conn, &agent.name)?;
+        }
+        Ok(agent)
+    }
+
+    pub fn update_agent_record(
+        &self,
+        name: &str,
+        display_name: &str,
+        description: Option<&str>,
+        runtime: &str,
+        model: &str,
+        env_vars: &[AgentEnvVar],
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE agents SET display_name = ?1, description = ?2, runtime = ?3, model = ?4 WHERE name = ?5",
+            params![display_name, description, runtime, model, name],
+        )?;
+        Self::replace_agent_env_vars_inner(&conn, name, env_vars)?;
+        Ok(())
     }
 
     pub fn update_agent_status(&self, name: &str, status: AgentStatus) -> Result<()> {
@@ -89,6 +119,46 @@ impl Store {
             "UPDATE agents SET status = ?1 WHERE name = ?2",
             params![s, name],
         )?;
+        Ok(())
+    }
+
+    pub fn list_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
+        let conn = self.conn.lock().unwrap();
+        Self::list_agent_env_vars_inner(&conn, name)
+    }
+
+    fn list_agent_env_vars_inner(
+        conn: &rusqlite::Connection,
+        name: &str,
+    ) -> Result<Vec<AgentEnvVar>> {
+        let rows = conn
+            .prepare(
+                "SELECT key, value, position FROM agent_env_vars WHERE agent_name = ?1 ORDER BY position ASC, key ASC",
+            )?
+            .query_map(params![name], |row| {
+                Ok(AgentEnvVar {
+                    key: row.get(0)?,
+                    value: row.get(1)?,
+                    position: row.get(2)?,
+                })
+            })?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    fn replace_agent_env_vars_inner(
+        conn: &rusqlite::Connection,
+        name: &str,
+        env_vars: &[AgentEnvVar],
+    ) -> Result<()> {
+        conn.execute("DELETE FROM agent_env_vars WHERE agent_name = ?1", params![name])?;
+        for env_var in env_vars {
+            conn.execute(
+                "INSERT INTO agent_env_vars (agent_name, key, value, position) VALUES (?1, ?2, ?3, ?4)",
+                params![name, env_var.key, env_var.value, env_var.position],
+            )?;
+        }
         Ok(())
     }
 

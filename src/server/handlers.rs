@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::http::{header, StatusCode};
@@ -9,6 +10,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::AgentLifecycle;
+use crate::agent_workspace::AgentWorkspace;
 use crate::models::*;
 use crate::store::Store;
 
@@ -19,6 +21,7 @@ pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 pub struct AppState {
     pub store: Arc<Store>,
     pub lifecycle: Arc<dyn AgentLifecycle>,
+    pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
 }
 
 fn api_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
@@ -33,6 +36,45 @@ fn internal_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse { error: msg.into() }),
     )
+}
+
+fn conflict_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
+    (
+        StatusCode::CONFLICT,
+        Json(ErrorResponse { error: msg.into() }),
+    )
+}
+
+struct TransitionGuard {
+    agent_name: String,
+    transitioning_agents: Arc<Mutex<HashSet<String>>>,
+}
+
+impl Drop for TransitionGuard {
+    fn drop(&mut self) {
+        if let Ok(mut transitioning) = self.transitioning_agents.lock() {
+            transitioning.remove(&self.agent_name);
+        }
+    }
+}
+
+fn acquire_transition(
+    state: &AppState,
+    agent_name: &str,
+) -> Result<TransitionGuard, (StatusCode, Json<ErrorResponse>)> {
+    let mut transitioning = state
+        .transitioning_agents
+        .lock()
+        .map_err(|_| internal_err("failed to lock transition state"))?;
+    if !transitioning.insert(agent_name.to_string()) {
+        return Err(conflict_err(
+            "agent lifecycle operation already in progress; retry when the current action completes",
+        ));
+    }
+    Ok(TransitionGuard {
+        agent_name: agent_name.to_string(),
+        transitioning_agents: state.transitioning_agents.clone(),
+    })
 }
 
 fn strip_channel_prefix(s: &str) -> &str {
@@ -514,24 +556,49 @@ pub async fn handle_create_channel(
 
 // ── Agent management ──
 
-#[derive(Deserialize)]
-pub struct CreateAgentRequest {
-    name: String,
-    #[serde(default)]
-    display_name: String,
-    #[serde(default)]
-    description: String,
-    #[serde(default = "default_runtime")]
-    runtime: String,
-    #[serde(default = "default_model")]
-    model: String,
+fn normalize_agent_env_vars(env_vars: &[AgentEnvVarPayload]) -> Result<Vec<AgentEnvVar>, (StatusCode, Json<ErrorResponse>)> {
+    if env_vars.len() > 100 {
+        return Err(api_err("too many environment variables"));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut normalized = Vec::with_capacity(env_vars.len());
+    for (index, env_var) in env_vars.iter().enumerate() {
+        let key = env_var.key.trim().to_string();
+        if key.is_empty() {
+            return Err(api_err("environment variable key is required"));
+        }
+        if key.len() > 8_192 || env_var.value.len() > 8_192 {
+            return Err(api_err("environment variable key/value is too large"));
+        }
+        if !seen.insert(key.clone()) {
+            return Err(api_err(format!("duplicate environment variable key: {key}")));
+        }
+        normalized.push(AgentEnvVar {
+            key,
+            value: env_var.value.clone(),
+            position: index as i64,
+        });
+    }
+    Ok(normalized)
 }
 
-fn default_runtime() -> String {
-    "claude".to_string()
-}
-fn default_model() -> String {
-    "sonnet".to_string()
+fn agent_info_from_agent(agent: &Agent) -> AgentInfo {
+    AgentInfo {
+        name: agent.name.clone(),
+        status: match agent.status {
+            AgentStatus::Active => "active".to_string(),
+            AgentStatus::Sleeping => "sleeping".to_string(),
+            AgentStatus::Inactive => "inactive".to_string(),
+        },
+        display_name: Some(agent.display_name.clone()),
+        description: agent.description.clone(),
+        runtime: Some(agent.runtime.clone()),
+        model: Some(agent.model.clone()),
+        session_id: agent.session_id.clone(),
+        activity: None,
+        activity_detail: None,
+    }
 }
 
 pub async fn handle_create_agent(
@@ -552,9 +619,17 @@ pub async fn handle_create_agent(
     } else {
         Some(req.description.as_str())
     };
+    let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     state
         .store
-        .create_agent_record(&name, &display_name, description, &req.runtime, &req.model)
+        .create_agent_record(
+            &name,
+            &display_name,
+            description,
+            &req.runtime,
+            &req.model,
+            &env_vars,
+        )
         .map_err(|e| api_err(e.to_string()))?;
     for channel in state
         .store
@@ -572,10 +647,186 @@ pub async fn handle_create_agent(
     Ok(Json(serde_json::json!({ "name": name })))
 }
 
+pub async fn handle_get_agent(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+) -> ApiResult<AgentDetailResponse> {
+    let agent = state
+        .store
+        .get_agent(&name)
+        .map_err(|e| api_err(e.to_string()))?
+        .ok_or_else(|| api_err("agent not found"))?;
+    Ok(Json(AgentDetailResponse {
+        agent: agent_info_from_agent(&agent),
+        env_vars: agent
+            .env_vars
+            .iter()
+            .map(|env_var| AgentEnvVarPayload {
+                key: env_var.key.clone(),
+                value: env_var.value.clone(),
+            })
+            .collect(),
+    }))
+}
+
+pub async fn handle_update_agent(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<UpdateAgentRequest>,
+) -> ApiResult<serde_json::Value> {
+    let _transition = acquire_transition(&state, &name)?;
+    let existing = state
+        .store
+        .get_agent(&name)
+        .map_err(|e| api_err(e.to_string()))?
+        .ok_or_else(|| api_err("agent not found"))?;
+
+    let env_vars = normalize_agent_env_vars(&req.env_vars)?;
+    let display_name = if req.display_name.trim().is_empty() {
+        existing.name.clone()
+    } else {
+        req.display_name.trim().to_string()
+    };
+    let description = if req.description.trim().is_empty() {
+        None
+    } else {
+        Some(req.description.trim())
+    };
+
+    let requires_restart = existing.runtime != req.runtime
+        || existing.model != req.model
+        || existing.env_vars != env_vars;
+
+    state
+        .store
+        .update_agent_record(
+            &name,
+            &display_name,
+            description,
+            &req.runtime,
+            &req.model,
+            &env_vars,
+        )
+        .map_err(|e| api_err(e.to_string()))?;
+
+    if existing.status == AgentStatus::Active && requires_restart {
+        state
+            .lifecycle
+            .stop_agent(&name)
+            .await
+            .map_err(|e| internal_err(e.to_string()))?;
+        if let Err(err) = state.lifecycle.start_agent(&name, None).await {
+            let _ = state
+                .store
+                .update_agent_status(&name, AgentStatus::Inactive);
+            return Err(internal_err(format!(
+                "agent updated but restart failed: {err}"
+            )));
+        }
+    }
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "restarted": existing.status == AgentStatus::Active && requires_restart
+    })))
+}
+
+pub async fn handle_restart_agent(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<RestartAgentRequest>,
+) -> ApiResult<serde_json::Value> {
+    let _transition = acquire_transition(&state, &name)?;
+    let agent = state
+        .store
+        .get_agent(&name)
+        .map_err(|e| api_err(e.to_string()))?
+        .ok_or_else(|| api_err("agent not found"))?;
+    let agents_dir = state.store.agents_dir();
+    let workspace = AgentWorkspace::new(&agents_dir);
+
+    state
+        .lifecycle
+        .stop_agent(&name)
+        .await
+        .map_err(|e| internal_err(e.to_string()))?;
+
+    match req.mode {
+        RestartMode::Restart => {}
+        RestartMode::ResetSession => {
+            state
+                .store
+                .update_agent_session(&name, None)
+                .map_err(|e| internal_err(e.to_string()))?;
+        }
+        RestartMode::FullReset => {
+            state
+                .store
+                .update_agent_session(&name, None)
+                .map_err(|e| internal_err(e.to_string()))?;
+            workspace
+                .delete_if_exists(&name)
+                .map_err(|e| internal_err(format!("failed to delete workspace: {e}")))?;
+        }
+    }
+
+    if let Err(err) = state.lifecycle.start_agent(&name, None).await {
+        let _ = state
+            .store
+            .update_agent_status(&name, AgentStatus::Inactive);
+        return Err(internal_err(format!("restart failed: {err}")));
+    }
+
+    Ok(Json(serde_json::json!({
+        "ok": true,
+        "mode": req.mode,
+        "agent": agent.name
+    })))
+}
+
+pub async fn handle_delete_agent(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(req): Json<DeleteAgentRequest>,
+) -> ApiResult<serde_json::Value> {
+    let _transition = acquire_transition(&state, &name)?;
+    state
+        .store
+        .get_agent(&name)
+        .map_err(|e| api_err(e.to_string()))?
+        .ok_or_else(|| api_err("agent not found"))?;
+
+    state
+        .lifecycle
+        .stop_agent(&name)
+        .await
+        .map_err(|e| internal_err(e.to_string()))?;
+
+    state
+        .store
+        .mark_agent_messages_deleted(&name)
+        .map_err(|e| internal_err(e.to_string()))?;
+    state
+        .store
+        .delete_agent_record(&name)
+        .map_err(|e| internal_err(e.to_string()))?;
+
+    if matches!(req.mode, DeleteMode::DeleteWorkspace) {
+        let agents_dir = state.store.agents_dir();
+        let workspace = AgentWorkspace::new(&agents_dir);
+        workspace
+            .delete_if_exists(&name)
+            .map_err(|e| internal_err(format!("agent deleted but failed to delete workspace: {e}")))?;
+    }
+
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 pub async fn handle_agent_start(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    let _transition = acquire_transition(&state, &name)?;
     info!(agent = %name, "starting agent");
     state
         .lifecycle
@@ -590,6 +841,7 @@ pub async fn handle_agent_stop(
     State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
+    let _transition = acquire_transition(&state, &name)?;
     info!(agent = %name, "stopping agent");
     state
         .lifecycle

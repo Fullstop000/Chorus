@@ -72,6 +72,7 @@ impl Store {
                 thread_parent_id TEXT,
                 sender_name TEXT NOT NULL,
                 sender_type TEXT NOT NULL,
+                sender_deleted INTEGER NOT NULL DEFAULT 0,
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 seq INTEGER NOT NULL,
@@ -92,6 +93,14 @@ impl Store {
                 status TEXT NOT NULL DEFAULT 'inactive',
                 session_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS agent_env_vars (
+                agent_name TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (agent_name, key),
+                FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
             );
             CREATE TABLE IF NOT EXISTS humans (
                 name TEXT PRIMARY KEY,
@@ -145,6 +154,11 @@ impl Store {
             END;
             ",
         )?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN sender_deleted INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .ok();
         Ok(())
     }
 

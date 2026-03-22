@@ -154,9 +154,17 @@ pub struct Agent {
     pub description: Option<String>,
     pub runtime: String,
     pub model: String,
+    pub env_vars: Vec<AgentEnvVar>,
     pub status: AgentStatus,
     pub session_id: Option<String>,
     pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentEnvVar {
+    pub key: String,
+    pub value: String,
+    pub position: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,7 +215,7 @@ pub struct AgentConfig {
     pub runtime: String,
     pub model: String,
     pub session_id: Option<String>,
-    pub env_vars: Option<std::collections::HashMap<String, String>>,
+    pub env_vars: Vec<AgentEnvVar>,
 }
 
 // ── API request/response types ──
@@ -277,6 +285,8 @@ pub struct HistoryMessage {
     pub sender_type: String,
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    #[serde(rename = "senderDeleted")]
+    pub sender_deleted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentRef>>,
     #[serde(rename = "replyCount", skip_serializing_if = "Option::is_none")]
@@ -329,6 +339,19 @@ pub struct AgentInfo {
     pub activity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentDetailResponse {
+    pub agent: AgentInfo,
+    #[serde(rename = "envVars")]
+    pub env_vars: Vec<AgentEnvVarPayload>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentEnvVarPayload {
+    pub key: String,
+    pub value: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -445,4 +468,65 @@ pub struct ActivityLogResponse {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateAgentRequest {
+    pub name: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_runtime")]
+    pub runtime: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default, rename = "envVars")]
+    pub env_vars: Vec<AgentEnvVarPayload>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UpdateAgentRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_runtime")]
+    pub runtime: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default, rename = "envVars")]
+    pub env_vars: Vec<AgentEnvVarPayload>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RestartAgentRequest {
+    pub mode: RestartMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartMode {
+    Restart,
+    ResetSession,
+    FullReset,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DeleteAgentRequest {
+    pub mode: DeleteMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteMode {
+    PreserveWorkspace,
+    DeleteWorkspace,
+}
+
+fn default_runtime() -> String {
+    "claude".to_string()
+}
+
+fn default_model() -> String {
+    "sonnet".to_string()
 }

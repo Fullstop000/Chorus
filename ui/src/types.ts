@@ -21,6 +21,16 @@ export interface AgentInfo {
   activity_detail?: string
 }
 
+export interface AgentEnvVar {
+  key: string
+  value: string
+}
+
+export interface AgentDetailResponse {
+  agent: AgentInfo
+  envVars: AgentEnvVar[]
+}
+
 export interface HumanInfo {
   name: string
 }
@@ -46,6 +56,7 @@ export interface HistoryMessage {
   content: string
   senderName: string
   senderType: 'human' | 'agent'
+  senderDeleted: boolean
   createdAt: string
   thread_parent_id?: string
   attachments?: AttachmentRef[]

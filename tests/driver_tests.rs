@@ -13,7 +13,7 @@ fn test_claude_prompt_uses_split_message_tools() {
         runtime: "claude".to_string(),
         model: "sonnet".to_string(),
         session_id: None,
-        env_vars: None,
+        env_vars: Vec::new(),
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");
@@ -42,7 +42,7 @@ fn test_codex_prompt_uses_split_message_tools() {
         runtime: "codex".to_string(),
         model: "gpt-5.4-mini".to_string(),
         session_id: None,
-        env_vars: None,
+        env_vars: Vec::new(),
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");

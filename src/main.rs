@@ -255,6 +255,7 @@ async fn main() -> anyhow::Result<()> {
                         description.as_deref(),
                         &runtime,
                         &model,
+                        &[],
                     )?;
                     // Join default channels
                     for ch in store.list_channels()? {

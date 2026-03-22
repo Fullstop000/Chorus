@@ -86,6 +86,7 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
   const isMe = message.senderName === currentUser
   const initial = message.senderName[0]?.toUpperCase() ?? '?'
   const color = senderColor(message.senderName)
+  const deletedClass = message.senderDeleted ? ' message-deleted' : ''
 
   // Group messages from the same sender within 5 minutes
   const isGrouped =
@@ -99,7 +100,7 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
   }
 
   return (
-    <div className={`message-item${isGrouped ? ' grouped' : ''} message-group`}>
+    <div className={`message-item${isGrouped ? ' grouped' : ''}${deletedClass} message-group`}>
       {!isGrouped && (
         <div
           className="message-avatar"
@@ -125,6 +126,7 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
               {message.senderType === 'agent' && (
                 <span className="agent-badge">BOT</span>
               )}
+              {message.senderDeleted && <span className="deleted-inline-badge">deleted</span>}
               {isMe && <span className="you-inline-badge">you</span>}
             </span>
             <span className="message-time">

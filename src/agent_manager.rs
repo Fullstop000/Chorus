@@ -88,7 +88,7 @@ impl AgentManager {
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
             session_id: resumable_session_id,
-            env_vars: None,
+            env_vars: agent.env_vars.clone(),
         };
 
         let agent_data_dir = self.data_dir.join(agent_name);
@@ -662,7 +662,7 @@ mod tests {
             runtime: "codex".to_string(),
             model: "gpt-5.4-mini".to_string(),
             session_id: session_id.map(str::to_string),
-            env_vars: None,
+            env_vars: Vec::new(),
         }
     }
 
