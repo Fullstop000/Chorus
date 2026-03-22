@@ -2,16 +2,14 @@
 
 Local AI agent collaboration platform. Agents run as real OS processes (Claude Code CLI, Codex CLI) and communicate through a Slack-like chat interface backed by SQLite.
 
-## Agent Working Rules
-
-### Engineering Principles
+## Engineering Principles
 
 - Add comments for key structs and non-trivial functions so the intent is clear on first read.
 - Handle errors explicitly. Do not ignore `Result`s or rely on hidden failure paths.
 - Prefer clear, sufficient design over speculative architecture.
 - Read this file before making changes, and keep it aligned with shipped behavior.
 
-### Branch Workflow For Feature Work
+## Branch Workflow For Feature Work
 
 When the user explicitly asks to implement a new feature or do a refactor:
 
@@ -21,12 +19,12 @@ When the user explicitly asks to implement a new feature or do a refactor:
 4. Create a new branch with the `{agent}/` prefix (agent: codex/claude/gemini/...).
 5. Do not carry unrelated residual changes into the new branch without explicit user approval.
 
-### Commit Conventions
+## Commit Conventions
 
 - Use conventional-style commit messages with a scope when practical.
 - Preferred patterns: `feat(settings): ...`, `fix(command): ...`, `refactor(config): ...`, `docs(agent): ...`, `ci: ...`.
 
-### Verification Policy
+## Verification Policy
 
 - Do not claim a task is complete without running verification that matches the risk of the change.
 - For backend or data-path changes, run the relevant Rust tests first.
@@ -35,23 +33,141 @@ When the user explicitly asks to implement a new feature or do a refactor:
 - Backend integration tests alone are not sufficient when the user-visible flow changed.
 - If the required headless-browser e2e verification cannot be run, say so clearly and do not present the work as fully verified.
 
-### Regression Testing Spec
+## QA Standard Operating Procedure
 
-- Treat `qa/` as the operational regression-testing source of truth:
-  - [`qa/README.md`](qa/README.md)
-  - [`qa/QA_CASES.md`](qa/QA_CASES.md)
-  - [`qa/QA_REPORT_TEMPLATE.md`](qa/QA_REPORT_TEMPLATE.md)
-- Use the static case catalog for repeatable browser QA. Do not invent an ad hoc checklist each time a core workflow changes.
-- When the change touches a Tier 0 workflow in `qa/QA_CASES.md`, run the relevant browser cases and record the results in a run report derived from `qa/QA_REPORT_TEMPLATE.md`.
-- When the change touches startup, persistence, session restore, runtime integration, workspace, uploads, tasks, or lifecycle state, include the relevant Tier 1 reliability cases as well.
-- Every QA run should capture evidence for failures:
-  - screenshot
-  - console error output when relevant
-  - network or API evidence when relevant
-- Every escaped bug must feed back into the QA system. After fixing a bug, either:
-  - add a new static case, or
-  - tighten an existing case so the same failure would be caught next time
-- Do not mark a core workflow as regression-tested unless the browser pass exercised the real user path end to end and the final report names the exact case IDs that were run.
+The `qa/` directory is the authoritative execution layer for regression testing. Every QA activity — planning runs, executing cases, writing reports, fixing bugs, maintaining the catalog — follows this SOP.
+
+#### Source of Truth Files
+
+| File | Role |
+| ---- | ---- |
+| `qa/README.md` | Execution rules, run modes, evidence naming, maintenance rules |
+| `qa/QA_CASES.md` | Case catalog index; links to per-domain modules under `qa/cases/` |
+| `qa/cases/*.md` | Executable case specs (agents, channels, messaging, tasks, shared_memory) |
+| `qa/QA_PRESETS.md` | Agent/runtime presets to use for each run type |
+| `qa/QA_PLAN_TEMPLATE.md` | Fill-in template for a QA plan (before execution) |
+| `qa/QA_REPORT_TEMPLATE.md` | Fill-in template for every QA run report (after execution) |
+| `qa/BUG_FIX_REPORT_TEMPLATE.md` | Fill-in template for the fix pass that follows a failing run |
+| `qa/runs/{datetime}/plan.md` | Pre-run plan for that session |
+| `qa/runs/{datetime}/report.md` | Execution results for that session |
+| `qa/runs/{datetime}/fix_report.md` | Fix pass record when code changes result |
+| `qa/runs/{datetime}/evidence/` | Screenshots, console logs, network captures for that run |
+
+#### When to Run QA Cases
+
+Run QA proactively at these trigger points — do not wait to be asked:
+
+| Trigger | Run mode |
+| ------- | -------- |
+| Before merging a medium or large PR | PR Smoke |
+| After touching messaging, lifecycle, tasks, uploads, or workspace | Core Regression |
+| After touching startup, persistence, session restore, or runtime integration | Recovery / Reliability |
+| After touching runtime support, model options, driver registration, or create-agent modal | Agent Matrix |
+| After fixing a High or Medium severity bug found in QA | Post-fix verification using the cases that originally failed |
+| Before any release | Core Regression (minimum) |
+
+For small UI-only changes (CSS tweaks, copy changes, icon adjustments), a full QA run is not required — verify visually and note the rationale.
+
+#### When to Write or Update a QA Case
+
+Write or update a case when any of the following are true:
+
+- **New user-visible feature ships** — add a case before or alongside the PR; do not ship without coverage.
+- **Bug escaped QA** — either add a case covering the exact failure path, or tighten an existing case so the failure would be caught next time. Do not leave an escaped bug without a coverage answer.
+- **Case is too coarse** — if a case passed but a related failure slipped through, tighten the expected results or add a failure signal.
+- **New domain or workflow area** — add a new module file under `qa/cases/` and register it in `qa/QA_CASES.md`.
+- **Product control ships for a `blocked-until-shipped` case** — convert the case to `browser` or `hybrid` and remove the blocked marker.
+
+#### Selecting a Run Mode
+
+Choose based on what changed. Do not invent an ad hoc checklist.
+
+| What changed | Run mode | Required cases |
+| ------------ | -------- | -------------- |
+| UI, non-critical path | **PR Smoke** | ENV-001, AGT-001, LFC-001, CHN-001, MSG-001–003, TSK-001, PRF-001, ACT-001 |
+| Messaging, lifecycle, tasks, uploads, workspace | **Core Regression** | All Tier 0 + release-sensitive Tier 1 cases |
+| Startup, persistence, session restore, runtime integration | **Recovery / Reliability** | LFC-002, REC-001, REC-002, MSG-004, WRK-001, ACT-001, ACT-002, PRF-001 |
+| Runtime support, model options, driver registration, create-agent modal | **Agent Matrix** | AGT-002 |
+
+#### Selecting an Agent Preset
+
+Pick from `qa/QA_PRESETS.md`. Record the preset name in the plan and report. Never silently substitute a different runtime/model.
+
+| Preset | When to use |
+| ------ | ----------- |
+| `claude-trio` | UI-only smoke runs not touching runtime-specific code |
+| `mixed-runtime-trio` | Core regression after driver, bridge, lifecycle, or message fan-out changes |
+| `codex-lifecycle-pair` | Restart, resume, idle-loop, workspace focused on the Codex driver |
+| `agent-matrix` | Any run verifying runtime matrix, model list, or create-agent defaults |
+
+Default to `mixed-runtime-trio` for any Tier 0 regression when driver code changed.
+
+#### Running a QA Session
+
+**Phase 1 — Plan (before executing any cases)**
+
+1. Create the run directory: `qa/runs/YYYY-MM-DDTHHMMSS/` and `evidence/` subdirectory.
+2. Copy `qa/QA_PLAN_TEMPLATE.md` → `qa/runs/{datetime}/plan.md`. Fill in: trigger, run mode + rationale, preset + rationale, planned case list, excluded cases + reasons, environment setup, and known risks.
+3. **Present the completed plan to the human. Wait for explicit approval before executing any cases.** The human may narrow scope, change mode, or add risk areas.
+
+**Phase 2 — Execute**
+
+4. Start the server from the branch under test. Use a fresh temp data dir unless the case requires an existing state.
+5. Create agents through the browser UI per the selected preset — never by mutating SQLite directly.
+6. Copy `qa/QA_REPORT_TEMPLATE.md` → `qa/runs/{datetime}/report.md`. Fill in all metadata fields.
+7. Execute each case in the browser following the steps exactly as written in `qa/cases/*.md`.
+8. For each case, record `Pass`, `Fail`, `Blocked`, or `Not Run` in the Case Execution Table.
+9. For every `Fail` or `Blocked`, capture evidence immediately:
+   - screenshot (named `YYYY-MM-DD-{case-id}-short-title.png`)
+   - console error log when relevant (`YYYY-MM-DD-{case-id}-console.txt`)
+   - network/API payload when relevant (`YYYY-MM-DD-{case-id}-network.txt`)
+10. Complete the Findings section in severity order (High → Medium → Low).
+11. Fill in the Release Gate Decision and Regression Follow-Up tables.
+
+**Phase 3 — Human handoff (after report is complete)**
+
+12. **Present the findings summary to the human.** Include: overall result, list of all failures with severity, release gate decision, and the Regression Follow-Up table showing what new/tightened coverage is needed.
+13. **Explicitly ask the human which follow-up actions to take.** Offer these options, and wait for a clear choice before acting:
+    - Fix the failing issues now (starts the fix pass below)
+    - Improve or add QA cases to the catalog
+    - Defer findings to a follow-up issue
+    - No action — accept the current state
+14. Do not begin any follow-up action without human approval. Do not mark a workflow regression-tested unless the report names the exact case IDs that were run end to end.
+
+#### Fixing Bugs Found in QA
+
+Only begin this phase after the human explicitly approves a fix pass.
+
+1. Copy `qa/BUG_FIX_REPORT_TEMPLATE.md` → `qa/runs/{datetime}/fix_report.md`.
+2. Link it to the corresponding `report.md` via the Run Linkage section.
+3. For each finding approved for fixing, document: root cause, fix status, verification method, and result.
+4. Run the Verification Matrix: Rust tests → UI build → browser E2E covering the fixed path.
+5. Complete the Regression Coverage Follow-Up table — every fix must identify whether new or tightened QA coverage is needed.
+6. After the fix pass, present a summary to the human and confirm whether a follow-up QA run is required before the release gate can be cleared.
+
+#### Case Design Rules
+
+When writing a new QA case or tightening an existing one:
+
+- **Assign a stable ID** using the domain prefix (e.g., `MSG-005`). Never reuse a retired ID.
+- **Set the Tier explicitly**: Tier 0 = critical path required every run; Tier 1 = reliability / secondary flows.
+- **Set `Release-sensitive`** to `yes` when the case must be run before any release touching that domain.
+- **Set `Execution mode`**: `browser`, `hybrid`, or `blocked-until-shipped`.
+- **Write atomic, deterministic steps** — specific enough to execute without guesswork across multiple runs.
+- **State expected results and common failure signals** — make it clear what a pass looks like and what specific failures look like.
+- **Do not fake missing UI flows**: if a product control is not yet shipped, mark the case `blocked-until-shipped` and note the gap.
+- Place the case in the appropriate module file under `qa/cases/` and add it to the index table in `qa/QA_CASES.md`.
+
+#### Catalog Maintenance Rules
+
+Keeping the case catalog current is a first-class engineering responsibility.
+
+- **New user-visible feature** → add a case before or alongside the feature PR.
+- **Escaped bug** → add or tighten a case; do not leave the gap open.
+- **Retired feature or flow** → mark the case `Not Run` with a note; do not silently delete it.
+- **Runtime/model list changes** → update the agent matrix in `qa/QA_PRESETS.md` to match the current UI.
+- **Case ID stability** → reports are compared across iterations by ID. Never renumber or reorder without updating historical reports that reference the changed IDs.
+- After any catalog update, verify the index table in `qa/QA_CASES.md` stays in sync with the module files under `qa/cases/`.
 
 ## Architecture
 
@@ -178,14 +294,13 @@ cargo test --test e2e_tests
 Tests live in `tests/`. Integration tests use `:memory:` SQLite databases.
 When adding methods to `AgentLifecycle`, add stub implementations to `MockLifecycle` in `tests/server_tests.rs`.
 
-Use this minimum verification bar:
+**Minimum verification bar before claiming a task complete:**
 
 1. Run focused Rust tests for the affected modules.
 2. Run `cargo test --test e2e_tests` when the backend message flow, task flow, DM flow, thread flow, or agent lifecycle is affected.
-3. For any core user-facing workflow change, start the app and verify the real behavior with a headless browser e2e pass.
+3. For any core user-facing workflow change, run the browser QA pass per the [QA SOP](#qa-standard-operating-procedure) above — follow the run mode selection table to pick the right scope.
 
-Headless-browser e2e must exercise the critical path end to end, not just load the page. At minimum, verify the primary happy-path flow the user relies on, and include the exact flow you checked in the final report.
-For regression work, prefer the reusable cases in [`qa/QA_CASES.md`](qa/QA_CASES.md) and record the run with [`qa/QA_REPORT_TEMPLATE.md`](qa/QA_REPORT_TEMPLATE.md).
+Rust/integration tests alone are not sufficient when the user-visible flow changed. If headless-browser e2e cannot be run, say so explicitly; do not present the work as fully verified.
 
 ## UI Conventions
 

@@ -5,24 +5,29 @@ This directory contains the reusable QA operating docs for Chorus.
 ## Files
 
 - `QA_CASES.md`
-  Static and versioned browser QA case catalog.
+Static and versioned browser QA case catalog index. Actual cases live in `cases/`.
 - `QA_PRESETS.md`
-  Reusable agent/runtime setup presets for runs that need consistent coverage across Claude and Codex.
+Reusable agent/runtime setup presets for runs that need consistent coverage across Claude and Codex.
+- `QA_PLAN_TEMPLATE.md`
+Fill-in template for the pre-run plan. Created before execution; shown to human for approval before any cases are run.
 - `QA_REPORT_TEMPLATE.md`
-  Fill-in template for each QA run.
+Fill-in template for each QA run. Created during execution; completed before presenting findings to the human.
 - `BUG_FIX_REPORT_TEMPLATE.md`
-  Fill-in template for the implementation/fix pass that follows a QA run.
+Fill-in template for the implementation/fix pass that follows a QA run. Created only after human approves a fix pass.
+- `runs/{datetime}/plan.md`
+Pre-run plan for that session.
 - `runs/{datetime}/report.md`
-  One report per QA run.
+Execution results for that session.
 - `runs/{datetime}/fix_report.md`
-  One fix report per QA run when code changes are made in response to findings.
+Fix pass record when code changes are made in response to findings.
 - `runs/{datetime}/evidence/`
-  Evidence bundle for that specific run only.
+Evidence bundle for that specific run only.
 
 ## Why This Directory Exists
 
 The testing plan in `.design/` explains strategy and release philosophy.
 This `qa/` directory is the execution layer:
+
 - what to test every time
 - how to run it in the real web product
 - how to record pass/fail status consistently
@@ -34,13 +39,13 @@ This `qa/` directory is the execution layer:
 2. Prefer a fresh temp data dir for repeatable runs.
 3. Run the cases through the browser, not API-only shortcuts.
 4. Capture evidence for every failure:
-   - screenshot
-   - console error
-   - network error or API payload when relevant
+  - screenshot
+  - console error
+  - network error or API payload when relevant
 5. Any escaped bug should be added to the static case catalog or mapped to an existing case.
 6. If a case depends on a control that is not yet exposed in the shipped product, do not fake the workflow by mutating SQLite directly. Follow the case's documented execution mode:
-   - run the allowed hybrid path when the case explicitly allows CLI or API assistance
-   - otherwise mark the case `Blocked` and record the product gap
+  - run the allowed hybrid path when the case explicitly allows CLI or API assistance
+  - otherwise mark the case `Blocked` and record the product gap
 
 ## Execution Modes
 
@@ -51,70 +56,11 @@ This `qa/` directory is the execution layer:
 - `blocked-until-shipped`
   - the product does not yet expose the control needed for this QA case; record the gap instead of inventing a hidden setup
 
-## Recommended Run Modes
+## Run Modes
 
-### PR Smoke
+Four modes exist: **PR Smoke**, **Core Regression**, **Recovery / Reliability**, and **Agent Matrix**.
 
-Run before merging medium or large product changes.
-
-Recommended preset:
-- `claude-trio` for generic UI changes
-- `mixed-runtime-trio` when agent, driver, lifecycle, prompt, or bridge code changed
-
-Required cases:
-- `ENV-001`
-- `AGT-001`
-- `LFC-001`
-- `CHN-001`
-- `MSG-001`
-- `MSG-002`
-- `MSG-003`
-- `TSK-001`
-- `PRF-001`
-- `ACT-001`
-
-### Core Regression
-
-Run before release or after touching messaging, lifecycle, tasks, upload, or workspace logic.
-
-Recommended preset:
-- `mixed-runtime-trio`
-
-Required cases:
-- all Tier 0 cases
-- all Tier 1 cases marked `release-sensitive`
-- `MSG-004` when DM routing, DM reply rendering, or agent wake behavior changed
-- `ACT-002` when lifecycle or activity aggregation changed
-- `AGT-002` when the agent create flow, runtime list, model list, defaults, or driver registration changed
-- `CHN-002`, `CHN-003`, and `CHN-004` when channel management or channel membership behavior changed
-
-### Recovery / Reliability
-
-Run after changes to startup, persistence, session restore, or runtime integration.
-
-Recommended preset:
-- `codex-lifecycle-pair`
-- plus `mixed-runtime-trio` when the bug could depend on multi-agent channel fan-out
-
-Required cases:
-- `LFC-002`
-- `REC-001`
-- `REC-002`
-- `MSG-004`
-- `WRK-001`
-- `ACT-001`
-- `ACT-002`
-- `PRF-001`
-
-### Agent Matrix
-
-Run before releases that touch runtime support, model options, driver registration, or the create-agent modal.
-
-Recommended preset:
-- `agent-matrix`
-
-Required cases:
-- `AGT-002`
+For the authoritative definition of each mode — which trigger conditions apply, which cases are required, and which preset to use — see the **QA Standard Operating Procedure** section in `CLAUDE.md`. That is the single source of truth. Do not duplicate case lists here; they diverge.
 
 ## Standard Environment
 
@@ -142,12 +88,13 @@ The main messaging suite should prove that the app behaves correctly when multip
 same channel and respond in the same window.
 
 When runtime-specific behavior matters, do not assume this trio is all-Claude. Use one of the
-documented presets in [`QA_PRESETS.md`](./QA_PRESETS.md) and record which preset was used.
+documented presets in `[QA_PRESETS.md](./QA_PRESETS.md)` and record which preset was used.
 
 ## Evidence Naming
 
 Each run should live in its own directory:
 
+- `qa/runs/{datetime}/plan.md`
 - `qa/runs/{datetime}/report.md`
 - `qa/runs/{datetime}/fix_report.md`
 - `qa/runs/{datetime}/evidence/`
@@ -169,9 +116,11 @@ Keep them in a separate location such as `qa/fixtures/`.
 
 When a new product feature becomes user-visible, update both:
 
-1. the tier inventory in [`testing-plan.md`](../.design/testing-plan.md)
-2. the executable case list in [`QA_CASES.md`](./QA_CASES.md)
+1. the tier inventory in `[testing-plan.md](../.design/testing-plan.md)`
+2. the executable case list in `[QA_CASES.md](./QA_CASES.md)`
 
 If a bug escapes, either:
+
 - add a new case, or
 - tighten an existing case so the failure would be caught next time.
+
