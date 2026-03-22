@@ -528,7 +528,7 @@ async fn test_get_and_update_agent_via_api() {
 
 #[tokio::test]
 async fn test_restart_agent_reset_session_preserves_workspace() {
-    let (store, app, dir) = setup_with_data_dir();
+    let (store, _app, dir) = setup_with_data_dir();
     store
         .update_agent_session("bot1", Some("thread-123"))
         .unwrap();
@@ -558,7 +558,7 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
 
 #[tokio::test]
 async fn test_delete_agent_marks_history_and_preserves_workspace() {
-    let (store, app, dir) = setup_with_data_dir();
+    let (store, _app, dir) = setup_with_data_dir();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
