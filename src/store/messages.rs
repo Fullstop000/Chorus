@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use uuid::Uuid;
@@ -93,6 +95,14 @@ impl Store {
                     max_seq = *seq;
                 }
 
+                if let Some(parent_id) = thread_parent_id {
+                    if !Self::agent_can_access_thread_inner(
+                        &conn, channel_id, parent_id, agent_name,
+                    )? {
+                        continue;
+                    }
+                }
+
                 let attachments = Self::get_message_attachments(&conn, msg_id)?;
                 let atts = if attachments.is_empty() {
                     None
@@ -171,6 +181,39 @@ impl Store {
         Ok(unread_messages
             .into_iter()
             .find(|message| message.message_id == message_id))
+    }
+
+    /// Resolve which agent recipients should receive delivery for a specific
+    /// message. Top-level channel and DM messages still fan out to every agent
+    /// member except the sender. Thread messages are scoped to the parent agent
+    /// author plus agents that have already replied in that same thread.
+    pub fn get_agent_message_recipients(
+        &self,
+        channel_id: &str,
+        message_id: &str,
+        sender_name: &str,
+    ) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let thread_parent_id: Option<String> = conn.query_row(
+            "SELECT thread_parent_id FROM messages WHERE id = ?1 AND channel_id = ?2",
+            params![message_id, channel_id],
+            |row| row.get(0),
+        )?;
+
+        if let Some(parent_id) = thread_parent_id {
+            return Self::get_thread_agent_recipients_inner(
+                &conn,
+                channel_id,
+                &parent_id,
+                sender_name,
+            );
+        }
+
+        let recipients = Self::get_channel_agent_members_inner(&conn, channel_id)?
+            .into_iter()
+            .filter(|member_name| member_name != sender_name)
+            .collect();
+        Ok(recipients)
     }
 
     pub fn get_history(
@@ -406,5 +449,73 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
+    }
+
+    /// Load all agent members for a channel as plain names so delivery policy
+    /// can filter on top without re-querying membership repeatedly.
+    fn get_channel_agent_members_inner(conn: &Connection, channel_id: &str) -> Result<Vec<String>> {
+        let rows = conn
+            .prepare(
+                "SELECT member_name FROM channel_members WHERE channel_id = ?1 AND member_type = 'agent'",
+            )?
+            .query_map(params![channel_id], |row| row.get(0))?
+            .filter_map(|row| row.ok())
+            .collect();
+        Ok(rows)
+    }
+
+    /// Derive implicit thread participants from the parent author and prior
+    /// thread replies because the product does not yet have an explicit invite
+    /// mechanism for threads.
+    fn get_thread_agent_recipients_inner(
+        conn: &Connection,
+        channel_id: &str,
+        parent_id: &str,
+        sender_name: &str,
+    ) -> Result<Vec<String>> {
+        let channel_agents = Self::get_channel_agent_members_inner(conn, channel_id)?;
+        let channel_agent_set: BTreeSet<String> = channel_agents.into_iter().collect();
+
+        let mut recipients = BTreeSet::new();
+        for agent_name in channel_agent_set {
+            if agent_name == sender_name {
+                continue;
+            }
+            if Self::agent_can_access_thread_inner(conn, channel_id, parent_id, &agent_name)? {
+                recipients.insert(agent_name);
+            }
+        }
+
+        Ok(recipients.into_iter().collect())
+    }
+
+    /// Thread membership is implicit: an agent can access the thread if it
+    /// authored the parent message or has already sent at least one reply in
+    /// that thread.
+    fn agent_can_access_thread_inner(
+        conn: &Connection,
+        channel_id: &str,
+        parent_id: &str,
+        agent_name: &str,
+    ) -> Result<bool> {
+        let parent_author_matches: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM messages
+             WHERE id = ?1 AND channel_id = ?2 AND sender_type = 'agent' AND sender_name = ?3",
+            params![parent_id, channel_id, agent_name],
+            |row| row.get(0),
+        )?;
+        if parent_author_matches > 0 {
+            return Ok(true);
+        }
+
+        let prior_reply_matches: i64 = conn.query_row(
+            "SELECT COUNT(*)
+             FROM messages
+             WHERE channel_id = ?1 AND thread_parent_id = ?2 AND sender_type = 'agent' AND sender_name = ?3",
+            params![channel_id, parent_id, agent_name],
+            |row| row.get(0),
+        )?;
+        Ok(prior_reply_matches > 0)
     }
 }

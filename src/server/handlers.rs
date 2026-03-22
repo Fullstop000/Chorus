@@ -711,23 +711,25 @@ pub async fn deliver_message_to_agents(
     sender_name: &str,
     message_id: &str,
 ) -> anyhow::Result<()> {
-    let members = state.store.get_channel_members(channel_id)?;
-    for member in members {
-        if member.member_type != SenderType::Agent || member.member_name == sender_name {
-            continue;
-        }
-        let Some(agent) = state.store.get_agent(&member.member_name)? else {
+    // Thread messages are scoped to implicit thread participants rather than
+    // every agent in the parent channel.
+    let recipients =
+        state
+            .store
+            .get_agent_message_recipients(channel_id, message_id, sender_name)?;
+    for recipient_name in recipients {
+        let Some(agent) = state.store.get_agent(&recipient_name)? else {
             continue;
         };
         match agent.status {
-            AgentStatus::Active => state.lifecycle.notify_agent(&member.member_name).await?,
+            AgentStatus::Active => state.lifecycle.notify_agent(&recipient_name).await?,
             AgentStatus::Sleeping | AgentStatus::Inactive => {
                 let wake_message = state
                     .store
-                    .get_received_message_for_agent(&member.member_name, message_id)?;
+                    .get_received_message_for_agent(&recipient_name, message_id)?;
                 state
                     .lifecycle
-                    .start_agent(&member.member_name, wake_message)
+                    .start_agent(&recipient_name, wake_message)
                     .await?
             }
         }

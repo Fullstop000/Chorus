@@ -238,3 +238,70 @@ fn test_dm_channels() {
     let (ch_id2, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
     assert_eq!(ch_id, ch_id2);
 }
+
+#[test]
+fn test_unrelated_agents_do_not_receive_thread_messages() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .unwrap();
+    store
+        .join_channel("general", "bot2", SenderType::Agent)
+        .unwrap();
+
+    let parent_id = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "human parent",
+            &[],
+        )
+        .unwrap();
+
+    let initial = store.get_messages_for_agent("bot2", true).unwrap();
+    assert_eq!(
+        initial.len(),
+        1,
+        "precondition: bot2 sees the parent message"
+    );
+
+    store
+        .send_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "bot1 thread reply",
+            &[],
+        )
+        .unwrap();
+
+    let bot2_messages = store.get_messages_for_agent("bot2", false).unwrap();
+    assert!(
+        bot2_messages.is_empty(),
+        "unrelated agents should not receive thread replies just because they share the parent channel"
+    );
+
+    let bot1_messages = store.get_messages_for_agent("bot1", false).unwrap();
+    assert!(
+        bot1_messages
+            .iter()
+            .any(|message| message.content == "bot1 thread reply"),
+        "the replying agent should still see its own thread activity"
+    );
+}

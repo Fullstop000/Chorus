@@ -12,6 +12,11 @@ use chorus::activity_log::{self, ActivityLogMap};
 use tempfile::tempdir;
 use tower::ServiceExt;
 
+fn sorted(mut names: Vec<String>) -> Vec<String> {
+    names.sort();
+    names
+}
+
 fn setup() -> (Arc<Store>, axum::Router) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
@@ -491,6 +496,169 @@ async fn test_send_starts_inactive_agent_recipients() {
         vec!["bot1".to_string(), "bot2".to_string()]
     );
     assert!(lifecycle.notified_names().is_empty());
+}
+
+#[tokio::test]
+async fn test_thread_send_only_starts_parent_author_agent() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .unwrap();
+    store
+        .join_channel("general", "bot2", SenderType::Agent)
+        .unwrap();
+
+    let parent_message_id = store
+        .send_message(
+            "general",
+            None,
+            "bot1",
+            SenderType::Agent,
+            "parent from bot1",
+            &[],
+        )
+        .unwrap();
+    let thread_target = format!("#general:{}", &parent_message_id[..8]);
+
+    let send_req = serde_json::json!({
+        "target": thread_target,
+        "content": "thread reply for parent author only"
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        lifecycle.started_names(),
+        vec!["bot1".to_string()],
+        "thread replies should wake only the parent author when no other agent has joined the thread"
+    );
+}
+
+#[tokio::test]
+async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .unwrap();
+    store
+        .join_channel("general", "bot2", SenderType::Agent)
+        .unwrap();
+    store
+        .create_agent_record("bot3", "Bot 3", None, "claude", "sonnet")
+        .unwrap();
+    store
+        .join_channel("general", "bot3", SenderType::Agent)
+        .unwrap();
+
+    let parent_message_id = store
+        .send_message(
+            "general",
+            None,
+            "bot1",
+            SenderType::Agent,
+            "parent from bot1",
+            &[],
+        )
+        .unwrap();
+    store
+        .send_message(
+            "general",
+            Some(&parent_message_id),
+            "bot2",
+            SenderType::Agent,
+            "bot2 already joined the thread",
+            &[],
+        )
+        .unwrap();
+
+    let thread_target = format!("#general:{}", &parent_message_id[..8]);
+    let send_req = serde_json::json!({
+        "target": thread_target,
+        "content": "thread reply for joined participants"
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        sorted(lifecycle.started_names()),
+        vec!["bot1".to_string(), "bot2".to_string()],
+        "thread replies should wake the parent author plus agent participants already present in that thread"
+    );
+}
+
+#[tokio::test]
+async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .unwrap();
+    store
+        .join_channel("general", "bot2", SenderType::Agent)
+        .unwrap();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
+
+    let parent_message_id = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "human started the thread",
+            &[],
+        )
+        .unwrap();
+
+    let thread_target = format!("#general:{}", &parent_message_id[..8]);
+    let send_req = serde_json::json!({
+        "target": thread_target,
+        "content": "bot1 joins the human thread"
+    });
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        lifecycle.started_names().is_empty(),
+        "an agent joining a human-owned thread should not wake unrelated agents"
+    );
+    assert!(
+        lifecycle.notified_names().is_empty(),
+        "thread replies to a human-owned thread should not notify unrelated active agents"
+    );
 }
 
 #[tokio::test]
