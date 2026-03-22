@@ -1,0 +1,12 @@
+#!/bin/sh
+cargo fmt --check || {
+  echo ""
+  echo "  cargo fmt found unformatted code. Run 'cargo fmt' and re-stage."
+  exit 1
+}
+
+cargo clippy --all-targets -- -D warnings || {
+  echo ""
+  echo "  cargo clippy found issues. Fix the warnings above before committing."
+  exit 1
+}

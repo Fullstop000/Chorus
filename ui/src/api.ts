@@ -33,13 +33,19 @@ export async function sendMessage(
   username: string,
   target: string,
   content: string,
-  attachmentIds?: string[]
+  attachmentIds?: string[],
+  options?: { suppressAgentDelivery?: boolean }
 ): Promise<{ messageId: string }> {
   return json(
     await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target, content, attachmentIds: attachmentIds ?? [] }),
+      body: JSON.stringify({
+        target,
+        content,
+        attachmentIds: attachmentIds ?? [],
+        suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
+      }),
     })
   )
 }

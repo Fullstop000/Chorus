@@ -75,7 +75,7 @@ impl TaskStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_status_str(s: &str) -> Option<Self> {
         match s {
             "todo" => Some(Self::Todo),
             "in_progress" => Some(Self::InProgress),
@@ -172,6 +172,10 @@ pub struct SendRequest {
     pub content: String,
     #[serde(default, rename = "attachmentIds")]
     pub attachment_ids: Vec<String>,
+    /// Skip fan-out to other agents when the caller wants a human-only side effect,
+    /// such as "send this message and create one task" without triggering agent replies.
+    #[serde(default, rename = "suppressAgentDelivery")]
+    pub suppress_agent_delivery: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -350,10 +354,29 @@ pub struct ResolveChannelResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEntry {
-    Thinking { text: String },
-    ToolStart { tool_name: String, tool_input: String },
-    Text { text: String },
-    Status { activity: String, detail: String },
+    Thinking {
+        text: String,
+    },
+    ToolStart {
+        tool_name: String,
+        tool_input: String,
+    },
+    Text {
+        text: String,
+    },
+    MessageReceived {
+        channel_label: String,
+        sender_name: String,
+        content: String,
+    },
+    MessageSent {
+        target: String,
+        content: String,
+    },
+    Status {
+        activity: String,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -7,12 +7,25 @@ use std::process::Child;
 /// Events parsed from agent CLI stdout.
 #[derive(Debug, Clone)]
 pub enum ParsedEvent {
-    SessionInit { session_id: String },
-    Thinking { text: String },
-    Text { text: String },
-    ToolCall { name: String, input: serde_json::Value },
-    TurnEnd { session_id: Option<String> },
-    Error { message: String },
+    SessionInit {
+        session_id: String,
+    },
+    Thinking {
+        text: String,
+    },
+    Text {
+        text: String,
+    },
+    ToolCall {
+        name: String,
+        input: serde_json::Value,
+    },
+    TurnEnd {
+        session_id: Option<String>,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Spawn context passed to drivers.

@@ -8,6 +8,7 @@ interface Props {
 
 export function WorkspacePanel({ agentName }: Props) {
   const [files, setFiles] = useState<string[]>([])
+  const [workspacePath, setWorkspacePath] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -15,6 +16,7 @@ export function WorkspacePanel({ agentName }: Props) {
     try {
       const res = await getAgentWorkspace(agentName)
       setFiles(res.files)
+      setWorkspacePath(res.path)
       setError(null)
     } catch (e) {
       setError(String(e))
@@ -53,10 +55,10 @@ export function WorkspacePanel({ agentName }: Props) {
   }
 
   return (
-    <div className="workspace-panel">
+      <div className="workspace-panel">
       <div className="workspace-header">
         <span className="workspace-title">Workspace — {agentName}</span>
-        <span className="workspace-path">~/.chorus/{agentName}/</span>
+        <span className="workspace-path">{workspacePath || '(workspace unavailable)'}</span>
       </div>
       {files.length === 0 ? (
         <div className="workspace-empty">Workspace is empty.</div>

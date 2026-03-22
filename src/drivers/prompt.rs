@@ -25,12 +25,13 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         "- Do NOT explore the filesystem looking for messaging scripts. The MCP tools are already available.".to_string(),
     );
 
-    let startup_steps = vec![
+    let startup_steps = [
         "1. **Read MEMORY.md** (in your cwd). This is your memory index — it tells you what you know and where to find it.".to_string(),
         "2. Follow the instructions in MEMORY.md to read any other memory files you need (e.g. channel summaries, role definitions, user preferences).".to_string(),
-        format!("3. Call {}(block=true) to start listening.", t("receive_message")),
+        format!("3. If you have no work in progress, call {}() to enter the idle loop.", t("wait_for_message")),
         format!("4. When you receive a message, process it and reply with {}.", t("send_message")),
-        format!("5. After replying, call {}(block=true) again to keep listening.", t("receive_message")),
+        format!("5. While work is still in progress, do NOT call {}(). At natural checkpoints, you may call {}() to check for newly arrived messages.", t("wait_for_message"), t("check_messages")),
+        format!("6. After you have finished all work and sent your updates, call {}() again to return to the idle loop.", t("wait_for_message")),
     ];
 
     let display_name = &config.display_name;
@@ -44,7 +45,8 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
     let critical_rules_text = critical_rules.join("\n");
     let startup_steps_text = startup_steps.join("\n");
 
-    let receive_message = t("receive_message");
+    let check_messages = t("check_messages");
+    let wait_for_message = t("wait_for_message");
     let send_message = t("send_message");
     let list_server = t("list_server");
     let read_history = t("read_history");
@@ -54,12 +56,13 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
     let unclaim_task = t("unclaim_task");
     let update_task_status = t("update_task_status");
     let upload_file = t("upload_file");
+    let view_file = t("view_file");
 
     let mut prompt = String::with_capacity(16384);
 
     // Header + identity
     prompt.push_str(&format!(
-        "You are \"{identity}\", an AI agent in Slock — a collaborative platform for human-AI collaboration."
+        "You are \"{identity}\", an AI agent in Chorus — a collaborative platform for human-AI collaboration."
     ));
 
     // Who you are
@@ -74,18 +77,22 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
 
     // Communication section
     prompt.push_str("\n\n## Communication — MCP tools ONLY\n\n");
-    prompt.push_str("You have MCP tools from the \"chat\" server. Use ONLY these for communication:\n\n");
+    prompt.push_str(
+        "You have MCP tools from the \"chat\" server. Use ONLY these for communication:\n\n",
+    );
     prompt.push_str(&format!(
-        "1. **{receive_message}** — Call with block=true to wait for messages. This is your main loop.\n\
-         2. **{send_message}** — Send a message to a channel or DM.\n\
-         3. **{list_server}** — List all channels in this server, which ones you have joined, plus all agents and humans.\n\
-         4. **{read_history}** — Read past messages from a channel or DM.\n\
-         5. **{list_tasks}** — View a channel's task board.\n\
-         6. **{create_tasks}** — Create tasks on a channel's task board (supports batch).\n\
-         7. **{claim_tasks}** — Claim tasks by number (supports batch, handles conflicts).\n\
-         8. **{unclaim_task}** — Release your claim on a task.\n\
-         9. **{update_task_status}** — Change a task's status (e.g. to in_review or done).\n\
-         10. **{upload_file}** — Upload an image file to attach to a message. Returns an attachment ID to pass to send_message.",
+        "1. **{wait_for_message}** — Block and wait for new messages only when you have no work left to do.\n\
+         2. **{check_messages}** — Check for newly arrived messages without going idle.\n\
+         3. **{send_message}** — Send a message to a channel or DM.\n\
+         4. **{list_server}** — List all channels in this server, which ones you have joined, plus all agents and humans.\n\
+         5. **{read_history}** — Read past messages from a channel or DM.\n\
+         6. **{list_tasks}** — View a channel's task board.\n\
+         7. **{create_tasks}** — Create tasks on a channel's task board (supports batch).\n\
+         8. **{claim_tasks}** — Claim tasks by number (supports batch, handles conflicts).\n\
+         9. **{unclaim_task}** — Release your claim on a task.\n\
+         10. **{update_task_status}** — Change a task's status (e.g. to in_review or done).\n\
+         11. **{upload_file}** — Upload an image file to attach to a message. Returns an attachment ID to pass to send_message.\n\
+         12. **{view_file}** — Download an attached image by its attachment ID so you can inspect it when a message includes relevant attachments.",
     ));
 
     prompt.push_str("\n\nCRITICAL RULES:\n");
@@ -141,6 +148,9 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         "- If unsure where something belongs, call `list_server` to review channel descriptions.\n\n",
         "### Reading history\n\n",
         "`read_history(channel=\"#channel-name\")` or `read_history(channel=\"dm:@peer-name\")` or `read_history(channel=\"#channel:shortid\")`\n\n",
+        "### Attachments\n\n",
+        "If a message includes attachments and they matter to the task, inspect them before replying.\n",
+        "Use `view_file(attachment_id=\"...\")` for image attachments and reference the attachment naturally in your reply.\n\n",
         "### Task boards\n\n",
         "Each channel has a task board with two independent dimensions: **status** (progress) and **assignee** (who's doing it).\n\n",
         "**Status** (progress): `todo` → `in_progress` → `in_review` → `done`\n",
@@ -184,6 +194,7 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         "- **Claim before you start.** When picking up a task, announce it in the channel first to avoid duplicate work by others.\n\n",
         "### Formatting — No HTML\n\n",
         "Never output raw HTML tags in your messages. Use plain-text @mentions (e.g. `@alice`) and #channel references (e.g. `#general`, `#t1`). Do NOT wrap them in `<a>` tags or any other HTML.\n\n",
+        "When you intend to reference a channel or mention someone, write them as plain text — do NOT wrap them in backticks (inline code). Backtick-wrapped mentions render as code instead of interactive links.\n\n",
         "### Formatting — URLs in non-English text\n\n",
         "When writing a URL next to non-ASCII punctuation (Chinese, Japanese, etc.), always wrap the URL in angle brackets or use markdown link syntax. Otherwise the punctuation may be rendered as part of the URL.\n\n",
         "- **Wrong**: `测试环境：http://localhost:3000，请查看` (the `，` gets swallowed into the link)\n",
@@ -244,20 +255,26 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
             "While you are busy (executing tools, thinking, etc.), new messages may arrive. When this happens, you will receive a system notification like:\n\n"
         );
         prompt.push_str(
-            "`[System notification: You have N new message(s) waiting. Call receive_message to read them when you're ready.]`\n\n"
+            "`[System notification: You have N new message(s) waiting. Call check_messages to read them when you're ready.]`\n\n"
         );
         prompt.push_str("How to handle these:\n");
-        prompt.push_str("- **Do NOT interrupt your current work.** Finish what you're doing first.\n");
+        prompt.push_str(
+            "- **Do NOT interrupt your current work.** Finish what you're doing first.\n",
+        );
         prompt.push_str(&format!(
-            "- After completing your current step, call `{receive_message}(block=false)` to check for messages.\n"
+            "- After completing your current step, call `{check_messages}()` to check for messages.\n"
         ));
         prompt.push_str("- Do not ignore notifications for too long — acknowledge new messages in a timely manner.\n");
-        prompt.push_str("- These notifications are batched (you won't get one per message), so the count tells you how many are waiting.");
+        prompt.push_str(&format!(
+            "- These notifications are batched (you won't get one per message), so the count tells you how many are waiting.\n- `{check_messages}()` returns immediately; `{wait_for_message}()` is only for returning to the idle loop."
+        ));
     }
 
     // Optional initial role section
     if let Some(ref description) = config.description {
-        prompt.push_str(&format!("\n\n## Initial role\n{description}. This may evolve."));
+        prompt.push_str(&format!(
+            "\n\n## Initial role\n{description}. This may evolve."
+        ));
     }
 
     prompt

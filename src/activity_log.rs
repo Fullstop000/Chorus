@@ -1,0 +1,135 @@
+use std::collections::VecDeque;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::models::{ActivityEntry, ActivityLogEntry, ActivityLogResponse};
+
+pub const ACTIVITY_LOG_MAX: usize = 500;
+
+/// Per-agent in-memory activity log (ring buffer, up to ACTIVITY_LOG_MAX entries).
+#[derive(Default)]
+pub struct AgentActivityLog {
+    entries: VecDeque<ActivityLogEntry>,
+    next_seq: u64,
+    /// Current activity state: online | thinking | working | offline
+    pub activity: String,
+    pub detail: String,
+}
+
+impl AgentActivityLog {
+    pub fn push(&mut self, entry: ActivityEntry) {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        self.entries.push_back(ActivityLogEntry {
+            seq: self.next_seq,
+            timestamp_ms,
+            entry,
+        });
+        self.next_seq += 1;
+        if self.entries.len() > ACTIVITY_LOG_MAX {
+            self.entries.pop_front();
+        }
+    }
+
+    pub fn set_state(&mut self, activity: &str, detail: &str) {
+        if self.activity == activity && self.detail == detail {
+            return;
+        }
+        self.activity = activity.to_string();
+        self.detail = detail.to_string();
+        self.push(ActivityEntry::Status {
+            activity: activity.to_string(),
+            detail: detail.to_string(),
+        });
+    }
+
+    pub fn entries_since(&self, after_seq: u64) -> Vec<ActivityLogEntry> {
+        self.entries
+            .iter()
+            .filter(|e| e.seq > after_seq)
+            .cloned()
+            .collect()
+    }
+
+    pub fn all_entries(&self) -> Vec<ActivityLogEntry> {
+        self.entries.iter().cloned().collect()
+    }
+}
+
+/// Thread-safe map of activity logs keyed by agent name.
+pub type ActivityLogMap = std::sync::Mutex<std::collections::HashMap<String, AgentActivityLog>>;
+
+/// Push a new entry for an agent (creates the log if absent).
+pub fn push_activity(logs: &ActivityLogMap, agent_name: &str, entry: ActivityEntry) {
+    logs.lock()
+        .unwrap()
+        .entry(agent_name.to_string())
+        .or_default()
+        .push(entry);
+}
+
+/// Update the activity state for an agent (also appends a Status entry).
+pub fn set_activity_state(logs: &ActivityLogMap, agent_name: &str, activity: &str, detail: &str) {
+    logs.lock()
+        .unwrap()
+        .entry(agent_name.to_string())
+        .or_default()
+        .set_state(activity, detail);
+}
+
+/// Read the activity log for a single agent.
+pub fn get_activity_log(
+    logs: &ActivityLogMap,
+    agent_name: &str,
+    after_seq: Option<u64>,
+) -> ActivityLogResponse {
+    let map = logs.lock().unwrap();
+    match map.get(agent_name) {
+        Some(log) => {
+            let entries = match after_seq {
+                Some(seq) => log.entries_since(seq),
+                None => log.all_entries(),
+            };
+            ActivityLogResponse {
+                entries,
+                agent_activity: log.activity.clone(),
+                agent_detail: log.detail.clone(),
+            }
+        }
+        None => ActivityLogResponse {
+            entries: vec![],
+            agent_activity: "offline".to_string(),
+            agent_detail: String::new(),
+        },
+    }
+}
+
+/// Snapshot of all agents' current activity states: `(name, activity, detail)`.
+pub fn all_activity_states(logs: &ActivityLogMap) -> Vec<(String, String, String)> {
+    logs.lock()
+        .unwrap()
+        .iter()
+        .map(|(name, log)| (name.clone(), log.activity.clone(), log.detail.clone()))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_activity_state_skips_duplicate_entries() {
+        let logs = ActivityLogMap::default();
+
+        set_activity_state(&logs, "bot1", "online", "Idle");
+        set_activity_state(&logs, "bot1", "online", "Idle");
+
+        let resp = get_activity_log(&logs, "bot1", None);
+        assert_eq!(
+            resp.entries.len(),
+            1,
+            "duplicate state transitions should not create duplicate log rows"
+        );
+    }
+}

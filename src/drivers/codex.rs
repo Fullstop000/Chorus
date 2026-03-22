@@ -1,5 +1,6 @@
 use std::process::{Child, Command, Stdio};
 
+use super::prompt::{build_base_system_prompt, PromptOptions};
 use super::{Driver, ParsedEvent, SpawnContext};
 use crate::models::AgentConfig;
 
@@ -82,7 +83,7 @@ impl Driver for CodexDriver {
         args.push("-c".to_string());
         args.push("mcp_servers.chat.startup_timeout_sec=30".to_string());
         args.push("-c".to_string());
-        args.push("mcp_servers.chat.tool_timeout_sec=120".to_string());
+        args.push("mcp_servers.chat.tool_timeout_sec=300".to_string());
         args.push("-c".to_string());
         args.push("mcp_servers.chat.enabled=true".to_string());
         args.push("-c".to_string());
@@ -201,8 +202,10 @@ impl Driver for CodexDriver {
                             if event_type == "item.started" {
                                 let server =
                                     item.get("server").and_then(|v| v.as_str()).unwrap_or("");
-                                let tool =
-                                    item.get("tool").and_then(|v| v.as_str()).unwrap_or("mcp_tool");
+                                let tool = item
+                                    .get("tool")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("mcp_tool");
                                 let name = if server == "chat" {
                                     format!("mcp_chat_{tool}")
                                 } else {
@@ -296,37 +299,28 @@ impl Driver for CodexDriver {
     }
 
     fn build_system_prompt(&self, config: &AgentConfig, _agent_id: &str) -> String {
-        let identity = if !config.display_name.is_empty() {
-            config.display_name.as_str()
-        } else {
-            config.name.as_str()
-        };
-        let role = config
-            .description
-            .as_deref()
-            .unwrap_or("You are a helpful Chorus agent.");
-
-        format!(
-            concat!(
-                "You are {identity}. {role}\n\n",
-                "Rules:\n",
-                "- Use only MCP chat tools for messaging.\n",
-                "- Do not output chat text directly; send replies with mcp_chat_send_message.\n",
-                "- Reuse the exact target from received messages when replying.\n",
-                "- Read MEMORY.md for persistent context after you have received work to do.\n\n",
-                "Wake-up flow:\n",
-                "1. Immediately call mcp_chat_receive_message(block=false).\n",
-                "2. If messages are returned, read MEMORY.md if it is relevant, do the requested work, and reply with mcp_chat_send_message.\n",
-                "3. If no messages are returned, exit without waiting.\n",
-                "4. Do not wait for future messages in this run; the server will start you again when needed."
-            ),
-            identity = identity,
-            role = role,
+        build_base_system_prompt(
+            config,
+            &PromptOptions {
+                tool_prefix: "mcp_chat_".to_string(),
+                extra_critical_rules: vec![
+                    "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".to_string(),
+                    "- ALWAYS call `mcp_chat_wait_for_message()` after completing any task so you return to the idle loop.".to_string(),
+                ],
+                post_startup_notes: vec![
+                    "**IMPORTANT**: Your process may exit after an idle wait completes. The server will resume you when new work arrives.".to_string(),
+                ],
+                include_stdin_notification_section: false,
+            },
         )
     }
 
     fn tool_display_name(&self, name: &str) -> String {
         match name {
+            "mcp_chat_send_message" => "Sending message\u{2026}".to_string(),
+            "mcp_chat_check_messages" => "Checking messages\u{2026}".to_string(),
+            "mcp_chat_wait_for_message" => "Waiting for messages\u{2026}".to_string(),
+            "mcp_chat_receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp_chat_upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp_chat_view_file" => "Viewing file\u{2026}".to_string(),
             "mcp_chat_list_tasks" => "Listing tasks\u{2026}".to_string(),
@@ -336,7 +330,10 @@ impl Driver for CodexDriver {
             "mcp_chat_update_task_status" => "Updating task status\u{2026}".to_string(),
             "mcp_chat_list_server" => "Listing server\u{2026}".to_string(),
             "mcp_chat_read_history" => "Reading history\u{2026}".to_string(),
-            n if n.starts_with("mcp_chat_") => String::new(),
+            n if n.starts_with("mcp_chat_") => {
+                let op = n.trim_start_matches("mcp_chat_").replace('_', " ");
+                format!("Using {op}\u{2026}")
+            }
             "shell" | "command_execution" => "Running command\u{2026}".to_string(),
             "file_change" => "Editing file\u{2026}".to_string(),
             "file_read" => "Reading file\u{2026}".to_string(),
@@ -382,6 +379,7 @@ impl Driver for CodexDriver {
                 }
             }
             "web_search" => str_field("query"),
+            "mcp_chat_check_messages" | "mcp_chat_wait_for_message" => String::new(),
             "mcp_chat_send_message" => {
                 let t = str_field("target");
                 if t.is_empty() {

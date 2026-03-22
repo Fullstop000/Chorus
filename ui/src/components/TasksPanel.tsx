@@ -17,11 +17,13 @@ function TaskCard({
   currentUser,
   channel,
   onRefresh,
+  onError,
 }: {
   task: TaskInfo
   currentUser: string
   channel: string
   onRefresh: () => void
+  onError: (message: string | null) => void
 }) {
   const nextStatus: Record<TaskStatus, TaskStatus | null> = {
     todo: 'in_progress',
@@ -30,23 +32,47 @@ function TaskCard({
     done: null,
   }
   const next = nextStatus[task.status]
+  const canAdvance =
+    !!next &&
+    (
+      (!task.claimedByName && task.status === 'todo') ||
+      task.claimedByName === currentUser
+    )
 
   async function advance() {
-    if (!next) return
+    if (!next || !canAdvance) return
     try {
       // Auto-claim when starting a task (backend requires claim before status update)
       if (task.status === 'todo') {
         await claimTasks(currentUser, channel, [task.taskNumber])
+        onError(null)
+        onRefresh()
+        return
       }
       await updateTaskStatus(currentUser, channel, task.taskNumber, next)
+      onError(null)
       onRefresh()
     } catch (e) {
       console.error(e)
+      onError(e instanceof Error ? e.message : String(e))
     }
   }
 
   return (
-    <div className="task-card" onClick={advance} title={next ? `Advance to ${next}` : 'Done'}>
+    <div
+      className="task-card"
+      onClick={advance}
+      title={
+        !next
+          ? 'Done'
+          : canAdvance
+          ? `Advance to ${next}`
+          : task.claimedByName
+          ? `Claimed by ${task.claimedByName}`
+          : 'Unavailable'
+      }
+      style={{ cursor: canAdvance ? 'pointer' : 'not-allowed', opacity: canAdvance ? 1 : 0.7 }}
+    >
       <div className="task-card-number">#{task.taskNumber}</div>
       <div className="task-card-title">{task.title}</div>
       <div className="task-card-meta">
@@ -66,6 +92,7 @@ export function TasksPanel() {
   const { tasks, loading, refresh } = useTasks(currentUser, selectedChannel)
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [creating, setCreating] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   async function handleCreate() {
     if (!selectedChannel || !newTaskTitle.trim()) return
@@ -73,9 +100,11 @@ export function TasksPanel() {
     try {
       await createTasks(currentUser, selectedChannel, [newTaskTitle.trim()])
       setNewTaskTitle('')
+      setError(null)
       refresh()
     } catch (e) {
       console.error(e)
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setCreating(false)
     }
@@ -94,6 +123,7 @@ export function TasksPanel() {
       <div className="tasks-panel-header">
         <span className="tasks-panel-title">Tasks — {selectedChannel}</span>
       </div>
+      {error && <div className="error-banner">{error}</div>}
 
       {loading && tasks.length === 0 ? (
         <div className="tasks-empty">Loading tasks...</div>
@@ -114,6 +144,7 @@ export function TasksPanel() {
                     currentUser={currentUser}
                     channel={selectedChannel}
                     onRefresh={refresh}
+                    onError={setError}
                   />
                 ))}
                 {status === 'todo' && (

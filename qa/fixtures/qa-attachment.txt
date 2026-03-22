@@ -1,0 +1,1 @@
+QA attachment fixture for browser regression testing.
