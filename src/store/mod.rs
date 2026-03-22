@@ -1,5 +1,6 @@
 mod agents;
 mod channels;
+mod knowledge;
 mod messages;
 mod tasks;
 
@@ -116,8 +117,53 @@ impl Store {
                 stored_path TEXT NOT NULL,
                 uploaded_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
+            CREATE TABLE IF NOT EXISTS shared_knowledge (
+                id TEXT PRIMARY KEY,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                tags TEXT NOT NULL DEFAULT '',
+                author_agent_id TEXT NOT NULL,
+                channel_context TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS shared_knowledge_author ON shared_knowledge(author_agent_id);
+            CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
+                key,
+                value,
+                tags,
+                content='shared_knowledge',
+                content_rowid='rowid'
+            );
+            CREATE TRIGGER IF NOT EXISTS knowledge_fts_insert AFTER INSERT ON shared_knowledge BEGIN
+                INSERT INTO knowledge_fts(rowid, key, value, tags)
+                VALUES (new.rowid, new.key, new.value, new.tags);
+            END;
+            CREATE TRIGGER IF NOT EXISTS knowledge_fts_delete BEFORE DELETE ON shared_knowledge BEGIN
+                INSERT INTO knowledge_fts(knowledge_fts, rowid, key, value, tags)
+                VALUES ('delete', old.rowid, old.key, old.value, old.tags);
+            END;
             ",
         )?;
+        Ok(())
+    }
+
+    /// Ensure a system channel with the given name exists. Idempotent — safe to call on every startup.
+    pub fn ensure_system_channel(&self, name: &str, description: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM channels WHERE name = ?1 AND channel_type = 'system'",
+            params![name],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, 'system')",
+                params![id, name, description],
+            )?;
+            tracing::info!(channel = %name, "created system channel");
+        }
         Ok(())
     }
 
@@ -238,6 +284,20 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
 
+        let mut sys_stmt = conn.prepare(
+            "SELECT name, description FROM channels WHERE channel_type = 'system' ORDER BY name",
+        )?;
+        let system_channels: Vec<ChannelInfo> = sys_stmt
+            .query_map([], |row| {
+                Ok(ChannelInfo {
+                    name: row.get(0)?,
+                    description: row.get(1)?,
+                    joined: true,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
         let mut hu_stmt = conn.prepare("SELECT name FROM humans ORDER BY name")?;
         let humans: Vec<HumanInfo> = hu_stmt
             .query_map([], |row| Ok(HumanInfo { name: row.get(0)? }))?
@@ -246,6 +306,7 @@ impl Store {
 
         Ok(ServerInfo {
             channels,
+            system_channels,
             agents,
             humans,
         })
@@ -329,6 +390,7 @@ pub(crate) fn channel_from_row(row: &rusqlite::Row) -> rusqlite::Result<Channel>
         description: row.get(2)?,
         channel_type: match row.get::<_, String>(3)?.as_str() {
             "dm" => ChannelType::Dm,
+            "system" => ChannelType::System,
             _ => ChannelType::Channel,
         },
         created_at: parse_datetime(&row.get::<_, String>(4)?),

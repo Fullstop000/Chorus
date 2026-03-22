@@ -58,6 +58,7 @@ export function Sidebar() {
   const [showCreateChannel, setShowCreateChannel] = useState(false)
 
   const channels = serverInfo?.channels.filter((c) => c.joined) ?? []
+  const systemChannels = serverInfo?.system_channels ?? []
   const agents = serverInfo?.agents ?? []
   const humans = serverInfo?.humans ?? []
 
@@ -96,6 +97,29 @@ export function Sidebar() {
               )
             })}
           </div>
+
+          {/* System Channels */}
+          {systemChannels.length > 0 && (
+            <div className="sidebar-section">
+              <div className="sidebar-section-header">
+                <span className="sidebar-section-label">System</span>
+              </div>
+              {systemChannels.map((ch) => {
+                const target = `#${ch.name}`
+                return (
+                  <div
+                    key={ch.name}
+                    className={`sidebar-item sidebar-item--system${selectedChannel === target ? ' active' : ''}`}
+                    onClick={() => setSelectedChannel(target)}
+                    title={ch.description ?? ch.name}
+                  >
+                    <span className="sidebar-item-hash">#</span>
+                    <span className="sidebar-item-text">{ch.name}</span>
+                  </div>
+                )
+              })}
+            </div>
+          )}
 
           {/* Agents */}
           <div className="sidebar-section">

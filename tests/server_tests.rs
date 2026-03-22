@@ -1005,3 +1005,290 @@ async fn test_send_can_skip_agent_delivery() {
     assert!(lifecycle.started_names().is_empty());
     assert!(lifecycle.notified_names().is_empty());
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Knowledge store tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Helper: build a store with #general and #shared-memory already created.
+fn setup_knowledge() -> (Arc<Store>, axum::Router) {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+    // Ensure system channel exists (mirrors main.rs startup).
+    store
+        .ensure_system_channel("shared-memory", "Agent group memory")
+        .unwrap();
+    let router = build_router(store.clone());
+    (store, router)
+}
+
+// 1. remember happy path: knowledge entry is stored and breadcrumb appears in #shared-memory
+#[tokio::test]
+async fn knowledge_remember_happy_path() {
+    let (store, app) = setup_knowledge();
+
+    let body = serde_json::json!({
+        "key": "rate-limiting approach",
+        "value": "token bucket is best for this codebase",
+        "tags": ["research", "task-42"]
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/remember")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let id = data["id"].as_str().expect("id should be present");
+    assert!(!id.is_empty());
+
+    // Knowledge entry must be retrievable via recall.
+    let entries = store.recall(Some("token bucket"), None).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].key, "rate-limiting approach");
+    assert_eq!(entries[0].author_agent_id, "bot1");
+
+    // Breadcrumb message must appear in #shared-memory channel.
+    let (msgs, _) = store
+        .get_history("shared-memory", None, 10, None, None)
+        .unwrap();
+    assert_eq!(msgs.len(), 1);
+    assert!(msgs[0].content.contains("rate-limiting approach"));
+}
+
+// 2. remember when #shared-memory is missing: best-effort — knowledge is stored, no panic
+#[tokio::test]
+async fn knowledge_remember_channel_missing() {
+    // Build store WITHOUT #shared-memory to test graceful degradation.
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .unwrap();
+    let router = build_router(store.clone());
+
+    let body = serde_json::json!({
+        "key": "no-channel test",
+        "value": "should store even without shared-memory",
+        "tags": []
+    });
+    let resp = router
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/remember")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Knowledge write must succeed even if channel post fails.
+    assert_eq!(resp.status(), StatusCode::OK);
+    let entries = store.recall(Some("no-channel"), None).unwrap();
+    assert_eq!(entries.len(), 1);
+}
+
+// 3. recall FTS5 match: store a fact and find it by keyword
+#[tokio::test]
+async fn knowledge_recall_fts_match() {
+    let (store, app) = setup_knowledge();
+
+    let body = serde_json::json!({
+        "key": "auth flow",
+        "value": "uses JWT tokens with 1h expiry",
+        "tags": ["auth"]
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/remember")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let entries = store.recall(Some("JWT"), None).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].key, "auth flow");
+}
+
+// 4. recall tag filter: only entries with matching tag are returned
+#[tokio::test]
+async fn knowledge_recall_tag_filter() {
+    let (store, _app) = setup_knowledge();
+
+    store
+        .remember("finding A", "value A", "research task-1", "bot1", None)
+        .unwrap();
+    store
+        .remember("finding B", "value B", "design task-2", "bot1", None)
+        .unwrap();
+
+    let by_research = store.recall(None, Some("research")).unwrap();
+    assert_eq!(by_research.len(), 1);
+    assert_eq!(by_research[0].key, "finding A");
+
+    let by_task2 = store.recall(None, Some("task-2")).unwrap();
+    assert_eq!(by_task2.len(), 1);
+    assert_eq!(by_task2[0].key, "finding B");
+}
+
+// 5. recall empty result: non-matching query returns empty list, not an error
+#[tokio::test]
+async fn knowledge_recall_empty_result() {
+    let (store, _app) = setup_knowledge();
+
+    let entries = store.recall(Some("nonexistent-term-xyz"), None).unwrap();
+    assert!(entries.is_empty());
+}
+
+// 6. ChannelType::System round-trips through the DB
+#[tokio::test]
+async fn channel_type_system_parse() {
+    let (store, _app) = setup_knowledge();
+
+    // #shared-memory was created in setup_knowledge as a system channel.
+    let ch = store
+        .find_channel_by_name("shared-memory")
+        .unwrap()
+        .unwrap();
+    assert_eq!(ch.channel_type, ChannelType::System);
+
+    // A regular channel should not be System.
+    let gen = store.find_channel_by_name("general").unwrap().unwrap();
+    assert_eq!(gen.channel_type, ChannelType::Channel);
+}
+
+// 7. list_channels excludes system channels
+#[tokio::test]
+async fn list_channels_excludes_system() {
+    let (store, _app) = setup_knowledge();
+
+    let channels = store.list_channels().unwrap();
+    let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains(&"general"), "general must be listed");
+    assert!(
+        !names.contains(&"shared-memory"),
+        "shared-memory must not appear in list_channels"
+    );
+}
+
+// 8. send_message to system channel is rejected
+#[tokio::test]
+async fn send_message_to_system_channel_rejected() {
+    let (store, app) = setup_knowledge();
+
+    // Join bot1 to #shared-memory so channel resolution succeeds (guard fires before membership check).
+    store
+        .join_channel("shared-memory", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let body = serde_json::json!({
+        "target": "#shared-memory",
+        "content": "direct post attempt"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(data["error"]
+        .as_str()
+        .unwrap_or("")
+        .contains("mcp_chat_remember"));
+}
+
+// 9. ensure_system_channel is idempotent — calling twice creates only one channel
+#[tokio::test]
+async fn shared_memory_auto_creation_idempotent() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    // Call twice — must not panic or duplicate the row (UNIQUE constraint + explicit check).
+    store
+        .ensure_system_channel("shared-memory", "Group memory")
+        .unwrap();
+    store
+        .ensure_system_channel("shared-memory", "Group memory")
+        .unwrap();
+
+    // Verify it exists and is of the correct type.
+    let ch = store
+        .find_channel_by_name("shared-memory")
+        .unwrap()
+        .expect("channel should exist after ensure");
+    assert_eq!(ch.channel_type, ChannelType::System);
+
+    // Verify list_channels (which excludes system) still lists nothing for this fresh store.
+    let listed = store.list_channels().unwrap();
+    assert!(
+        listed.iter().all(|c| c.name != "shared-memory"),
+        "shared-memory must not appear in list_channels"
+    );
+}
+
+// 10. tags are stored as FTS5 tokens — partial tag name does not match
+#[tokio::test]
+async fn knowledge_tags_fts_token_boundary() {
+    let (store, _app) = setup_knowledge();
+
+    store
+        .remember("boundary test", "some value", "task-42", "bot1", None)
+        .unwrap();
+
+    // Exact tag match must work.
+    let exact = store.recall(None, Some("task-42")).unwrap();
+    assert_eq!(exact.len(), 1);
+
+    // A different tag that is NOT a prefix/substring in the tags string must not match.
+    let no_match = store.recall(None, Some("task-4")).unwrap();
+    assert!(
+        no_match.is_empty(),
+        "partial tag 'task-4' should not match 'task-42'"
+    );
+}

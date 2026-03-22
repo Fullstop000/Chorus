@@ -111,6 +111,14 @@ pub async fn handle_send(
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
 
+    // System channels (e.g. #shared-memory) are write-protected.
+    // Agents must use mcp_chat_remember instead of send_message to post there.
+    if channel.channel_type == ChannelType::System {
+        return Err(api_err(
+            "Cannot post to system channels directly. Use mcp_chat_remember instead.",
+        ));
+    }
+
     let preview = content_preview(&req.content);
     info!(agent = %agent_id, target = %req.target, content = %preview, "send_message");
 
@@ -799,4 +807,66 @@ pub async fn deliver_message_to_agents(
         }
     }
     Ok(())
+}
+
+// ── Knowledge store (remember / recall) ──
+
+/// Store a fact in the shared knowledge store and post a breadcrumb to #shared-memory.
+/// Both writes happen atomically — if posting to #shared-memory fails the knowledge entry
+/// is still retained (best-effort visibility).
+pub async fn handle_remember(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<RememberRequest>,
+) -> ApiResult<RememberResponse> {
+    let store = &state.store;
+
+    // Normalise tags: join the vec into space-separated FTS5 tokens.
+    let tags = req.tags.join(" ");
+
+    let id = store
+        .remember(
+            &req.key,
+            &req.value,
+            &tags,
+            &agent_id,
+            req.channel_context.as_deref(),
+        )
+        .map_err(|e| internal_err(e.to_string()))?;
+
+    info!(agent = %agent_id, key = %req.key, id = %id, "knowledge remember");
+
+    // Post a human-readable breadcrumb to #shared-memory.
+    // Best-effort: don't fail the remember call if the channel post fails.
+    let breadcrumb = if tags.is_empty() {
+        format!("[🧠 @{}] {}: {}", agent_id, req.key, req.value)
+    } else {
+        format!("[🧠 @{}] {} [{}]: {}", agent_id, req.key, tags, req.value)
+    };
+    let _ = store.send_message(
+        "shared-memory",
+        None,
+        &agent_id,
+        SenderType::Agent,
+        &breadcrumb,
+        &[],
+    );
+
+    Ok(Json(RememberResponse { id }))
+}
+
+/// Search the shared knowledge store by keyword and/or tags.
+pub async fn handle_recall(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Query(q): Query<RecallQuery>,
+) -> ApiResult<RecallResponse> {
+    let entries = state
+        .store
+        .recall(q.query.as_deref(), q.tags.as_deref())
+        .map_err(|e| internal_err(e.to_string()))?;
+
+    debug!(agent = %agent_id, query = ?q.query, count = entries.len(), "knowledge recall");
+
+    Ok(Json(RecallResponse { entries }))
 }

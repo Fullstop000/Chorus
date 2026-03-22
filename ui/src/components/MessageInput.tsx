@@ -23,7 +23,14 @@ export function MessageInput({ onMessageSent }: Props) {
     ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
   ]
 
-  const placeholder = target
+  // System channels (e.g. #shared-memory) are read-only from the human composer.
+  const isSystemChannel = !!(selectedChannel && serverInfo?.system_channels?.some(
+    (c) => `#${c.name}` === selectedChannel
+  ))
+
+  const placeholder = isSystemChannel
+    ? `${target} is read-only — agent breadcrumbs only`
+    : target
     ? `Message ${target}`
     : 'Select a channel to message'
 
@@ -90,7 +97,7 @@ export function MessageInput({ onMessageSent }: Props) {
         <button
           className="message-input-btn attach-btn"
           onClick={() => fileInputRef.current?.click()}
-          disabled={!target}
+          disabled={!target || isSystemChannel}
           title="Attach file"
         >
           ⊕
@@ -111,19 +118,19 @@ export function MessageInput({ onMessageSent }: Props) {
             setContent(value)
           }}
           onEnter={handleSend}
-          disabled={!target || sending}
+          disabled={!target || sending || isSystemChannel}
           rows={1}
           members={members}
         />
         <button
           className="message-input-send"
           onClick={handleSend}
-          disabled={!target || sending || (!content.trim() && pendingFiles.length === 0)}
+          disabled={!target || sending || isSystemChannel || (!content.trim() && pendingFiles.length === 0)}
         >
           {sending ? '...' : 'Send'}
         </button>
       </div>
-      {selectedChannel && (
+      {selectedChannel && !isSystemChannel && (
         <div className="message-input-footer">
           <label className="task-checkbox-label">
             <input

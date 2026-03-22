@@ -179,6 +179,30 @@ struct ViewFileParams {
     attachment_id: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RememberParams {
+    /// Short label for this fact, e.g. "rate-limiting approach" or "api shape"
+    key: String,
+    /// The full content of the fact
+    value: String,
+    /// Optional space-separated tags for filtering later, e.g. "research task-42"
+    #[serde(default)]
+    tags: Option<String>,
+    /// Optional channel context where this fact was discovered (e.g. '#general')
+    #[serde(default, rename = "channelContext")]
+    channel_context: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct RecallParams {
+    /// Keyword query to search across all stored facts (key, value, and tags)
+    #[serde(default)]
+    query: Option<String>,
+    /// Space-separated tags to filter by (all listed tags must be present)
+    #[serde(default)]
+    tags: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // ChatBridge
 // ---------------------------------------------------------------------------
@@ -1044,6 +1068,123 @@ impl ChatBridge {
         Ok(format!(
             "Downloaded to: {}\n\nUse your Read tool to view this image.",
             file_path.to_string_lossy()
+        ))
+    }
+
+    #[tool(
+        description = "Store a fact in the shared knowledge store so other agents can find it later. Posts a breadcrumb to #shared-memory visible to all agents and humans. Use this before handing off a task so the receiving agent can recall your findings."
+    )]
+    async fn remember(
+        &self,
+        Parameters(params): Parameters<RememberParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let tags_vec: Vec<String> = params
+            .tags
+            .as_deref()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(|s| s.to_string())
+            .collect();
+
+        let body = serde_json::json!({
+            "key": params.key,
+            "value": params.value,
+            "tags": tags_vec,
+            "channelContext": params.channel_context,
+        });
+
+        let res = self
+            .client
+            .post(format!("{}/remember", self.base_url()))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+
+        let data: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+
+        if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
+            return Ok(format!("Error: {}", err));
+        }
+
+        let id = data.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        Ok(format!(
+            "Stored knowledge entry (id: {}). Key: \"{}\". Breadcrumb posted to #shared-memory.",
+            id, params.key
+        ))
+    }
+
+    #[tool(
+        description = "Search the shared knowledge store for facts stored by any agent. Use this at the start of a task to check if relevant context has already been researched. Supports keyword search and tag filtering."
+    )]
+    async fn recall(
+        &self,
+        Parameters(params): Parameters<RecallParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let mut url = format!("{}/recall", self.base_url());
+        let mut sep = '?';
+        if let Some(q) = &params.query {
+            if !q.is_empty() {
+                url.push_str(&format!("{}query={}", sep, urlencoding::encode(q)));
+                sep = '&';
+            }
+        }
+        if let Some(t) = &params.tags {
+            if !t.is_empty() {
+                url.push_str(&format!("{}tags={}", sep, urlencoding::encode(t)));
+            }
+        }
+
+        let res =
+            self.client.get(&url).send().await.map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
+            })?;
+
+        let data: serde_json::Value = res
+            .json()
+            .await
+            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+
+        if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
+            return Ok(format!("Error: {}", err));
+        }
+
+        let entries = match data.get("entries").and_then(|v| v.as_array()) {
+            Some(arr) if !arr.is_empty() => arr,
+            _ => return Ok("No matching knowledge entries found.".into()),
+        };
+
+        let formatted: Vec<String> = entries
+            .iter()
+            .map(|e| {
+                let id = e
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| if s.len() >= 8 { &s[..8] } else { s })
+                    .unwrap_or("?");
+                let key = e.get("key").and_then(|v| v.as_str()).unwrap_or("?");
+                let value = e.get("value").and_then(|v| v.as_str()).unwrap_or("");
+                let author = e
+                    .get("author_agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+                let tags = e.get("tags").and_then(|v| v.as_str()).unwrap_or("");
+                let tag_suffix = if tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", tags)
+                };
+                format!("[id:{}]{} @{} — {}: {}", id, tag_suffix, author, key, value)
+            })
+            .collect();
+
+        Ok(format!(
+            "## Shared Knowledge ({} entries)\n\n{}",
+            entries.len(),
+            formatted.join("\n")
         ))
     }
 }

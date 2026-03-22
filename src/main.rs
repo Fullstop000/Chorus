@@ -322,6 +322,12 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
         store.join_channel("general", &username, SenderType::Human)?;
     }
 
+    // Ensure the #shared-memory system channel exists (idempotent).
+    store.ensure_system_channel(
+        "shared-memory",
+        "Agent group memory — breadcrumbs posted here by mcp_chat_remember",
+    )?;
+
     let server_url = format!("http://localhost:{port}");
     let bridge_binary = std::env::current_exe()?.to_string_lossy().into_owned();
     let manager = Arc::new(AgentManager::new(
