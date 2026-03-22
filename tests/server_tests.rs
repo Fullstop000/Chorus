@@ -1028,9 +1028,12 @@ async fn knowledge_remember_happy_path() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    let data: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap())
-            .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let id = data["id"].as_str().expect("id should be present");
     assert!(!id.is_empty());
 
@@ -1201,9 +1204,12 @@ async fn send_message_to_system_channel_rejected() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    let data: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap())
-            .unwrap();
+    let data: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert!(data["error"]
         .as_str()
         .unwrap_or("")

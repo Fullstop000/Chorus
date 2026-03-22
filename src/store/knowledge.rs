@@ -82,7 +82,8 @@ impl Store {
         };
 
         // Apply tag filter in Rust (simpler than fragile SQL LIKE on space-separated tokens).
-        let filtered: Vec<KnowledgeEntry> = if let Some(tag_filter) = tags.filter(|s| !s.is_empty()) {
+        let filtered: Vec<KnowledgeEntry> = if let Some(tag_filter) = tags.filter(|s| !s.is_empty())
+        {
             let required_tags: Vec<&str> = tag_filter.split_whitespace().collect();
             entries
                 .into_iter()

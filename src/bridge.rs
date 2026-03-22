@@ -1138,12 +1138,10 @@ impl ChatBridge {
             }
         }
 
-        let res = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+        let res =
+            self.client.get(&url).send().await.map_err(|e| {
+                rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
+            })?;
 
         let data: serde_json::Value = res
             .json()
@@ -1162,12 +1160,23 @@ impl ChatBridge {
         let formatted: Vec<String> = entries
             .iter()
             .map(|e| {
-                let id = e.get("id").and_then(|v| v.as_str()).map(|s| if s.len() >= 8 { &s[..8] } else { s }).unwrap_or("?");
+                let id = e
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| if s.len() >= 8 { &s[..8] } else { s })
+                    .unwrap_or("?");
                 let key = e.get("key").and_then(|v| v.as_str()).unwrap_or("?");
                 let value = e.get("value").and_then(|v| v.as_str()).unwrap_or("");
-                let author = e.get("author_agent_id").and_then(|v| v.as_str()).unwrap_or("?");
+                let author = e
+                    .get("author_agent_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
                 let tags = e.get("tags").and_then(|v| v.as_str()).unwrap_or("");
-                let tag_suffix = if tags.is_empty() { String::new() } else { format!(" [{}]", tags) };
+                let tag_suffix = if tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", tags)
+                };
                 format!("[id:{}]{} @{} — {}: {}", id, tag_suffix, author, key, value)
             })
             .collect();
