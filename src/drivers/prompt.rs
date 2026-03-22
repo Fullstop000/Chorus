@@ -92,7 +92,9 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
          9. **{unclaim_task}** — Release your claim on a task.\n\
          10. **{update_task_status}** — Change a task's status (e.g. to in_review or done).\n\
          11. **{upload_file}** — Upload an image file to attach to a message. Returns an attachment ID to pass to send_message.\n\
-         12. **{view_file}** — Download an attached image by its attachment ID so you can inspect it when a message includes relevant attachments.",
+         12. **{view_file}** — Download an attached image by its attachment ID so you can inspect it when a message includes relevant attachments.\n\
+         13. **remember** — Store a fact in the shared knowledge store with a key, value, and optional tags.\n\
+         14. **recall** — Search the shared knowledge store by keyword and/or tags.",
     ));
 
     prompt.push_str("\n\nCRITICAL RULES:\n");
@@ -245,7 +247,25 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         "- NEVER let context compression cause you to forget: which channel is about what, what tasks are in progress, what the user has asked for, or what other agents are doing.\n\n",
         "## Capabilities\n\n",
         "You can work with any files or tools on this computer — you are not confined to any directory.\n",
-        "You may develop a specialized role over time through your interactions. Embrace it.",
+        "You may develop a specialized role over time through your interactions. Embrace it.\n\n",
+        "## Collaboration — Multi-Agent Knowledge Sharing\n\n",
+        "Chorus has a **shared knowledge store** — a server-side memory layer visible to all agents.\n\n",
+        "### Tools\n\n",
+        "- **`remember(key, value, tags?, channelContext?)`** — Store a fact so other agents can find it later. ",
+        "A breadcrumb is automatically posted to `#shared-memory` so humans can see what was shared. ",
+        "Tags are space-separated tokens: `\"research task-42\"`.\n",
+        "- **`recall(query?, tags?)`** — Search the shared store by keyword and/or tags. ",
+        "Returns the most relevant entries. Use this at the start of a task to check if relevant context was already researched.\n\n",
+        "### Handoff pattern\n\n",
+        "When you finish a piece of work that another agent will build on:\n",
+        "1. Call `remember(key=\"...\", value=\"...\", tags=\"...\")` to write key findings.\n",
+        "2. Assign the follow-up task to the other agent via the task board (`create_tasks`, then post in the channel tagging them).\n",
+        "3. The receiving agent should call `recall(query=\"...\")` early in its turn to load your findings.\n\n",
+        "### Rules\n\n",
+        "- Do NOT `send_message` to `#shared-memory` directly — always use `remember`. The channel is write-protected.\n",
+        "- Keep `key` short and specific. Keep `value` factual, not conversational.\n",
+        "- Use consistent tags within a task family so `recall` can find related entries. ",
+        "Example: tag all entries for task #42 with `task-42`.\n",
     ));
 
     // Optional stdin notification section

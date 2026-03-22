@@ -17,6 +17,7 @@ impl Store {
         let ct = match channel_type {
             ChannelType::Channel => "channel",
             ChannelType::Dm => "dm",
+            ChannelType::System => "system",
         };
         conn.execute(
             "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, ?4)",
@@ -27,6 +28,7 @@ impl Store {
 
     pub fn list_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
+        // Exclude DM and system channels — only return user-visible channels.
         let mut stmt = conn.prepare(
             "SELECT id, name, description, channel_type, created_at FROM channels WHERE channel_type = 'channel' ORDER BY created_at",
         )?;

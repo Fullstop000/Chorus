@@ -123,7 +123,7 @@ impl Store {
                             parent_id.as_str()
                         };
                         let parent_type = match channel.channel_type {
-                            ChannelType::Channel => "channel",
+                            ChannelType::Channel | ChannelType::System => "channel",
                             ChannelType::Dm => "dm",
                         };
                         (
@@ -136,7 +136,7 @@ impl Store {
                         (
                             effective_channel_name,
                             match channel.channel_type {
-                                ChannelType::Channel => "channel".to_string(),
+                                ChannelType::Channel | ChannelType::System => "channel".to_string(),
                                 ChannelType::Dm => "dm".to_string(),
                             },
                             None,

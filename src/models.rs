@@ -17,6 +17,53 @@ pub struct Channel {
 pub enum ChannelType {
     Channel,
     Dm,
+    /// System-managed channels (e.g. #shared-memory). Not listed in the UI channel list.
+    /// Agents may not post to them directly via send_message.
+    System,
+}
+
+// ── Shared knowledge (group memory store) ──
+
+/// A single entry in the shared knowledge store, written by one agent and readable by all.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeEntry {
+    pub id: String,
+    /// Short label describing the fact, e.g. "rate-limiting approach"
+    pub key: String,
+    /// The content of the fact
+    pub value: String,
+    /// Space-separated tags used for filtering, e.g. "research task-42"
+    pub tags: String,
+    pub author_agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_context: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RememberRequest {
+    pub key: String,
+    pub value: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, rename = "channelContext")]
+    pub channel_context: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RememberResponse {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RecallQuery {
+    pub query: Option<String>,
+    pub tags: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecallResponse {
+    pub entries: Vec<KnowledgeEntry>,
 }
 
 // ── Message ──

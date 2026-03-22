@@ -133,6 +133,11 @@ pub fn build_router_with_lifecycle(
         )
         .route("/internal/agent/{agent_id}/upload", post(handle_upload))
         .route(
+            "/internal/agent/{agent_id}/remember",
+            post(handle_remember),
+        )
+        .route("/internal/agent/{agent_id}/recall", get(handle_recall))
+        .route(
             "/api/attachments/{attachment_id}",
             get(handle_get_attachment),
         )
