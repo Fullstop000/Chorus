@@ -4,6 +4,7 @@ mod tasks;
 mod agents;
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Result;
@@ -15,6 +16,7 @@ use crate::models::*;
 pub struct Store {
     conn: Mutex<Connection>,
     msg_tx: broadcast::Sender<(String, String)>,
+    data_dir: PathBuf,
 }
 
 impl Store {
@@ -27,7 +29,23 @@ impl Store {
         Ok(Self {
             conn: Mutex::new(conn),
             msg_tx,
+            data_dir: derive_data_dir(path),
         })
+    }
+
+    /// Return the configured server data directory that owns the SQLite file.
+    pub fn data_dir(&self) -> &Path {
+        &self.data_dir
+    }
+
+    /// Return the directory used to persist uploaded attachments.
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.data_dir.join("attachments")
+    }
+
+    /// Return the directory that contains per-agent workspaces.
+    pub fn agents_dir(&self) -> PathBuf {
+        self.data_dir.join("agents")
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
@@ -257,6 +275,20 @@ impl Store {
         }
         Ok(map)
     }
+}
+
+/// Derive the server data directory from the SQLite path.
+fn derive_data_dir(path: &str) -> PathBuf {
+    if path == ":memory:" {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        return PathBuf::from(home).join(".chorus");
+    }
+
+    Path::new(path)
+        .parent()
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .to_path_buf()
 }
 
 // ── Helpers (shared across submodules) ──

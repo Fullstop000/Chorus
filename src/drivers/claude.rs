@@ -37,6 +37,7 @@ impl Driver for ClaudeDriver {
         let mut args = vec![
             "--allow-dangerously-skip-permissions".to_string(),
             "--dangerously-skip-permissions".to_string(),
+            "--print".to_string(),
             "--verbose".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
@@ -76,14 +77,15 @@ impl Driver for ClaudeDriver {
             .spawn()?;
 
         // Send initial user message via stdin
-        let stdin_msg = if let Some(ref session_id) = ctx.config.session_id {
+        let stdin_msg = if ctx.config.session_id.is_some() {
+            // `claude --resume <session>` already selects the prior session. Re-sending the
+            // session ID inside the stdin payload can cause the resumed process to exit early.
             serde_json::json!({
                 "type": "user",
                 "message": {
                     "role": "user",
                     "content": [{"type": "text", "text": &ctx.prompt}]
-                },
-                "session_id": session_id
+                }
             })
         } else {
             serde_json::json!({

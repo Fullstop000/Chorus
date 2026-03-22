@@ -18,7 +18,7 @@ When the user explicitly asks to implement a new feature or do a refactor:
 1. Check whether the worktree is dirty before switching branches.
 2. If local changes exist, stop and ask the user whether to commit, stash, or move them aside.
 3. Start the work from an up-to-date `main` based on `origin/main`.
-4. Create a new branch with the `codex/` prefix.
+4. Create a new branch with the `{agent}/` prefix (agent: codex/claude/gemini/...).
 5. Do not carry unrelated residual changes into the new branch without explicit user approval.
 
 ### Commit Conventions
@@ -42,11 +42,6 @@ When the user explicitly asks to implement a new feature or do a refactor:
   - [`qa/QA_CASES.md`](qa/QA_CASES.md)
   - [`qa/QA_REPORT_TEMPLATE.md`](qa/QA_REPORT_TEMPLATE.md)
 - Use the static case catalog for repeatable browser QA. Do not invent an ad hoc checklist each time a core workflow changes.
-- For messaging and agent-collaboration verification, do not rely on a single-agent happy path. The standard regression setup must include at least 3 agents in one shared channel:
-  - `bot-a`
-  - `bot-b`
-  - `bot-c`
-- The shared-channel regression pass must prove multi-agent fan-out, sender correctness, ordering sanity, and activity visibility under concurrent replies.
 - When the change touches a Tier 0 workflow in `qa/QA_CASES.md`, run the relevant browser cases and record the results in a run report derived from `qa/QA_REPORT_TEMPLATE.md`.
 - When the change touches startup, persistence, session restore, runtime integration, workspace, uploads, tasks, or lifecycle state, include the relevant Tier 1 reliability cases as well.
 - Every QA run should capture evidence for failures:
@@ -149,59 +144,6 @@ Agent CLI process
                   └─ SQLite + broadcast channel
 ```
 
-### MCP Tools Exposed to Agents
-
-All tools are served under the `chat__` namespace (prefix varies by driver — `mcp__chat__` for Claude, `mcp_chat_` for Codex):
-
-| Tool | Description |
-|------|-------------|
-| `send_message` | Send a message. Target format: `#channel`, `dm:@name`, `#channel:msgid` (thread), `dm:@name:msgid` |
-| `receive_message` | Poll for new messages. `block=true` (default) long-polls up to 59s |
-| `read_history` | Fetch message history with `before`/`after` cursor pagination |
-| `list_tasks` | View the task board for a channel |
-| `create_tasks` | Create new tasks in a channel |
-| `claim_tasks` | Claim tasks by number |
-| `unclaim_task` | Release a claimed task |
-| `update_task_status` | Move a task to `todo`, `in_progress`, `in_review`, or `done` |
-| `upload_file` | Upload an image/file and get an attachment ID |
-| `view_file` | Read an uploaded attachment by ID |
-| `server_info` | Get the list of channels, agents, and humans |
-
-### Message Delivery Flow (Detailed)
-
-**Agent receives a message:**
-1. Agent calls `receive_message(block=true)` → bridge POSTs to `GET /internal/agent/{id}/receive`
-2. Server holds the request open (long-poll, 30s timeout), waiting on a broadcast channel receiver
-3. When a new message arrives in any of the agent's channels, the broadcast channel fires
-4. Server queries unread messages for the agent, marks them as read, and returns them in the response
-5. Bridge formats the messages as an MCP tool result and returns them to the agent
-
-**Agent sends a message:**
-1. Agent calls `send_message(target, content)` → bridge POSTs to `/internal/agent/{id}/send`
-2. Server calls `store.resolve_target()` to convert `#channel` or `dm:@peer` into a `channel_id`
-3. Message is written to SQLite with a `seq` number; broadcast fires `(channel_id, message_id)`
-4. All agents in that channel that are currently blocking on `receive_message` are unblocked
-5. UI clients polling `/api/channels/{name}/messages` see the new message on their next poll
-
-**Wakeup notifications (stdin injection):**
-- When an agent is NOT blocking on `receive_message` (it's thinking/working), new messages trigger a debounced stdin notification after 3 seconds
-- `AgentManager.notify_agent()` writes a formatted JSON wakeup event to the agent's stdin
-- Only works for drivers where `supports_stdin_notification()` returns `true` (Claude only)
-- Codex agents must poll `receive_message` proactively
-
-### Channel Membership and Unread Tracking
-
-- `channel_members` table tracks every (channel, agent) pair with a `last_read_seq` cursor
-- `receive_message` queries messages with `seq > last_read_seq` and updates the cursor after delivery
-- `get_unread_summary()` returns `HashMap<channel_name, unread_count>` used at agent startup to build the resume prompt
-
-## DM Channel Naming
-
-Internal DB name: `dm-{sorted_a}-{sorted_b}` (e.g., `dm-alice-richard`)
-Target string used in messages: `dm:@{peer_name}` (e.g., `dm:@richard`)
-
-When constructing message targets, always look up the peer name from `channel_members` — never use the raw internal channel name as the target. See `src/store/messages.rs:get_messages_for_agent()`.
-
 ## Adding a New Driver
 
 1. Create `src/drivers/myruntimename.rs`
@@ -225,7 +167,6 @@ When constructing message targets, always look up the peer name from `channel_me
 - Every DB operation uses `self.conn.lock().unwrap()` — the connection is `Mutex<Connection>`
 - IDs are `uuid::Uuid::new_v4().to_string()`
 - Timestamps are stored as ISO 8601 text; parsed via `chrono`
-- Broadcast notifications: `self.msg_tx.send((channel_id, message_id))` after any new message
 
 ## Testing
 
@@ -253,10 +194,3 @@ For regression work, prefer the reusable cases in [`qa/QA_CASES.md`](qa/QA_CASES
 - Icons: Lucide React (`lucide-react`) — keep sizes consistent (13px for inline tool icons, 16px for panel icons)
 - No global state mutations outside `ui/src/store.tsx`
 - API calls go through `ui/src/api.ts`
-
-## Common Pitfalls
-
-- **Bridge logs are invisible**: The bridge process runs with `Stdio::piped()` stderr (never read). Log agent communication in `src/server/handlers.rs`, not `src/bridge.rs`.
-- **DM target mismatch**: Always resolve `dm:@peer` from `channel_members`, never from the channel's internal name.
-- **`AgentLifecycle` trait changes**: Must update `AgentManager`, `NoopAgentLifecycle`, and `MockLifecycle` together.
-- **Vite cache**: `ui/.vite/` and `ui/tsconfig.tsbuildinfo` are gitignored — do not commit them.

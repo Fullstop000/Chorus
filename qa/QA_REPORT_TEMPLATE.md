@@ -5,6 +5,9 @@ Copy this file for each QA run.
 Recommended filename:
 - `qa/runs/YYYY-MM-DDTHHMMSS/report.md`
 
+Companion fix report when bugs are addressed:
+- `qa/runs/YYYY-MM-DDTHHMMSS/fix_report.md`
+
 ## Run Metadata
 
 - Date:

@@ -925,8 +925,9 @@ impl ChatBridge {
         &self,
         Parameters(params): Parameters<ViewFileParams>,
     ) -> Result<String, rmcp::ErrorData> {
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-        let cache_dir = std::path::PathBuf::from(&home)
+        // Cache attachments inside the agent workspace so sandboxed agents can read them.
+        let cache_dir = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
             .join(".chorus")
             .join("attachments");
         std::fs::create_dir_all(&cache_dir).map_err(|e| {

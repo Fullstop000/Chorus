@@ -14,6 +14,7 @@ export function MessageInput({ onMessageSent }: Props) {
   const [content, setContent] = useState('')
   const [alsoTask, setAlsoTask] = useState(false)
   const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -29,6 +30,7 @@ export function MessageInput({ onMessageSent }: Props) {
   async function handleSend() {
     if (!target || !currentUser || (!content.trim() && pendingFiles.length === 0)) return
     setSending(true)
+    setError(null)
     try {
       // Upload files first
       const attachmentIds: string[] = []
@@ -37,7 +39,9 @@ export function MessageInput({ onMessageSent }: Props) {
         attachmentIds.push(res.id)
       }
 
-      await sendMessage(currentUser, target, content.trim(), attachmentIds)
+      await sendMessage(currentUser, target, content.trim(), attachmentIds, {
+        suppressAgentDelivery: alsoTask && !!selectedChannel,
+      })
 
       if (alsoTask && selectedChannel && content.trim()) {
         await createTasks(currentUser, selectedChannel, [content.trim()])
@@ -49,6 +53,7 @@ export function MessageInput({ onMessageSent }: Props) {
       onMessageSent?.()
     } catch (e) {
       console.error('Send failed:', e)
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setSending(false)
     }
@@ -56,19 +61,24 @@ export function MessageInput({ onMessageSent }: Props) {
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     const files = Array.from(e.target.files ?? [])
+    setError(null)
     setPendingFiles((prev) => [...prev, ...files])
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
   return (
     <div className="message-input-area">
+      {error && <div className="error-banner">{error}</div>}
       {pendingFiles.length > 0 && (
         <div className="message-input-files">
           {pendingFiles.map((f, i) => (
             <span key={i} className="file-chip">
               📎 {f.name}
               <button
-                onClick={() => setPendingFiles((prev) => prev.filter((_, j) => j !== i))}
+                onClick={() => {
+                  setError(null)
+                  setPendingFiles((prev) => prev.filter((_, j) => j !== i))
+                }}
               >
                 ×
               </button>
@@ -96,7 +106,10 @@ export function MessageInput({ onMessageSent }: Props) {
           className="message-input-textarea"
           placeholder={placeholder}
           value={content}
-          onChange={setContent}
+          onChange={(value) => {
+            setError(null)
+            setContent(value)
+          }}
           onEnter={handleSend}
           disabled={!target || sending}
           rows={1}

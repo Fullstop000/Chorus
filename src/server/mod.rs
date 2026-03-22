@@ -1,7 +1,6 @@
 mod handlers;
 
 use std::future::Future;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -124,10 +123,4 @@ pub fn build_router_with_lifecycle(
             ServeDir::new("ui/dist").fallback(ServeFile::new("ui/dist/index.html")),
         )
         .with_state(state)
-}
-
-pub fn home_dir() -> PathBuf {
-    std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
 }

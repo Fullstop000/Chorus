@@ -72,13 +72,21 @@ impl AgentManager {
         let driver = get_driver(&agent.runtime)?;
         let is_codex_driver = driver.id() == "codex";
 
+        // Codex thread IDs survive process restarts. Claude session IDs are not reliable enough
+        // to use as a hard dependency for restart, so Claude falls back to MEMORY.md + a fresh session.
+        let resumable_session_id = if driver.id() == "codex" {
+            agent.session_id.clone()
+        } else {
+            None
+        };
+
         let config = AgentConfig {
             name: agent.name.clone(),
             display_name: agent.display_name.clone(),
             description: agent.description.clone(),
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
-            session_id: agent.session_id.clone(),
+            session_id: resumable_session_id,
             env_vars: None,
         };
 
@@ -98,10 +106,12 @@ impl AgentManager {
         }
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
 
-        let is_resume = agent.session_id.is_some();
+        let is_resume = config.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
 
         let prompt = build_start_prompt(&config, driver.as_ref(), is_codex_driver, is_resume, &unread_summary);
+
+        let running_session_id = config.session_id.clone();
 
         let ctx = SpawnContext {
             agent_id: agent.name.clone(),
@@ -122,7 +132,7 @@ impl AgentManager {
             agents.insert(agent_name.to_string(), RunningAgent {
                 process: child,
                 driver: driver.clone(),
-                session_id: agent.session_id.clone(),
+                session_id: running_session_id,
                 is_in_receive_message: false,
                 pending_notification_count: 0,
             });

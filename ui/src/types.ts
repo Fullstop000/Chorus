@@ -153,6 +153,7 @@ export interface ActivityLogResponse {
 // ── Agent Workspace ──
 
 export interface WorkspaceResponse {
+  path: string
   files: string[]
 }
 

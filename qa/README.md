@@ -2,17 +2,18 @@
 
 This directory contains the reusable QA operating docs for Chorus.
 
-These docs are intended to be used together with the product-level testing strategy in
-[`testing-plan.md`](../.design/testing-plan.md).
-
 ## Files
 
 - `QA_CASES.md`
   Static and versioned browser QA case catalog.
 - `QA_REPORT_TEMPLATE.md`
   Fill-in template for each QA run.
+- `BUG_FIX_REPORT_TEMPLATE.md`
+  Fill-in template for the implementation/fix pass that follows a QA run.
 - `runs/{datetime}/report.md`
   One report per QA run.
+- `runs/{datetime}/fix_report.md`
+  One fix report per QA run when code changes are made in response to findings.
 - `runs/{datetime}/evidence/`
   Evidence bundle for that specific run only.
 
@@ -125,6 +126,7 @@ same channel and respond in the same window.
 Each run should live in its own directory:
 
 - `qa/runs/{datetime}/report.md`
+- `qa/runs/{datetime}/fix_report.md`
 - `qa/runs/{datetime}/evidence/`
 
 Recommended `{datetime}` format:

@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::models::*;
 use crate::store::Store;
-use super::{AgentLifecycle, home_dir};
+use super::AgentLifecycle;
 
 pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
@@ -128,9 +128,11 @@ pub async fn handle_send(
         );
     }
 
-    deliver_message_to_agents(&state, &channel.id, &agent_id)
-        .await
-        .map_err(|e| internal_err(e.to_string()))?;
+    if !req.suppress_agent_delivery {
+        deliver_message_to_agents(&state, &channel.id, &agent_id)
+            .await
+            .map_err(|e| internal_err(e.to_string()))?;
+    }
 
     Ok(Json(SendResponse { message_id }))
 }
@@ -359,7 +361,7 @@ pub async fn handle_upload(
         .unwrap_or_default();
 
     let file_id = Uuid::new_v4().to_string();
-    let attachments_dir = home_dir().join(".chorus").join("attachments");
+    let attachments_dir = state.store.attachments_dir();
     std::fs::create_dir_all(&attachments_dir).map_err(|e| internal_err(e.to_string()))?;
 
     let stored_path = attachments_dir.join(format!("{}{}", file_id, ext));
@@ -529,15 +531,22 @@ pub async fn handle_ui_server_info(
 // ── Workspace ──
 
 pub async fn handle_agent_workspace(
+    State(state): State<AppState>,
     Path(name): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    let workspace_dir = home_dir().join(".chorus").join("agents").join(&name);
+    let workspace_dir = state.store.agents_dir().join(&name);
     if !workspace_dir.exists() {
-        return Ok(Json(serde_json::json!({ "files": [] })));
+        return Ok(Json(serde_json::json!({
+            "path": workspace_dir.to_string_lossy(),
+            "files": []
+        })));
     }
     let mut files: Vec<String> = Vec::new();
     collect_workspace_files(&workspace_dir, &workspace_dir, &mut files, 0);
-    Ok(Json(serde_json::json!({ "files": files })))
+    Ok(Json(serde_json::json!({
+        "path": workspace_dir.to_string_lossy(),
+        "files": files
+    })))
 }
 
 fn collect_workspace_files(

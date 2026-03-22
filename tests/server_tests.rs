@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use chorus::activity_log::{self, ActivityLogMap};
+use tempfile::tempdir;
 use tower::ServiceExt;
 
 fn setup() -> (Arc<Store>, axum::Router) {
@@ -20,6 +21,19 @@ fn setup() -> (Arc<Store>, axum::Router) {
     store.join_channel("general", "bot1", SenderType::Agent).unwrap();
     let router = build_router(store.clone());
     (store, router)
+}
+
+fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("chorus.db");
+    let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+    store.create_channel("general", Some("General"), ChannelType::Channel).unwrap();
+    store.add_human("alice").unwrap();
+    store.join_channel("general", "alice", SenderType::Human).unwrap();
+    store.create_agent_record("bot1", "Bot 1", None, "claude", "sonnet").unwrap();
+    store.join_channel("general", "bot1", SenderType::Agent).unwrap();
+    let router = build_router(store.clone());
+    (store, router, dir)
 }
 
 #[derive(Default)]
@@ -474,4 +488,91 @@ async fn test_activity_log_includes_message_send_and_receive_events() {
         kinds.contains(&"message_sent"),
         "activity log should surface sent messages to the UI"
     );
+}
+
+#[tokio::test]
+async fn test_upload_uses_configured_data_dir() {
+    let (store, app, dir) = setup_with_data_dir();
+    let boundary = "chorus-boundary";
+    let body = format!(
+        "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"qa.txt\"\r\nContent-Type: text/plain\r\n\r\nhello upload\r\n--{boundary}--\r\n"
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/upload")
+                .header("content-type", format!("multipart/form-data; boundary={boundary}"))
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let attachment_id = val["id"].as_str().expect("attachment id");
+    let attachment = store.get_attachment(attachment_id).unwrap().expect("attachment record");
+
+    assert!(
+        attachment.stored_path.starts_with(dir.path().join("attachments").to_string_lossy().as_ref()),
+        "attachment should be stored under the configured data dir"
+    );
+}
+
+#[tokio::test]
+async fn test_workspace_lists_files_from_configured_data_dir() {
+    let (_store, app, dir) = setup_with_data_dir();
+    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    std::fs::write(workspace_dir.join("plan.md"), "# test\n").unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents/bot1/workspace")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000).await.unwrap();
+    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        val["path"].as_str(),
+        Some(dir.path().join("agents").join("bot1").to_string_lossy().as_ref())
+    );
+    let files = val["files"].as_array().expect("files array");
+    assert!(files.iter().any(|entry| entry == "notes/"));
+    assert!(files.iter().any(|entry| entry == "notes/plan.md"));
+}
+
+#[tokio::test]
+async fn test_send_can_skip_agent_delivery() {
+    let (_store, app, lifecycle) = setup_with_lifecycle();
+
+    let send_req = serde_json::json!({
+        "target": "#general",
+        "content": "create one task only",
+        "suppressAgentDelivery": true
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(lifecycle.started_names().is_empty());
+    assert!(lifecycle.notified_names().is_empty());
 }

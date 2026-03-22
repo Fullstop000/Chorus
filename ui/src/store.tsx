@@ -45,6 +45,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     getServerInfo(currentUser)
       .then((info) => {
         setServerInfo(info)
+        setSelectedAgent((prev) => {
+          if (!prev) return prev
+          return info.agents.find((agent) => agent.name === prev.name) ?? null
+        })
         // Auto-select first joined channel only if nothing is selected (no channel AND no agent)
         setSelectedChannel((prev) => {
           if (prev || selectedAgentRef.current) return prev

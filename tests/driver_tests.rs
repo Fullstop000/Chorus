@@ -29,4 +29,12 @@ fn test_codex_prompt_uses_prefixed_chat_tools() {
         prompt.contains("block=false"),
         "Codex prompts should wake with a non-blocking receive flow"
     );
+    assert!(
+        prompt.contains("mcp_chat_view_file"),
+        "Codex prompts should teach attachment inspection explicitly"
+    );
+    assert!(
+        prompt.contains("Chorus"),
+        "Codex prompts should use the current product name"
+    );
 }
