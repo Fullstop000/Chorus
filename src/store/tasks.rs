@@ -173,7 +173,7 @@ impl Store {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
-        let current_status = TaskStatus::from_str(&current_status_str)
+        let current_status = TaskStatus::from_status_str(&current_status_str)
             .ok_or_else(|| anyhow!("invalid task status: {}", current_status_str))?;
 
         if claimed_by.as_deref() != Some(requester_name) {

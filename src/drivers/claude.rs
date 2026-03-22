@@ -77,23 +77,13 @@ impl Driver for ClaudeDriver {
             .spawn()?;
 
         // Send initial user message via stdin
-        let stdin_msg = if ctx.config.session_id.is_some() {
-            serde_json::json!({
-                "type": "user",
-                "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": &ctx.prompt}]
-                }
-            })
-        } else {
-            serde_json::json!({
-                "type": "user",
-                "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": &ctx.prompt}]
-                }
-            })
-        };
+        let stdin_msg = serde_json::json!({
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [{"type": "text", "text": &ctx.prompt}]
+            }
+        });
 
         if let Some(ref mut stdin) = child.stdin {
             let mut line = serde_json::to_string(&stdin_msg)?;

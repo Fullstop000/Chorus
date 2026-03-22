@@ -252,7 +252,7 @@ impl ChatBridge {
                 let time = m
                     .get("timestamp")
                     .and_then(|v| v.as_str())
-                    .map(|s| to_local_time(s))
+                    .map(to_local_time)
                     .unwrap_or_else(|| "-".into());
                 let sender_type = match m.get("sender_type").and_then(|v| v.as_str()) {
                     Some("agent") => " type=agent",
@@ -435,7 +435,7 @@ impl ChatBridge {
                 let time = m
                     .get("createdAt")
                     .and_then(|v| v.as_str())
-                    .map(|s| to_local_time(s))
+                    .map(to_local_time)
                     .unwrap_or_else(|| "-".into());
                 let msg_id = m
                     .get("id")

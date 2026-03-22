@@ -62,6 +62,7 @@ impl Store {
             let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
 
+            #[allow(clippy::type_complexity)]
             let msgs: Vec<(String, String, String, String, String, i64, Option<String>)> = conn
                 .prepare(
                     "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id
@@ -321,7 +322,7 @@ impl Store {
             let other_name = parts[0];
             let thread_short = parts.get(1).copied();
 
-            let mut names = vec![sender_name.to_string(), other_name.to_string()];
+            let mut names = [sender_name.to_string(), other_name.to_string()];
             names.sort();
             let dm_name = format!("dm-{}-{}", names[0], names[1]);
 
@@ -334,10 +335,10 @@ impl Store {
                         params![id, dm_name],
                     )?;
                     let sender_mt = Self::lookup_sender_type_inner(&conn, sender_name)?
-                        .map(|st| sender_type_str(st))
+                        .map(sender_type_str)
                         .unwrap_or("agent");
                     let other_mt = Self::lookup_sender_type_inner(&conn, other_name)?
-                        .map(|st| sender_type_str(st))
+                        .map(sender_type_str)
                         .unwrap_or("human");
                     conn.execute(
                         "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",

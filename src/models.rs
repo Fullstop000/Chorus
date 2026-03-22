@@ -75,7 +75,7 @@ impl TaskStatus {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_status_str(s: &str) -> Option<Self> {
         match s {
             "todo" => Some(Self::Todo),
             "in_progress" => Some(Self::InProgress),

@@ -25,7 +25,7 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         "- Do NOT explore the filesystem looking for messaging scripts. The MCP tools are already available.".to_string(),
     );
 
-    let startup_steps = vec![
+    let startup_steps = [
         "1. **Read MEMORY.md** (in your cwd). This is your memory index — it tells you what you know and where to find it.".to_string(),
         "2. Follow the instructions in MEMORY.md to read any other memory files you need (e.g. channel summaries, role definitions, user preferences).".to_string(),
         format!("3. If you have no work in progress, call {}() to enter the idle loop.", t("wait_for_message")),
