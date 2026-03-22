@@ -243,12 +243,20 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
     let workspace_dir = store.agents_dir().join("bot1");
     let notes_dir = workspace_dir.join("notes");
     std::fs::create_dir_all(&notes_dir).unwrap();
-    std::fs::write(workspace_dir.join("MEMORY.md"), "# Memory
-").unwrap();
-    std::fs::write(notes_dir.join("work-log.md"), "# Work Log
+    std::fs::write(
+        workspace_dir.join("MEMORY.md"),
+        "# Memory
+",
+    )
+    .unwrap();
+    std::fs::write(
+        notes_dir.join("work-log.md"),
+        "# Work Log
 
 - first entry
-").unwrap();
+",
+    )
+    .unwrap();
 
     let workspace: serde_json::Value = client
         .get(format!("{url}/api/agents/bot1/workspace"))
@@ -259,14 +267,19 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
         .await
         .unwrap();
 
-    assert_eq!(workspace["path"].as_str(), Some(workspace_dir.to_string_lossy().as_ref()));
+    assert_eq!(
+        workspace["path"].as_str(),
+        Some(workspace_dir.to_string_lossy().as_ref())
+    );
     let files = workspace["files"].as_array().unwrap();
     assert!(files.iter().any(|entry| entry == "notes/"));
     assert!(files.iter().any(|entry| entry == "notes/work-log.md"));
     assert!(files.iter().any(|entry| entry == "MEMORY.md"));
 
     let preview: serde_json::Value = client
-        .get(format!("{url}/api/agents/bot1/workspace/file?path=notes%2Fwork-log.md"))
+        .get(format!(
+            "{url}/api/agents/bot1/workspace/file?path=notes%2Fwork-log.md"
+        ))
         .send()
         .await
         .unwrap()
@@ -275,10 +288,15 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
         .unwrap();
 
     assert_eq!(preview["path"].as_str(), Some("notes/work-log.md"));
-    assert_eq!(preview["content"].as_str(), Some("# Work Log
+    assert_eq!(
+        preview["content"].as_str(),
+        Some(
+            "# Work Log
 
 - first entry
-"));
+"
+        )
+    );
     assert_eq!(preview["sizeBytes"].as_u64(), Some(26));
     assert_eq!(preview["truncated"].as_bool(), Some(false));
     assert!(preview["modifiedMs"].as_u64().is_some());

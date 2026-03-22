@@ -711,7 +711,9 @@ pub async fn handle_agent_workspace_file(
     })))
 }
 
-fn sanitize_workspace_path(path: &str) -> Result<std::path::PathBuf, (StatusCode, Json<ErrorResponse>)> {
+fn sanitize_workspace_path(
+    path: &str,
+) -> Result<std::path::PathBuf, (StatusCode, Json<ErrorResponse>)> {
     use std::path::{Component, PathBuf};
 
     let candidate = std::path::Path::new(path);
