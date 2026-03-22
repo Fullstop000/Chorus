@@ -9,6 +9,7 @@ import type {
   ActivityResponse,
   ActivityLogResponse,
   WorkspaceResponse,
+  WorkspaceFileResponse,
 } from './types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
@@ -193,4 +194,9 @@ export async function getAgentActivityLog(agentName: string, afterSeq?: number):
 
 export async function getAgentWorkspace(agentName: string): Promise<WorkspaceResponse> {
   return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/workspace`))
+}
+
+export async function getAgentWorkspaceFile(agentName: string, path: string): Promise<WorkspaceFileResponse> {
+  const params = new URLSearchParams({ path })
+  return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/workspace/file?${params.toString()}`))
 }

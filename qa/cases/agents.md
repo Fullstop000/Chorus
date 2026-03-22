@@ -302,22 +302,39 @@
 - Release-sensitive: yes
 - Goal:
   - verify the workspace tab reflects the actual agent workspace, including non-default data dirs
+  - verify the split-view explorer can select and preview real files instead of showing a placeholder list
 - Preconditions:
   - agent has started and produced workspace files
+  - the workspace contains at least one markdown file under `notes/`, such as `notes/work-log.md`
   - run once with default storage path and once with a custom temp data dir
 - Steps:
   1. Open an agent workspace tab.
-  2. Verify the displayed path is correct for the current server configuration.
-  3. Verify expected files or directories are listed.
-  4. Open at least one file.
-  5. Repeat in a run that uses `--data-dir <temp dir>`.
+  2. Verify the top path row shows the real workspace path for the current server configuration and that the copy-path control is present.
+  3. Verify expected files and directories are listed in the left tree, including `notes/` and `MEMORY.md` when they exist on disk.
+  4. Expand `notes/` and select a markdown file such as `notes/work-log.md`.
+  5. Verify the selected row is visibly highlighted.
+  6. Verify the right pane header shows:
+     - the relative file path
+     - file size
+     - modified timestamp
+  7. Toggle `Raw` and `Preview`.
+  8. Verify `Raw` shows the literal file contents.
+  9. Verify `Preview` renders markdown formatting for `.md` files.
+  10. Trigger the workspace refresh action and confirm the tree and preview remain usable.
+  11. Repeat in a run that uses `--data-dir <temp dir>`.
 - Expected:
   - displayed path matches actual storage path
   - workspace is not falsely shown empty
   - file browsing works in both default and custom path modes
+  - selected file metadata and content stay aligned with the file chosen in the tree
+  - markdown preview is rendered for markdown files and raw mode remains literal
 - Common failure signals:
   - path ignores configured data dir
   - files exist on disk but UI shows empty state
+  - selecting a file does not load preview content
+  - preview header shows stale path, wrong size, or missing timestamp
+  - raw and preview modes show the same unrendered output for markdown
+  - refresh clears selection or leaves the pane in a broken state
   - file open fails for valid files
 
 ### REC-001 Restart Server And Verify Agent Recovery

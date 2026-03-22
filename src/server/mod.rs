@@ -148,6 +148,10 @@ pub fn build_router_with_lifecycle(
             get(handle_agent_activity_log),
         )
         .route("/api/agents/{name}/workspace", get(handle_agent_workspace))
+        .route(
+            "/api/agents/{name}/workspace/file",
+            get(handle_agent_workspace_file),
+        )
         .route("/api/server-info", get(handle_ui_server_info))
         .layer(cors)
         .fallback_service(ServeDir::new("ui/dist").fallback(ServeFile::new("ui/dist/index.html")))
