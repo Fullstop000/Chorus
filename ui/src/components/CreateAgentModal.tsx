@@ -1,38 +1,27 @@
 import { useState } from 'react'
 import './ProfilePanel.css'  // reuses modal styles
+import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
 
 interface Props {
   onClose: () => void
   onCreated: () => void
 }
 
-const MODELS: Record<string, { value: string; label: string }[]> = {
-  claude: [
-    { value: 'sonnet', label: 'claude-sonnet-4-6' },
-    { value: 'opus', label: 'claude-opus-4-6' },
-    { value: 'haiku', label: 'claude-haiku-4-5' },
-  ],
-  codex: [
-    { value: 'gpt-5.4', label: 'gpt-5.4' },
-    { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-    { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
-    { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex' },
-    { value: 'gpt-5.2', label: 'gpt-5.2' },
-    { value: 'gpt-5.1-codex-max', label: 'gpt-5.1-codex-max' },
-    { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
-  ],
-}
-
 export function CreateAgentModal({ onClose, onCreated }: Props) {
-  const [name, setName] = useState('')
-  const [description, setDescription] = useState('')
-  const [runtime, setRuntime] = useState('claude')
-  const [model, setModel] = useState('sonnet')
+  const [config, setConfig] = useState<AgentConfigState>({
+    name: '',
+    display_name: '',
+    description: '',
+    runtime: 'claude',
+    model: 'sonnet',
+    reasoningEffort: null,
+    envVars: [],
+  })
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function handleCreate() {
-    if (!name.trim()) {
+    if (!config.name.trim()) {
       setError('Name is required')
       return
     }
@@ -42,7 +31,15 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
       const res = await fetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), description, runtime, model }),
+        body: JSON.stringify({
+          name: config.name.trim(),
+          display_name: config.display_name.trim(),
+          description: config.description,
+          runtime: config.runtime,
+          model: config.model,
+          reasoningEffort: config.runtime === 'codex' ? config.reasoningEffort : null,
+          envVars: config.envVars,
+        }),
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({ error: res.statusText }))
@@ -71,52 +68,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           </select>
         </div>
 
-        <div className="modal-field">
-          <label>Name</label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. my-agent"
-            autoFocus
-          />
-        </div>
-
-        <div className="modal-field">
-          <label>Description</label>
-          <textarea
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-            placeholder="What does this agent do?"
-          />
-        </div>
-
-        <div className="modal-field">
-          <label>Runtime</label>
-          <select
-            value={runtime}
-            onChange={(e) => {
-              const r = e.target.value
-              setRuntime(r)
-              setModel(MODELS[r][0].value)
-            }}
-          >
-            <option value="claude">Claude Code</option>
-            <option value="codex">Codex CLI</option>
-          </select>
-        </div>
-
-        <div className="modal-field">
-          <label>Model</label>
-          <select value={model} onChange={(e) => setModel(e.target.value)}>
-            {(MODELS[runtime] ?? []).map((m) => (
-              <option key={m.value} value={m.value}>{m.label}</option>
-            ))}
-          </select>
-        </div>
-
-        <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-          Environment variables are not supported in the UI yet.
-        </div>
+        <AgentConfigForm state={config} editableName onChange={setConfig} />
 
         {error && (
           <div style={{ color: 'var(--accent)', fontSize: 13, marginTop: 8 }}>{error}</div>
@@ -127,7 +79,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           <button
             className="btn-primary"
             onClick={handleCreate}
-            disabled={creating || !name.trim()}
+            disabled={creating || !config.name.trim()}
           >
             {creating ? 'Creating...' : 'Create Agent'}
           </button>

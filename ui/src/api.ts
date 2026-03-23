@@ -10,6 +10,8 @@ import type {
   ActivityLogResponse,
   WorkspaceResponse,
   WorkspaceFileResponse,
+  AgentDetailResponse,
+  AgentEnvVar,
 } from './types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
@@ -199,4 +201,54 @@ export async function getAgentWorkspace(agentName: string): Promise<WorkspaceRes
 export async function getAgentWorkspaceFile(agentName: string, path: string): Promise<WorkspaceFileResponse> {
   const params = new URLSearchParams({ path })
   return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/workspace/file?${params.toString()}`))
+}
+
+export async function getAgentDetail(agentName: string): Promise<AgentDetailResponse> {
+  return json(await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}`))
+}
+
+export async function updateAgent(
+  agentName: string,
+  payload: {
+    display_name: string
+    description: string
+    runtime: string
+    model: string
+    reasoningEffort?: string | null
+    envVars: AgentEnvVar[]
+  }
+): Promise<{ ok: boolean; restarted: boolean }> {
+  return json(
+    await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  )
+}
+
+export async function restartAgent(
+  agentName: string,
+  mode: 'restart' | 'reset_session' | 'full_reset'
+): Promise<void> {
+  await json(
+    await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/restart`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    })
+  )
+}
+
+export async function deleteAgent(
+  agentName: string,
+  mode: 'preserve_workspace' | 'delete_workspace'
+): Promise<void> {
+  await json(
+    await fetch(`${BASE}/api/agents/${encodeURIComponent(agentName)}/delete`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    })
+  )
 }

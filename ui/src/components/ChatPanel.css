@@ -96,6 +96,11 @@
   margin-top: 2px;
 }
 
+.message-deleted .message-avatar {
+  filter: saturate(0.2);
+  border: 1px dashed rgba(0,0,0,0.35);
+}
+
 .message-avatar-spacer {
   width: 36px;
   flex-shrink: 0;
@@ -140,9 +145,26 @@
   vertical-align: middle;
 }
 
+.deleted-inline-badge {
+  font-size: 9px;
+  font-weight: 700;
+  background: rgba(0,0,0,0.08);
+  color: var(--text-muted);
+  border-radius: 3px;
+  padding: 1px 4px;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+
 .message-time {
   font-size: 11px;
   color: var(--text-muted);
+}
+
+.message-deleted .message-content,
+.message-deleted .message-time,
+.message-deleted .message-sender {
+  opacity: 0.78;
 }
 
 .message-content {

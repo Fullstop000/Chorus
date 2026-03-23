@@ -4,6 +4,8 @@ mod knowledge;
 mod messages;
 mod tasks;
 
+pub use agents::AgentRecordUpsert;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -72,6 +74,7 @@ impl Store {
                 thread_parent_id TEXT,
                 sender_name TEXT NOT NULL,
                 sender_type TEXT NOT NULL,
+                sender_deleted INTEGER NOT NULL DEFAULT 0,
                 content TEXT NOT NULL,
                 created_at TEXT NOT NULL DEFAULT (datetime('now')),
                 seq INTEGER NOT NULL,
@@ -89,9 +92,18 @@ impl Store {
                 description TEXT,
                 runtime TEXT NOT NULL,
                 model TEXT NOT NULL,
+                reasoning_effort TEXT,
                 status TEXT NOT NULL DEFAULT 'inactive',
                 session_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS agent_env_vars (
+                agent_name TEXT NOT NULL,
+                key TEXT NOT NULL,
+                value TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                PRIMARY KEY (agent_name, key),
+                FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
             );
             CREATE TABLE IF NOT EXISTS humans (
                 name TEXT PRIMARY KEY,
@@ -145,6 +157,13 @@ impl Store {
             END;
             ",
         )?;
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN sender_deleted INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .ok();
+        conn.execute("ALTER TABLE agents ADD COLUMN reasoning_effort TEXT", [])
+            .ok();
         Ok(())
     }
 
@@ -265,7 +284,7 @@ impl Store {
             .collect();
 
         let mut ag_stmt = conn.prepare(
-            "SELECT name, display_name, description, runtime, model, status, session_id FROM agents ORDER BY name",
+            "SELECT name, display_name, description, runtime, model, reasoning_effort, status, session_id FROM agents ORDER BY name",
         )?;
         let agents: Vec<AgentInfo> = ag_stmt
             .query_map([], |row| {
@@ -275,8 +294,9 @@ impl Store {
                     description: row.get(2)?,
                     runtime: row.get(3)?,
                     model: row.get(4)?,
-                    status: row.get(5)?,
-                    session_id: row.get(6)?,
+                    reasoning_effort: row.get(5)?,
+                    status: row.get(6)?,
+                    session_id: row.get(7)?,
                     activity: None,
                     activity_detail: None,
                 })

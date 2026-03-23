@@ -3,6 +3,7 @@ mod handlers;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::{collections::HashSet, sync::Mutex};
 
 use axum::routing::{get, post};
 use axum::Router;
@@ -103,7 +104,11 @@ pub fn build_router_with_lifecycle(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    let state = AppState { store, lifecycle };
+    let state = AppState {
+        store,
+        lifecycle,
+        transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
+    };
 
     Router::new()
         // Agent bridge endpoints (called by MCP bridge subprocess)
@@ -142,8 +147,14 @@ pub fn build_router_with_lifecycle(
         .route("/api/whoami", get(handle_whoami))
         .route("/api/channels", post(handle_create_channel))
         .route("/api/agents", post(handle_create_agent))
+        .route(
+            "/api/agents/{name}",
+            get(handle_get_agent).patch(handle_update_agent),
+        )
         .route("/api/agents/{name}/start", post(handle_agent_start))
         .route("/api/agents/{name}/stop", post(handle_agent_stop))
+        .route("/api/agents/{name}/restart", post(handle_restart_agent))
+        .route("/api/agents/{name}/delete", post(handle_delete_agent))
         .route("/api/agents/{name}/activity", get(handle_agent_activity))
         .route(
             "/api/agents/{name}/activity-log",

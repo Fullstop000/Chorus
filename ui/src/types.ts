@@ -14,11 +14,22 @@ export interface AgentInfo {
   status: 'active' | 'sleeping' | 'inactive'
   runtime?: string
   model?: string
+  reasoningEffort?: string
   description?: string
   session_id?: string
   /** Live activity state: online | thinking | working | offline */
   activity?: string
   activity_detail?: string
+}
+
+export interface AgentEnvVar {
+  key: string
+  value: string
+}
+
+export interface AgentDetailResponse {
+  agent: AgentInfo
+  envVars: AgentEnvVar[]
 }
 
 export interface HumanInfo {
@@ -46,6 +57,7 @@ export interface HistoryMessage {
   content: string
   senderName: string
   senderType: 'human' | 'agent'
+  senderDeleted: boolean
   createdAt: string
   thread_parent_id?: string
   attachments?: AttachmentRef[]

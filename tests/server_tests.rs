@@ -27,7 +27,7 @@ fn setup() -> (Arc<Store>, axum::Router) {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -48,7 +48,7 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -60,6 +60,7 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
 #[derive(Default)]
 struct MockLifecycle {
     started: Mutex<Vec<(String, Option<ReceivedMessage>)>>,
+    stopped: Mutex<Vec<String>>,
     notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
 }
@@ -80,6 +81,10 @@ impl MockLifecycle {
 
     fn started_calls(&self) -> Vec<(String, Option<ReceivedMessage>)> {
         self.started.lock().unwrap().clone()
+    }
+
+    fn stopped_names(&self) -> Vec<String> {
+        self.stopped.lock().unwrap().clone()
     }
 }
 
@@ -110,9 +115,12 @@ impl AgentLifecycle for MockLifecycle {
 
     fn stop_agent<'a>(
         &'a self,
-        _agent_name: &'a str,
+        agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            self.stopped.lock().unwrap().push(agent_name.to_string());
+            Ok(())
+        })
     }
 
     fn get_activity_log_data(
@@ -142,7 +150,7 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -469,10 +477,144 @@ async fn test_create_agent_via_api() {
 }
 
 #[tokio::test]
+async fn test_get_and_update_agent_via_api() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
+
+    let detail_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents/bot1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(detail_resp.status(), StatusCode::OK);
+    let detail_body = axum::body::to_bytes(detail_resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let detail: AgentDetailResponse = serde_json::from_slice(&detail_body).unwrap();
+    assert_eq!(detail.agent.reasoning_effort, None);
+
+    let update_req = serde_json::json!({
+        "display_name": "Updated Bot",
+        "description": "Updated role",
+        "runtime": "codex",
+        "model": "gpt-5.4",
+        "reasoningEffort": "low",
+        "envVars": [{"key": "DEBUG", "value": "1"}]
+    });
+    let update_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/agents/bot1")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_resp.status(), StatusCode::OK);
+
+    let agent = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(agent.display_name, "Updated Bot");
+    assert_eq!(agent.runtime, "codex");
+    assert_eq!(agent.model, "gpt-5.4");
+    assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(agent.env_vars.len(), 1);
+    assert_eq!(agent.env_vars[0].key, "DEBUG");
+    assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
+    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
+}
+
+#[tokio::test]
+async fn test_restart_agent_reset_session_preserves_workspace() {
+    let (store, _app, dir) = setup_with_data_dir();
+    store
+        .update_agent_session("bot1", Some("thread-123"))
+        .unwrap();
+    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
+
+    let app = build_router_with_lifecycle(store.clone(), Arc::new(MockLifecycle::default()));
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents/bot1/restart")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "mode": "reset_session" })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let agent = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(agent.session_id, None);
+    assert!(workspace_dir.join("plan.md").exists());
+}
+
+#[tokio::test]
+async fn test_delete_agent_marks_history_and_preserves_workspace() {
+    let (store, _app, dir) = setup_with_data_dir();
+    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    std::fs::create_dir_all(&workspace_dir).unwrap();
+    std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
+    store
+        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .unwrap();
+
+    let app = build_router_with_lifecycle(store.clone(), Arc::new(MockLifecycle::default()));
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents/bot1/delete")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "mode": "preserve_workspace" }))
+                        .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(store.get_agent("bot1").unwrap().is_none());
+    assert!(workspace_dir.join("plan.md").exists());
+
+    let history_response = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/alice/history?channel=%23general&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(history_response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(history_response.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["messages"][0]["senderDeleted"], true);
+}
+
+#[tokio::test]
 async fn test_send_starts_inactive_agent_recipients() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
@@ -502,7 +644,7 @@ async fn test_send_starts_inactive_agent_recipients() {
 async fn test_thread_send_only_starts_parent_author_agent() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
@@ -549,13 +691,13 @@ async fn test_thread_send_only_starts_parent_author_agent() {
 async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
         .unwrap();
     store
-        .create_agent_record("bot3", "Bot 3", None, "claude", "sonnet")
+        .create_agent_record("bot3", "Bot 3", None, "claude", "sonnet", &[])
         .unwrap();
     store
         .join_channel("general", "bot3", SenderType::Agent)
@@ -612,7 +754,7 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
 async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4")
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
@@ -1021,7 +1163,7 @@ fn setup_knowledge() -> (Arc<Store>, axum::Router) {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -1090,7 +1232,7 @@ async fn knowledge_remember_channel_missing() {
         .unwrap();
     store.add_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet")
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     let router = build_router(store.clone());
 

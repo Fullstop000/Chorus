@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Child;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -14,6 +15,7 @@ use crate::server::AgentLifecycle;
 use crate::store::Store;
 
 struct RunningAgent {
+    instance_id: u64,
     process: Child,
     driver: Arc<dyn Driver>,
     session_id: Option<String>,
@@ -28,6 +30,7 @@ pub struct AgentManager {
     data_dir: PathBuf,
     bridge_binary: String,
     server_url: String,
+    next_instance_id: AtomicU64,
 }
 
 fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
@@ -52,6 +55,7 @@ impl AgentManager {
             data_dir,
             bridge_binary,
             server_url,
+            next_instance_id: AtomicU64::new(1),
         }
     }
 
@@ -88,7 +92,8 @@ impl AgentManager {
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
             session_id: resumable_session_id,
-            env_vars: None,
+            reasoning_effort: agent.reasoning_effort.clone(),
+            env_vars: agent.env_vars.clone(),
         };
 
         let agent_data_dir = self.data_dir.join(agent_name);
@@ -139,11 +144,14 @@ impl AgentManager {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdout"))?;
 
+        let instance_id = self.next_instance_id.fetch_add(1, Ordering::Relaxed);
+
         {
             let mut agents = self.agents.lock().await;
             agents.insert(
                 agent_name.to_string(),
                 RunningAgent {
+                    instance_id,
                     process: child,
                     driver: driver.clone(),
                     session_id: running_session_id,
@@ -157,7 +165,7 @@ impl AgentManager {
             .update_agent_status(agent_name, AgentStatus::Active)?;
         activity_log::set_activity_state(&self.activity_logs, agent_name, "working", "Starting…");
 
-        self.spawn_output_reader(agent_name.to_string(), stdout, driver);
+        self.spawn_output_reader(agent_name.to_string(), stdout, driver, instance_id);
         Ok(())
     }
 
@@ -173,6 +181,12 @@ impl AgentManager {
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Inactive)?;
+        activity_log::set_activity_state(
+            &self.activity_logs,
+            agent_name,
+            "offline",
+            "Process stopped",
+        );
         Ok(())
     }
 
@@ -189,6 +203,7 @@ impl AgentManager {
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Sleeping)?;
+        activity_log::set_activity_state(&self.activity_logs, agent_name, "offline", "Sleeping");
         Ok(())
     }
 
@@ -263,6 +278,7 @@ impl AgentManager {
         agent_name: String,
         stdout: std::process::ChildStdout,
         driver: Arc<dyn Driver>,
+        instance_id: u64,
     ) {
         let agents = self.agents.clone();
         let activity_logs = self.activity_logs.clone();
@@ -294,12 +310,21 @@ impl AgentManager {
                 }
             }
 
-            info!(agent = %name, "stdout reader ended — checking exit status");
-            activity_log::set_activity_state(&activity_logs, &name, "offline", "Process stopped");
-
             let rt = tokio::runtime::Handle::current();
             rt.block_on(async {
                 let mut agents_map = agents.lock().await;
+                let Some(current) = agents_map.get(&name) else {
+                    info!(agent = %name, instance_id, "stdout reader ended for stale process");
+                    return;
+                };
+                if current.instance_id != instance_id {
+                    info!(agent = %name, stale_instance = instance_id, current_instance = current.instance_id, "stdout reader ended after agent restart");
+                    return;
+                }
+
+                info!(agent = %name, "stdout reader ended — checking exit status");
+                activity_log::set_activity_state(&activity_logs, &name, "offline", "Process stopped");
+
                 if let Some(mut running) = agents_map.remove(&name) {
                     match running.process.wait() {
                         Ok(status) => {
@@ -613,6 +638,10 @@ fn truncate_prompt_text(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::process::{Command, Stdio};
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::tempdir;
 
     struct FakeDriver;
 
@@ -662,7 +691,8 @@ mod tests {
             runtime: "codex".to_string(),
             model: "gpt-5.4-mini".to_string(),
             session_id: session_id.map(str::to_string),
-            env_vars: None,
+            reasoning_effort: None,
+            env_vars: Vec::new(),
         }
     }
 
@@ -716,5 +746,89 @@ mod tests {
         assert!(prompt.contains("BASE PROMPT"));
         assert!(prompt.contains("Treat this preview as wake-up context only."));
         assert!(prompt.contains("Target: #general"));
+    }
+
+    #[tokio::test]
+    async fn stale_output_reader_does_not_remove_restarted_agent() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        store
+            .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+            .unwrap();
+
+        let manager = AgentManager::new(
+            store,
+            dir.path().join("agents"),
+            "chorus".to_string(),
+            "http://127.0.0.1:3001".to_string(),
+        );
+        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+
+        let mut first = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 0.1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let first_stdout = first.stdout.take().unwrap();
+        {
+            let mut agents = manager.agents.lock().await;
+            agents.insert(
+                "bot1".to_string(),
+                RunningAgent {
+                    instance_id: 1,
+                    process: first,
+                    driver: driver.clone(),
+                    session_id: None,
+                    is_in_receive_message: false,
+                    pending_notification_count: 0,
+                },
+            );
+        }
+        manager.spawn_output_reader("bot1".to_string(), first_stdout, driver.clone(), 1);
+
+        {
+            let mut agents = manager.agents.lock().await;
+            agents.remove("bot1").unwrap();
+        }
+
+        let second = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        {
+            let mut agents = manager.agents.lock().await;
+            agents.insert(
+                "bot1".to_string(),
+                RunningAgent {
+                    instance_id: 2,
+                    process: second,
+                    driver,
+                    session_id: None,
+                    is_in_receive_message: false,
+                    pending_notification_count: 0,
+                },
+            );
+        }
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+
+        let contains_restarted_agent = manager.agents.lock().await.contains_key("bot1");
+        if contains_restarted_agent {
+            if let Some(mut running) = manager.agents.lock().await.remove("bot1") {
+                let _ = running.process.kill();
+                let _ = running.process.wait();
+            }
+        }
+
+        assert!(
+            contains_restarted_agent,
+            "stale stdout reader removed the restarted agent from the running map"
+        );
     }
 }

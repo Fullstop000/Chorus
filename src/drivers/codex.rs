@@ -6,6 +6,57 @@ use crate::models::AgentConfig;
 
 pub struct CodexDriver;
 
+fn build_codex_args(ctx: &SpawnContext) -> anyhow::Result<Vec<String>> {
+    let bridge_binary_json = serde_json::to_string(&ctx.bridge_binary)?;
+    let bridge_args_json = serde_json::to_string(&vec![
+        "bridge",
+        "--agent-id",
+        &ctx.agent_id,
+        "--server-url",
+        &ctx.server_url,
+    ])?;
+
+    let mut args = vec!["exec".to_string()];
+
+    if let Some(ref session_id) = ctx.config.session_id {
+        args.push("resume".to_string());
+        args.push(session_id.clone());
+    }
+
+    args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
+    args.push("--json".to_string());
+
+    args.push("-c".to_string());
+    args.push(format!("mcp_servers.chat.command={bridge_binary_json}"));
+    args.push("-c".to_string());
+    args.push(format!("mcp_servers.chat.args={bridge_args_json}"));
+    args.push("-c".to_string());
+    args.push("mcp_servers.chat.startup_timeout_sec=30".to_string());
+    args.push("-c".to_string());
+    args.push("mcp_servers.chat.tool_timeout_sec=300".to_string());
+    args.push("-c".to_string());
+    args.push("mcp_servers.chat.enabled=true".to_string());
+    args.push("-c".to_string());
+    args.push("mcp_servers.chat.required=true".to_string());
+
+    if let Some(reasoning_effort) = ctx.config.reasoning_effort.as_deref() {
+        args.push("-c".to_string());
+        args.push(format!(
+            "model_reasoning_effort={}",
+            serde_json::to_string(reasoning_effort)?
+        ));
+    }
+
+    if !ctx.config.model.is_empty() {
+        args.push("-m".to_string());
+        args.push(ctx.config.model.clone());
+    }
+
+    args.push(ctx.prompt.clone());
+
+    Ok(args)
+}
+
 impl Driver for CodexDriver {
     fn id(&self) -> &str {
         "codex"
@@ -57,53 +108,13 @@ impl Driver for CodexDriver {
                 .status()?;
         }
 
-        let bridge_binary_json = serde_json::to_string(&ctx.bridge_binary)?;
-        let bridge_args_json = serde_json::to_string(&vec![
-            "bridge",
-            "--agent-id",
-            &ctx.agent_id,
-            "--server-url",
-            &ctx.server_url,
-        ])?;
-
-        let mut args = vec!["exec".to_string()];
-
-        if let Some(ref session_id) = ctx.config.session_id {
-            args.push("resume".to_string());
-            args.push(session_id.clone());
-        }
-
-        args.push("--dangerously-bypass-approvals-and-sandbox".to_string());
-        args.push("--json".to_string());
-
-        args.push("-c".to_string());
-        args.push(format!("mcp_servers.chat.command={bridge_binary_json}"));
-        args.push("-c".to_string());
-        args.push(format!("mcp_servers.chat.args={bridge_args_json}"));
-        args.push("-c".to_string());
-        args.push("mcp_servers.chat.startup_timeout_sec=30".to_string());
-        args.push("-c".to_string());
-        args.push("mcp_servers.chat.tool_timeout_sec=300".to_string());
-        args.push("-c".to_string());
-        args.push("mcp_servers.chat.enabled=true".to_string());
-        args.push("-c".to_string());
-        args.push("mcp_servers.chat.required=true".to_string());
-
-        if !ctx.config.model.is_empty() {
-            args.push("-m".to_string());
-            args.push(ctx.config.model.clone());
-        }
-
-        // Prompt is the last positional arg
-        args.push(ctx.prompt.clone());
+        let args = build_codex_args(ctx)?;
 
         let mut env_vars: std::collections::HashMap<String, String> = std::env::vars().collect();
         env_vars.insert("FORCE_COLOR".to_string(), "0".to_string());
         env_vars.insert("NO_COLOR".to_string(), "1".to_string());
-        if let Some(ref extra) = ctx.config.env_vars {
-            for (k, v) in extra {
-                env_vars.insert(k.clone(), v.clone());
-            }
+        for extra in &ctx.config.env_vars {
+            env_vars.insert(extra.key.clone(), extra.value.clone());
         }
 
         let child = Command::new("codex")
@@ -436,5 +447,35 @@ impl Driver for CodexDriver {
             "mcp_chat_upload_file" => str_field("file_path"),
             _ => String::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_args_include_reasoning_effort_override_when_configured() {
+        let ctx = SpawnContext {
+            agent_id: "bot1".to_string(),
+            agent_name: "bot1".to_string(),
+            config: AgentConfig {
+                name: "bot1".to_string(),
+                display_name: "Bot 1".to_string(),
+                description: Some("test".to_string()),
+                runtime: "codex".to_string(),
+                model: "gpt-5.4-mini".to_string(),
+                session_id: None,
+                reasoning_effort: Some("low".to_string()),
+                env_vars: Vec::new(),
+            },
+            prompt: "hello".to_string(),
+            working_directory: "/tmp".to_string(),
+            bridge_binary: "chorus".to_string(),
+            server_url: "http://127.0.0.1:3001".to_string(),
+        };
+
+        let args = build_codex_args(&ctx).unwrap();
+        assert!(args.contains(&"model_reasoning_effort=\"low\"".to_string()));
     }
 }
