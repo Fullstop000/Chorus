@@ -121,7 +121,11 @@ export function TasksPanel() {
   return (
     <div className="tasks-panel">
       <div className="tasks-panel-header">
-        <span className="tasks-panel-title">Tasks — {selectedChannel}</span>
+        <div className="tasks-panel-header-copy">
+          <span className="tasks-panel-kicker">[board::channel]</span>
+          <span className="tasks-panel-title">Tasks</span>
+        </div>
+        <span className="tasks-panel-channel">#{selectedChannel}</span>
       </div>
       {error && <div className="error-banner">{error}</div>}
 

@@ -48,3 +48,5 @@ ui/.vite/
 ui/tsconfig.tsbuildinfo
 .gstack/
 qa/runs/
+.codex/
+.claude/

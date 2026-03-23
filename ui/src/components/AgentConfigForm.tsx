@@ -66,121 +66,144 @@ export function AgentConfigForm({ state, editableName = false, onChange }: Props
   }
 
   return (
-    <>
-      {editableName && (
-        <div className="modal-field">
-          <label>Name</label>
-          <input
-            value={state.name}
-            onChange={(e) => onChange({ ...state, name: e.target.value })}
-            placeholder="e.g. my-agent"
-            autoFocus
-          />
+    <div className="agent-config-form">
+      <section className="agent-config-section">
+        <div className="agent-config-section-header">
+          <span className="agent-config-section-kicker">[identity::surface]</span>
         </div>
-      )}
-
-      <div className="modal-field">
-        <label>Display Name</label>
-        <input
-          value={state.display_name}
-          onChange={(e) => onChange({ ...state, display_name: e.target.value })}
-          placeholder={state.name || 'Agent name'}
-          autoFocus={!editableName}
-        />
-      </div>
-
-      <div className="modal-field">
-        <label>Role</label>
-        <textarea
-          value={state.description}
-          onChange={(e) => onChange({ ...state, description: e.target.value })}
-          placeholder="What does this agent do?"
-        />
-      </div>
-
-      <div className="modal-field">
-        <label>Runtime</label>
-        <select
-          value={state.runtime}
-          onChange={(e) => {
-            const runtime = e.target.value
-            const model = MODELS[runtime]?.[0]?.value ?? ''
-            onChange({
-              ...state,
-              runtime,
-              model,
-              reasoningEffort: runtime === 'codex' ? state.reasoningEffort ?? 'default' : null,
-            })
-          }}
-        >
-          <option value="claude">Claude Code</option>
-          <option value="codex">Codex CLI</option>
-        </select>
-      </div>
-
-      <div className="modal-field">
-        <label>Model</label>
-        <select
-          value={state.model}
-          onChange={(e) => onChange({ ...state, model: e.target.value })}
-        >
-          {(MODELS[state.runtime] ?? []).map((model) => (
-            <option key={model.value} value={model.value}>
-              {model.label}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {state.runtime === 'codex' && (
-        <div className="modal-field">
-          <label>Reasoning</label>
-          <select
-            value={state.reasoningEffort ?? 'default'}
-            onChange={(e) =>
-              onChange({
-                ...state,
-                reasoningEffort: e.target.value,
-              })
-            }
-          >
-            {REASONING_EFFORTS.map((effort) => (
-              <option key={effort.value} value={effort.value}>
-                {effort.label}
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      <div className="modal-field">
-        <label>Environment Variables</label>
-        <div className="env-var-editor">
-          {state.envVars.length === 0 && (
-            <div className="env-var-editor-empty">No environment variables configured.</div>
-          )}
-          {state.envVars.map((envVar, index) => (
-            <div key={index} className="env-var-editor-row">
+        <div className="agent-config-grid">
+          {editableName && (
+            <div className="modal-field">
+              <label>Name</label>
               <input
-                value={envVar.key}
-                onChange={(e) => updateEnvVar(index, 'key', e.target.value)}
-                placeholder="KEY"
+                value={state.name}
+                onChange={(e) => onChange({ ...state, name: e.target.value })}
+                placeholder="e.g. my-agent"
+                autoFocus
               />
-              <input
-                value={envVar.value}
-                onChange={(e) => updateEnvVar(index, 'value', e.target.value)}
-                placeholder="value"
-              />
-              <button className="env-remove-btn" type="button" onClick={() => removeEnvVar(index)}>
-                ×
-              </button>
+              <div className="modal-field-hint">Stable machine name used in channels and internal references.</div>
             </div>
-          ))}
+          )}
+
+          <div className="modal-field">
+            <label>Display Name</label>
+            <input
+              value={state.display_name}
+              onChange={(e) => onChange({ ...state, display_name: e.target.value })}
+              placeholder={state.name || 'Agent name'}
+              autoFocus={!editableName}
+            />
+            <div className="modal-field-hint">Human-facing label shown across the workspace.</div>
+          </div>
+        </div>
+
+        <div className="modal-field">
+          <label>Role</label>
+          <textarea
+            value={state.description}
+            onChange={(e) => onChange({ ...state, description: e.target.value })}
+            placeholder="What does this agent do?"
+          />
+          <div className="modal-field-hint">Keep it brief and operational. This description guides how teammates interpret the agent.</div>
+        </div>
+      </section>
+
+      <section className="agent-config-section">
+        <div className="agent-config-section-header">
+          <span className="agent-config-section-kicker">[runtime::selection]</span>
+        </div>
+        <div className="agent-config-grid">
+          <div className="modal-field">
+            <label>Runtime</label>
+            <select
+              value={state.runtime}
+              onChange={(e) => {
+                const runtime = e.target.value
+                const model = MODELS[runtime]?.[0]?.value ?? ''
+                onChange({
+                  ...state,
+                  runtime,
+                  model,
+                  reasoningEffort: runtime === 'codex' ? state.reasoningEffort ?? 'default' : null,
+                })
+              }}
+            >
+              <option value="claude">Claude Code</option>
+              <option value="codex">Codex CLI</option>
+            </select>
+          </div>
+
+          <div className="modal-field">
+            <label>Model</label>
+            <select
+              value={state.model}
+              onChange={(e) => onChange({ ...state, model: e.target.value })}
+            >
+              {(MODELS[state.runtime] ?? []).map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {state.runtime === 'codex' && (
+            <div className="modal-field">
+              <label>Reasoning</label>
+              <select
+                value={state.reasoningEffort ?? 'default'}
+                onChange={(e) =>
+                  onChange({
+                    ...state,
+                    reasoningEffort: e.target.value,
+                  })
+                }
+              >
+                {REASONING_EFFORTS.map((effort) => (
+                  <option key={effort.value} value={effort.value}>
+                    {effort.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </div>
+      </section>
+
+      <section className="agent-config-section">
+        <div className="agent-config-section-header">
+          <span className="agent-config-section-kicker">[env::bindings]</span>
           <button className="env-add-btn" type="button" onClick={addEnvVar}>
             + Add variable
           </button>
         </div>
-      </div>
-    </>
+        <div className="modal-field">
+          <label>Environment Variables</label>
+          <div className="modal-field-hint">Pass runtime secrets and flags into the agent process without hardcoding them into prompts.</div>
+          <div className="env-var-editor">
+            {state.envVars.length === 0 && (
+              <div className="env-var-editor-empty">No environment variables configured.</div>
+            )}
+            {state.envVars.map((envVar, index) => (
+              <div key={index} className="env-var-editor-row">
+                <input
+                  value={envVar.key}
+                  onChange={(e) => updateEnvVar(index, 'key', e.target.value)}
+                  placeholder="KEY"
+                />
+                <input
+                  value={envVar.value}
+                  onChange={(e) => updateEnvVar(index, 'value', e.target.value)}
+                  placeholder="value"
+                />
+                <button className="env-remove-btn" type="button" onClick={() => removeEnvVar(index)}>
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+    </div>
   )
 }

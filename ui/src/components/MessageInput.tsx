@@ -1,4 +1,5 @@
 import { useState, useRef } from 'react'
+import { Paperclip, Plus } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { sendMessage, createTasks, uploadFile } from '../api'
 import { MentionTextarea } from './MentionTextarea'
@@ -80,7 +81,8 @@ export function MessageInput({ onMessageSent }: Props) {
         <div className="message-input-files">
           {pendingFiles.map((f, i) => (
             <span key={i} className="file-chip">
-              📎 {f.name}
+              <Paperclip size={12} />
+              {f.name}
               <button
                 onClick={() => {
                   setError(null)
@@ -100,7 +102,7 @@ export function MessageInput({ onMessageSent }: Props) {
           disabled={!target || isSystemChannel}
           title="Attach file"
         >
-          ⊕
+          <Plus size={16} />
         </button>
         <input
           ref={fileInputRef}

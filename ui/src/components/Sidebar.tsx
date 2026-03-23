@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ChevronDown, Plus, Settings2, Sparkles } from 'lucide-react'
 import { useApp } from '../store'
 import type { AgentInfo } from '../types'
 import { CreateAgentModal } from './CreateAgentModal'
@@ -65,89 +66,108 @@ export function Sidebar() {
   return (
     <>
       <nav className="sidebar">
-        {/* Header */}
         <div className="sidebar-header">
-          <span className="sidebar-server-name">
-            Chorus <button>▾</button>
-          </span>
-          <div style={{ display: 'flex', gap: 4 }}>
-            <button className="sidebar-icon-btn">✦</button>
-            <button className="sidebar-icon-btn">⊕</button>
+          <div className="sidebar-server-block">
+            <span className="sidebar-server-label">[chorus::workspace]</span>
+            <span className="sidebar-server-name">
+              Chorus
+              <button type="button" aria-label="Open workspace menu">
+                <ChevronDown size={14} />
+              </button>
+            </span>
+          </div>
+          <div className="sidebar-header-actions">
+            <button className="sidebar-icon-btn" type="button" aria-label="Open suggestions">
+              <Sparkles size={15} />
+            </button>
+            <button className="sidebar-icon-btn" type="button" aria-label="Create">
+              <Plus size={15} />
+            </button>
           </div>
         </div>
 
         <div className="sidebar-body">
-          {/* Channels */}
           <div className="sidebar-section">
             <div className="sidebar-section-header">
               <span className="sidebar-section-label">Channels</span>
-              <button className="sidebar-add-btn" title="Add channel" onClick={() => setShowCreateChannel(true)}>+</button>
+              <button className="sidebar-add-btn" type="button" title="Add channel" onClick={() => setShowCreateChannel(true)}>
+                <Plus size={14} />
+              </button>
             </div>
             {channels.map((ch) => {
               const target = `#${ch.name}`
               return (
-                <div
+                <button
                   key={ch.name}
+                  type="button"
                   className={`sidebar-item${selectedChannel === target ? ' active' : ''}`}
                   onClick={() => setSelectedChannel(target)}
                 >
                   <span className="sidebar-item-hash">#</span>
-                  <span className="sidebar-item-text">{ch.name}</span>
-                </div>
+                  <span className="sidebar-item-main">
+                    <span className="sidebar-item-text">{ch.name}</span>
+                  </span>
+                </button>
               )
             })}
           </div>
 
-          {/* System Channels */}
           {systemChannels.length > 0 && (
             <div className="sidebar-section">
               <div className="sidebar-section-header">
-                <span className="sidebar-section-label">System</span>
+                <span className="sidebar-section-label">System Channels</span>
               </div>
               {systemChannels.map((ch) => {
                 const target = `#${ch.name}`
                 return (
-                  <div
+                  <button
                     key={ch.name}
+                    type="button"
                     className={`sidebar-item sidebar-item--system${selectedChannel === target ? ' active' : ''}`}
                     onClick={() => setSelectedChannel(target)}
                     title={ch.description ?? ch.name}
                   >
                     <span className="sidebar-item-hash">#</span>
-                    <span className="sidebar-item-text">{ch.name}</span>
-                  </div>
+                    <span className="sidebar-item-main">
+                      <span className="sidebar-item-text">{ch.name}</span>
+                      <span className="sidebar-item-meta">:: system</span>
+                    </span>
+                  </button>
                 )
               })}
             </div>
           )}
 
-          {/* Agents */}
           <div className="sidebar-section">
             <div className="sidebar-section-header">
               <span className="sidebar-section-label">Agents</span>
               <button
                 className="sidebar-add-btn"
+                type="button"
                 title="Create agent"
                 onClick={() => setShowCreateAgent(true)}
               >
-                +
+                <Plus size={14} />
               </button>
             </div>
             {agents.map((agent) => (
-              <div
+              <button
                 key={agent.name}
+                type="button"
                 className={`sidebar-item${
                   selectedAgent?.name === agent.name ? ' active' : ''
                 }`}
                 onClick={() => setSelectedAgent(agent as AgentInfo)}
               >
                 <AgentAvatar name={agent.name} status={agent.status} activity={agent.activity} />
-                <span className="sidebar-item-text">{agent.display_name ?? agent.name}</span>
-              </div>
+                <span className="sidebar-item-main">
+                  <span className="sidebar-item-text">{agent.display_name ?? agent.name}</span>
+                  <span className="sidebar-item-meta">:: {agent.runtime ?? 'agent'}</span>
+                </span>
+              </button>
             ))}
           </div>
 
-          {/* Humans */}
           <div className="sidebar-section">
             <div className="sidebar-section-header">
               <span className="sidebar-section-label">Humans</span>
@@ -169,16 +189,19 @@ export function Sidebar() {
                 >
                   {h.name[0]?.toUpperCase()}
                 </div>
-                <span className="sidebar-item-text">{h.name}</span>
+                <span className="sidebar-item-main">
+                  <span className="sidebar-item-text">{h.name}</span>
+                  <span className="sidebar-item-meta">:: human</span>
+                </span>
                 {h.name === currentUser && <span className="you-badge">you</span>}
               </div>
             ))}
           </div>
         </div>
 
-        {/* Footer */}
         <div className="sidebar-footer">
           <div
+            className="sidebar-footer-avatar"
             style={{
               width: 32,
               height: 32,
@@ -195,8 +218,13 @@ export function Sidebar() {
           >
             {currentUser[0]?.toUpperCase() ?? '?'}
           </div>
-          <span className="sidebar-footer-name">{currentUser}</span>
-          <button className="sidebar-footer-cog">⚙</button>
+          <div className="sidebar-footer-main">
+            <span className="sidebar-footer-name">{currentUser}</span>
+            <span className="sidebar-footer-meta">[operator::active]</span>
+          </div>
+          <button className="sidebar-footer-cog" type="button" aria-label="Open settings">
+            <Settings2 size={15} />
+          </button>
         </div>
       </nav>
 

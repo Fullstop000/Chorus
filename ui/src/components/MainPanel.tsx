@@ -1,6 +1,6 @@
 import { useApp, useTarget } from '../store'
 import { TabBar } from './TabBar'
-import { ChatPanel } from './ChatPanel'
+import { ChatHeader, ChatPanel } from './ChatPanel'
 import { TasksPanel } from './TasksPanel'
 import { ProfilePanel } from './ProfilePanel'
 import { ActivityPanel } from './ActivityPanel'
@@ -24,9 +24,15 @@ export function MainPanel() {
         flexDirection: 'column',
         overflow: 'hidden',
         background: 'var(--content-bg)',
+        paddingTop: 10,
       }}
     >
-      {showHeader && <TabBar />}
+      {showHeader && (
+        <>
+          <ChatHeader />
+          <TabBar />
+        </>
+      )}
 
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
@@ -52,7 +58,7 @@ export function MainPanel() {
                 gap: 8,
               }}
             >
-              <span style={{ fontSize: 32 }}>🎵</span>
+              <span className="empty-state-icon">[chorus::idle]</span>
               <span>Select a channel or agent to get started</span>
             </div>
           )}

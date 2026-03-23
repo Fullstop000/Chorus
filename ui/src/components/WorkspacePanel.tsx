@@ -159,6 +159,7 @@ export function WorkspacePanel({ agentName }: Props) {
     <div className="workspace-panel">
       <div className="workspace-toolbar">
         <div className="workspace-toolbar-path">
+          <span className="workspace-toolbar-kicker">[workspace::path]</span>
           <span className="workspace-location">{workspacePath || '(workspace unavailable)'}</span>
         </div>
         <button className="workspace-toolbar-btn" type="button" onClick={copyWorkspacePath} aria-label="Copy workspace path">
@@ -169,7 +170,10 @@ export function WorkspacePanel({ agentName }: Props) {
       <div className="workspace-shell">
         <aside className="workspace-sidebar">
           <div className="workspace-sidebar-header">
-            <span className="workspace-sidebar-title">WORKSPACE</span>
+            <div className="workspace-sidebar-copy">
+              <span className="workspace-sidebar-kicker">[tree::index]</span>
+              <span className="workspace-sidebar-title">Workspace</span>
+            </div>
             <button className="workspace-icon-btn" type="button" onClick={load} aria-label="Refresh workspace">
               <RefreshCw size={18} />
             </button>
@@ -204,6 +208,7 @@ export function WorkspacePanel({ agentName }: Props) {
         <section className="workspace-preview">
           <div className="workspace-preview-header">
             <div className="workspace-preview-meta">
+              <span className="workspace-preview-kicker">[preview::file]</span>
               <div className="workspace-preview-heading-row">
                 <span className="workspace-preview-title">{selectedPath ?? 'Preview'}</span>
                 {metadata.map((item) => (

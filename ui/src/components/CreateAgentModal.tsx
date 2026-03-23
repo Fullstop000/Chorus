@@ -55,9 +55,12 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
 
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box">
+      <div className="modal-box modal-box-agent">
         <div className="modal-header">
-          <span className="modal-title">Create Agent</span>
+          <div className="modal-title-block">
+            <span className="modal-title">Create Agent</span>
+            <span className="modal-subtitle">[agent::new]</span>
+          </div>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
 
@@ -70,9 +73,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
 
         <AgentConfigForm state={config} editableName onChange={setConfig} />
 
-        {error && (
-          <div style={{ color: 'var(--accent)', fontSize: 13, marginTop: 8 }}>{error}</div>
-        )}
+        {error && <div className="modal-error">{error}</div>}
 
         <div className="modal-footer">
           <button className="btn-secondary" onClick={onClose}>Cancel</button>
