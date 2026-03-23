@@ -1,5 +1,5 @@
 use chorus::models::*;
-use chorus::store::Store;
+use chorus::store::{AgentRecordUpsert, Store};
 use tempfile::tempdir;
 
 fn make_store() -> (Store, tempfile::TempDir) {
@@ -128,30 +128,30 @@ fn test_agent_env_vars_persist_in_agent_record() {
 fn test_agent_reasoning_effort_persists_in_agent_record() {
     let (store, _dir) = make_store();
     store
-        .create_agent_record_with_reasoning(
-            "bot1",
-            "Bot 1",
-            None,
-            "codex",
-            "gpt-5.4-mini",
-            Some("low"),
-            &[],
-        )
+        .create_agent_record_with_reasoning(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            runtime: "codex",
+            model: "gpt-5.4-mini",
+            reasoning_effort: Some("low"),
+            env_vars: &[],
+        })
         .unwrap();
 
     let agent = store.get_agent("bot1").unwrap().unwrap();
     assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
 
     store
-        .update_agent_record_with_reasoning(
-            "bot1",
-            "Bot 1",
-            None,
-            "codex",
-            "gpt-5.4-mini",
-            Some("high"),
-            &[],
-        )
+        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            runtime: "codex",
+            model: "gpt-5.4-mini",
+            reasoning_effort: Some("high"),
+            env_vars: &[],
+        })
         .unwrap();
 
     let updated = store.get_agent("bot1").unwrap().unwrap();

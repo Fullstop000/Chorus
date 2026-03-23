@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Child;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -181,7 +181,12 @@ impl AgentManager {
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Inactive)?;
-        activity_log::set_activity_state(&self.activity_logs, agent_name, "offline", "Process stopped");
+        activity_log::set_activity_state(
+            &self.activity_logs,
+            agent_name,
+            "offline",
+            "Process stopped",
+        );
         Ok(())
     }
 
@@ -634,8 +639,8 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::process::{Command, Stdio};
-    use std::time::Duration;
     use std::sync::Arc;
+    use std::time::Duration;
     use tempfile::tempdir;
 
     struct FakeDriver;

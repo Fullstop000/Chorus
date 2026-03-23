@@ -582,7 +582,8 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
                 .uri("/api/agents/bot1/delete")
                 .header("content-type", "application/json")
                 .body(Body::from(
-                    serde_json::to_vec(&serde_json::json!({ "mode": "preserve_workspace" })).unwrap(),
+                    serde_json::to_vec(&serde_json::json!({ "mode": "preserve_workspace" }))
+                        .unwrap(),
                 ))
                 .unwrap(),
         )

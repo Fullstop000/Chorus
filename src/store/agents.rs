@@ -5,6 +5,17 @@ use uuid::Uuid;
 use super::{parse_agent_status, parse_datetime, Store};
 use crate::models::*;
 
+/// Shared persisted agent configuration used by store create/update helpers.
+pub struct AgentRecordUpsert<'a> {
+    pub name: &'a str,
+    pub display_name: &'a str,
+    pub description: Option<&'a str>,
+    pub runtime: &'a str,
+    pub model: &'a str,
+    pub reasoning_effort: Option<&'a str>,
+    pub env_vars: &'a [AgentEnvVar],
+}
+
 impl Store {
     pub fn create_agent_record(
         &self,
@@ -15,34 +26,36 @@ impl Store {
         model: &str,
         env_vars: &[AgentEnvVar],
     ) -> Result<String> {
-        self.create_agent_record_with_reasoning(
+        self.create_agent_record_with_reasoning(&AgentRecordUpsert {
             name,
             display_name,
             description,
             runtime,
             model,
-            None,
+            reasoning_effort: None,
             env_vars,
-        )
+        })
     }
 
     pub fn create_agent_record_with_reasoning(
         &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        reasoning_effort: Option<&str>,
-        env_vars: &[AgentEnvVar],
+        record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO agents (id, name, display_name, description, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![id, name, display_name, description, runtime, model, reasoning_effort],
+            params![
+                id,
+                record.name,
+                record.display_name,
+                record.description,
+                record.runtime,
+                record.model,
+                record.reasoning_effort
+            ],
         )?;
-        Self::replace_agent_env_vars_inner(&conn, name, env_vars)?;
+        Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
         Ok(id)
     }
 
@@ -122,33 +135,31 @@ impl Store {
         model: &str,
         env_vars: &[AgentEnvVar],
     ) -> Result<()> {
-        self.update_agent_record_with_reasoning(
+        self.update_agent_record_with_reasoning(&AgentRecordUpsert {
             name,
             display_name,
             description,
             runtime,
             model,
-            None,
+            reasoning_effort: None,
             env_vars,
-        )
+        })
     }
 
-    pub fn update_agent_record_with_reasoning(
-        &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        reasoning_effort: Option<&str>,
-        env_vars: &[AgentEnvVar],
-    ) -> Result<()> {
+    pub fn update_agent_record_with_reasoning(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE agents SET display_name = ?1, description = ?2, runtime = ?3, model = ?4, reasoning_effort = ?5 WHERE name = ?6",
-            params![display_name, description, runtime, model, reasoning_effort, name],
+            params![
+                record.display_name,
+                record.description,
+                record.runtime,
+                record.model,
+                record.reasoning_effort,
+                record.name
+            ],
         )?;
-        Self::replace_agent_env_vars_inner(&conn, name, env_vars)?;
+        Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
         Ok(())
     }
 
@@ -196,7 +207,10 @@ impl Store {
         name: &str,
         env_vars: &[AgentEnvVar],
     ) -> Result<()> {
-        conn.execute("DELETE FROM agent_env_vars WHERE agent_name = ?1", params![name])?;
+        conn.execute(
+            "DELETE FROM agent_env_vars WHERE agent_name = ?1",
+            params![name],
+        )?;
         for env_var in env_vars {
             conn.execute(
                 "INSERT INTO agent_env_vars (agent_name, key, value, position) VALUES (?1, ?2, ?3, ?4)",

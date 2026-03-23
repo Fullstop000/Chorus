@@ -147,7 +147,10 @@ pub fn build_router_with_lifecycle(
         .route("/api/whoami", get(handle_whoami))
         .route("/api/channels", post(handle_create_channel))
         .route("/api/agents", post(handle_create_agent))
-        .route("/api/agents/{name}", get(handle_get_agent).patch(handle_update_agent))
+        .route(
+            "/api/agents/{name}",
+            get(handle_get_agent).patch(handle_update_agent),
+        )
         .route("/api/agents/{name}/start", post(handle_agent_start))
         .route("/api/agents/{name}/stop", post(handle_agent_stop))
         .route("/api/agents/{name}/restart", post(handle_restart_agent))

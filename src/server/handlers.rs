@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::AgentLifecycle;
 use crate::agent_workspace::AgentWorkspace;
 use crate::models::*;
-use crate::store::Store;
+use crate::store::{AgentRecordUpsert, Store};
 
 pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
@@ -556,7 +556,9 @@ pub async fn handle_create_channel(
 
 // ── Agent management ──
 
-fn normalize_agent_env_vars(env_vars: &[AgentEnvVarPayload]) -> Result<Vec<AgentEnvVar>, (StatusCode, Json<ErrorResponse>)> {
+fn normalize_agent_env_vars(
+    env_vars: &[AgentEnvVarPayload],
+) -> Result<Vec<AgentEnvVar>, (StatusCode, Json<ErrorResponse>)> {
     if env_vars.len() > 100 {
         return Err(api_err("too many environment variables"));
     }
@@ -572,7 +574,9 @@ fn normalize_agent_env_vars(env_vars: &[AgentEnvVarPayload]) -> Result<Vec<Agent
             return Err(api_err("environment variable key/value is too large"));
         }
         if !seen.insert(key.clone()) {
-            return Err(api_err(format!("duplicate environment variable key: {key}")));
+            return Err(api_err(format!(
+                "duplicate environment variable key: {key}"
+            )));
         }
         normalized.push(AgentEnvVar {
             key,
@@ -650,15 +654,15 @@ pub async fn handle_create_agent(
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     state
         .store
-        .create_agent_record_with_reasoning(
-            &name,
-            &display_name,
+        .create_agent_record_with_reasoning(&AgentRecordUpsert {
+            name: &name,
+            display_name: &display_name,
             description,
-            &req.runtime,
-            &req.model,
-            reasoning_effort.as_deref(),
-            &env_vars,
-        )
+            runtime: &req.runtime,
+            model: &req.model,
+            reasoning_effort: reasoning_effort.as_deref(),
+            env_vars: &env_vars,
+        })
         .map_err(|e| api_err(e.to_string()))?;
     for channel in state
         .store
@@ -731,15 +735,15 @@ pub async fn handle_update_agent(
 
     state
         .store
-        .update_agent_record_with_reasoning(
-            &name,
-            &display_name,
+        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+            name: &name,
+            display_name: &display_name,
             description,
-            &req.runtime,
-            &req.model,
-            reasoning_effort.as_deref(),
-            &env_vars,
-        )
+            runtime: &req.runtime,
+            model: &req.model,
+            reasoning_effort: reasoning_effort.as_deref(),
+            env_vars: &env_vars,
+        })
         .map_err(|e| api_err(e.to_string()))?;
 
     if existing.status == AgentStatus::Active && requires_restart {
@@ -847,9 +851,9 @@ pub async fn handle_delete_agent(
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
         let agents_dir = state.store.agents_dir();
         let workspace = AgentWorkspace::new(&agents_dir);
-        workspace
-            .delete_if_exists(&name)
-            .map_err(|e| internal_err(format!("agent deleted but failed to delete workspace: {e}")))?;
+        workspace.delete_if_exists(&name).map_err(|e| {
+            internal_err(format!("agent deleted but failed to delete workspace: {e}"))
+        })?;
     }
 
     Ok(Json(serde_json::json!({ "ok": true })))

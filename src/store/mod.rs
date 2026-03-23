@@ -4,6 +4,8 @@ mod knowledge;
 mod messages;
 mod tasks;
 
+pub use agents::AgentRecordUpsert;
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
