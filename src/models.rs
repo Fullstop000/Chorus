@@ -154,6 +154,7 @@ pub struct Agent {
     pub description: Option<String>,
     pub runtime: String,
     pub model: String,
+    pub reasoning_effort: Option<String>,
     pub env_vars: Vec<AgentEnvVar>,
     pub status: AgentStatus,
     pub session_id: Option<String>,
@@ -215,6 +216,7 @@ pub struct AgentConfig {
     pub runtime: String,
     pub model: String,
     pub session_id: Option<String>,
+    pub reasoning_effort: Option<String>,
     pub env_vars: Vec<AgentEnvVar>,
 }
 
@@ -332,6 +334,8 @@ pub struct AgentInfo {
     pub runtime: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(rename = "reasoningEffort", skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Live activity state: online | thinking | working | offline
@@ -481,6 +485,8 @@ pub struct CreateAgentRequest {
     pub runtime: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default, rename = "reasoningEffort")]
+    pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
 }
@@ -494,6 +500,8 @@ pub struct UpdateAgentRequest {
     pub runtime: String,
     #[serde(default = "default_model")]
     pub model: String,
+    #[serde(default, rename = "reasoningEffort")]
+    pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
 }

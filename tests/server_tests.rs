@@ -494,12 +494,18 @@ async fn test_get_and_update_agent_via_api() {
         .await
         .unwrap();
     assert_eq!(detail_resp.status(), StatusCode::OK);
+    let detail_body = axum::body::to_bytes(detail_resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let detail: AgentDetailResponse = serde_json::from_slice(&detail_body).unwrap();
+    assert_eq!(detail.agent.reasoning_effort, None);
 
     let update_req = serde_json::json!({
         "display_name": "Updated Bot",
         "description": "Updated role",
         "runtime": "codex",
         "model": "gpt-5.4",
+        "reasoningEffort": "low",
         "envVars": [{"key": "DEBUG", "value": "1"}]
     });
     let update_resp = app
@@ -520,6 +526,7 @@ async fn test_get_and_update_agent_via_api() {
     assert_eq!(agent.display_name, "Updated Bot");
     assert_eq!(agent.runtime, "codex");
     assert_eq!(agent.model, "gpt-5.4");
+    assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
     assert_eq!(agent.env_vars.len(), 1);
     assert_eq!(agent.env_vars[0].key, "DEBUG");
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);

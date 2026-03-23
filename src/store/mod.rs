@@ -90,6 +90,7 @@ impl Store {
                 description TEXT,
                 runtime TEXT NOT NULL,
                 model TEXT NOT NULL,
+                reasoning_effort TEXT,
                 status TEXT NOT NULL DEFAULT 'inactive',
                 session_id TEXT,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -159,6 +160,8 @@ impl Store {
             [],
         )
         .ok();
+        conn.execute("ALTER TABLE agents ADD COLUMN reasoning_effort TEXT", [])
+            .ok();
         Ok(())
     }
 
@@ -279,7 +282,7 @@ impl Store {
             .collect();
 
         let mut ag_stmt = conn.prepare(
-            "SELECT name, display_name, description, runtime, model, status, session_id FROM agents ORDER BY name",
+            "SELECT name, display_name, description, runtime, model, reasoning_effort, status, session_id FROM agents ORDER BY name",
         )?;
         let agents: Vec<AgentInfo> = ag_stmt
             .query_map([], |row| {
@@ -289,8 +292,9 @@ impl Store {
                     description: row.get(2)?,
                     runtime: row.get(3)?,
                     model: row.get(4)?,
-                    status: row.get(5)?,
-                    session_id: row.get(6)?,
+                    reasoning_effort: row.get(5)?,
+                    status: row.get(6)?,
+                    session_id: row.get(7)?,
                     activity: None,
                     activity_detail: None,
                 })

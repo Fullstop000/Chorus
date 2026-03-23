@@ -214,6 +214,7 @@ export async function updateAgent(
     description: string
     runtime: string
     model: string
+    reasoningEffort?: string | null
     envVars: AgentEnvVar[]
   }
 ): Promise<{ ok: boolean; restarted: boolean }> {

@@ -17,12 +17,23 @@ export const MODELS: Record<string, { value: string; label: string }[]> = {
   ],
 }
 
+export const REASONING_EFFORTS = [
+  { value: 'default', label: 'Default' },
+  { value: 'none', label: 'None' },
+  { value: 'minimal', label: 'Minimal' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra High' },
+]
+
 export interface AgentConfigState {
   name: string
   display_name: string
   description: string
   runtime: string
   model: string
+  reasoningEffort: string | null
   envVars: AgentEnvVar[]
 }
 
@@ -94,7 +105,12 @@ export function AgentConfigForm({ state, editableName = false, onChange }: Props
           onChange={(e) => {
             const runtime = e.target.value
             const model = MODELS[runtime]?.[0]?.value ?? ''
-            onChange({ ...state, runtime, model })
+            onChange({
+              ...state,
+              runtime,
+              model,
+              reasoningEffort: runtime === 'codex' ? state.reasoningEffort ?? 'default' : null,
+            })
           }}
         >
           <option value="claude">Claude Code</option>
@@ -115,6 +131,27 @@ export function AgentConfigForm({ state, editableName = false, onChange }: Props
           ))}
         </select>
       </div>
+
+      {state.runtime === 'codex' && (
+        <div className="modal-field">
+          <label>Reasoning</label>
+          <select
+            value={state.reasoningEffort ?? 'default'}
+            onChange={(e) =>
+              onChange({
+                ...state,
+                reasoningEffort: e.target.value,
+              })
+            }
+          >
+            {REASONING_EFFORTS.map((effort) => (
+              <option key={effort.value} value={effort.value}>
+                {effort.label}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
 
       <div className="modal-field">
         <label>Environment Variables</label>

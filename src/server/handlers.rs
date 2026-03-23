@@ -583,6 +583,31 @@ fn normalize_agent_env_vars(env_vars: &[AgentEnvVarPayload]) -> Result<Vec<Agent
     Ok(normalized)
 }
 
+fn normalize_reasoning_effort(
+    runtime: &str,
+    reasoning_effort: Option<&str>,
+) -> Result<Option<String>, (StatusCode, Json<ErrorResponse>)> {
+    if runtime != "codex" {
+        return Ok(None);
+    }
+
+    let Some(reasoning_effort) = reasoning_effort.map(str::trim) else {
+        return Ok(None);
+    };
+    if reasoning_effort.is_empty() || reasoning_effort == "default" {
+        return Ok(None);
+    }
+
+    match reasoning_effort {
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => {
+            Ok(Some(reasoning_effort.to_string()))
+        }
+        _ => Err(api_err(format!(
+            "unsupported Codex reasoning effort: {reasoning_effort}"
+        ))),
+    }
+}
+
 fn agent_info_from_agent(agent: &Agent) -> AgentInfo {
     AgentInfo {
         name: agent.name.clone(),
@@ -595,6 +620,7 @@ fn agent_info_from_agent(agent: &Agent) -> AgentInfo {
         description: agent.description.clone(),
         runtime: Some(agent.runtime.clone()),
         model: Some(agent.model.clone()),
+        reasoning_effort: agent.reasoning_effort.clone(),
         session_id: agent.session_id.clone(),
         activity: None,
         activity_detail: None,
@@ -619,15 +645,18 @@ pub async fn handle_create_agent(
     } else {
         Some(req.description.as_str())
     };
+    let reasoning_effort =
+        normalize_reasoning_effort(&req.runtime, req.reasoning_effort.as_deref())?;
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     state
         .store
-        .create_agent_record(
+        .create_agent_record_with_reasoning(
             &name,
             &display_name,
             description,
             &req.runtime,
             &req.model,
+            reasoning_effort.as_deref(),
             &env_vars,
         )
         .map_err(|e| api_err(e.to_string()))?;
@@ -692,19 +721,23 @@ pub async fn handle_update_agent(
     } else {
         Some(req.description.trim())
     };
+    let reasoning_effort =
+        normalize_reasoning_effort(&req.runtime, req.reasoning_effort.as_deref())?;
 
     let requires_restart = existing.runtime != req.runtime
         || existing.model != req.model
+        || existing.reasoning_effort != reasoning_effort
         || existing.env_vars != env_vars;
 
     state
         .store
-        .update_agent_record(
+        .update_agent_record_with_reasoning(
             &name,
             &display_name,
             description,
             &req.runtime,
             &req.model,
+            reasoning_effort.as_deref(),
             &env_vars,
         )
         .map_err(|e| api_err(e.to_string()))?;

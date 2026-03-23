@@ -14,6 +14,7 @@ export interface AgentInfo {
   status: 'active' | 'sleeping' | 'inactive'
   runtime?: string
   model?: string
+  reasoningEffort?: string
   description?: string
   session_id?: string
   /** Live activity state: online | thinking | working | offline */

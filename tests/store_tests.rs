@@ -125,6 +125,40 @@ fn test_agent_env_vars_persist_in_agent_record() {
 }
 
 #[test]
+fn test_agent_reasoning_effort_persists_in_agent_record() {
+    let (store, _dir) = make_store();
+    store
+        .create_agent_record_with_reasoning(
+            "bot1",
+            "Bot 1",
+            None,
+            "codex",
+            "gpt-5.4-mini",
+            Some("low"),
+            &[],
+        )
+        .unwrap();
+
+    let agent = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
+
+    store
+        .update_agent_record_with_reasoning(
+            "bot1",
+            "Bot 1",
+            None,
+            "codex",
+            "gpt-5.4-mini",
+            Some("high"),
+            &[],
+        )
+        .unwrap();
+
+    let updated = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(updated.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[test]
 fn test_mark_agent_messages_deleted_marks_history_rows() {
     let (store, _dir) = make_store();
     store

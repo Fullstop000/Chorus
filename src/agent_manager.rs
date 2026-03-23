@@ -92,6 +92,7 @@ impl AgentManager {
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
             session_id: resumable_session_id,
+            reasoning_effort: agent.reasoning_effort.clone(),
             env_vars: agent.env_vars.clone(),
         };
 
@@ -685,6 +686,7 @@ mod tests {
             runtime: "codex".to_string(),
             model: "gpt-5.4-mini".to_string(),
             session_id: session_id.map(str::to_string),
+            reasoning_effort: None,
             env_vars: Vec::new(),
         }
     }

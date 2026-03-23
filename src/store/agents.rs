@@ -15,11 +15,32 @@ impl Store {
         model: &str,
         env_vars: &[AgentEnvVar],
     ) -> Result<String> {
+        self.create_agent_record_with_reasoning(
+            name,
+            display_name,
+            description,
+            runtime,
+            model,
+            None,
+            env_vars,
+        )
+    }
+
+    pub fn create_agent_record_with_reasoning(
+        &self,
+        name: &str,
+        display_name: &str,
+        description: Option<&str>,
+        runtime: &str,
+        model: &str,
+        reasoning_effort: Option<&str>,
+        env_vars: &[AgentEnvVar],
+    ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO agents (id, name, display_name, description, runtime, model) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![id, name, display_name, description, runtime, model],
+            "INSERT INTO agents (id, name, display_name, description, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![id, name, display_name, description, runtime, model, reasoning_effort],
         )?;
         Self::replace_agent_env_vars_inner(&conn, name, env_vars)?;
         Ok(id)
@@ -39,7 +60,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
-                "SELECT id, name, display_name, description, runtime, model, status, session_id, created_at FROM agents ORDER BY name",
+                "SELECT id, name, display_name, description, runtime, model, reasoning_effort, status, session_id, created_at FROM agents ORDER BY name",
             )?
             .query_map([], |row| {
                 Ok(Agent {
@@ -49,10 +70,11 @@ impl Store {
                     description: row.get(3)?,
                     runtime: row.get(4)?,
                     model: row.get(5)?,
+                    reasoning_effort: row.get(6)?,
                     env_vars: Vec::new(),
-                    status: parse_agent_status(&row.get::<_, String>(6)?),
-                    session_id: row.get(7)?,
-                    created_at: parse_datetime(&row.get::<_, String>(8)?),
+                    status: parse_agent_status(&row.get::<_, String>(7)?),
+                    session_id: row.get(8)?,
+                    created_at: parse_datetime(&row.get::<_, String>(9)?),
                 })
             })?
             .filter_map(|r| r.ok())
@@ -67,7 +89,7 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, display_name, description, runtime, model, status, session_id, created_at FROM agents WHERE name = ?1",
+            "SELECT id, name, display_name, description, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], |row| {
             Ok(Agent {
@@ -77,10 +99,11 @@ impl Store {
                 description: row.get(3)?,
                 runtime: row.get(4)?,
                 model: row.get(5)?,
+                reasoning_effort: row.get(6)?,
                 env_vars: Vec::new(),
-                status: parse_agent_status(&row.get::<_, String>(6)?),
-                session_id: row.get(7)?,
-                created_at: parse_datetime(&row.get::<_, String>(8)?),
+                status: parse_agent_status(&row.get::<_, String>(7)?),
+                session_id: row.get(8)?,
+                created_at: parse_datetime(&row.get::<_, String>(9)?),
             })
         })?;
         let mut agent = rows.next().transpose()?;
@@ -99,10 +122,31 @@ impl Store {
         model: &str,
         env_vars: &[AgentEnvVar],
     ) -> Result<()> {
+        self.update_agent_record_with_reasoning(
+            name,
+            display_name,
+            description,
+            runtime,
+            model,
+            None,
+            env_vars,
+        )
+    }
+
+    pub fn update_agent_record_with_reasoning(
+        &self,
+        name: &str,
+        display_name: &str,
+        description: Option<&str>,
+        runtime: &str,
+        model: &str,
+        reasoning_effort: Option<&str>,
+        env_vars: &[AgentEnvVar],
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE agents SET display_name = ?1, description = ?2, runtime = ?3, model = ?4 WHERE name = ?5",
-            params![display_name, description, runtime, model, name],
+            "UPDATE agents SET display_name = ?1, description = ?2, runtime = ?3, model = ?4, reasoning_effort = ?5 WHERE name = ?6",
+            params![display_name, description, runtime, model, reasoning_effort, name],
         )?;
         Self::replace_agent_env_vars_inner(&conn, name, env_vars)?;
         Ok(())

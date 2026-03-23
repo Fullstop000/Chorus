@@ -55,6 +55,7 @@
 - Goal:
   - verify every runtime and model pair currently exposed in the UI can be created and is stored correctly
   - verify duplicate agent names are rejected consistently
+  - verify runtime-specific controls appear only when applicable, especially Codex reasoning effort
 - Preconditions:
   - fresh data dir
   - current runtime/model matrix captured from the create-agent modal before execution
@@ -73,21 +74,30 @@
     - `gpt-5.1-codex-mini`
 - Steps:
   1. Open the create-agent modal and record the runtime and model options actually shown in the build under test.
-  2. Create one disposable agent for every runtime/model pair using a stable naming scheme such as `matrix-<runtime>-<model>`.
-  3. After each creation, verify the new agent appears in the sidebar.
-  4. Open the new agent profile and verify the runtime badge and model badge match the selected pair exactly.
-  5. Verify creation does not silently fall back to a different runtime or model.
-  6. Attempt to create one duplicate name using the exact same config.
-  7. Attempt to create the same duplicate name again with a different runtime or model.
-  8. Verify both duplicate-name attempts fail with a clear error and do not create extra records.
+  2. Switch between Claude and Codex in the create-agent modal.
+  3. Verify the reasoning-effort control is hidden for Claude and visible for Codex.
+  4. For at least one Codex model, choose a non-default reasoning effort and create the agent.
+  5. Create one disposable agent for every runtime/model pair using a stable naming scheme such as `matrix-<runtime>-<model>`.
+  6. After each creation, verify the new agent appears in the sidebar.
+  7. Open the new agent profile and verify the runtime badge and model badge match the selected pair exactly.
+  8. For Codex agents created with a non-default reasoning effort, verify the profile reflects the selected reasoning effort exactly.
+  9. Verify creation does not silently fall back to a different runtime, model, or Codex reasoning effort.
+  10. Attempt to create one duplicate name using the exact same config.
+  11. Attempt to create the same duplicate name again with a different runtime or model.
+  12. Verify both duplicate-name attempts fail with a clear error and do not create extra records.
 - Expected:
   - every visible runtime/model pair is creatable
   - stored runtime and model match the selected values exactly
+  - Codex shows a reasoning-effort control and persists the chosen value exactly
+  - Claude does not show a meaningless reasoning-effort control
   - duplicate names are rejected regardless of runtime or model
   - failures are attributable to a specific pair, not hidden behind a generic fallback
 - Common failure signals:
   - one runtime/model pair cannot be created
   - created agent shows a different model than requested
+  - reasoning-effort control is missing for Codex
+  - reasoning-effort control appears for Claude
+  - created Codex agent ignores the selected reasoning effort
   - runtime picker and stored runtime disagree
   - duplicate name is accepted
   - duplicate name creates partial sidebar or DB state
@@ -135,23 +145,28 @@
   - a shared channel or DM contains at least one visible historical message from that agent before delete
 - Steps:
   1. Open a test agent profile and record its runtime, model, and current role text.
-  2. Use the edit control to change the role text and add one environment variable.
-  3. Save the change and verify the profile reflects the new role and environment state.
-  4. Use the restart control in plain `Restart` mode and verify the agent returns to a usable state without losing workspace files.
-  5. Use the restart control in `Reset Session & Restart` mode and verify the agent still has workspace files but behaves like a fresh conversation session.
-  6. Send at least one visible message from the agent in a channel or DM so there is history to inspect after delete.
-  7. Delete the agent using the `keep workspace` option.
-  8. Verify the agent disappears from navigation, the workspace files still exist, and historical messages remain readable with deleted styling.
-  9. Recreate an agent with the same name if the product still allows clean name reuse after delete.
-  10. Verify the recreated agent does not silently remove the deleted styling from the old history rows.
+  2. If the test agent runtime is Codex, verify the edit control shows a reasoning-effort selector; if the runtime is Claude, verify it does not.
+  3. Use the edit control to change the role text and add one environment variable.
+  4. If the runtime is Codex, also change the reasoning effort.
+  5. Save the change and verify the profile reflects the new role, environment state, and Codex reasoning effort when applicable.
+  6. Use the restart control in plain `Restart` mode and verify the agent returns to a usable state without losing workspace files.
+  7. Use the restart control in `Reset Session & Restart` mode and verify the agent still has workspace files but behaves like a fresh conversation session.
+  8. Send at least one visible message from the agent in a channel or DM so there is history to inspect after delete.
+  9. Delete the agent using the `keep workspace` option.
+  10. Verify the agent disappears from navigation, the workspace files still exist, and historical messages remain readable with deleted styling.
+  11. Recreate an agent with the same name if the product still allows clean name reuse after delete.
+  12. Verify the recreated agent does not silently remove the deleted styling from the old history rows.
 - Expected:
   - profile edit persists correctly
+  - Codex reasoning effort is editable and persisted correctly
+  - Claude does not expose Codex-only reasoning controls
   - restart modes behave differently but coherently
   - delete removes the live record while preserving readable history
   - deleted messages remain attributed but visibly historical
   - name reuse does not reattach old messages to the recreated live identity
 - Common failure signals:
   - edit saves but does not actually apply
+  - Codex reasoning effort is missing, ignored, or shown for Claude
   - restart mode effects are indistinguishable
   - workspace keep/delete choice is ignored
   - deleted history rows lose attribution or look live
@@ -249,15 +264,15 @@
 - Steps:
   1. Open `bot-a` activity tab.
   2. Verify the most recent entries include all of these row types when they occurred in the run:
-     - status changes
-     - received messages
-     - sent messages
-     - tool or tool-like work
-     - thinking or output text when available
+    - status changes
+    - received messages
+    - sent messages
+    - tool or tool-like work
+    - thinking or output text when available
   3. Pick one received-message row and verify:
-     - sender name is shown
-     - target label is shown
-     - content preview is recognizable and not empty
+    - sender name is shown
+    - target label is shown
+    - content preview is recognizable and not empty
   4. Pick one sent-message row and verify the target label matches where the message was actually sent.
   5. Pick one tool row and verify the label is specific enough to distinguish waiting, checking, sending, or file/tool work.
   6. Verify entries are visually distinguishable at a glance.
@@ -288,12 +303,12 @@
   1. Open the activity tab for the agent used in `MSG-004`.
   2. Locate the portion of the timeline covering the DM-triggered wake-up.
   3. Verify the sequence is coherent, for example:
-     - non-active or offline state
-     - startup or working state
-     - received message
-     - tool/check/wait work
-     - sent reply
-     - idle or waiting state
+    - non-active or offline state
+    - startup or working state
+    - received message
+    - tool/check/wait work
+    - sent reply
+    - idle or waiting state
   4. Verify the triggering DM content preview appears before or alongside the follow-up send, not after unrelated work.
   5. Verify the sent-reply row content matches the DM reply that was actually rendered in chat.
   6. If the case includes a server restart, verify the timeline does not fabricate phantom active periods after the restart.
@@ -348,9 +363,9 @@
   4. Expand `notes/` and select a markdown file such as `notes/work-log.md`.
   5. Verify the selected row is visibly highlighted.
   6. Verify the right pane header shows:
-     - the relative file path
-     - file size
-     - modified timestamp
+    - the relative file path
+    - file size
+    - modified timestamp
   7. Toggle `Raw` and `Preview`.
   8. Verify `Raw` shows the literal file contents.
   9. Verify `Preview` renders markdown formatting for `.md` files.
@@ -415,3 +430,4 @@
   - disappearing messages
   - activity entries missing for one agent
   - stale tab content during live updates
+

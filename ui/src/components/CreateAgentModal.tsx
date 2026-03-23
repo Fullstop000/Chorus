@@ -14,6 +14,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
     description: '',
     runtime: 'claude',
     model: 'sonnet',
+    reasoningEffort: null,
     envVars: [],
   })
   const [creating, setCreating] = useState(false)
@@ -36,6 +37,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           description: config.description,
           runtime: config.runtime,
           model: config.model,
+          reasoningEffort: config.runtime === 'codex' ? config.reasoningEffort : null,
           envVars: config.envVars,
         }),
       })

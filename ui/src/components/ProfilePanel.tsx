@@ -68,6 +68,7 @@ export function ProfilePanel() {
   const initial = agent.name[0]?.toUpperCase() ?? '?'
   const isActive = agent.status === 'active'
   const envVars = detail?.envVars ?? []
+  const reasoningEffort = agent.reasoningEffort ?? detail?.agent.reasoningEffort ?? null
 
   async function handleStartStop() {
     setBusy(true)
@@ -138,6 +139,12 @@ export function ProfilePanel() {
           <span className="badge badge-claude">{agent.runtime ?? 'claude'}</span>
           <span className="profile-config-key">Model</span>
           <span className="badge">{agent.model ?? 'sonnet'}</span>
+          {agent.runtime === 'codex' && (
+            <>
+              <span className="profile-config-key">Reasoning</span>
+              <span className="badge">{reasoningEffort ?? 'default'}</span>
+            </>
+          )}
           <span className="profile-config-key">Status</span>
           <span className="badge" style={{ background: isActive ? 'var(--lime)' : agent.status === 'sleeping' ? 'var(--orange)' : 'var(--gray-400)' }}>
             {agent.status}
@@ -170,6 +177,10 @@ export function ProfilePanel() {
             description: detail.agent.description ?? '',
             runtime: detail.agent.runtime ?? 'claude',
             model: detail.agent.model ?? 'sonnet',
+            reasoningEffort:
+              detail.agent.runtime === 'codex'
+                ? (detail.agent.reasoningEffort ?? 'default')
+                : null,
             envVars: detail.envVars,
           }}
           onClose={() => setShowEdit(false)}
@@ -230,6 +241,7 @@ function EditAgentModal({
         description: state.description,
         runtime: state.runtime,
         model: state.model,
+        reasoningEffort: state.runtime === 'codex' ? state.reasoningEffort : null,
         envVars: state.envVars.filter((envVar) => envVar.key.trim() || envVar.value),
       })
       await onSaved()
