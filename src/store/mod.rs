@@ -297,7 +297,10 @@ impl Store {
                     Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION
                 ],
             )?;
-            tracing::info!(channel = Self::DEFAULT_SYSTEM_CHANNEL, "created built-in system channel");
+            tracing::info!(
+                channel = Self::DEFAULT_SYSTEM_CHANNEL,
+                "created built-in system channel"
+            );
             id
         };
 

@@ -481,7 +481,10 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
 
     let server_info = store.get_server_info("alice").unwrap();
     assert!(
-        server_info.channels.iter().all(|channel| channel.name != "all"),
+        server_info
+            .channels
+            .iter()
+            .all(|channel| channel.name != "all"),
         "#all should no longer appear in the editable channel list"
     );
     let system_all = server_info
