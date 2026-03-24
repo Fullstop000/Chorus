@@ -153,9 +153,11 @@ pub async fn handle_send(
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
 
-    // System channels (e.g. #shared-memory) are write-protected.
+    // Protected system channels (e.g. #shared-memory) are write-protected.
     // Agents must use mcp_chat_remember instead of send_message to post there.
-    if channel.channel_type == ChannelType::System {
+    if channel.channel_type == ChannelType::System
+        && Store::is_system_channel_read_only(&channel.name)
+    {
         return Err(api_err(
             "Cannot post to system channels directly. Use mcp_chat_remember instead.",
         ));

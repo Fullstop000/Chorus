@@ -219,7 +219,7 @@ pub async fn handle_create_agent(
         .map_err(|e| api_err(e.to_string()))?;
     for channel in state
         .store
-        .list_channels()
+        .list_auto_join_channels()
         .map_err(|e| internal_err(e.to_string()))?
     {
         let _ = state

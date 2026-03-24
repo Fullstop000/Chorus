@@ -5,6 +5,7 @@ export interface ChannelInfo {
   name: string
   description?: string
   joined: boolean
+  read_only?: boolean
 }
 
 export interface AgentInfo {
@@ -38,7 +39,7 @@ export interface HumanInfo {
 
 export interface ServerInfo {
   channels: ChannelInfo[]
-  /** System-managed channels (e.g. #shared-memory). Shown separately; read-only. */
+  /** System-managed channels (e.g. #all, #shared-memory). Shown separately. */
   system_channels: ChannelInfo[]
   agents: AgentInfo[]
   humans: HumanInfo[]
@@ -182,5 +183,5 @@ export interface WorkspaceFileResponse {
 // ── App-level target union ──
 
 // A "target" is the encoded channel/DM string passed to send/history
-// e.g. "#general" or "dm:@alice"
+// e.g. "#all" or "dm:@alice"
 export type Target = string

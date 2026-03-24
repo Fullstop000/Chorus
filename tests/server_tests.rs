@@ -508,6 +508,7 @@ async fn test_whoami() {
 #[tokio::test]
 async fn test_create_agent_via_api() {
     let (store, app, lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
 
     // Create a new agent via POST /api/agents
     let req = serde_json::json!({
@@ -544,8 +545,8 @@ async fn test_create_agent_via_api() {
     assert_eq!(agent.model, "gpt-5.4");
     assert_eq!(agent.description, Some("A test agent".to_string()));
     assert!(
-        store.is_member("general", "new-bot").unwrap(),
-        "API-created agents should join existing channels"
+        store.is_member("all", "new-bot").unwrap(),
+        "API-created agents should join the built-in default room"
     );
 
     let resp = app
@@ -563,8 +564,15 @@ async fn test_create_agent_via_api() {
         .await
         .unwrap();
     let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(info["channels"][0]["name"], "general");
-    assert_eq!(info["channels"][0]["joined"], true);
+    let system_channels = info["system_channels"]
+        .as_array()
+        .expect("system_channels should be present");
+    let all = system_channels
+        .iter()
+        .find(|channel| channel["name"] == "all")
+        .expect("#all should be exposed as a system channel");
+    assert_eq!(all["joined"], true);
+    assert_eq!(all["read_only"], false);
 
     let new_bot = info["agents"]
         .as_array()

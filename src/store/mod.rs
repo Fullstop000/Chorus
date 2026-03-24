@@ -51,6 +51,8 @@ pub struct ChannelInfo {
     pub name: String,
     pub description: Option<String>,
     pub joined: bool,
+    #[serde(default)]
+    pub read_only: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -87,6 +89,19 @@ pub struct Store {
 }
 
 impl Store {
+    pub const DEFAULT_SYSTEM_CHANNEL: &'static str = "all";
+    pub const DEFAULT_SYSTEM_CHANNEL_DESCRIPTION: &'static str = "All members";
+    pub const SHARED_MEMORY_CHANNEL: &'static str = "shared-memory";
+    pub const SHARED_MEMORY_DESCRIPTION: &'static str =
+        "Agent group memory — breadcrumbs posted here by mcp_chat_remember";
+
+    /// Built-in system channels can be surfaced separately in the UI without
+    /// necessarily being write-protected. Only protected channels should block
+    /// direct human or agent posts.
+    pub fn is_system_channel_read_only(name: &str) -> bool {
+        name == Self::SHARED_MEMORY_CHANNEL
+    }
+
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
@@ -240,6 +255,67 @@ impl Store {
     /// Ensure a system channel with the given name exists. Idempotent — safe to call on every startup.
     pub fn ensure_system_channel(&self, name: &str, description: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        Self::ensure_system_channel_inner(&conn, name, description)?;
+        Ok(())
+    }
+
+    /// Ensure built-in channels exist and upgrade legacy `#general` installs to
+    /// the new writable `#all` system channel without changing its stable id.
+    pub fn ensure_builtin_channels(&self, default_human: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let all_id = if let Some(existing) =
+            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+        {
+            conn.execute(
+                "UPDATE channels
+                 SET description = ?1, channel_type = 'system', archived = 0
+                 WHERE id = ?2",
+                params![Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION, existing.id],
+            )?;
+            existing.id
+        } else if let Some(legacy) = Self::find_channel_by_name_inner(&conn, "general")? {
+            conn.execute(
+                "UPDATE channels
+                 SET name = ?1, description = ?2, channel_type = 'system', archived = 0
+                 WHERE id = ?3",
+                params![
+                    Self::DEFAULT_SYSTEM_CHANNEL,
+                    Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION,
+                    legacy.id
+                ],
+            )?;
+            tracing::info!("migrated built-in channel #general to #all");
+            legacy.id
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO channels (id, name, description, channel_type)
+                 VALUES (?1, ?2, ?3, 'system')",
+                params![
+                    id,
+                    Self::DEFAULT_SYSTEM_CHANNEL,
+                    Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION
+                ],
+            )?;
+            tracing::info!(channel = Self::DEFAULT_SYSTEM_CHANNEL, "created built-in system channel");
+            id
+        };
+
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             VALUES (?1, ?2, 'human', 0)",
+            params![all_id, default_human],
+        )?;
+
+        Self::ensure_system_channel_inner(
+            &conn,
+            Self::SHARED_MEMORY_CHANNEL,
+            Self::SHARED_MEMORY_DESCRIPTION,
+        )?;
+        Ok(())
+    }
+
+    fn ensure_system_channel_inner(conn: &Connection, name: &str, description: &str) -> Result<()> {
         let exists: i64 = conn.query_row(
             "SELECT COUNT(*) FROM channels WHERE name = ?1 AND channel_type = 'system'",
             params![name],
@@ -349,6 +425,7 @@ impl Store {
                     name: row.get(1)?,
                     description: row.get(2)?,
                     joined: row.get::<_, i64>(3)? > 0,
+                    read_only: false,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -376,15 +453,20 @@ impl Store {
             .collect();
 
         let mut sys_stmt = conn.prepare(
-            "SELECT name, description FROM channels WHERE channel_type = 'system' ORDER BY name",
+            "SELECT id, name, description
+             FROM channels
+             WHERE channel_type = 'system'
+             ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, name",
         )?;
         let system_channels: Vec<ChannelInfo> = sys_stmt
             .query_map([], |row| {
+                let name: String = row.get(1)?;
                 Ok(ChannelInfo {
-                    id: None,
-                    name: row.get(0)?,
-                    description: row.get(1)?,
+                    id: Some(row.get(0)?),
+                    name: name.clone(),
+                    description: row.get(2)?,
                     joined: true,
+                    read_only: Self::is_system_channel_read_only(&name),
                 })
             })?
             .filter_map(|r| r.ok())
