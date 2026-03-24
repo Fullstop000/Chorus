@@ -96,44 +96,48 @@ export function ProfilePanel() {
   return (
     <div className="profile-panel">
       <div className="profile-avatar-section">
-        <div className="profile-toolbar">
-          <button className="profile-action-btn" type="button" onClick={() => setShowEdit(true)}>
-            Edit
-          </button>
-          <button className="profile-action-btn" type="button" onClick={() => setShowRestart(true)}>
-            Restart
-          </button>
-          <button className="profile-action-btn profile-action-btn-danger" type="button" onClick={() => setShowDelete(true)}>
-            Delete
-          </button>
-        </div>
-
-        <div className="profile-avatar-large" style={{ background: color }}>
-          {initial}
-        </div>
-        <div className="profile-name">{agent.display_name ?? agent.name}</div>
-        <div className="profile-handle">@{agent.name}</div>
-        <div className="profile-activity-status">
-          <span className="profile-activity-dot" style={{ background: activityDotColor(agent.activity) }} />
-          {activityLabel(agent.activity, agent.activity_detail)}
+        <div className="profile-avatar-row">
+          <div className="profile-avatar-large" style={{ background: color }}>
+            {initial}
+          </div>
+          <div className="profile-identity">
+            <span className="profile-kicker">[agent::profile]</span>
+            <div className="profile-name">{agent.display_name ?? agent.name}</div>
+            <div className="profile-handle">@{agent.name}</div>
+            <div className="profile-activity-status">
+              <span className="profile-activity-dot" style={{ background: activityDotColor(agent.activity) }} />
+              {activityLabel(agent.activity, agent.activity_detail)}
+            </div>
+          </div>
+          <div className="profile-toolbar">
+            <button className="profile-action-btn" type="button" onClick={() => setShowEdit(true)}>
+              Edit
+            </button>
+            <button className="profile-action-btn" type="button" onClick={() => setShowRestart(true)}>
+              Restart
+            </button>
+            <button className="profile-action-btn profile-action-btn-danger" type="button" onClick={() => setShowDelete(true)}>
+              Delete
+            </button>
+          </div>
         </div>
       </div>
 
       {error && <div className="error-banner">{error}</div>}
 
       <div className="profile-controls">
-        <button className={`btn-brutal ${isActive ? 'btn-orange' : 'btn-lime'}`} onClick={handleStartStop} disabled={busy}>
-          {busy ? '…' : isActive ? '⏹ Stop' : '▶ Start'}
+        <button className="btn-brutal" type="button" onClick={handleStartStop} disabled={busy}>
+          {busy ? '…' : isActive ? '[stop::agent]' : '[start::agent]'}
         </button>
       </div>
 
       <div className="profile-section">
-        <div className="profile-section-label">Role</div>
+        <div className="profile-section-label">[role::brief]</div>
         <div className="profile-role-text">{agent.description || 'No role defined.'}</div>
       </div>
 
       <div className="profile-section">
-        <div className="profile-section-label">Configuration</div>
+        <div className="profile-section-label">[config::runtime]</div>
         <div className="profile-config-grid">
           <span className="profile-config-key">Runtime</span>
           <span className="badge badge-claude">{agent.runtime ?? 'claude'}</span>
@@ -153,7 +157,7 @@ export function ProfilePanel() {
       </div>
 
       <div className="profile-section">
-        <div className="profile-section-label">Environment Variables</div>
+        <div className="profile-section-label">[env::vars]</div>
         {detailLoading ? (
           <div className="profile-role-text">Loading...</div>
         ) : envVars.length === 0 ? (
@@ -254,9 +258,12 @@ function EditAgentModal({
 
   return (
     <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box">
+      <div className="modal-box modal-box-agent">
         <div className="modal-header">
-          <span className="modal-title">Edit Agent</span>
+          <div className="modal-title-block">
+            <span className="modal-title">Edit Agent</span>
+            <span className="modal-subtitle">@{agentName}</span>
+          </div>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <AgentConfigForm state={state} onChange={setState} />

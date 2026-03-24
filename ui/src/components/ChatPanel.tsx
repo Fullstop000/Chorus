@@ -1,37 +1,12 @@
 import { useEffect, useRef } from 'react'
+import { Ellipsis, Search } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
 import './ChatPanel.css'
 
-export function ChatPanel() {
-  const { currentUser, selectedChannel, selectedAgent, serverInfo, setOpenThreadMsg } = useApp()
-  const target = useTarget()
-  const { messages, loading } = useHistory(currentUser, target)
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const prevTargetRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    const container = scrollContainerRef.current
-    if (!container) return
-
-    const targetChanged = prevTargetRef.current !== target
-    prevTargetRef.current = target
-
-    // Always scroll to bottom on initial channel/agent switch
-    if (targetChanged) {
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
-      return
-    }
-
-    // Only auto-scroll on new messages if already near the bottom (within 100px)
-    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
-    if (distFromBottom < 100) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [messages, target])
-
+export function ChatHeader() {
+  const { selectedChannel, selectedAgent, serverInfo } = useApp()
   const channelInfo = selectedChannel
     ? serverInfo?.channels.find((c) => `#${c.name}` === selectedChannel)
     : null
@@ -46,16 +21,54 @@ export function ChatPanel() {
   const headerIcon = selectedChannel ? '#' : selectedAgent ? '@' : '?'
 
   return (
-    <div className="chat-panel">
-      <div className="chat-header">
-        <span className="chat-header-icon">{headerIcon}</span>
-        <span className="chat-header-name">{headerName}</span>
-        {headerDesc && <span className="chat-header-desc">{headerDesc}</span>}
-        <div className="chat-header-actions">
-          <button className="chat-header-btn">🔍</button>
-          <button className="chat-header-btn">⋯</button>
+    <div className="chat-header">
+      <div className="chat-header-copy">
+        <div className="chat-header-title-row">
+          <span className="chat-header-icon">{headerIcon}</span>
+          <span className="chat-header-name">{headerName}</span>
+          {headerDesc && <span className="chat-header-desc">{headerDesc}</span>}
         </div>
       </div>
+      <div className="chat-header-actions">
+        <button className="chat-header-btn" type="button" aria-label="Search room">
+          <Search size={15} />
+        </button>
+        <button className="chat-header-btn" type="button" aria-label="Open room actions">
+          <Ellipsis size={15} />
+        </button>
+      </div>
+    </div>
+  )
+}
+
+export function ChatPanel() {
+  const { currentUser, setOpenThreadMsg } = useApp()
+  const target = useTarget()
+  const { messages, loading } = useHistory(currentUser, target)
+  const bottomRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
+  const prevTargetRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) return
+
+    const targetChanged = prevTargetRef.current !== target
+    prevTargetRef.current = target
+
+    if (targetChanged) {
+      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+      return
+    }
+
+    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distFromBottom < 100) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [messages, target])
+
+  return (
+    <div className="chat-panel">
 
       <div className="chat-messages" ref={scrollContainerRef}>
         {loading && messages.length === 0 && (

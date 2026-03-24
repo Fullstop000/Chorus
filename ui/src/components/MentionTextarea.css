@@ -4,17 +4,19 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
+  justify-content: center;
+  min-height: 30px;
 }
 
 .mention-popup {
   position: absolute;
-  bottom: calc(100% + 4px);
+  bottom: calc(100% + 6px);
   left: 0;
   right: 0;
-  background: #fff;
-  border: 2px solid var(--black);
-  border-radius: 6px;
-  box-shadow: 3px 3px 0 var(--black);
+  background: var(--bg-panel-strong);
+  border: var(--border);
+  border-radius: 0;
+  box-shadow: none;
   z-index: 100;
   max-height: 220px;
   overflow-y: auto;
@@ -24,11 +26,11 @@
 .mention-popup-item {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
   text-align: left;
-  padding: 5px 8px;
-  border-radius: 4px;
+  padding: 6px 8px;
+  border-radius: 0;
   font-size: 13px;
   background: transparent;
   border: none;
@@ -37,13 +39,13 @@
 
 .mention-popup-item.highlighted,
 .mention-popup-item:hover {
-  background: var(--yellow, #FFE44D);
+  background: var(--bg-hover);
 }
 
 .mention-popup-avatar {
-  width: 22px;
-  height: 22px;
-  border-radius: 4px;
+  width: 24px;
+  height: 24px;
+  border-radius: 0;
   flex-shrink: 0;
   display: flex;
   align-items: center;
@@ -62,9 +64,11 @@
 
 .mention-popup-badge {
   font-size: 9px;
-  font-weight: 700;
-  background: var(--badge-claude, #2563eb);
-  color: #fff;
-  border-radius: 3px;
-  padding: 1px 4px;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--accent-soft);
+  color: var(--text-primary);
+  border-radius: 0;
+  padding: 2px 6px;
 }

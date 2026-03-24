@@ -3,26 +3,32 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--content-bg);
+  background: transparent;
+  padding: 0 18px 18px;
 }
 
 .activity-header {
-  border-bottom: var(--border);
-  padding: 0 16px;
-  height: 48px;
   display: flex;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: space-between;
   gap: 10px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: var(--border);
+  border-radius: 0;
+  background: var(--bg-panel-strong);
+  box-shadow: none;
   flex-shrink: 0;
-  background: var(--content-bg);
 }
 
 .activity-title {
-  font-weight: 700;
-  font-size: 13px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 11px;
   flex: 1;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  text-transform: lowercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
 }
 
 .activity-status {
@@ -51,28 +57,27 @@
 .activity-list {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 12px;
+  padding: 2px 0 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
-
-/* ── Base row ────────────────────────────────────────────────────── */
 
 .activity-item {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 8px 10px;
+  padding: 7px 8px;
   font-size: 12px;
   line-height: 1.5;
-  border-radius: 8px;
-  border: 1px solid color-mix(in srgb, var(--line, #d4d4d8) 65%, transparent);
-  background: color-mix(in srgb, var(--panel-bg, #fff) 92%, transparent);
+  border-radius: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow: none;
 }
 
 .activity-item:hover {
-  background: color-mix(in srgb, var(--panel-bg, #fff) 85%, var(--cyan, #22d3ee) 6%);
+  background: rgba(255, 255, 255, 0.92);
 }
 
 .activity-item-icon {
@@ -83,8 +88,8 @@
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--panel-bg, #fff) 80%, var(--text-muted) 8%);
+  border-radius: 0;
+  background: color-mix(in srgb, var(--bg-panel-strong) 80%, var(--text-muted) 8%);
 }
 
 .activity-item-main {
@@ -108,11 +113,11 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-secondary, #555);
+  color: var(--text-secondary);
 }
 
 .activity-item-meta {
-  color: var(--text-secondary, #555);
+  color: var(--text-secondary);
   font-family: var(--font-mono);
 }
 
@@ -120,15 +125,15 @@
   display: inline-flex;
   align-items: center;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 0;
   font-size: 10px;
   font-family: var(--font-mono);
   color: var(--text-muted);
-  background: color-mix(in srgb, var(--panel-bg, #fff) 76%, var(--text-muted) 10%);
+  background: var(--bg-panel-muted);
 }
 
 .activity-item-body {
-  color: var(--text-primary, #111);
+  color: var(--text-primary);
   word-break: break-word;
 }
 
@@ -144,10 +149,8 @@
   font-family: var(--font-mono);
 }
 
-/* ── Status row ──────────────────────────────────────────────────── */
-
 .activity-item-status {
-  background: color-mix(in srgb, var(--panel-bg, #fff) 88%, var(--line, #d4d4d8) 12%);
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .activity-status-dot {
@@ -164,7 +167,7 @@
   display: inline-flex;
   align-items: center;
   padding: 2px 8px;
-  border-radius: 999px;
+  border-radius: 0;
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.05em;
@@ -175,77 +178,67 @@
 }
 
 .activity-tone-online {
-  color: var(--lime, #84cc16);
+  color: #2f7b44;
 }
 
 .activity-tone-offline {
-  color: var(--gray-400, #9ca3af);
+  color: #9ca3af;
 }
 
 .activity-tone-thinking,
 .activity-tone-working {
-  color: var(--orange, #f97316);
+  color: #9f6a2b;
 }
 
 .activity-tone-error {
-  color: var(--pink, #ec4899);
+  color: #a84738;
 }
 
-/* ── Thinking row ────────────────────────────────────────────────── */
-
 .activity-icon-think {
-  color: var(--orange, #f97316);
-  background: color-mix(in srgb, var(--orange, #f97316) 12%, transparent);
+  color: #9f6a2b;
+  background: color-mix(in srgb, #9f6a2b 12%, transparent);
 }
 
 .activity-item-thinking .activity-item-body {
-  color: rgba(0,0,0,0.62);
+  color: rgba(0, 0, 0, 0.62);
   font-style: italic;
 }
 
-/* ── Tool row ────────────────────────────────────────────────────── */
-
 .activity-icon-tool {
-  color: var(--text-secondary, #555);
-  background: color-mix(in srgb, var(--text-secondary, #555) 10%, transparent);
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
 }
 
 .activity-tool-input {
   color: var(--text-muted);
 }
 
-/* ── Text / response row ─────────────────────────────────────────── */
-
 .activity-item-text-entry {
-  background: color-mix(in srgb, var(--cyan, #22d3ee) 10%, var(--panel-bg, #fff) 90%);
+  background: rgba(255, 255, 255, 0.78);
 }
 
 .activity-icon-text {
-  color: var(--cyan, #22d3ee);
-  background: color-mix(in srgb, var(--cyan, #22d3ee) 14%, transparent);
+  color: #355d8a;
+  background: color-mix(in srgb, #355d8a 14%, transparent);
 }
 
-/* ── Message rows ────────────────────────────────────────────────── */
-
 .activity-item-message-received {
-  background: color-mix(in srgb, var(--lime, #84cc16) 8%, var(--panel-bg, #fff) 92%);
+  background: rgba(248, 252, 248, 0.92);
 }
 
 .activity-item-message-sent {
-  background: color-mix(in srgb, var(--cyan, #22d3ee) 8%, var(--panel-bg, #fff) 92%);
+  background: rgba(248, 250, 253, 0.92);
 }
 
 .activity-icon-message-received {
-  color: var(--lime, #84cc16);
-  background: color-mix(in srgb, var(--lime, #84cc16) 14%, transparent);
+  color: #2f7b44;
+  background: color-mix(in srgb, #2f7b44 14%, transparent);
 }
 
 .activity-icon-message-sent {
-  color: var(--cyan, #22d3ee);
-  background: color-mix(in srgb, var(--cyan, #22d3ee) 14%, transparent);
+  color: #355d8a;
+  background: color-mix(in srgb, #355d8a 14%, transparent);
 }
-
-/* ── Expandable text ─────────────────────────────────────────────── */
 
 .activity-expandable {
   display: inline;
@@ -258,20 +251,10 @@
 .activity-expand-btn {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   margin-left: 6px;
-  padding: 0 4px;
-  font-size: 10px;
-  font-family: var(--font-mono);
   color: var(--text-muted);
-  background: transparent;
-  border: 1px solid currentColor;
-  border-radius: 2px;
-  cursor: pointer;
-  vertical-align: middle;
-  opacity: 0.7;
-}
-
-.activity-expand-btn:hover {
-  opacity: 1;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: lowercase;
 }

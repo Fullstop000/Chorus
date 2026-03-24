@@ -53,8 +53,11 @@ export function ThreadPanel() {
     <div className="thread-panel">
       {/* Header */}
       <div className="thread-header">
-        <span className="thread-title">Thread</span>
-        <button className="thread-close-btn" onClick={() => setOpenThreadMsg(null)} title="Close thread">
+        <div className="thread-header-copy">
+          <span className="thread-kicker">[ctx::thread]</span>
+          <span className="thread-title">Thread</span>
+        </div>
+        <button className="thread-close-btn" type="button" onClick={() => setOpenThreadMsg(null)} title="Close thread">
           <X size={16} strokeWidth={2} />
         </button>
       </div>
@@ -105,6 +108,7 @@ export function ThreadPanel() {
             </button>
             <button
               className="thread-send-btn"
+              type="button"
               onClick={handleSend}
               disabled={sending || !content.trim()}
             >

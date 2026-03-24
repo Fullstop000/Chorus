@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
-import { MessageSquare, Copy } from 'lucide-react'
+import { MessageSquare, Copy, Paperclip } from 'lucide-react'
 import type { HistoryMessage } from '../types'
 import { attachmentUrl } from '../api'
 
@@ -155,7 +155,8 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
                 rel="noreferrer"
                 className="attachment-link"
               >
-                📎 {att.filename}
+                <Paperclip size={12} />
+                {att.filename}
               </a>
             ))}
           </div>
