@@ -2,7 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
 
-use super::{api_err, AppState, ApiResult};
+use super::{api_err, ApiResult, AppState};
 use crate::store::tasks::TaskStatus;
 
 // ── Inline query structs ──

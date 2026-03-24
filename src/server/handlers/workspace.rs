@@ -4,7 +4,7 @@ use axum::extract::{Path as AxumPath, Query, State};
 use axum::Json;
 use serde::Deserialize;
 
-use super::{api_err, internal_err, AppState, ApiResult};
+use super::{api_err, internal_err, ApiResult, AppState};
 
 // ── Inline query structs ──
 

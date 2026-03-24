@@ -54,7 +54,11 @@ pub trait Driver: Send + Sync {
     /// Encode a wake-up notification for stdin-based runtimes, if supported.
     fn encode_stdin_message(&self, text: &str, session_id: &str) -> Option<String>;
     /// Build the runtime-specific system prompt for a given agent configuration.
-    fn build_system_prompt(&self, config: &crate::store::agents::AgentConfig, agent_id: &str) -> String;
+    fn build_system_prompt(
+        &self,
+        config: &crate::store::agents::AgentConfig,
+        agent_id: &str,
+    ) -> String;
     /// Convert a raw tool name into the short label shown in the activity log.
     fn tool_display_name(&self, name: &str) -> String;
     /// Produce a compact summary of tool input for UI activity rows and tracing.

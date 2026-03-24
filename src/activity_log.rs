@@ -8,12 +8,29 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEntry {
-    Thinking { text: String },
-    ToolStart { tool_name: String, tool_input: String },
-    Text { text: String },
-    MessageReceived { channel_label: String, sender_name: String, content: String },
-    MessageSent { target: String, content: String },
-    Status { activity: String, detail: String },
+    Thinking {
+        text: String,
+    },
+    ToolStart {
+        tool_name: String,
+        tool_input: String,
+    },
+    Text {
+        text: String,
+    },
+    MessageReceived {
+        channel_label: String,
+        sender_name: String,
+        content: String,
+    },
+    MessageSent {
+        target: String,
+        content: String,
+    },
+    Status {
+        activity: String,
+        detail: String,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

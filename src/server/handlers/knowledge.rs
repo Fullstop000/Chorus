@@ -2,7 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::Json;
 use tracing::{debug, info};
 
-use super::{internal_err, AppState, ApiResult};
+use super::{internal_err, ApiResult, AppState};
 use crate::store::knowledge::{RecallQuery, RecallResponse, RememberRequest, RememberResponse};
 use crate::store::messages::SenderType;
 

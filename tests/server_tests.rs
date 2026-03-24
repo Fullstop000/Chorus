@@ -1,7 +1,9 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::activity_log::{ActivityEntry, ActivityLogResponse};
-use chorus::server::{build_router, build_router_with_lifecycle, AgentDetailResponse, AgentLifecycle, HistoryResponse};
+use chorus::server::{
+    build_router, build_router_with_lifecycle, AgentDetailResponse, AgentLifecycle, HistoryResponse,
+};
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{ReceivedMessage, SenderType};

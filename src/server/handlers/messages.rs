@@ -3,7 +3,7 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{debug, info};
 
-use super::{api_err, internal_err, AppState, ApiResult};
+use super::{api_err, internal_err, ApiResult, AppState};
 use crate::activity_log::ActivityEntry;
 use crate::store::agents::AgentStatus;
 use crate::store::channels::ChannelType;

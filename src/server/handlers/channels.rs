@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
-use super::{api_err, AppState, ApiResult};
+use super::{api_err, ApiResult, AppState};
 use crate::store::channels::{Channel, ChannelType};
 use crate::store::messages::SenderType;
 

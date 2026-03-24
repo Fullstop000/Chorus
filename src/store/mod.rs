@@ -16,7 +16,9 @@ use tokio::sync::broadcast;
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
 pub use channels::{Channel, ChannelMember, ChannelType};
-pub use knowledge::{KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse};
+pub use knowledge::{
+    KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
+};
 pub use messages::{
     ActivityMessage, AttachmentRef, HistoryMessage, Message, ReceivedMessage, SenderType,
 };
