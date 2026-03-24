@@ -531,8 +531,12 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    let expected_member_count = store.list_agents().unwrap().len() + store.list_humans().unwrap().len();
-    assert_eq!(json["memberCount"].as_u64().unwrap(), expected_member_count as u64);
+    let expected_member_count =
+        store.list_agents().unwrap().len() + store.list_humans().unwrap().len();
+    assert_eq!(
+        json["memberCount"].as_u64().unwrap(),
+        expected_member_count as u64
+    );
 }
 
 #[tokio::test]
