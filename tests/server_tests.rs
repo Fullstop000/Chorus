@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chorus::activity_log::{ActivityEntry, ActivityLogResponse};
+use chorus::agent::activity_log::{ActivityEntry, ActivityLogResponse};
 use chorus::server::{
     build_router, build_router_with_lifecycle, AgentDetailResponse, AgentLifecycle, HistoryResponse,
 };
@@ -13,7 +13,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use chorus::activity_log::{self, ActivityLogMap};
+use chorus::agent::activity_log::{self, ActivityLogMap};
 use tempfile::tempdir;
 use tower::ServiceExt;
 
