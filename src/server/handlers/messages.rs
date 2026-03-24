@@ -279,6 +279,16 @@ pub async fn handle_history(
     let (channel_name, thread_parent_id) =
         resolve_history_target(store, &agent_id, &channel_target)
             .map_err(|e| api_err(e.to_string()))?;
+    if !store
+        .is_member(&channel_name, &agent_id)
+        .map_err(|e| api_err(e.to_string()))?
+    {
+        return Ok(Json(HistoryResponse {
+            messages: vec![],
+            has_more: false,
+            last_read_seq: 0,
+        }));
+    }
 
     let limit = params.limit.unwrap_or(50);
     let (messages, has_more) = store

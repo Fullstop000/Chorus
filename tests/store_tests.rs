@@ -481,7 +481,10 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
 
     let server_info = store.get_server_info("alice").unwrap();
     assert!(
-        server_info.channels.iter().all(|channel| channel.name != "all"),
+        server_info
+            .channels
+            .iter()
+            .all(|channel| channel.name != "all"),
         "#all should no longer appear in the editable channel list"
     );
     let system_all = server_info
@@ -493,6 +496,48 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
         !system_all.read_only,
         "#all must remain writable even though it is classified as a system channel"
     );
+}
+
+#[test]
+fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
+    let (store, _dir) = make_store();
+    store.add_human("alice").unwrap();
+    store.add_human("zoe").unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .unwrap();
+
+    store.ensure_builtin_channels("alice").unwrap();
+
+    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let members = store.get_channel_members(&all.id).unwrap();
+    let names: Vec<_> = members
+        .iter()
+        .map(|member| member.member_name.as_str())
+        .collect();
+    assert!(names.contains(&"alice"));
+    assert!(names.contains(&"zoe"));
+    assert!(names.contains(&"bot1"));
+    assert!(names.contains(&"bot2"));
+}
+
+#[test]
+fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
+    let (store, _dir) = make_store();
+    store.add_human("alice").unwrap();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    store.add_human("zoe").unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+
+    assert!(store.is_member("all", "alice").unwrap());
+    assert!(store.is_member("all", "zoe").unwrap());
+    assert!(store.is_member("all", "bot1").unwrap());
 }
 
 #[test]

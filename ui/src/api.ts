@@ -12,6 +12,7 @@ import type {
   WorkspaceFileResponse,
   AgentDetailResponse,
   AgentEnvVar,
+  ChannelMembersResponse,
 } from './types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
@@ -70,6 +71,23 @@ export async function deleteChannel(channelId: string): Promise<{ ok: boolean }>
   return json(
     await fetch(`${BASE}/api/channels/${encodeURIComponent(channelId)}`, {
       method: 'DELETE',
+    })
+  )
+}
+
+export async function getChannelMembers(channelId: string): Promise<ChannelMembersResponse> {
+  return json(await fetch(`${BASE}/api/channels/${encodeURIComponent(channelId)}/members`))
+}
+
+export async function inviteChannelMember(
+  channelId: string,
+  memberName: string
+): Promise<ChannelMembersResponse> {
+  return json(
+    await fetch(`${BASE}/api/channels/${encodeURIComponent(channelId)}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ memberName }),
     })
   )
 }

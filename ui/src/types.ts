@@ -37,6 +37,18 @@ export interface HumanInfo {
   name: string
 }
 
+export interface ChannelMemberInfo {
+  memberName: string
+  memberType: 'human' | 'agent'
+  displayName?: string
+}
+
+export interface ChannelMembersResponse {
+  channelId: string
+  memberCount: number
+  members: ChannelMemberInfo[]
+}
+
 export interface ServerInfo {
   channels: ChannelInfo[]
   /** System-managed channels (e.g. #all, #shared-memory). Shown separately. */

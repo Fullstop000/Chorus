@@ -312,8 +312,9 @@ export function Sidebar() {
       {showCreateChannel && (
         <CreateChannelModal
           onClose={() => setShowCreateChannel(false)}
-          onCreated={() => {
+          onCreated={(created) => {
             setShowCreateChannel(false)
+            setSelectedChannel(`#${created.name}`, created.id)
             refreshServerInfo()
           }}
         />

@@ -15,7 +15,7 @@ use tokio::sync::broadcast;
 
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
-pub use channels::{Channel, ChannelMember, ChannelType};
+pub use channels::{Channel, ChannelMember, ChannelMemberProfile, ChannelType};
 pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
@@ -297,7 +297,10 @@ impl Store {
                     Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION
                 ],
             )?;
-            tracing::info!(channel = Self::DEFAULT_SYSTEM_CHANNEL, "created built-in system channel");
+            tracing::info!(
+                channel = Self::DEFAULT_SYSTEM_CHANNEL,
+                "created built-in system channel"
+            );
             id
         };
 
@@ -305,6 +308,16 @@ impl Store {
             "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
              VALUES (?1, ?2, 'human', 0)",
             params![all_id, default_human],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             SELECT ?1, name, 'human', 0 FROM humans",
+            params![all_id],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             SELECT ?1, name, 'agent', 0 FROM agents",
+            params![all_id],
         )?;
 
         Self::ensure_system_channel_inner(

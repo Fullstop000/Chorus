@@ -363,6 +363,215 @@ async fn test_update_channel_via_api_rejects_duplicate_name() {
 }
 
 #[tokio::test]
+async fn test_create_channel_via_api_only_adds_current_human_member() {
+    let (store, app) = setup();
+
+    let req = serde_json::json!({
+        "name": "#Engineering",
+        "description": "Platform work"
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/channels")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let channel = store.find_channel_by_name("engineering").unwrap().unwrap();
+    let members = store.get_channel_members(&channel.id).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].member_name, whoami::username());
+    assert_eq!(members[0].member_type, SenderType::Human);
+
+    let members_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/channels/{}/members", channel.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(members_resp.status(), StatusCode::OK);
+    let members_body = axum::body::to_bytes(members_resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let members_json: serde_json::Value = serde_json::from_slice(&members_body).unwrap();
+    assert_eq!(members_json["memberCount"], 1);
+}
+
+#[tokio::test]
+async fn test_channel_members_api_lists_members_and_supports_invite() {
+    let (store, app) = setup();
+    store.add_human("zoe").unwrap();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .unwrap();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+
+    let initial = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/channels/{channel_id}/members"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(initial.status(), StatusCode::OK);
+    let initial_body = axum::body::to_bytes(initial.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let initial_json: serde_json::Value = serde_json::from_slice(&initial_body).unwrap();
+    assert_eq!(initial_json["memberCount"], 2);
+
+    let invite_human = serde_json::json!({ "memberName": "zoe" });
+    let invite_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/channels/{channel_id}/members"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&invite_human).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invite_resp.status(), StatusCode::OK);
+
+    let invite_agent = serde_json::json!({ "memberName": "bot2" });
+    let invite_agent_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/channels/{channel_id}/members"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&invite_agent).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(invite_agent_resp.status(), StatusCode::OK);
+
+    let listed = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/channels/{channel_id}/members"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(listed.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["memberCount"], 4);
+
+    let members = json["members"].as_array().unwrap();
+    assert!(members.iter().any(|member| member["memberName"] == "alice"));
+    assert!(members.iter().any(|member| member["memberName"] == "bot1"));
+    assert!(members.iter().any(|member| member["memberName"] == "zoe"));
+    assert!(members.iter().any(|member| member["memberName"] == "bot2"));
+}
+
+#[tokio::test]
+async fn test_channel_members_api_rejects_unknown_member() {
+    let (store, app) = setup();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let req = serde_json::json!({ "memberName": "missing-user" });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/channels/{channel_id}/members"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_all_channel_member_count_matches_agents_plus_humans() {
+    let (store, app) = setup();
+    store.ensure_builtin_channels("alice").unwrap();
+    store.add_human("zoe").unwrap();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .unwrap();
+
+    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/channels/{}/members", all.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let expected_member_count = store.list_agents().unwrap().len() + store.list_humans().unwrap().len();
+    assert_eq!(json["memberCount"].as_u64().unwrap(), expected_member_count as u64);
+}
+
+#[tokio::test]
+async fn test_history_returns_empty_for_non_member_agent() {
+    let (store, app) = setup();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .unwrap();
+    store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "secret channel update",
+            &[],
+        )
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot2/history?channel=%23general&limit=20")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let history: HistoryResponse = serde_json::from_slice(&body).unwrap();
+    assert!(history.messages.is_empty());
+    assert!(!history.has_more);
+    assert_eq!(history.last_read_seq, 0);
+}
+
+#[tokio::test]
 async fn test_archive_channel_via_api_hides_it_from_server_info() {
     let (store, app) = setup();
     let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
@@ -547,6 +756,10 @@ async fn test_create_agent_via_api() {
     assert!(
         store.is_member("all", "new-bot").unwrap(),
         "API-created agents should join the built-in default room"
+    );
+    assert!(
+        !store.is_member("general", "new-bot").unwrap(),
+        "API-created agents should not auto-join user-created channels"
     );
 
     let resp = app
