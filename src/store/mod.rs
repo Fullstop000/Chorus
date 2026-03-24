@@ -59,6 +59,7 @@ impl Store {
                 name TEXT UNIQUE NOT NULL,
                 description TEXT,
                 channel_type TEXT NOT NULL DEFAULT 'channel',
+                archived INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
             );
             CREATE TABLE IF NOT EXISTS channel_members (
@@ -159,6 +160,11 @@ impl Store {
         )?;
         conn.execute(
             "ALTER TABLE messages ADD COLUMN sender_deleted INTEGER NOT NULL DEFAULT 0",
+            [],
+        )
+        .ok();
+        conn.execute(
+            "ALTER TABLE channels ADD COLUMN archived INTEGER NOT NULL DEFAULT 0",
             [],
         )
         .ok();
@@ -270,14 +276,15 @@ impl Store {
         let conn = self.conn.lock().unwrap();
 
         let mut ch_stmt = conn.prepare(
-            "SELECT c.name, c.description, EXISTS(SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.member_name = ?1) as joined FROM channels c WHERE c.channel_type = 'channel' ORDER BY c.name",
+            "SELECT c.id, c.name, c.description, EXISTS(SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.member_name = ?1) as joined FROM channels c WHERE c.channel_type = 'channel' AND c.archived = 0 ORDER BY c.name",
         )?;
         let channels: Vec<ChannelInfo> = ch_stmt
             .query_map(params![for_agent], |row| {
                 Ok(ChannelInfo {
-                    name: row.get(0)?,
-                    description: row.get(1)?,
-                    joined: row.get::<_, i64>(2)? > 0,
+                    id: Some(row.get(0)?),
+                    name: row.get(1)?,
+                    description: row.get(2)?,
+                    joined: row.get::<_, i64>(3)? > 0,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -310,6 +317,7 @@ impl Store {
         let system_channels: Vec<ChannelInfo> = sys_stmt
             .query_map([], |row| {
                 Ok(ChannelInfo {
+                    id: None,
                     name: row.get(0)?,
                     description: row.get(1)?,
                     joined: true,

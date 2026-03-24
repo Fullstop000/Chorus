@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::HashSet, sync::Mutex};
 
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
@@ -146,6 +146,14 @@ pub fn build_router_with_lifecycle(
         // UI / management endpoints
         .route("/api/whoami", get(handle_whoami))
         .route("/api/channels", post(handle_create_channel))
+        .route(
+            "/api/channels/{channel_id}",
+            patch(handle_update_channel).delete(handle_delete_channel),
+        )
+        .route(
+            "/api/channels/{channel_id}/archive",
+            post(handle_archive_channel),
+        )
         .route("/api/agents", post(handle_create_agent))
         .route(
             "/api/agents/{name}",
