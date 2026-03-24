@@ -598,15 +598,14 @@ pub async fn handle_update_channel(
     };
 
     // Avoid spurious unique-key failures when keeping the same logical name.
-    if name != channel.name {
-        if state
+    if name != channel.name
+        && state
             .store
             .find_channel_by_name(&name)
             .map_err(|e| api_err(e.to_string()))?
             .is_some()
-        {
-            return Err(api_err(format!("channel already exists: {name}")));
-        }
+    {
+        return Err(api_err(format!("channel already exists: {name}")));
     }
 
     state
