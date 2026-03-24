@@ -70,25 +70,11 @@ Use these defaults unless the run needs a targeted variation:
 - backend: local server started from current branch
 - data dir: fresh temp directory
 - seed users: current user only
-- seed agents: create 3 test agents
-- seed channel: use `#general` or create a dedicated `#qa-multi-agent`
-- test attachment: one small text file
-- matrix runs: create one disposable agent per runtime and model pair in the current UI
+- seed agents: create 1-3 test agents
 
 ## Standard Agent Set
 
-Unless a case says otherwise, create these agents for the run:
-
-- `bot-a`
-- `bot-b`
-- `bot-c`
-
-This is intentional. Single-agent testing hides fan-out, ordering, activity, and stale-state bugs.
-The main messaging suite should prove that the app behaves correctly when multiple agents share the
-same channel and respond in the same window.
-
-When runtime-specific behavior matters, do not assume this trio is all-Claude. Use one of the
-documented presets in `[QA_PRESETS.md](./QA_PRESETS.md)` and record which preset was used.
+Use presets in `[QA_PRESETS.md](./QA_PRESETS.md)` and record which preset was used.
 
 ## Evidence Naming
 
