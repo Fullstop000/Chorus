@@ -10,7 +10,7 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::AgentLifecycle;
-use crate::agent_workspace::AgentWorkspace;
+use crate::agent::workspace::AgentWorkspace;
 use crate::models::*;
 use crate::store::{AgentRecordUpsert, Store};
 

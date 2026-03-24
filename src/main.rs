@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
-use chorus::agent_manager::AgentManager;
+use chorus::agent::manager::AgentManager;
 use chorus::bridge;
 use chorus::models::*;
 use chorus::server::build_router_with_lifecycle;

@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::activity_log::{self, ActivityLogMap};
-use crate::drivers::{Driver, ParsedEvent, SpawnContext};
+use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::models::*;
 use crate::server::AgentLifecycle;
 use crate::store::Store;
@@ -35,8 +35,8 @@ pub struct AgentManager {
 
 fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
     match runtime {
-        "claude" => Ok(Arc::new(crate::drivers::claude::ClaudeDriver)),
-        "codex" => Ok(Arc::new(crate::drivers::codex::CodexDriver)),
+        "claude" => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
+        "codex" => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
         _ => anyhow::bail!("Unknown runtime: {runtime}"),
     }
 }

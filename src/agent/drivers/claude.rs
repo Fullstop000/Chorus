@@ -2,7 +2,7 @@ use std::io::Write as _;
 use std::process::{Child, Command, Stdio};
 
 use super::{Driver, ParsedEvent, SpawnContext};
-use crate::drivers::prompt::{build_base_system_prompt, PromptOptions};
+use crate::agent::drivers::prompt::{build_base_system_prompt, PromptOptions};
 use crate::models::AgentConfig;
 
 pub struct ClaudeDriver;
@@ -217,15 +217,6 @@ impl Driver for ClaudeDriver {
                 let op = n.trim_start_matches("mcp__chat__").replace('_', " ");
                 format!("Using {op}\u{2026}")
             }
-            "Read" | "read_file" => "Reading file\u{2026}".to_string(),
-            "Write" | "write_file" => "Writing file\u{2026}".to_string(),
-            "Edit" | "edit_file" => "Editing file\u{2026}".to_string(),
-            "Bash" | "bash" => "Running command\u{2026}".to_string(),
-            "Glob" | "glob" => "Searching files\u{2026}".to_string(),
-            "Grep" | "grep" => "Searching code\u{2026}".to_string(),
-            "WebFetch" | "web_fetch" => "Fetching web\u{2026}".to_string(),
-            "WebSearch" | "web_search" => "Searching web\u{2026}".to_string(),
-            "TodoWrite" => "Updating tasks\u{2026}".to_string(),
             other => {
                 let truncated: String = other.chars().take(20).collect();
                 format!("Using {truncated}\u{2026}")

@@ -1,6 +1,6 @@
-use chorus::drivers::claude::ClaudeDriver;
-use chorus::drivers::codex::CodexDriver;
-use chorus::drivers::Driver;
+use chorus::agent::drivers::claude::ClaudeDriver;
+use chorus::agent::drivers::codex::CodexDriver;
+use chorus::agent::drivers::Driver;
 use chorus::models::AgentConfig;
 
 #[test]
