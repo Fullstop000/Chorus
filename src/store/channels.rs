@@ -31,7 +31,7 @@ pub enum ChannelType {
 pub struct ChannelMember {
     pub channel_id: String,
     pub member_name: String,
-    pub member_type: super::messages::SenderType,
+    pub member_type: SenderType,
     pub last_read_seq: i64,
 }
 
