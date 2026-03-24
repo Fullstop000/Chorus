@@ -1,9 +1,60 @@
 use anyhow::Result;
+use chrono::{DateTime, Utc};
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_agent_status, parse_datetime, Store};
-use crate::models::*;
+use super::{parse_agent_status, parse_datetime, Attachment, Store};
+
+// ── Types owned by this module ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Agent {
+    pub id: String,
+    pub name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub runtime: String,
+    pub model: String,
+    pub reasoning_effort: Option<String>,
+    pub env_vars: Vec<AgentEnvVar>,
+    pub status: AgentStatus,
+    pub session_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentEnvVar {
+    pub key: String,
+    pub value: String,
+    pub position: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentStatus {
+    Active,
+    Sleeping,
+    Inactive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    pub name: String,
+    pub display_name: String,
+    pub description: Option<String>,
+    pub runtime: String,
+    pub model: String,
+    pub session_id: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub env_vars: Vec<AgentEnvVar>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Human {
+    pub name: String,
+    pub created_at: DateTime<Utc>,
+}
 
 /// Shared persisted agent configuration used by store create/update helpers.
 pub struct AgentRecordUpsert<'a> {

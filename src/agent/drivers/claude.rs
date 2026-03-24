@@ -3,7 +3,7 @@ use std::process::{Child, Command, Stdio};
 
 use super::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::drivers::prompt::{build_base_system_prompt, PromptOptions};
-use crate::models::AgentConfig;
+use crate::store::agents::AgentConfig;
 
 pub struct ClaudeDriver;
 

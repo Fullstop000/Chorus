@@ -2,7 +2,7 @@ use std::process::{Child, Command, Stdio};
 
 use super::prompt::{build_base_system_prompt, PromptOptions};
 use super::{Driver, ParsedEvent, SpawnContext};
-use crate::models::AgentConfig;
+use crate::store::agents::AgentConfig;
 
 pub struct CodexDriver;
 

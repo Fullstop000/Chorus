@@ -1,9 +1,39 @@
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::messages::SenderType;
 use super::{channel_from_row, parse_sender_type, sender_type_str, Store};
-use crate::models::*;
+
+// ── Types owned by this module ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Channel {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub channel_type: ChannelType,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelType {
+    Channel,
+    Dm,
+    /// System-managed channels (e.g. #shared-memory). Not listed in the UI channel list.
+    System,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelMember {
+    pub channel_id: String,
+    pub member_name: String,
+    pub member_type: super::messages::SenderType,
+    pub last_read_seq: i64,
+}
 
 impl Store {
     /// Persist a new channel row. User-visible list queries later filter out

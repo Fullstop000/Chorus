@@ -8,10 +8,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
-use crate::activity_log::{self, ActivityLogMap};
+use crate::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
-use crate::models::*;
 use crate::server::AgentLifecycle;
+use crate::store::agents::{AgentConfig, AgentStatus};
+use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
 struct RunningAgent {

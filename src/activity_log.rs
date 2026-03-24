@@ -1,7 +1,34 @@
 use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::models::{ActivityEntry, ActivityLogEntry, ActivityLogResponse};
+use serde::{Deserialize, Serialize};
+
+// ── Types owned by this module ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ActivityEntry {
+    Thinking { text: String },
+    ToolStart { tool_name: String, tool_input: String },
+    Text { text: String },
+    MessageReceived { channel_label: String, sender_name: String, content: String },
+    MessageSent { target: String, content: String },
+    Status { activity: String, detail: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActivityLogEntry {
+    pub seq: u64,
+    pub timestamp_ms: u64,
+    pub entry: ActivityEntry,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActivityLogResponse {
+    pub entries: Vec<ActivityLogEntry>,
+    pub agent_activity: String,
+    pub agent_detail: String,
+}
 
 pub const ACTIVITY_LOG_MAX: usize = 500;
 

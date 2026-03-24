@@ -3,7 +3,9 @@ use std::sync::Arc;
 
 use chorus::agent::manager::AgentManager;
 use chorus::bridge;
-use chorus::models::*;
+use chorus::store::agents::AgentStatus;
+use chorus::store::channels::ChannelType;
+use chorus::store::messages::SenderType;
 use chorus::server::build_router_with_lifecycle;
 use chorus::store::Store;
 

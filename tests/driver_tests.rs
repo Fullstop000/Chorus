@@ -1,7 +1,7 @@
 use chorus::agent::drivers::claude::ClaudeDriver;
 use chorus::agent::drivers::codex::CodexDriver;
 use chorus::agent::drivers::Driver;
-use chorus::models::AgentConfig;
+use chorus::store::agents::AgentConfig;
 
 #[test]
 fn test_claude_prompt_uses_split_message_tools() {

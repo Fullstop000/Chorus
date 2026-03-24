@@ -10,9 +10,171 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::AgentLifecycle;
+use crate::activity_log::{ActivityEntry, ActivityLogResponse};
 use crate::agent::workspace::AgentWorkspace;
-use crate::models::*;
-use crate::store::{AgentRecordUpsert, Store};
+use crate::store::agents::{Agent, AgentEnvVar, AgentStatus};
+use crate::store::channels::{Channel, ChannelType};
+use crate::store::knowledge::{RecallQuery, RecallResponse, RememberRequest, RememberResponse};
+use crate::store::messages::{ReceivedMessage, SenderType};
+use crate::store::tasks::TaskStatus;
+use crate::store::{AgentInfo, AgentRecordUpsert, ServerInfo, Store};
+
+// ── API DTOs ──
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ErrorResponse {
+    pub error: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SendRequest {
+    pub target: String,
+    #[serde(default)]
+    pub content: String,
+    #[serde(default, rename = "attachmentIds")]
+    pub attachment_ids: Vec<String>,
+    /// Skip fan-out to other agents when the caller wants a human-only side effect,
+    /// such as "send this message and create one task" without triggering agent replies.
+    #[serde(default, rename = "suppressAgentDelivery")]
+    pub suppress_agent_delivery: bool,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct SendResponse {
+    #[serde(rename = "messageId")]
+    pub message_id: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReceiveResponse {
+    pub messages: Vec<ReceivedMessage>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct HistoryResponse {
+    pub messages: Vec<crate::store::messages::HistoryMessage>,
+    pub has_more: bool,
+    pub last_read_seq: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ResolveChannelRequest {
+    pub target: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ResolveChannelResponse {
+    #[serde(rename = "channelId")]
+    pub channel_id: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct AgentDetailResponse {
+    pub agent: AgentInfo,
+    #[serde(rename = "envVars")]
+    pub env_vars: Vec<AgentEnvVarPayload>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct AgentEnvVarPayload {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct CreateAgentRequest {
+    pub name: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_runtime")]
+    pub runtime: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default, rename = "reasoningEffort")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, rename = "envVars")]
+    pub env_vars: Vec<AgentEnvVarPayload>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct UpdateAgentRequest {
+    pub display_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default = "default_runtime")]
+    pub runtime: String,
+    #[serde(default = "default_model")]
+    pub model: String,
+    #[serde(default, rename = "reasoningEffort")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, rename = "envVars")]
+    pub env_vars: Vec<AgentEnvVarPayload>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct RestartAgentRequest {
+    pub mode: RestartMode,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartMode {
+    Restart,
+    ResetSession,
+    FullReset,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct DeleteAgentRequest {
+    pub mode: DeleteMode,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeleteMode {
+    PreserveWorkspace,
+    DeleteWorkspace,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct CreateTasksRequest {
+    pub channel: String,
+    pub tasks: Vec<CreateTaskItem>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct CreateTaskItem {
+    pub title: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ClaimTasksRequest {
+    pub channel: String,
+    pub task_numbers: Vec<i64>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct UnclaimTaskRequest {
+    pub channel: String,
+    pub task_number: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct UpdateTaskStatusRequest {
+    pub channel: String,
+    pub task_number: i64,
+    pub status: String,
+}
+
+fn default_runtime() -> String {
+    "claude".to_string()
+}
+
+fn default_model() -> String {
+    "sonnet".to_string()
+}
 
 pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
