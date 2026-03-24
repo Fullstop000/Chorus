@@ -303,6 +303,137 @@ async fn test_server_info() {
 }
 
 #[tokio::test]
+async fn test_update_channel_via_api_normalizes_and_preserves_identity() {
+    let (store, app) = setup();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+
+    let req = serde_json::json!({
+        "name": "#Engineering",
+        "description": "Platform work"
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/channels/{channel_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let renamed = store.find_channel_by_name("engineering").unwrap().unwrap();
+    assert_eq!(renamed.id, channel_id);
+    assert_eq!(renamed.description.as_deref(), Some("Platform work"));
+    assert!(store.find_channel_by_name("general").unwrap().is_none());
+}
+
+#[tokio::test]
+async fn test_update_channel_via_api_rejects_duplicate_name() {
+    let (store, app) = setup();
+    store
+        .create_channel("random", Some("Random"), ChannelType::Channel)
+        .unwrap();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+
+    let req = serde_json::json!({
+        "name": "#RANDOM",
+        "description": "Duplicate"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/channels/{channel_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_archive_channel_via_api_hides_it_from_server_info() {
+    let (store, app) = setup();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/channels/{channel_id}/archive"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(store.find_channel_by_id(&channel_id).unwrap().is_some());
+
+    let server_info = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/server-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(server_info.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(server_info.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let info: ServerInfo = serde_json::from_slice(&body).unwrap();
+    assert!(info.channels.is_empty());
+}
+
+#[tokio::test]
+async fn test_delete_channel_via_api_removes_channel_owned_data() {
+    let (store, app) = setup();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    store.create_tasks("general", "bot1", &["Fix bug"]).unwrap();
+    store
+        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .unwrap();
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/channels/{channel_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(store.find_channel_by_id(&channel_id).unwrap().is_none());
+
+    let server_info = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/server-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(server_info.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(server_info.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let info: ServerInfo = serde_json::from_slice(&body).unwrap();
+    assert!(info.channels.is_empty());
+}
+
+#[tokio::test]
 async fn test_task_workflow() {
     let (_store, app) = setup();
 

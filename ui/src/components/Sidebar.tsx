@@ -1,9 +1,10 @@
-import { useState } from 'react'
-import { ChevronDown, Plus, Settings2, Sparkles } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2 } from 'lucide-react'
 import { useApp } from '../store'
-import type { AgentInfo } from '../types'
+import type { AgentInfo, ChannelInfo } from '../types'
 import { CreateAgentModal } from './CreateAgentModal'
 import { CreateChannelModal } from './CreateChannelModal'
+import { DeleteChannelModal, EditChannelModal } from './EditChannelModal'
 import './Sidebar.css'
 
 function agentColor(name: string): string {
@@ -50,6 +51,7 @@ export function Sidebar() {
     currentUser,
     serverInfo,
     selectedChannel,
+    selectedChannelId,
     selectedAgent,
     setSelectedChannel,
     setSelectedAgent,
@@ -57,11 +59,39 @@ export function Sidebar() {
   } = useApp()
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showCreateChannel, setShowCreateChannel] = useState(false)
+  const [editingChannel, setEditingChannel] = useState<ChannelInfo | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<ChannelInfo | null>(null)
+  const [openChannelMenuId, setOpenChannelMenuId] = useState<string | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
 
   const channels = serverInfo?.channels.filter((c) => c.joined) ?? []
   const systemChannels = serverInfo?.system_channels ?? []
   const agents = serverInfo?.agents ?? []
   const humans = serverInfo?.humans ?? []
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setOpenChannelMenuId(null)
+      }
+    }
+    document.addEventListener('mousedown', handlePointerDown)
+    return () => document.removeEventListener('mousedown', handlePointerDown)
+  }, [])
+
+  function selectChannel(channel: ChannelInfo | null) {
+    if (!channel) {
+      setSelectedChannel(null)
+      return
+    }
+    setSelectedChannel(`#${channel.name}`, channel.id ?? null)
+  }
+
+  function recoverSelectionAfterChannelRemoval(channelId?: string) {
+    if (!channelId || selectedChannelId !== channelId) return
+    const fallback = channels.find((channel) => channel.id !== channelId) ?? null
+    selectChannel(fallback)
+  }
 
   return (
     <>
@@ -96,18 +126,68 @@ export function Sidebar() {
             </div>
             {channels.map((ch) => {
               const target = `#${ch.name}`
+              const isActive = selectedChannel === target
+              const isMenuOpen = openChannelMenuId === ch.id
               return (
-                <button
-                  key={ch.name}
-                  type="button"
-                  className={`sidebar-item${selectedChannel === target ? ' active' : ''}`}
-                  onClick={() => setSelectedChannel(target)}
+                <div
+                  key={ch.id ?? ch.name}
+                  className={`sidebar-channel-row${isActive ? ' active' : ''}`}
+                  ref={isMenuOpen ? menuRef : undefined}
                 >
-                  <span className="sidebar-item-hash">#</span>
-                  <span className="sidebar-item-main">
-                    <span className="sidebar-item-text">{ch.name}</span>
-                  </span>
-                </button>
+                  <button
+                    type="button"
+                    className={`sidebar-item sidebar-channel-button${isActive ? ' active' : ''}`}
+                    onClick={() => selectChannel(ch)}
+                    title={ch.description ?? ch.name}
+                  >
+                    <span className="sidebar-item-hash">#</span>
+                    <span className="sidebar-item-main">
+                      <span className="sidebar-item-text">{ch.name}</span>
+                      {ch.description && <span className="sidebar-item-meta">{ch.description}</span>}
+                    </span>
+                  </button>
+                  <div className="sidebar-channel-actions">
+                    <button
+                      type="button"
+                      className="sidebar-channel-action"
+                      title={`Edit #${ch.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setOpenChannelMenuId(null)
+                        setEditingChannel(ch)
+                      }}
+                    >
+                      <Pencil size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-channel-action"
+                      title={`Open menu for #${ch.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setOpenChannelMenuId((current) => (current === ch.id ? null : ch.id ?? null))
+                      }}
+                    >
+                      <Ellipsis size={12} />
+                    </button>
+                    {isMenuOpen && (
+                      <div className="sidebar-channel-menu">
+                        <button
+                          type="button"
+                          className="sidebar-channel-menu-item danger"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            setOpenChannelMenuId(null)
+                            setDeleteTarget(ch)
+                          }}
+                        >
+                          <Trash2 size={12} />
+                          <span>Delete Channel</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
               )
             })}
           </div>
@@ -124,7 +204,7 @@ export function Sidebar() {
                     key={ch.name}
                     type="button"
                     className={`sidebar-item sidebar-item--system${selectedChannel === target ? ' active' : ''}`}
-                    onClick={() => setSelectedChannel(target)}
+                    onClick={() => setSelectedChannel(target, ch.id ?? null)}
                     title={ch.description ?? ch.name}
                   >
                     <span className="sidebar-item-hash">#</span>
@@ -242,6 +322,35 @@ export function Sidebar() {
           onClose={() => setShowCreateChannel(false)}
           onCreated={() => {
             setShowCreateChannel(false)
+            refreshServerInfo()
+          }}
+        />
+      )}
+      {editingChannel && (
+        <EditChannelModal
+          channel={editingChannel}
+          onClose={() => setEditingChannel(null)}
+          onSaved={(updated) => {
+            if (selectedChannelId === updated.id) {
+              setSelectedChannel(`#${updated.name}`, updated.id)
+            }
+            setEditingChannel(null)
+            refreshServerInfo()
+          }}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteChannelModal
+          channel={deleteTarget}
+          onClose={() => setDeleteTarget(null)}
+          onArchived={() => {
+            recoverSelectionAfterChannelRemoval(deleteTarget.id)
+            setDeleteTarget(null)
+            refreshServerInfo()
+          }}
+          onDeleted={() => {
+            recoverSelectionAfterChannelRemoval(deleteTarget.id)
+            setDeleteTarget(null)
             refreshServerInfo()
           }}
         />

@@ -50,3 +50,4 @@ ui/tsconfig.tsbuildinfo
 qa/runs/
 .codex/
 .claude/
+docs/plans

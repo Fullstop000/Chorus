@@ -6,6 +6,8 @@ use super::{channel_from_row, parse_sender_type, sender_type_str, Store};
 use crate::models::*;
 
 impl Store {
+    /// Persist a new channel row. User-visible list queries later filter out
+    /// non-channel types and archived entries.
     pub fn create_channel(
         &self,
         name: &str,
@@ -30,10 +32,107 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         // Exclude DM and system channels — only return user-visible channels.
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels WHERE channel_type = 'channel' ORDER BY created_at",
+            "SELECT id, name, description, channel_type, created_at FROM channels WHERE channel_type = 'channel' AND archived = 0 ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], channel_from_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Update a user channel in place so message/task/thread data continues to
+    /// point at the same stable channel id.
+    pub fn update_channel(
+        &self,
+        channel_id: &str,
+        name: &str,
+        description: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
+        if channel.channel_type != ChannelType::Channel {
+            return Err(anyhow!("only user channels can be updated"));
+        }
+
+        conn.execute(
+            "UPDATE channels SET name = ?1, description = ?2 WHERE id = ?3",
+            params![name, description, channel_id],
+        )?;
+        Ok(())
+    }
+
+    /// Archive a user channel without destroying its history so the UI can hide
+    /// it from normal navigation while retaining auditability.
+    pub fn archive_channel(&self, channel_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
+        if channel.channel_type != ChannelType::Channel {
+            return Err(anyhow!("only user channels can be archived"));
+        }
+
+        conn.execute(
+            "UPDATE channels SET archived = 1 WHERE id = ?1",
+            params![channel_id],
+        )?;
+        Ok(())
+    }
+
+    /// Permanently remove a user channel and its dependent rows. Channel-owned
+    /// data does not currently use foreign-key cascades, so cleanup is explicit.
+    pub fn delete_channel(&self, channel_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
+        if channel.channel_type != ChannelType::Channel {
+            return Err(anyhow!("only user channels can be deleted"));
+        }
+
+        let attachment_rows: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT DISTINCT a.id, a.stored_path
+                 FROM attachments a
+                 JOIN message_attachments ma ON ma.attachment_id = a.id
+                 JOIN messages m ON m.id = ma.message_id
+                 WHERE m.channel_id = ?1",
+            )?
+            .query_map(params![channel_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .filter_map(|row| row.ok())
+            .collect();
+
+        conn.execute(
+            "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?1)",
+            params![channel_id],
+        )?;
+        conn.execute(
+            "DELETE FROM messages WHERE channel_id = ?1",
+            params![channel_id],
+        )?;
+        conn.execute(
+            "DELETE FROM tasks WHERE channel_id = ?1",
+            params![channel_id],
+        )?;
+        conn.execute(
+            "DELETE FROM channel_members WHERE channel_id = ?1",
+            params![channel_id],
+        )?;
+        conn.execute("DELETE FROM channels WHERE id = ?1", params![channel_id])?;
+
+        for (attachment_id, stored_path) in attachment_rows {
+            let refs_remaining: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM message_attachments WHERE attachment_id = ?1",
+                params![attachment_id],
+                |row| row.get(0),
+            )?;
+            if refs_remaining == 0 {
+                conn.execute(
+                    "DELETE FROM attachments WHERE id = ?1",
+                    params![attachment_id],
+                )?;
+                let _ = std::fs::remove_file(stored_path);
+            }
+        }
+
+        Ok(())
     }
 
     pub fn find_channel_by_name(&self, name: &str) -> Result<Option<Channel>> {

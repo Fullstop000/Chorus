@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createChannel } from '../api'
 
 interface Props {
   onClose: () => void
@@ -17,18 +18,10 @@ export function CreateChannelModal({ onClose, onCreated }: Props) {
     setCreating(true)
     setError(null)
     try {
-      const res = await fetch('/api/channels', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: trimmed, description }),
-      })
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}))
-        throw new Error((data as { error?: string }).error ?? res.statusText)
-      }
+      await createChannel({ name: trimmed, description })
       onCreated()
     } catch (e) {
-      setError(String(e))
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setCreating(false)
     }

@@ -317,6 +317,8 @@ pub struct ServerInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChannelInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     pub description: Option<String>,
     pub joined: bool,

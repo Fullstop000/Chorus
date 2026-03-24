@@ -32,6 +32,48 @@ export async function getServerInfo(_username: string): Promise<ServerInfo> {
   return json(await fetch(`${BASE}/api/server-info`))
 }
 
+export async function createChannel(payload: {
+  name: string
+  description: string
+}): Promise<{ id: string; name: string }> {
+  return json(
+    await fetch(`${BASE}/api/channels`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  )
+}
+
+export async function updateChannel(
+  channelId: string,
+  payload: { name: string; description: string }
+): Promise<{ id: string; name: string; description?: string | null }> {
+  return json(
+    await fetch(`${BASE}/api/channels/${encodeURIComponent(channelId)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  )
+}
+
+export async function archiveChannel(channelId: string): Promise<{ ok: boolean }> {
+  return json(
+    await fetch(`${BASE}/api/channels/${encodeURIComponent(channelId)}/archive`, {
+      method: 'POST',
+    })
+  )
+}
+
+export async function deleteChannel(channelId: string): Promise<{ ok: boolean }> {
+  return json(
+    await fetch(`${BASE}/api/channels/${encodeURIComponent(channelId)}`, {
+      method: 'DELETE',
+    })
+  )
+}
+
 export async function sendMessage(
   username: string,
   target: string,

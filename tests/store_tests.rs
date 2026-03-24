@@ -1,5 +1,6 @@
 use chorus::models::*;
 use chorus::store::{AgentRecordUpsert, Store};
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 fn make_store() -> (Store, tempfile::TempDir) {
@@ -383,4 +384,127 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
             .any(|message| message.content == "bot1 thread reply"),
         "the replying agent should still see its own thread activity"
     );
+}
+
+#[test]
+fn test_update_channel_preserves_id_and_metadata() {
+    let (store, dir) = make_store();
+    let channel_id = store
+        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .unwrap();
+
+    store
+        .update_channel(&channel_id, "engineering", Some("Engineering"))
+        .unwrap();
+
+    let renamed = store.find_channel_by_name("engineering").unwrap().unwrap();
+    assert_eq!(renamed.id, channel_id);
+    assert_eq!(renamed.description.as_deref(), Some("Engineering"));
+    assert!(
+        store.find_channel_by_name("general").unwrap().is_none(),
+        "old name should no longer resolve after rename"
+    );
+
+    let conn = Connection::open(dir.path().join("test.db")).unwrap();
+    let raw_id: String = conn
+        .query_row(
+            "SELECT id FROM channels WHERE name = 'engineering'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(raw_id, channel_id);
+}
+
+#[test]
+fn test_archive_channel_hides_it_from_active_listings() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    store.archive_channel(&channel_id).unwrap();
+
+    assert!(
+        store.find_channel_by_id(&channel_id).unwrap().is_some(),
+        "archive should preserve the underlying channel row"
+    );
+    assert!(
+        store.list_channels().unwrap().is_empty(),
+        "archived channels must be hidden from active channel listings"
+    );
+    assert!(
+        store.get_server_info("alice").unwrap().channels.is_empty(),
+        "archived channels must not appear in server info"
+    );
+}
+
+#[test]
+fn test_delete_channel_removes_messages_tasks_and_memberships() {
+    let (store, dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", Some("Engineering"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("eng", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("eng", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let parent_id = store
+        .send_message("eng", None, "alice", SenderType::Human, "hello", &[])
+        .unwrap();
+    store
+        .send_message(
+            "eng",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "thread reply",
+            &[],
+        )
+        .unwrap();
+    store.create_tasks("eng", "bot1", &["ship it"]).unwrap();
+
+    store.delete_channel(&channel_id).unwrap();
+
+    assert!(
+        store.find_channel_by_id(&channel_id).unwrap().is_none(),
+        "channel row should be removed after hard delete"
+    );
+    let conn = Connection::open(dir.path().join("test.db")).unwrap();
+    let membership_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_members WHERE channel_id = ?1",
+            [&channel_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let message_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE channel_id = ?1",
+            [&channel_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let task_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM tasks WHERE channel_id = ?1",
+            [&channel_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(membership_count, 0, "channel memberships should cascade");
+    assert_eq!(message_count, 0, "channel messages should cascade");
+    assert_eq!(task_count, 0, "channel tasks should cascade");
 }
