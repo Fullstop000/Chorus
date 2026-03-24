@@ -23,7 +23,8 @@ pub struct Channel {
 pub enum ChannelType {
     Channel,
     Dm,
-    /// System-managed channels (e.g. #shared-memory). Not listed in the UI channel list.
+    /// System-managed channels (e.g. #all, #shared-memory). Surfaced separately
+    /// from user-created channels in the UI.
     System,
 }
 
@@ -66,6 +67,31 @@ impl Store {
         )?;
         let rows = stmt.query_map([], channel_from_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Channels that newly created agents should join automatically. This keeps
+    /// the writable built-in room available even though it is rendered under the
+    /// system section instead of the editable channel list.
+    pub fn list_auto_join_channels(&self) -> Result<Vec<Channel>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, channel_type, created_at
+             FROM channels
+             WHERE archived = 0 AND (channel_type = 'channel' OR channel_type = 'system')
+             ORDER BY CASE
+                 WHEN name = 'all' THEN 0
+                 WHEN channel_type = 'channel' THEN 1
+                 ELSE 2
+             END, created_at",
+        )?;
+        let rows = stmt.query_map([], channel_from_row)?;
+        Ok(rows
+            .filter_map(|row| row.ok())
+            .filter(|channel| {
+                channel.channel_type != ChannelType::System
+                    || !Store::is_system_channel_read_only(&channel.name)
+            })
+            .collect())
     }
 
     /// Update a user channel in place so message/task/thread data continues to

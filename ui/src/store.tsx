@@ -8,7 +8,7 @@ export interface AppState {
   currentUser: string                  // OS username from /api/whoami
   serverInfo: ServerInfo | null
   serverInfoLoading: boolean
-  selectedChannel: string | null       // e.g. "#general"
+  selectedChannel: string | null       // e.g. "#all"
   selectedChannelId: string | null
   selectedAgent: AgentInfo | null      // non-null when viewing a DM with an agent
   activeTab: ActiveTab
@@ -55,7 +55,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         })
         if (selectedAgentRef.current) return
 
-        const joinedChannels = info.channels.filter((c) => c.joined)
+        const joinedChannels = [
+          ...info.system_channels.filter((c) => c.joined),
+          ...info.channels.filter((c) => c.joined),
+        ]
         let nextSelected = null as string | null
         let nextSelectedId = null as string | null
 

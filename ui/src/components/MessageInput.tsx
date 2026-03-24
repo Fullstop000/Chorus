@@ -24,9 +24,9 @@ export function MessageInput({ onMessageSent }: Props) {
     ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
   ]
 
-  // System channels (e.g. #shared-memory) are read-only from the human composer.
+  // Only protected system channels (e.g. #shared-memory) are read-only.
   const isSystemChannel = !!(selectedChannel && serverInfo?.system_channels?.some(
-    (c) => `#${c.name}` === selectedChannel
+    (c) => `#${c.name}` === selectedChannel && c.read_only
   ))
 
   const placeholder = isSystemChannel

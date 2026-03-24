@@ -447,6 +447,55 @@ fn test_archive_channel_hides_it_from_active_listings() {
 }
 
 #[test]
+fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let original = store.find_channel_by_name("general").unwrap().unwrap();
+
+    store.ensure_builtin_channels("alice").unwrap();
+
+    assert!(
+        store.find_channel_by_name("general").unwrap().is_none(),
+        "startup migration should rename #general to #all"
+    );
+
+    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    assert_eq!(all.id, original.id);
+    assert_eq!(all.channel_type, ChannelType::System);
+    assert_eq!(
+        all.description.as_deref(),
+        Some("All members"),
+        "the migrated default channel should use the new built-in description"
+    );
+    assert!(
+        store.is_member("all", "alice").unwrap(),
+        "existing memberships should survive the rename"
+    );
+
+    let server_info = store.get_server_info("alice").unwrap();
+    assert!(
+        server_info.channels.iter().all(|channel| channel.name != "all"),
+        "#all should no longer appear in the editable channel list"
+    );
+    let system_all = server_info
+        .system_channels
+        .iter()
+        .find(|channel| channel.name == "all")
+        .expect("#all should be listed as a system channel");
+    assert!(
+        !system_all.read_only,
+        "#all must remain writable even though it is classified as a system channel"
+    );
+}
+
+#[test]
 fn test_delete_channel_removes_messages_tasks_and_memberships() {
     let (store, dir) = make_store();
     let channel_id = store
