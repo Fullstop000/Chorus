@@ -97,11 +97,11 @@ pub enum DeleteMode {
     DeleteWorkspace,
 }
 
-pub fn default_runtime() -> String {
+pub(super) fn default_runtime() -> String {
     "claude".to_string()
 }
 
-pub fn default_model() -> String {
+pub(super) fn default_model() -> String {
     "sonnet".to_string()
 }
 

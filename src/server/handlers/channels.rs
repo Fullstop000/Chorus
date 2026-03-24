@@ -25,11 +25,6 @@ pub struct UpdateChannelRequest {
 
 // ── Private helpers ──
 
-#[allow(dead_code)]
-pub(super) fn strip_channel_prefix(s: &str) -> &str {
-    s.strip_prefix('#').unwrap_or(s)
-}
-
 pub(super) fn normalize_channel_name(raw: &str) -> String {
     raw.trim().trim_start_matches('#').trim().to_lowercase()
 }
