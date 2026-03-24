@@ -909,7 +909,7 @@ impl ChatBridge {
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
 
-        let data: serde_json::Value = res
+        let data: Value = res
             .json()
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
@@ -951,7 +951,7 @@ impl ChatBridge {
                 rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
             })?;
 
-        let data: serde_json::Value = res
+        let data: Value = res
             .json()
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
