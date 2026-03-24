@@ -10,10 +10,11 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::models::*;
+use crate::agent::activity_log::{ActivityEntry, ActivityLogResponse};
+use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
-pub use handlers::AppState;
+pub use handlers::{AgentDetailResponse, AppState, HistoryResponse};
 
 /// Runtime lifecycle operations the HTTP server can trigger for agents.
 pub trait AgentLifecycle: Send + Sync {

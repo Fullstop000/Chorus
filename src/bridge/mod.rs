@@ -1,207 +1,15 @@
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
-use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
-use serde::Deserialize;
 use serde_json::Value;
 use std::time::Duration;
 
-// ---------------------------------------------------------------------------
-// Helper functions
-// ---------------------------------------------------------------------------
+mod format;
+mod types;
 
-fn to_local_time(iso: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(iso)
-        .map(|dt| {
-            dt.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
-        })
-        .unwrap_or_else(|_| iso.to_string())
-}
-
-fn format_target(m: &Value) -> String {
-    let channel_type = m.get("channel_type").and_then(|v| v.as_str()).unwrap_or("");
-    let channel_name = m.get("channel_name").and_then(|v| v.as_str()).unwrap_or("");
-    let parent_channel_name = m.get("parent_channel_name").and_then(|v| v.as_str());
-    let parent_channel_type = m
-        .get("parent_channel_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
-
-    if channel_type == "thread" {
-        if let Some(parent_name) = parent_channel_name {
-            let short_id = channel_name.strip_prefix("thread-").unwrap_or(channel_name);
-            if parent_channel_type == "dm" {
-                return format!("dm:@{}:{}", parent_name, short_id);
-            }
-            return format!("#{}:{}", parent_name, short_id);
-        }
-    }
-    if channel_type == "dm" {
-        return format!("dm:@{}", channel_name);
-    }
-    format!("#{}", channel_name)
-}
-
-fn format_attachments(attachments: Option<&Value>) -> String {
-    match attachments.and_then(|a| a.as_array()) {
-        Some(arr) if !arr.is_empty() => {
-            let count = arr.len();
-            let details: Vec<String> = arr
-                .iter()
-                .map(|a| {
-                    let filename = a.get("filename").and_then(|v| v.as_str()).unwrap_or("file");
-                    let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                    format!("{} (id:{})", filename, id)
-                })
-                .collect();
-            let plural = if count > 1 { "s" } else { "" };
-            format!(
-                " [{} image{}: {} \u{2014} use view_file to see]",
-                count,
-                plural,
-                details.join(", ")
-            )
-        }
-        _ => String::new(),
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Request parameter structs
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct SendMessageParams {
-    /// Where to send. Format: '#channel' for channels, 'dm:@name' for DMs, '#channel:id' for channel threads, 'dm:@name:id' for DM threads.
-    target: String,
-    /// The message content
-    content: String,
-    /// Optional attachment IDs from upload_file to include with the message
-    #[serde(default)]
-    attachment_ids: Option<Vec<String>>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ReceiveMessageParams {
-    /// Whether to block (wait) for new messages (default true)
-    #[serde(default = "default_true")]
-    block: Option<bool>,
-    /// How long to wait in ms when blocking (default 59000)
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-}
-
-fn default_true() -> Option<bool> {
-    Some(true)
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct EmptyParams {}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ReadHistoryParams {
-    /// The target to read history from — e.g. '#general', 'dm:@richard'
-    channel: String,
-    /// Max number of messages to return (default 50, max 100)
-    #[serde(default)]
-    limit: Option<u32>,
-    /// Return messages before this seq number (for backward pagination)
-    #[serde(default)]
-    before: Option<i64>,
-    /// Return messages after this seq number (for catching up on unread)
-    #[serde(default)]
-    after: Option<i64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ListTasksParams {
-    /// The channel whose task board to view — e.g. '#engineering'
-    channel: String,
-    /// Filter by status: all, todo, in_progress, in_review, done (default: all)
-    #[serde(default)]
-    status: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct TaskDef {
-    /// Task title
-    title: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct CreateTasksParams {
-    /// The channel to create tasks in — e.g. '#engineering'
-    channel: String,
-    /// Array of tasks to create
-    tasks: Vec<TaskDef>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ClaimTasksParams {
-    /// The channel whose tasks to claim — e.g. '#engineering'
-    channel: String,
-    /// Task numbers to claim (e.g. [1, 3, 5])
-    task_numbers: Vec<i64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct UnclaimTaskParams {
-    /// The channel — e.g. '#engineering'
-    channel: String,
-    /// The task number to unclaim (e.g. 3)
-    task_number: i64,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct UpdateTaskStatusParams {
-    /// The channel — e.g. '#engineering'
-    channel: String,
-    /// The task number to update (e.g. 3)
-    task_number: i64,
-    /// The new status: todo, in_progress, in_review, or done
-    status: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct UploadFileParams {
-    /// Absolute path to the image file on your local filesystem
-    file_path: String,
-    /// The channel target where this file will be used (e.g. '#general', 'dm:@richard')
-    channel: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct ViewFileParams {
-    /// The attachment UUID (from the 'id:...' shown in the message)
-    attachment_id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct RememberParams {
-    /// Short label for this fact, e.g. "rate-limiting approach" or "api shape"
-    key: String,
-    /// The full content of the fact
-    value: String,
-    /// Optional space-separated tags for filtering later, e.g. "research task-42"
-    #[serde(default)]
-    tags: Option<String>,
-    /// Optional channel context where this fact was discovered (e.g. '#general')
-    #[serde(default, rename = "channelContext")]
-    channel_context: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-struct RecallParams {
-    /// Keyword query to search across all stored facts (key, value, and tags)
-    #[serde(default)]
-    query: Option<String>,
-    /// Space-separated tags to filter by (all listed tags must be present)
-    #[serde(default)]
-    tags: Option<String>,
-}
+use format::{format_attachments, format_target, to_local_time};
+use types::*;
 
 // ---------------------------------------------------------------------------
 // ChatBridge
@@ -1101,7 +909,7 @@ impl ChatBridge {
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
 
-        let data: serde_json::Value = res
+        let data: Value = res
             .json()
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
@@ -1143,7 +951,7 @@ impl ChatBridge {
                 rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
             })?;
 
-        let data: serde_json::Value = res
+        let data: Value = res
             .json()
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;

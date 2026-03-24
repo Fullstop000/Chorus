@@ -1,14 +1,19 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chorus::models::*;
-use chorus::server::{build_router, build_router_with_lifecycle, AgentLifecycle};
-use chorus::store::Store;
+use chorus::agent::activity_log::{ActivityEntry, ActivityLogResponse};
+use chorus::server::{
+    build_router, build_router_with_lifecycle, AgentDetailResponse, AgentLifecycle, HistoryResponse,
+};
+use chorus::store::agents::AgentStatus;
+use chorus::store::channels::ChannelType;
+use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::{ServerInfo, Store};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-use chorus::activity_log::{self, ActivityLogMap};
+use chorus::agent::activity_log::{self, ActivityLogMap};
 use tempfile::tempdir;
 use tower::ServiceExt;
 

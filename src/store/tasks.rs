@@ -1,9 +1,89 @@
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::Store;
-use crate::models::*;
+
+// ── Types owned by this module ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Task {
+    pub id: String,
+    pub channel_id: String,
+    pub task_number: i64,
+    pub title: String,
+    pub status: TaskStatus,
+    pub claimed_by: Option<String>,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Todo,
+    InProgress,
+    InReview,
+    Done,
+}
+
+impl TaskStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Todo => "todo",
+            Self::InProgress => "in_progress",
+            Self::InReview => "in_review",
+            Self::Done => "done",
+        }
+    }
+
+    pub fn from_status_str(s: &str) -> Option<Self> {
+        match s {
+            "todo" => Some(Self::Todo),
+            "in_progress" => Some(Self::InProgress),
+            "in_review" => Some(Self::InReview),
+            "done" => Some(Self::Done),
+            _ => None,
+        }
+    }
+
+    pub fn can_transition_to(&self, to: Self) -> bool {
+        matches!(
+            (self, to),
+            (Self::Todo, Self::InProgress)
+                | (Self::InProgress, Self::InReview)
+                | (Self::InProgress, Self::Done)
+                | (Self::InReview, Self::Done)
+                | (Self::InReview, Self::InProgress)
+        )
+    }
+}
+
+/// Returned by list_tasks and create_tasks — store constructs these directly.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TaskInfo {
+    #[serde(rename = "taskNumber")]
+    pub task_number: i64,
+    pub title: String,
+    pub status: String,
+    #[serde(rename = "claimedByName")]
+    pub claimed_by_name: Option<String>,
+    #[serde(rename = "createdByName")]
+    pub created_by_name: Option<String>,
+}
+
+/// Returned by claim_tasks — store constructs these directly.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClaimResult {
+    #[serde(rename = "taskNumber")]
+    pub task_number: i64,
+    pub success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
 
 impl Store {
     pub fn create_tasks(

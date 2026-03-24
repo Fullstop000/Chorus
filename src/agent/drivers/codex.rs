@@ -2,7 +2,7 @@ use std::process::{Child, Command, Stdio};
 
 use super::prompt::{build_base_system_prompt, PromptOptions};
 use super::{Driver, ParsedEvent, SpawnContext};
-use crate::models::AgentConfig;
+use crate::store::agents::AgentConfig;
 
 pub struct CodexDriver;
 
@@ -345,12 +345,6 @@ impl Driver for CodexDriver {
                 let op = n.trim_start_matches("mcp_chat_").replace('_', " ");
                 format!("Using {op}\u{2026}")
             }
-            "shell" | "command_execution" => "Running command\u{2026}".to_string(),
-            "file_change" => "Editing file\u{2026}".to_string(),
-            "file_read" => "Reading file\u{2026}".to_string(),
-            "file_write" => "Writing file\u{2026}".to_string(),
-            "web_search" => "Searching web\u{2026}".to_string(),
-            "collab_tool_call" => "Collaborating\u{2026}".to_string(),
             other => {
                 let truncated: String = other.chars().take(20).collect();
                 format!("Using {truncated}\u{2026}")

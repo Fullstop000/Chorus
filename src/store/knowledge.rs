@@ -1,9 +1,50 @@
 use anyhow::{anyhow, Result};
 use rusqlite::params;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{parse_datetime, Store};
-use crate::models::KnowledgeEntry;
+
+// ── Types owned by this module ──
+
+/// A single entry in the shared knowledge store.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KnowledgeEntry {
+    pub id: String,
+    pub key: String,
+    pub value: String,
+    pub tags: String,
+    pub author_agent_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel_context: Option<String>,
+    pub created_at: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RememberRequest {
+    pub key: String,
+    pub value: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default, rename = "channelContext")]
+    pub channel_context: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RememberResponse {
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RecallQuery {
+    pub query: Option<String>,
+    pub tags: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RecallResponse {
+    pub entries: Vec<KnowledgeEntry>,
+}
 
 /// Sanitize a raw FTS5 query string so agent-supplied input cannot inject FTS5 syntax
 /// that causes a parse error. We escape double-quotes and strip bare operators.

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use chorus::models::{ChannelType, SenderType};
 use chorus::server::build_router;
+use chorus::store::channels::ChannelType;
+use chorus::store::messages::SenderType;
 use chorus::store::Store;
 
 async fn start_test_server() -> (String, Arc<Store>) {

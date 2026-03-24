@@ -1,11 +1,88 @@
 use std::collections::BTreeSet;
 
 use anyhow::{anyhow, Result};
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use super::channels::{Channel, ChannelType};
 use super::{sender_type_str, Store};
-use crate::models::*;
+
+// ── Types owned by this module ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SenderType {
+    Human,
+    Agent,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Message {
+    pub id: String,
+    pub channel_id: String,
+    pub thread_parent_id: Option<String>,
+    pub sender_name: String,
+    pub sender_type: SenderType,
+    pub content: String,
+    pub created_at: DateTime<Utc>,
+    pub seq: i64,
+    pub attachment_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReceivedMessage {
+    pub message_id: String,
+    pub channel_name: String,
+    pub channel_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_channel_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_channel_type: Option<String>,
+    pub sender_name: String,
+    pub sender_type: String,
+    pub content: String,
+    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<AttachmentRef>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttachmentRef {
+    pub id: String,
+    pub filename: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistoryMessage {
+    pub id: String,
+    pub seq: i64,
+    pub content: String,
+    #[serde(rename = "senderName")]
+    pub sender_name: String,
+    #[serde(rename = "senderType")]
+    pub sender_type: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "senderDeleted")]
+    pub sender_deleted: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<AttachmentRef>>,
+    #[serde(rename = "replyCount", skip_serializing_if = "Option::is_none")]
+    pub reply_count: Option<i64>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ActivityMessage {
+    pub id: String,
+    pub seq: i64,
+    pub content: String,
+    #[serde(rename = "channelName")]
+    pub channel_name: String,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+}
 
 impl Store {
     pub fn send_message(

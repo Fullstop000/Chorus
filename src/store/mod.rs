@@ -1,10 +1,8 @@
-mod agents;
-mod channels;
-mod knowledge;
-mod messages;
-mod tasks;
-
-pub use agents::AgentRecordUpsert;
+pub mod agents;
+pub mod channels;
+pub mod knowledge;
+pub mod messages;
+pub mod tasks;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -12,9 +10,75 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
-use crate::models::*;
+pub use agents::AgentRecordUpsert;
+pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
+pub use channels::{Channel, ChannelMember, ChannelType};
+pub use knowledge::{
+    KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
+};
+pub use messages::{
+    ActivityMessage, AttachmentRef, HistoryMessage, Message, ReceivedMessage, SenderType,
+};
+pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
+
+// ── Types that live in store/mod.rs ──
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Attachment {
+    pub id: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: i64,
+    pub stored_path: String,
+    pub uploaded_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ServerInfo {
+    pub channels: Vec<ChannelInfo>,
+    pub system_channels: Vec<ChannelInfo>,
+    pub agents: Vec<AgentInfo>,
+    pub humans: Vec<HumanInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChannelInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    pub description: Option<String>,
+    pub joined: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentInfo {
+    pub name: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(rename = "reasoningEffort", skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_detail: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HumanInfo {
+    pub name: String,
+}
 
 pub struct Store {
     conn: Mutex<Connection>,

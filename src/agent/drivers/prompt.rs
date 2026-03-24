@@ -1,4 +1,4 @@
-use crate::models::AgentConfig;
+use crate::store::agents::AgentConfig;
 
 pub struct PromptOptions {
     pub tool_prefix: String,

@@ -1,4 +1,7 @@
-use chorus::models::*;
+use chorus::store::agents::AgentEnvVar;
+use chorus::store::channels::ChannelType;
+use chorus::store::messages::SenderType;
+use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
 use rusqlite::Connection;
 use tempfile::tempdir;
