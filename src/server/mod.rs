@@ -148,6 +148,10 @@ pub fn build_router_with_lifecycle(
         .route("/api/whoami", get(handle_whoami))
         .route("/api/channels", post(handle_create_channel))
         .route(
+            "/api/channels/{channel_id}/members",
+            get(handle_list_channel_members).post(handle_invite_channel_member),
+        )
+        .route(
             "/api/channels/{channel_id}",
             patch(handle_update_channel).delete(handle_delete_channel),
         )

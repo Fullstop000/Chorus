@@ -447,6 +447,100 @@ fn test_archive_channel_hides_it_from_active_listings() {
 }
 
 #[test]
+fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let original = store.find_channel_by_name("general").unwrap().unwrap();
+
+    store.ensure_builtin_channels("alice").unwrap();
+
+    assert!(
+        store.find_channel_by_name("general").unwrap().is_none(),
+        "startup migration should rename #general to #all"
+    );
+
+    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    assert_eq!(all.id, original.id);
+    assert_eq!(all.channel_type, ChannelType::System);
+    assert_eq!(
+        all.description.as_deref(),
+        Some("All members"),
+        "the migrated default channel should use the new built-in description"
+    );
+    assert!(
+        store.is_member("all", "alice").unwrap(),
+        "existing memberships should survive the rename"
+    );
+
+    let server_info = store.get_server_info("alice").unwrap();
+    assert!(
+        server_info
+            .channels
+            .iter()
+            .all(|channel| channel.name != "all"),
+        "#all should no longer appear in the editable channel list"
+    );
+    let system_all = server_info
+        .system_channels
+        .iter()
+        .find(|channel| channel.name == "all")
+        .expect("#all should be listed as a system channel");
+    assert!(
+        !system_all.read_only,
+        "#all must remain writable even though it is classified as a system channel"
+    );
+}
+
+#[test]
+fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
+    let (store, _dir) = make_store();
+    store.add_human("alice").unwrap();
+    store.add_human("zoe").unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .unwrap();
+
+    store.ensure_builtin_channels("alice").unwrap();
+
+    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let members = store.get_channel_members(&all.id).unwrap();
+    let names: Vec<_> = members
+        .iter()
+        .map(|member| member.member_name.as_str())
+        .collect();
+    assert!(names.contains(&"alice"));
+    assert!(names.contains(&"zoe"));
+    assert!(names.contains(&"bot1"));
+    assert!(names.contains(&"bot2"));
+}
+
+#[test]
+fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
+    let (store, _dir) = make_store();
+    store.add_human("alice").unwrap();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    store.add_human("zoe").unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+
+    assert!(store.is_member("all", "alice").unwrap());
+    assert!(store.is_member("all", "zoe").unwrap());
+    assert!(store.is_member("all", "bot1").unwrap());
+}
+
+#[test]
 fn test_delete_channel_removes_messages_tasks_and_memberships() {
     let (store, dir) = make_store();
     let channel_id = store

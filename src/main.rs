@@ -315,21 +315,8 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
     let username = whoami::username();
     let _ = store.add_human(&username);
 
-    // Create default #general channel if none exist
-    if store.list_channels()?.is_empty() {
-        store.create_channel(
-            "general",
-            Some("General channel for all members"),
-            ChannelType::Channel,
-        )?;
-        store.join_channel("general", &username, SenderType::Human)?;
-    }
-
-    // Ensure the #shared-memory system channel exists (idempotent).
-    store.ensure_system_channel(
-        "shared-memory",
-        "Agent group memory — breadcrumbs posted here by mcp_chat_remember",
-    )?;
+    // Ensure built-in system channels exist and upgrade legacy installs to #all.
+    store.ensure_builtin_channels(&username)?;
 
     let server_url = format!("http://localhost:{port}");
     let bridge_binary = std::env::current_exe()?.to_string_lossy().into_owned();
@@ -361,7 +348,7 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("Chorus running at {server_url}");
     println!("Human user: @{username}");
-    println!("Use `chorus send '#general' 'hello'` to send messages");
+    println!("Use `chorus send '#all' 'hello'` to send messages");
     println!("Use `chorus agent create <name>` to create an agent");
 
     // Graceful shutdown on Ctrl+C

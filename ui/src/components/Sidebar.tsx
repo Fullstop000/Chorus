@@ -124,6 +124,24 @@ export function Sidebar() {
                 <Plus size={14} />
               </button>
             </div>
+            {systemChannels.map((ch) => {
+              const target = `#${ch.name}`
+              return (
+                <button
+                  key={ch.id ?? ch.name}
+                  type="button"
+                  className={`sidebar-item${selectedChannel === target ? ' active' : ''}`}
+                  onClick={() => setSelectedChannel(target, ch.id ?? null)}
+                  title={ch.description ?? ch.name}
+                >
+                  <span className="sidebar-item-hash">#</span>
+                  <span className="sidebar-item-main">
+                    <span className="sidebar-item-text">{ch.name}</span>
+                  </span>
+                  <span className="sidebar-channel-badge">sys</span>
+                </button>
+              )
+            })}
             {channels.map((ch) => {
               const target = `#${ch.name}`
               const isActive = selectedChannel === target
@@ -191,32 +209,6 @@ export function Sidebar() {
               )
             })}
           </div>
-
-          {systemChannels.length > 0 && (
-            <div className="sidebar-section">
-              <div className="sidebar-section-header">
-                <span className="sidebar-section-label">System Channels</span>
-              </div>
-              {systemChannels.map((ch) => {
-                const target = `#${ch.name}`
-                return (
-                  <button
-                    key={ch.name}
-                    type="button"
-                    className={`sidebar-item sidebar-item--system${selectedChannel === target ? ' active' : ''}`}
-                    onClick={() => setSelectedChannel(target, ch.id ?? null)}
-                    title={ch.description ?? ch.name}
-                  >
-                    <span className="sidebar-item-hash">#</span>
-                    <span className="sidebar-item-main">
-                      <span className="sidebar-item-text">{ch.name}</span>
-                      <span className="sidebar-item-meta">:: system</span>
-                    </span>
-                  </button>
-                )
-              })}
-            </div>
-          )}
 
           <div className="sidebar-section">
             <div className="sidebar-section-header">
@@ -320,8 +312,9 @@ export function Sidebar() {
       {showCreateChannel && (
         <CreateChannelModal
           onClose={() => setShowCreateChannel(false)}
-          onCreated={() => {
+          onCreated={(created) => {
             setShowCreateChannel(false)
+            setSelectedChannel(`#${created.name}`, created.id)
             refreshServerInfo()
           }}
         />

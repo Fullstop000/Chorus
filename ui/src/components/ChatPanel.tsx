@@ -1,11 +1,17 @@
 import { useEffect, useRef } from 'react'
-import { Ellipsis, Search } from 'lucide-react'
+import { Ellipsis, Search, Users } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
 import './ChatPanel.css'
 
-export function ChatHeader() {
+interface ChatHeaderProps {
+  memberCount?: number | null
+  membersOpen: boolean
+  onToggleMembers: () => void
+}
+
+export function ChatHeader({ memberCount, membersOpen, onToggleMembers }: ChatHeaderProps) {
   const { selectedChannel, selectedAgent, serverInfo } = useApp()
   const channelInfo = selectedChannel
     ? serverInfo?.channels.find((c) => `#${c.name}` === selectedChannel)
@@ -30,6 +36,17 @@ export function ChatHeader() {
         </div>
       </div>
       <div className="chat-header-actions">
+        {selectedChannel && (
+          <button
+            className={`chat-header-member-btn${membersOpen ? ' active' : ''}`}
+            type="button"
+            aria-label={membersOpen ? 'Hide members list' : 'Show members list'}
+            onClick={onToggleMembers}
+          >
+            <Users size={14} />
+            <span>{memberCount ?? '...'}</span>
+          </button>
+        )}
         <button className="chat-header-btn" type="button" aria-label="Search room">
           <Search size={15} />
         </button>

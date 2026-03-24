@@ -1,30 +1,34 @@
 # Channel Cases
 
-### CHN-001 Channel Create And Shared Availability
+### CHN-001 Channel Create And Default Membership
 
 - Tier: 0
 - Release-sensitive: yes
 - Execution mode: browser
 - Goal:
-  - verify a new channel can be created from the product and becomes usable immediately
+  - verify a new channel can be created from the product, starts with only the human creator, and becomes usable after explicit invites
 - Preconditions:
   - at least 3 test agents exist
 - Steps:
   1. Create a new disposable channel such as `#qa-ops`.
   2. Verify it appears in the sidebar immediately.
   3. Open the new channel and verify the empty state is sane.
-  4. Send one human message asking all agents to reply.
-  5. Verify replies land in the new channel rather than `#general`.
-  6. Navigate away and back, then verify the new channel history persists.
+  4. Open the members rail and verify the count starts at `1`, showing only the current human user.
+  5. Invite one agent into the channel through the shipped member control.
+  6. Send one human message asking the invited agent to reply.
+  7. Verify the invited agent replies in the new channel and uninvited agents do not.
+  8. Navigate away and back, then verify the new channel history and membership count persist.
 - Expected:
   - channel create succeeds
   - sidebar updates immediately
-  - new channel is actually routable for chat traffic
-  - agents and human can all use the new channel
+  - new channel starts with only the creator as a member
+  - invited members become active participants in that channel
+  - uninvited agents do not behave like implicit members
 - Common failure signals:
   - channel create succeeds but sidebar does not update
-  - messages land in the wrong channel
-  - new channel is visible but not usable
+  - member rail shows agents before any invite occurs
+  - uninvited agents receive or reply in the new channel
+  - invited replies land in the wrong channel
 
 ### CHN-002 Channel Name Validation, Normalization, And Duplicate Rejection
 
@@ -50,36 +54,34 @@
   - duplicate create looks successful but produces partial state
   - invalid name is silently accepted
 
-### CHN-003 Channel Member Add And Remove Operations
+### CHN-003 Channel Invite Operations And `#all` Guardrails
 
 - Tier: 1
 - Release-sensitive: yes when explicit membership controls exist or channel delivery logic changes
-- Execution mode: hybrid
-- Current product note:
-  - the current build auto-joins agents to created channels and does not expose explicit add-member or remove-member controls in the normal UI
-  - if that remains true for the build under test, mark this case `Blocked` and record the product gap
+- Execution mode: browser
 - Goal:
-  - verify explicit membership controls change who can receive and participate in a channel
+  - verify invite controls add the intended members to user channels, and verify the built-in `#all` channel behaves as a complete-membership system room with no invite affordance
 - Preconditions:
-  - disposable channel exists
-  - member add/remove controls exist in the current product build
+  - disposable user channel exists
+  - at least one extra human and one extra agent exist in the build under test
 - Steps:
-  1. Create a disposable channel.
-  2. Add `bot-a` and `bot-b`, but not `bot-c`.
-  3. Send a message asking every present agent to reply.
-  4. Verify only `bot-a` and `bot-b` reply.
-  5. Remove `bot-b`.
-  6. Send another message.
-  7. Verify `bot-a` can still reply and `bot-b` no longer receives the message.
-  8. Verify membership changes remain correct after page reload.
+  1. Open `#all`.
+  2. Open the members rail.
+  3. Verify there is no invite button in `#all`.
+  4. Verify the member list includes all visible humans and agents from the sidebar.
+  5. Open the disposable user channel.
+  6. Open the members rail and invite one extra human and one extra agent.
+  7. Verify the member count increments after each invite and the newly invited entries appear in the list.
+  8. Refresh the page and confirm the disposable channel still shows the invited members.
 - Expected:
-  - member add/remove changes actual delivery and participation
-  - removed members stop receiving messages
-  - non-members do not appear as active channel participants
+  - `#all` exposes no invite affordance
+  - `#all` member list is the full set of humans and agents
+  - user-channel invites update the member list immediately
+  - invited membership persists after refresh
 - Common failure signals:
-  - removed member still replies
-  - non-member receives channel traffic
-  - membership UI updates but delivery behavior does not
+  - `#all` shows an invite button or incomplete membership
+  - invited human or agent does not appear until a manual refresh
+  - refreshed page drops invited members from the disposable channel
 
 ### CHN-004 Channel Delete And Selection Recovery
 

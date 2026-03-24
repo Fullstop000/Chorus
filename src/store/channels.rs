@@ -23,7 +23,8 @@ pub struct Channel {
 pub enum ChannelType {
     Channel,
     Dm,
-    /// System-managed channels (e.g. #shared-memory). Not listed in the UI channel list.
+    /// System-managed channels (e.g. #all, #shared-memory). Surfaced separately
+    /// from user-created channels in the UI.
     System,
 }
 
@@ -33,6 +34,13 @@ pub struct ChannelMember {
     pub member_name: String,
     pub member_type: SenderType,
     pub last_read_seq: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelMemberProfile {
+    pub member_name: String,
+    pub member_type: SenderType,
+    pub display_name: Option<String>,
 }
 
 impl Store {
@@ -66,6 +74,24 @@ impl Store {
         )?;
         let rows = stmt.query_map([], channel_from_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Channels that newly created agents should join automatically. User-created
+    /// channels stay invite-only; only writable built-in system rooms such as
+    /// `#all` are auto-joined.
+    pub fn list_auto_join_channels(&self) -> Result<Vec<Channel>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, description, channel_type, created_at
+             FROM channels
+             WHERE archived = 0 AND channel_type = 'system'
+             ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at",
+        )?;
+        let rows = stmt.query_map([], channel_from_row)?;
+        Ok(rows
+            .filter_map(|row| row.ok())
+            .filter(|channel| !Store::is_system_channel_read_only(&channel.name))
+            .collect())
     }
 
     /// Update a user channel in place so message/task/thread data continues to
@@ -211,6 +237,23 @@ impl Store {
         Ok(())
     }
 
+    /// Join a channel by stable id so API handlers do not have to resolve the
+    /// mutable channel name before mutating membership.
+    pub fn join_channel_by_id(
+        &self,
+        channel_id: &str,
+        member_name: &str,
+        member_type: SenderType,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mt = sender_type_str(member_type);
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+            params![channel_id, member_name, mt],
+        )?;
+        Ok(())
+    }
+
     pub fn get_channel_members(&self, channel_id: &str) -> Result<Vec<ChannelMember>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -222,6 +265,40 @@ impl Store {
                 member_name: row.get(1)?,
                 member_type: parse_sender_type(&row.get::<_, String>(2)?),
                 last_read_seq: row.get(3)?,
+            })
+        })?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
+    /// Load channel members with display metadata for the UI member rail.
+    pub fn get_channel_member_profiles(
+        &self,
+        channel_id: &str,
+    ) -> Result<Vec<ChannelMemberProfile>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT cm.member_name,
+                    cm.member_type,
+                    CASE
+                        WHEN cm.member_type = 'agent' THEN a.display_name
+                        ELSE NULL
+                    END AS display_name
+             FROM channel_members cm
+             LEFT JOIN agents a ON a.name = cm.member_name
+             WHERE cm.channel_id = ?1
+             ORDER BY
+                CASE cm.member_type
+                    WHEN 'human' THEN 0
+                    ELSE 1
+                END,
+                COALESCE(a.display_name, cm.member_name),
+                cm.member_name",
+        )?;
+        let rows = stmt.query_map(params![channel_id], |row| {
+            Ok(ChannelMemberProfile {
+                member_name: row.get(0)?,
+                member_type: parse_sender_type(&row.get::<_, String>(1)?),
+                display_name: row.get(2)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())

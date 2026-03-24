@@ -107,6 +107,15 @@ impl Store {
             ],
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
+        if let Some(all_channel) =
+            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+        {
+            conn.execute(
+                "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+                 VALUES (?1, ?2, 'agent', 0)",
+                params![all_channel.id, record.name],
+            )?;
+        }
         Ok(id)
     }
 
@@ -286,6 +295,15 @@ impl Store {
             "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
             params![name],
         )?;
+        if let Some(all_channel) =
+            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+        {
+            conn.execute(
+                "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+                 VALUES (?1, ?2, 'human', 0)",
+                params![all_channel.id, name],
+            )?;
+        }
         Ok(())
     }
 

@@ -3,7 +3,7 @@ import { createChannel } from '../api'
 
 interface Props {
   onClose: () => void
-  onCreated: () => void
+  onCreated: (channel: { id: string; name: string }) => void
 }
 
 export function CreateChannelModal({ onClose, onCreated }: Props) {
@@ -18,8 +18,8 @@ export function CreateChannelModal({ onClose, onCreated }: Props) {
     setCreating(true)
     setError(null)
     try {
-      await createChannel({ name: trimmed, description })
-      onCreated()
+      const created = await createChannel({ name: trimmed, description })
+      onCreated(created)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
