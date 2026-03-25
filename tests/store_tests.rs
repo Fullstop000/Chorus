@@ -3,7 +3,7 @@ use chorus::store::channels::ChannelType;
 use chorus::store::messages::SenderType;
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use tempfile::tempdir;
 
 #[test]
@@ -16,6 +16,55 @@ fn test_team_tables_exist() {
         |r| r.get::<_, i64>(0),
     ).unwrap();
     assert_eq!(count, 4);
+}
+
+#[test]
+fn test_create_and_get_team() {
+    let store = Store::open(":memory:").unwrap();
+    let id = store.create_team("eng-team", "Engineering Team", "leader_operators", Some("alice")).unwrap();
+    let team = store.get_team("eng-team").unwrap().unwrap();
+    assert_eq!(team.id, id);
+    assert_eq!(team.name, "eng-team");
+    assert_eq!(team.display_name, "Engineering Team");
+    assert_eq!(team.collaboration_model, "leader_operators");
+    assert_eq!(team.leader_agent_name.as_deref(), Some("alice"));
+}
+
+#[test]
+fn test_add_and_list_team_members() {
+    let store = Store::open(":memory:").unwrap();
+    let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
+    store.add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator").unwrap();
+    store.add_team_member(&team_id, "bob", "human", "bob", "observer").unwrap();
+    let members = store.get_team_members(&team_id).unwrap();
+    assert_eq!(members.len(), 2);
+}
+
+#[test]
+fn test_list_teams_for_agent() {
+    let store = Store::open(":memory:").unwrap();
+    let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
+    store.add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator").unwrap();
+    let teams = store.list_teams_for_agent("alice").unwrap();
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0].team_name, "eng-team");
+}
+
+#[test]
+fn test_delete_team_cascades() {
+    let store = Store::open(":memory:").unwrap();
+    let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
+    store.add_team_member(&team_id, "alice", "agent", "uuid-1", "operator").unwrap();
+    store.delete_team(&team_id).unwrap();
+    assert!(store.get_team("eng-team").unwrap().is_none());
+    // member row should be gone
+    let conn = store.conn_for_test();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM team_members WHERE team_id = ?1",
+        params![team_id],
+        |r| r.get(0),
+    ).unwrap();
+    assert_eq!(count, 0);
 }
 
 fn make_store() -> (Store, tempfile::TempDir) {

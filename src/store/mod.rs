@@ -25,6 +25,7 @@ pub use messages::{
     SenderType,
 };
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
+pub use teams::{Team, TeamMember, TeamMembership};
 
 // ── Types that live in store/mod.rs ──
 
