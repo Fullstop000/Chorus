@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
-import { Ellipsis, Search, Users } from 'lucide-react'
+import { Search, Settings2, Users } from 'lucide-react'
 import { useApp, useTarget } from '../store'
+import { mergeUserAndTeamChannels } from '../channelList'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
 import './ChatPanel.css'
@@ -8,13 +9,23 @@ import './ChatPanel.css'
 interface ChatHeaderProps {
   memberCount?: number | null
   membersOpen: boolean
+  isTeamChannel?: boolean
   onToggleMembers: () => void
+  onOpenTeamSettings?: () => void
 }
 
-export function ChatHeader({ memberCount, membersOpen, onToggleMembers }: ChatHeaderProps) {
-  const { selectedChannel, selectedAgent, serverInfo } = useApp()
+export function ChatHeader({
+  memberCount,
+  membersOpen,
+  isTeamChannel,
+  onToggleMembers,
+  onOpenTeamSettings,
+}: ChatHeaderProps) {
+  const { selectedChannel, selectedAgent, channels, teams } = useApp()
   const channelInfo = selectedChannel
-    ? serverInfo?.channels.find((c) => `#${c.name}` === selectedChannel)
+    ? mergeUserAndTeamChannels(channels, teams).find(
+        (channel) => `#${channel.name}` === selectedChannel
+      )
     : null
 
   const headerName = selectedChannel
@@ -50,9 +61,16 @@ export function ChatHeader({ memberCount, membersOpen, onToggleMembers }: ChatHe
         <button className="chat-header-btn" type="button" aria-label="Search room">
           <Search size={15} />
         </button>
-        <button className="chat-header-btn" type="button" aria-label="Open room actions">
-          <Ellipsis size={15} />
-        </button>
+        {isTeamChannel && onOpenTeamSettings && (
+          <button
+            className="chat-header-btn"
+            type="button"
+            aria-label="Open team settings"
+            onClick={onOpenTeamSettings}
+          >
+            <Settings2 size={15} />
+          </button>
+        )}
       </div>
     </div>
   )

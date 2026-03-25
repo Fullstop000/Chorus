@@ -1,0 +1,57 @@
+.team-settings-card {
+  width: min(560px, 96vw);
+}
+
+.team-settings-list {
+  display: grid;
+  gap: 8px;
+}
+
+.team-settings-member {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: var(--border);
+  background: var(--bg-panel-muted);
+}
+
+.team-settings-member-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.team-settings-member-name {
+  font-weight: 600;
+}
+
+.team-settings-member-meta {
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.team-settings-add-row {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 140px auto;
+}
+
+.team-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+@media (max-width: 720px) {
+  .team-settings-add-row {
+    grid-template-columns: 1fr;
+  }
+
+  .team-settings-actions {
+    flex-wrap: wrap;
+  }
+}

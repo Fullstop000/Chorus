@@ -10,7 +10,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
-use crate::server::AgentLifecycle;
+use crate::agent::AgentLifecycle;
 use crate::store::agents::{AgentConfig, AgentStatus};
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
@@ -95,7 +95,10 @@ impl AgentManager {
             session_id: resumable_session_id,
             reasoning_effort: agent.reasoning_effort.clone(),
             env_vars: agent.env_vars.clone(),
-            teams: self.store.list_teams_for_agent(agent_name).unwrap_or_default(),
+            teams: self
+                .store
+                .list_teams_for_agent(agent_name)
+                .unwrap_or_default(),
         };
 
         let agent_data_dir = self.data_dir.join(agent_name);

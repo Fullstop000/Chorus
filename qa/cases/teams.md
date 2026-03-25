@@ -7,6 +7,8 @@
 - Execution mode: browser
 - Goal:
   - verify a team can be created through the UI, gets a `[team]` badge in the channel list, and does not appear as a plain user channel
+- Script:
+  - [`playwright/TMT-001.spec.ts`](./playwright/TMT-001.spec.ts)
 - Preconditions:
   - at least 2 agents exist
 - Steps:
@@ -40,6 +42,8 @@
 - Execution mode: browser
 - Goal:
   - verify that posting a message containing `@<team-name>` in any channel causes a copy to appear in the team's channel, with `forwarded_from` metadata visible to agents
+- Script:
+  - [`playwright/TMT-002.spec.ts`](./playwright/TMT-002.spec.ts) (Steps 5–6/9 hybrid `history` as `bot-a`; annotates human `forwardedFrom` gap)
 - Preconditions:
   - team `qa-eng` exists (from TMT-001) with at least one agent member
   - agent member is active
@@ -73,6 +77,8 @@
 - Execution mode: browser
 - Goal:
   - verify that in a Leader+Operators team, a forwarded task goes to the leader, the leader delegates to operators, and the result is reported back
+- Script:
+  - [`playwright/TMT-003.spec.ts`](./playwright/TMT-003.spec.ts) (asserts Step 7 / no swarm system line; Steps 3–6 observational when LLM on)
 - Preconditions:
   - team `qa-eng` exists with collaboration model `leader_operators`, one leader agent (`bot-a`), one operator agent (`bot-b`), both active
 - Steps:
@@ -103,6 +109,8 @@
 - Execution mode: browser
 - Goal:
   - verify the Swarm model's two-phase flow: deliberation prompt appears on task arrival, agents discuss, each posts `READY:`, system posts GO message, agents execute
+- Script:
+  - [`playwright/TMT-004.spec.ts`](./playwright/TMT-004.spec.ts) (asserts Step 3 system line; Steps 4–9 manual / longer automation)
 - Preconditions:
   - team `qa-swarm` exists with collaboration model `swarm`, two agent members (`bot-a`, `bot-b`), both active
 - Steps:
@@ -137,6 +145,8 @@
 - Execution mode: browser
 - Goal:
   - verify members can be added and removed through the team settings panel, and that membership changes are reflected in the channel and in the agent's system prompt
+- Script:
+  - [`playwright/TMT-005.spec.ts`](./playwright/TMT-005.spec.ts) (Steps 5/9 LLM-dependent; membership UI + rail covered)
 - Preconditions:
   - team `qa-eng` exists with one agent member (`bot-a`)
   - a second agent `bot-b` exists but is not a member of `qa-eng`
@@ -171,6 +181,8 @@
 - Execution mode: browser
 - Goal:
   - verify that display name, collaboration model, and leader changes are saved and take effect
+- Script:
+  - [`playwright/TMT-006.spec.ts`](./playwright/TMT-006.spec.ts) (Steps 6–8 partial when LLM on; mutates `qa-eng` settings)
 - Preconditions:
   - team `qa-eng` exists with model `leader_operators` and leader `bot-a`
 - Steps:
@@ -202,6 +214,8 @@
 - Execution mode: browser
 - Goal:
   - verify that deleting a team archives the channel (preserving message history), removes the workspace on disk, and rebuilds agent system prompts so former members no longer reference the team
+- Script:
+  - [`playwright/TMT-007.spec.ts`](./playwright/TMT-007.spec.ts) (**disposable** `qa-del-*` team — catalog uses `qa-eng`; see spec header. Step 9 not automated.)
 - Preconditions:
   - team `qa-eng` exists with at least one agent member (`bot-a`)
   - some messages exist in `#qa-eng`
@@ -235,6 +249,8 @@
 - Execution mode: browser
 - Goal:
   - verify that an agent belonging to multiple teams correctly identifies its role in each team and does not cross-contaminate team contexts
+- Script:
+  - [`playwright/TMT-008.spec.ts`](./playwright/TMT-008.spec.ts) (Steps 1–2 + 3–4 hybrid `history`; Steps 5–6 LLM depth)
 - Preconditions:
   - two teams exist: `qa-eng` (Leader+Operators, `bot-a` as leader) and `qa-algo` (Swarm, `bot-a` as member)
   - `bot-a` is a member of both teams

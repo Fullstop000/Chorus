@@ -84,10 +84,12 @@ Choose based on what changed. Do not invent an ad hoc checklist.
 
 | What changed | Run mode | Required cases |
 | ------------ | -------- | -------------- |
-| UI, non-critical path | **PR Smoke** | ENV-001, AGT-001, LFC-001, CHN-001, MSG-001–003, TSK-001, PRF-001, ACT-001 |
-| Messaging, lifecycle, tasks, uploads, workspace | **Core Regression** | All Tier 0 + release-sensitive Tier 1 cases |
-| Startup, persistence, session restore, runtime integration | **Recovery / Reliability** | LFC-002, REC-001, REC-002, MSG-004, WRK-001, ACT-001, ACT-002, PRF-001 |
-| Runtime support, model options, driver registration, create-agent modal | **Agent Matrix** | AGT-002 |
+| UI, non-critical path | **PR Smoke** | Base smoke set: ENV-001, AGT-001, LFC-001, CHN-001, MSG-001–003, TSK-001, TSK-002, PRF-001, ACT-001 |
+| Messaging, lifecycle, tasks, uploads, workspace, or any channel-like collaboration flow | **Core Regression** | Entire PR Smoke set, plus every touched Tier 0 case and every release-sensitive Tier 1 case in the changed domain. For team work, include TMT-001–004 at minimum and add TMT-005–008 when membership, settings, delete, or multi-team behavior changed. |
+| Startup, persistence, session restore, restart, or runtime recovery | **Recovery / Reliability** | LFC-002, REC-001, REC-002, MSG-004, WRK-001, ACT-001, ACT-002, PRF-001, plus any touched Tier 0 cases |
+| Runtime support, model options, driver registration, reasoning-effort controls, or create-agent modal | **Agent Matrix** | AGT-002, plus ENV-001 and AGT-001 as a sanity check when the visible create flow changed |
+
+Treat the table above as the minimum required set. If a changed feature has its own release-sensitive case, run it even when it is not named explicitly in the table.
 
 #### Selecting an Agent Preset
 
@@ -115,24 +117,19 @@ Default to `mixed-runtime-trio` for any Tier 0 regression when driver code chang
 4. Start the server from the branch under test. Use a fresh temp data dir unless the case requires an existing state.
 5. Create agents through the browser UI per the selected preset — never by mutating SQLite directly.
 6. Copy `qa/QA_REPORT_TEMPLATE.md` → `qa/runs/{datetime}/report.md`. Fill in all metadata fields.
-7. Execute each case in the browser following the steps exactly as written in `qa/cases/*.md`.
-8. For each case, record `Pass`, `Fail`, `Blocked`, or `Not Run` in the Case Execution Table.
-9. For every `Fail` or `Blocked`, capture evidence immediately:
-   - screenshot (named `YYYY-MM-DD-{case-id}-short-title.png`)
-   - console error log when relevant (`YYYY-MM-DD-{case-id}-console.txt`)
-   - network/API payload when relevant (`YYYY-MM-DD-{case-id}-network.txt`)
-10. Complete the Findings section in severity order (High → Medium → Low).
-11. Fill in the Release Gate Decision and Regression Follow-Up tables.
+7. Execute each case according to the authoritative workflow in `qa/README.md`.
+8. During execution, output per-case progress in the form `Executing {CASE_ID} ({finished_cases}/{total_cases})`, and note when a scripted case falls back to manual execution.
+9. Record per-case results, capture required evidence, and complete the report fields for findings, release gate, and regression follow-up.
 
 **Phase 3 — Human handoff (after report is complete)**
 
-12. **Present the findings summary to the human.** Include: overall result, list of all failures with severity, release gate decision, and the Regression Follow-Up table showing what new/tightened coverage is needed.
-13. **Explicitly ask the human which follow-up actions to take.** Offer these options, and wait for a clear choice before acting:
+13. **Present the findings summary to the human.** Include: overall result, list of all failures with severity, release gate decision, and the Regression Follow-Up table showing what new/tightened coverage is needed.
+14. **Explicitly ask the human which follow-up actions to take.** Offer these options, and wait for a clear choice before acting:
     - Fix the failing issues now (starts the fix pass below)
     - Improve or add QA cases to the catalog
     - Defer findings to a follow-up issue
     - No action — accept the current state
-14. Do not begin any follow-up action without human approval. Do not mark a workflow regression-tested unless the report names the exact case IDs that were run end to end.
+15. Do not begin any follow-up action without human approval. Do not mark a workflow regression-tested unless the report names the exact case IDs that were run end to end.
 
 #### Fixing Bugs Found in QA
 
@@ -156,6 +153,7 @@ When writing a new QA case or tightening an existing one:
 - **Write atomic, deterministic steps** — specific enough to execute without guesswork across multiple runs.
 - **State expected results and common failure signals** — make it clear what a pass looks like and what specific failures look like.
 - **Do not fake missing UI flows**: if a product control is not yet shipped, mark the case `blocked-until-shipped` and note the gap.
+- Follow the script authoring and maintenance rules in `qa/README.md` when a case has, or should have, Playwright coverage.
 - Place the case in the appropriate module file under `qa/cases/` and add it to the index table in `qa/QA_CASES.md`.
 
 #### Catalog Maintenance Rules
@@ -290,6 +288,8 @@ Agent CLI process
 cargo test
 cargo test --test e2e_tests
 ```
+
+Catalog-aligned browser automation: `qa/cases/playwright/` (see `qa/README.md`).
 
 Tests live in `tests/`. Integration tests use `:memory:` SQLite databases.
 When adding methods to `AgentLifecycle`, add stub implementations to `MockLifecycle` in `tests/server_tests.rs`.

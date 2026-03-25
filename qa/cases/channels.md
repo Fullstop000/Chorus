@@ -7,6 +7,8 @@
 - Execution mode: browser
 - Goal:
   - verify a new channel can be created from the product, starts with only the human creator, and becomes usable after explicit invites
+- Script:
+  - [`playwright/CHN-001.spec.ts`](./playwright/CHN-001.spec.ts) (disposable channel slug; Step 7 hybrid via member `history` when LLM enabled)
 - Preconditions:
   - at least 3 test agents exist
 - Steps:

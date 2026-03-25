@@ -1,12 +1,16 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
-import type { ServerInfo, AgentInfo, HistoryMessage } from './types'
-import { getWhoami, getServerInfo } from './api'
+import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team } from './types'
+import { getWhoami, getServerInfo, listAgents, listChannels, listTeams, resolveChannel } from './api'
+import { mergeUserAndTeamChannels } from './channelList'
 
 export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
 export interface AppState {
   currentUser: string                  // OS username from /api/whoami
   serverInfo: ServerInfo | null
+  channels: ChannelInfo[]
+  agents: AgentInfo[]
+  teams: Team[]
   serverInfoLoading: boolean
   selectedChannel: string | null       // e.g. "#all"
   selectedChannelId: string | null
@@ -17,7 +21,8 @@ export interface AppState {
   setSelectedAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
   setOpenThreadMsg: (msg: HistoryMessage | null) => void
-  refreshServerInfo: () => void
+  refreshServerInfo: () => Promise<void>
+  refreshTeams: () => Promise<void>
 }
 
 const AppContext = createContext<AppState | null>(null)
@@ -25,6 +30,9 @@ const AppContext = createContext<AppState | null>(null)
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState('')
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null)
+  const [channels, setChannels] = useState<ChannelInfo[]>([])
+  const [agents, setAgents] = useState<AgentInfo[]>([])
+  const [teams, setTeams] = useState<Team[]>([])
   const [serverInfoLoading, setServerInfoLoading] = useState(true)
   const [selectedChannel, setSelectedChannel] = useState<string | null>(null)
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
@@ -43,52 +51,71 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       .catch(() => setCurrentUser('user'))
   }, [])
 
-  const refreshServerInfo = useCallback(() => {
+  const refreshTeams = useCallback(async () => {
+    try {
+      setTeams(await listTeams())
+    } catch (error) {
+      console.error('Failed to load teams', error)
+    }
+  }, [])
+
+  const refreshServerInfo = useCallback(async () => {
     if (!currentUser) return
     setServerInfoLoading(true)
-    getServerInfo(currentUser)
-      .then((info) => {
-        setServerInfo(info)
-        setSelectedAgent((prev) => {
-          if (!prev) return prev
-          return info.agents.find((agent) => agent.name === prev.name) ?? null
-        })
-        if (selectedAgentRef.current) return
-
-        const joinedChannels = [
-          ...info.system_channels.filter((c) => c.joined),
-          ...info.channels.filter((c) => c.joined),
-        ]
-        let nextSelected = null as string | null
-        let nextSelectedId = null as string | null
-
-        if (selectedChannelIdRef.current) {
-          const match = joinedChannels.find((channel) => channel.id === selectedChannelIdRef.current)
-          if (match) {
-            nextSelected = `#${match.name}`
-            nextSelectedId = match.id ?? null
-          }
-        } else if (selectedChannelRef.current) {
-          const match = joinedChannels.find(
-            (channel) => `#${channel.name}` === selectedChannelRef.current
-          )
-          if (match) {
-            nextSelected = `#${match.name}`
-            nextSelectedId = match.id ?? null
-          }
-        }
-
-        if (!nextSelected) {
-          const first = joinedChannels[0]
-          nextSelected = first ? `#${first.name}` : null
-          nextSelectedId = first?.id ?? null
-        }
-
-        setSelectedChannel(nextSelected)
-        setSelectedChannelId(nextSelectedId)
+    try {
+      const [info, loadedChannels, loadedAgents, loadedTeams] = await Promise.all([
+        getServerInfo(currentUser),
+        listChannels(),
+        listAgents(),
+        listTeams(),
+      ])
+      setServerInfo(info)
+      setChannels(loadedChannels)
+      setAgents(loadedAgents)
+      setTeams(loadedTeams)
+      setSelectedAgent((prev) => {
+        if (!prev) return prev
+        return loadedAgents.find((agent) => agent.name === prev.name) ?? null
       })
-      .catch(console.error)
-      .finally(() => setServerInfoLoading(false))
+      if (selectedAgentRef.current) return
+
+      const joinedChannels = [
+        ...info.system_channels.filter((c) => c.joined),
+        ...mergeUserAndTeamChannels(loadedChannels.filter((c) => c.joined), loadedTeams),
+      ]
+      let nextSelected = null as string | null
+      let nextSelectedId = null as string | null
+
+      if (selectedChannelIdRef.current) {
+        const match = joinedChannels.find((channel) => channel.id === selectedChannelIdRef.current)
+        if (match) {
+          nextSelected = `#${match.name}`
+          nextSelectedId = match.id ?? null
+        }
+      }
+      if (!nextSelected && selectedChannelRef.current) {
+        const match = joinedChannels.find(
+          (channel) => `#${channel.name}` === selectedChannelRef.current
+        )
+        if (match) {
+          nextSelected = `#${match.name}`
+          nextSelectedId = match.id ?? null
+        }
+      }
+
+      if (!nextSelected) {
+        const first = joinedChannels[0]
+        nextSelected = first ? `#${first.name}` : null
+        nextSelectedId = first?.id ?? null
+      }
+
+      setSelectedChannel(nextSelected)
+      setSelectedChannelId(nextSelectedId)
+    } catch (error) {
+      console.error(error)
+    } finally {
+      setServerInfoLoading(false)
+    }
   }, [currentUser])
 
   // Poll server info every 10s
@@ -122,14 +149,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (ch) {
       setSelectedAgent(null)
       setActiveTab('chat')
+      if (!channelId && currentUser) {
+        void resolveChannel(currentUser, ch)
+          .then((response) => {
+            if (selectedChannelRef.current === ch) {
+              setSelectedChannelId(response.channelId)
+            }
+          })
+          .catch((error) => {
+            console.error('Failed to resolve channel', error)
+          })
+      }
     }
-  }, [])
+  }, [currentUser])
 
   return (
     <AppContext.Provider
       value={{
         currentUser,
         serverInfo,
+        channels,
+        agents,
+        teams,
         serverInfoLoading,
         selectedChannel,
         selectedChannelId,
@@ -141,6 +182,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         openThreadMsg,
         setOpenThreadMsg,
         refreshServerInfo,
+        refreshTeams,
       }}
     >
       {children}

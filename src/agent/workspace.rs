@@ -26,11 +26,19 @@ impl<'a> AgentWorkspace<'a> {
 
     /// Path for agent's private team memory: <agents_dir>/<agent>/teams/<team>/
     pub fn team_memory_path(&self, agent_name: &str, team_name: &str) -> PathBuf {
-        self.agents_dir.join(agent_name).join("teams").join(team_name)
+        self.agents_dir
+            .join(agent_name)
+            .join("teams")
+            .join(team_name)
     }
 
     /// Create per-team memory dir + ROLE.md stub for an agent.
-    pub fn init_team_memory(&self, agent_name: &str, team_name: &str, role: &str) -> std::io::Result<()> {
+    pub fn init_team_memory(
+        &self,
+        agent_name: &str,
+        team_name: &str,
+        role: &str,
+    ) -> std::io::Result<()> {
         let dir = self.team_memory_path(agent_name, team_name);
         std::fs::create_dir_all(&dir)?;
         let role_md = dir.join("ROLE.md");
@@ -68,7 +76,10 @@ impl TeamWorkspace {
     }
 
     pub fn member_path(&self, team_name: &str, agent_name: &str) -> PathBuf {
-        self.teams_dir.join(team_name).join("members").join(agent_name)
+        self.teams_dir
+            .join(team_name)
+            .join("members")
+            .join(agent_name)
     }
 
     /// Create team workspace skeleton with TEAM.md stub.

@@ -1,9 +1,10 @@
 import { useState, useRef, type KeyboardEvent } from 'react'
+import { Users } from 'lucide-react'
 import './MentionTextarea.css'
 
 export interface MentionMember {
   name: string
-  type: 'agent' | 'human'
+  type: 'agent' | 'human' | 'team'
 }
 
 interface Props {
@@ -131,15 +132,14 @@ export function MentionTextarea({
               onMouseEnter={() => setHighlightIdx(i)}
             >
               <span
-                className="mention-popup-avatar"
-                style={{ background: memberColor(m.name) }}
+                className={`mention-popup-avatar${m.type === 'team' ? ' team' : ''}`}
+                style={m.type === 'team' ? undefined : { background: memberColor(m.name) }}
               >
-                {memberInitial(m.name)}
+                {m.type === 'team' ? <Users size={12} /> : memberInitial(m.name)}
               </span>
               <span className="mention-popup-name">@{m.name}</span>
-              {m.type === 'agent' && (
-                <span className="mention-popup-badge">BOT</span>
-              )}
+              {m.type === 'agent' && <span className="mention-popup-badge">BOT</span>}
+              {m.type === 'team' && <span className="mention-popup-badge">TEAM</span>}
             </button>
           ))}
         </div>

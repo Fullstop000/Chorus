@@ -1,5 +1,7 @@
 import type {
   ServerInfo,
+  ChannelInfo,
+  AgentInfo,
   HistoryResponse,
   TasksResponse,
   TaskStatus,
@@ -13,6 +15,8 @@ import type {
   AgentDetailResponse,
   AgentEnvVar,
   ChannelMembersResponse,
+  Team,
+  TeamResponse,
 } from './types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
@@ -31,6 +35,27 @@ export async function getWhoami(): Promise<WhoamiResponse> {
 
 export async function getServerInfo(_username: string): Promise<ServerInfo> {
   return json(await fetch(`${BASE}/api/server-info`))
+}
+
+export async function listChannels(params?: {
+  member?: string
+  includeArchived?: boolean
+  includeDm?: boolean
+  includeSystem?: boolean
+  includeTeam?: boolean
+}): Promise<ChannelInfo[]> {
+  const search = new URLSearchParams()
+  if (params?.member) search.set('member', params.member)
+  if (params?.includeArchived) search.set('include_archived', 'true')
+  if (params?.includeDm) search.set('include_dm', 'true')
+  if (params?.includeSystem) search.set('include_system', 'true')
+  if (params?.includeTeam === false) search.set('include_team', 'false')
+  const suffix = search.size > 0 ? `?${search.toString()}` : ''
+  return json(await fetch(`${BASE}/api/channels${suffix}`))
+}
+
+export async function listAgents(): Promise<AgentInfo[]> {
+  return json(await fetch(`${BASE}/api/agents`))
 }
 
 export async function createChannel(payload: {
@@ -310,5 +335,81 @@ export async function deleteAgent(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode }),
     })
+  )
+}
+
+export async function listTeams(): Promise<Team[]> {
+  return json(await fetch(`${BASE}/api/teams`))
+}
+
+export async function getTeam(name: string): Promise<TeamResponse> {
+  return json(await fetch(`${BASE}/api/teams/${encodeURIComponent(name)}`))
+}
+
+export async function createTeam(payload: {
+  name: string
+  display_name: string
+  collaboration_model: 'leader_operators' | 'swarm'
+  leader_agent_name: string | null
+  members: Array<{ member_name: string; member_type: 'agent' | 'human'; member_id: string; role: string }>
+}): Promise<TeamResponse> {
+  return json(
+    await fetch(`${BASE}/api/teams`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  )
+}
+
+export async function updateTeam(
+  name: string,
+  payload: {
+    display_name?: string
+    collaboration_model?: 'leader_operators' | 'swarm'
+    leader_agent_name?: string | null
+  }
+): Promise<Team> {
+  return json(
+    await fetch(`${BASE}/api/teams/${encodeURIComponent(name)}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+  )
+}
+
+export async function deleteTeam(name: string): Promise<void> {
+  await json(
+    await fetch(`${BASE}/api/teams/${encodeURIComponent(name)}`, {
+      method: 'DELETE',
+    })
+  )
+}
+
+export async function addTeamMember(
+  teamName: string,
+  member: {
+    member_name: string
+    member_type: 'agent' | 'human'
+    member_id: string
+    role: string
+  }
+): Promise<void> {
+  await json(
+    await fetch(`${BASE}/api/teams/${encodeURIComponent(teamName)}/members`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(member),
+    })
+  )
+}
+
+export async function removeTeamMember(teamName: string, memberName: string): Promise<void> {
+  await json(
+    await fetch(
+      `${BASE}/api/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(memberName)}`,
+      { method: 'DELETE' }
+    )
   )
 }

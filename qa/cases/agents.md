@@ -6,6 +6,8 @@
 - Release-sensitive: yes
 - Goal:
   - prove the product shell boots and identifies the current user correctly
+- Script:
+  - [`playwright/ENV-001.spec.ts`](./playwright/ENV-001.spec.ts)
 - Preconditions:
   - fresh server start
 - Steps:
@@ -29,6 +31,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify agent creation works repeatedly, not just once
+- Script:
+  - [`playwright/AGT-001.spec.ts`](./playwright/AGT-001.spec.ts)
 - Preconditions:
   - no existing test agents in the fresh data dir
 - Steps:
@@ -178,6 +182,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify profile state matches actual runtime state
+- Script:
+  - [`playwright/PRF-001.spec.ts`](./playwright/PRF-001.spec.ts)
 - Preconditions:
   - at least one active agent exists
 - Steps:
@@ -203,6 +209,8 @@
 - Execution mode: browser
 - Goal:
   - verify the visible lifecycle path from startup to idle to stop to manual restart is coherent across sidebar, profile, and activity
+- Script:
+  - [`playwright/LFC-001.spec.ts`](./playwright/LFC-001.spec.ts)
 - Preconditions:
   - at least one test agent exists
   - the agent is not currently mid-turn when the case starts
@@ -259,6 +267,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify activity is readable and complete for real mixed flows
+- Script:
+  - [`playwright/ACT-001.spec.ts`](./playwright/ACT-001.spec.ts) (hybrid pre-seed when `CHORUS_E2E_LLM` is not `0`; see spec header)
 - Preconditions:
   - run `MSG-001`, `MSG-003`, and `MSG-002` first
 - Steps:

@@ -6,6 +6,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify task workflow transitions match visible UI state
+- Script:
+  - [`playwright/TSK-001.spec.ts`](./playwright/TSK-001.spec.ts) (disposable channel slug per run)
 - Preconditions:
   - tasks tab available
 - Steps:

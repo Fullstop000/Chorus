@@ -10,6 +10,21 @@ It is intentionally:
 All cases below are browser-first cases unless explicitly marked otherwise.
 The explicit `Tier:` field on each case is authoritative. Nearby placement in the file is for related-domain readability.
 
+## Case record template (authoring)
+
+Each executable case under `cases/*.md` should use this shape (fields may omit `Execution mode` when default is browser-first):
+
+- `### ABC-NNN Short Title`
+- `Tier:` / `Release-sensitive:` / `Execution mode:` (when not default)
+- `Goal:` (bullet list)
+- **`Script:`** — link to Playwright spec under [`cases/playwright/`](./cases/playwright/) (e.g. [`playwright/ENV-001.spec.ts`](./cases/playwright/ENV-001.spec.ts)), **or** `_None — manual / not automated yet_`, optionally with a one-line note (hybrid steps, disposable slug, etc.).
+- `Preconditions:`
+- `Steps:` (numbered)
+- `Expected:`
+- `Common failure signals:`
+
+When you add or change automation, update the case’s `Script:` line and keep the spec’s file header in sync with Preconditions / Steps / Expected (see `qa/README.md` → Playwright).
+
 ## How To Use This Catalog
 
 For each run:

@@ -6,6 +6,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify a human message in a shared channel can wake multiple agents and preserve message correctness
+- Script:
+  - [`playwright/MSG-001.spec.ts`](./playwright/MSG-001.spec.ts) (Step 1 UI; Steps 3–6 hybrid `history` API)
 - Preconditions:
   - `bot-a`, `bot-b`, and `bot-c` exist
   - active test channel is open
@@ -33,6 +35,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify DM send and agent reply rendering work independently of channel traffic
+- Script:
+  - [`playwright/MSG-002.spec.ts`](./playwright/MSG-002.spec.ts) (Steps 4–6 hybrid poll `history` for agent row)
 - Preconditions:
   - at least one test agent exists
   - the selected agent is reachable and not already mid-turn
@@ -65,6 +69,8 @@
 - Release-sensitive: yes
 - Goal:
   - prove thread behavior still works when the parent channel has multiple agents participating
+- Script:
+  - [`playwright/MSG-003.spec.ts`](./playwright/MSG-003.spec.ts) (precondition: API seed to `#all` when LLM enabled)
 - Preconditions:
   - `MSG-001` completed
 - Steps:

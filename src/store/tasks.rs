@@ -8,25 +8,40 @@ use super::Store;
 
 // ── Types owned by this module ──
 
+/// Full task row from the `tasks` table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
+    /// UUID primary key.
     pub id: String,
+    /// Owning channel id.
     pub channel_id: String,
+    /// Per-channel monotonic task id shown in the UI.
     pub task_number: i64,
+    /// Short title line.
     pub title: String,
+    /// Workflow column.
     pub status: TaskStatus,
+    /// Agent or human name currently holding the task, if any.
     pub claimed_by: Option<String>,
+    /// Creator handle (human or agent).
     pub created_by: String,
+    /// Insert time.
     pub created_at: DateTime<Utc>,
+    /// Last mutation time.
     pub updated_at: DateTime<Utc>,
 }
 
+/// Kanban-style state stored in SQLite.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Open, not started.
     Todo,
+    /// Someone is actively working it.
     InProgress,
+    /// Awaiting review.
     InReview,
+    /// Completed.
     Done,
 }
 
@@ -65,12 +80,17 @@ impl TaskStatus {
 /// Returned by list_tasks and create_tasks — store constructs these directly.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TaskInfo {
+    /// Per-channel task number.
     #[serde(rename = "taskNumber")]
     pub task_number: i64,
+    /// Title line.
     pub title: String,
+    /// Status string matching `TaskStatus::as_str`.
     pub status: String,
+    /// Display name of claimer when set.
     #[serde(rename = "claimedByName")]
     pub claimed_by_name: Option<String>,
+    /// Display name of creator.
     #[serde(rename = "createdByName")]
     pub created_by_name: Option<String>,
 }
@@ -78,9 +98,12 @@ pub struct TaskInfo {
 /// Returned by claim_tasks — store constructs these directly.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClaimResult {
+    /// Task number that was claimed or failed.
     #[serde(rename = "taskNumber")]
     pub task_number: i64,
+    /// Whether the claim succeeded.
     pub success: bool,
+    /// Error explanation when `success` is false.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
