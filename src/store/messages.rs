@@ -18,6 +18,14 @@ pub enum SenderType {
     Agent,
 }
 
+/// Provenance metadata attached to a forwarded message, capturing the origin
+/// channel and the original sender so recipients can trace where it came from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardedFrom {
+    pub channel_name: String,
+    pub sender_name: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
     pub id: String,
@@ -29,6 +37,8 @@ pub struct Message {
     pub created_at: DateTime<Utc>,
     pub seq: i64,
     pub attachment_ids: Vec<String>,
+    /// Set when this message was forwarded from another channel.
+    pub forwarded_from: Option<ForwardedFrom>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +56,8 @@ pub struct ReceivedMessage {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentRef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<ForwardedFrom>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,7 +212,9 @@ impl Store {
                             parent_id.as_str()
                         };
                         let parent_type = match channel.channel_type {
-                            ChannelType::Channel | ChannelType::System => "channel",
+                            ChannelType::Channel | ChannelType::System | ChannelType::Team => {
+                                "channel"
+                            }
                             ChannelType::Dm => "dm",
                         };
                         (
@@ -213,7 +227,9 @@ impl Store {
                         (
                             effective_channel_name,
                             match channel.channel_type {
-                                ChannelType::Channel | ChannelType::System => "channel".to_string(),
+                                ChannelType::Channel
+                                | ChannelType::System
+                                | ChannelType::Team => "channel".to_string(),
                                 ChannelType::Dm => "dm".to_string(),
                             },
                             None,
@@ -232,6 +248,7 @@ impl Store {
                     content: content.clone(),
                     timestamp: created_at.clone(),
                     attachments: atts,
+                    forwarded_from: None,
                 });
             }
 

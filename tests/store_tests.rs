@@ -6,6 +6,18 @@ use chorus::store::{AgentRecordUpsert, Store};
 use rusqlite::Connection;
 use tempfile::tempdir;
 
+#[test]
+fn test_team_tables_exist() {
+    let store = Store::open(":memory:").unwrap();
+    let conn = store.conn_for_test();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('teams','team_members','team_task_signals','team_task_quorum')",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).unwrap();
+    assert_eq!(count, 4);
+}
+
 fn make_store() -> (Store, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");

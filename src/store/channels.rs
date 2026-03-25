@@ -26,6 +26,9 @@ pub enum ChannelType {
     /// System-managed channels (e.g. #all, #shared-memory). Surfaced separately
     /// from user-created channels in the UI.
     System,
+    /// Channel owned by a team. Managed through team lifecycle, not directly
+    /// deletable by the user.
+    Team,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,6 +61,7 @@ impl Store {
             ChannelType::Channel => "channel",
             ChannelType::Dm => "dm",
             ChannelType::System => "system",
+            ChannelType::Team => "team",
         };
         conn.execute(
             "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, ?4)",
@@ -68,9 +72,9 @@ impl Store {
 
     pub fn list_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
-        // Exclude DM and system channels — only return user-visible channels.
+        // Exclude DM and system channels — return user-visible and team channels.
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels WHERE channel_type = 'channel' AND archived = 0 ORDER BY created_at",
+            "SELECT id, name, description, channel_type, created_at FROM channels WHERE channel_type IN ('channel', 'team') AND archived = 0 ORDER BY created_at",
         )?;
         let rows = stmt.query_map([], channel_from_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
@@ -105,8 +109,8 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
-        if channel.channel_type != ChannelType::Channel {
-            return Err(anyhow!("only user channels can be updated"));
+        if !matches!(channel.channel_type, ChannelType::Channel | ChannelType::Team) {
+            return Err(anyhow!("only user and team channels can be updated"));
         }
 
         conn.execute(
@@ -122,8 +126,8 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
-        if channel.channel_type != ChannelType::Channel {
-            return Err(anyhow!("only user channels can be archived"));
+        if !matches!(channel.channel_type, ChannelType::Channel | ChannelType::Team) {
+            return Err(anyhow!("only user and team channels can be archived"));
         }
 
         conn.execute(
@@ -139,6 +143,11 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
+        if channel.channel_type == ChannelType::Team {
+            return Err(anyhow!(
+                "team channels cannot be deleted directly; delete the team instead"
+            ));
+        }
         if channel.channel_type != ChannelType::Channel {
             return Err(anyhow!("only user channels can be deleted"));
         }

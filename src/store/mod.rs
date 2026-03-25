@@ -20,7 +20,8 @@ pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
 pub use messages::{
-    ActivityMessage, AttachmentRef, HistoryMessage, Message, ReceivedMessage, SenderType,
+    ActivityMessage, AttachmentRef, ForwardedFrom, HistoryMessage, Message, ReceivedMessage,
+    SenderType,
 };
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 
@@ -130,6 +131,17 @@ impl Store {
         self.data_dir.join("agents")
     }
 
+    /// Return the directory used to persist per-team workspaces.
+    pub fn teams_dir(&self) -> PathBuf {
+        self.data_dir.join("teams")
+    }
+
+    /// Expose the raw connection guard for use in integration tests only.
+    /// Not intended for production use.
+    pub fn conn_for_test(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        self.conn.lock().unwrap()
+    }
+
     fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "
@@ -235,6 +247,39 @@ impl Store {
                 INSERT INTO knowledge_fts(knowledge_fts, rowid, key, value, tags)
                 VALUES ('delete', old.rowid, old.key, old.value, old.tags);
             END;
+            CREATE TABLE IF NOT EXISTS teams (
+                id TEXT PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                collaboration_model TEXT NOT NULL,
+                leader_agent_name TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS team_members (
+                team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                member_name TEXT NOT NULL,
+                member_type TEXT NOT NULL,
+                member_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (team_id, member_name)
+            );
+            CREATE TABLE IF NOT EXISTS team_task_signals (
+                id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                member_name TEXT NOT NULL,
+                signal TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (trigger_message_id, member_name)
+            );
+            CREATE TABLE IF NOT EXISTS team_task_quorum (
+                trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                member_name TEXT NOT NULL,
+                resolved_at TEXT,
+                PRIMARY KEY (trigger_message_id, member_name)
+            );
             ",
         )?;
         conn.execute(
@@ -249,6 +294,11 @@ impl Store {
         .ok();
         conn.execute("ALTER TABLE agents ADD COLUMN reasoning_effort TEXT", [])
             .ok();
+        conn.execute(
+            "ALTER TABLE messages ADD COLUMN forwarded_from TEXT",
+            [],
+        )
+        .ok();
         Ok(())
     }
 
@@ -576,6 +626,7 @@ pub(crate) fn channel_from_row(row: &rusqlite::Row) -> rusqlite::Result<Channel>
         name: row.get(1)?,
         description: row.get(2)?,
         channel_type: match row.get::<_, String>(3)?.as_str() {
+            "team" => ChannelType::Team,
             "dm" => ChannelType::Dm,
             "system" => ChannelType::System,
             _ => ChannelType::Channel,
