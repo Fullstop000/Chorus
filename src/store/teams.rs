@@ -261,12 +261,21 @@ impl Store {
             Some(id) => id,
         };
 
+        // Only insert if member_name is in the quorum for this trigger; discard signals
+        // from agents that joined after the quorum was snapshotted.
         let signal_id = Uuid::new_v4().to_string();
-        conn.execute(
+        let inserted = conn.execute(
             "INSERT OR IGNORE INTO team_task_signals (id, team_id, trigger_message_id, member_name, signal)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE EXISTS (
+                 SELECT 1 FROM team_task_quorum
+                 WHERE trigger_message_id = ?3 AND member_name = ?4
+             )",
             params![signal_id, team_id, trigger_id, member_name, signal],
         )?;
+        if inserted == 0 {
+            return Ok(false); // non-quorum member, discard signal
+        }
 
         // Check if quorum is now complete (all expected members have signalled).
         let quorum_size: i64 = conn.query_row(

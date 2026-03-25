@@ -666,3 +666,59 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
     assert_eq!(message_count, 0, "channel messages should cascade");
     assert_eq!(task_count, 0, "channel tasks should cascade");
 }
+
+#[test]
+fn test_record_swarm_signal_ignores_non_quorum_agent() {
+    let store = Store::open(":memory:").unwrap();
+    // Create a team channel so we have a valid channel_id for the trigger message.
+    store
+        .create_channel("qa-swarm", None, ChannelType::Team)
+        .unwrap();
+    // Insert a messages row directly so we have a trigger_message_id without needing
+    // the full send_message flow (which requires channel membership setup).
+    let trigger_id = {
+        let conn = store.conn_for_test();
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq) \
+             SELECT ?1, c.id, 'human', 'human', 'task', 1 FROM channels c WHERE c.name = 'qa-swarm'",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        id
+    };
+    // Create team with alice and bob as members.
+    let team_id = store
+        .create_team("qa-swarm", "QA Swarm", "swarm", None)
+        .unwrap();
+    store
+        .add_team_member(&team_id, "alice", "agent", "uuid-alice", "member")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bob", "agent", "uuid-bob", "member")
+        .unwrap();
+    // Snapshot quorum — only alice and bob are captured.
+    store.snapshot_swarm_quorum(&team_id, &trigger_id).unwrap();
+    // Charlie is NOT in the quorum; their signal must be silently discarded.
+    let resolved = store
+        .record_swarm_signal(&team_id, "charlie", "READY: I'll do the thing")
+        .unwrap();
+    assert!(
+        !resolved,
+        "non-quorum agent should not contribute to consensus"
+    );
+    // The quorum must still be unresolved after charlie's ignored signal.
+    let conn = store.conn_for_test();
+    let resolved_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM team_task_quorum WHERE trigger_message_id = ?1 AND resolved_at IS NOT NULL",
+            rusqlite::params![trigger_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        resolved_count,
+        0,
+        "quorum should still be unresolved after non-quorum signal"
+    );
+}
