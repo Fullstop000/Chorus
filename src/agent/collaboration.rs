@@ -24,6 +24,8 @@ pub fn make_collaboration_model(model: &str) -> Box<dyn CollaborationModel> {
 
 // ── Leader + Operators ──
 
+/// Collaboration model where one leader decomposes tasks and delegates to operators.
+/// No deliberation phase — the leader acts immediately on task arrival.
 pub struct LeaderOperators;
 
 impl CollaborationModel for LeaderOperators {
@@ -54,6 +56,8 @@ impl CollaborationModel for LeaderOperators {
 
 // ── Swarm ──
 
+/// Collaboration model where all members deliberate before executing.
+/// Each member posts `READY: <subtask>` to signal readiness; the system posts a GO message once all are ready.
 pub struct Swarm;
 
 impl CollaborationModel for Swarm {
