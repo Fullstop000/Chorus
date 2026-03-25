@@ -15,6 +15,7 @@ fn test_claude_prompt_uses_split_message_tools() {
         session_id: None,
         reasoning_effort: None,
         env_vars: Vec::new(),
+        teams: vec![],
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");
@@ -45,6 +46,7 @@ fn test_codex_prompt_uses_split_message_tools() {
         session_id: None,
         reasoning_effort: None,
         env_vars: Vec::new(),
+        teams: vec![],
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");

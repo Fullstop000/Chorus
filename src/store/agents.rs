@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{parse_agent_status, parse_datetime, Attachment, Store};
+use crate::store::teams::TeamMembership;
 
 // ── Types owned by this module ──
 
@@ -48,6 +49,8 @@ pub struct AgentConfig {
     pub session_id: Option<String>,
     pub reasoning_effort: Option<String>,
     pub env_vars: Vec<AgentEnvVar>,
+    /// Team memberships injected into the agent's system prompt at spawn time.
+    pub teams: Vec<TeamMembership>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -95,6 +95,7 @@ impl AgentManager {
             session_id: resumable_session_id,
             reasoning_effort: agent.reasoning_effort.clone(),
             env_vars: agent.env_vars.clone(),
+            teams: self.store.list_teams_for_agent(agent_name).unwrap_or_default(),
         };
 
         let agent_data_dir = self.data_dir.join(agent_name);
@@ -694,6 +695,7 @@ mod tests {
             session_id: session_id.map(str::to_string),
             reasoning_effort: None,
             env_vars: Vec::new(),
+            teams: vec![],
         }
     }
 
