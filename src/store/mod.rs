@@ -3,6 +3,7 @@ pub mod channels;
 pub mod knowledge;
 pub mod messages;
 pub mod tasks;
+pub mod teams;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
