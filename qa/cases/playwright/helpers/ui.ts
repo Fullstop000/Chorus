@@ -3,13 +3,16 @@ import { expect } from '@playwright/test'
 
 export async function createAgentViaUi(
   page: Page,
-  opts: { name: string; runtime: string; model: string }
+  opts: { name: string; runtime: string; model: string; reasoningEffort?: string | null }
 ): Promise<void> {
   await page.click('button[title="Create agent"]')
   await expect(page.locator('.modal-title:text("Create Agent")')).toBeVisible()
   await page.locator('.modal-box-agent input[placeholder="e.g. my-agent"]').fill(opts.name)
   await page.locator('.modal-box-agent .modal-field:has-text("Runtime") select').selectOption(opts.runtime)
   await page.locator('.modal-box-agent .modal-field:has-text("Model") select').first().selectOption(opts.model)
+  if (opts.runtime === 'codex' && opts.reasoningEffort) {
+    await page.locator('.modal-box-agent .modal-field:has-text("Reasoning") select').selectOption(opts.reasoningEffort)
+  }
   await page.locator('.modal-box-agent button:has-text("Create Agent")').click()
   await expect(page.locator('.modal-title:text("Create Agent")')).toBeHidden({ timeout: 120_000 })
 }
@@ -61,13 +64,46 @@ export async function openAgentChat(page: Page, agentName: string): Promise<void
     .click()
 }
 
+export async function openAgent(page: Page, agentName: string): Promise<void> {
+  await openAgentChat(page, agentName)
+}
+
+export async function openAgentTab(
+  page: Page,
+  agentName: string,
+  tab: 'Chat' | 'Tasks' | 'Profile' | 'Activity' | 'Workspace'
+): Promise<void> {
+  await openAgent(page, agentName)
+  await page.getByRole('button', { name: tab, exact: true }).click()
+}
+
 export async function sendChatMessage(page: Page, text: string): Promise<void> {
   const ta = page.locator('.message-input-textarea')
   await ta.fill(text)
   await page.locator('.message-input-send').click()
 }
 
+export async function sendThreadMessage(page: Page, text: string): Promise<void> {
+  const ta = page.locator('.thread-input-textarea')
+  await ta.fill(text)
+  await page.locator('.thread-send-btn').click()
+}
+
 export async function openMembersPanel(page: Page): Promise<void> {
   await page.getByRole('button', { name: /Show members list/i }).click()
   await expect(page.locator('.members-panel-kicker:text("Members")')).toBeVisible()
+}
+
+export async function closeMembersPanel(page: Page): Promise<void> {
+  const close = page.locator('.members-panel-close').first()
+  if (await close.isVisible().catch(() => false)) {
+    await close.click()
+  }
+}
+
+export async function openThreadFromMessage(page: Page, contentSnippet: string): Promise<void> {
+  const msg = page.locator('.message-item').filter({ hasText: contentSnippet }).first()
+  await expect(msg).toBeVisible()
+  await msg.locator('.message-action-btn[title="Reply in thread"]').click()
+  await expect(page.locator('.thread-panel')).toBeVisible()
 }

@@ -95,6 +95,8 @@
 - Release-sensitive: yes when touching lifecycle, runtime integration, DM routing, or restart/wake behavior
 - Goal:
   - verify a sleeping or inactive agent can wake from a DM and render its reply back into the same DM timeline
+- Script:
+  - [`playwright/MSG-004.spec.ts`](./playwright/MSG-004.spec.ts) (inactive DM wake + reply visibility)
 - Preconditions:
   - at least one test agent exists
   - the selected agent can be moved into a sleeping or inactive state through the shipped product flow
@@ -124,6 +126,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify history and current selection survive refresh
+- Script:
+  - [`playwright/HIS-001.spec.ts`](./playwright/HIS-001.spec.ts) (channel, DM, and thread history reload)
 - Preconditions:
   - at least one populated channel, one DM, and one thread exist
 - Steps:
@@ -147,6 +151,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify a human can upload an attachment from the browser and send it in chat
+- Script:
+  - [`playwright/ATT-001.spec.ts`](./playwright/ATT-001.spec.ts) (attachment upload + render)
 - Preconditions:
   - small text file prepared locally
 - Steps:
@@ -173,6 +179,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify errors are visible and the UI can recover cleanly
+- Script:
+  - [`playwright/ERR-001.spec.ts`](./playwright/ERR-001.spec.ts) (forced upload error + recovery)
 - Preconditions:
   - use at least one intentionally failing path discovered during testing or known from recent regressions
 - Steps:

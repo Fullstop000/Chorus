@@ -60,6 +60,8 @@
   - verify every runtime and model pair currently exposed in the UI can be created and is stored correctly
   - verify duplicate agent names are rejected consistently
   - verify runtime-specific controls appear only when applicable, especially Codex reasoning effort
+- Script:
+  - [`playwright/AGT-002.spec.ts`](./playwright/AGT-002.spec.ts) (browser-driven matrix create + duplicate-name checks)
 - Preconditions:
   - fresh data dir
   - current runtime/model matrix captured from the create-agent modal before execution
@@ -116,6 +118,8 @@
   - if that remains true for the build under test, mark this case `Blocked` and record the product gap
 - Goal:
   - verify deleting an agent fully removes the user-facing record and cleans up enough state to safely reuse the name
+- Script:
+  - [`playwright/AGT-003.spec.ts`](./playwright/AGT-003.spec.ts) (hybrid delete + recreate-name regression)
 - Preconditions:
   - disposable agent exists
   - delete entrypoint is exposed in the current build
@@ -144,6 +148,8 @@
 - Execution mode: browser
 - Goal:
   - verify the profile control center can edit config, run each restart mode coherently, delete an agent with explicit workspace handling, and preserve deleted-history attribution
+- Script:
+  - [`playwright/AGT-004.spec.ts`](./playwright/AGT-004.spec.ts) (browser edit flow + hybrid restart/delete verification)
 - Preconditions:
   - at least one test agent exists
   - a shared channel or DM contains at least one visible historical message from that agent before delete
@@ -241,6 +247,8 @@
 - Execution mode: hybrid
 - Goal:
   - verify the system restart routine preserves lifecycle state and returns agents to a usable post-restart state
+- Script:
+  - [`playwright/LFC-002.spec.ts`](./playwright/LFC-002.spec.ts) (placeholder `fixme` until restart/recovery automation is implemented)
 - Preconditions:
   - at least one active agent has already completed a real reply cycle before restart
   - run once with a default data dir and once with a custom temp data dir during release-level QA
@@ -306,6 +314,8 @@
 - Release-sensitive: yes when touching lifecycle, restart, driver wake behavior, or activity aggregation
 - Goal:
   - verify the activity timeline preserves the order and meaning of a wake-up flow, especially for DM-triggered recovery
+- Script:
+  - [`playwright/ACT-002.spec.ts`](./playwright/ACT-002.spec.ts) (DM wake + activity ordering assertions)
 - Preconditions:
   - run `MSG-004` first
   - if restart behavior changed, run `LFC-002` or `REC-001` first
@@ -339,6 +349,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify users can move between channels, agents, and tabs without stale selection bugs
+- Script:
+  - [`playwright/NAV-001.spec.ts`](./playwright/NAV-001.spec.ts) (sidebar and tab navigation persistence)
 - Preconditions:
   - at least one channel and one agent populated
 - Steps:
@@ -362,6 +374,8 @@
 - Goal:
   - verify the workspace tab reflects the actual agent workspace, including non-default data dirs
   - verify the split-view explorer can select and preview real files instead of showing a placeholder list
+- Script:
+  - [`playwright/WRK-001.spec.ts`](./playwright/WRK-001.spec.ts) (workspace tree, preview, and metadata coverage)
 - Preconditions:
   - agent has started and produced workspace files
   - the workspace contains at least one markdown file under `notes/`, such as `notes/work-log.md`
@@ -402,6 +416,8 @@
 - Release-sensitive: yes when touching runtime/session logic
 - Goal:
   - verify server restart does not destroy active product state
+- Script:
+  - [`playwright/REC-001.spec.ts`](./playwright/REC-001.spec.ts) (placeholder `fixme` until restart-session recovery automation is implemented)
 - Preconditions:
   - at least one active agent has an established session
 - Steps:
@@ -425,6 +441,8 @@
 - Release-sensitive: yes when touching agent manager, runtime, or activity aggregation
 - Goal:
   - verify the system remains usable when several agents respond in the same channel window
+- Script:
+  - [`playwright/REC-002.spec.ts`](./playwright/REC-002.spec.ts) (concurrent multi-agent channel stability)
 - Preconditions:
   - `bot-a`, `bot-b`, and `bot-c` all available
 - Steps:
@@ -440,4 +458,3 @@
   - disappearing messages
   - activity entries missing for one agent
   - stale tab content during live updates
-

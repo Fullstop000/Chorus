@@ -4,7 +4,7 @@ This directory contains the reusable QA operating docs for Chorus.
 
 ## Files
 
-- `cases/playwright/` — Playwright specs (one file per automated case ID, e.g. `ENV-001.spec.ts`). Each spec’s header and `test.step` labels track the matching **Preconditions**, **Steps**, and **Expected** blocks in `cases/*.md`. Run from that directory after `npm install` (see below).
+- `cases/playwright/` — Playwright specs (one file per case ID, e.g. `ENV-001.spec.ts`). Each spec’s header and `test.step` labels track the matching **Preconditions**, **Steps**, and **Expected** blocks in `cases/*.md`. Run from that directory after `npm install` (see below).
 - `QA_CASES.md` — static and versioned browser QA case catalog index. Actual cases live in `cases/`.
 - `QA_PRESETS.md` — reusable agent/runtime setup presets for runs that need consistent coverage across Claude and Codex.
 - `QA_PLAN_TEMPLATE.md` — fill-in template for the pre-run plan. Created before execution; shown to human for approval before any cases are run.
@@ -42,12 +42,16 @@ npx playwright test
 
 - **`CHORUS_BASE_URL`** — default `http://localhost:3101`
 - **`CHORUS_E2E_LLM=0`** — skip tests that wait on real agent replies (MSG/TMT parts, etc.)
+- Recommended live reporter for QA runs: `npx playwright test --reporter=list`
+- Recommended interactive repro modes:
+  - `npx playwright test <CASE>.spec.ts --headed --reporter=line`
+  - `npx playwright test --ui`
 
-Each catalog case that is automated lists **Script:** with a relative link to `playwright/<CASE>.spec.ts`. Specs may use **hybrid** checks (UI + `history` / internal API) where the case allows or where the UI alone cannot observe the assertion; notes live in the case’s `Script:` line and in the spec header.
+Each catalog case must list **Script:** with a relative link to `playwright/<CASE>.spec.ts`. Specs may use **hybrid** checks (UI + `history` / internal API) where the case allows or where the UI alone cannot observe the assertion; notes live in the case’s `Script:` line and in the spec header.
 
-Treat a Playwright spec as the preferred executable form of a case when one exists:
+Treat a Playwright spec as the executable form of every case:
 
-1. If the case’s `Script:` line points at a spec, run that script first.
+1. Run the case’s `Script:` spec first.
 2. If the script passes, use that result as the primary execution record for the case.
 3. If the script fails, rerun the case through the original browser-driven flow, using headed or headless browser control as appropriate, before finalizing the case result.
 4. Record both outcomes in the run report when they differ:
@@ -56,14 +60,111 @@ Treat a Playwright spec as the preferred executable form of a case when one exis
 
 If a case changes, update the markdown case and its Playwright spec in the same behavior change. The case steps, expected results, spec header, and `test.step` labels should continue to describe the same flow.
 
-Not every case needs a Playwright spec. `_None — manual only_` is acceptable only when at least one of these is true:
+When a case is not fully automated yet, keep the per-case script file anyway and mark the spec as a placeholder with an explicit `fixme` reason. This preserves the invariant that every case has a discoverable script while still making coverage gaps visible in test output.
 
-- the case is `blocked-until-shipped`
-- the case depends on subjective visual judgment or exploratory observation that is not yet stable enough to automate
-- the case depends on external runtime behavior, quota, or live-model output that makes deterministic automation impractical today
-- the automation cost would require hidden setup or assertions that no longer match the user-visible product flow
+## Failure Debugging
 
-When a case intentionally has no script, say why on the `Script:` line in the case file. Do not leave the omission unexplained.
+When a scripted QA case fails, do not write a vague report entry like "Playwright failed." Record the exact failing step, the exact repro command, and the concrete artifacts that prove the failure.
+
+### How To Identify The Failed Step
+
+Use the Playwright output first.
+
+- Every case spec should wrap major assertions in `test.step(...)`.
+- The failing output will name the case, then the specific `test.step(...)` label that failed.
+- The stack trace will include the exact spec file and line number.
+
+Example shape:
+
+```text
+MSG-003.spec.ts › MSG-003 › Thread Reply In Busy Channel
+› Step 1: Open thread from an agent reply
+```
+
+That `test.step(...)` label is the step to cite in the QA report.
+
+### How To Reproduce A Failed Case
+
+Always rerun the exact spec against a fresh temp data dir before deciding whether the problem is a product regression or automation drift.
+
+Baseline repro:
+
+```bash
+cd ui && npm run build && cd ..
+cargo build
+./target/debug/chorus serve --port 3101 --data-dir /tmp/chorus-qa-repro
+
+cd qa/cases/playwright
+npx playwright test <CASE>.spec.ts --reporter=list
+```
+
+For live observation:
+
+```bash
+npx playwright test <CASE>.spec.ts --headed --reporter=line
+```
+
+For interactive debugging:
+
+```bash
+npx playwright test --ui
+```
+
+If the scripted repro still fails, the report should say that the failure reproduced on a clean rerun. If the rerun passes, treat that as likely automation drift or nondeterminism and say so explicitly.
+
+### Where Playwright Puts Artifacts
+
+The current Playwright configuration already produces useful debugging output:
+
+- terminal output with failing case and step name
+- `test-results/.../error-context.md` for failure context
+- `playwright-report/` for the HTML report
+- trace artifacts on first retry, because `trace: 'on-first-retry'` is enabled in `playwright.config.ts`
+
+These artifacts are useful, but they are not the authoritative QA evidence location for a run. The authoritative evidence location is still the run-local `qa/runs/{datetime}/evidence/` directory.
+
+## Evidence Workflow
+
+For every failing scripted case, copy or export the relevant Playwright artifacts into the run-local evidence directory and reference those filenames in `report.md`.
+
+Minimum evidence bundle for a failing scripted case:
+
+1. screenshot or visible failure capture
+2. Playwright failure context (`error-context.md` or equivalent text extract)
+3. trace file or HTML report pointer when available
+4. console or network detail when relevant to the failure mode
+
+Recommended naming inside `qa/runs/{datetime}/evidence/`:
+
+- `YYYY-MM-DD-<CASE>-failure.png`
+- `YYYY-MM-DD-<CASE>-error-context.md`
+- `YYYY-MM-DD-<CASE>-trace.zip`
+- `YYYY-MM-DD-<CASE>-console.txt`
+- `YYYY-MM-DD-<CASE>-network.txt`
+
+### What To Write In The Report
+
+For a failed scripted case, the report entry should include all of the following:
+
+- the case ID
+- the exact failed `test.step(...)` label
+- the exact repro command used
+- whether the failure reproduced on rerun
+- the evidence filenames copied into `qa/runs/{datetime}/evidence/`
+
+Good example:
+
+```text
+MSG-003 failed at "Step 1: Open thread from an agent reply".
+Reproduced with: npx playwright test MSG-003.spec.ts --headed --reporter=line
+Evidence: 2026-03-26-MSG-003-failure.png, 2026-03-26-MSG-003-error-context.md
+```
+
+Bad example:
+
+```text
+MSG-003 failed in Playwright.
+```
 
 ## Execution Rules
 

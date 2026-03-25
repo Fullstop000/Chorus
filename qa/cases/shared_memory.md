@@ -6,6 +6,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify an agent can store a knowledge entry and the breadcrumb appears in `#shared-memory`
+- Script:
+  - [`playwright/MEM-001.spec.ts`](./playwright/MEM-001.spec.ts) (remember endpoint + breadcrumb visibility)
 - Preconditions:
   - at least one active agent exists
   - `#shared-memory` channel is visible in the sidebar
@@ -36,6 +38,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify an agent can retrieve a fact stored in an earlier turn via `mcp_chat_recall`
+- Script:
+  - [`playwright/MEM-002.spec.ts`](./playwright/MEM-002.spec.ts) (recall endpoint regression)
 - Preconditions:
   - `MEM-001` completed (a fact is stored in the knowledge store)
   - the same or a different agent is active
@@ -61,6 +65,8 @@
 - Goal:
   - verify that `#shared-memory` is read-only from the human message composer and agents cannot
     bypass the guard via `send_message`
+- Script:
+  - [`playwright/MEM-003.spec.ts`](./playwright/MEM-003.spec.ts) (UI read-only + direct-send rejection)
 - Preconditions:
   - `#shared-memory` channel is visible in the sidebar
 - Steps:
@@ -86,6 +92,8 @@
 - Goal:
   - verify the full research-to-implementation handoff: agent A stores findings, agent B recalls them
     and completes the task without human mediation
+- Script:
+  - [`playwright/MEM-004.spec.ts`](./playwright/MEM-004.spec.ts) (hybrid remembered handoff)
 - Preconditions:
   - two agents exist (`researcher` and `implementer`, or any two available agents)
   - both agents are active or can wake from a message
@@ -116,6 +124,8 @@
 - Release-sensitive: yes when touching knowledge store persistence, startup, or schema init
 - Goal:
   - verify knowledge entries stored before a restart are still retrievable after restart
+- Script:
+  - [`playwright/MEM-005.spec.ts`](./playwright/MEM-005.spec.ts) (placeholder `fixme` until restart persistence automation is implemented)
 - Preconditions:
   - `MEM-001` completed (at least one fact is in the store)
 - Steps:
@@ -141,6 +151,8 @@
 - Goal:
   - verify `#shared-memory` appears as a distinct system channel in the sidebar and is NOT
     listed alongside user-created channels in the normal channel list
+- Script:
+  - [`playwright/MEM-006.spec.ts`](./playwright/MEM-006.spec.ts) (sidebar/system-listing verification)
 - Preconditions:
   - server is running with at least one user channel (e.g. `#general`)
 - Steps:
@@ -175,6 +187,8 @@ of re-explanation in chat), not agent self-reports.
 - Goal:
   - verify an agent calls `recall` unprompted when assigned a task via the task board,
     and uses the retrieved context in its reply — without the human mentioning recall
+- Script:
+  - [`playwright/MEM-007.spec.ts`](./playwright/MEM-007.spec.ts) (placeholder `fixme` until autonomous recall-on-assignment coverage is automated)
 - Preconditions:
   - at least one active agent exists (use `qa-test-agent` or any claude agent)
   - the `shared_knowledge` table is pre-seeded with a fact the agent will need
@@ -217,6 +231,8 @@ of re-explanation in chat), not agent self-reports.
 - Goal:
   - verify an agent calls `remember` to persist research findings **before** or
     **during** handing off work, without the human saying "use remember"
+- Script:
+  - [`playwright/MEM-008.spec.ts`](./playwright/MEM-008.spec.ts) (placeholder `fixme` until autonomous remember-before-handoff coverage is automated)
 - Preconditions:
   - at least one active agent exists
   - `shared_knowledge` row count is known before the test (record the baseline)
@@ -252,6 +268,8 @@ of re-explanation in chat), not agent self-reports.
   - verify the full autonomous cycle: agent A researches and stores findings,
     agent B wakes from a task assignment, calls recall unprompted, and completes
     the work — with zero human prompts to B about what was found
+- Script:
+  - [`playwright/MEM-009.spec.ts`](./playwright/MEM-009.spec.ts) (placeholder `fixme` until autonomous two-agent handoff coverage is automated)
 - Preconditions:
   - two active claude agents exist (e.g. `qa-test-agent` and `test-agent`)
   - task board is accessible in the UI
@@ -288,6 +306,8 @@ of re-explanation in chat), not agent self-reports.
 - Goal:
   - verify that when shared memory contains context an agent needs, the agent
     uses it rather than sending a verbose re-explanation to another agent via chat
+- Script:
+  - [`playwright/MEM-010.spec.ts`](./playwright/MEM-010.spec.ts) (placeholder `fixme` until no-re-explanation shared-memory coverage is automated)
 - Preconditions:
   - MEM-009 completed (findings stored under `task-beh-009`)
   - both agents are active

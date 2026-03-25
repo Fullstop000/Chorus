@@ -32,6 +32,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify the chat composer can create a task while sending a message
+- Script:
+  - [`playwright/TSK-002.spec.ts`](./playwright/TSK-002.spec.ts) (composer task creation flow)
 - Preconditions:
   - channel composer visible
 - Steps:
