@@ -154,13 +154,13 @@ impl Store {
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
 
             #[allow(clippy::type_complexity)]
-            let msgs: Vec<(String, String, String, String, String, i64, Option<String>)> = conn
+            let msgs: Vec<(String, String, String, String, String, i64, Option<String>, Option<String>)> = conn
                 .prepare(
-                    "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id
+                    "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id, m.forwarded_from
                      FROM messages m WHERE m.channel_id = ?1 AND m.seq > ?2 ORDER BY m.seq ASC",
                 )?
                 .query_map(params![channel_id, last_read_seq], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -177,7 +177,7 @@ impl Store {
             };
 
             let mut max_seq = *last_read_seq;
-            for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id) in
+            for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id, forwarded_from_raw) in
                 &msgs
             {
                 if *seq > max_seq {
@@ -237,6 +237,10 @@ impl Store {
                         )
                     };
 
+                let forwarded_from = forwarded_from_raw
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<ForwardedFrom>(s).ok());
+
                 result.push(ReceivedMessage {
                     message_id: msg_id.clone(),
                     channel_name: msg_channel_name,
@@ -248,7 +252,7 @@ impl Store {
                     content: content.clone(),
                     timestamp: created_at.clone(),
                     attachments: atts,
-                    forwarded_from: None,
+                    forwarded_from,
                 });
             }
 
