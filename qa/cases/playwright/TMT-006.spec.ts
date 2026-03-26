@@ -34,6 +34,11 @@ test.describe('TMT-006', () => {
           { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
         ],
       })
+    } else {
+      // Ensure bot-b is a member for this test
+      await request.post('/api/teams/qa-eng/members', {
+        data: { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
+      }).catch(() => {})
     }
   })
 
@@ -83,7 +88,7 @@ test.describe('TMT-006', () => {
 
     await test.step('Steps 7–8 (partial): Restore Leader+Operators, leader bot-b', async () => {
       await collabSelect.selectOption('leader_operators')
-      await page.locator('.form-group:has-text("Leader") select.form-select').selectOption('bot-b')
+      await page.locator('.form-group').filter({ has: page.locator('label.form-label', { hasText: 'Leader' }) }).locator('select').selectOption('bot-b')
       await page.locator('.team-settings-card button:has-text("Save")').click()
       await page.waitForTimeout(600)
     })

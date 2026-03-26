@@ -113,6 +113,19 @@ export function MainPanel() {
     setTeamDetails(await getTeam(selectedTeamChannel.name))
   }
 
+  async function refreshCurrentChannelMembers() {
+    if (!selectedChannelId) return
+    setMembersLoading(true)
+    try {
+      const response = await getChannelMembers(selectedChannelId)
+      setMembers(response.members)
+    } catch (err) {
+      console.error('Failed to refresh channel members', err)
+    } finally {
+      setMembersLoading(false)
+    }
+  }
+
   return (
     <div
       style={{
@@ -196,6 +209,7 @@ export function MainPanel() {
           onRefresh={async () => {
             await Promise.all([refreshServerInfo(), refreshTeams()])
             await refreshSelectedTeam()
+            await refreshCurrentChannelMembers()
           }}
           onDeleted={async () => {
             await Promise.all([refreshServerInfo(), refreshTeams()])

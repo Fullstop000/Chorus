@@ -47,6 +47,8 @@ test.describe('TMT-005', () => {
       if (!(await row.isVisible().catch(() => false))) {
         await page.locator('.team-settings-add-row select').selectOption('bot-b')
         await page.locator('.team-settings-add-row button:has-text("Add")').click()
+        await page.locator('.team-settings-card button:has-text("Save")').click()
+        await page.waitForTimeout(600)
       }
       await expect(page.locator('.team-settings-member').filter({ hasText: 'bot-b' })).toBeVisible()
     })
@@ -70,6 +72,7 @@ test.describe('TMT-005', () => {
       const row = page.locator('.team-settings-member').filter({ hasText: 'bot-b' })
       if (await row.isVisible().catch(() => false)) {
         await row.getByRole('button', { name: 'Remove' }).click()
+        await page.locator('.team-settings-card button:has-text("Save")').click()
         await page.waitForTimeout(600)
       }
       await expect(page.locator('.team-settings-member').filter({ hasText: 'bot-b' })).toHaveCount(0)
