@@ -141,6 +141,9 @@ pub struct HistoryMessage {
     /// Number of thread replies when loaded.
     #[serde(rename = "replyCount", skip_serializing_if = "Option::is_none")]
     pub reply_count: Option<i64>,
+    /// Set when this message was forwarded from another channel (e.g. via @team mention).
+    #[serde(rename = "forwardedFrom", skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<ForwardedFrom>,
 }
 
 /// Compact message row for activity / cross-channel feeds.
@@ -486,7 +489,7 @@ impl Store {
         }
 
         let sql = format!(
-            "SELECT id, seq, content, sender_name, sender_type, sender_deleted, created_at \
+            "SELECT id, seq, content, sender_name, sender_type, sender_deleted, created_at, forwarded_from \
              FROM messages WHERE channel_id = ?1 {thread_clause} {cursor_clause} \
              ORDER BY seq {order} LIMIT {fetch_limit}"
         );
@@ -496,6 +499,13 @@ impl Store {
         let mut stmt = conn.prepare(&sql)?;
 
         let map_row = |row: &rusqlite::Row| -> rusqlite::Result<HistoryMessage> {
+            let forwarded_from_raw: Option<String> = row.get(7)?;
+            let forwarded_from = forwarded_from_raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<ForwardedFrom>(s).map_err(|e| {
+                    tracing::warn!(raw = s, err = %e, "failed to parse forwarded_from JSON in history");
+                    e
+                }).ok());
             Ok(HistoryMessage {
                 id: row.get(0)?,
                 seq: row.get(1)?,
@@ -506,6 +516,7 @@ impl Store {
                 created_at: row.get(6)?,
                 attachments: None,
                 reply_count: None,
+                forwarded_from,
             })
         };
 
