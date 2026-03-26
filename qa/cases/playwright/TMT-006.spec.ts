@@ -88,7 +88,10 @@ test.describe('TMT-006', () => {
 
     await test.step('Steps 7–8 (partial): Restore Leader+Operators, leader bot-b', async () => {
       await collabSelect.selectOption('leader_operators')
-      await page.locator('.form-group').filter({ has: page.locator('label.form-label', { hasText: 'Leader' }) }).locator('select').selectOption('bot-b')
+      // Wait for React to re-render the conditionally-shown leader select
+      const leaderSelect = page.locator('.form-group').filter({ has: page.locator('label.form-label', { hasText: 'Leader' }) }).locator('select')
+      await expect(leaderSelect).toBeVisible()
+      await leaderSelect.selectOption('bot-b')
       await page.locator('.team-settings-card button:has-text("Save")').click()
       await page.waitForTimeout(600)
     })
