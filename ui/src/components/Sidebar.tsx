@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2, Users } from 'lucide-react'
 import { useApp } from '../store'
 import type { AgentInfo, ChannelInfo } from '../types'
-import { mergeUserAndTeamChannels } from '../channelList'
+import { isVisibleSidebarChannel } from '../sidebarChannels'
 import { CreateAgentModal } from './CreateAgentModal'
 import { CreateChannelModal } from './CreateChannelModal'
 import { DeleteChannelModal, EditChannelModal } from './EditChannelModal'
@@ -53,7 +53,6 @@ export function Sidebar() {
     serverInfo,
     channels: loadedChannels,
     agents,
-    teams,
     selectedChannel,
     selectedChannelId,
     selectedAgent,
@@ -69,7 +68,7 @@ export function Sidebar() {
   const [openChannelMenuId, setOpenChannelMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
-  const channels = mergeUserAndTeamChannels(loadedChannels.filter((c) => c.joined), teams)
+  const channels = loadedChannels.filter(isVisibleSidebarChannel)
   const systemChannels = serverInfo?.system_channels ?? []
   const humans = serverInfo?.humans ?? []
 
@@ -179,7 +178,9 @@ export function Sidebar() {
                 >
                   <button
                     type="button"
-                    className={`sidebar-item sidebar-channel-button${isActive ? ' active' : ''}`}
+                    className={`sidebar-item sidebar-channel-button${
+                      ch.channel_type !== 'team' ? ' has-actions' : ''
+                    }${isActive ? ' active' : ''}`}
                     onClick={() => selectChannel(ch)}
                     title={ch.description ?? ch.name}
                   >

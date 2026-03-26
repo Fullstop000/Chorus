@@ -139,6 +139,9 @@
 
 .sidebar-channel-button {
   margin-bottom: 0;
+}
+
+.sidebar-channel-button.has-actions {
   padding-right: 108px;
 }
 
@@ -236,6 +239,8 @@
 }
 
 .sidebar-item-main {
+  flex: 1;
+  width: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;

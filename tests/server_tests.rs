@@ -5,6 +5,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::server::{
     build_router, build_router_with_lifecycle, AgentDetailResponse, HistoryResponse,
 };
+use chorus::server::dto::ChannelInfo;
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{ReceivedMessage, SenderType};
@@ -1898,7 +1899,7 @@ async fn test_create_team_endpoint() {
             "member_name": "bot1",
             "member_type": "agent",
             "member_id": bot1.id,
-            "role": "leader"
+            "role": "operator"
         }]
     });
 
@@ -1949,7 +1950,10 @@ async fn test_create_team_endpoint() {
 
 #[tokio::test]
 async fn test_list_and_update_team_endpoints() {
-    let (store, app, _lifecycle) = setup_with_lifecycle();
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .unwrap();
     let team_id = store
         .create_team(
             "eng-team",
@@ -1986,6 +1990,7 @@ async fn test_list_and_update_team_endpoints() {
         "leader_agent_name": null
     });
     let patch_resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("PATCH")
@@ -2002,6 +2007,86 @@ async fn test_list_and_update_team_endpoints() {
     assert_eq!(updated.display_name, "Applied Science");
     assert_eq!(updated.collaboration_model, "swarm");
     assert_eq!(updated.leader_agent_name, None);
+
+    store
+        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bot2", "agent", "bot2", "operator")
+        .unwrap();
+
+    let leader_patch_body = serde_json::json!({
+        "collaboration_model": "leader_operators",
+        "leader_agent_name": "bot2"
+    });
+    let leader_patch_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/teams/eng-team")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&leader_patch_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(leader_patch_resp.status(), StatusCode::OK);
+
+    let updated_members = store.get_team_members(&team_id).unwrap();
+    let bot1_member = updated_members
+        .iter()
+        .find(|member| member.member_name == "bot1")
+        .unwrap();
+    let bot2_member = updated_members
+        .iter()
+        .find(|member| member.member_name == "bot2")
+        .unwrap();
+    assert_eq!(bot1_member.role, "operator");
+    assert_eq!(bot2_member.role, "leader");
+    assert_eq!(lifecycle.started_names().len(), 2);
+    assert_eq!(lifecycle.stopped_names().len(), 2);
+}
+
+#[tokio::test]
+async fn test_list_channels_includes_team_without_human_membership() {
+    let (store, app) = setup();
+    let team_id = store
+        .create_team("qa-eng", "QA Engineering", "leader_operators", Some("bot1"))
+        .unwrap();
+    store
+        .create_channel("qa-eng", None, ChannelType::Team)
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .unwrap();
+    store.join_channel("qa-eng", "bot1", SenderType::Agent).unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/channels?member=alice")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let channels: Vec<ChannelInfo> = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    let team = channels
+        .iter()
+        .find(|channel| channel.name == "qa-eng")
+        .expect("team channel should be listed even without human membership");
+    assert_eq!(team.channel_type.as_deref(), Some("team"));
+    assert!(!team.joined);
 }
 
 #[tokio::test]

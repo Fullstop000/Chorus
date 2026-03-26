@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getChannelMembers, getTeam } from '../api'
 import { useApp, useTarget } from '../store'
-import { mergeUserAndTeamChannels } from '../channelList'
 import { TabBar } from './TabBar'
 import { ChatHeader, ChatPanel } from './ChatPanel'
 import { TasksPanel } from './TasksPanel'
@@ -28,7 +27,6 @@ export function MainPanel() {
     selectedAgent,
     openThreadMsg,
     serverInfo,
-    teams,
   } = useApp()
   const target = useTarget()
   const { refresh: refreshHistory } = useHistory(currentUser, target)
@@ -39,7 +37,7 @@ export function MainPanel() {
   const [teamDetails, setTeamDetails] = useState<TeamResponse | null>(null)
   const [teamSettingsLoading, setTeamSettingsLoading] = useState(false)
 
-  const userChannels = mergeUserAndTeamChannels(channels, teams)
+  const userChannels = channels
   const showHeader = selectedChannel || selectedAgent
   const selectedUserChannel = selectedChannel
     ? userChannels.find((channel) => `#${channel.name}` === selectedChannel) ?? null

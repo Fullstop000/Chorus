@@ -189,6 +189,16 @@ impl Store {
         Ok(())
     }
 
+    /// Update a single member role within a team.
+    pub fn set_team_member_role(&self, team_id: &str, member_name: &str, role: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE team_members SET role = ?1 WHERE team_id = ?2 AND member_name = ?3",
+            params![role, team_id, member_name],
+        )?;
+        Ok(())
+    }
+
     /// Remove a member from a channel by channel name. Used when removing a team member
     /// so their channel membership is cleaned up alongside the team membership.
     pub fn leave_channel(&self, channel_name: &str, member_name: &str) -> Result<()> {

@@ -1,6 +1,29 @@
 import { test, expect } from '@playwright/test'
+import type { Page } from '@playwright/test'
 import { ensureMixedRuntimeTrio, teamExists } from './helpers/api'
 import { createTeamQaEngViaUi, clickSidebarChannel } from './helpers/ui'
+
+async function expectSingleRightAlignedTeamRow(page: Page) {
+  const row = page
+    .locator('.sidebar-channel-row')
+    .filter({ has: page.locator('.sidebar-item-text', { hasText: /^qa-eng$/ }) })
+
+  await expect(row).toHaveCount(1)
+
+  const badge = row.locator('.sidebar-channel-badge.team')
+  await expect(badge).toHaveCount(1)
+  await expect(badge).toContainText('team')
+
+  const rowBox = await row.boundingBox()
+  const badgeBox = await badge.boundingBox()
+  expect(rowBox).not.toBeNull()
+  expect(badgeBox).not.toBeNull()
+
+  if (!rowBox || !badgeBox) return
+
+  const rightGap = rowBox.x + rowBox.width - (badgeBox.x + badgeBox.width)
+  expect(rightGap).toBeLessThanOrEqual(20)
+}
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-001 Team Create, Channel Badge, and Sidebar Appearance
@@ -54,9 +77,14 @@ test.describe('TMT-001', () => {
       })
     }
 
-    await test.step('Steps 5–6: Sidebar shows qa-eng with team badge (not sys)', async () => {
-      await expect(page.locator('.sidebar-item-text:text("qa-eng")').first()).toBeVisible()
-      await expect(page.locator('.sidebar-channel-badge.team').first()).toContainText('team')
+    await test.step('Steps 5–6: Sidebar shows exactly one qa-eng row with a right-aligned team badge', async () => {
+      await expectSingleRightAlignedTeamRow(page)
+      await expect(
+        page
+          .locator('.sidebar-channel-row')
+          .filter({ has: page.locator('.sidebar-item-text', { hasText: /^qa-eng$/ }) })
+          .locator('.sidebar-channel-badge')
+      ).not.toContainText('sys')
     })
 
     await test.step('Step 9: Open qa-eng — team settings affordance', async () => {
@@ -66,8 +94,7 @@ test.describe('TMT-001', () => {
 
     await test.step('Step 10: Refresh — team badge persists', async () => {
       await page.reload({ waitUntil: 'networkidle' })
-      await expect(page.locator('.sidebar-item-text:text("qa-eng")').first()).toBeVisible()
-      await expect(page.locator('.sidebar-channel-badge.team').first()).toContainText('team')
+      await expectSingleRightAlignedTeamRow(page)
     })
   })
 })

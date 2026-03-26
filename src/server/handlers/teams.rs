@@ -84,6 +84,56 @@ fn parse_member_type(
     }
 }
 
+fn canonical_team_role(
+    member_name: &str,
+    member_type: &str,
+    current_role: &str,
+    collaboration_model: &str,
+    leader_agent_name: Option<&str>,
+) -> String {
+    if member_type != "agent" {
+        return current_role.to_string();
+    }
+    if collaboration_model == "leader_operators" && leader_agent_name == Some(member_name) {
+        return "leader".to_string();
+    }
+    "operator".to_string()
+}
+
+async fn sync_team_roles_and_agents(
+    state: &AppState,
+    team: &Team,
+    members: &[TeamMember],
+) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    let agents_dir = state.store.agents_dir();
+    let agent_workspace = AgentWorkspace::new(&agents_dir);
+
+    for member in members {
+        let desired_role = canonical_team_role(
+            &member.member_name,
+            &member.member_type,
+            &member.role,
+            &team.collaboration_model,
+            team.leader_agent_name.as_deref(),
+        );
+        if desired_role != member.role {
+            state
+                .store
+                .set_team_member_role(&team.id, &member.member_name, &desired_role)
+                .map_err(|e| api_err(e.to_string()))?;
+        }
+
+        if member.member_type == "agent" {
+            agent_workspace
+                .set_team_role(&member.member_name, &team.name, &desired_role)
+                .map_err(|e| internal_err(e.to_string()))?;
+            restart_agent_member(state, &member.member_name).await?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Restart an agent so its system prompt is rebuilt from the latest team state.
 async fn restart_agent_member(
     state: &AppState,
@@ -148,6 +198,13 @@ pub async fn handle_create_team(
 
     for member in &req.members {
         let sender_type = parse_member_type(&member.member_type)?;
+        let effective_role = canonical_team_role(
+            &member.member_name,
+            &member.member_type,
+            &member.role,
+            &req.collaboration_model,
+            req.leader_agent_name.as_deref(),
+        );
         state
             .store
             .add_team_member(
@@ -155,7 +212,7 @@ pub async fn handle_create_team(
                 &member.member_name,
                 &member.member_type,
                 &member.member_id,
-                &member.role,
+                &effective_role,
             )
             .map_err(|e| api_err(e.to_string()))?;
         state
@@ -165,7 +222,7 @@ pub async fn handle_create_team(
 
         if sender_type == SenderType::Agent {
             agent_workspace
-                .init_team_memory(&member.member_name, &name, &member.role)
+                .init_team_memory(&member.member_name, &name, &effective_role)
                 .map_err(|e| internal_err(e.to_string()))?;
             restart_agent_member(&state, &member.member_name).await?;
         }
@@ -254,6 +311,11 @@ pub async fn handle_update_team(
         .get_team(&name)
         .map_err(|e| internal_err(e.to_string()))?
         .ok_or_else(|| internal_err(format!("team not found after update: {name}")))?;
+    let members = state
+        .store
+        .get_team_members(&team.id)
+        .map_err(|e| internal_err(e.to_string()))?;
+    sync_team_roles_and_agents(&state, &updated, &members).await?;
     Ok(Json(updated))
 }
 
@@ -346,8 +408,18 @@ pub async fn handle_add_team_member(
         agent_workspace
             .init_team_memory(&req.member_name, &name, &req.role)
             .map_err(|e| internal_err(e.to_string()))?;
-        restart_agent_member(&state, &req.member_name).await?;
     }
+
+    let updated_team = state
+        .store
+        .get_team(&name)
+        .map_err(|e| internal_err(e.to_string()))?
+        .ok_or_else(|| internal_err(format!("team not found after add member: {name}")))?;
+    let members = state
+        .store
+        .get_team_members(&team.id)
+        .map_err(|e| internal_err(e.to_string()))?;
+    sync_team_roles_and_agents(&state, &updated_team, &members).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

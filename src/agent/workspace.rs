@@ -51,6 +51,44 @@ impl<'a> AgentWorkspace<'a> {
         Ok(())
     }
 
+    /// Update the persisted role line in an agent's private team memory.
+    pub fn set_team_role(
+        &self,
+        agent_name: &str,
+        team_name: &str,
+        role: &str,
+    ) -> std::io::Result<()> {
+        let dir = self.team_memory_path(agent_name, team_name);
+        std::fs::create_dir_all(&dir)?;
+        let role_md = dir.join("ROLE.md");
+        if !role_md.exists() {
+            return self.init_team_memory(agent_name, team_name, role);
+        }
+
+        let current = std::fs::read_to_string(&role_md)?;
+        let mut replaced = false;
+        let updated = current
+            .lines()
+            .map(|line| {
+                if line.starts_with("**Role:** ") {
+                    replaced = true;
+                    format!("**Role:** {role}")
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let next = if replaced {
+            updated
+        } else {
+            format!("{updated}\n\n**Role:** {role}\n")
+        };
+        std::fs::write(role_md, next)?;
+        Ok(())
+    }
+
     /// Remove agent's private team memory directory.
     pub fn delete_team_memory(&self, agent_name: &str, team_name: &str) -> std::io::Result<()> {
         let path = self.team_memory_path(agent_name, team_name);

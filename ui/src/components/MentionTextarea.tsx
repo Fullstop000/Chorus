@@ -1,4 +1,4 @@
-import { useState, useRef, type KeyboardEvent } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Users } from 'lucide-react'
 import './MentionTextarea.css'
 
@@ -47,6 +47,7 @@ export function MentionTextarea({
   members,
 }: Props) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
   const [mentionQuery, setMentionQuery] = useState<string | null>(null)
   const [highlightIdx, setHighlightIdx] = useState(0)
 
@@ -61,6 +62,15 @@ export function MentionTextarea({
     setMentionQuery(null)
     setHighlightIdx(0)
   }
+
+  useEffect(() => {
+    if (suggestions.length === 0) {
+      itemRefs.current = []
+      return
+    }
+    const activeItem = itemRefs.current[highlightIdx]
+    activeItem?.scrollIntoView({ block: 'nearest' })
+  }, [highlightIdx, suggestions.length])
 
   function insertMention(name: string) {
     const ta = textareaRef.current
@@ -124,6 +134,9 @@ export function MentionTextarea({
           {suggestions.map((m, i) => (
             <button
               key={m.name}
+              ref={(node) => {
+                itemRefs.current[i] = node
+              }}
               className={`mention-popup-item${i === highlightIdx ? ' highlighted' : ''}`}
               onMouseDown={(e) => {
                 e.preventDefault() // Don't blur textarea

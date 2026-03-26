@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team } from './types'
 import { getWhoami, getServerInfo, listAgents, listChannels, listTeams, resolveChannel } from './api'
-import { mergeUserAndTeamChannels } from './channelList'
+import { isVisibleSidebarChannel } from './sidebarChannels'
 
 export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
@@ -81,7 +81,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       const joinedChannels = [
         ...info.system_channels.filter((c) => c.joined),
-        ...mergeUserAndTeamChannels(loadedChannels.filter((c) => c.joined), loadedTeams),
+        ...loadedChannels.filter(isVisibleSidebarChannel),
       ]
       let nextSelected = null as string | null
       let nextSelectedId = null as string | null

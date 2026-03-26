@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { Search, Settings2, Users } from 'lucide-react'
 import { useApp, useTarget } from '../store'
-import { mergeUserAndTeamChannels } from '../channelList'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
 import './ChatPanel.css'
@@ -21,11 +20,9 @@ export function ChatHeader({
   onToggleMembers,
   onOpenTeamSettings,
 }: ChatHeaderProps) {
-  const { selectedChannel, selectedAgent, channels, teams } = useApp()
+  const { selectedChannel, selectedAgent, channels } = useApp()
   const channelInfo = selectedChannel
-    ? mergeUserAndTeamChannels(channels, teams).find(
-        (channel) => `#${channel.name}` === selectedChannel
-      )
+    ? channels.find((channel) => `#${channel.name}` === selectedChannel)
     : null
 
   const headerName = selectedChannel
