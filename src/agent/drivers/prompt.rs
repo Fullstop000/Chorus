@@ -1,10 +1,13 @@
 use crate::store::agents::AgentConfig;
+use crate::store::teams::TeamMembership;
 
 pub struct PromptOptions {
     pub tool_prefix: String,
     pub extra_critical_rules: Vec<String>,
     pub post_startup_notes: Vec<String>,
     pub include_stdin_notification_section: bool,
+    /// Team memberships to inject into the agent's system prompt.
+    pub teams: Vec<TeamMembership>,
 }
 
 fn tool_ref(prefix: &str, name: &str) -> String {
@@ -309,6 +312,13 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         prompt.push_str(&format!(
             "\n\n## Initial role\n{description}. This may evolve."
         ));
+    }
+
+    // Team membership section — empty string when the agent has no teams, so safe to always append.
+    let teams_section = crate::agent::collaboration::build_teams_prompt_section(&opts.teams);
+    if !teams_section.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&teams_section);
     }
 
     prompt

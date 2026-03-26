@@ -1,7 +1,5 @@
 mod handlers;
 
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::{collections::HashSet, sync::Mutex};
 
@@ -10,85 +8,12 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::agent::activity_log::{ActivityEntry, ActivityLogResponse};
-use crate::store::messages::ReceivedMessage;
+use crate::agent::{AgentLifecycle, NoopAgentLifecycle};
 use crate::store::Store;
 
+pub use handlers::dto;
+pub use handlers::server_info::{build_server_info, build_ui_shell_info};
 pub use handlers::{AgentDetailResponse, AppState, HistoryResponse};
-
-/// Runtime lifecycle operations the HTTP server can trigger for agents.
-pub trait AgentLifecycle: Send + Sync {
-    fn start_agent<'a>(
-        &'a self,
-        agent_name: &'a str,
-        wake_message: Option<ReceivedMessage>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
-    fn notify_agent<'a>(
-        &'a self,
-        agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
-    fn stop_agent<'a>(
-        &'a self,
-        agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
-    fn get_activity_log_data(
-        &self,
-        agent_name: &str,
-        after_seq: Option<u64>,
-    ) -> ActivityLogResponse;
-
-    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)>;
-
-    /// Append a UI-visible activity entry for an agent.
-    fn push_activity_entry(&self, agent_name: &str, entry: ActivityEntry);
-}
-
-struct NoopAgentLifecycle;
-
-impl AgentLifecycle for NoopAgentLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-        _wake_message: Option<ReceivedMessage>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn get_activity_log_data(
-        &self,
-        _agent_name: &str,
-        _after_seq: Option<u64>,
-    ) -> ActivityLogResponse {
-        ActivityLogResponse {
-            entries: vec![],
-            agent_activity: "offline".to_string(),
-            agent_detail: String::new(),
-        }
-    }
-
-    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
-        vec![]
-    }
-
-    fn push_activity_entry(&self, _agent_name: &str, _entry: ActivityEntry) {}
-}
 
 pub fn build_router(store: Arc<Store>) -> Router {
     build_router_with_lifecycle(store, Arc::new(NoopAgentLifecycle))
@@ -146,7 +71,29 @@ pub fn build_router_with_lifecycle(
         )
         // UI / management endpoints
         .route("/api/whoami", get(handle_whoami))
-        .route("/api/channels", post(handle_create_channel))
+        .route(
+            "/api/channels",
+            get(handle_list_channels).post(handle_create_channel),
+        )
+        .route(
+            "/api/agents",
+            get(handle_list_agents).post(handle_create_agent),
+        )
+        .route(
+            "/api/teams",
+            get(handle_list_teams).post(handle_create_team),
+        )
+        .route(
+            "/api/teams/{name}",
+            get(handle_get_team)
+                .patch(handle_update_team)
+                .delete(handle_delete_team),
+        )
+        .route("/api/teams/{name}/members", post(handle_add_team_member))
+        .route(
+            "/api/teams/{name}/members/{member}",
+            axum::routing::delete(handle_remove_team_member),
+        )
         .route(
             "/api/channels/{channel_id}/members",
             get(handle_list_channel_members).post(handle_invite_channel_member),
@@ -159,7 +106,6 @@ pub fn build_router_with_lifecycle(
             "/api/channels/{channel_id}/archive",
             post(handle_archive_channel),
         )
-        .route("/api/agents", post(handle_create_agent))
         .route(
             "/api/agents/{name}",
             get(handle_get_agent).patch(handle_update_agent),

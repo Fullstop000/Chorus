@@ -1,13 +1,16 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::{ActivityEntry, ActivityLogResponse};
+use chorus::agent::AgentLifecycle;
+use chorus::server::dto::ChannelInfo;
+use chorus::server::dto::ServerInfo;
 use chorus::server::{
-    build_router, build_router_with_lifecycle, AgentDetailResponse, AgentLifecycle, HistoryResponse,
+    build_router, build_router_with_lifecycle, AgentDetailResponse, HistoryResponse,
 };
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{ReceivedMessage, SenderType};
-use chorus::store::{ServerInfo, Store};
+use chorus::store::Store;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -165,6 +168,33 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     (store, router, lifecycle)
 }
 
+fn setup_with_lifecycle_and_data_dir() -> (
+    Arc<Store>,
+    axum::Router,
+    Arc<MockLifecycle>,
+    tempfile::TempDir,
+) {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("chorus.db");
+    let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+    let lifecycle = Arc::new(MockLifecycle::default());
+    let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
+    (store, router, lifecycle, dir)
+}
+
 #[tokio::test]
 async fn test_send_and_receive() {
     let (_store, app) = setup();
@@ -305,6 +335,64 @@ async fn test_server_info() {
     assert_eq!(info.channels.len(), 1);
     assert_eq!(info.agents.len(), 1);
     assert_eq!(info.humans.len(), 1);
+}
+
+#[tokio::test]
+async fn test_ui_server_info_is_shell_only() {
+    let (_store, app) = setup();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/server-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(info.get("system_channels").is_some());
+    assert!(info.get("humans").is_some());
+    assert!(info.get("channels").is_none());
+    assert!(info.get("agents").is_none());
+}
+
+#[tokio::test]
+async fn test_list_channels_honors_search_params() {
+    let (store, app) = setup();
+    store.ensure_builtin_channels("alice").unwrap();
+    store
+        .create_channel("engineering", Some("Engineering"), ChannelType::Channel)
+        .unwrap();
+    store
+        .create_channel("eng-team", Some("Engineering"), ChannelType::Team)
+        .unwrap();
+    store
+        .create_channel("dm-bot1", None, ChannelType::Dm)
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/channels?include_system=true&include_dm=true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let channels: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let channels = channels.as_array().expect("channel list array");
+    assert!(channels.iter().any(|entry| entry["name"] == "engineering"));
+    assert!(channels.iter().any(|entry| entry["name"] == "eng-team"));
+    assert!(channels.iter().any(|entry| entry["name"] == "all"));
+    assert!(channels.iter().any(|entry| entry["name"] == "dm-bot1"));
 }
 
 #[tokio::test]
@@ -594,21 +682,21 @@ async fn test_archive_channel_via_api_hides_it_from_server_info() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(store.find_channel_by_id(&channel_id).unwrap().is_some());
 
-    let server_info = app
+    let channels_resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/server-info")
+                .uri("/api/channels")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(server_info.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(server_info.into_body(), 1_000_000)
+    assert_eq!(channels_resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(channels_resp.into_body(), 1_000_000)
         .await
         .unwrap();
-    let info: ServerInfo = serde_json::from_slice(&body).unwrap();
-    assert!(info.channels.is_empty());
+    let channels: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(channels.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -634,21 +722,21 @@ async fn test_delete_channel_via_api_removes_channel_owned_data() {
     assert_eq!(resp.status(), StatusCode::OK);
     assert!(store.find_channel_by_id(&channel_id).unwrap().is_none());
 
-    let server_info = app
+    let channels_resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/server-info")
+                .uri("/api/channels")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(server_info.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(server_info.into_body(), 1_000_000)
+    assert_eq!(channels_resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(channels_resp.into_body(), 1_000_000)
         .await
         .unwrap();
-    let info: ServerInfo = serde_json::from_slice(&body).unwrap();
-    assert!(info.channels.is_empty());
+    let channels: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(channels.as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -805,6 +893,28 @@ async fn test_create_agent_via_api() {
     assert_eq!(new_bot["model"], "gpt-5.4");
     assert_eq!(new_bot["status"], "inactive");
     assert_eq!(lifecycle.started_names(), vec!["new-bot".to_string()]);
+
+    let agents_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(agents_resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(agents_resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let agents: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let listed_new_bot = agents
+        .as_array()
+        .and_then(|entries| entries.iter().find(|entry| entry["name"] == "new-bot"))
+        .expect("new agent should be listed by /api/agents");
+    assert_eq!(listed_new_bot["runtime"], "codex");
+    assert_eq!(listed_new_bot["model"], "gpt-5.4");
 
     // Duplicate name should fail
     let resp = app
@@ -1772,6 +1882,449 @@ async fn shared_memory_auto_creation_idempotent() {
     assert!(
         listed.iter().all(|c| c.name != "shared-memory"),
         "shared-memory must not appear in list_channels"
+    );
+}
+
+#[tokio::test]
+async fn test_create_team_endpoint() {
+    let (store, app, lifecycle, dir) = setup_with_lifecycle_and_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+
+    let body = serde_json::json!({
+        "name": "eng-team",
+        "display_name": "Engineering Team",
+        "collaboration_model": "leader_operators",
+        "leader_agent_name": "bot1",
+        "members": [{
+            "member_name": "bot1",
+            "member_type": "agent",
+            "member_id": bot1.id,
+            "role": "operator"
+        }]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/teams")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+    let ch = store.find_channel_by_name("eng-team").unwrap().unwrap();
+    assert_eq!(ch.channel_type, ChannelType::Team);
+    assert_eq!(payload["team"]["channel_id"], ch.id);
+
+    let team = store.get_team("eng-team").unwrap().unwrap();
+    let members = store.get_team_members(&team.id).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].member_name, "bot1");
+    assert_eq!(members[0].role, "leader");
+
+    assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
+    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
+
+    let teams_root = dir.path().join("teams").join("eng-team");
+    assert!(teams_root.join("TEAM.md").exists());
+    assert!(teams_root.join("members").join("bot1").exists());
+
+    let role_md = dir
+        .path()
+        .join("agents")
+        .join("bot1")
+        .join("teams")
+        .join("eng-team")
+        .join("ROLE.md");
+    assert!(role_md.exists());
+}
+
+#[tokio::test]
+async fn test_list_and_update_team_endpoints() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .unwrap();
+    let team_id = store
+        .create_team(
+            "eng-team",
+            "Engineering Team",
+            "leader_operators",
+            Some("bot1"),
+        )
+        .unwrap();
+
+    let list_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/teams")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let teams: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(list_resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(teams.as_array().unwrap().len(), 1);
+    assert_eq!(teams[0]["name"], "eng-team");
+
+    let patch_body = serde_json::json!({
+        "display_name": "Applied Science",
+        "collaboration_model": "swarm",
+        "leader_agent_name": null
+    });
+    let patch_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/teams/eng-team")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&patch_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(patch_resp.status(), StatusCode::OK);
+
+    let updated = store.get_team_by_id(&team_id).unwrap().unwrap();
+    assert_eq!(updated.display_name, "Applied Science");
+    assert_eq!(updated.collaboration_model, "swarm");
+    assert_eq!(updated.leader_agent_name, None);
+
+    store
+        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bot2", "agent", "bot2", "operator")
+        .unwrap();
+
+    let leader_patch_body = serde_json::json!({
+        "collaboration_model": "leader_operators",
+        "leader_agent_name": "bot2"
+    });
+    let leader_patch_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/teams/eng-team")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&leader_patch_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(leader_patch_resp.status(), StatusCode::OK);
+
+    let updated_members = store.get_team_members(&team_id).unwrap();
+    let bot1_member = updated_members
+        .iter()
+        .find(|member| member.member_name == "bot1")
+        .unwrap();
+    let bot2_member = updated_members
+        .iter()
+        .find(|member| member.member_name == "bot2")
+        .unwrap();
+    assert_eq!(bot1_member.role, "operator");
+    assert_eq!(bot2_member.role, "leader");
+    assert_eq!(lifecycle.started_names().len(), 2);
+    assert_eq!(lifecycle.stopped_names().len(), 2);
+}
+
+#[tokio::test]
+async fn test_list_channels_includes_team_without_human_membership() {
+    let (store, app) = setup();
+    let team_id = store
+        .create_team("qa-eng", "QA Engineering", "leader_operators", Some("bot1"))
+        .unwrap();
+    store
+        .create_channel("qa-eng", None, ChannelType::Team)
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .unwrap();
+    store
+        .join_channel("qa-eng", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/api/channels?member=alice")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let channels: Vec<ChannelInfo> = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
+    let team = channels
+        .iter()
+        .find(|channel| channel.name == "qa-eng")
+        .expect("team channel should be listed even without human membership");
+    assert_eq!(team.channel_type.as_deref(), Some("team"));
+    assert!(!team.joined);
+}
+
+#[tokio::test]
+async fn test_add_remove_and_delete_team_endpoints() {
+    let (store, app, lifecycle, dir) = setup_with_lifecycle_and_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+
+    let team_id = store
+        .create_team("eng-team", "Engineering Team", "leader_operators", None)
+        .unwrap();
+    store
+        .create_channel("eng-team", None, ChannelType::Team)
+        .unwrap();
+
+    let add_body = serde_json::json!({
+        "member_name": "bot1",
+        "member_type": "agent",
+        "member_id": bot1.id,
+        "role": "operator"
+    });
+    let add_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/teams/eng-team/members")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&add_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(add_resp.status(), StatusCode::OK);
+    assert_eq!(
+        store.list_teams_for_agent("bot1").unwrap()[0].team_name,
+        "eng-team"
+    );
+    assert!(dir
+        .path()
+        .join("agents")
+        .join("bot1")
+        .join("teams")
+        .join("eng-team")
+        .join("ROLE.md")
+        .exists());
+
+    let remove_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/teams/eng-team/members/bot1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(remove_resp.status(), StatusCode::OK);
+    assert!(store.list_teams_for_agent("bot1").unwrap().is_empty());
+    assert_eq!(
+        store
+            .get_last_read_seq("eng-team", "bot1")
+            .unwrap_err()
+            .to_string(),
+        "Query returned no rows"
+    );
+
+    let delete_resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/teams/eng-team")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete_resp.status(), StatusCode::OK);
+    assert!(store.get_team_by_id(&team_id).unwrap().is_none());
+    let listed = store.list_channels().unwrap();
+    assert!(listed.iter().all(|channel| channel.name != "eng-team"));
+    assert!(!dir.path().join("teams").join("eng-team").exists());
+    assert_eq!(lifecycle.started_names().len(), 2);
+    assert_eq!(lifecycle.stopped_names().len(), 2);
+}
+
+#[tokio::test]
+async fn test_at_mention_forwards_to_team_channel() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .unwrap();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
+    store
+        .update_agent_status("bot2", AgentStatus::Active)
+        .unwrap();
+    let team_id = store
+        .create_team("eng-team", "Engineering", "leader_operators", Some("bot1"))
+        .unwrap();
+    store
+        .create_channel("eng-team", None, ChannelType::Team)
+        .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    let bot2 = store.get_agent("bot2").unwrap().unwrap();
+    store
+        .add_team_member(&team_id, "bot1", "agent", &bot1.id, "leader")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bot2", "agent", &bot2.id, "operator")
+        .unwrap();
+    store
+        .join_channel("eng-team", "bot1", SenderType::Agent)
+        .unwrap();
+    store
+        .join_channel("eng-team", "bot2", SenderType::Agent)
+        .unwrap();
+
+    let send_req =
+        serde_json::json!({ "target": "#general", "content": "hey @eng-team build something" });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let forwarded = store
+        .get_messages_for_agent("bot1", false)
+        .unwrap()
+        .into_iter()
+        .find(|msg| msg.channel_name == "eng-team")
+        .expect("forwarded team message");
+    assert_eq!(forwarded.content, "hey @eng-team build something");
+    let provenance = forwarded.forwarded_from.expect("forwarded metadata");
+    assert_eq!(provenance.channel_name, "general");
+    assert_eq!(provenance.sender_name, "alice");
+
+    let notified = lifecycle.notified_names();
+    assert_eq!(
+        notified
+            .iter()
+            .filter(|name| name.as_str() == "bot1")
+            .count(),
+        2
+    );
+    assert_eq!(
+        notified
+            .iter()
+            .filter(|name| name.as_str() == "bot2")
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn test_swarm_ready_signals_emit_consensus_system_message() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store
+        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot2", SenderType::Agent)
+        .unwrap();
+    let team_id = store
+        .create_team("eng-team", "Engineering", "swarm", None)
+        .unwrap();
+    store
+        .create_channel("eng-team", None, ChannelType::Team)
+        .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    let bot2 = store.get_agent("bot2").unwrap().unwrap();
+    store
+        .add_team_member(&team_id, "bot1", "agent", &bot1.id, "builder")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bot2", "agent", &bot2.id, "reviewer")
+        .unwrap();
+    store
+        .join_channel("eng-team", "bot1", SenderType::Agent)
+        .unwrap();
+    store
+        .join_channel("eng-team", "bot2", SenderType::Agent)
+        .unwrap();
+
+    let trigger_req = serde_json::json!({
+        "target": "#general",
+        "content": "team please handle @eng-team"
+    });
+    let trigger_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&trigger_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(trigger_resp.status(), StatusCode::OK);
+
+    let ready_req = |agent: &str| {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/internal/agent/{agent}/send"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "target": "#eng-team",
+                    "content": "READY: begin execution"
+                }))
+                .unwrap(),
+            ))
+            .unwrap()
+    };
+
+    let bot1_resp = app.clone().oneshot(ready_req("bot1")).await.unwrap();
+    assert_eq!(bot1_resp.status(), StatusCode::OK);
+    let bot2_resp = app.oneshot(ready_req("bot2")).await.unwrap();
+    assert_eq!(bot2_resp.status(), StatusCode::OK);
+
+    let (history, _) = store.get_history("eng-team", None, 20, None, None).unwrap();
+    assert!(
+        history
+            .iter()
+            .any(|msg| msg.content.contains("All members ready")),
+        "consensus system message should be posted"
     );
 }
 

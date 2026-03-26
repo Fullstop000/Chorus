@@ -1,0 +1,810 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Inter+Tight:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+.signal-lab {
+  --signal-bg: #060816;
+  --signal-bg-2: #0a1024;
+  --signal-panel: rgba(8, 14, 33, 0.76);
+  --signal-panel-strong: rgba(10, 18, 42, 0.92);
+  --signal-border: rgba(113, 188, 255, 0.18);
+  --signal-border-strong: rgba(113, 188, 255, 0.4);
+  --signal-text: #edf6ff;
+  --signal-muted: #8ca3bf;
+  --signal-cyan: #55d6ff;
+  --signal-lime: #b8ff65;
+  --signal-violet: #b487ff;
+  --signal-orange: #ff9b5b;
+  --signal-grid: rgba(125, 180, 255, 0.07);
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  background:
+    radial-gradient(circle at top left, rgba(85, 214, 255, 0.18), transparent 30%),
+    radial-gradient(circle at 80% 20%, rgba(180, 135, 255, 0.14), transparent 22%),
+    linear-gradient(180deg, var(--signal-bg) 0%, #03050d 100%);
+  color: var(--signal-text);
+  font-family: 'Inter', sans-serif;
+  position: relative;
+  overflow: hidden;
+}
+
+.signal-lab__backdrop {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    linear-gradient(var(--signal-grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--signal-grid) 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent 92%);
+}
+
+.signal-lab__scanlines {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.14;
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.025) 0,
+    rgba(255, 255, 255, 0.025) 1px,
+    transparent 1px,
+    transparent 4px
+  );
+  mix-blend-mode: screen;
+}
+
+.signal-sidebar,
+.signal-panel,
+.signal-topbar {
+  backdrop-filter: blur(20px);
+}
+
+.signal-sidebar {
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 20px 16px 16px;
+  background:
+    linear-gradient(180deg, rgba(10, 18, 40, 0.92), rgba(6, 10, 24, 0.88));
+  border-right: 1px solid var(--signal-border);
+  box-shadow: inset -1px 0 0 rgba(85, 214, 255, 0.08);
+}
+
+.signal-sidebar__brand,
+.signal-sidebar__footer,
+.signal-nav-card,
+.signal-agent-card,
+.signal-topbar,
+.signal-panel,
+.signal-composer__row,
+.signal-pill {
+  position: relative;
+}
+
+.signal-sidebar__brand::after,
+.signal-sidebar__footer::after,
+.signal-nav-card::after,
+.signal-agent-card::after,
+.signal-topbar::after,
+.signal-panel::after,
+.signal-composer__row::after,
+.signal-pill::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  pointer-events: none;
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 16px 100%, 0 calc(100% - 16px));
+}
+
+.signal-sidebar__brand {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 14px;
+  background: linear-gradient(135deg, rgba(13, 27, 57, 0.95), rgba(8, 15, 33, 0.85));
+  border: 1px solid var(--signal-border);
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 0 100%);
+}
+
+.signal-sidebar__brand-mark {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  color: var(--signal-cyan);
+  background: radial-gradient(circle, rgba(85, 214, 255, 0.18), rgba(85, 214, 255, 0.04));
+  border: 1px solid rgba(85, 214, 255, 0.45);
+  box-shadow: 0 0 24px rgba(85, 214, 255, 0.18);
+}
+
+.signal-bootline,
+.signal-terminal-line,
+.signal-nav-card__node {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--signal-muted);
+  text-transform: uppercase;
+}
+
+.signal-kicker {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--signal-cyan);
+}
+
+.signal-sidebar__brand h1,
+.signal-topbar h2,
+.signal-hero h3 {
+  font-family: 'Inter Tight', sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.signal-sidebar__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.signal-sidebar__section-header,
+.signal-panel__header,
+.signal-message__meta,
+.signal-topbar__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.signal-sidebar__section-header {
+  padding: 0 4px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--signal-muted);
+}
+
+.signal-sidebar__section-header button,
+.signal-ghost-button,
+.signal-nav-card,
+.signal-agent-card,
+.signal-composer button {
+  border: 0;
+  background: none;
+  color: inherit;
+}
+
+.signal-sidebar__section-header button {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: var(--signal-cyan);
+  background: rgba(85, 214, 255, 0.08);
+}
+
+.signal-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.signal-nav-card,
+.signal-agent-card {
+  width: 100%;
+  text-align: left;
+  display: grid;
+  align-items: center;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    box-shadow 180ms ease;
+}
+
+.signal-nav-card {
+  grid-template-columns: 40px 1fr auto auto;
+  gap: 10px;
+  padding: 12px;
+  background: rgba(10, 16, 35, 0.7);
+  border: 1px solid var(--signal-border);
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%);
+}
+
+.signal-nav-card:hover,
+.signal-agent-card:hover,
+.signal-ghost-button:hover,
+.signal-composer button:hover {
+  transform: translateY(-1px);
+}
+
+.signal-nav-card.is-active,
+.signal-agent-card.is-active {
+  background: linear-gradient(135deg, rgba(20, 38, 79, 0.92), rgba(8, 16, 36, 0.92));
+  border-color: var(--signal-border-strong);
+  box-shadow: 0 0 30px rgba(85, 214, 255, 0.12);
+}
+
+.signal-nav-card__glyph,
+.signal-agent-card__avatar {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--signal-cyan);
+  background: rgba(85, 214, 255, 0.08);
+  border: 1px solid rgba(85, 214, 255, 0.26);
+}
+
+.signal-nav-card__body,
+.signal-agent-card__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.signal-nav-card__count {
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(85, 214, 255, 0.22);
+  background: rgba(85, 214, 255, 0.1);
+  color: var(--signal-cyan);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.signal-nav-card__node {
+  justify-self: end;
+  opacity: 0.82;
+}
+
+.signal-nav-card__body strong,
+.signal-agent-card__body strong,
+.signal-events strong,
+.signal-message__meta strong {
+  font-size: 13px;
+}
+
+.signal-nav-card__body small,
+.signal-agent-card__body small,
+.signal-agent-card__status,
+.signal-events span,
+.signal-message__meta span,
+.signal-panel__meta {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--signal-muted);
+}
+
+.signal-agent-card {
+  grid-template-columns: 32px 1fr auto;
+  gap: 10px;
+  padding: 11px 12px;
+  background: rgba(8, 14, 31, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 14px 100%, 0 calc(100% - 14px));
+}
+
+.signal-agent-card.tone-cyan .signal-agent-card__avatar {
+  color: var(--signal-cyan);
+}
+
+.signal-agent-card.tone-violet .signal-agent-card__avatar {
+  color: var(--signal-violet);
+  border-color: rgba(180, 135, 255, 0.26);
+  background: rgba(180, 135, 255, 0.08);
+}
+
+.signal-agent-card.tone-lime .signal-agent-card__avatar {
+  color: var(--signal-lime);
+  border-color: rgba(184, 255, 101, 0.26);
+  background: rgba(184, 255, 101, 0.08);
+}
+
+.signal-sidebar__footer {
+  margin-top: auto;
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(7, 11, 25, 0.88);
+  clip-path: polygon(0 0, calc(100% - 14px) 0, 100% 14px, 100% 100%, 0 100%);
+}
+
+.signal-ghost-button,
+.signal-composer button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  background: rgba(85, 214, 255, 0.08);
+  color: var(--signal-cyan);
+  border: 1px solid rgba(85, 214, 255, 0.2);
+}
+
+.signal-main {
+  z-index: 1;
+  min-width: 0;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.signal-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: rgba(8, 14, 32, 0.72);
+  border: 1px solid var(--signal-border);
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+}
+
+.signal-topbar h2 {
+  font-size: 24px;
+}
+
+.signal-topbar__meta {
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.signal-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(85, 214, 255, 0.18);
+  background: rgba(85, 214, 255, 0.07);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--signal-cyan);
+}
+
+.signal-pill--warning {
+  color: var(--signal-orange);
+  border-color: rgba(255, 155, 91, 0.22);
+  background: rgba(255, 155, 91, 0.08);
+}
+
+.signal-pill--link {
+  text-decoration: none;
+}
+
+.signal-pill--link.is-active {
+  border-color: var(--signal-border-strong);
+  box-shadow: 0 0 0 1px rgba(85, 214, 255, 0.12) inset;
+}
+
+.signal-dashboard {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(320px, 0.8fr);
+  grid-template-rows: auto 1fr;
+  gap: 12px;
+}
+
+.signal-panel {
+  padding: 12px;
+  background: var(--signal-panel);
+  border: 1px solid var(--signal-border);
+  clip-path: polygon(0 0, calc(100% - 18px) 0, 100% 18px, 100% 100%, 18px 100%, 0 calc(100% - 18px));
+}
+
+.signal-panel--hero {
+  grid-column: 1 / -1;
+  background:
+    radial-gradient(circle at right, rgba(85, 214, 255, 0.08), transparent 28%),
+    linear-gradient(135deg, rgba(12, 21, 49, 0.95), rgba(9, 15, 34, 0.92));
+}
+
+.signal-panel__header {
+  margin-bottom: 10px;
+  gap: 16px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--signal-muted);
+}
+
+.signal-panel__header span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--signal-text);
+}
+
+.signal-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(260px, 0.8fr);
+  gap: 14px;
+  align-items: end;
+}
+
+.signal-hero h3 {
+  font-size: clamp(24px, 3.4vw, 38px);
+  max-width: 12ch;
+  margin: 6px 0 10px;
+}
+
+.signal-hero__copy {
+  max-width: 56ch;
+  color: #c8d7ea;
+  line-height: 1.55;
+}
+
+.signal-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.signal-metrics article {
+  padding: 10px 12px;
+  background: rgba(8, 17, 39, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.signal-metrics span {
+  display: block;
+  margin-bottom: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: var(--signal-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+}
+
+.signal-metrics strong {
+  font-size: 28px;
+  color: var(--signal-lime);
+}
+
+.signal-segmented {
+  font-family: 'IBM Plex Mono', monospace;
+  letter-spacing: -0.02em;
+  text-shadow: 0 0 12px rgba(184, 255, 101, 0.12);
+}
+
+.signal-panel--chat {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.signal-feed {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.signal-message {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 10px;
+  padding: 10px 12px;
+  background: rgba(7, 12, 28, 0.76);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.signal-message--agent {
+  box-shadow: inset 2px 0 0 rgba(85, 214, 255, 0.45);
+}
+
+.signal-message--human {
+  box-shadow: inset 2px 0 0 rgba(180, 135, 255, 0.35);
+}
+
+.signal-message__avatar {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  color: var(--signal-cyan);
+  background: rgba(85, 214, 255, 0.08);
+  border: 1px solid rgba(85, 214, 255, 0.22);
+}
+
+.signal-message--human .signal-message__avatar {
+  color: var(--signal-violet);
+  background: rgba(180, 135, 255, 0.08);
+  border-color: rgba(180, 135, 255, 0.22);
+}
+
+.signal-message__body {
+  min-width: 0;
+}
+
+.signal-message__meta {
+  margin-bottom: 4px;
+  gap: 8px;
+}
+
+.signal-message p {
+  color: #d4e1f0;
+  line-height: 1.5;
+  font-size: 13px;
+}
+
+.signal-composer {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.signal-composer__label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--signal-muted);
+}
+
+.signal-composer__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  padding: 9px 10px;
+  background: rgba(6, 10, 23, 0.88);
+  border: 1px solid rgba(85, 214, 255, 0.14);
+  clip-path: polygon(0 0, calc(100% - 16px) 0, 100% 16px, 100% 100%, 0 100%);
+}
+
+.signal-composer input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--signal-text);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+}
+
+.signal-composer input:focus {
+  outline: none;
+}
+
+.signal-composer__row:focus-within {
+  border-color: var(--signal-border-strong);
+  box-shadow: 0 0 0 1px rgba(85, 214, 255, 0.14);
+}
+
+.signal-panel--rail {
+  background: var(--signal-panel-strong);
+}
+
+.signal-events {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.signal-event {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 10px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.signal-event:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.signal-event svg {
+  margin-top: 2px;
+  color: var(--signal-cyan);
+}
+
+.signal-metric-card,
+.signal-message,
+.signal-event,
+.signal-nav-card,
+.signal-agent-card,
+.signal-panel,
+.signal-sidebar__brand,
+.signal-sidebar__footer,
+.signal-topbar {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
+}
+
+.signal-event div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@media (max-width: 1100px) {
+  .signal-lab {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-sidebar {
+    border-right: 0;
+    border-bottom: 1px solid var(--signal-border);
+  }
+
+  .signal-dashboard,
+  .signal-hero {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .signal-main,
+  .signal-sidebar {
+    padding: 16px;
+  }
+
+  .signal-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .signal-topbar h2 {
+    font-size: 24px;
+  }
+
+  .signal-metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-dashboard {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .signal-nav-card,
+  .signal-agent-card,
+  .signal-ghost-button,
+  .signal-composer button {
+    transition: none;
+  }
+}
+
+.signal-lab--light {
+  --signal-bg: #edf7ff;
+  --signal-bg-2: #dfefff;
+  --signal-panel: rgba(255, 255, 255, 0.78);
+  --signal-panel-strong: rgba(248, 252, 255, 0.92);
+  --signal-border: rgba(21, 96, 164, 0.14);
+  --signal-border-strong: rgba(21, 96, 164, 0.3);
+  --signal-text: #10213c;
+  --signal-muted: #5e7393;
+  --signal-cyan: #0077c8;
+  --signal-lime: #6da800;
+  --signal-violet: #7d57d8;
+  --signal-orange: #c76818;
+  --signal-grid: rgba(36, 108, 175, 0.07);
+  background:
+    radial-gradient(circle at top left, rgba(0, 119, 200, 0.12), transparent 32%),
+    radial-gradient(circle at 80% 20%, rgba(125, 87, 216, 0.1), transparent 24%),
+    linear-gradient(180deg, #f6fbff 0%, #e2eefb 100%);
+}
+
+.signal-lab--light .signal-lab__scanlines {
+  opacity: 0.08;
+  mix-blend-mode: multiply;
+}
+
+.signal-lab--light .signal-sidebar {
+  background: linear-gradient(180deg, rgba(239, 247, 255, 0.96), rgba(226, 238, 251, 0.92));
+  box-shadow: inset -1px 0 0 rgba(0, 119, 200, 0.08);
+}
+
+.signal-lab--light .signal-sidebar__brand::after,
+.signal-lab--light .signal-sidebar__footer::after,
+.signal-lab--light .signal-nav-card::after,
+.signal-lab--light .signal-agent-card::after,
+.signal-lab--light .signal-topbar::after,
+.signal-lab--light .signal-panel::after,
+.signal-lab--light .signal-composer__row::after,
+.signal-lab--light .signal-pill::after {
+  border-color: rgba(255, 255, 255, 0.45);
+}
+
+.signal-lab--light .signal-sidebar__brand {
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(241, 248, 255, 0.95));
+}
+
+.signal-lab--light .signal-sidebar__brand-mark {
+  background: radial-gradient(circle, rgba(0, 119, 200, 0.1), rgba(0, 119, 200, 0.02));
+  box-shadow: 0 8px 24px rgba(0, 119, 200, 0.12);
+}
+
+.signal-lab--light .signal-sidebar__section-header button,
+.signal-lab--light .signal-ghost-button,
+.signal-lab--light .signal-composer button {
+  background: rgba(0, 119, 200, 0.07);
+  border-color: rgba(0, 119, 200, 0.16);
+}
+
+.signal-lab--light .signal-nav-card,
+.signal-lab--light .signal-agent-card,
+.signal-lab--light .signal-sidebar__footer,
+.signal-lab--light .signal-topbar,
+.signal-lab--light .signal-panel,
+.signal-lab--light .signal-composer__row,
+.signal-lab--light .signal-metrics article,
+.signal-lab--light .signal-message {
+  background: rgba(255, 255, 255, 0.74);
+  border-color: rgba(21, 96, 164, 0.08);
+  box-shadow: 0 18px 48px rgba(31, 72, 122, 0.08);
+}
+
+.signal-lab--light .signal-nav-card.is-active,
+.signal-lab--light .signal-agent-card.is-active {
+  background: linear-gradient(135deg, rgba(245, 250, 255, 0.98), rgba(227, 239, 252, 0.95));
+  border-color: var(--signal-border-strong);
+  box-shadow: 0 14px 34px rgba(0, 119, 200, 0.1);
+}
+
+.signal-lab--light .signal-nav-card__glyph,
+.signal-lab--light .signal-agent-card__avatar,
+.signal-lab--light .signal-message__avatar {
+  background: rgba(0, 119, 200, 0.06);
+  border-color: rgba(0, 119, 200, 0.2);
+}
+
+.signal-lab--light .signal-nav-card__count {
+  background: rgba(0, 119, 200, 0.08);
+  border-color: rgba(0, 119, 200, 0.16);
+}
+
+.signal-lab--light .signal-agent-card.tone-violet .signal-agent-card__avatar,
+.signal-lab--light .signal-message--human .signal-message__avatar {
+  background: rgba(125, 87, 216, 0.08);
+  border-color: rgba(125, 87, 216, 0.18);
+}
+
+.signal-lab--light .signal-agent-card.tone-lime .signal-agent-card__avatar {
+  background: rgba(109, 168, 0, 0.08);
+  border-color: rgba(109, 168, 0, 0.18);
+}
+
+.signal-lab--light .signal-panel--hero {
+  background:
+    radial-gradient(circle at right, rgba(0, 119, 200, 0.08), transparent 28%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(240, 247, 255, 0.95));
+}
+
+.signal-lab--light .signal-hero__copy,
+.signal-lab--light .signal-message p {
+  color: #334a6a;
+}
+
+.signal-lab--light .signal-pill--link.is-active {
+  box-shadow: 0 0 0 1px rgba(0, 119, 200, 0.12) inset;
+}

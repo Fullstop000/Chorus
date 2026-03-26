@@ -6,6 +6,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify a human message in a shared channel can wake multiple agents and preserve message correctness
+- Script:
+  - [`playwright/MSG-001.spec.ts`](./playwright/MSG-001.spec.ts) (Step 1 UI; Steps 3–6 hybrid `history` API)
 - Preconditions:
   - `bot-a`, `bot-b`, and `bot-c` exist
   - active test channel is open
@@ -33,6 +35,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify DM send and agent reply rendering work independently of channel traffic
+- Script:
+  - [`playwright/MSG-002.spec.ts`](./playwright/MSG-002.spec.ts) (Steps 4–6 hybrid poll `history` for agent row)
 - Preconditions:
   - at least one test agent exists
   - the selected agent is reachable and not already mid-turn
@@ -65,6 +69,8 @@
 - Release-sensitive: yes
 - Goal:
   - prove thread behavior still works when the parent channel has multiple agents participating
+- Script:
+  - [`playwright/MSG-003.spec.ts`](./playwright/MSG-003.spec.ts) (precondition: API seed to `#all` when LLM enabled)
 - Preconditions:
   - `MSG-001` completed
 - Steps:
@@ -89,6 +95,8 @@
 - Release-sensitive: yes when touching lifecycle, runtime integration, DM routing, or restart/wake behavior
 - Goal:
   - verify a sleeping or inactive agent can wake from a DM and render its reply back into the same DM timeline
+- Script:
+  - [`playwright/MSG-004.spec.ts`](./playwright/MSG-004.spec.ts) (inactive DM wake + reply visibility)
 - Preconditions:
   - at least one test agent exists
   - the selected agent can be moved into a sleeping or inactive state through the shipped product flow
@@ -118,6 +126,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify history and current selection survive refresh
+- Script:
+  - [`playwright/HIS-001.spec.ts`](./playwright/HIS-001.spec.ts) (channel, DM, and thread history reload)
 - Preconditions:
   - at least one populated channel, one DM, and one thread exist
 - Steps:
@@ -141,6 +151,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify a human can upload an attachment from the browser and send it in chat
+- Script:
+  - [`playwright/ATT-001.spec.ts`](./playwright/ATT-001.spec.ts) (attachment upload + render)
 - Preconditions:
   - small text file prepared locally
 - Steps:
@@ -167,6 +179,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify errors are visible and the UI can recover cleanly
+- Script:
+  - [`playwright/ERR-001.spec.ts`](./playwright/ERR-001.spec.ts) (forced upload error + recovery)
 - Preconditions:
   - use at least one intentionally failing path discovered during testing or known from recent regressions
 - Steps:

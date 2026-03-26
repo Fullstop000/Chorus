@@ -1,23 +1,29 @@
 # Chorus QA Report Template
 
-Copy this file for each QA run.
+> Copy this file for each QA run and fill it out as the run progresses. Keep the report scoped to the cases and exploratory coverage that actually happened in that run.
 
 Recommended filename:
+
 - `qa/runs/YYYY-MM-DDTHHMMSS/report.md`
 
 Companion fix report when bugs are addressed:
+
 - `qa/runs/YYYY-MM-DDTHHMMSS/fix_report.md`
 
 ## Run Metadata
+
+> Instruction: Record the exact run identity and environment so another person can trace the run back to a branch, commit, preset, and evidence bundle.
 
 - Date:
 - Branch:
 - Commit:
 - Tester:
+- Related change / PR:
 - Run mode:
   - `PR Smoke`
   - `Core Regression`
   - `Recovery / Reliability`
+  - `Agent Matrix`
   - custom:
 - QA preset:
   - `claude-trio`
@@ -33,15 +39,33 @@ Companion fix report when bugs are addressed:
 - Run directory:
 - Evidence directory:
   - `qa/runs/YYYY-MM-DDTHHMMSS/evidence/`
-- Related change / PR:
 
-## Scope
+## Release Gate Decision
+
+> Instruction: State the final QA outcome early so a reader can understand the run status before reading the details. Update this section as the run progresses and finalize it before sharing the report.
+
+- Overall result:
+  - `✅ DONE`
+  - `⚠️ DONE_WITH_CONCERNS`
+  - `⛔ BLOCKED`
+- Release blockers:
+- Non-blocking concerns:
+- Blocked cases:
+- Recommended next action:
+
+## Scope Summary
+
+Instruction: Summarize what this run covered, what it intentionally did not cover, and why the chosen scope was appropriate.
 
 - Planned cases:
+- Cases actually executed:
 - Additional exploratory coverage:
 - Intentionally skipped areas:
+- Scope notes:
 
 ## Environment Setup
+
+> Instruction: Capture the concrete test setup used for this run, including human identity, channel context, test agents, attachment fixtures, and any non-default setup.
 
 - Current user:
 - Test channel:
@@ -58,62 +82,25 @@ Companion fix report when bugs are addressed:
 - Attachment file used:
 - Notes about environment:
 
-## Feature QA Result Table
+## Coverage Summary
 
-| Feature | Tier | Cases Covered | Result | Notes |
-| --- | --- | --- | --- | --- |
-| App startup and identity | Tier 0 | `ENV-001` |  |  |
-| Agent creation and selection | Tier 0 | `AGT-001` |  |  |
-| Agent runtime/model matrix and uniqueness | Tier 1 | `AGT-002`, `AGT-003` |  |  |
-| Agent lifecycle | Tier 0/1 | `LFC-001`, `LFC-002`, `PRF-001` |  |  |
-| Channel CRUD and membership | Tier 0/1 | `CHN-001`, `CHN-002`, `CHN-003`, `CHN-004` |  |  |
-| Channel messaging | Tier 0 | `MSG-001` |  |  |
-| DM messaging | Tier 0/1 | `MSG-002`, `MSG-004` |  |  |
-| Thread messaging | Tier 0 | `MSG-003` |  |  |
-| History reload and selection stability | Tier 0 | `HIS-001` |  |  |
-| Tasks | Tier 0 | `TSK-001`, `TSK-002` |  |  |
-| Attachments | Tier 0 | `ATT-001` |  |  |
-| Profile and lifecycle accuracy | Tier 0 | `PRF-001` |  |  |
-| Activity timeline | Tier 1 | `ACT-001`, `ACT-002` |  |  |
-| Workspace browsing | Tier 1 | `WRK-001` |  |  |
-| Navigation and target selection | Tier 1 | `NAV-001` |  |  |
-| Error handling and recovery | Tier 1 | `ERR-001` |  |  |
-| Restart and reliability | Tier 1 | `LFC-002`, `REC-001`, `REC-002` |  |  |
+> Instruction: Summarize executed coverage by product area or workflow. Use this section for a human-readable overview, not as a second source of truth for the catalog.
+
+| Area / Workflow | Cases Run | Result | Notes |
+| --- | --- | --- | --- |
+|  |  |  |  |
 
 ## Case Execution Table
 
-| Case ID | Result | Evidence | Notes |
-| --- | --- | --- | --- |
-| `ENV-001` |  |  |  |
-| `AGT-001` |  |  |  |
-| `AGT-002` |  |  |  |
-| `AGT-003` |  |  |  |
-| `LFC-001` |  |  |  |
-| `LFC-002` |  |  |  |
-| `CHN-001` |  |  |  |
-| `CHN-002` |  |  |  |
-| `CHN-003` |  |  |  |
-| `CHN-004` |  |  |  |
-| `MSG-001` |  |  |  |
-| `MSG-002` |  |  |  |
-| `MSG-003` |  |  |  |
-| `MSG-004` |  |  |  |
-| `HIS-001` |  |  |  |
-| `TSK-001` |  |  |  |
-| `TSK-002` |  |  |  |
-| `ATT-001` |  |  |  |
-| `PRF-001` |  |  |  |
-| `ACT-001` |  |  |  |
-| `ACT-002` |  |  |  |
-| `WRK-001` |  |  |  |
-| `NAV-001` |  |  |  |
-| `ERR-001` |  |  |  |
-| `REC-001` |  |  |  |
-| `REC-002` |  |  |  |
+> Instruction: List only the cases that were actually part of this run. Add one row per executed, blocked, or intentionally not-run case that mattered to the final decision.
+
+| Case ID | Module | Result | Execution Type | Evidence | Notes |
+| --- | --- | --- | --- | --- | --- |
+|  |  | `✅ Pass` / `❌ Fail` / `⛔ Blocked` / `⏭️ Not Run` | `script` / `manual` / `hybrid` / `blocked` / `not run` |  |  |
 
 ## Findings
 
-List findings in severity order.
+> Instruction: List findings in severity order. Include concrete repro information and evidence pointers. Omit empty severity sections if there were no findings at that level.
 
 ### High
 
@@ -145,25 +132,16 @@ List findings in severity order.
    - User impact:
    - Evidence:
 
-## Release Gate Decision
-
-- Overall result:
-  - `DONE`
-  - `DONE_WITH_CONCERNS`
-  - `BLOCKED`
-- Release blockers:
-- Non-blocking concerns:
-- Blocked cases:
-
 ## Regression Follow-Up
 
-For every significant bug, decide how it should be prevented next time.
+> Instruction: For every meaningful bug or notable miss, decide how this class of issue should be prevented in future runs.
 
-| Bug / Finding | Existing Case Covered It? | New Or Tightened Case Needed? | Automation Layer Target |
-| --- | --- | --- | --- |
-|  |  |  |  |
+| Bug / Finding | Existing Case Covered It? | New Or Tightened Case Needed? | Automation Layer Target | Follow-Up Notes |
+| --- | --- | --- | --- | --- |
+|  |  |  |  |  |
 
 Automation layer target examples:
+
 - Rust unit test
 - Rust integration test
 - contract test
@@ -171,6 +149,8 @@ Automation layer target examples:
 - manual exploratory only
 
 ## Evidence Index
+
+> Instruction: Index every evidence artifact referenced elsewhere in the report so another reviewer can find the supporting files quickly.
 
 | Evidence File | Related Case / Finding | Notes |
 | --- | --- | --- |

@@ -9,10 +9,11 @@ import { sendMessage } from '../api'
 import './ThreadPanel.css'
 
 export function ThreadPanel() {
-  const { currentUser, openThreadMsg, setOpenThreadMsg, serverInfo } = useApp()
+  const { currentUser, openThreadMsg, setOpenThreadMsg, serverInfo, agents, teams } = useApp()
   const members: MentionMember[] = [
-    ...(serverInfo?.agents ?? []).map((a) => ({ name: a.name, type: 'agent' as const })),
+    ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
     ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
+    ...teams.map((team) => ({ name: team.name, type: 'team' as const })),
   ]
   const mainTarget = useTarget()
   const threadTarget = mainTarget && openThreadMsg

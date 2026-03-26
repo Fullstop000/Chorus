@@ -3,6 +3,7 @@ pub mod channels;
 pub mod knowledge;
 pub mod messages;
 pub mod tasks;
+pub mod teams;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,76 +16,43 @@ use tokio::sync::broadcast;
 
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
-pub use channels::{Channel, ChannelMember, ChannelMemberProfile, ChannelType};
+pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
 pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
 pub use messages::{
-    ActivityMessage, AttachmentRef, HistoryMessage, Message, ReceivedMessage, SenderType,
+    ActivityMessage, AttachmentRef, ForwardedFrom, HistoryMessage, Message, ReceivedMessage,
+    SenderType,
 };
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
+pub use teams::{Team, TeamMember, TeamMembership};
 
 // ── Types that live in store/mod.rs ──
 
+/// Binary upload metadata persisted in SQLite and on disk under `attachments/`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Attachment {
+    /// Random UUID primary key referenced by messages.
     pub id: String,
+    /// Original client filename.
     pub filename: String,
+    /// MIME type reported at upload.
     pub mime_type: String,
+    /// Byte length on disk.
     pub size_bytes: i64,
+    /// Path relative to the server data dir where the file is stored.
     pub stored_path: String,
+    /// When the row was created.
     pub uploaded_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ServerInfo {
-    pub channels: Vec<ChannelInfo>,
-    pub system_channels: Vec<ChannelInfo>,
-    pub agents: Vec<AgentInfo>,
-    pub humans: Vec<HumanInfo>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ChannelInfo {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub id: Option<String>,
-    pub name: String,
-    pub description: Option<String>,
-    pub joined: bool,
-    #[serde(default)]
-    pub read_only: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AgentInfo {
-    pub name: String,
-    pub status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub runtime: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(rename = "reasoningEffort", skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub activity: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub activity_detail: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct HumanInfo {
-    pub name: String,
-}
-
+/// SQLite-backed persistence and pub/sub for new messages.
 pub struct Store {
+    /// Serialized access to the rusqlite connection.
     conn: Mutex<Connection>,
+    /// Broadcast channel: `(channel_id, message_id)` for wake / notify.
     msg_tx: broadcast::Sender<(String, String)>,
+    /// Root data directory (db parent, attachments, agents, teams).
     data_dir: PathBuf,
 }
 
@@ -128,6 +96,17 @@ impl Store {
     /// Return the directory that contains per-agent workspaces.
     pub fn agents_dir(&self) -> PathBuf {
         self.data_dir.join("agents")
+    }
+
+    /// Return the directory used to persist per-team workspaces.
+    pub fn teams_dir(&self) -> PathBuf {
+        self.data_dir.join("teams")
+    }
+
+    /// Expose the raw connection guard for use in integration tests only.
+    /// Not intended for production use.
+    pub fn conn_for_test(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        self.conn.lock().unwrap()
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
@@ -235,6 +214,39 @@ impl Store {
                 INSERT INTO knowledge_fts(knowledge_fts, rowid, key, value, tags)
                 VALUES ('delete', old.rowid, old.key, old.value, old.tags);
             END;
+            CREATE TABLE IF NOT EXISTS teams (
+                id TEXT PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                collaboration_model TEXT NOT NULL,
+                leader_agent_name TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS team_members (
+                team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                member_name TEXT NOT NULL,
+                member_type TEXT NOT NULL,
+                member_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (team_id, member_name)
+            );
+            CREATE TABLE IF NOT EXISTS team_task_signals (
+                id TEXT PRIMARY KEY,
+                team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                member_name TEXT NOT NULL,
+                signal TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (trigger_message_id, member_name)
+            );
+            CREATE TABLE IF NOT EXISTS team_task_quorum (
+                trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+                team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+                member_name TEXT NOT NULL,
+                resolved_at TEXT,
+                PRIMARY KEY (trigger_message_id, member_name)
+            );
             ",
         )?;
         conn.execute(
@@ -248,6 +260,8 @@ impl Store {
         )
         .ok();
         conn.execute("ALTER TABLE agents ADD COLUMN reasoning_effort TEXT", [])
+            .ok();
+        conn.execute("ALTER TABLE messages ADD COLUMN forwarded_from TEXT", [])
             .ok();
         Ok(())
     }
@@ -423,82 +437,6 @@ impl Store {
         Ok(None)
     }
 
-    // ── Server info ──
-
-    pub fn get_server_info(&self, for_agent: &str) -> Result<ServerInfo> {
-        let conn = self.conn.lock().unwrap();
-
-        let mut ch_stmt = conn.prepare(
-            "SELECT c.id, c.name, c.description, EXISTS(SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.member_name = ?1) as joined FROM channels c WHERE c.channel_type = 'channel' AND c.archived = 0 ORDER BY c.name",
-        )?;
-        let channels: Vec<ChannelInfo> = ch_stmt
-            .query_map(params![for_agent], |row| {
-                Ok(ChannelInfo {
-                    id: Some(row.get(0)?),
-                    name: row.get(1)?,
-                    description: row.get(2)?,
-                    joined: row.get::<_, i64>(3)? > 0,
-                    read_only: false,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let mut ag_stmt = conn.prepare(
-            "SELECT name, display_name, description, runtime, model, reasoning_effort, status, session_id FROM agents ORDER BY name",
-        )?;
-        let agents: Vec<AgentInfo> = ag_stmt
-            .query_map([], |row| {
-                Ok(AgentInfo {
-                    name: row.get(0)?,
-                    display_name: row.get(1)?,
-                    description: row.get(2)?,
-                    runtime: row.get(3)?,
-                    model: row.get(4)?,
-                    reasoning_effort: row.get(5)?,
-                    status: row.get(6)?,
-                    session_id: row.get(7)?,
-                    activity: None,
-                    activity_detail: None,
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let mut sys_stmt = conn.prepare(
-            "SELECT id, name, description
-             FROM channels
-             WHERE channel_type = 'system'
-             ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, name",
-        )?;
-        let system_channels: Vec<ChannelInfo> = sys_stmt
-            .query_map([], |row| {
-                let name: String = row.get(1)?;
-                Ok(ChannelInfo {
-                    id: Some(row.get(0)?),
-                    name: name.clone(),
-                    description: row.get(2)?,
-                    joined: true,
-                    read_only: Self::is_system_channel_read_only(&name),
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        let mut hu_stmt = conn.prepare("SELECT name FROM humans ORDER BY name")?;
-        let humans: Vec<HumanInfo> = hu_stmt
-            .query_map([], |row| Ok(HumanInfo { name: row.get(0)? }))?
-            .filter_map(|r| r.ok())
-            .collect();
-
-        Ok(ServerInfo {
-            channels,
-            system_channels,
-            agents,
-            humans,
-        })
-    }
-
     // ── Unread summary ──
 
     pub fn get_unread_summary(&self, agent_name: &str) -> Result<HashMap<String, i64>> {
@@ -545,41 +483,4 @@ pub(crate) fn parse_datetime(s: &str) -> chrono::DateTime<chrono::Utc> {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .map(|dt| dt.and_utc())
         .unwrap_or_else(|_| chrono::Utc::now())
-}
-
-pub(crate) fn sender_type_str(st: SenderType) -> &'static str {
-    match st {
-        SenderType::Human => "human",
-        SenderType::Agent => "agent",
-    }
-}
-
-pub(crate) fn parse_sender_type(s: &str) -> SenderType {
-    match s {
-        "agent" => SenderType::Agent,
-        _ => SenderType::Human,
-    }
-}
-
-pub(crate) fn parse_agent_status(s: &str) -> AgentStatus {
-    match s {
-        "active" => AgentStatus::Active,
-        "sleeping" => AgentStatus::Sleeping,
-        _ => AgentStatus::Inactive,
-    }
-}
-
-/// Parse a Channel row from the standard 5-column SELECT.
-pub(crate) fn channel_from_row(row: &rusqlite::Row) -> rusqlite::Result<Channel> {
-    Ok(Channel {
-        id: row.get(0)?,
-        name: row.get(1)?,
-        description: row.get(2)?,
-        channel_type: match row.get::<_, String>(3)?.as_str() {
-            "dm" => ChannelType::Dm,
-            "system" => ChannelType::System,
-            _ => ChannelType::Channel,
-        },
-        created_at: parse_datetime(&row.get::<_, String>(4)?),
-    })
 }

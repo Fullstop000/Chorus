@@ -7,84 +7,226 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::channels::{Channel, ChannelType};
-use super::{sender_type_str, Store};
+use super::Store;
 
 // ── Types owned by this module ──
 
+/// Who authored a message or holds channel membership.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SenderType {
+    /// Human user row from `humans`.
     Human,
+    /// Agent row from `agents`.
     Agent,
 }
 
+impl SenderType {
+    /// Value stored in `messages.sender_type` / `channel_members.member_type` and in JSON.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Human => "human",
+            Self::Agent => "agent",
+        }
+    }
+
+    /// Parse DB / wire string; unknown values default to [`Human`] (matches prior `parse_sender_type`).
+    pub fn from_sender_type_str(s: &str) -> Self {
+        match s {
+            "agent" => Self::Agent,
+            _ => Self::Human,
+        }
+    }
+}
+
+/// Provenance metadata attached to a forwarded message, capturing the origin
+/// channel and the original sender so recipients can trace where it came from.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ForwardedFrom {
+    /// Source channel slug (no `#`).
+    pub channel_name: String,
+    /// Original author handle.
+    pub sender_name: String,
+}
+
+/// In-memory / store representation of one `messages` row plus attachment ids.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
+    /// UUID message id.
     pub id: String,
+    /// Owning channel id.
     pub channel_id: String,
+    /// When set, this message is a thread reply under the parent message id.
     pub thread_parent_id: Option<String>,
+    /// Author handle.
     pub sender_name: String,
+    /// Author kind.
     pub sender_type: SenderType,
+    /// Markdown or plain text body.
     pub content: String,
+    /// Wall-clock timestamp from SQLite.
     pub created_at: DateTime<Utc>,
+    /// Monotonic per-channel ordering.
     pub seq: i64,
+    /// Attachment UUIDs linked via `message_attachments`.
     pub attachment_ids: Vec<String>,
+    /// Set when this message was forwarded from another channel.
+    pub forwarded_from: Option<ForwardedFrom>,
 }
 
+/// Wire shape pushed to agent bridges on receive (names resolved for prompts).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceivedMessage {
+    /// Same as `messages.id`.
     pub message_id: String,
+    /// Target channel slug.
     pub channel_name: String,
+    /// API string for channel kind (`channel`, `dm`, …).
     pub channel_type: String,
+    /// Parent channel when this is a thread under another room.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_channel_name: Option<String>,
+    /// Parent channel kind string when applicable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parent_channel_type: Option<String>,
+    /// Author handle.
     pub sender_name: String,
+    /// `human` or `agent` string for JSON consumers.
     pub sender_type: String,
+    /// Message body.
     pub content: String,
+    /// ISO-ish timestamp string for the bridge.
     pub timestamp: String,
+    /// Inline attachment metadata when present.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentRef>>,
+    /// Forward provenance when this is a cross-post.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<ForwardedFrom>,
 }
 
+/// Minimal attachment descriptor embedded in history / receive payloads.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttachmentRef {
+    /// Attachment UUID.
     pub id: String,
+    /// Original filename for display.
     pub filename: String,
 }
 
+/// One message in paginated channel history for the UI.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HistoryMessage {
+    /// Message UUID.
     pub id: String,
+    /// Channel sequence number.
     pub seq: i64,
+    /// Body text.
     pub content: String,
+    /// Author handle.
     #[serde(rename = "senderName")]
     pub sender_name: String,
+    /// `human` or `agent`.
     #[serde(rename = "senderType")]
     pub sender_type: String,
+    /// ISO timestamp string.
     #[serde(rename = "createdAt")]
     pub created_at: String,
+    /// True when the sender was soft-deleted (tombstone display).
     #[serde(rename = "senderDeleted")]
     pub sender_deleted: bool,
+    /// Linked files when any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentRef>>,
+    /// Number of thread replies when loaded.
     #[serde(rename = "replyCount", skip_serializing_if = "Option::is_none")]
     pub reply_count: Option<i64>,
+    /// Set when this message was forwarded from another channel (e.g. via @team mention).
+    #[serde(rename = "forwardedFrom", skip_serializing_if = "Option::is_none")]
+    pub forwarded_from: Option<ForwardedFrom>,
 }
 
+/// Compact message row for activity / cross-channel feeds.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ActivityMessage {
+    /// Message UUID.
     pub id: String,
+    /// Channel sequence number.
     pub seq: i64,
+    /// Body text.
     pub content: String,
+    /// Channel slug where the message lives.
     #[serde(rename = "channelName")]
     pub channel_name: String,
+    /// ISO timestamp string.
     #[serde(rename = "createdAt")]
     pub created_at: String,
 }
 
 impl Store {
+    /// Insert a message row directly by channel id, optionally attaching
+    /// provenance metadata for forwarded copies.
+    pub fn post_message_with_forwarded_from(
+        &self,
+        channel_id: &str,
+        sender_name: &str,
+        sender_type: SenderType,
+        content: &str,
+        attachment_ids: &[String],
+        forwarded_from: Option<ForwardedFrom>,
+    ) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+
+        let seq: i64 = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE channel_id = ?1",
+            params![channel_id],
+            |row| row.get(0),
+        )?;
+
+        let msg_id = Uuid::new_v4().to_string();
+        let st = sender_type.as_str();
+        let forwarded_from_json = forwarded_from
+            .map(|value| serde_json::to_string(&value))
+            .transpose()?;
+
+        conn.execute(
+            "INSERT INTO messages (
+                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from
+             ) VALUES (?1, ?2, NULL, ?3, ?4, 0, ?5, ?6, ?7)",
+            params![
+                msg_id,
+                channel_id,
+                sender_name,
+                st,
+                content,
+                seq,
+                forwarded_from_json
+            ],
+        )?;
+
+        for att_id in attachment_ids {
+            conn.execute(
+                "INSERT INTO message_attachments (message_id, attachment_id) VALUES (?1, ?2)",
+                params![msg_id, att_id],
+            )?;
+        }
+
+        let _ = self.msg_tx.send((channel_id.to_string(), msg_id.clone()));
+        Ok(msg_id)
+    }
+
+    /// Post a server-authored message into a channel.
+    pub fn post_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
+        self.post_message_with_forwarded_from(
+            channel_id,
+            "system",
+            SenderType::Human,
+            content,
+            &[],
+            None,
+        )
+    }
+
     pub fn send_message(
         &self,
         channel_name: &str,
@@ -103,22 +245,20 @@ impl Store {
             params![channel.id],
             |row| row.get(0),
         )?;
-
         let msg_id = Uuid::new_v4().to_string();
-        let st = sender_type_str(sender_type);
-
+        let st = sender_type.as_str();
         conn.execute(
-            "INSERT INTO messages (id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
+            "INSERT INTO messages (
+                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
             params![msg_id, channel.id, thread_parent_id, sender_name, st, content, seq],
         )?;
-
         for att_id in attachment_ids {
             conn.execute(
                 "INSERT INTO message_attachments (message_id, attachment_id) VALUES (?1, ?2)",
                 params![msg_id, att_id],
             )?;
         }
-
         let _ = self.msg_tx.send((channel.id.clone(), msg_id.clone()));
         Ok(msg_id)
     }
@@ -142,13 +282,13 @@ impl Store {
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
 
             #[allow(clippy::type_complexity)]
-            let msgs: Vec<(String, String, String, String, String, i64, Option<String>)> = conn
+            let msgs: Vec<(String, String, String, String, String, i64, Option<String>, Option<String>)> = conn
                 .prepare(
-                    "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id
+                    "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id, m.forwarded_from
                      FROM messages m WHERE m.channel_id = ?1 AND m.seq > ?2 ORDER BY m.seq ASC",
                 )?
                 .query_map(params![channel_id, last_read_seq], |row| {
-                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))
+                    Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?))
                 })?
                 .filter_map(|r| r.ok())
                 .collect();
@@ -165,8 +305,16 @@ impl Store {
             };
 
             let mut max_seq = *last_read_seq;
-            for (msg_id, sender_name, sender_type, content, created_at, seq, thread_parent_id) in
-                &msgs
+            for (
+                msg_id,
+                sender_name,
+                sender_type,
+                content,
+                created_at,
+                seq,
+                thread_parent_id,
+                forwarded_from_raw,
+            ) in &msgs
             {
                 if *seq > max_seq {
                     max_seq = *seq;
@@ -200,7 +348,9 @@ impl Store {
                             parent_id.as_str()
                         };
                         let parent_type = match channel.channel_type {
-                            ChannelType::Channel | ChannelType::System => "channel",
+                            ChannelType::Channel | ChannelType::System | ChannelType::Team => {
+                                "channel"
+                            }
                             ChannelType::Dm => "dm",
                         };
                         (
@@ -213,13 +363,19 @@ impl Store {
                         (
                             effective_channel_name,
                             match channel.channel_type {
-                                ChannelType::Channel | ChannelType::System => "channel".to_string(),
+                                ChannelType::Channel | ChannelType::System | ChannelType::Team => {
+                                    "channel".to_string()
+                                }
                                 ChannelType::Dm => "dm".to_string(),
                             },
                             None,
                             None,
                         )
                     };
+
+                let forwarded_from = forwarded_from_raw
+                    .as_deref()
+                    .and_then(|s| serde_json::from_str::<ForwardedFrom>(s).ok());
 
                 result.push(ReceivedMessage {
                     message_id: msg_id.clone(),
@@ -232,6 +388,7 @@ impl Store {
                     content: content.clone(),
                     timestamp: created_at.clone(),
                     attachments: atts,
+                    forwarded_from,
                 });
             }
 
@@ -332,7 +489,7 @@ impl Store {
         }
 
         let sql = format!(
-            "SELECT id, seq, content, sender_name, sender_type, sender_deleted, created_at \
+            "SELECT id, seq, content, sender_name, sender_type, sender_deleted, created_at, forwarded_from \
              FROM messages WHERE channel_id = ?1 {thread_clause} {cursor_clause} \
              ORDER BY seq {order} LIMIT {fetch_limit}"
         );
@@ -342,6 +499,13 @@ impl Store {
         let mut stmt = conn.prepare(&sql)?;
 
         let map_row = |row: &rusqlite::Row| -> rusqlite::Result<HistoryMessage> {
+            let forwarded_from_raw: Option<String> = row.get(7)?;
+            let forwarded_from = forwarded_from_raw
+                .as_deref()
+                .and_then(|s| serde_json::from_str::<ForwardedFrom>(s).map_err(|e| {
+                    tracing::warn!(raw = s, err = %e, "failed to parse forwarded_from JSON in history");
+                    e
+                }).ok());
             Ok(HistoryMessage {
                 id: row.get(0)?,
                 seq: row.get(1)?,
@@ -352,6 +516,7 @@ impl Store {
                 created_at: row.get(6)?,
                 attachments: None,
                 reply_count: None,
+                forwarded_from,
             })
         };
 
@@ -465,10 +630,10 @@ impl Store {
                         params![id, dm_name],
                     )?;
                     let sender_mt = Self::lookup_sender_type_inner(&conn, sender_name)?
-                        .map(sender_type_str)
+                        .map(SenderType::as_str)
                         .unwrap_or("agent");
                     let other_mt = Self::lookup_sender_type_inner(&conn, other_name)?
-                        .map(sender_type_str)
+                        .map(SenderType::as_str)
                         .unwrap_or("human");
                     conn.execute(
                         "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",

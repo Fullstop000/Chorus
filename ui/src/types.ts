@@ -5,6 +5,7 @@ export interface ChannelInfo {
   name: string
   description?: string
   joined: boolean
+  channel_type?: 'channel' | 'dm' | 'system' | 'team'
   read_only?: boolean
 }
 
@@ -50,10 +51,8 @@ export interface ChannelMembersResponse {
 }
 
 export interface ServerInfo {
-  channels: ChannelInfo[]
   /** System-managed channels (e.g. #all, #shared-memory). Shown separately. */
   system_channels: ChannelInfo[]
-  agents: AgentInfo[]
   humans: HumanInfo[]
 }
 
@@ -190,6 +189,32 @@ export interface WorkspaceFileResponse {
   truncated: boolean
   sizeBytes: number
   modifiedMs?: number
+}
+
+// ── Teams ──
+
+export interface Team {
+  id: string
+  name: string
+  display_name: string
+  channel_id?: string | null
+  collaboration_model: 'leader_operators' | 'swarm'
+  leader_agent_name?: string | null
+  created_at: string
+}
+
+export interface TeamMember {
+  team_id: string
+  member_name: string
+  member_type: 'agent' | 'human'
+  member_id: string
+  role: string
+  joined_at: string
+}
+
+export interface TeamResponse {
+  team: Team
+  members: TeamMember[]
 }
 
 // ── App-level target union ──

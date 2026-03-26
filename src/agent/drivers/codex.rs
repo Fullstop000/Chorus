@@ -322,6 +322,7 @@ impl Driver for CodexDriver {
                     "**IMPORTANT**: Your process may exit after an idle wait completes. The server will resume you when new work arrives.".to_string(),
                 ],
                 include_stdin_notification_section: false,
+                teams: config.teams.clone(),
             },
         )
     }
@@ -462,6 +463,7 @@ mod tests {
                 session_id: None,
                 reasoning_effort: Some("low".to_string()),
                 env_vars: Vec::new(),
+                teams: vec![],
             },
             prompt: "hello".to_string(),
             working_directory: "/tmp".to_string(),

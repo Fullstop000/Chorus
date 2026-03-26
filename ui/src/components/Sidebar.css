@@ -139,7 +139,10 @@
 
 .sidebar-channel-button {
   margin-bottom: 0;
-  padding-right: 68px;
+}
+
+.sidebar-channel-button.has-actions {
+  padding-right: 108px;
 }
 
 .sidebar-channel-actions {
@@ -236,6 +239,8 @@
 }
 
 .sidebar-item-main {
+  flex: 1;
+  width: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -262,6 +267,12 @@
   letter-spacing: 0.07em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+
+.sidebar-channel-badge.team {
+  background: rgba(31, 31, 28, 0.08);
+  border-color: rgba(31, 31, 28, 0.16);
+  color: var(--text-primary);
 }
 
 .agent-avatar {

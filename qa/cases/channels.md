@@ -7,6 +7,8 @@
 - Execution mode: browser
 - Goal:
   - verify a new channel can be created from the product, starts with only the human creator, and becomes usable after explicit invites
+- Script:
+  - [`playwright/CHN-001.spec.ts`](./playwright/CHN-001.spec.ts) (disposable channel slug; Step 7 hybrid via member `history` when LLM enabled)
 - Preconditions:
   - at least 3 test agents exist
 - Steps:
@@ -37,6 +39,8 @@
 - Execution mode: browser
 - Goal:
   - verify channel names are normalized and duplicate channels are rejected cleanly
+- Script:
+  - [`playwright/CHN-002.spec.ts`](./playwright/CHN-002.spec.ts) (API-backed normalization and duplicate rejection checks)
 - Preconditions:
   - channel create modal is available
 - Steps:
@@ -61,6 +65,8 @@
 - Execution mode: browser
 - Goal:
   - verify invite controls add the intended members to user channels, and verify the built-in `#all` channel behaves as a complete-membership system room with no invite affordance
+- Script:
+  - [`playwright/CHN-003.spec.ts`](./playwright/CHN-003.spec.ts) (browser invite flow + #all guardrails)
 - Preconditions:
   - disposable user channel exists
   - at least one extra human and one extra agent exist in the build under test
@@ -93,6 +99,8 @@
   - if that remains true for the build under test, mark this case `Blocked` and record the product gap
 - Goal:
   - verify deleting a channel removes it cleanly and leaves the UI in a sane selection state
+- Script:
+  - [`playwright/CHN-004.spec.ts`](./playwright/CHN-004.spec.ts) (hybrid delete + selection recovery)
 - Preconditions:
   - disposable channel exists
   - delete control exists in the current product build

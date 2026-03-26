@@ -56,6 +56,11 @@
   font-family: var(--font-mono);
 }
 
+.mention-popup-avatar.team {
+  background: var(--accent-soft);
+  color: var(--text-primary);
+}
+
 .mention-popup-name {
   flex: 1;
   font-weight: 600;

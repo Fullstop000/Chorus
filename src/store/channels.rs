@@ -5,45 +5,158 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::messages::SenderType;
-use super::{channel_from_row, parse_sender_type, sender_type_str, Store};
+use super::Store;
 
 // ── Types owned by this module ──
 
+/// One row from `channels` (any type: user, DM, system, or team).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Channel {
+    /// UUID primary key.
     pub id: String,
+    /// Unique slug (no `#`); used in URLs and mentions.
     pub name: String,
+    /// Optional human-facing blurb.
     pub description: Option<String>,
+    /// Kind of channel (controls permissions and UI grouping).
     pub channel_type: ChannelType,
+    /// Row creation time.
     pub created_at: DateTime<Utc>,
 }
 
+/// Classifies how the channel behaves in the UI and access control.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelType {
+    /// Normal user-created room.
     Channel,
+    /// Two-party direct message channel.
     Dm,
     /// System-managed channels (e.g. #all, #shared-memory). Surfaced separately
     /// from user-created channels in the UI.
     System,
+    /// Channel owned by a team. Managed through team lifecycle, not directly
+    /// deletable by the user.
+    Team,
 }
 
+impl ChannelType {
+    /// Stable lowercase tag used in SQLite `channel_type` and in API JSON (`channel_type` field).
+    pub const fn as_api_str(self) -> &'static str {
+        match self {
+            Self::Channel => "channel",
+            Self::Dm => "dm",
+            Self::System => "system",
+            Self::Team => "team",
+        }
+    }
+}
+
+impl Channel {
+    /// Parse the standard 5-column `channels` row: id, name, description, channel_type, created_at.
+    pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            description: row.get(2)?,
+            channel_type: match row.get::<_, String>(3)?.as_str() {
+                "team" => ChannelType::Team,
+                "dm" => ChannelType::Dm,
+                "system" => ChannelType::System,
+                _ => ChannelType::Channel,
+            },
+            created_at: super::parse_datetime(&row.get::<_, String>(4)?),
+        })
+    }
+}
+
+/// Membership row from `channel_members`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelMember {
+    /// Foreign key to `channels.id`.
     pub channel_id: String,
+    /// Human username or agent name.
     pub member_name: String,
+    /// Whether the member is a human or agent.
     pub member_type: SenderType,
+    /// Last read message seq for unread calculations.
     pub last_read_seq: i64,
 }
 
+/// Member row joined with optional display metadata for API responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelMemberProfile {
+    /// Member handle.
     pub member_name: String,
+    /// Human vs agent.
     pub member_type: SenderType,
+    /// Resolved display name when available (e.g. agent `display_name`).
     pub display_name: Option<String>,
 }
 
+/// Search filters shared by raw channel listings and UI-facing channel info
+/// listings so handlers can request exactly the channel set they need.
+#[derive(Debug, Clone, Default)]
+pub struct ChannelListParams<'a> {
+    /// When set, callers can derive per-row `joined` from membership.
+    pub for_member: Option<&'a str>,
+    /// Include rows with `archived = 1`.
+    pub include_archived: bool,
+    /// Include `dm` type channels.
+    pub include_dm: bool,
+    /// Include `system` type channels.
+    pub include_system: bool,
+    /// Include `team` type channels.
+    pub include_team: bool,
+}
+
 impl Store {
+    fn list_channel_type_names(params: &ChannelListParams<'_>) -> Vec<&'static str> {
+        let mut types = vec!["channel"];
+        if params.include_team {
+            types.push("team");
+        }
+        if params.include_dm {
+            types.push("dm");
+        }
+        if params.include_system {
+            types.push("system");
+        }
+        types
+    }
+
+    fn list_channels_inner(
+        conn: &Connection,
+        params: &ChannelListParams<'_>,
+    ) -> Result<Vec<Channel>> {
+        let mut sql =
+            "SELECT id, name, description, channel_type, created_at FROM channels".to_string();
+        let mut conditions = Vec::new();
+
+        if !params.include_archived {
+            conditions.push("archived = 0".to_string());
+        }
+
+        let channel_types = Self::list_channel_type_names(params);
+        conditions.push(format!(
+            "channel_type IN ({})",
+            vec!["?"; channel_types.len()].join(", ")
+        ));
+
+        if !conditions.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
+        }
+        sql.push_str(" ORDER BY created_at");
+
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(
+            rusqlite::params_from_iter(channel_types.iter().copied()),
+            Channel::from_row,
+        )?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
+    }
+
     /// Persist a new channel row. User-visible list queries later filter out
     /// non-channel types and archived entries.
     pub fn create_channel(
@@ -54,11 +167,7 @@ impl Store {
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
-        let ct = match channel_type {
-            ChannelType::Channel => "channel",
-            ChannelType::Dm => "dm",
-            ChannelType::System => "system",
-        };
+        let ct = channel_type.as_api_str();
         conn.execute(
             "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, ?4)",
             params![id, name, description, ct],
@@ -68,12 +177,33 @@ impl Store {
 
     pub fn list_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
-        // Exclude DM and system channels — only return user-visible channels.
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels WHERE channel_type = 'channel' AND archived = 0 ORDER BY created_at",
+        // Exclude DM and system channels — return user-visible and team channels.
+        Self::list_channels_inner(
+            &conn,
+            &ChannelListParams {
+                include_team: true,
+                ..ChannelListParams::default()
+            },
+        )
+    }
+
+    /// Return channel rows matching the filter list (archived, DM, system, team).
+    pub fn list_channels_for_params(&self, params: &ChannelListParams<'_>) -> Result<Vec<Channel>> {
+        let conn = self.conn.lock().unwrap();
+        Self::list_channels_inner(&conn, params)
+    }
+
+    pub fn channel_member_exists(&self, channel_id: &str, member_name: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let exists: i64 = conn.query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM channel_members
+                WHERE channel_id = ?1 AND member_name = ?2
+            )",
+            params![channel_id, member_name],
+            |row| row.get(0),
         )?;
-        let rows = stmt.query_map([], channel_from_row)?;
-        Ok(rows.filter_map(|r| r.ok()).collect())
+        Ok(exists != 0)
     }
 
     /// Channels that newly created agents should join automatically. User-created
@@ -87,7 +217,7 @@ impl Store {
              WHERE archived = 0 AND channel_type = 'system'
              ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at",
         )?;
-        let rows = stmt.query_map([], channel_from_row)?;
+        let rows = stmt.query_map([], Channel::from_row)?;
         Ok(rows
             .filter_map(|row| row.ok())
             .filter(|channel| !Store::is_system_channel_read_only(&channel.name))
@@ -105,8 +235,11 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
-        if channel.channel_type != ChannelType::Channel {
-            return Err(anyhow!("only user channels can be updated"));
+        if !matches!(
+            channel.channel_type,
+            ChannelType::Channel | ChannelType::Team
+        ) {
+            return Err(anyhow!("only user and team channels can be updated"));
         }
 
         conn.execute(
@@ -122,8 +255,11 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
-        if channel.channel_type != ChannelType::Channel {
-            return Err(anyhow!("only user channels can be archived"));
+        if !matches!(
+            channel.channel_type,
+            ChannelType::Channel | ChannelType::Team
+        ) {
+            return Err(anyhow!("only user and team channels can be archived"));
         }
 
         conn.execute(
@@ -139,6 +275,11 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
+        if channel.channel_type == ChannelType::Team {
+            return Err(anyhow!(
+                "team channels cannot be deleted directly; delete the team instead"
+            ));
+        }
         if channel.channel_type != ChannelType::Channel {
             return Err(anyhow!("only user channels can be deleted"));
         }
@@ -203,7 +344,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, name, description, channel_type, created_at FROM channels WHERE name = ?1",
         )?;
-        let mut rows = stmt.query_map(params![name], channel_from_row)?;
+        let mut rows = stmt.query_map(params![name], Channel::from_row)?;
         Ok(rows.next().transpose()?)
     }
 
@@ -216,7 +357,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, name, description, channel_type, created_at FROM channels WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![id], channel_from_row)?;
+        let mut rows = stmt.query_map(params![id], Channel::from_row)?;
         Ok(rows.next().transpose()?)
     }
 
@@ -229,7 +370,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let mt = sender_type_str(member_type);
+        let mt = member_type.as_str();
         conn.execute(
             "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
             params![channel.id, member_name, mt],
@@ -246,7 +387,7 @@ impl Store {
         member_type: SenderType,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let mt = sender_type_str(member_type);
+        let mt = member_type.as_str();
         conn.execute(
             "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
             params![channel_id, member_name, mt],
@@ -263,7 +404,7 @@ impl Store {
             Ok(ChannelMember {
                 channel_id: row.get(0)?,
                 member_name: row.get(1)?,
-                member_type: parse_sender_type(&row.get::<_, String>(2)?),
+                member_type: SenderType::from_sender_type_str(&row.get::<_, String>(2)?),
                 last_read_seq: row.get(3)?,
             })
         })?;
@@ -297,7 +438,7 @@ impl Store {
         let rows = stmt.query_map(params![channel_id], |row| {
             Ok(ChannelMemberProfile {
                 member_name: row.get(0)?,
-                member_type: parse_sender_type(&row.get::<_, String>(1)?),
+                member_type: SenderType::from_sender_type_str(&row.get::<_, String>(1)?),
                 display_name: row.get(2)?,
             })
         })?;

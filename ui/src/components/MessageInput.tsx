@@ -10,7 +10,7 @@ interface Props {
 }
 
 export function MessageInput({ onMessageSent }: Props) {
-  const { currentUser, selectedChannel, serverInfo } = useApp()
+  const { currentUser, selectedChannel, serverInfo, agents, teams } = useApp()
   const target = useTarget()
   const [content, setContent] = useState('')
   const [alsoTask, setAlsoTask] = useState(false)
@@ -20,8 +20,9 @@ export function MessageInput({ onMessageSent }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const members: MentionMember[] = [
-    ...(serverInfo?.agents ?? []).map((a) => ({ name: a.name, type: 'agent' as const })),
+    ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
     ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
+    ...teams.map((team) => ({ name: team.name, type: 'team' as const })),
   ]
 
   // Only protected system channels (e.g. #shared-memory) are read-only.

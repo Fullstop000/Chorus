@@ -10,39 +10,58 @@ use super::{parse_datetime, Store};
 /// A single entry in the shared knowledge store.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct KnowledgeEntry {
+    /// UUID row id.
     pub id: String,
+    /// Short lookup key chosen by the author.
     pub key: String,
+    /// Free-form fact text (FTS-indexed).
     pub value: String,
+    /// Space-separated or serialized tag string as stored for FTS.
     pub tags: String,
+    /// `agents.id` of the authoring agent.
     pub author_agent_id: String,
+    /// Optional channel slug where the fact was captured.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_context: Option<String>,
+    /// SQLite datetime string.
     pub created_at: String,
 }
 
+/// JSON body for `remember` MCP / HTTP endpoint.
 #[derive(Debug, Deserialize)]
 pub struct RememberRequest {
+    /// Knowledge key.
     pub key: String,
+    /// Knowledge value body.
     pub value: String,
+    /// Tag tokens for filtering search.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Optional channel slug for scoping.
     #[serde(default, rename = "channelContext")]
     pub channel_context: Option<String>,
 }
 
+/// Ack from a successful remember insert.
 #[derive(Debug, Serialize)]
 pub struct RememberResponse {
+    /// New `knowledge_entries.id`.
     pub id: String,
 }
 
+/// Query params for recall / search.
 #[derive(Debug, Deserialize)]
 pub struct RecallQuery {
+    /// Optional FTS keyword string.
     pub query: Option<String>,
+    /// Optional tag filter string.
     pub tags: Option<String>,
 }
 
+/// Batch of matching knowledge rows.
 #[derive(Debug, Serialize)]
 pub struct RecallResponse {
+    /// Ranked or filtered entries.
     pub entries: Vec<KnowledgeEntry>,
 }
 

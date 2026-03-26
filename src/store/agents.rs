@@ -4,66 +4,128 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_agent_status, parse_datetime, Attachment, Store};
+use super::{parse_datetime, Attachment, Store};
+use crate::store::teams::TeamMembership;
 
 // ── Types owned by this module ──
 
+/// Full agent row as loaded from `agents` (+ env vars from child table).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agent {
+    /// UUID primary key.
     pub id: String,
+    /// Unique handle used in channels and APIs.
     pub name: String,
+    /// Human-readable title in the UI.
     pub display_name: String,
+    /// Optional longer description.
     pub description: Option<String>,
+    /// Which subprocess driver to spawn (`claude`, `codex`, …).
     pub runtime: String,
+    /// Model identifier for the driver.
     pub model: String,
+    /// Optional Codex reasoning effort override.
     pub reasoning_effort: Option<String>,
+    /// Injected environment variables (ordered by `position`).
     pub env_vars: Vec<AgentEnvVar>,
+    /// Process / bridge lifecycle state.
     pub status: AgentStatus,
+    /// Current bridge session id when connected.
     pub session_id: Option<String>,
+    /// Row creation time.
     pub created_at: DateTime<Utc>,
 }
 
+/// One key/value pair stored for an agent, with stable ordering.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentEnvVar {
+    /// Variable name (non-empty).
     pub key: String,
+    /// Variable value.
     pub value: String,
+    /// Sort order when listing / injecting into the process env.
     pub position: i64,
 }
 
+/// Persisted agent process state (independent of in-memory activity strings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentStatus {
+    /// Bridge connected and agent runnable.
     Active,
+    /// Connected but blocked in receive / idle wait.
     Sleeping,
+    /// No running bridge process.
     Inactive,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    pub name: String,
-    pub display_name: String,
-    pub description: Option<String>,
-    pub runtime: String,
-    pub model: String,
-    pub session_id: Option<String>,
-    pub reasoning_effort: Option<String>,
-    pub env_vars: Vec<AgentEnvVar>,
+impl AgentStatus {
+    /// Value stored in `agents.status` and returned in API JSON.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Sleeping => "sleeping",
+            Self::Inactive => "inactive",
+        }
+    }
+
+    /// Parse DB / API status string; unknown values map to [`Inactive`].
+    pub fn from_status_str(s: &str) -> Self {
+        match s {
+            "active" => Self::Active,
+            "sleeping" => Self::Sleeping,
+            _ => Self::Inactive,
+        }
+    }
 }
 
+/// Snapshot passed to the bridge when spawning an agent (includes team context).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentConfig {
+    /// Agent handle.
+    pub name: String,
+    /// Display name for prompts.
+    pub display_name: String,
+    /// Optional description for system prompt.
+    pub description: Option<String>,
+    /// Driver key.
+    pub runtime: String,
+    /// Model id.
+    pub model: String,
+    /// Active session id if resuming.
+    pub session_id: Option<String>,
+    /// Reasoning effort for Codex.
+    pub reasoning_effort: Option<String>,
+    /// Environment variables for the child process.
+    pub env_vars: Vec<AgentEnvVar>,
+    /// Team memberships injected into the agent's system prompt at spawn time.
+    pub teams: Vec<TeamMembership>,
+}
+
+/// Registered human user (can post and own channels).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Human {
+    /// Username (typically OS login) used as sender id.
     pub name: String,
+    /// When the human row was inserted.
     pub created_at: DateTime<Utc>,
 }
 
 /// Shared persisted agent configuration used by store create/update helpers.
 pub struct AgentRecordUpsert<'a> {
+    /// Agent handle (primary key for updates).
     pub name: &'a str,
+    /// Display name column.
     pub display_name: &'a str,
+    /// Optional description column.
     pub description: Option<&'a str>,
+    /// Driver column.
     pub runtime: &'a str,
+    /// Model column.
     pub model: &'a str,
+    /// Optional reasoning effort (Codex).
     pub reasoning_effort: Option<&'a str>,
+    /// Full env var list to replace existing rows.
     pub env_vars: &'a [AgentEnvVar],
 }
 
@@ -145,16 +207,12 @@ impl Store {
                     model: row.get(5)?,
                     reasoning_effort: row.get(6)?,
                     env_vars: Vec::new(),
-                    status: parse_agent_status(&row.get::<_, String>(7)?),
+                    status: AgentStatus::from_status_str(&row.get::<_, String>(7)?),
                     session_id: row.get(8)?,
                     created_at: parse_datetime(&row.get::<_, String>(9)?),
                 })
             })?
             .filter_map(|r| r.ok())
-            .map(|mut agent: Agent| {
-                agent.env_vars = Self::list_agent_env_vars_inner(&conn, &agent.name).unwrap_or_default();
-                agent
-            })
             .collect();
         Ok(rows)
     }
@@ -174,7 +232,7 @@ impl Store {
                 model: row.get(5)?,
                 reasoning_effort: row.get(6)?,
                 env_vars: Vec::new(),
-                status: parse_agent_status(&row.get::<_, String>(7)?),
+                status: AgentStatus::from_status_str(&row.get::<_, String>(7)?),
                 session_id: row.get(8)?,
                 created_at: parse_datetime(&row.get::<_, String>(9)?),
             })
@@ -225,14 +283,9 @@ impl Store {
 
     pub fn update_agent_status(&self, name: &str, status: AgentStatus) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let s = match status {
-            AgentStatus::Active => "active",
-            AgentStatus::Sleeping => "sleeping",
-            AgentStatus::Inactive => "inactive",
-        };
         conn.execute(
             "UPDATE agents SET status = ?1 WHERE name = ?2",
-            params![s, name],
+            params![status.as_str(), name],
         )?;
         Ok(())
     }

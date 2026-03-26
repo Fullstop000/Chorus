@@ -3,8 +3,86 @@ use chorus::store::channels::ChannelType;
 use chorus::store::messages::SenderType;
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use tempfile::tempdir;
+
+#[test]
+fn test_team_tables_exist() {
+    let store = Store::open(":memory:").unwrap();
+    let conn = store.conn_for_test();
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('teams','team_members','team_task_signals','team_task_quorum')",
+        [],
+        |r| r.get::<_, i64>(0),
+    ).unwrap();
+    assert_eq!(count, 4);
+}
+
+#[test]
+fn test_create_and_get_team() {
+    let store = Store::open(":memory:").unwrap();
+    let id = store
+        .create_team(
+            "eng-team",
+            "Engineering Team",
+            "leader_operators",
+            Some("alice"),
+        )
+        .unwrap();
+    let team = store.get_team("eng-team").unwrap().unwrap();
+    assert_eq!(team.id, id);
+    assert_eq!(team.name, "eng-team");
+    assert_eq!(team.display_name, "Engineering Team");
+    assert_eq!(team.collaboration_model, "leader_operators");
+    assert_eq!(team.leader_agent_name.as_deref(), Some("alice"));
+}
+
+#[test]
+fn test_add_and_list_team_members() {
+    let store = Store::open(":memory:").unwrap();
+    let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
+    store
+        .add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bob", "human", "bob", "observer")
+        .unwrap();
+    let members = store.get_team_members(&team_id).unwrap();
+    assert_eq!(members.len(), 2);
+}
+
+#[test]
+fn test_list_teams_for_agent() {
+    let store = Store::open(":memory:").unwrap();
+    let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
+    store
+        .add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .unwrap();
+    let teams = store.list_teams_for_agent("alice").unwrap();
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0].team_name, "eng-team");
+}
+
+#[test]
+fn test_delete_team_cascades() {
+    let store = Store::open(":memory:").unwrap();
+    let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
+    store
+        .add_team_member(&team_id, "alice", "agent", "uuid-1", "operator")
+        .unwrap();
+    store.delete_team(&team_id).unwrap();
+    assert!(store.get_team("eng-team").unwrap().is_none());
+    // member row should be gone
+    let conn = store.conn_for_test();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM team_members WHERE team_id = ?1",
+            params![team_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 0);
+}
 
 fn make_store() -> (Store, tempfile::TempDir) {
     let dir = tempdir().unwrap();
@@ -441,7 +519,10 @@ fn test_archive_channel_hides_it_from_active_listings() {
         "archived channels must be hidden from active channel listings"
     );
     assert!(
-        store.get_server_info("alice").unwrap().channels.is_empty(),
+        chorus::server::build_server_info(&store, "alice")
+            .unwrap()
+            .channels
+            .is_empty(),
         "archived channels must not appear in server info"
     );
 }
@@ -479,7 +560,7 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
         "existing memberships should survive the rename"
     );
 
-    let server_info = store.get_server_info("alice").unwrap();
+    let server_info = chorus::server::build_server_info(&store, "alice").unwrap();
     assert!(
         server_info
             .channels
@@ -604,4 +685,59 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
     assert_eq!(membership_count, 0, "channel memberships should cascade");
     assert_eq!(message_count, 0, "channel messages should cascade");
     assert_eq!(task_count, 0, "channel tasks should cascade");
+}
+
+#[test]
+fn test_record_swarm_signal_ignores_non_quorum_agent() {
+    let store = Store::open(":memory:").unwrap();
+    // Create a team channel so we have a valid channel_id for the trigger message.
+    store
+        .create_channel("qa-swarm", None, ChannelType::Team)
+        .unwrap();
+    // Insert a messages row directly so we have a trigger_message_id without needing
+    // the full send_message flow (which requires channel membership setup).
+    let trigger_id = {
+        let conn = store.conn_for_test();
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq) \
+             SELECT ?1, c.id, 'human', 'human', 'task', 1 FROM channels c WHERE c.name = 'qa-swarm'",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        id
+    };
+    // Create team with alice and bob as members.
+    let team_id = store
+        .create_team("qa-swarm", "QA Swarm", "swarm", None)
+        .unwrap();
+    store
+        .add_team_member(&team_id, "alice", "agent", "uuid-alice", "member")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bob", "agent", "uuid-bob", "member")
+        .unwrap();
+    // Snapshot quorum — only alice and bob are captured.
+    store.snapshot_swarm_quorum(&team_id, &trigger_id).unwrap();
+    // Charlie is NOT in the quorum; their signal must be silently discarded.
+    let resolved = store
+        .record_swarm_signal(&team_id, "charlie", "READY: I'll do the thing")
+        .unwrap();
+    assert!(
+        !resolved,
+        "non-quorum agent should not contribute to consensus"
+    );
+    // The quorum must still be unresolved after charlie's ignored signal.
+    let conn = store.conn_for_test();
+    let resolved_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM team_task_quorum WHERE trigger_message_id = ?1 AND resolved_at IS NOT NULL",
+            rusqlite::params![trigger_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        resolved_count, 0,
+        "quorum should still be unresolved after non-quorum signal"
+    );
 }

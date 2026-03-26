@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use super::{api_err, ApiResult, AppState};
 use crate::store::channels::{Channel, ChannelMemberProfile, ChannelType};
 use crate::store::messages::SenderType;
+use crate::store::ChannelListParams;
+
+use super::dto::ChannelInfo;
+use super::server_info::channel_infos_for;
 
 // ── Inline structs ──
 
@@ -29,6 +33,19 @@ pub struct InviteChannelMemberRequest {
     pub member_name: String,
 }
 
+#[derive(Debug, Deserialize, Default)]
+pub struct ListChannelsQuery {
+    pub member: Option<String>,
+    #[serde(default)]
+    pub include_archived: bool,
+    #[serde(default)]
+    pub include_dm: bool,
+    #[serde(default)]
+    pub include_system: bool,
+    #[serde(default = "default_include_team")]
+    pub include_team: bool,
+}
+
 #[derive(Serialize)]
 pub struct ChannelMemberInfo {
     #[serde(rename = "memberName")]
@@ -46,6 +63,10 @@ pub struct ChannelMembersResponse {
     #[serde(rename = "memberCount")]
     pub member_count: usize,
     pub members: Vec<ChannelMemberInfo>,
+}
+
+fn default_include_team() -> bool {
+    true
 }
 
 // ── Private helpers ──
@@ -78,6 +99,25 @@ fn channel_member_info(profile: ChannelMemberProfile) -> ChannelMemberInfo {
 }
 
 // ── Public handlers ──
+
+pub async fn handle_list_channels(
+    State(state): State<AppState>,
+    Query(query): Query<ListChannelsQuery>,
+) -> ApiResult<Vec<ChannelInfo>> {
+    let member = query.member.unwrap_or_else(whoami::username);
+    let channels = channel_infos_for(
+        state.store.as_ref(),
+        &ChannelListParams {
+            for_member: Some(member.as_str()),
+            include_archived: query.include_archived,
+            include_dm: query.include_dm,
+            include_system: query.include_system,
+            include_team: query.include_team,
+        },
+    )
+    .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(channels))
+}
 
 pub async fn handle_create_channel(
     State(state): State<AppState>,

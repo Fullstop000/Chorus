@@ -10,6 +10,21 @@ It is intentionally:
 All cases below are browser-first cases unless explicitly marked otherwise.
 The explicit `Tier:` field on each case is authoritative. Nearby placement in the file is for related-domain readability.
 
+## Case record template (authoring)
+
+Each executable case under `cases/*.md` should use this shape (fields may omit `Execution mode` when default is browser-first):
+
+- `### ABC-NNN Short Title`
+- `Tier:` / `Release-sensitive:` / `Execution mode:` (when not default)
+- `Goal:` (bullet list)
+- **`Script:`** — required link to Playwright spec under [`cases/playwright/`](./cases/playwright/) (e.g. [`playwright/ENV-001.spec.ts`](./cases/playwright/ENV-001.spec.ts)); if the case is not yet automated, the linked spec must exist and state the gap with `test.fixme(...)`.
+- `Preconditions:`
+- `Steps:` (numbered)
+- `Expected:`
+- `Common failure signals:`
+
+When you add or change automation, update the case’s `Script:` line and keep the spec’s file header in sync with Preconditions / Steps / Expected (see `qa/README.md` → Playwright).
+
 ## How To Use This Catalog
 
 For each run:
@@ -60,6 +75,8 @@ Cases are split into focused modules under [`cases/`](./cases/):
 | [`cases/channels.md`](./cases/channels.md) | CHN-001, CHN-002, CHN-003, CHN-004 |
 | [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, HIS-001, ATT-001, ERR-001 |
 | [`cases/tasks.md`](./cases/tasks.md) | TSK-001, TSK-002 |
+| [`cases/teams.md`](./cases/teams.md) | TMT-001, TMT-002, TMT-003, TMT-004, TMT-005, TMT-006, TMT-007, TMT-008 |
+| [`cases/shared_memory.md`](./cases/shared_memory.md) | MEM-001, MEM-002, MEM-003, MEM-004, MEM-005, MEM-006, MEM-007, MEM-008, MEM-009, MEM-010 |
 
 ## Maintenance Notes
 

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2 } from 'lucide-react'
+import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2, Users } from 'lucide-react'
 import { useApp } from '../store'
 import type { AgentInfo, ChannelInfo } from '../types'
+import { isVisibleSidebarChannel } from '../sidebarChannels'
 import { CreateAgentModal } from './CreateAgentModal'
 import { CreateChannelModal } from './CreateChannelModal'
 import { DeleteChannelModal, EditChannelModal } from './EditChannelModal'
@@ -50,6 +51,8 @@ export function Sidebar() {
   const {
     currentUser,
     serverInfo,
+    channels: loadedChannels,
+    agents,
     selectedChannel,
     selectedChannelId,
     selectedAgent,
@@ -59,14 +62,14 @@ export function Sidebar() {
   } = useApp()
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showCreateChannel, setShowCreateChannel] = useState(false)
+  const [createModalMode, setCreateModalMode] = useState<'channel' | 'team'>('channel')
   const [editingChannel, setEditingChannel] = useState<ChannelInfo | null>(null)
   const [deleteTarget, setDeleteTarget] = useState<ChannelInfo | null>(null)
   const [openChannelMenuId, setOpenChannelMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
 
-  const channels = serverInfo?.channels.filter((c) => c.joined) ?? []
+  const channels = loadedChannels.filter(isVisibleSidebarChannel)
   const systemChannels = serverInfo?.system_channels ?? []
-  const agents = serverInfo?.agents ?? []
   const humans = serverInfo?.humans ?? []
 
   useEffect(() => {
@@ -120,9 +123,30 @@ export function Sidebar() {
           <div className="sidebar-section">
             <div className="sidebar-section-header">
               <span className="sidebar-section-label">Channels</span>
-              <button className="sidebar-add-btn" type="button" title="Add channel" onClick={() => setShowCreateChannel(true)}>
-                <Plus size={14} />
-              </button>
+              <div style={{ display: 'flex', gap: 4 }}>
+                <button
+                  className="sidebar-add-btn"
+                  type="button"
+                  title="Add channel"
+                  onClick={() => {
+                    setCreateModalMode('channel')
+                    setShowCreateChannel(true)
+                  }}
+                >
+                  <Plus size={14} />
+                </button>
+                <button
+                  className="sidebar-add-btn"
+                  type="button"
+                  title="Add team"
+                  onClick={() => {
+                    setCreateModalMode('team')
+                    setShowCreateChannel(true)
+                  }}
+                >
+                  <Users size={14} />
+                </button>
+              </div>
             </div>
             {systemChannels.map((ch) => {
               const target = `#${ch.name}`
@@ -154,7 +178,9 @@ export function Sidebar() {
                 >
                   <button
                     type="button"
-                    className={`sidebar-item sidebar-channel-button${isActive ? ' active' : ''}`}
+                    className={`sidebar-item sidebar-channel-button${
+                      ch.channel_type !== 'team' ? ' has-actions' : ''
+                    }${isActive ? ' active' : ''}`}
                     onClick={() => selectChannel(ch)}
                     title={ch.description ?? ch.name}
                   >
@@ -163,48 +189,53 @@ export function Sidebar() {
                       <span className="sidebar-item-text">{ch.name}</span>
                       {ch.description && <span className="sidebar-item-meta">{ch.description}</span>}
                     </span>
-                  </button>
-                  <div className="sidebar-channel-actions">
-                    <button
-                      type="button"
-                      className="sidebar-channel-action"
-                      title={`Edit #${ch.name}`}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        setOpenChannelMenuId(null)
-                        setEditingChannel(ch)
-                      }}
-                    >
-                      <Pencil size={12} />
-                    </button>
-                    <button
-                      type="button"
-                      className="sidebar-channel-action"
-                      title={`Open menu for #${ch.name}`}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        setOpenChannelMenuId((current) => (current === ch.id ? null : ch.id ?? null))
-                      }}
-                    >
-                      <Ellipsis size={12} />
-                    </button>
-                    {isMenuOpen && (
-                      <div className="sidebar-channel-menu">
-                        <button
-                          type="button"
-                          className="sidebar-channel-menu-item danger"
-                          onClick={(event) => {
-                            event.stopPropagation()
-                            setOpenChannelMenuId(null)
-                            setDeleteTarget(ch)
-                          }}
-                        >
-                          <Trash2 size={12} />
-                          <span>Delete Channel</span>
-                        </button>
-                      </div>
+                    {ch.channel_type === 'team' && (
+                      <span className="sidebar-channel-badge team">team</span>
                     )}
-                  </div>
+                  </button>
+                  {ch.channel_type !== 'team' && (
+                    <div className="sidebar-channel-actions">
+                      <button
+                        type="button"
+                        className="sidebar-channel-action"
+                        title={`Edit #${ch.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setOpenChannelMenuId(null)
+                          setEditingChannel(ch)
+                        }}
+                      >
+                        <Pencil size={12} />
+                      </button>
+                      <button
+                        type="button"
+                        className="sidebar-channel-action"
+                        title={`Open menu for #${ch.name}`}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setOpenChannelMenuId((current) => (current === ch.id ? null : ch.id ?? null))
+                        }}
+                      >
+                        <Ellipsis size={12} />
+                      </button>
+                      {isMenuOpen && (
+                        <div className="sidebar-channel-menu">
+                          <button
+                            type="button"
+                            className="sidebar-channel-menu-item danger"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setOpenChannelMenuId(null)
+                              setDeleteTarget(ch)
+                            }}
+                          >
+                            <Trash2 size={12} />
+                            <span>Delete Channel</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
               )
             })}
@@ -311,10 +342,11 @@ export function Sidebar() {
       )}
       {showCreateChannel && (
         <CreateChannelModal
+          defaultMode={createModalMode}
           onClose={() => setShowCreateChannel(false)}
           onCreated={(created) => {
             setShowCreateChannel(false)
-            setSelectedChannel(`#${created.name}`, created.id)
+            setSelectedChannel(`#${created.name}`, created.id ?? null)
             refreshServerInfo()
           }}
         />

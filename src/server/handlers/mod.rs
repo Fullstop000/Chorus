@@ -1,9 +1,12 @@
 pub mod agents;
 pub mod attachments;
 pub mod channels;
+pub mod dto;
 pub mod knowledge;
 pub mod messages;
+pub mod server_info;
 pub mod tasks;
+pub mod teams;
 pub mod workspace;
 
 pub use agents::*;
@@ -12,6 +15,7 @@ pub use channels::*;
 pub use knowledge::*;
 pub use messages::*;
 pub use tasks::*;
+pub use teams::*;
 pub use workspace::*;
 
 use std::collections::HashSet;
@@ -22,8 +26,10 @@ use axum::http::StatusCode;
 use axum::Json;
 use tracing::debug;
 
-use super::AgentLifecycle;
-use crate::store::{ServerInfo, Store};
+use crate::agent::AgentLifecycle;
+use crate::store::Store;
+
+use dto::ServerInfo;
 
 // ── Core types ──
 
@@ -108,9 +114,7 @@ pub async fn handle_server_info(
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
     debug!(agent = %agent_id, "list_server");
-    let info = state
-        .store
-        .get_server_info(&agent_id)
+    let info = server_info::build_server_info(state.store.as_ref(), &agent_id)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(info))
 }
@@ -118,21 +122,7 @@ pub async fn handle_server_info(
 // ── UI Server Info ──
 
 pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
-    let username = whoami::username();
-    let mut info = state
-        .store
-        .get_server_info(&username)
+    let info = server_info::build_ui_shell_info(state.store.as_ref())
         .map_err(|e| api_err(e.to_string()))?;
-
-    let activity_states = state.lifecycle.get_all_agent_activity_states();
-    for agent in &mut info.agents {
-        if let Some((_, activity, detail)) =
-            activity_states.iter().find(|(n, _, _)| n == &agent.name)
-        {
-            agent.activity = Some(activity.clone());
-            agent.activity_detail = Some(detail.clone());
-        }
-    }
-
     Ok(Json(serde_json::to_value(info).unwrap()))
 }

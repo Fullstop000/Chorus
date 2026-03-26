@@ -1,13 +1,15 @@
 use axum::extract::{Path, Query, State};
 use axum::Json;
+use regex::Regex;
 use serde::Deserialize;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use super::{api_err, internal_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityEntry;
+use crate::agent::collaboration::make_collaboration_model;
 use crate::store::agents::AgentStatus;
 use crate::store::channels::ChannelType;
-use crate::store::messages::{ReceivedMessage, SenderType};
+use crate::store::messages::{ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
 
 // ── Inline query structs ──
@@ -131,6 +133,55 @@ fn resolve_history_target(
     Ok((channel_target.to_string(), None))
 }
 
+/// Mirror `@team-name` mentions into the corresponding team channel.
+async fn forward_team_mentions(
+    state: &AppState,
+    channel_name: &str,
+    sender_name: &str,
+    sender_type: SenderType,
+    content: &str,
+) -> anyhow::Result<()> {
+    let mention_re = Regex::new(r"@([A-Za-z0-9_-]+)").expect("team mention regex is valid");
+    let mentions = mention_re
+        .captures_iter(content)
+        .filter_map(|capture| capture.get(1).map(|m| m.as_str().to_string()))
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for mention in mentions {
+        let Some(team) = state.store.get_team(&mention)? else {
+            continue;
+        };
+        let Some(team_channel) = state.store.find_channel_by_name(&team.name)? else {
+            continue;
+        };
+
+        let forwarded_message_id = state.store.post_message_with_forwarded_from(
+            &team_channel.id,
+            sender_name,
+            sender_type,
+            content,
+            &[],
+            Some(ForwardedFrom {
+                channel_name: channel_name.to_string(),
+                sender_name: sender_name.to_string(),
+            }),
+        )?;
+
+        let collaboration_model = make_collaboration_model(&team.collaboration_model);
+        if let Some(prompt) = collaboration_model.deliberation_prompt() {
+            state
+                .store
+                .snapshot_swarm_quorum(&team.id, &forwarded_message_id)?;
+            state.store.post_system_message(&team_channel.id, &prompt)?;
+        }
+
+        deliver_message_to_agents(state, &team_channel.id, sender_name, &forwarded_message_id)
+            .await?;
+    }
+
+    Ok(())
+}
+
 // ── Public handlers ──
 
 pub async fn handle_send(
@@ -193,8 +244,44 @@ pub async fn handle_send(
         );
     }
 
+    let mut consensus_message_id = None;
+    if sender_type == SenderType::Agent && channel.channel_type == ChannelType::Team {
+        if let Some(team) = store
+            .get_team(&channel.name)
+            .map_err(|e| internal_err(e.to_string()))?
+        {
+            let collaboration_model = make_collaboration_model(&team.collaboration_model);
+            if collaboration_model.is_consensus_signal(&req.content) {
+                match store.record_swarm_signal(&team.id, &agent_id, &req.content) {
+                    Ok(true) => {
+                        let system_message_id = store
+                            .post_system_message(
+                                &channel.id,
+                                "[System] All members ready - execution begins.",
+                            )
+                            .map_err(|e| internal_err(e.to_string()))?;
+                        consensus_message_id = Some(system_message_id);
+                    }
+                    Ok(false) => {}
+                    Err(e) => warn!("swarm signal error: {e}"),
+                }
+            }
+        }
+    }
+
+    if !req.suppress_agent_delivery {
+        forward_team_mentions(&state, &channel.name, &agent_id, sender_type, &req.content)
+            .await
+            .map_err(|e| internal_err(e.to_string()))?;
+    }
+
     if !req.suppress_agent_delivery {
         deliver_message_to_agents(&state, &channel.id, &agent_id, &message_id)
+            .await
+            .map_err(|e| internal_err(e.to_string()))?;
+    }
+    if let Some(system_message_id) = consensus_message_id {
+        deliver_message_to_agents(&state, &channel.id, "system", &system_message_id)
             .await
             .map_err(|e| internal_err(e.to_string()))?;
     }

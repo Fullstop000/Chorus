@@ -6,6 +6,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify task workflow transitions match visible UI state
+- Script:
+  - [`playwright/TSK-001.spec.ts`](./playwright/TSK-001.spec.ts) (disposable channel slug per run)
 - Preconditions:
   - tasks tab available
 - Steps:
@@ -30,6 +32,8 @@
 - Release-sensitive: yes
 - Goal:
   - verify the chat composer can create a task while sending a message
+- Script:
+  - [`playwright/TSK-002.spec.ts`](./playwright/TSK-002.spec.ts) (composer task creation flow)
 - Preconditions:
   - channel composer visible
 - Steps:

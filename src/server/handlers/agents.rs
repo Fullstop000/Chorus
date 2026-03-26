@@ -9,9 +9,11 @@ use tracing::info;
 use super::{acquire_transition, api_err, internal_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
-use crate::store::agents::{Agent, AgentEnvVar, AgentStatus};
+use crate::store::agents::{AgentEnvVar, AgentStatus};
 use crate::store::messages::SenderType;
-use crate::store::{AgentInfo, AgentRecordUpsert};
+use crate::store::AgentRecordUpsert;
+
+use super::dto::AgentInfo;
 
 // ── Activity query params ──
 
@@ -163,26 +165,28 @@ pub(super) fn normalize_reasoning_effort(
     }
 }
 
-pub(super) fn agent_info_from_agent(agent: &Agent) -> AgentInfo {
-    AgentInfo {
-        name: agent.name.clone(),
-        status: match agent.status {
-            AgentStatus::Active => "active".to_string(),
-            AgentStatus::Sleeping => "sleeping".to_string(),
-            AgentStatus::Inactive => "inactive".to_string(),
-        },
-        display_name: Some(agent.display_name.clone()),
-        description: agent.description.clone(),
-        runtime: Some(agent.runtime.clone()),
-        model: Some(agent.model.clone()),
-        reasoning_effort: agent.reasoning_effort.clone(),
-        session_id: agent.session_id.clone(),
-        activity: None,
-        activity_detail: None,
-    }
-}
-
 // ── Public handlers ──
+
+pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<AgentInfo>> {
+    let mut agents: Vec<AgentInfo> = state
+        .store
+        .list_agents()
+        .map_err(|e| api_err(e.to_string()))?
+        .iter()
+        .map(AgentInfo::from)
+        .collect();
+    let activity_states = state.lifecycle.get_all_agent_activity_states();
+    for agent in &mut agents {
+        if let Some((_, activity, detail)) = activity_states
+            .iter()
+            .find(|(name, _, _)| name == &agent.name)
+        {
+            agent.activity = Some(activity.clone());
+            agent.activity_detail = Some(detail.clone());
+        }
+    }
+    Ok(Json(agents))
+}
 
 pub async fn handle_create_agent(
     State(state): State<AppState>,
@@ -243,7 +247,7 @@ pub async fn handle_get_agent(
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("agent not found"))?;
     Ok(Json(AgentDetailResponse {
-        agent: agent_info_from_agent(&agent),
+        agent: AgentInfo::from(&agent),
         env_vars: agent
             .env_vars
             .iter()

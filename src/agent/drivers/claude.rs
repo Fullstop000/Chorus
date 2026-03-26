@@ -194,6 +194,7 @@ impl Driver for ClaudeDriver {
                 ],
                 post_startup_notes: vec![],
                 include_stdin_notification_section: true,
+                teams: config.teams.clone(),
             },
         )
     }
