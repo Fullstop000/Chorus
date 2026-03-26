@@ -42,7 +42,11 @@ pub fn build_ui_shell_info(store: &Store) -> Result<UiShellInfo> {
         _ => 2,
     });
 
-    let humans: Vec<HumanInfo> = store.list_humans()?.into_iter().map(HumanInfo::from).collect();
+    let humans: Vec<HumanInfo> = store
+        .list_humans()?
+        .into_iter()
+        .map(HumanInfo::from)
+        .collect();
 
     Ok(UiShellInfo {
         system_channels,

@@ -2,14 +2,14 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::{ActivityEntry, ActivityLogResponse};
 use chorus::agent::AgentLifecycle;
+use chorus::server::dto::ChannelInfo;
+use chorus::server::dto::ServerInfo;
 use chorus::server::{
     build_router, build_router_with_lifecycle, AgentDetailResponse, HistoryResponse,
 };
-use chorus::server::dto::ChannelInfo;
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{ReceivedMessage, SenderType};
-use chorus::server::dto::ServerInfo;
 use chorus::store::Store;
 use std::future::Future;
 use std::pin::Pin;
@@ -2060,7 +2060,9 @@ async fn test_list_channels_includes_team_without_human_membership() {
     store
         .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
         .unwrap();
-    store.join_channel("qa-eng", "bot1", SenderType::Agent).unwrap();
+    store
+        .join_channel("qa-eng", "bot1", SenderType::Agent)
+        .unwrap();
 
     let resp = app
         .oneshot(

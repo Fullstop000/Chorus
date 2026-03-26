@@ -484,4 +484,3 @@ pub(crate) fn parse_datetime(s: &str) -> chrono::DateTime<chrono::Utc> {
         .map(|dt| dt.and_utc())
         .unwrap_or_else(|_| chrono::Utc::now())
 }
-
