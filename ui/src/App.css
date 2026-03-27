@@ -178,6 +178,7 @@ select:focus-visible {
 .badge-bot,
 .badge-claude,
 .badge-codex,
+.badge-kimi,
 .badge-you {
   color: var(--text-primary);
 }

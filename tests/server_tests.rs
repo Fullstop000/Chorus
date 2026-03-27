@@ -10,6 +10,7 @@ use chorus::server::{
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use std::future::Future;
 use std::pin::Pin;
@@ -628,7 +629,7 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
 }
 
 #[tokio::test]
-async fn test_history_returns_empty_for_non_member_agent() {
+async fn test_history_rejects_non_member_agent() {
     let (store, app) = setup();
     store
         .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
@@ -653,14 +654,15 @@ async fn test_history_returns_empty_for_non_member_agent() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
         .await
         .unwrap();
-    let history: HistoryResponse = serde_json::from_slice(&body).unwrap();
-    assert!(history.messages.is_empty());
-    assert!(!history.has_more);
-    assert_eq!(history.last_read_seq, 0);
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        json["error"].as_str(),
+        Some("you are not a member of channel #general")
+    );
 }
 
 #[tokio::test]
@@ -948,6 +950,41 @@ async fn test_create_agent_via_api() {
 }
 
 #[tokio::test]
+async fn test_create_kimi_agent_via_api() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    let req = serde_json::json!({
+        "name": "kimi-bot",
+        "description": "A Kimi test agent",
+        "runtime": "kimi",
+        "model": "kimi-code/kimi-for-coding"
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let agent = store
+        .get_agent("kimi-bot")
+        .unwrap()
+        .expect("agent should exist");
+    assert_eq!(agent.runtime, "kimi");
+    assert_eq!(agent.model, "kimi-code/kimi-for-coding");
+    assert_eq!(agent.reasoning_effort, None);
+    assert_eq!(lifecycle.started_names(), vec!["kimi-bot".to_string()]);
+}
+
+#[tokio::test]
 async fn test_get_and_update_agent_via_api() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
@@ -998,6 +1035,57 @@ async fn test_get_and_update_agent_via_api() {
     assert_eq!(agent.runtime, "codex");
     assert_eq!(agent.model, "gpt-5.4");
     assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
+    assert_eq!(agent.env_vars.len(), 1);
+    assert_eq!(agent.env_vars[0].key, "DEBUG");
+    assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
+    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
+}
+
+#[tokio::test]
+async fn test_update_agent_to_kimi_clears_reasoning_effort() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
+    store
+        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: Some("Replies in Chorus"),
+            runtime: "codex",
+            model: "gpt-5.4-mini",
+            reasoning_effort: Some("high"),
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let update_req = serde_json::json!({
+        "display_name": "Kimi Bot",
+        "description": "Updated role",
+        "runtime": "kimi",
+        "model": "kimi-code/kimi-for-coding",
+        "reasoningEffort": "high",
+        "envVars": [{"key": "DEBUG", "value": "1"}]
+    });
+    let update_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/agents/bot1")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_resp.status(), StatusCode::OK);
+
+    let agent = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(agent.display_name, "Kimi Bot");
+    assert_eq!(agent.runtime, "kimi");
+    assert_eq!(agent.model, "kimi-code/kimi-for-coding");
+    assert_eq!(agent.reasoning_effort, None);
     assert_eq!(agent.env_vars.len(), 1);
     assert_eq!(agent.env_vars[0].key, "DEBUG");
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
@@ -1472,6 +1560,7 @@ async fn test_activity_log_includes_message_send_and_receive_events() {
             ActivityEntry::Thinking { .. } => "thinking",
             ActivityEntry::ToolStart { .. } => "tool_start",
             ActivityEntry::Text { .. } => "text",
+            ActivityEntry::RawOutput { .. } => "raw_output",
         })
         .collect();
 

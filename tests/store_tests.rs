@@ -146,6 +146,37 @@ fn test_send_and_receive_messages() {
 }
 
 #[test]
+fn test_agent_does_not_receive_its_own_sent_message() {
+    let (store, _dir) = make_store();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store.add_human("alice").unwrap();
+    let (dm_channel_id, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
+    let dm_channel = store.find_channel_by_id(&dm_channel_id).unwrap().unwrap();
+
+    store
+        .send_message(
+            &dm_channel.name,
+            None,
+            "bot1",
+            SenderType::Agent,
+            "hello alice",
+            &[],
+        )
+        .unwrap();
+
+    let unread = store.get_messages_for_agent("bot1", false).unwrap();
+    assert!(
+        unread.is_empty(),
+        "an agent should not get its own outbound message back as unread"
+    );
+
+    let last_read = store.get_last_read_seq(&dm_channel.name, "bot1").unwrap();
+    assert_eq!(last_read, 1, "sender read position should advance on send");
+}
+
+#[test]
 fn test_message_history_pagination() {
     let (store, _dir) = make_store();
     store
@@ -462,8 +493,8 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
     assert!(
         bot1_messages
             .iter()
-            .any(|message| message.content == "bot1 thread reply"),
-        "the replying agent should still see its own thread activity"
+            .all(|message| message.content != "bot1 thread reply"),
+        "the replying agent should not get its own thread reply back as unread"
     );
 }
 

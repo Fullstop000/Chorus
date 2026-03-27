@@ -15,6 +15,9 @@ export const MODELS: Record<string, { value: string; label: string }[]> = {
     { value: 'gpt-5.1-codex-max', label: 'gpt-5.1-codex-max' },
     { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
   ],
+  kimi: [
+    { value: 'kimi-code/kimi-for-coding', label: 'kimi-for-coding' },
+  ],
 }
 
 export const REASONING_EFFORTS = [
@@ -130,6 +133,7 @@ export function AgentConfigForm({ state, editableName = false, onChange }: Props
             >
               <option value="claude">Claude Code</option>
               <option value="codex">Codex CLI</option>
+              <option value="kimi">Kimi CLI</option>
             </select>
           </div>
 

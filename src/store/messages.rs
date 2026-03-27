@@ -259,6 +259,12 @@ impl Store {
                 params![msg_id, att_id],
             )?;
         }
+        // Treat the sender's own newly-created message as already read so it
+        // does not come back later through get_messages_for_agent() as unread.
+        conn.execute(
+            "UPDATE channel_members SET last_read_seq = MAX(last_read_seq, ?1) WHERE channel_id = ?2 AND member_name = ?3",
+            params![seq, channel.id, sender_name],
+        )?;
         let _ = self.msg_tx.send((channel.id.clone(), msg_id.clone()));
         Ok(msg_id)
     }

@@ -140,7 +140,7 @@ export function ProfilePanel() {
         <div className="profile-section-label">[config::runtime]</div>
         <div className="profile-config-grid">
           <span className="profile-config-key">Runtime</span>
-          <span className="badge badge-claude">{agent.runtime ?? 'claude'}</span>
+          <span className={`badge badge-${agent.runtime ?? 'claude'}`}>{agent.runtime ?? 'claude'}</span>
           <span className="profile-config-key">Model</span>
           <span className="badge">{agent.model ?? 'sonnet'}</span>
           {agent.runtime === 'codex' && (

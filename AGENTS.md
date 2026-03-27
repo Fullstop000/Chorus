@@ -11,8 +11,8 @@ ui/ (React + Vite)  <->  src/ (Rust/Axum)  <->  ~/.chorus/
                               |
                     +---------+---------+
                     |                   |
-              agent processes      bridge processes
-              (claude/codex CLI)   (chorus bridge --agent-id)
+                    agent processes      bridge processes
+                 (claude/codex/kimi CLI) (chorus bridge --agent-id)
 ```
 
 ### Message Flow
@@ -31,7 +31,7 @@ Data flow for an agent receiving a message:
 Each agent runs as a single process across all channels and DMs. One session equals one process and retains full conversation history in the agent memory.
 
 - Session ID is persisted to SQLite on `SessionInit` and `TurnEnd`
-- On server restart, active agents are auto-restarted with `--resume <session_id>` (Claude) or `codex exec resume <thread_id>` (Codex)
+- On server restart, active agents are auto-restarted with `--resume <session_id>` (Claude), `codex exec resume <thread_id>` (Codex), or `kimi --session <session_id>` (Kimi)
 - Context isolation between channels is provided through `MEMORY.md` in the agent workspace, not through separate processes
 
 ## Code Organization
@@ -178,6 +178,7 @@ The authoritative QA execution workflow lives in `qa/README.md`, with the case c
 2. Implement the `Driver` trait with all required methods:
 3. Register the driver in `src/agent/drivers/mod.rs`
 4. Add it to the driver selection match in `src/agent/manager.rs`
+5. Follow [`docs/DRIVER_GUIDE.md`](./docs/DRIVER_GUIDE.md) for protocol discovery, live-runtime debugging, and required verification
 
 ## Completion Checklist
 

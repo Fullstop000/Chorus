@@ -217,9 +217,18 @@
   background: rgba(255, 255, 255, 0.78);
 }
 
+.activity-item-raw-output {
+  background: rgba(246, 244, 240, 0.96);
+}
+
 .activity-icon-text {
   color: #355d8a;
   background: color-mix(in srgb, #355d8a 14%, transparent);
+}
+
+.activity-icon-raw-output {
+  color: #6d5f48;
+  background: color-mix(in srgb, #6d5f48 12%, transparent);
 }
 
 .activity-item-message-received {

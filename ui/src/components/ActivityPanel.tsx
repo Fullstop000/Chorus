@@ -247,6 +247,26 @@ function TextRow({ item }: { item: ActivityLogEntry }) {
   )
 }
 
+function RawOutputRow({ item }: { item: ActivityLogEntry }) {
+  const { entry, timestamp_ms } = item
+  return (
+    <div className="activity-item activity-item-raw-output">
+      <span className="activity-item-icon activity-icon-raw-output">
+        <Terminal size={13} />
+      </span>
+      <div className="activity-item-main">
+        <div className="activity-item-heading">
+          <span className="activity-item-label">Raw output</span>
+        </div>
+        <div className="activity-item-body">
+          <ExpandableText text={entry.text ?? ''} maxLines={4} />
+        </div>
+      </div>
+      <span className="activity-item-time">{fmtTime(timestamp_ms)}</span>
+    </div>
+  )
+}
+
 function MessageReceivedRow({ item }: { item: ActivityLogEntry }) {
   const { entry, timestamp_ms } = item
   return (
@@ -296,6 +316,7 @@ function ActivityRow({ item }: { item: ActivityLogEntry }) {
     case 'thinking': return <ThinkingRow item={item} />
     case 'tool_start': return <ToolRow item={item} />
     case 'text': return <TextRow item={item} />
+    case 'raw_output': return <RawOutputRow item={item} />
     case 'message_received': return <MessageReceivedRow item={item} />
     case 'message_sent': return <MessageSentRow item={item} />
     default: return null
