@@ -1560,6 +1560,7 @@ async fn test_activity_log_includes_message_send_and_receive_events() {
             ActivityEntry::Thinking { .. } => "thinking",
             ActivityEntry::ToolStart { .. } => "tool_start",
             ActivityEntry::Text { .. } => "text",
+            ActivityEntry::RawOutput { .. } => "raw_output",
         })
         .collect();
 

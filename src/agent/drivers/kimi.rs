@@ -138,9 +138,9 @@ impl Driver for KimiDriver {
                                     has_tool_calls = true;
                                     let name = normalize_kimi_tool_name(
                                         block
-                                        .get("name")
-                                        .and_then(|v| v.as_str())
-                                        .unwrap_or("unknown_tool")
+                                            .get("name")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown_tool"),
                                     );
                                     let input = block
                                         .get("input")
@@ -313,9 +313,8 @@ mod tests {
     #[test]
     fn kimi_parse_line_maps_documented_assistant_text_output() {
         let driver = KimiDriver;
-        let events = driver.parse_line(
-            r#"{"role":"assistant","content":"Hello! How can I help you?"}"#,
-        );
+        let events =
+            driver.parse_line(r#"{"role":"assistant","content":"Hello! How can I help you?"}"#);
 
         assert!(matches!(
             &events[0],
