@@ -1,15 +1,16 @@
 use std::io::Write as _;
 use std::process::{Child, Command, Stdio};
 
-use super::{Driver, ParsedEvent, SpawnContext};
+use super::{command_exists, run_command, Driver, ParsedEvent, SpawnContext};
 use crate::agent::drivers::prompt::{build_base_system_prompt, PromptOptions};
-use crate::store::agents::AgentConfig;
+use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
+use crate::store::agents::{AgentConfig, AgentRuntime};
 
 pub struct ClaudeDriver;
 
 impl Driver for ClaudeDriver {
-    fn id(&self) -> &str {
-        "claude"
+    fn runtime(&self) -> AgentRuntime {
+        AgentRuntime::Claude
     }
 
     fn supports_stdin_notification(&self) -> bool {
@@ -332,5 +333,36 @@ impl Driver for ClaudeDriver {
             "mcp__chat__upload_file" => str_field("file_path"),
             _ => String::new(),
         }
+    }
+
+    fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus> {
+        if !command_exists("claude") {
+            return Ok(RuntimeStatus {
+                runtime: self.id().to_string(),
+                installed: false,
+                auth_status: None,
+            });
+        }
+
+        let auth_status = run_command("claude", &["auth", "status"])
+            .ok()
+            .and_then(|result| {
+                if !result.success {
+                    return Some(RuntimeAuthStatus::Unauthed);
+                }
+                let payload: serde_json::Value = serde_json::from_str(&result.stdout).ok()?;
+                Some(if payload["loggedIn"].as_bool().unwrap_or(false) {
+                    RuntimeAuthStatus::Authed
+                } else {
+                    RuntimeAuthStatus::Unauthed
+                })
+            })
+            .unwrap_or(RuntimeAuthStatus::Unauthed);
+
+        Ok(RuntimeStatus {
+            runtime: self.id().to_string(),
+            installed: true,
+            auth_status: Some(auth_status),
+        })
     }
 }

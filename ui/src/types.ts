@@ -29,6 +29,14 @@ export interface AgentEnvVar {
   value: string
 }
 
+export type RuntimeAuthStatus = 'authed' | 'unauthed'
+
+export interface RuntimeStatusInfo {
+  runtime: 'claude' | 'codex' | 'kimi' | string
+  installed: boolean
+  authStatus?: RuntimeAuthStatus
+}
+
 export interface AgentDetailResponse {
   agent: AgentInfo
   envVars: AgentEnvVar[]

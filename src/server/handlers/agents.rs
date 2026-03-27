@@ -9,7 +9,7 @@ use tracing::info;
 use super::{acquire_transition, api_err, internal_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
-use crate::store::agents::{AgentEnvVar, AgentStatus};
+use crate::store::agents::{AgentEnvVar, AgentRuntime, AgentStatus};
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
 
@@ -100,7 +100,7 @@ pub enum DeleteMode {
 }
 
 pub(super) fn default_runtime() -> String {
-    "claude".to_string()
+    AgentRuntime::Claude.as_str().to_string()
 }
 
 pub(super) fn default_model() -> String {
@@ -144,7 +144,7 @@ pub(super) fn normalize_reasoning_effort(
     runtime: &str,
     reasoning_effort: Option<&str>,
 ) -> Result<Option<String>, (StatusCode, Json<super::ErrorResponse>)> {
-    if runtime != "codex" {
+    if AgentRuntime::parse(runtime) != Some(AgentRuntime::Codex) {
         return Ok(None);
     }
 

@@ -1,9 +1,11 @@
 use std::io::Write as _;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
-use super::{Driver, ParsedEvent, SpawnContext};
+use super::{command_exists, home_dir, read_file, Driver, ParsedEvent, SpawnContext};
 use crate::agent::drivers::prompt::{build_base_system_prompt, PromptOptions};
-use crate::store::agents::AgentConfig;
+use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
+use crate::store::agents::{AgentConfig, AgentRuntime};
 
 pub struct KimiDriver;
 
@@ -27,8 +29,8 @@ fn normalize_kimi_tool_name(name: &str) -> String {
 }
 
 impl Driver for KimiDriver {
-    fn id(&self) -> &str {
-        "kimi"
+    fn runtime(&self) -> AgentRuntime {
+        AgentRuntime::Kimi
     }
 
     fn supports_stdin_notification(&self) -> bool {
@@ -304,11 +306,52 @@ impl Driver for KimiDriver {
             _ => String::new(),
         }
     }
+
+    fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus> {
+        detect_kimi_runtime_status(self.id(), &home_dir())
+    }
+}
+
+fn detect_kimi_runtime_status(runtime_id: &str, home: &Path) -> anyhow::Result<RuntimeStatus> {
+    if !command_exists("kimi") {
+        return Ok(RuntimeStatus {
+            runtime: runtime_id.to_string(),
+            installed: false,
+            auth_status: None,
+        });
+    }
+
+    let auth_status = read_file(&home.join(".kimi/credentials/kimi-code.json"))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .map(|payload| {
+            let has_access = payload["access_token"]
+                .as_str()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            let has_refresh = payload["refresh_token"]
+                .as_str()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            if has_access || has_refresh {
+                RuntimeAuthStatus::Authed
+            } else {
+                RuntimeAuthStatus::Unauthed
+            }
+        })
+        .unwrap_or(RuntimeAuthStatus::Unauthed);
+
+    Ok(RuntimeStatus {
+        runtime: runtime_id.to_string(),
+        installed: true,
+        auth_status: Some(auth_status),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn kimi_parse_line_maps_documented_assistant_text_output() {
@@ -371,5 +414,26 @@ mod tests {
             driver.summarize_tool_input("read_history", &input),
             "#common-feature-squad"
         );
+    }
+
+    #[test]
+    fn kimi_runtime_status_reads_local_credentials() {
+        let dir = tempdir().unwrap();
+        let credentials_dir = dir.path().join(".kimi/credentials");
+        std::fs::create_dir_all(&credentials_dir).unwrap();
+        std::fs::write(
+            credentials_dir.join("kimi-code.json"),
+            r#"{"access_token":"token","refresh_token":""}"#,
+        )
+        .unwrap();
+
+        let status = detect_kimi_runtime_status("kimi", dir.path()).unwrap();
+
+        assert_eq!(status.runtime, "kimi");
+        if status.installed {
+            assert_eq!(status.auth_status, Some(RuntimeAuthStatus::Authed));
+        } else {
+            assert_eq!(status.auth_status, None);
+        }
     }
 }

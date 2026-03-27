@@ -1,11 +1,13 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::{ActivityEntry, ActivityLogResponse};
+use chorus::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus, RuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
 use chorus::server::{
-    build_router, build_router_with_lifecycle, AgentDetailResponse, HistoryResponse,
+    build_router, build_router_with_lifecycle, build_router_with_services, AgentDetailResponse,
+    HistoryResponse,
 };
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
@@ -72,6 +74,16 @@ struct MockLifecycle {
     stopped: Mutex<Vec<String>>,
     notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
+}
+
+struct MockRuntimeStatusProvider {
+    statuses: Vec<RuntimeStatus>,
+}
+
+impl RuntimeStatusProvider for MockRuntimeStatusProvider {
+    fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatus>> {
+        Ok(self.statuses.clone())
+    }
 }
 
 impl MockLifecycle {
@@ -166,6 +178,30 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
         .unwrap();
     let lifecycle = Arc::new(MockLifecycle::default());
     let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
+    (store, router, lifecycle)
+}
+
+fn setup_with_runtime_statuses(
+    statuses: Vec<RuntimeStatus>,
+) -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+    let lifecycle = Arc::new(MockLifecycle::default());
+    let runtime_status_provider = Arc::new(MockRuntimeStatusProvider { statuses });
+    let router =
+        build_router_with_services(store.clone(), lifecycle.clone(), runtime_status_provider);
     (store, router, lifecycle)
 }
 
@@ -806,6 +842,55 @@ async fn test_whoami() {
         .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(val["username"].as_str().is_some(), "username field missing");
+}
+
+#[tokio::test]
+async fn test_list_runtime_statuses() {
+    let (_store, app, _lifecycle) = setup_with_runtime_statuses(vec![
+        RuntimeStatus {
+            runtime: "claude".to_string(),
+            installed: true,
+            auth_status: Some(RuntimeAuthStatus::Authed),
+        },
+        RuntimeStatus {
+            runtime: "codex".to_string(),
+            installed: true,
+            auth_status: Some(RuntimeAuthStatus::Unauthed),
+        },
+        RuntimeStatus {
+            runtime: "kimi".to_string(),
+            installed: false,
+            auth_status: None,
+        },
+    ]);
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/runtimes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let runtimes = payload
+        .as_array()
+        .expect("runtimes payload should be an array");
+    assert_eq!(runtimes.len(), 3);
+    assert_eq!(runtimes[0]["runtime"], "claude");
+    assert_eq!(runtimes[0]["installed"], true);
+    assert_eq!(runtimes[0]["authStatus"], "authed");
+    assert_eq!(runtimes[1]["runtime"], "codex");
+    assert_eq!(runtimes[1]["authStatus"], "unauthed");
+    assert_eq!(runtimes[2]["runtime"], "kimi");
+    assert_eq!(runtimes[2]["installed"], false);
+    assert!(runtimes[2].get("authStatus").is_none());
 }
 
 #[tokio::test]

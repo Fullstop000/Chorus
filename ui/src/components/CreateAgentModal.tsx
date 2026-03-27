@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useRuntimeStatuses } from '../hooks/useRuntimeStatuses'
 import './ProfilePanel.css'  // reuses modal styles
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
 
@@ -19,6 +20,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
   })
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses()
 
   async function handleCreate() {
     if (!config.name.trim()) {
@@ -71,7 +73,13 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           </select>
         </div>
 
-        <AgentConfigForm state={config} editableName onChange={setConfig} />
+        <AgentConfigForm
+          state={config}
+          runtimeStatuses={runtimeStatuses}
+          runtimeStatusError={runtimeStatusError}
+          editableName
+          onChange={setConfig}
+        />
 
         {error && <div className="modal-error">{error}</div>}
 

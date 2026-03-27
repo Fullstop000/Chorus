@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::agent::runtime_status::RuntimeAuthStatus;
 use crate::store::agents::{Agent, Human};
 use crate::store::channels::{Channel, ChannelType};
 use crate::store::Store;
@@ -79,6 +80,18 @@ pub struct AgentInfo {
     /// Longer activity text for tooltips / panels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_detail: Option<String>,
+}
+
+/// Local machine status for a supported CLI runtime.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeStatusInfo {
+    /// Driver key, e.g. `claude`, `codex`, `kimi`.
+    pub runtime: String,
+    /// Whether the executable is present on the local machine.
+    pub installed: bool,
+    /// Authentication state when the runtime is installed.
+    #[serde(rename = "authStatus", skip_serializing_if = "Option::is_none")]
+    pub auth_status: Option<RuntimeAuthStatus>,
 }
 
 /// Human user row for server info and shell.

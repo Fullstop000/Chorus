@@ -4,7 +4,7 @@ use std::sync::Arc;
 use chorus::agent::manager::AgentManager;
 use chorus::bridge;
 use chorus::server::build_router_with_lifecycle;
-use chorus::store::agents::AgentStatus;
+use chorus::store::agents::{AgentRuntime, AgentStatus};
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::SenderType;
 use chorus::store::Store;
@@ -103,9 +103,9 @@ fn default_data_dir() -> String {
 }
 
 fn default_model_for_runtime(runtime: &str) -> &str {
-    match runtime {
-        "codex" => "gpt-5.4",
-        "kimi" => "kimi-code/kimi-for-coding",
+    match AgentRuntime::parse(runtime) {
+        Some(AgentRuntime::Codex) => "gpt-5.4",
+        Some(AgentRuntime::Kimi) => "kimi-code/kimi-for-coding",
         _ => "sonnet",
     }
 }

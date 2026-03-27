@@ -1,8 +1,9 @@
 use std::process::{Child, Command, Stdio};
 
 use super::prompt::{build_base_system_prompt, PromptOptions};
-use super::{Driver, ParsedEvent, SpawnContext};
-use crate::store::agents::AgentConfig;
+use super::{command_exists, run_command, Driver, ParsedEvent, SpawnContext};
+use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
+use crate::store::agents::{AgentConfig, AgentRuntime};
 
 pub struct CodexDriver;
 
@@ -58,8 +59,8 @@ fn build_codex_args(ctx: &SpawnContext) -> anyhow::Result<Vec<String>> {
 }
 
 impl Driver for CodexDriver {
-    fn id(&self) -> &str {
-        "codex"
+    fn runtime(&self) -> AgentRuntime {
+        AgentRuntime::Codex
     }
 
     fn supports_stdin_notification(&self) -> bool {
@@ -443,6 +444,36 @@ impl Driver for CodexDriver {
             _ => String::new(),
         }
     }
+
+    fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus> {
+        if !command_exists("codex") {
+            return Ok(RuntimeStatus {
+                runtime: self.id().to_string(),
+                installed: false,
+                auth_status: None,
+            });
+        }
+
+        let auth_status = run_command("codex", &["login", "status"])
+            .ok()
+            .map(|result| codex_auth_status_from_probe(&result))
+            .unwrap_or(RuntimeAuthStatus::Unauthed);
+
+        Ok(RuntimeStatus {
+            runtime: self.id().to_string(),
+            installed: true,
+            auth_status: Some(auth_status),
+        })
+    }
+}
+
+fn codex_auth_status_from_probe(result: &super::CommandProbeResult) -> RuntimeAuthStatus {
+    let combined = format!("{}\n{}", result.stdout, result.stderr).to_ascii_lowercase();
+    if result.success && combined.contains("logged in") {
+        RuntimeAuthStatus::Authed
+    } else {
+        RuntimeAuthStatus::Unauthed
+    }
 }
 
 #[cfg(test)]
@@ -473,5 +504,16 @@ mod tests {
 
         let args = build_codex_args(&ctx).unwrap();
         assert!(args.contains(&"model_reasoning_effort=\"low\"".to_string()));
+    }
+
+    #[test]
+    fn codex_runtime_status_treats_stderr_logged_in_message_as_authed() {
+        let status = codex_auth_status_from_probe(&super::super::CommandProbeResult {
+            success: true,
+            stdout: String::new(),
+            stderr: "WARNING: proceeding\nLogged in using ChatGPT\n".to_string(),
+        });
+
+        assert_eq!(status, RuntimeAuthStatus::Authed);
     }
 }
