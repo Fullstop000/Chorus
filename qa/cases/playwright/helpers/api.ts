@@ -211,6 +211,27 @@ export interface HistoryMessage {
   replyCount?: number
 }
 
+export interface ActivityLogEntry {
+  seq: number
+  timestamp_ms: number
+  entry: {
+    kind: string
+    text?: string
+    content?: string
+    tool_name?: string
+    tool_input?: string
+    target?: string
+    activity?: string
+    detail?: string
+  }
+}
+
+export interface AgentActivityLogResponse {
+  entries: ActivityLogEntry[]
+  agent_activity: string
+  agent_detail: string
+}
+
 export async function historyForUser(
   request: APIRequestContext,
   username: string,
@@ -224,6 +245,15 @@ export async function historyForUser(
   expect(res.ok(), await res.text()).toBeTruthy()
   const j = await res.json()
   return j.messages ?? []
+}
+
+export async function getAgentActivityLogApi(
+  request: APIRequestContext,
+  name: string
+): Promise<AgentActivityLogResponse> {
+  const res = await request.get(`/api/agents/${encodeURIComponent(name)}/activity-log`)
+  expect(res.ok(), await res.text()).toBeTruthy()
+  return res.json()
 }
 
 export async function listChannelsApi(

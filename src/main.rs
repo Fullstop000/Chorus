@@ -77,7 +77,7 @@ enum AgentCommands {
         name: String,
         #[arg(long, default_value = "claude")]
         runtime: String,
-        #[arg(long, default_value = "sonnet")]
+        #[arg(long, default_value = "")]
         model: String,
         #[arg(long)]
         description: Option<String>,
@@ -100,6 +100,14 @@ enum AgentCommands {
 fn default_data_dir() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     format!("{home}/.chorus")
+}
+
+fn default_model_for_runtime(runtime: &str) -> &str {
+    match runtime {
+        "codex" => "gpt-5.4",
+        "kimi" => "kimi-code/kimi-for-coding",
+        _ => "sonnet",
+    }
 }
 
 #[tokio::main]
@@ -248,6 +256,11 @@ async fn main() -> anyhow::Result<()> {
                     description,
                     data_dir,
                 } => {
+                    let model = if model.is_empty() {
+                        default_model_for_runtime(&runtime).to_string()
+                    } else {
+                        model
+                    };
                     let data_dir = data_dir.unwrap_or_else(default_data_dir);
                     let db_path = format!("{data_dir}/chorus.db");
                     let store = Store::open(&db_path)?;

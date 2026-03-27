@@ -88,6 +88,8 @@ Current UI matrix:
   - `gpt-5.2`
   - `gpt-5.1-codex-max`
   - `gpt-5.1-codex-mini`
+- Kimi:
+  - `kimi-code/kimi-for-coding`
 
 Notes:
 - Use stable names such as `matrix-claude-sonnet` and `matrix-codex-gpt-5-4-mini`.

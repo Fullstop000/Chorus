@@ -61,7 +61,7 @@ pub struct AgentInfo {
     /// Optional longer blurb.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// Driver key, e.g. `claude`, `codex`.
+    /// Driver key, e.g. `claude`, `codex`, `kimi`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     /// Model id passed to the driver.

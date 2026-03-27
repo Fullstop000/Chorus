@@ -103,7 +103,10 @@ impl ChatBridge {
             })
             .collect();
 
-        Ok(formatted.join("\n"))
+        Ok(format!(
+            "{}\n\nReply instructions:\n- For any human-visible reply, call send_message(target=\"<exact target from the header above>\", content=\"...\").\n- Reuse the exact target value from the header when you reply.\n- Do not output the reply as plain assistant text.",
+            formatted.join("\n")
+        ))
     }
 }
 

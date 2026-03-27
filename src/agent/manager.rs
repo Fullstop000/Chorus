@@ -38,6 +38,7 @@ fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
     match runtime {
         "claude" => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
         "codex" => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
+        "kimi" => Ok(Arc::new(crate::agent::drivers::kimi::KimiDriver)),
         _ => anyhow::bail!("Unknown runtime: {runtime}"),
     }
 }
@@ -80,10 +81,15 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
 
         let driver = get_driver(&agent.runtime)?;
-        let resumable_session_id = if driver.id() == "codex" {
-            agent.session_id.clone()
-        } else {
-            None
+        let resumable_session_id = match driver.id() {
+            "codex" => agent.session_id.clone(),
+            "kimi" => Some(
+                agent
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            ),
+            _ => None,
         };
 
         let config = AgentConfig {
@@ -132,6 +138,12 @@ impl AgentManager {
         );
 
         let running_session_id = config.session_id.clone();
+        if driver.id() == "kimi" {
+            if let Some(ref session_id) = running_session_id {
+                self.store
+                    .update_agent_session(agent_name, Some(session_id.as_str()))?;
+            }
+        }
 
         let ctx = SpawnContext {
             agent_id: agent.name.clone(),
@@ -148,6 +160,7 @@ impl AgentManager {
             .stdout
             .take()
             .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdout"))?;
+        let stderr = child.stderr.take();
 
         let instance_id = self.next_instance_id.fetch_add(1, Ordering::Relaxed);
 
@@ -171,6 +184,9 @@ impl AgentManager {
         activity_log::set_activity_state(&self.activity_logs, agent_name, "working", "Starting…");
 
         self.spawn_output_reader(agent_name.to_string(), stdout, driver, instance_id);
+        if let Some(stderr) = stderr {
+            self.spawn_stderr_reader(agent_name.to_string(), stderr, instance_id);
+        }
         Ok(())
     }
 
@@ -306,6 +322,15 @@ impl AgentManager {
                     continue;
                 }
 
+                if driver.id() == "kimi" {
+                    debug!(agent = %name, raw_stdout = %line, "raw agent stdout");
+                    activity_log::push_activity(
+                        &activity_logs,
+                        &name,
+                        ActivityEntry::RawOutput { text: line.clone() },
+                    );
+                }
+
                 for event in driver.parse_line(&line) {
                     let rt = tokio::runtime::Handle::current();
                     rt.block_on(async {
@@ -349,6 +374,32 @@ impl AgentManager {
                     }
                 }
             });
+        });
+    }
+
+    fn spawn_stderr_reader(
+        &self,
+        agent_name: String,
+        stderr: std::process::ChildStderr,
+        instance_id: u64,
+    ) {
+        tokio::task::spawn_blocking(move || {
+            use std::io::BufRead;
+            let reader = std::io::BufReader::new(stderr);
+
+            for line in reader.lines() {
+                let line = match line {
+                    Ok(l) => l,
+                    Err(e) => {
+                        error!(agent = %agent_name, err = %e, "stderr read error");
+                        break;
+                    }
+                };
+                if line.trim().is_empty() {
+                    continue;
+                }
+                warn!(agent = %agent_name, instance_id, raw_stderr = %line, "agent stderr");
+            }
         });
     }
 }

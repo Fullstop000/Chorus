@@ -13,6 +13,7 @@ const MODELS: Record<string, string[]> = {
     'gpt-5.1-codex-max',
     'gpt-5.1-codex-mini',
   ],
+  kimi: ['kimi-code/kimi-for-coding'],
 }
 
 /**

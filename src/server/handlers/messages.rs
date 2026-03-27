@@ -370,11 +370,10 @@ pub async fn handle_history(
         .is_member(&channel_name, &agent_id)
         .map_err(|e| api_err(e.to_string()))?
     {
-        return Ok(Json(HistoryResponse {
-            messages: vec![],
-            has_more: false,
-            last_read_seq: 0,
-        }));
+        return Err(api_err(format!(
+            "you are not a member of channel {}",
+            channel_target
+        )));
     }
 
     let limit = params.limit.unwrap_or(50);

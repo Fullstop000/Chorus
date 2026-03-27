@@ -20,7 +20,7 @@ pub struct Agent {
     pub display_name: String,
     /// Optional longer description.
     pub description: Option<String>,
-    /// Which subprocess driver to spawn (`claude`, `codex`, …).
+    /// Which subprocess driver to spawn (`claude`, `codex`, `kimi`, …).
     pub runtime: String,
     /// Model identifier for the driver.
     pub model: String,

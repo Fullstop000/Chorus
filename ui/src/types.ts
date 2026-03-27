@@ -142,6 +142,7 @@ export type ActivityEntryKind =
   | 'thinking'
   | 'tool_start'
   | 'text'
+  | 'raw_output'
   | 'message_received'
   | 'message_sent'
   | 'status'

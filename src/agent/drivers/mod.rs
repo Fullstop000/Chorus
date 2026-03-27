@@ -1,5 +1,6 @@
 pub mod claude;
 pub mod codex;
+pub mod kimi;
 pub mod prompt;
 
 use std::process::Child;

@@ -18,6 +18,9 @@ pub enum ActivityEntry {
     Text {
         text: String,
     },
+    RawOutput {
+        text: String,
+    },
     MessageReceived {
         channel_label: String,
         sender_name: String,

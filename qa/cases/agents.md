@@ -78,10 +78,12 @@
     - `gpt-5.2`
     - `gpt-5.1-codex-max`
     - `gpt-5.1-codex-mini`
+  - Kimi:
+    - `kimi-for-coding`
 - Steps:
   1. Open the create-agent modal and record the runtime and model options actually shown in the build under test.
-  2. Switch between Claude and Codex in the create-agent modal.
-  3. Verify the reasoning-effort control is hidden for Claude and visible for Codex.
+  2. Switch between Claude, Codex, and Kimi in the create-agent modal.
+  3. Verify the reasoning-effort control is hidden for Claude and Kimi, and visible for Codex.
   4. For at least one Codex model, choose a non-default reasoning effort and create the agent.
   5. Create one disposable agent for every runtime/model pair using a stable naming scheme such as `matrix-<runtime>-<model>`.
   6. After each creation, verify the new agent appears in the sidebar.
@@ -95,14 +97,14 @@
   - every visible runtime/model pair is creatable
   - stored runtime and model match the selected values exactly
   - Codex shows a reasoning-effort control and persists the chosen value exactly
-  - Claude does not show a meaningless reasoning-effort control
+  - Claude and Kimi do not show a meaningless reasoning-effort control
   - duplicate names are rejected regardless of runtime or model
   - failures are attributable to a specific pair, not hidden behind a generic fallback
 - Common failure signals:
   - one runtime/model pair cannot be created
   - created agent shows a different model than requested
   - reasoning-effort control is missing for Codex
-  - reasoning-effort control appears for Claude
+  - reasoning-effort control appears for Claude or Kimi
   - created Codex agent ignores the selected reasoning effort
   - runtime picker and stored runtime disagree
   - duplicate name is accepted
