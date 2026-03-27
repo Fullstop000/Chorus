@@ -270,3 +270,40 @@
   - `bot-a` posts `READY:` in `#qa-eng` (Swarm bleed-over)
   - `bot-a` tries to delegate in `#qa-algo` instead of deliberating
   - agent says it belongs to only one team despite being in two
+
+---
+
+### TMT-009 Agent Team Thread Wake And In-Thread Reply
+
+- Tier: 0
+- Release-sensitive: yes when touching agent lifecycle, restart prompts, bridge formatting, thread routing, or team-channel messaging
+- Execution mode: hybrid
+- Goal:
+  - verify a stopped agent can wake and reply in a team thread it already belongs to
+  - verify the reply remains in the thread and does not flatten into the top-level team timeline
+- Script:
+  - [`playwright/TMT-009.spec.ts`](./playwright/TMT-009.spec.ts) (runtime matrix across supported agents; hybrid setup for agent-authored parent; browser thread flow; hybrid API polling for exact thread history and agent status)
+- Preconditions:
+  - mixed-runtime trio exists with at least one Claude agent and one Codex agent
+  - per-runtime team channels exist with the selected agent as a member and the current human user as an observer
+- Steps:
+  1. For each supported runtime under test, seed a unique top-level parent message from that agent in its team channel.
+  2. Stop that agent so the next thread message must wake it.
+  3. Open the team channel.
+  4. Open a thread from the agent-authored parent message.
+  5. In the thread, send a message asking the stopped agent to reply with an exact token.
+  6. Wait for the agent to wake and reply.
+  7. Verify the exact-token reply appears in the thread.
+  8. Verify the top-level team timeline does not show the thread-only reply as a normal channel message.
+  9. Open the agent profile or poll agent state and verify the wake path returned it to `active`.
+- Expected:
+  - stopped agents across supported runtimes wake from a thread where they are already the parent author
+  - reply appears under the same thread target
+  - top-level team timeline still contains only the parent message
+  - lifecycle status and visible thread history agree
+- Common failure signals:
+  - one runtime wakes correctly while another does not
+  - stopped agent never wakes on a thread it owns
+  - agent wakes but posts in `#qa-codex-thread` top-level instead of the thread
+  - agent replies in the wrong target or drops the exact token request
+  - profile shows active but thread history never updates

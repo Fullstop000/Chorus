@@ -421,3 +421,113 @@ async fn test_multi_agent_channel_communication() {
         .unwrap();
     assert_eq!(resp["messages"].as_array().unwrap().len(), 1);
 }
+
+/// Test 7: Team thread targets round-trip correctly for Codex agents
+#[tokio::test]
+async fn test_team_thread_target_round_trip_for_codex_agent() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let team_id = store
+        .create_team("qa-eng", "QA Engineering", "leader_operators", Some("bot1"))
+        .unwrap();
+    store
+        .create_channel("qa-eng", Some("QA Engineering"), ChannelType::Team)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "codex", "gpt-5.4-mini", &[])
+        .unwrap();
+    store
+        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .unwrap();
+    store
+        .add_team_member(&team_id, "testuser", "human", "testuser", "observer")
+        .unwrap();
+    store
+        .join_channel("qa-eng", "bot1", SenderType::Agent)
+        .unwrap();
+    store
+        .join_channel("qa-eng", "testuser", SenderType::Human)
+        .unwrap();
+
+    let parent_resp: serde_json::Value = client
+        .post(format!("{url}/internal/agent/bot1/send"))
+        .json(&serde_json::json!({
+            "target": "#qa-eng",
+            "content": "bot1 team parent"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let parent_id = parent_resp["messageId"].as_str().unwrap();
+    let short_id = &parent_id[..8];
+    let thread_target = format!("#qa-eng:{short_id}");
+
+    let send_resp = client
+        .post(format!("{url}/internal/agent/testuser/send"))
+        .json(&serde_json::json!({
+            "target": thread_target,
+            "content": "please stay in the team thread"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(send_resp.status().is_success());
+
+    let thread_history: serde_json::Value = client
+        .get(format!(
+            "{url}/internal/agent/testuser/history?channel={}&limit=10",
+            urlencoding::encode(&format!("#qa-eng:{short_id}"))
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let thread_messages = thread_history["messages"].as_array().unwrap();
+    assert_eq!(thread_messages.len(), 1);
+    assert_eq!(
+        thread_messages[0]["content"].as_str().unwrap(),
+        "please stay in the team thread"
+    );
+    assert_eq!(
+        thread_messages[0]["senderName"].as_str().unwrap(),
+        "testuser"
+    );
+
+    let top_level_history: serde_json::Value = client
+        .get(format!(
+            "{url}/internal/agent/testuser/history?channel=%23qa-eng&limit=10"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let top_level_messages = top_level_history["messages"].as_array().unwrap();
+    assert_eq!(top_level_messages.len(), 1);
+    assert_eq!(
+        top_level_messages[0]["content"].as_str().unwrap(),
+        "bot1 team parent"
+    );
+
+    let receive_resp: serde_json::Value = client
+        .get(format!("{url}/internal/agent/bot1/receive?block=false"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let received_messages = receive_resp["messages"].as_array().unwrap();
+    assert!(received_messages.iter().any(|message| {
+        message["channel_type"].as_str() == Some("thread")
+            && message["parent_channel_name"].as_str() == Some("qa-eng")
+            && message["content"].as_str() == Some("please stay in the team thread")
+    }));
+}

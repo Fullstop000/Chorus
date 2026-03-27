@@ -610,7 +610,8 @@ fn build_wake_message_prompt(
 }
 
 /// Convert the stored message shape into the human-facing target label used in
-/// prompts, matching channel, DM, and thread semantics.
+/// prompts. For threads we preserve the exact reply target so restarted
+/// runtimes can respond in-place without reconstructing the short id.
 fn format_message_target(message: &ReceivedMessage) -> String {
     match message.channel_type.as_str() {
         "dm" => format!("dm:@{}", message.channel_name),
@@ -619,9 +620,13 @@ fn format_message_target(message: &ReceivedMessage) -> String {
                 .parent_channel_name
                 .as_deref()
                 .unwrap_or(&message.channel_name);
+            let short_id = message
+                .channel_name
+                .strip_prefix("thread-")
+                .unwrap_or(&message.channel_name);
             match message.parent_channel_type.as_deref() {
-                Some("dm") => format!("dm:@{parent_name} thread"),
-                _ => format!("#{parent_name} thread"),
+                Some("dm") => format!("dm:@{parent_name}:{short_id}"),
+                _ => format!("#{parent_name}:{short_id}"),
             }
         }
         _ => format!("#{}", message.channel_name),
@@ -715,6 +720,21 @@ mod tests {
         .expect("wake message fixture should deserialize")
     }
 
+    fn sample_thread_wake_message() -> ReceivedMessage {
+        serde_json::from_value(json!({
+            "message_id": "reply-1",
+            "channel_name": "thread-a1b2c3d4",
+            "channel_type": "thread",
+            "parent_channel_name": "eng-team",
+            "parent_channel_type": "channel",
+            "sender_name": "alice",
+            "sender_type": "human",
+            "content": "Please reply in the team thread.",
+            "timestamp": "2026-03-22T12:00:00Z"
+        }))
+        .expect("thread wake message fixture should deserialize")
+    }
+
     #[test]
     fn wake_prompt_for_resumed_agent_mentions_check_and_wait_tools() {
         let config = sample_config(Some("thread-123"));
@@ -752,6 +772,25 @@ mod tests {
         assert!(prompt.contains("BASE PROMPT"));
         assert!(prompt.contains("Treat this preview as wake-up context only."));
         assert!(prompt.contains("Target: #general"));
+    }
+
+    #[test]
+    fn wake_prompt_for_thread_message_uses_exact_reply_target() {
+        let config = sample_config(Some("thread-123"));
+        let driver = FakeDriver;
+        let prompt = build_start_prompt(
+            &config,
+            &driver,
+            true,
+            &std::collections::HashMap::new(),
+            Some(&sample_thread_wake_message()),
+        );
+
+        assert!(prompt.contains("Target: #eng-team:a1b2c3d4"));
+        assert!(
+            !prompt.contains("Target: #eng-team thread"),
+            "wake prompts must preserve the exact thread target so resumed agents can reply in place"
+        );
     }
 
     #[tokio::test]

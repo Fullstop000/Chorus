@@ -104,6 +104,8 @@ export async function closeMembersPanel(page: Page): Promise<void> {
 export async function openThreadFromMessage(page: Page, contentSnippet: string): Promise<void> {
   const msg = page.locator('.message-item').filter({ hasText: contentSnippet }).first()
   await expect(msg).toBeVisible()
+  await msg.hover()
+  await expect(msg.locator('.message-action-btn[title="Reply in thread"]')).toBeVisible()
   await msg.locator('.message-action-btn[title="Reply in thread"]').click()
   await expect(page.locator('.thread-panel')).toBeVisible()
 }
