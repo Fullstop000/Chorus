@@ -493,8 +493,8 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
     assert!(
         bot1_messages
             .iter()
-            .any(|message| message.content == "bot1 thread reply"),
-        "the replying agent should still see its own thread activity"
+            .all(|message| message.content != "bot1 thread reply"),
+        "the replying agent should not get its own thread reply back as unread"
     );
 }
 
