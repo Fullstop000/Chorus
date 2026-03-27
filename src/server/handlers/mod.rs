@@ -26,6 +26,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use tracing::debug;
 
+use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::AgentLifecycle;
 use crate::store::Store;
 
@@ -45,6 +46,7 @@ pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 pub struct AppState {
     pub store: Arc<Store>,
     pub lifecycle: Arc<dyn AgentLifecycle>,
+    pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
 }
 
@@ -125,4 +127,21 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
     let info = server_info::build_ui_shell_info(state.store.as_ref())
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::to_value(info).unwrap()))
+}
+
+pub async fn handle_list_runtime_statuses(
+    State(state): State<AppState>,
+) -> ApiResult<Vec<dto::RuntimeStatusInfo>> {
+    let statuses = state
+        .runtime_status_provider
+        .list_statuses()
+        .map_err(|e| internal_err(e.to_string()))?
+        .into_iter()
+        .map(|status| dto::RuntimeStatusInfo {
+            runtime: status.runtime,
+            installed: status.installed,
+            auth_status: status.auth_status,
+        })
+        .collect();
+    Ok(Json(statuses))
 }

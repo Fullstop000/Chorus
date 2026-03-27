@@ -8,6 +8,7 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
+use crate::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use crate::agent::{AgentLifecycle, NoopAgentLifecycle};
 use crate::store::Store;
 
@@ -23,6 +24,18 @@ pub fn build_router_with_lifecycle(
     store: Arc<Store>,
     lifecycle: Arc<dyn AgentLifecycle>,
 ) -> Router {
+    build_router_with_services(
+        store,
+        lifecycle,
+        Arc::new(SystemRuntimeStatusProvider) as SharedRuntimeStatusProvider,
+    )
+}
+
+pub fn build_router_with_services(
+    store: Arc<Store>,
+    lifecycle: Arc<dyn AgentLifecycle>,
+    runtime_status_provider: SharedRuntimeStatusProvider,
+) -> Router {
     use handlers::*;
 
     let cors = CorsLayer::new()
@@ -33,6 +46,7 @@ pub fn build_router_with_lifecycle(
     let state = AppState {
         store,
         lifecycle,
+        runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
     };
 
@@ -79,6 +93,7 @@ pub fn build_router_with_lifecycle(
             "/api/agents",
             get(handle_list_agents).post(handle_create_agent),
         )
+        .route("/api/runtimes", get(handle_list_runtime_statuses))
         .route(
             "/api/teams",
             get(handle_list_teams).post(handle_create_team),

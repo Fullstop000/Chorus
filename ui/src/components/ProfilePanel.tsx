@@ -1,8 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
-import { deleteAgent, getAgentDetail, restartAgent, startAgent, stopAgent, updateAgent } from '../api'
-import type { AgentDetailResponse } from '../types'
+import {
+  deleteAgent,
+  getAgentDetail,
+  restartAgent,
+  startAgent,
+  stopAgent,
+  updateAgent,
+} from '../api'
+import type { AgentDetailResponse, RuntimeStatusInfo } from '../types'
+import { useRuntimeStatuses } from '../hooks/useRuntimeStatuses'
 import { useApp } from '../store'
-import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
+import {
+  AgentConfigForm,
+  runtimeStatusSummary,
+  type AgentConfigState,
+} from './AgentConfigForm'
 import './ProfilePanel.css'
 
 function agentColor(name: string): string {
@@ -39,6 +51,7 @@ export function ProfilePanel() {
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<AgentDetailResponse | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses()
   const [showEdit, setShowEdit] = useState(false)
   const [showRestart, setShowRestart] = useState(false)
   const [showDelete, setShowDelete] = useState(false)
@@ -69,6 +82,7 @@ export function ProfilePanel() {
   const isActive = agent.status === 'active'
   const envVars = detail?.envVars ?? []
   const reasoningEffort = agent.reasoningEffort ?? detail?.agent.reasoningEffort ?? null
+  const runtimeSummary = runtimeStatusSummary(agent.runtime ?? 'claude', runtimeStatuses)
 
   async function handleStartStop() {
     setBusy(true)
@@ -154,6 +168,13 @@ export function ProfilePanel() {
             {agent.status}
           </span>
         </div>
+        <div className={`runtime-status-banner runtime-status-banner-${runtimeSummary.tone}`}>
+          <strong>{runtimeSummary.title}</strong>
+          <span>{runtimeSummary.detail}</span>
+        </div>
+        {runtimeStatusError && (
+          <div className="profile-role-text">{runtimeStatusError}</div>
+        )}
       </div>
 
       <div className="profile-section">
@@ -187,6 +208,8 @@ export function ProfilePanel() {
                 : null,
             envVars: detail.envVars,
           }}
+          runtimeStatuses={runtimeStatuses}
+          runtimeStatusError={runtimeStatusError}
           onClose={() => setShowEdit(false)}
           onSaved={async () => {
             setShowEdit(false)
@@ -224,11 +247,15 @@ export function ProfilePanel() {
 function EditAgentModal({
   agentName,
   initialState,
+  runtimeStatuses,
+  runtimeStatusError,
   onClose,
   onSaved,
 }: {
   agentName: string
   initialState: AgentConfigState
+  runtimeStatuses: RuntimeStatusInfo[]
+  runtimeStatusError: string | null
   onClose: () => void
   onSaved: () => Promise<void>
 }) {
@@ -266,7 +293,7 @@ function EditAgentModal({
           </div>
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
-        <AgentConfigForm state={state} onChange={setState} />
+        <AgentConfigForm state={state} runtimeStatuses={runtimeStatuses} runtimeStatusError={runtimeStatusError} onChange={setState} />
         {error && <div className="modal-error">{error}</div>}
         <div className="modal-footer">
           <button className="btn-secondary" onClick={onClose}>Cancel</button>

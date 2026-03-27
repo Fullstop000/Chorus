@@ -11,7 +11,7 @@ use tracing::{debug, error, info, warn};
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::AgentLifecycle;
-use crate::store::agents::{AgentConfig, AgentStatus};
+use crate::store::agents::{AgentConfig, AgentRuntime, AgentStatus};
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
@@ -35,11 +35,11 @@ pub struct AgentManager {
 }
 
 fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
-    match runtime {
-        "claude" => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
-        "codex" => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
-        "kimi" => Ok(Arc::new(crate::agent::drivers::kimi::KimiDriver)),
-        _ => anyhow::bail!("Unknown runtime: {runtime}"),
+    match AgentRuntime::parse(runtime) {
+        Some(AgentRuntime::Claude) => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
+        Some(AgentRuntime::Codex) => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
+        Some(AgentRuntime::Kimi) => Ok(Arc::new(crate::agent::drivers::kimi::KimiDriver)),
+        None => anyhow::bail!("Unknown runtime: {runtime}"),
     }
 }
 
@@ -81,15 +81,15 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
 
         let driver = get_driver(&agent.runtime)?;
-        let resumable_session_id = match driver.id() {
-            "codex" => agent.session_id.clone(),
-            "kimi" => Some(
+        let resumable_session_id = match driver.runtime() {
+            AgentRuntime::Codex => agent.session_id.clone(),
+            AgentRuntime::Kimi => Some(
                 agent
                     .session_id
                     .clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             ),
-            _ => None,
+            AgentRuntime::Claude => None,
         };
 
         let config = AgentConfig {
@@ -138,7 +138,7 @@ impl AgentManager {
         );
 
         let running_session_id = config.session_id.clone();
-        if driver.id() == "kimi" {
+        if driver.runtime() == AgentRuntime::Kimi {
             if let Some(ref session_id) = running_session_id {
                 self.store
                     .update_agent_session(agent_name, Some(session_id.as_str()))?;
@@ -322,7 +322,7 @@ impl AgentManager {
                     continue;
                 }
 
-                if driver.id() == "kimi" {
+                if driver.runtime() == AgentRuntime::Kimi {
                     debug!(agent = %name, raw_stdout = %line, "raw agent stdout");
                     activity_log::push_activity(
                         &activity_logs,
@@ -707,8 +707,8 @@ mod tests {
     struct FakeDriver;
 
     impl Driver for FakeDriver {
-        fn id(&self) -> &str {
-            "codex"
+        fn runtime(&self) -> AgentRuntime {
+            AgentRuntime::Codex
         }
 
         fn supports_stdin_notification(&self) -> bool {
@@ -741,6 +741,16 @@ mod tests {
 
         fn summarize_tool_input(&self, _name: &str, _input: &serde_json::Value) -> String {
             String::new()
+        }
+
+        fn detect_runtime_status(
+            &self,
+        ) -> anyhow::Result<crate::agent::runtime_status::RuntimeStatus> {
+            Ok(crate::agent::runtime_status::RuntimeStatus {
+                runtime: self.id().to_string(),
+                installed: true,
+                auth_status: Some(crate::agent::runtime_status::RuntimeAuthStatus::Authed),
+            })
         }
     }
 

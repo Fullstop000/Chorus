@@ -79,6 +79,34 @@ impl AgentStatus {
     }
 }
 
+/// Supported local agent runtimes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentRuntime {
+    Claude,
+    Codex,
+    Kimi,
+}
+
+impl AgentRuntime {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Kimi => "kimi",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "kimi" => Some(Self::Kimi),
+            _ => None,
+        }
+    }
+}
+
 /// Snapshot passed to the bridge when spawning an agent (includes team context).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {

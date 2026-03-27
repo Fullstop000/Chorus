@@ -1,4 +1,4 @@
-import type { AgentEnvVar } from '../types'
+import type { AgentEnvVar, RuntimeStatusInfo } from '../types'
 
 export const MODELS: Record<string, { value: string; label: string }[]> = {
   claude: [
@@ -42,11 +42,65 @@ export interface AgentConfigState {
 
 interface Props {
   state: AgentConfigState
+  runtimeStatuses?: RuntimeStatusInfo[]
+  runtimeStatusError?: string | null
   editableName?: boolean
   onChange: (next: AgentConfigState) => void
 }
 
-export function AgentConfigForm({ state, editableName = false, onChange }: Props) {
+export function runtimeOptionLabel(
+  runtime: string,
+  runtimeStatuses: RuntimeStatusInfo[] = [],
+): string {
+  const baseLabel =
+    runtime === 'claude' ? 'Claude Code' : runtime === 'codex' ? 'Codex CLI' : 'Kimi CLI'
+  const status = runtimeStatuses.find((entry) => entry.runtime === runtime)
+  if (!status) return `${baseLabel} · status unavailable`
+  if (!status.installed) return `${baseLabel} · not installed`
+  if (status.authStatus === 'authed') return `${baseLabel} · signed in`
+  return `${baseLabel} · not signed in`
+}
+
+export function runtimeStatusSummary(
+  runtime: string,
+  runtimeStatuses: RuntimeStatusInfo[] = [],
+): { tone: 'ok' | 'warn' | 'muted'; title: string; detail: string } {
+  const status = runtimeStatuses.find((entry) => entry.runtime === runtime)
+  if (!status) {
+    return {
+      tone: 'muted',
+      title: 'Status unavailable',
+      detail: 'The local runtime probe did not return a status for this CLI.',
+    }
+  }
+  if (!status.installed) {
+    return {
+      tone: 'warn',
+      title: 'Not installed',
+      detail: 'This runtime is not available on the local machine yet.',
+    }
+  }
+  if (status.authStatus === 'authed') {
+    return {
+      tone: 'ok',
+      title: 'Signed in',
+      detail: 'This runtime is installed locally and has an active login.',
+    }
+  }
+  return {
+    tone: 'warn',
+    title: 'Not signed in',
+    detail: 'The CLI is installed, but local authentication needs to be completed before agent startup will work reliably.',
+  }
+}
+
+export function AgentConfigForm({
+  state,
+  runtimeStatuses = [],
+  runtimeStatusError = null,
+  editableName = false,
+  onChange,
+}: Props) {
   function updateEnvVar(index: number, key: keyof AgentEnvVar, value: string) {
     const envVars = state.envVars.map((envVar, envIndex) =>
       envIndex === index ? { ...envVar, [key]: value } : envVar
@@ -67,6 +121,8 @@ export function AgentConfigForm({ state, editableName = false, onChange }: Props
       envVars: state.envVars.filter((_, envIndex) => envIndex !== index),
     })
   }
+
+  const runtimeSummary = runtimeStatusSummary(state.runtime, runtimeStatuses)
 
   return (
     <div className="agent-config-form">
@@ -131,10 +187,17 @@ export function AgentConfigForm({ state, editableName = false, onChange }: Props
                 })
               }}
             >
-              <option value="claude">Claude Code</option>
-              <option value="codex">Codex CLI</option>
-              <option value="kimi">Kimi CLI</option>
+              <option value="claude">{runtimeOptionLabel('claude', runtimeStatuses)}</option>
+              <option value="codex">{runtimeOptionLabel('codex', runtimeStatuses)}</option>
+              <option value="kimi">{runtimeOptionLabel('kimi', runtimeStatuses)}</option>
             </select>
+            <div className={`runtime-status-banner runtime-status-banner-${runtimeSummary.tone}`}>
+              <strong>{runtimeSummary.title}</strong>
+              <span>{runtimeSummary.detail}</span>
+            </div>
+            {runtimeStatusError && (
+              <div className="modal-field-hint">{runtimeStatusError}</div>
+            )}
           </div>
 
           <div className="modal-field">

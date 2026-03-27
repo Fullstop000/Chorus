@@ -14,6 +14,7 @@ import type {
   WorkspaceFileResponse,
   AgentDetailResponse,
   AgentEnvVar,
+  RuntimeStatusInfo,
   ChannelMembersResponse,
   Team,
   TeamResponse,
@@ -56,6 +57,10 @@ export async function listChannels(params?: {
 
 export async function listAgents(): Promise<AgentInfo[]> {
   return json(await fetch(`${BASE}/api/agents`))
+}
+
+export async function listRuntimeStatuses(): Promise<RuntimeStatusInfo[]> {
+  return json(await fetch(`${BASE}/api/runtimes`))
 }
 
 export async function createChannel(payload: {
