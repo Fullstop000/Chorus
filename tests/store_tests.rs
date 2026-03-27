@@ -1,9 +1,11 @@
 use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
+use chorus::store::events::StoredEvent;
 use chorus::store::messages::SenderType;
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
 use rusqlite::{params, Connection};
+use serde_json::Value;
 use tempfile::tempdir;
 
 #[test]
@@ -288,6 +290,138 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
     let (history, _) = store.get_history("general", None, 10, None, None).unwrap();
     assert_eq!(history.len(), 1);
     assert!(history[0].sender_deleted);
+}
+
+fn payload_field<'a>(event: &'a StoredEvent, key: &str) -> &'a Value {
+    event
+        .payload
+        .get(key)
+        .unwrap_or_else(|| panic!("missing payload field {key} in {:?}", event.payload))
+}
+
+#[test]
+fn test_send_message_emits_message_created_event() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let message_id = store
+        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .unwrap();
+
+    let events = store.list_events(None, 20).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "message.created");
+    assert_eq!(events[0].scope_kind, "channel");
+    assert_eq!(events[0].actor_name.as_deref(), Some("alice"));
+    assert_eq!(events[0].actor_type.as_deref(), Some("human"));
+    assert_eq!(
+        payload_field(&events[0], "messageId").as_str(),
+        Some(message_id.as_str())
+    );
+    assert_eq!(payload_field(&events[0], "content").as_str(), Some("hello"));
+    assert_eq!(
+        payload_field(&events[0], "conversationType").as_str(),
+        Some("channel")
+    );
+}
+
+#[test]
+fn test_thread_reply_emits_thread_derived_events() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let parent_id = store
+        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .unwrap();
+    let reply_id = store
+        .send_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let events = store.list_events(None, 20).unwrap();
+    let event_types: Vec<_> = events.iter().map(|event| event.event_type.as_str()).collect();
+    assert_eq!(
+        event_types,
+        vec![
+            "message.created",
+            "message.created",
+            "thread.reply_count_changed",
+            "thread.activity_bumped",
+            "thread.participant_added",
+        ]
+    );
+
+    let reply_event = &events[1];
+    assert_eq!(reply_event.scope_kind, "thread");
+    assert_eq!(
+        payload_field(reply_event, "messageId").as_str(),
+        Some(reply_id.as_str())
+    );
+    assert_eq!(
+        payload_field(reply_event, "threadParentId").as_str(),
+        Some(parent_id.as_str())
+    );
+
+    let reply_count_event = &events[2];
+    assert_eq!(reply_count_event.scope_kind, "channel");
+    assert_eq!(
+        payload_field(reply_count_event, "replyCount").as_i64(),
+        Some(1)
+    );
+}
+
+#[test]
+fn test_mark_agent_messages_deleted_emits_tombstone_events() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    let message_id = store
+        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .unwrap();
+
+    store.mark_agent_messages_deleted("bot1").unwrap();
+
+    let events = store.list_events(None, 20).unwrap();
+    let tombstone_event = events
+        .iter()
+        .find(|event| event.event_type == "message.tombstone_changed")
+        .expect("expected tombstone event after sender deletion");
+    assert_eq!(
+        payload_field(tombstone_event, "messageId").as_str(),
+        Some(message_id.as_str())
+    );
+    assert_eq!(
+        payload_field(tombstone_event, "senderDeleted").as_bool(),
+        Some(true)
+    );
 }
 
 #[test]

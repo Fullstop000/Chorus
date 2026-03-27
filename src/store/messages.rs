@@ -2,11 +2,13 @@ use std::collections::BTreeSet;
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use uuid::Uuid;
 
 use super::channels::{Channel, ChannelType};
+use super::events::NewEvent;
 use super::Store;
 
 // ── Types owned by this module ──
@@ -163,7 +165,299 @@ pub struct ActivityMessage {
     pub created_at: String,
 }
 
+/// Result of inserting a message row before fanout or event derivation.
+struct InsertedMessage {
+    id: String,
+    seq: i64,
+    created_at: String,
+}
+
 impl Store {
+    fn conversation_scope_for(channel: &Channel) -> (&'static str, String) {
+        let scope_kind = if channel.channel_type == ChannelType::Dm {
+            "dm"
+        } else {
+            "channel"
+        };
+        (scope_kind, format!("{scope_kind}:{}", channel.id))
+    }
+
+    fn message_scope_for(
+        channel: &Channel,
+        thread_parent_id: Option<&str>,
+    ) -> (&'static str, String) {
+        match thread_parent_id {
+            Some(parent_id) => ("thread", format!("thread:{parent_id}")),
+            None => Self::conversation_scope_for(channel),
+        }
+    }
+
+    fn insert_message_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        thread_parent_id: Option<&str>,
+        sender_name: &str,
+        sender_type: SenderType,
+        content: &str,
+        attachment_ids: &[String],
+        forwarded_from: Option<&ForwardedFrom>,
+    ) -> Result<InsertedMessage> {
+        let seq: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE channel_id = ?1",
+            params![channel.id],
+            |row| row.get(0),
+        )?;
+        let msg_id = Uuid::new_v4().to_string();
+        let forwarded_from_json = forwarded_from
+            .map(serde_json::to_string)
+            .transpose()?;
+        tx.execute(
+            "INSERT INTO messages (
+                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8)",
+            params![
+                msg_id,
+                channel.id,
+                thread_parent_id,
+                sender_name,
+                sender_type.as_str(),
+                content,
+                seq,
+                forwarded_from_json
+            ],
+        )?;
+        for att_id in attachment_ids {
+            tx.execute(
+                "INSERT INTO message_attachments (message_id, attachment_id) VALUES (?1, ?2)",
+                params![msg_id, att_id],
+            )?;
+        }
+
+        let created_at: String = tx.query_row(
+            "SELECT created_at FROM messages WHERE id = ?1",
+            params![msg_id],
+            |row| row.get(0),
+        )?;
+        Ok(InsertedMessage {
+            id: msg_id,
+            seq,
+            created_at,
+        })
+    }
+
+    fn append_message_created_event_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        thread_parent_id: Option<&str>,
+        sender_name: &str,
+        sender_type: SenderType,
+        content: &str,
+        attachment_ids: &[String],
+        forwarded_from: Option<&ForwardedFrom>,
+        inserted: &InsertedMessage,
+        caused_by_kind: &'static str,
+    ) -> Result<()> {
+        let (scope_kind, scope_id) = Self::message_scope_for(channel, thread_parent_id);
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type: "message.created",
+                scope_kind,
+                scope_id,
+                channel_id: Some(&channel.id),
+                channel_name: Some(&channel.name),
+                thread_parent_id,
+                actor_name: Some(sender_name),
+                actor_type: Some(sender_type.as_str()),
+                caused_by_kind: Some(caused_by_kind),
+                payload: json!({
+                    "messageId": inserted.id.as_str(),
+                    "conversationId": channel.id.as_str(),
+                    "conversationType": channel.channel_type.as_api_str(),
+                    "threadParentId": thread_parent_id,
+                    "sender": {
+                        "name": sender_name,
+                        "type": sender_type.as_str(),
+                    },
+                    "content": content,
+                    "attachmentIds": attachment_ids,
+                    "seq": inserted.seq,
+                    "createdAt": inserted.created_at.as_str(),
+                    "forwardedFrom": forwarded_from,
+                }),
+            },
+        )?;
+        Ok(())
+    }
+
+    fn append_system_notice_event_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        inserted: &InsertedMessage,
+    ) -> Result<()> {
+        let (scope_kind, scope_id) = Self::conversation_scope_for(channel);
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type: "system.notice_posted",
+                scope_kind,
+                scope_id,
+                channel_id: Some(&channel.id),
+                channel_name: Some(&channel.name),
+                thread_parent_id: None,
+                actor_name: Some("system"),
+                actor_type: None,
+                caused_by_kind: Some("post_system_message"),
+                payload: json!({
+                    "messageId": inserted.id.as_str(),
+                    "conversationId": channel.id.as_str(),
+                    "noticeKind": "system_message",
+                }),
+            },
+        )?;
+        Ok(())
+    }
+
+    fn thread_participant_exists_before(
+        conn: &Connection,
+        channel_id: &str,
+        parent_id: &str,
+        member_name: &str,
+    ) -> Result<bool> {
+        let parent_author_matches: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages
+             WHERE id = ?1 AND channel_id = ?2 AND sender_name = ?3",
+            params![parent_id, channel_id, member_name],
+            |row| row.get(0),
+        )?;
+        if parent_author_matches > 0 {
+            return Ok(true);
+        }
+
+        let prior_reply_matches: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM messages
+             WHERE channel_id = ?1 AND thread_parent_id = ?2 AND sender_name = ?3",
+            params![channel_id, parent_id, member_name],
+            |row| row.get(0),
+        )?;
+        Ok(prior_reply_matches > 0)
+    }
+
+    fn append_thread_events_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        parent_id: &str,
+        sender_name: &str,
+        sender_type: SenderType,
+        inserted: &InsertedMessage,
+        sender_was_participant_before: bool,
+    ) -> Result<()> {
+        let (conversation_scope_kind, conversation_scope_id) = Self::conversation_scope_for(channel);
+        let reply_count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND thread_parent_id = ?2",
+            params![channel.id, parent_id],
+            |row| row.get(0),
+        )?;
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type: "thread.reply_count_changed",
+                scope_kind: conversation_scope_kind,
+                scope_id: conversation_scope_id,
+                channel_id: Some(&channel.id),
+                channel_name: Some(&channel.name),
+                thread_parent_id: Some(parent_id),
+                actor_name: Some(sender_name),
+                actor_type: Some(sender_type.as_str()),
+                caused_by_kind: Some("send_message"),
+                payload: json!({
+                    "parentMessageId": parent_id,
+                    "conversationId": channel.id.as_str(),
+                    "replyCount": reply_count,
+                }),
+            },
+        )?;
+
+        let thread_scope_id = format!("thread:{parent_id}");
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type: "thread.activity_bumped",
+                scope_kind: "thread",
+                scope_id: thread_scope_id.clone(),
+                channel_id: Some(&channel.id),
+                channel_name: Some(&channel.name),
+                thread_parent_id: Some(parent_id),
+                actor_name: Some(sender_name),
+                actor_type: Some(sender_type.as_str()),
+                caused_by_kind: Some("send_message"),
+                payload: json!({
+                    "parentMessageId": parent_id,
+                    "lastReplyAt": inserted.created_at.as_str(),
+                    "lastReplyMessageId": inserted.id.as_str(),
+                }),
+            },
+        )?;
+
+        if !sender_was_participant_before {
+            Self::append_event_tx(
+                tx,
+                NewEvent {
+                    event_type: "thread.participant_added",
+                    scope_kind: "thread",
+                    scope_id: thread_scope_id,
+                    channel_id: Some(&channel.id),
+                    channel_name: Some(&channel.name),
+                    thread_parent_id: Some(parent_id),
+                    actor_name: Some(sender_name),
+                    actor_type: Some(sender_type.as_str()),
+                    caused_by_kind: Some("send_message"),
+                    payload: json!({
+                        "parentMessageId": parent_id,
+                        "participant": {
+                            "name": sender_name,
+                            "type": sender_type.as_str(),
+                        },
+                        "reason": "reply_sent",
+                    }),
+                },
+            )?;
+        }
+
+        Ok(())
+    }
+
+    fn append_tombstone_changed_event_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        thread_parent_id: Option<&str>,
+        message_id: &str,
+        caused_by_kind: &'static str,
+    ) -> Result<()> {
+        let (scope_kind, scope_id) = Self::message_scope_for(channel, thread_parent_id);
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type: "message.tombstone_changed",
+                scope_kind,
+                scope_id,
+                channel_id: Some(&channel.id),
+                channel_name: Some(&channel.name),
+                thread_parent_id,
+                actor_name: None,
+                actor_type: None,
+                caused_by_kind: Some(caused_by_kind),
+                payload: json!({
+                    "messageId": message_id,
+                    "conversationId": channel.id.as_str(),
+                    "threadParentId": thread_parent_id,
+                    "senderDeleted": true,
+                }),
+            },
+        )?;
+        Ok(())
+    }
+
     /// Insert a message row directly by channel id, optionally attaching
     /// provenance metadata for forwarded copies.
     pub fn post_message_with_forwarded_from(
@@ -175,56 +469,71 @@ impl Store {
         attachment_ids: &[String],
         forwarded_from: Option<ForwardedFrom>,
     ) -> Result<String> {
-        let conn = self.conn.lock().unwrap();
-
-        let seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE channel_id = ?1",
-            params![channel_id],
-            |row| row.get(0),
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let channel = Self::find_channel_by_id_inner(&tx, channel_id)?
+            .ok_or_else(|| anyhow!("channel not found by id"))?;
+        let inserted = Self::insert_message_tx(
+            &tx,
+            &channel,
+            None,
+            sender_name,
+            sender_type,
+            content,
+            attachment_ids,
+            forwarded_from.as_ref(),
         )?;
-
-        let msg_id = Uuid::new_v4().to_string();
-        let st = sender_type.as_str();
-        let forwarded_from_json = forwarded_from
-            .map(|value| serde_json::to_string(&value))
-            .transpose()?;
-
-        conn.execute(
-            "INSERT INTO messages (
-                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from
-             ) VALUES (?1, ?2, NULL, ?3, ?4, 0, ?5, ?6, ?7)",
-            params![
-                msg_id,
-                channel_id,
-                sender_name,
-                st,
-                content,
-                seq,
-                forwarded_from_json
-            ],
+        Self::append_message_created_event_tx(
+            &tx,
+            &channel,
+            None,
+            sender_name,
+            sender_type,
+            content,
+            attachment_ids,
+            forwarded_from.as_ref(),
+            &inserted,
+            "post_message_with_forwarded_from",
         )?;
+        tx.commit()?;
 
-        for att_id in attachment_ids {
-            conn.execute(
-                "INSERT INTO message_attachments (message_id, attachment_id) VALUES (?1, ?2)",
-                params![msg_id, att_id],
-            )?;
-        }
-
-        let _ = self.msg_tx.send((channel_id.to_string(), msg_id.clone()));
-        Ok(msg_id)
+        let _ = self.msg_tx.send((channel_id.to_string(), inserted.id.clone()));
+        Ok(inserted.id)
     }
 
     /// Post a server-authored message into a channel.
     pub fn post_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
-        self.post_message_with_forwarded_from(
-            channel_id,
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let channel = Self::find_channel_by_id_inner(&tx, channel_id)?
+            .ok_or_else(|| anyhow!("channel not found by id"))?;
+        let inserted = Self::insert_message_tx(
+            &tx,
+            &channel,
+            None,
             "system",
             SenderType::Human,
             content,
             &[],
             None,
-        )
+        )?;
+        Self::append_message_created_event_tx(
+            &tx,
+            &channel,
+            None,
+            "system",
+            SenderType::Human,
+            content,
+            &[],
+            None,
+            &inserted,
+            "post_system_message",
+        )?;
+        Self::append_system_notice_event_tx(&tx, &channel, &inserted)?;
+        tx.commit()?;
+
+        let _ = self.msg_tx.send((channel_id.to_string(), inserted.id.clone()));
+        Ok(inserted.id)
     }
 
     pub fn send_message(
@@ -236,37 +545,59 @@ impl Store {
         content: &str,
         attachment_ids: &[String],
     ) -> Result<String> {
-        let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let channel = Self::find_channel_by_name_inner(&tx, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-
-        let seq: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE channel_id = ?1",
-            params![channel.id],
-            |row| row.get(0),
+        let sender_was_participant_before = match thread_parent_id {
+            Some(parent_id) => {
+                Self::thread_participant_exists_before(&tx, &channel.id, parent_id, sender_name)?
+            }
+            None => false,
+        };
+        let inserted = Self::insert_message_tx(
+            &tx,
+            &channel,
+            thread_parent_id,
+            sender_name,
+            sender_type,
+            content,
+            attachment_ids,
+            None,
         )?;
-        let msg_id = Uuid::new_v4().to_string();
-        let st = sender_type.as_str();
-        conn.execute(
-            "INSERT INTO messages (
-                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7)",
-            params![msg_id, channel.id, thread_parent_id, sender_name, st, content, seq],
+        Self::append_message_created_event_tx(
+            &tx,
+            &channel,
+            thread_parent_id,
+            sender_name,
+            sender_type,
+            content,
+            attachment_ids,
+            None,
+            &inserted,
+            "send_message",
         )?;
-        for att_id in attachment_ids {
-            conn.execute(
-                "INSERT INTO message_attachments (message_id, attachment_id) VALUES (?1, ?2)",
-                params![msg_id, att_id],
+        if let Some(parent_id) = thread_parent_id {
+            Self::append_thread_events_tx(
+                &tx,
+                &channel,
+                parent_id,
+                sender_name,
+                sender_type,
+                &inserted,
+                sender_was_participant_before,
             )?;
         }
         // Treat the sender's own newly-created message as already read so it
         // does not come back later through get_messages_for_agent() as unread.
-        conn.execute(
+        tx.execute(
             "UPDATE channel_members SET last_read_seq = MAX(last_read_seq, ?1) WHERE channel_id = ?2 AND member_name = ?3",
-            params![seq, channel.id, sender_name],
+            params![inserted.seq, channel.id, sender_name],
         )?;
-        let _ = self.msg_tx.send((channel.id.clone(), msg_id.clone()));
-        Ok(msg_id)
+        tx.commit()?;
+
+        let _ = self.msg_tx.send((channel.id.clone(), inserted.id.clone()));
+        Ok(inserted.id)
     }
 
     pub fn get_messages_for_agent(
@@ -567,11 +898,50 @@ impl Store {
     }
 
     pub fn mark_agent_messages_deleted(&self, name: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE messages SET sender_deleted = 1 WHERE sender_type = 'agent' AND sender_name = ?1",
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let impacted_messages: Vec<(String, Channel, Option<String>)> = tx
+            .prepare(
+                "SELECT m.id, c.id, c.name, c.description, c.channel_type, c.created_at, m.thread_parent_id
+                 FROM messages m
+                 JOIN channels c ON c.id = m.channel_id
+                 WHERE m.sender_type = 'agent' AND m.sender_name = ?1 AND m.sender_deleted = 0",
+            )?
+            .query_map(params![name], |row| {
+                Ok((
+                    row.get(0)?,
+                    Channel {
+                        id: row.get(1)?,
+                        name: row.get(2)?,
+                        description: row.get(3)?,
+                        channel_type: match row.get::<_, String>(4)?.as_str() {
+                            "team" => ChannelType::Team,
+                            "dm" => ChannelType::Dm,
+                            "system" => ChannelType::System,
+                            _ => ChannelType::Channel,
+                        },
+                        created_at: super::parse_datetime(&row.get::<_, String>(5)?),
+                    },
+                    row.get(6)?,
+                ))
+            })?
+            .filter_map(|row| row.ok())
+            .collect();
+        tx.execute(
+            "UPDATE messages SET sender_deleted = 1
+             WHERE sender_type = 'agent' AND sender_name = ?1 AND sender_deleted = 0",
             params![name],
         )?;
+        for (message_id, channel, thread_parent_id) in impacted_messages {
+            Self::append_tombstone_changed_event_tx(
+                &tx,
+                &channel,
+                thread_parent_id.as_deref(),
+                &message_id,
+                "mark_agent_messages_deleted",
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 

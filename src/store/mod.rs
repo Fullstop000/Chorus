@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod channels;
+pub mod events;
 pub mod knowledge;
 pub mod messages;
 pub mod tasks;
@@ -17,6 +18,7 @@ use tokio::sync::broadcast;
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
+pub use events::StoredEvent;
 pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
@@ -144,6 +146,22 @@ impl Store {
                 attachment_id TEXT NOT NULL,
                 PRIMARY KEY (message_id, attachment_id)
             );
+            CREATE TABLE IF NOT EXISTS events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                scope_kind TEXT NOT NULL,
+                scope_id TEXT NOT NULL,
+                channel_id TEXT,
+                channel_name TEXT,
+                thread_parent_id TEXT,
+                actor_name TEXT,
+                actor_type TEXT,
+                caused_by_kind TEXT,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE INDEX IF NOT EXISTS events_scope_event_id
+                ON events(scope_kind, scope_id, event_id);
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
@@ -466,8 +484,7 @@ impl Store {
 /// Derive the server data directory from the SQLite path.
 fn derive_data_dir(path: &str) -> PathBuf {
     if path == ":memory:" {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        return PathBuf::from(home).join(".chorus");
+        return std::env::temp_dir().join(format!("chorus-memory-{}", uuid::Uuid::new_v4()));
     }
 
     Path::new(path)
