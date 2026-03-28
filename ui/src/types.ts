@@ -71,6 +71,11 @@ export interface AttachmentRef {
   filename: string
 }
 
+export interface ForwardedFrom {
+  channelName: string
+  senderName: string
+}
+
 export interface HistoryMessage {
   id: string
   seq: number
@@ -82,6 +87,7 @@ export interface HistoryMessage {
   thread_parent_id?: string
   attachments?: AttachmentRef[]
   replyCount?: number
+  forwardedFrom?: ForwardedFrom
 }
 
 export interface HistoryResponse {
@@ -89,6 +95,8 @@ export interface HistoryResponse {
   has_more: boolean
   last_read_seq: number
   latestEventId: number
+  streamId: string
+  streamPos: number
 }
 
 export interface RealtimeScope {
@@ -98,6 +106,9 @@ export interface RealtimeScope {
 
 export interface RealtimeEvent {
   eventId: number
+  streamId?: string
+  streamKind?: string
+  streamPos?: number
   eventType: string
   scopeKind: string
   scopeId: string
@@ -119,6 +130,8 @@ export type RealtimeMessage =
   | {
       type: 'subscribed'
       resumeFrom: number
+      streamId?: string
+      resumeFromStreamPos?: number
       scopes: RealtimeScope[]
     }
   | {

@@ -24,12 +24,28 @@ struct SubscribeScope {
     id: String,
 }
 
+#[derive(Debug, Clone)]
+enum ReplayCursor {
+    Global {
+        event_id: i64,
+    },
+    Stream {
+        stream_id: String,
+        stream_pos: i64,
+        fallback_event_id: i64,
+    },
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ClientFrame {
     Subscribe {
         #[serde(default, rename = "resumeFrom")]
         resume_from: Option<i64>,
+        #[serde(default, rename = "streamId")]
+        stream_id: Option<String>,
+        #[serde(default, rename = "resumeFromStreamPos")]
+        resume_from_stream_pos: Option<i64>,
         #[serde(default)]
         scopes: Vec<SubscribeScope>,
     },
@@ -54,7 +70,7 @@ pub async fn handle_events_ws(
 
 async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: String) {
     let mut subscribed_scopes = BTreeSet::new();
-    let mut last_seen_event_id = 0_i64;
+    let mut replay_cursor = ReplayCursor::Global { event_id: 0 };
     let mut event_rx = store.subscribe_events();
 
     loop {
@@ -67,7 +83,7 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
                             store.as_ref(),
                             &viewer,
                             &mut subscribed_scopes,
-                            &mut last_seen_event_id,
+                            &mut replay_cursor,
                             text.as_str(),
                         ).await.is_err() {
                             break;
@@ -93,10 +109,10 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
                             &mut socket,
                             store.as_ref(),
                             &subscribed_scopes,
-                            last_seen_event_id,
+                            &replay_cursor,
                         ).await {
                             Ok(updated_cursor) => {
-                                last_seen_event_id = updated_cursor;
+                                replay_cursor = updated_cursor;
                             }
                             Err(err) => {
                                 warn!(viewer = %viewer, error = %err, "realtime websocket replay failed");
@@ -116,7 +132,7 @@ async fn handle_client_frame(
     store: &Store,
     viewer: &str,
     subscribed_scopes: &mut BTreeSet<(String, String)>,
-    last_seen_event_id: &mut i64,
+    replay_cursor: &mut ReplayCursor,
     text: &str,
 ) -> anyhow::Result<()> {
     let frame: ClientFrame = match serde_json::from_str(text) {
@@ -137,6 +153,8 @@ async fn handle_client_frame(
     match frame {
         ClientFrame::Subscribe {
             resume_from,
+            stream_id,
+            resume_from_stream_pos,
             scopes,
         } => {
             let requested_scopes = match validate_scopes(store, viewer, scopes).await {
@@ -160,24 +178,77 @@ async fn handle_client_frame(
                     return Ok(());
                 }
             };
+            let mut next_subscribed_scopes = subscribed_scopes.clone();
             for scope in &requested_scopes {
-                subscribed_scopes.insert(scope.clone());
+                next_subscribed_scopes.insert(scope.clone());
             }
-            if let Some(resume_from) = resume_from {
-                *last_seen_event_id = resume_from;
+            let all_scopes = next_subscribed_scopes.iter().cloned().collect::<Vec<_>>();
+            let shared_stream_id = store.shared_stream_id_for_scopes(&all_scopes)?;
+            let active_stream_id = match (shared_stream_id, stream_id) {
+                (Some(shared_stream_id), Some(requested_stream_id))
+                    if requested_stream_id != shared_stream_id =>
+                {
+                    send_json(
+                        socket,
+                        json!({
+                            "type": "error",
+                            "code": "invalid_scope",
+                            "message": format!(
+                                "requested stream {} does not match subscribed scopes",
+                                requested_stream_id
+                            ),
+                        }),
+                    )
+                    .await?;
+                    return Ok(());
+                }
+                (Some(shared_stream_id), _) => Some(shared_stream_id),
+                (None, _) => None,
+            };
+
+            let fallback_event_id = resume_from.unwrap_or(match replay_cursor {
+                ReplayCursor::Global { event_id } => *event_id,
+                ReplayCursor::Stream {
+                    fallback_event_id, ..
+                } => *fallback_event_id,
+            });
+
+            if let Some(stream_id) = active_stream_id.clone() {
+                let current_stream_pos = match replay_cursor {
+                    ReplayCursor::Stream {
+                        stream_id: current_stream_id,
+                        stream_pos,
+                        ..
+                    } if current_stream_id == &stream_id => *stream_pos,
+                    _ => 0,
+                };
+                *replay_cursor = ReplayCursor::Stream {
+                    stream_id: stream_id.clone(),
+                    stream_pos: resume_from_stream_pos.unwrap_or(current_stream_pos),
+                    fallback_event_id,
+                };
+            } else {
+                *replay_cursor = ReplayCursor::Global {
+                    event_id: fallback_event_id,
+                };
             }
+            *subscribed_scopes = next_subscribed_scopes;
             send_json(
                 socket,
                 json!({
                     "type": "subscribed",
-                    "resumeFrom": *last_seen_event_id,
-                    "scopes": requested_scopes.iter().map(|(kind, id)| json!({ "kind": kind, "id": id })).collect::<Vec<_>>(),
+                    "resumeFrom": fallback_event_id,
+                    "streamId": active_stream_id,
+                    "resumeFromStreamPos": match replay_cursor {
+                        ReplayCursor::Stream { stream_pos, .. } => Some(*stream_pos),
+                        ReplayCursor::Global { .. } => None,
+                    },
+                    "scopes": subscribed_scopes.iter().map(|(kind, id)| json!({ "kind": kind, "id": id })).collect::<Vec<_>>(),
                 }),
             )
             .await?;
-            *last_seen_event_id =
-                replay_matching_events(socket, store, subscribed_scopes, *last_seen_event_id)
-                    .await?;
+            *replay_cursor =
+                replay_matching_events(socket, store, subscribed_scopes, replay_cursor).await?;
         }
     }
     Ok(())
@@ -206,41 +277,95 @@ async fn replay_matching_events(
     socket: &mut WebSocket,
     store: &Store,
     subscribed_scopes: &BTreeSet<(String, String)>,
-    after_event_id: i64,
-) -> anyhow::Result<i64> {
-    let mut cursor = after_event_id;
-    loop {
-        let events = store.list_events(if cursor > 0 { Some(cursor) } else { None }, 200)?;
-        if events.is_empty() {
-            break;
-        }
+    replay_cursor: &ReplayCursor,
+) -> anyhow::Result<ReplayCursor> {
+    match replay_cursor {
+        ReplayCursor::Global { event_id } => {
+            let mut cursor = *event_id;
+            loop {
+                let events =
+                    store.list_events(if cursor > 0 { Some(cursor) } else { None }, 200)?;
+                if events.is_empty() {
+                    break;
+                }
 
-        for event in events {
-            cursor = event.event_id;
-            if scope_matches(subscribed_scopes, &event) {
-                send_json(
-                    socket,
-                    json!({
-                        "type": "event",
-                        "event": event_to_json_value(&event),
-                    }),
-                )
-                .await?;
+                for event in events {
+                    cursor = event.event_id;
+                    if scope_matches(subscribed_scopes, &event) {
+                        send_json(
+                            socket,
+                            json!({
+                                "type": "event",
+                                "event": event_to_json_value(store, &event),
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+
+                if store.list_events(Some(cursor), 1)?.is_empty() {
+                    break;
+                }
             }
+            Ok(ReplayCursor::Global { event_id: cursor })
         }
+        ReplayCursor::Stream {
+            stream_id,
+            stream_pos,
+            fallback_event_id,
+        } => {
+            let mut cursor = *stream_pos;
+            let mut latest_event_id = *fallback_event_id;
+            loop {
+                let events = store.list_events_for_stream(
+                    stream_id,
+                    if cursor > 0 { Some(cursor) } else { None },
+                    200,
+                )?;
+                if events.is_empty() {
+                    break;
+                }
 
-        if store.list_events(Some(cursor), 1)?.is_empty() {
-            break;
+                for event in events {
+                    cursor = event.stream_pos;
+                    latest_event_id = latest_event_id.max(event.event_id);
+                    if scope_matches(subscribed_scopes, &event) {
+                        send_json(
+                            socket,
+                            json!({
+                                "type": "event",
+                                "event": event_to_json_value(store, &event),
+                            }),
+                        )
+                        .await?;
+                    }
+                }
+
+                if store
+                    .list_events_for_stream(stream_id, Some(cursor), 1)?
+                    .is_empty()
+                {
+                    break;
+                }
+            }
+            Ok(ReplayCursor::Stream {
+                stream_id: stream_id.clone(),
+                stream_pos: cursor,
+                fallback_event_id: latest_event_id,
+            })
         }
     }
-    Ok(cursor)
 }
 
 fn scope_matches(subscribed_scopes: &BTreeSet<(String, String)>, event: &StoredEvent) -> bool {
     subscribed_scopes.contains(&(event.scope_kind.clone(), event.scope_id.clone()))
 }
 
-pub fn event_to_json_value(event: &StoredEvent) -> Value {
+pub fn event_to_json_value(store: &Store, event: &StoredEvent) -> Value {
+    event_to_json_value_with_store(Some(store), event)
+}
+
+fn event_to_json_value_with_store(store: Option<&Store>, event: &StoredEvent) -> Value {
     let actor = event
         .actor_name
         .as_ref()
@@ -249,8 +374,12 @@ pub fn event_to_json_value(event: &StoredEvent) -> Value {
         .caused_by_kind
         .as_ref()
         .map(|kind| json!({ "kind": kind }));
+    let payload = transport_payload_for_event(store, event);
     json!({
         "eventId": event.event_id,
+        "streamId": event.stream_id,
+        "streamKind": event.stream_kind,
+        "streamPos": event.stream_pos,
         "eventType": event.event_type,
         "scopeKind": event.scope_kind,
         "scopeId": event.scope_id,
@@ -259,13 +388,35 @@ pub fn event_to_json_value(event: &StoredEvent) -> Value {
         "threadParentId": event.thread_parent_id,
         "actor": actor,
         "causedBy": caused_by,
-        "payload": event.payload,
+        "payload": payload,
         "createdAt": event.created_at.to_rfc3339(),
     })
 }
 
+fn transport_payload_for_event(store: Option<&Store>, event: &StoredEvent) -> Value {
+    if event.event_type != "message.created" {
+        return event.payload.clone();
+    }
+
+    let message_id = event
+        .payload
+        .get("messageId")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if message_id.is_empty() {
+        return event.payload.clone();
+    }
+
+    store
+        .and_then(|store| store.get_message_event_payload(message_id).ok().flatten())
+        .unwrap_or_else(|| event.payload.clone())
+}
+
 async fn send_json(socket: &mut WebSocket, value: Value) -> anyhow::Result<()> {
-    debug!(frame_type = value["type"].as_str().unwrap_or("unknown"), "realtime websocket send");
+    debug!(
+        frame_type = value["type"].as_str().unwrap_or("unknown"),
+        "realtime websocket send"
+    );
     socket.send(Message::Text(value.to_string().into())).await?;
     Ok(())
 }

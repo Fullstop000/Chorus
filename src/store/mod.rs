@@ -23,8 +23,8 @@ pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
 pub use messages::{
-    ActivityMessage, AttachmentRef, ForwardedFrom, HistoryMessage, Message, ReceivedMessage,
-    SenderType,
+    ActivityMessage, AttachmentRef, ForwardedFrom, HistoryMessage, HistorySnapshot, Message,
+    ReceivedMessage, SenderType,
 };
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
@@ -79,6 +79,7 @@ impl Store {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Self::init_schema(&conn)?;
         Self::migrate_remove_spurious_dm_members(&conn)?;
+        Self::migrate_event_stream_identity(&conn)?;
         let (msg_tx, _) = broadcast::channel(256);
         let (event_tx, _) = broadcast::channel(256);
         Ok(Self {
@@ -152,6 +153,9 @@ impl Store {
             );
             CREATE TABLE IF NOT EXISTS events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                stream_id TEXT,
+                stream_kind TEXT,
+                stream_pos INTEGER,
                 event_type TEXT NOT NULL,
                 scope_kind TEXT NOT NULL,
                 scope_id TEXT NOT NULL,
@@ -166,6 +170,15 @@ impl Store {
             );
             CREATE INDEX IF NOT EXISTS events_scope_event_id
                 ON events(scope_kind, scope_id, event_id);
+            CREATE INDEX IF NOT EXISTS events_stream_event_id
+                ON events(stream_id, stream_pos);
+            CREATE TABLE IF NOT EXISTS streams (
+                stream_id TEXT PRIMARY KEY,
+                stream_kind TEXT NOT NULL,
+                aggregate_id TEXT NOT NULL,
+                current_pos INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
             CREATE TABLE IF NOT EXISTS agents (
                 id TEXT PRIMARY KEY,
                 name TEXT UNIQUE NOT NULL,
@@ -284,6 +297,12 @@ impl Store {
         conn.execute("ALTER TABLE agents ADD COLUMN reasoning_effort TEXT", [])
             .ok();
         conn.execute("ALTER TABLE messages ADD COLUMN forwarded_from TEXT", [])
+            .ok();
+        conn.execute("ALTER TABLE events ADD COLUMN stream_id TEXT", [])
+            .ok();
+        conn.execute("ALTER TABLE events ADD COLUMN stream_kind TEXT", [])
+            .ok();
+        conn.execute("ALTER TABLE events ADD COLUMN stream_pos INTEGER", [])
             .ok();
         Ok(())
     }
@@ -425,6 +444,61 @@ impl Store {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Backfill per-domain stream identity onto existing durable events and
+    /// ensure the lightweight stream cursor table reflects the latest position
+    /// for every known stream. Safe to run on every startup.
+    fn migrate_event_stream_identity(conn: &Connection) -> Result<()> {
+        let rows: Vec<(i64, String, String, Option<String>)> = conn
+            .prepare(
+                "SELECT event_id, scope_kind, scope_id, channel_id
+                 FROM events
+                 ORDER BY event_id ASC",
+            )?
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .filter_map(|row| row.ok())
+            .collect();
+
+        let mut stream_positions: HashMap<String, i64> = HashMap::new();
+        let mut stream_meta: HashMap<String, (String, String, i64)> = HashMap::new();
+
+        for (event_id, scope_kind, scope_id, channel_id) in rows {
+            let (stream_id, stream_kind, aggregate_id) =
+                crate::store::events::derive_stream_identity(
+                    &scope_kind,
+                    &scope_id,
+                    channel_id.as_deref(),
+                );
+            let next_pos = stream_positions.get(&stream_id).copied().unwrap_or(0) + 1;
+            stream_positions.insert(stream_id.clone(), next_pos);
+            stream_meta.insert(
+                stream_id.clone(),
+                (stream_kind.clone(), aggregate_id.clone(), next_pos),
+            );
+            conn.execute(
+                "UPDATE events
+                 SET stream_id = ?1, stream_kind = ?2, stream_pos = ?3
+                 WHERE event_id = ?4",
+                params![stream_id, stream_kind, next_pos, event_id],
+            )?;
+        }
+
+        for (stream_id, (stream_kind, aggregate_id, current_pos)) in stream_meta {
+            conn.execute(
+                "INSERT INTO streams (stream_id, stream_kind, aggregate_id, current_pos)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(stream_id) DO UPDATE SET
+                     stream_kind = excluded.stream_kind,
+                     aggregate_id = excluded.aggregate_id,
+                     current_pos = excluded.current_pos",
+                params![stream_id, stream_kind, aggregate_id, current_pos],
+            )?;
+        }
+
         Ok(())
     }
 

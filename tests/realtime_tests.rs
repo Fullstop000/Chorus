@@ -88,6 +88,84 @@ async fn test_realtime_subscription_replays_matching_events_from_cursor() {
 }
 
 #[tokio::test]
+async fn test_realtime_subscription_can_resume_from_stream_position() {
+    let (base_url, store) = start_test_server().await;
+    let general_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    store
+        .create_channel("random", Some("Random"), ChannelType::Channel)
+        .unwrap();
+    store
+        .join_channel("random", "alice", SenderType::Human)
+        .unwrap();
+
+    store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "general-1",
+            &[],
+        )
+        .unwrap();
+    store
+        .send_message("random", None, "alice", SenderType::Human, "random-1", &[])
+        .unwrap();
+    store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "general-2",
+            &[],
+        )
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
+        .await
+        .unwrap();
+
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "subscribe",
+                "resumeFrom": 999,
+                "streamId": format!("conversation:{general_id}"),
+                "resumeFromStreamPos": 1,
+                "scopes": [
+                    {
+                        "kind": "channel",
+                        "id": format!("channel:{general_id}")
+                    }
+                ]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+    let subscribed = read_json_frame(&mut socket).await;
+    assert_eq!(subscribed["type"], "subscribed");
+    assert_eq!(
+        subscribed["streamId"],
+        Value::String(format!("conversation:{general_id}"))
+    );
+    assert_eq!(subscribed["resumeFromStreamPos"], 1);
+
+    let event = read_json_frame(&mut socket).await;
+    assert_eq!(event["type"], "event");
+    assert_eq!(event["event"]["eventType"], "message.created");
+    assert_eq!(
+        event["event"]["streamId"],
+        format!("conversation:{general_id}")
+    );
+    assert_eq!(event["event"]["streamPos"], 2);
+    assert_eq!(event["event"]["payload"]["content"], "general-2");
+}
+
+#[tokio::test]
 async fn test_realtime_subscription_receives_live_events_after_subscribe() {
     let (base_url, store) = start_test_server().await;
     let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
@@ -125,6 +203,115 @@ async fn test_realtime_subscription_receives_live_events_after_subscribe() {
     assert_eq!(event["type"], "event");
     assert_eq!(event["event"]["eventType"], "message.created");
     assert_eq!(event["event"]["payload"]["content"], "live");
+}
+
+#[tokio::test]
+async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery() {
+    let (base_url, store) = start_test_server().await;
+    let general_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let random_id = store
+        .create_channel("random", Some("Random"), ChannelType::Channel)
+        .unwrap();
+    store
+        .join_channel("random", "alice", SenderType::Human)
+        .unwrap();
+
+    store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "general-seed",
+            &[],
+        )
+        .unwrap();
+    store
+        .send_message(
+            "random",
+            None,
+            "alice",
+            SenderType::Human,
+            "random-seed",
+            &[],
+        )
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
+        .await
+        .unwrap();
+
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "subscribe",
+                "resumeFrom": 2,
+                "streamId": format!("conversation:{general_id}"),
+                "resumeFromStreamPos": 1,
+                "scopes": [
+                    {
+                        "kind": "channel",
+                        "id": format!("channel:{general_id}")
+                    }
+                ]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+    let first_subscribed = read_json_frame(&mut socket).await;
+    assert_eq!(first_subscribed["type"], "subscribed");
+    assert_eq!(
+        first_subscribed["streamId"],
+        Value::String(format!("conversation:{general_id}"))
+    );
+
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "subscribe",
+                "resumeFrom": 2,
+                "scopes": [
+                    {
+                        "kind": "channel",
+                        "id": format!("channel:{random_id}")
+                    }
+                ]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+    let second_subscribed = read_json_frame(&mut socket).await;
+    assert_eq!(second_subscribed["type"], "subscribed");
+    assert_eq!(second_subscribed["streamId"], Value::Null);
+
+    store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "general-live-after-multi-subscribe",
+            &[],
+        )
+        .unwrap();
+
+    let event = read_json_frame(&mut socket).await;
+    assert_eq!(event["type"], "event");
+    assert_eq!(event["event"]["scopeKind"], "channel");
+    assert_eq!(
+        event["event"]["scopeId"],
+        Value::String(format!("channel:{general_id}"))
+    );
+    assert_eq!(
+        event["event"]["payload"]["content"],
+        "general-live-after-multi-subscribe"
+    );
 }
 
 #[tokio::test]

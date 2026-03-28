@@ -266,7 +266,7 @@ async fn test_send_and_receive() {
 
 #[tokio::test]
 async fn test_history_includes_latest_event_id_cursor() {
-    let (_store, app) = setup();
+    let (store, app) = setup();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "hello" });
     let send_resp = app
@@ -297,7 +297,10 @@ async fn test_history_includes_latest_event_id_cursor() {
         .await
         .unwrap();
     let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
     assert_eq!(history["latestEventId"], 1);
+    assert_eq!(history["streamId"], format!("conversation:{channel_id}"));
+    assert_eq!(history["streamPos"], 1);
 }
 
 #[tokio::test]

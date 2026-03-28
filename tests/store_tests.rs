@@ -214,6 +214,36 @@ fn test_message_history_pagination() {
 }
 
 #[test]
+fn test_history_snapshot_returns_messages_and_event_cursor_together() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    store
+        .send_message("general", None, "alice", SenderType::Human, "one", &[])
+        .unwrap();
+    store
+        .send_message("general", None, "alice", SenderType::Human, "two", &[])
+        .unwrap();
+
+    let snapshot = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+
+    assert_eq!(snapshot.messages.len(), 2);
+    assert!(!snapshot.has_more);
+    assert_eq!(snapshot.last_read_seq, 2);
+    assert_eq!(snapshot.latest_event_id, 2);
+    assert_eq!(snapshot.messages[0].content, "one");
+    assert_eq!(snapshot.messages[1].content, "two");
+}
+
+#[test]
 fn test_agent_env_vars_persist_in_agent_record() {
     let (store, _dir) = make_store();
     store
@@ -313,22 +343,29 @@ fn test_send_message_emits_message_created_event() {
     let message_id = store
         .send_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
+    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
 
     let events = store.list_events(None, 20).unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_type, "message.created");
     assert_eq!(events[0].scope_kind, "channel");
+    assert_eq!(events[0].stream_kind, "conversation");
+    assert_eq!(events[0].stream_id, format!("conversation:{channel_id}"));
+    assert_eq!(events[0].stream_pos, 1);
     assert_eq!(events[0].actor_name.as_deref(), Some("alice"));
     assert_eq!(events[0].actor_type.as_deref(), Some("human"));
     assert_eq!(
         payload_field(&events[0], "messageId").as_str(),
         Some(message_id.as_str())
     );
-    assert_eq!(payload_field(&events[0], "content").as_str(), Some("hello"));
     assert_eq!(
         payload_field(&events[0], "conversationType").as_str(),
         Some("channel")
     );
+    assert!(events[0].payload.get("content").is_none());
+    assert!(events[0].payload.get("attachments").is_none());
+    assert!(events[0].payload.get("attachmentIds").is_none());
+    assert!(events[0].payload.get("createdAt").is_none());
 }
 
 #[test]
@@ -363,7 +400,10 @@ fn test_thread_reply_emits_thread_derived_events() {
         .unwrap();
 
     let events = store.list_events(None, 20).unwrap();
-    let event_types: Vec<_> = events.iter().map(|event| event.event_type.as_str()).collect();
+    let event_types: Vec<_> = events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
     assert_eq!(
         event_types,
         vec![
@@ -374,6 +414,11 @@ fn test_thread_reply_emits_thread_derived_events() {
             "thread.participant_added",
         ]
     );
+    let stream_positions: Vec<_> = events.iter().map(|event| event.stream_pos).collect();
+    assert_eq!(stream_positions, vec![1, 2, 3, 4, 5]);
+    assert!(events
+        .iter()
+        .all(|event| event.stream_kind == "conversation"));
 
     let reply_event = &events[1];
     assert_eq!(reply_event.scope_kind, "thread");
@@ -385,6 +430,7 @@ fn test_thread_reply_emits_thread_derived_events() {
         payload_field(reply_event, "threadParentId").as_str(),
         Some(parent_id.as_str())
     );
+    assert!(reply_event.payload.get("content").is_none());
 
     let reply_count_event = &events[2];
     assert_eq!(reply_count_event.scope_kind, "channel");

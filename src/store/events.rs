@@ -11,6 +11,12 @@ use super::{parse_datetime, Store};
 pub struct StoredEvent {
     /// Monotonic workspace-global event cursor.
     pub event_id: i64,
+    /// Domain stream that owns this event.
+    pub stream_id: String,
+    /// Stream kind (`conversation`, `team`, `agent`, `inbox`, ...).
+    pub stream_kind: String,
+    /// Monotonic position within the owning stream.
+    pub stream_pos: i64,
     /// Stable event name such as `message.created`.
     pub event_type: String,
     /// Subscription scope discriminator (`channel`, `dm`, `thread`, ...).
@@ -54,11 +60,10 @@ impl Store {
     /// Return the latest committed global event cursor.
     pub fn latest_event_id(&self) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let latest = conn.query_row(
-            "SELECT COALESCE(MAX(event_id), 0) FROM events",
-            [],
-            |row| row.get(0),
-        )?;
+        let latest =
+            conn.query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
+                row.get(0)
+            })?;
         Ok(latest)
     }
 
@@ -69,6 +74,17 @@ impl Store {
         Self::list_events_inner(&conn, after_event_id, limit)
     }
 
+    /// List persisted events for a single stream ordered by stream position.
+    pub fn list_events_for_stream(
+        &self,
+        stream_id: &str,
+        after_stream_pos: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<StoredEvent>> {
+        let conn = self.conn.lock().unwrap();
+        Self::list_events_for_stream_inner(&conn, stream_id, after_stream_pos, limit)
+    }
+
     fn list_events_inner(
         conn: &Connection,
         after_event_id: Option<i64>,
@@ -76,7 +92,7 @@ impl Store {
     ) -> Result<Vec<StoredEvent>> {
         let mut stmt = if after_event_id.is_some() {
             conn.prepare(
-                "SELECT event_id, event_type, scope_kind, scope_id, channel_id, channel_name,
+                "SELECT event_id, stream_id, stream_kind, stream_pos, event_type, scope_kind, scope_id, channel_id, channel_name,
                         thread_parent_id, actor_name, actor_type, caused_by_kind, payload, created_at
                  FROM events
                  WHERE event_id > ?1
@@ -85,7 +101,7 @@ impl Store {
             )?
         } else {
             conn.prepare(
-                "SELECT event_id, event_type, scope_kind, scope_id, channel_id, channel_name,
+                "SELECT event_id, stream_id, stream_kind, stream_pos, event_type, scope_kind, scope_id, channel_id, channel_name,
                         thread_parent_id, actor_name, actor_type, caused_by_kind, payload, created_at
                  FROM events
                  ORDER BY event_id ASC
@@ -102,22 +118,60 @@ impl Store {
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
+    fn list_events_for_stream_inner(
+        conn: &Connection,
+        stream_id: &str,
+        after_stream_pos: Option<i64>,
+        limit: i64,
+    ) -> Result<Vec<StoredEvent>> {
+        let mut stmt = if after_stream_pos.is_some() {
+            conn.prepare(
+                "SELECT event_id, stream_id, stream_kind, stream_pos, event_type, scope_kind, scope_id, channel_id, channel_name,
+                        thread_parent_id, actor_name, actor_type, caused_by_kind, payload, created_at
+                 FROM events
+                 WHERE stream_id = ?1 AND stream_pos > ?2
+                 ORDER BY stream_pos ASC
+                 LIMIT ?3",
+            )?
+        } else {
+            conn.prepare(
+                "SELECT event_id, stream_id, stream_kind, stream_pos, event_type, scope_kind, scope_id, channel_id, channel_name,
+                        thread_parent_id, actor_name, actor_type, caused_by_kind, payload, created_at
+                 FROM events
+                 WHERE stream_id = ?1
+                 ORDER BY stream_pos ASC
+                 LIMIT ?2",
+            )?
+        };
+
+        let rows = if let Some(after) = after_stream_pos {
+            stmt.query_map(params![stream_id, after, limit], Self::map_stored_event)?
+        } else {
+            stmt.query_map(params![stream_id, limit], Self::map_stored_event)?
+        };
+
+        Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
     fn map_stored_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredEvent> {
-        let payload_raw: String = row.get(10)?;
+        let payload_raw: String = row.get(13)?;
         let payload = serde_json::from_str(&payload_raw).unwrap_or(Value::Null);
         Ok(StoredEvent {
             event_id: row.get(0)?,
-            event_type: row.get(1)?,
-            scope_kind: row.get(2)?,
-            scope_id: row.get(3)?,
-            channel_id: row.get(4)?,
-            channel_name: row.get(5)?,
-            thread_parent_id: row.get(6)?,
-            actor_name: row.get(7)?,
-            actor_type: row.get(8)?,
-            caused_by_kind: row.get(9)?,
+            stream_id: row.get(1)?,
+            stream_kind: row.get(2)?,
+            stream_pos: row.get(3)?,
+            event_type: row.get(4)?,
+            scope_kind: row.get(5)?,
+            scope_id: row.get(6)?,
+            channel_id: row.get(7)?,
+            channel_name: row.get(8)?,
+            thread_parent_id: row.get(9)?,
+            actor_name: row.get(10)?,
+            actor_type: row.get(11)?,
+            caused_by_kind: row.get(12)?,
             payload,
-            created_at: parse_datetime(&row.get::<_, String>(11)?),
+            created_at: parse_datetime(&row.get::<_, String>(14)?),
         })
     }
 
@@ -176,13 +230,36 @@ impl Store {
     }
 
     pub(crate) fn append_event_tx(tx: &Transaction<'_>, event: NewEvent<'_>) -> Result<i64> {
+        let (stream_id, stream_kind, aggregate_id) =
+            derive_stream_identity(event.scope_kind, &event.scope_id, event.channel_id);
+        tx.execute(
+            "INSERT OR IGNORE INTO streams (stream_id, stream_kind, aggregate_id, current_pos)
+             VALUES (?1, ?2, ?3, 0)",
+            params![
+                stream_id.as_str(),
+                stream_kind.as_str(),
+                aggregate_id.as_str()
+            ],
+        )?;
+        tx.execute(
+            "UPDATE streams SET current_pos = current_pos + 1 WHERE stream_id = ?1",
+            params![stream_id.as_str()],
+        )?;
+        let stream_pos: i64 = tx.query_row(
+            "SELECT current_pos FROM streams WHERE stream_id = ?1",
+            params![stream_id.as_str()],
+            |row| row.get(0),
+        )?;
         let payload_json = serde_json::to_string(&event.payload)?;
         tx.execute(
             "INSERT INTO events (
-                event_type, scope_kind, scope_id, channel_id, channel_name, thread_parent_id,
+                stream_id, stream_kind, stream_pos, event_type, scope_kind, scope_id, channel_id, channel_name, thread_parent_id,
                 actor_name, actor_type, caused_by_kind, payload
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
+                stream_id.as_str(),
+                stream_kind.as_str(),
+                stream_pos,
                 event.event_type,
                 event.scope_kind,
                 event.scope_id,
@@ -197,4 +274,106 @@ impl Store {
         )?;
         Ok(tx.last_insert_rowid())
     }
+
+    /// Resolve the owning stream for a single subscription scope.
+    pub fn stream_id_for_scope(&self, scope_kind: &str, scope_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        Self::stream_id_for_scope_inner(&conn, scope_kind, scope_id)
+    }
+
+    /// If all scopes map to the same owning stream, return it. Otherwise return None.
+    pub fn shared_stream_id_for_scopes(
+        &self,
+        scopes: &[(String, String)],
+    ) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut shared_stream_id: Option<String> = None;
+        for (scope_kind, scope_id) in scopes {
+            let Some(stream_id) = Self::stream_id_for_scope_inner(&conn, scope_kind, scope_id)?
+            else {
+                return Ok(None);
+            };
+            match &shared_stream_id {
+                Some(existing) if existing != &stream_id => return Ok(None),
+                Some(_) => {}
+                None => shared_stream_id = Some(stream_id),
+            }
+        }
+        Ok(shared_stream_id)
+    }
+
+    fn stream_id_for_scope_inner(
+        conn: &Connection,
+        scope_kind: &str,
+        scope_id: &str,
+    ) -> Result<Option<String>> {
+        match scope_kind {
+            "channel" | "dm" => Ok(scope_id
+                .strip_prefix(&format!("{scope_kind}:"))
+                .map(|channel_id| format!("conversation:{channel_id}"))),
+            "thread" => {
+                let Some(parent_message_id) = scope_id.strip_prefix("thread:") else {
+                    return Ok(None);
+                };
+                let channel_id: Option<String> = conn
+                    .query_row(
+                        "SELECT channel_id FROM messages WHERE id = ?1",
+                        params![parent_message_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+                Ok(channel_id.map(|channel_id| format!("conversation:{channel_id}")))
+            }
+            "agent" => Ok(Some(scope_id.to_string())),
+            "user" => Ok(scope_id
+                .strip_prefix("user:")
+                .map(|user_name| format!("inbox:{user_name}"))),
+            "workspace" => Ok(Some("workspace:default".to_string())),
+            _ => Ok(None),
+        }
+    }
+}
+
+pub(crate) fn derive_stream_identity(
+    scope_kind: &str,
+    scope_id: &str,
+    channel_id: Option<&str>,
+) -> (String, String, String) {
+    if let Some(channel_id) = channel_id {
+        return (
+            format!("conversation:{channel_id}"),
+            "conversation".to_string(),
+            channel_id.to_string(),
+        );
+    }
+
+    if let Some(agent_name) = scope_id.strip_prefix("agent:") {
+        return (
+            format!("agent:{agent_name}"),
+            "agent".to_string(),
+            agent_name.to_string(),
+        );
+    }
+
+    if let Some(user_name) = scope_id.strip_prefix("user:") {
+        return (
+            format!("inbox:{user_name}"),
+            "inbox".to_string(),
+            user_name.to_string(),
+        );
+    }
+
+    if scope_kind == "workspace" {
+        return (
+            "workspace:default".to_string(),
+            "workspace".to_string(),
+            "default".to_string(),
+        );
+    }
+
+    (
+        scope_id.to_string(),
+        scope_kind.to_string(),
+        scope_id.to_string(),
+    )
 }

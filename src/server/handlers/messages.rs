@@ -61,6 +61,10 @@ pub struct HistoryResponse {
     pub last_read_seq: i64,
     #[serde(rename = "latestEventId")]
     pub latest_event_id: i64,
+    #[serde(rename = "streamId")]
+    pub stream_id: String,
+    #[serde(rename = "streamPos")]
+    pub stream_pos: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -379,9 +383,10 @@ pub async fn handle_history(
     }
 
     let limit = params.limit.unwrap_or(50);
-    let (messages, has_more) = store
-        .get_history(
+    let snapshot = store
+        .get_history_snapshot(
             &channel_name,
+            &agent_id,
             thread_parent_id.as_deref(),
             limit,
             params.before,
@@ -389,16 +394,13 @@ pub async fn handle_history(
         )
         .map_err(|e| api_err(e.to_string()))?;
 
-    let last_read_seq = store
-        .get_last_read_seq(&channel_name, &agent_id)
-        .unwrap_or(0);
-    let latest_event_id = store.latest_event_id().unwrap_or(0);
-
     Ok(Json(HistoryResponse {
-        messages,
-        has_more,
-        last_read_seq,
-        latest_event_id,
+        messages: snapshot.messages,
+        has_more: snapshot.has_more,
+        last_read_seq: snapshot.last_read_seq,
+        latest_event_id: snapshot.latest_event_id,
+        stream_id: snapshot.stream_id,
+        stream_pos: snapshot.stream_pos,
     }))
 }
 

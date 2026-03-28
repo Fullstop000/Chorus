@@ -1,6 +1,7 @@
 import { resolveChannel } from '../api'
 import type {
   AttachmentRef,
+  ForwardedFrom,
   HistoryMessage,
   RealtimeEvent,
   RealtimeMessage,
@@ -70,6 +71,7 @@ function materializeLiveMessage(event: RealtimeEvent): HistoryMessage | null {
     return null
   }
 
+  const senderDeleted = payload.senderDeleted === true
   const attachments = Array.isArray(payload.attachments)
     ? payload.attachments
         .map((attachment) => {
@@ -83,6 +85,25 @@ function materializeLiveMessage(event: RealtimeEvent): HistoryMessage | null {
         })
         .filter((attachment): attachment is AttachmentRef => attachment != null)
     : undefined
+  const forwardedFrom =
+    typeof payload.forwardedFrom === 'object' && payload.forwardedFrom !== null
+      ? (() => {
+          const value = payload.forwardedFrom as {
+            channelName?: unknown
+            senderName?: unknown
+          }
+          if (
+            typeof value.channelName !== 'string' ||
+            typeof value.senderName !== 'string'
+          ) {
+            return undefined
+          }
+          return {
+            channelName: value.channelName,
+            senderName: value.senderName,
+          } satisfies ForwardedFrom
+        })()
+      : undefined
 
   return {
     id: messageId,
@@ -90,9 +111,10 @@ function materializeLiveMessage(event: RealtimeEvent): HistoryMessage | null {
     content,
     senderName,
     senderType: sender?.type === 'agent' ? 'agent' : 'human',
-    senderDeleted: false,
+    senderDeleted,
     createdAt: typeof payload.createdAt === 'string' ? payload.createdAt : event.createdAt,
-    attachments,
+    ...(attachments ? { attachments } : {}),
+    ...(forwardedFrom ? { forwardedFrom } : {}),
   }
 }
 

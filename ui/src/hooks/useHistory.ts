@@ -13,6 +13,8 @@ export function useHistory(username: string, target: string | null) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const lastEventIdRef = useRef(0)
+  const streamIdRef = useRef<string | null>(null)
+  const lastStreamPosRef = useRef(0)
 
   const fetchHistory = useCallback(async (): Promise<HistoryResponse | null> => {
     if (!username || !target) return null
@@ -20,6 +22,8 @@ export function useHistory(username: string, target: string | null) {
       const res = await getHistory(username, target, 50)
       setMessages(res.messages)
       lastEventIdRef.current = res.latestEventId ?? 0
+      streamIdRef.current = res.streamId ?? null
+      lastStreamPosRef.current = res.streamPos ?? 0
       setError(null)
       return res
     } catch (e) {
@@ -35,6 +39,8 @@ export function useHistory(username: string, target: string | null) {
       setMessages([])
       setError(null)
       lastEventIdRef.current = 0
+      streamIdRef.current = null
+      lastStreamPosRef.current = 0
       return
     }
 
@@ -49,12 +55,17 @@ export function useHistory(username: string, target: string | null) {
 
       socket = createRealtimeSocket(username)
       socket.onopen = () => {
+        const subscribeFrame: Record<string, unknown> = {
+          type: 'subscribe',
+          resumeFrom: lastEventIdRef.current,
+          scopes: [activeScope],
+        }
+        if (streamIdRef.current) {
+          subscribeFrame.streamId = streamIdRef.current
+          subscribeFrame.resumeFromStreamPos = lastStreamPosRef.current
+        }
         socket?.send(
-          JSON.stringify({
-            type: 'subscribe',
-            resumeFrom: lastEventIdRef.current,
-            scopes: [activeScope],
-          })
+          JSON.stringify(subscribeFrame)
         )
       }
       socket.onmessage = (messageEvent) => {
@@ -62,6 +73,10 @@ export function useHistory(username: string, target: string | null) {
           const frame = JSON.parse(String(messageEvent.data)) as RealtimeMessage
           if (frame.type === 'subscribed') {
             lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
+            if (frame.streamId) {
+              streamIdRef.current = frame.streamId
+              lastStreamPosRef.current = frame.resumeFromStreamPos ?? lastStreamPosRef.current
+            }
             return
           }
           if (frame.type === 'error') {
@@ -69,6 +84,12 @@ export function useHistory(username: string, target: string | null) {
             return
           }
           lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
+          if (streamIdRef.current && frame.event.streamId === streamIdRef.current) {
+            lastStreamPosRef.current = Math.max(
+              lastStreamPosRef.current,
+              frame.event.streamPos ?? 0
+            )
+          }
           setMessages((current) => applyRealtimeEvent(current, frame.event))
           setError(null)
         } catch (eventError) {
@@ -89,6 +110,8 @@ export function useHistory(username: string, target: string | null) {
       setMessages([])
       setError(null)
       lastEventIdRef.current = 0
+      streamIdRef.current = null
+      lastStreamPosRef.current = 0
 
       const history = await fetchHistory()
       if (cancelled || !history) return

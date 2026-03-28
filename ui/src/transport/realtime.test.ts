@@ -30,6 +30,11 @@ describe('realtime transport helpers', () => {
         messageId: 'msg-1',
         content: 'hello',
         sender: { name: 'alice', type: 'human' },
+        senderDeleted: true,
+        forwardedFrom: {
+          channelName: 'eng-team',
+          senderName: 'bob',
+        },
         seq: 1,
         createdAt: '2026-03-28T00:00:00Z',
       },
@@ -43,7 +48,11 @@ describe('realtime transport helpers', () => {
         content: 'hello',
         senderName: 'alice',
         senderType: 'human',
-        senderDeleted: false,
+        senderDeleted: true,
+        forwardedFrom: {
+          channelName: 'eng-team',
+          senderName: 'bob',
+        },
         createdAt: '2026-03-28T00:00:00Z',
       },
     ])
@@ -57,5 +66,18 @@ describe('realtime transport helpers', () => {
     }
 
     expect(nextRealtimeCursor(10, frame)).toBe(3)
+  })
+
+  it('preserves stream resume metadata on subscribed frames', () => {
+    const frame: RealtimeMessage = {
+      type: 'subscribed',
+      resumeFrom: 0,
+      streamId: 'conversation:abc',
+      resumeFromStreamPos: 7,
+      scopes: [],
+    }
+
+    expect(frame.streamId).toBe('conversation:abc')
+    expect(frame.resumeFromStreamPos).toBe(7)
   })
 })

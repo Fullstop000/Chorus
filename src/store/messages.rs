@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::channels::{Channel, ChannelType};
@@ -148,6 +148,23 @@ pub struct HistoryMessage {
     pub forwarded_from: Option<ForwardedFrom>,
 }
 
+/// Consistent history bootstrap payload assembled from one store read.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct HistorySnapshot {
+    /// Page of messages for the requested conversation scope.
+    pub messages: Vec<HistoryMessage>,
+    /// Whether more history exists beyond this page.
+    pub has_more: bool,
+    /// Last read sequence for the requesting member in the parent conversation.
+    pub last_read_seq: i64,
+    /// Latest committed durable event cursor observed alongside this snapshot.
+    pub latest_event_id: i64,
+    /// Owning conversation stream for this history snapshot.
+    pub stream_id: String,
+    /// Latest committed position in the owning conversation stream.
+    pub stream_pos: i64,
+}
+
 /// Compact message row for activity / cross-channel feeds.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ActivityMessage {
@@ -208,9 +225,7 @@ impl Store {
             |row| row.get(0),
         )?;
         let msg_id = Uuid::new_v4().to_string();
-        let forwarded_from_json = forwarded_from
-            .map(serde_json::to_string)
-            .transpose()?;
+        let forwarded_from_json = forwarded_from.map(serde_json::to_string).transpose()?;
         tx.execute(
             "INSERT INTO messages (
                 id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from
@@ -251,14 +266,10 @@ impl Store {
         thread_parent_id: Option<&str>,
         sender_name: &str,
         sender_type: SenderType,
-        content: &str,
-        attachment_ids: &[String],
-        forwarded_from: Option<&ForwardedFrom>,
         inserted: &InsertedMessage,
         caused_by_kind: &'static str,
     ) -> Result<i64> {
         let (scope_kind, scope_id) = Self::message_scope_for(channel, thread_parent_id);
-        let attachments = Self::get_message_attachments(tx, &inserted.id)?;
         Self::append_event_tx(
             tx,
             NewEvent {
@@ -276,16 +287,6 @@ impl Store {
                     "conversationId": channel.id.as_str(),
                     "conversationType": channel.channel_type.as_api_str(),
                     "threadParentId": thread_parent_id,
-                    "sender": {
-                        "name": sender_name,
-                        "type": sender_type.as_str(),
-                    },
-                    "content": content,
-                    "attachmentIds": attachment_ids,
-                    "attachments": attachments,
-                    "seq": inserted.seq,
-                    "createdAt": inserted.created_at.as_str(),
-                    "forwardedFrom": forwarded_from,
                 }),
             },
         )
@@ -352,7 +353,8 @@ impl Store {
         inserted: &InsertedMessage,
         sender_was_participant_before: bool,
     ) -> Result<i64> {
-        let (conversation_scope_kind, conversation_scope_id) = Self::conversation_scope_for(channel);
+        let (conversation_scope_kind, conversation_scope_id) =
+            Self::conversation_scope_for(channel);
         let reply_count: i64 = tx.query_row(
             "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND thread_parent_id = ?2",
             params![channel.id, parent_id],
@@ -488,15 +490,14 @@ impl Store {
             None,
             sender_name,
             sender_type,
-            content,
-            attachment_ids,
-            forwarded_from.as_ref(),
             &inserted,
             "post_message_with_forwarded_from",
         )?;
         tx.commit()?;
 
-        let _ = self.msg_tx.send((channel_id.to_string(), inserted.id.clone()));
+        let _ = self
+            .msg_tx
+            .send((channel_id.to_string(), inserted.id.clone()));
         let _ = self.event_tx.send(last_event_id);
         Ok(inserted.id)
     }
@@ -523,16 +524,15 @@ impl Store {
             None,
             "system",
             SenderType::Human,
-            content,
-            &[],
-            None,
             &inserted,
             "post_system_message",
         )?;
         let last_event_id = Self::append_system_notice_event_tx(&tx, &channel, &inserted)?;
         tx.commit()?;
 
-        let _ = self.msg_tx.send((channel_id.to_string(), inserted.id.clone()));
+        let _ = self
+            .msg_tx
+            .send((channel_id.to_string(), inserted.id.clone()));
         let _ = self.event_tx.send(last_event_id);
         Ok(inserted.id)
     }
@@ -572,9 +572,6 @@ impl Store {
             thread_parent_id,
             sender_name,
             sender_type,
-            content,
-            attachment_ids,
-            None,
             &inserted,
             "send_message",
         )?;
@@ -712,9 +709,7 @@ impl Store {
                         )
                     };
 
-                let forwarded_from = forwarded_from_raw
-                    .as_deref()
-                    .and_then(|s| serde_json::from_str::<ForwardedFrom>(s).ok());
+                let forwarded_from = Self::parse_forwarded_from_raw(forwarded_from_raw.as_deref());
 
                 result.push(ReceivedMessage {
                     message_id: msg_id.clone(),
@@ -798,6 +793,70 @@ impl Store {
         after: Option<i64>,
     ) -> Result<(Vec<HistoryMessage>, bool)> {
         let conn = self.conn.lock().unwrap();
+        Self::get_history_inner(&conn, channel_name, thread_parent_id, limit, before, after)
+    }
+
+    /// Rehydrate the canonical message projection for websocket transport so
+    /// `message.created` converges with history reads even if the stored event
+    /// payload becomes stale.
+    pub fn get_message_event_payload(&self, message_id: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_message_event_payload_inner(&conn, message_id)
+    }
+
+    /// Read a history page and durable event cursor together so reconnecting
+    /// clients can resume from a cursor that matches the returned snapshot.
+    pub fn get_history_snapshot(
+        &self,
+        channel_name: &str,
+        member_name: &str,
+        thread_parent_id: Option<&str>,
+        limit: i64,
+        before: Option<i64>,
+        after: Option<i64>,
+    ) -> Result<HistorySnapshot> {
+        let conn = self.conn.lock().unwrap();
+        let (messages, has_more) =
+            Self::get_history_inner(&conn, channel_name, thread_parent_id, limit, before, after)?;
+        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        let last_read_seq: i64 = conn
+            .query_row(
+                "SELECT last_read_seq FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
+                params![channel.id, member_name],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        let latest_event_id: i64 =
+            conn.query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
+                row.get(0)
+            })?;
+        let stream_id = format!("conversation:{}", channel.id);
+        let stream_pos: i64 = conn
+            .query_row(
+                "SELECT current_pos FROM streams WHERE stream_id = ?1",
+                params![stream_id.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(HistorySnapshot {
+            messages,
+            has_more,
+            last_read_seq,
+            latest_event_id,
+            stream_id,
+            stream_pos,
+        })
+    }
+
+    fn get_history_inner(
+        conn: &Connection,
+        channel_name: &str,
+        thread_parent_id: Option<&str>,
+        limit: i64,
+        before: Option<i64>,
+        after: Option<i64>,
+    ) -> Result<(Vec<HistoryMessage>, bool)> {
         let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
@@ -839,12 +898,7 @@ impl Store {
 
         let map_row = |row: &rusqlite::Row| -> rusqlite::Result<HistoryMessage> {
             let forwarded_from_raw: Option<String> = row.get(7)?;
-            let forwarded_from = forwarded_from_raw
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<ForwardedFrom>(s).map_err(|e| {
-                    tracing::warn!(raw = s, err = %e, "failed to parse forwarded_from JSON in history");
-                    e
-                }).ok());
+            let forwarded_from = Self::parse_forwarded_from_raw(forwarded_from_raw.as_deref());
             Ok(HistoryMessage {
                 id: row.get(0)?,
                 seq: row.get(1)?,
@@ -897,6 +951,90 @@ impl Store {
         }
 
         Ok((msgs, has_more))
+    }
+
+    fn get_message_event_payload_inner(
+        conn: &Connection,
+        message_id: &str,
+    ) -> Result<Option<Value>> {
+        let message_row = conn
+            .query_row(
+                "SELECT m.id, m.channel_id, c.channel_type, m.thread_parent_id, m.sender_name,
+                        m.sender_type, m.sender_deleted, m.content, m.seq, m.created_at, m.forwarded_from
+                 FROM messages m
+                 JOIN channels c ON c.id = m.channel_id
+                 WHERE m.id = ?1",
+                params![message_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, i64>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, i64>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, Option<String>>(10)?,
+                    ))
+                },
+            )
+            .ok();
+
+        let Some((
+            message_id,
+            conversation_id,
+            conversation_type,
+            thread_parent_id,
+            sender_name,
+            sender_type,
+            sender_deleted,
+            content,
+            seq,
+            created_at,
+            forwarded_from_raw,
+        )) = message_row
+        else {
+            return Ok(None);
+        };
+
+        let attachments = Self::get_message_attachments(conn, &message_id)?;
+        let attachment_ids = attachments
+            .iter()
+            .map(|attachment| attachment.id.clone())
+            .collect::<Vec<_>>();
+        let forwarded_from = Self::parse_forwarded_from_raw(forwarded_from_raw.as_deref());
+
+        Ok(Some(json!({
+            "messageId": message_id,
+            "conversationId": conversation_id,
+            "conversationType": conversation_type,
+            "threadParentId": thread_parent_id,
+            "sender": {
+                "name": sender_name,
+                "type": sender_type,
+            },
+            "senderDeleted": sender_deleted != 0,
+            "content": content,
+            "attachmentIds": attachment_ids,
+            "attachments": attachments,
+            "seq": seq,
+            "createdAt": created_at,
+            "forwardedFrom": forwarded_from,
+        })))
+    }
+
+    fn parse_forwarded_from_raw(raw: Option<&str>) -> Option<ForwardedFrom> {
+        raw.and_then(|value| {
+            serde_json::from_str::<ForwardedFrom>(value)
+                .map_err(|err| {
+                    tracing::warn!(raw = value, err = %err, "failed to parse forwarded_from JSON");
+                    err
+                })
+                .ok()
+        })
     }
 
     pub fn mark_agent_messages_deleted(&self, name: &str) -> Result<()> {
