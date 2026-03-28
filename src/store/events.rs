@@ -51,6 +51,17 @@ pub(crate) struct NewEvent<'a> {
 }
 
 impl Store {
+    /// Return the latest committed global event cursor.
+    pub fn latest_event_id(&self) -> Result<i64> {
+        let conn = self.conn.lock().unwrap();
+        let latest = conn.query_row(
+            "SELECT COALESCE(MAX(event_id), 0) FROM events",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(latest)
+    }
+
     /// List persisted events ordered by global cursor, optionally starting after
     /// a previously-seen cursor.
     pub fn list_events(&self, after_event_id: Option<i64>, limit: i64) -> Result<Vec<StoredEvent>> {
@@ -108,6 +119,60 @@ impl Store {
             payload,
             created_at: parse_datetime(&row.get::<_, String>(11)?),
         })
+    }
+
+    /// Validate whether the named viewer can subscribe to the requested event scope.
+    pub fn can_access_event_scope(
+        &self,
+        viewer_name: &str,
+        scope_kind: &str,
+        scope_id: &str,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Self::can_access_event_scope_inner(&conn, viewer_name, scope_kind, scope_id)
+    }
+
+    fn can_access_event_scope_inner(
+        conn: &Connection,
+        viewer_name: &str,
+        scope_kind: &str,
+        scope_id: &str,
+    ) -> Result<bool> {
+        if Self::lookup_sender_type_inner(conn, viewer_name)?.is_none() {
+            return Ok(false);
+        }
+
+        match scope_kind {
+            "workspace" => Ok(true),
+            "user" => Ok(scope_id == format!("user:{viewer_name}")),
+            "channel" | "dm" => {
+                let Some(channel_id) = scope_id.strip_prefix(&format!("{scope_kind}:")) else {
+                    return Ok(false);
+                };
+                let membership_count: i64 = conn.query_row(
+                    "SELECT COUNT(*) FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
+                    params![channel_id, viewer_name],
+                    |row| row.get(0),
+                )?;
+                Ok(membership_count > 0)
+            }
+            "thread" => {
+                let Some(parent_message_id) = scope_id.strip_prefix("thread:") else {
+                    return Ok(false);
+                };
+                let membership_count: i64 = conn.query_row(
+                    "SELECT COUNT(*)
+                     FROM messages m
+                     JOIN channel_members cm ON cm.channel_id = m.channel_id
+                     WHERE m.id = ?1 AND cm.member_name = ?2",
+                    params![parent_message_id, viewer_name],
+                    |row| row.get(0),
+                )?;
+                Ok(membership_count > 0)
+            }
+            "agent" => Ok(scope_id == format!("agent:{viewer_name}")),
+            _ => Ok(false),
+        }
     }
 
     pub(crate) fn append_event_tx(tx: &Transaction<'_>, event: NewEvent<'_>) -> Result<i64> {

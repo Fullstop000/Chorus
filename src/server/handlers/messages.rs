@@ -59,6 +59,8 @@ pub struct HistoryResponse {
     pub messages: Vec<crate::store::messages::HistoryMessage>,
     pub has_more: bool,
     pub last_read_seq: i64,
+    #[serde(rename = "latestEventId")]
+    pub latest_event_id: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -390,11 +392,13 @@ pub async fn handle_history(
     let last_read_seq = store
         .get_last_read_seq(&channel_name, &agent_id)
         .unwrap_or(0);
+    let latest_event_id = store.latest_event_id().unwrap_or(0);
 
     Ok(Json(HistoryResponse {
         messages,
         has_more,
         last_read_seq,
+        latest_event_id,
     }))
 }
 

@@ -256,8 +256,9 @@ impl Store {
         forwarded_from: Option<&ForwardedFrom>,
         inserted: &InsertedMessage,
         caused_by_kind: &'static str,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let (scope_kind, scope_id) = Self::message_scope_for(channel, thread_parent_id);
+        let attachments = Self::get_message_attachments(tx, &inserted.id)?;
         Self::append_event_tx(
             tx,
             NewEvent {
@@ -281,20 +282,20 @@ impl Store {
                     },
                     "content": content,
                     "attachmentIds": attachment_ids,
+                    "attachments": attachments,
                     "seq": inserted.seq,
                     "createdAt": inserted.created_at.as_str(),
                     "forwardedFrom": forwarded_from,
                 }),
             },
-        )?;
-        Ok(())
+        )
     }
 
     fn append_system_notice_event_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
         inserted: &InsertedMessage,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let (scope_kind, scope_id) = Self::conversation_scope_for(channel);
         Self::append_event_tx(
             tx,
@@ -314,8 +315,7 @@ impl Store {
                     "noticeKind": "system_message",
                 }),
             },
-        )?;
-        Ok(())
+        )
     }
 
     fn thread_participant_exists_before(
@@ -351,14 +351,14 @@ impl Store {
         sender_type: SenderType,
         inserted: &InsertedMessage,
         sender_was_participant_before: bool,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let (conversation_scope_kind, conversation_scope_id) = Self::conversation_scope_for(channel);
         let reply_count: i64 = tx.query_row(
             "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND thread_parent_id = ?2",
             params![channel.id, parent_id],
             |row| row.get(0),
         )?;
-        Self::append_event_tx(
+        let _ = Self::append_event_tx(
             tx,
             NewEvent {
                 event_type: "thread.reply_count_changed",
@@ -379,7 +379,7 @@ impl Store {
         )?;
 
         let thread_scope_id = format!("thread:{parent_id}");
-        Self::append_event_tx(
+        let mut last_event_id = Self::append_event_tx(
             tx,
             NewEvent {
                 event_type: "thread.activity_bumped",
@@ -400,7 +400,7 @@ impl Store {
         )?;
 
         if !sender_was_participant_before {
-            Self::append_event_tx(
+            last_event_id = Self::append_event_tx(
                 tx,
                 NewEvent {
                     event_type: "thread.participant_added",
@@ -424,7 +424,7 @@ impl Store {
             )?;
         }
 
-        Ok(())
+        Ok(last_event_id)
     }
 
     fn append_tombstone_changed_event_tx(
@@ -433,7 +433,7 @@ impl Store {
         thread_parent_id: Option<&str>,
         message_id: &str,
         caused_by_kind: &'static str,
-    ) -> Result<()> {
+    ) -> Result<i64> {
         let (scope_kind, scope_id) = Self::message_scope_for(channel, thread_parent_id);
         Self::append_event_tx(
             tx,
@@ -454,8 +454,7 @@ impl Store {
                     "senderDeleted": true,
                 }),
             },
-        )?;
-        Ok(())
+        )
     }
 
     /// Insert a message row directly by channel id, optionally attaching
@@ -483,7 +482,7 @@ impl Store {
             attachment_ids,
             forwarded_from.as_ref(),
         )?;
-        Self::append_message_created_event_tx(
+        let last_event_id = Self::append_message_created_event_tx(
             &tx,
             &channel,
             None,
@@ -498,6 +497,7 @@ impl Store {
         tx.commit()?;
 
         let _ = self.msg_tx.send((channel_id.to_string(), inserted.id.clone()));
+        let _ = self.event_tx.send(last_event_id);
         Ok(inserted.id)
     }
 
@@ -517,7 +517,7 @@ impl Store {
             &[],
             None,
         )?;
-        Self::append_message_created_event_tx(
+        let _ = Self::append_message_created_event_tx(
             &tx,
             &channel,
             None,
@@ -529,10 +529,11 @@ impl Store {
             &inserted,
             "post_system_message",
         )?;
-        Self::append_system_notice_event_tx(&tx, &channel, &inserted)?;
+        let last_event_id = Self::append_system_notice_event_tx(&tx, &channel, &inserted)?;
         tx.commit()?;
 
         let _ = self.msg_tx.send((channel_id.to_string(), inserted.id.clone()));
+        let _ = self.event_tx.send(last_event_id);
         Ok(inserted.id)
     }
 
@@ -565,7 +566,7 @@ impl Store {
             attachment_ids,
             None,
         )?;
-        Self::append_message_created_event_tx(
+        let mut last_event_id = Self::append_message_created_event_tx(
             &tx,
             &channel,
             thread_parent_id,
@@ -578,7 +579,7 @@ impl Store {
             "send_message",
         )?;
         if let Some(parent_id) = thread_parent_id {
-            Self::append_thread_events_tx(
+            last_event_id = Self::append_thread_events_tx(
                 &tx,
                 &channel,
                 parent_id,
@@ -597,6 +598,7 @@ impl Store {
         tx.commit()?;
 
         let _ = self.msg_tx.send((channel.id.clone(), inserted.id.clone()));
+        let _ = self.event_tx.send(last_event_id);
         Ok(inserted.id)
     }
 
@@ -932,16 +934,20 @@ impl Store {
              WHERE sender_type = 'agent' AND sender_name = ?1 AND sender_deleted = 0",
             params![name],
         )?;
+        let mut last_event_id = None;
         for (message_id, channel, thread_parent_id) in impacted_messages {
-            Self::append_tombstone_changed_event_tx(
+            last_event_id = Some(Self::append_tombstone_changed_event_tx(
                 &tx,
                 &channel,
                 thread_parent_id.as_deref(),
                 &message_id,
                 "mark_agent_messages_deleted",
-            )?;
+            )?);
         }
         tx.commit()?;
+        if let Some(last_event_id) = last_event_id {
+            let _ = self.event_tx.send(last_event_id);
+        }
         Ok(())
     }
 

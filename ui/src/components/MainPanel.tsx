@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getChannelMembers, getTeam } from '../api'
-import { useApp, useTarget } from '../store'
+import { useApp } from '../store'
 import { TabBar } from './TabBar'
 import { ChatHeader, ChatPanel } from './ChatPanel'
 import { TasksPanel } from './TasksPanel'
@@ -9,7 +9,6 @@ import { ActivityPanel } from './ActivityPanel'
 import { WorkspacePanel } from './WorkspacePanel'
 import { MessageInput } from './MessageInput'
 import { ThreadPanel } from './ThreadPanel'
-import { useHistory } from '../hooks/useHistory'
 import { ChannelMembersPanel } from './ChannelMembersPanel'
 import type { ChannelMemberInfo, TeamResponse } from '../types'
 import { TeamSettings } from './TeamSettings'
@@ -28,8 +27,6 @@ export function MainPanel() {
     openThreadMsg,
     serverInfo,
   } = useApp()
-  const target = useTarget()
-  const { refresh: refreshHistory } = useHistory(currentUser, target)
   const [members, setMembers] = useState<ChannelMemberInfo[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [showMembersPanel, setShowMembersPanel] = useState(false)
@@ -159,7 +156,7 @@ export function MainPanel() {
           {activeTab === 'chat' && (
             <>
               <ChatPanel />
-              <MessageInput onMessageSent={refreshHistory} />
+              <MessageInput />
             </>
           )}
           {activeTab === 'tasks' && <TasksPanel />}

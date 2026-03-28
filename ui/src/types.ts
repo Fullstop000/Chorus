@@ -88,7 +88,48 @@ export interface HistoryResponse {
   messages: HistoryMessage[]
   has_more: boolean
   last_read_seq: number
+  latestEventId: number
 }
+
+export interface RealtimeScope {
+  kind: string
+  id: string
+}
+
+export interface RealtimeEvent {
+  eventId: number
+  eventType: string
+  scopeKind: string
+  scopeId: string
+  channelId?: string | null
+  channelName?: string | null
+  threadParentId?: string | null
+  actor?: {
+    name: string
+    type?: 'human' | 'agent' | null
+  } | null
+  causedBy?: {
+    kind: string
+  } | null
+  payload: Record<string, unknown>
+  createdAt: string
+}
+
+export type RealtimeMessage =
+  | {
+      type: 'subscribed'
+      resumeFrom: number
+      scopes: RealtimeScope[]
+    }
+  | {
+      type: 'event'
+      event: RealtimeEvent
+    }
+  | {
+      type: 'error'
+      code: string
+      message: string
+    }
 
 // ── Tasks ──
 

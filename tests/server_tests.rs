@@ -265,6 +265,42 @@ async fn test_send_and_receive() {
 }
 
 #[tokio::test]
+async fn test_history_includes_latest_event_id_cursor() {
+    let (_store, app) = setup();
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "hello" });
+    let send_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(send_resp.status(), StatusCode::OK);
+
+    let history_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/alice/history?channel=%23general&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(history_resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(history_resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(history["latestEventId"], 1);
+}
+
+#[tokio::test]
 async fn test_receive_timeout_is_interpreted_in_milliseconds() {
     let (_store, app) = setup();
 

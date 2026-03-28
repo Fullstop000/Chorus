@@ -1,4 +1,5 @@
 mod handlers;
+pub mod transport;
 
 use std::sync::Arc;
 use std::{collections::HashSet, sync::Mutex};
@@ -37,6 +38,7 @@ pub fn build_router_with_services(
     runtime_status_provider: SharedRuntimeStatusProvider,
 ) -> Router {
     use handlers::*;
+    use transport::realtime::handle_events_ws;
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -140,6 +142,7 @@ pub fn build_router_with_services(
             get(handle_agent_workspace_file),
         )
         .route("/api/server-info", get(handle_ui_server_info))
+        .route("/api/events/ws", get(handle_events_ws))
         .layer(cors)
         .fallback_service(ServeDir::new("ui/dist").fallback(ServeFile::new("ui/dist/index.html")))
         .with_state(state)

@@ -54,6 +54,8 @@ pub struct Store {
     conn: Mutex<Connection>,
     /// Broadcast channel: `(channel_id, message_id)` for wake / notify.
     msg_tx: broadcast::Sender<(String, String)>,
+    /// Broadcast channel: latest committed durable event id for realtime wake / replay.
+    event_tx: broadcast::Sender<i64>,
     /// Root data directory (db parent, attachments, agents, teams).
     data_dir: PathBuf,
 }
@@ -78,9 +80,11 @@ impl Store {
         Self::init_schema(&conn)?;
         Self::migrate_remove_spurious_dm_members(&conn)?;
         let (msg_tx, _) = broadcast::channel(256);
+        let (event_tx, _) = broadcast::channel(256);
         Ok(Self {
             conn: Mutex::new(conn),
             msg_tx,
+            event_tx,
             data_dir: derive_data_dir(path),
         })
     }
@@ -426,6 +430,10 @@ impl Store {
 
     pub fn subscribe(&self) -> broadcast::Receiver<(String, String)> {
         self.msg_tx.subscribe()
+    }
+
+    pub fn subscribe_events(&self) -> broadcast::Receiver<i64> {
+        self.event_tx.subscribe()
     }
 
     // ── Sender type lookup ──
