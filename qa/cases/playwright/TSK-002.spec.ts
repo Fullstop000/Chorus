@@ -22,7 +22,7 @@ test.describe('TSK-002', () => {
     })
 
     await test.step('Step 4: Matching task exists in Tasks tab', async () => {
-      await page.getByRole('button', { name: 'Tasks' }).click()
+      await page.getByRole('button', { name: 'Tasks', exact: true }).click()
       await expect(
         page.locator('.task-column[data-status="todo"] .task-card-title').filter({ hasText: title })
       ).toBeVisible()

@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -11,7 +11,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use crate::server::handlers::{api_err, AppState, ErrorResponse};
-use crate::store::{Store, StoredEvent};
+use crate::store::{ResolvedSubscriptionTarget, Store, StoredEvent};
 
 #[derive(Debug, Deserialize)]
 pub struct RealtimeParams {
@@ -47,6 +47,8 @@ enum ClientFrame {
         #[serde(default, rename = "resumeFromStreamPos")]
         resume_from_stream_pos: Option<i64>,
         #[serde(default)]
+        targets: Vec<String>,
+        #[serde(default)]
         scopes: Vec<SubscribeScope>,
     },
 }
@@ -69,7 +71,7 @@ pub async fn handle_events_ws(
 }
 
 async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: String) {
-    let mut subscribed_scopes = BTreeSet::new();
+    let mut subscribed_targets = BTreeMap::new();
     let mut replay_cursor = ReplayCursor::Global { event_id: 0 };
     let mut event_rx = store.subscribe_events();
 
@@ -82,7 +84,7 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
                             &mut socket,
                             store.as_ref(),
                             &viewer,
-                            &mut subscribed_scopes,
+                            &mut subscribed_targets,
                             &mut replay_cursor,
                             text.as_str(),
                         ).await.is_err() {
@@ -102,13 +104,13 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
                     }
                 }
             }
-            event_notice = event_rx.recv(), if !subscribed_scopes.is_empty() => {
+            event_notice = event_rx.recv(), if !subscribed_targets.is_empty() => {
                 match event_notice {
                     Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {
                         match replay_matching_events(
                             &mut socket,
                             store.as_ref(),
-                            &subscribed_scopes,
+                            &subscribed_targets,
                             &replay_cursor,
                         ).await {
                             Ok(updated_cursor) => {
@@ -131,7 +133,7 @@ async fn handle_client_frame(
     socket: &mut WebSocket,
     store: &Store,
     viewer: &str,
-    subscribed_scopes: &mut BTreeSet<(String, String)>,
+    subscribed_targets: &mut BTreeMap<String, ResolvedSubscriptionTarget>,
     replay_cursor: &mut ReplayCursor,
     text: &str,
 ) -> anyhow::Result<()> {
@@ -155,13 +157,16 @@ async fn handle_client_frame(
             resume_from,
             stream_id,
             resume_from_stream_pos,
+            targets,
             scopes,
         } => {
-            let requested_scopes = match validate_scopes(store, viewer, scopes).await {
-                Ok(scopes) => scopes,
+            let requested_targets = match validate_targets(store, viewer, targets, scopes).await {
+                Ok(targets) => targets,
                 Err(err) => {
                     let message = err.to_string();
-                    let code = if message.starts_with("forbidden_scope:") {
+                    let code = if message.starts_with("forbidden_scope:")
+                        || message.starts_with("forbidden_target:")
+                    {
                         "forbidden_scope"
                     } else {
                         "invalid_scope"
@@ -178,12 +183,15 @@ async fn handle_client_frame(
                     return Ok(());
                 }
             };
-            let mut next_subscribed_scopes = subscribed_scopes.clone();
-            for scope in &requested_scopes {
-                next_subscribed_scopes.insert(scope.clone());
+            let mut next_subscribed_targets = subscribed_targets.clone();
+            for target in requested_targets {
+                next_subscribed_targets.insert(target.target_id.clone(), target);
             }
-            let all_scopes = next_subscribed_scopes.iter().cloned().collect::<Vec<_>>();
-            let shared_stream_id = store.shared_stream_id_for_scopes(&all_scopes)?;
+            let all_targets = next_subscribed_targets
+                .values()
+                .cloned()
+                .collect::<Vec<_>>();
+            let shared_stream_id = store.shared_stream_id_for_targets(&all_targets)?;
             let active_stream_id = match (shared_stream_id, stream_id) {
                 (Some(shared_stream_id), Some(requested_stream_id))
                     if requested_stream_id != shared_stream_id =>
@@ -194,7 +202,7 @@ async fn handle_client_frame(
                             "type": "error",
                             "code": "invalid_scope",
                             "message": format!(
-                                "requested stream {} does not match subscribed scopes",
+                                "requested stream {} does not match subscribed targets",
                                 requested_stream_id
                             ),
                         }),
@@ -232,7 +240,7 @@ async fn handle_client_frame(
                     event_id: fallback_event_id,
                 };
             }
-            *subscribed_scopes = next_subscribed_scopes;
+            *subscribed_targets = next_subscribed_targets;
             send_json(
                 socket,
                 json!({
@@ -243,32 +251,47 @@ async fn handle_client_frame(
                         ReplayCursor::Stream { stream_pos, .. } => Some(*stream_pos),
                         ReplayCursor::Global { .. } => None,
                     },
-                    "scopes": subscribed_scopes.iter().map(|(kind, id)| json!({ "kind": kind, "id": id })).collect::<Vec<_>>(),
+                    "targets": subscribed_targets.keys().cloned().collect::<Vec<_>>(),
+                    "scopes": [],
                 }),
             )
             .await?;
             *replay_cursor =
-                replay_matching_events(socket, store, subscribed_scopes, replay_cursor).await?;
+                replay_matching_events(socket, store, subscribed_targets, replay_cursor).await?;
         }
     }
     Ok(())
 }
 
-async fn validate_scopes(
+async fn validate_targets(
     store: &Store,
     viewer: &str,
+    targets: Vec<String>,
     scopes: Vec<SubscribeScope>,
-) -> anyhow::Result<Vec<(String, String)>> {
+) -> anyhow::Result<Vec<ResolvedSubscriptionTarget>> {
+    if !targets.is_empty() {
+        let mut validated = Vec::with_capacity(targets.len());
+        for target in targets {
+            let Some(resolved) = store.resolve_subscription_target(viewer, &target)? else {
+                return Err(anyhow::anyhow!("forbidden_target:{}", target));
+            };
+            validated.push(resolved);
+        }
+        return Ok(validated);
+    }
+
     let mut validated = Vec::with_capacity(scopes.len());
     for scope in scopes {
-        if !store.can_access_event_scope(viewer, &scope.kind, &scope.id)? {
+        let Some(resolved) =
+            store.resolve_scope_subscription_target(viewer, &scope.kind, &scope.id)?
+        else {
             return Err(anyhow::anyhow!(
                 "forbidden_scope:{}:{}",
                 scope.kind,
                 scope.id
             ));
-        }
-        validated.push((scope.kind, scope.id));
+        };
+        validated.push(resolved);
     }
     Ok(validated)
 }
@@ -276,7 +299,7 @@ async fn validate_scopes(
 async fn replay_matching_events(
     socket: &mut WebSocket,
     store: &Store,
-    subscribed_scopes: &BTreeSet<(String, String)>,
+    subscribed_targets: &BTreeMap<String, ResolvedSubscriptionTarget>,
     replay_cursor: &ReplayCursor,
 ) -> anyhow::Result<ReplayCursor> {
     match replay_cursor {
@@ -291,7 +314,7 @@ async fn replay_matching_events(
 
                 for event in events {
                     cursor = event.event_id;
-                    if scope_matches(subscribed_scopes, &event) {
+                    if target_matches(subscribed_targets, &event) {
                         send_json(
                             socket,
                             json!({
@@ -329,7 +352,7 @@ async fn replay_matching_events(
                 for event in events {
                     cursor = event.stream_pos;
                     latest_event_id = latest_event_id.max(event.event_id);
-                    if scope_matches(subscribed_scopes, &event) {
+                    if target_matches(subscribed_targets, &event) {
                         send_json(
                             socket,
                             json!({
@@ -357,8 +380,13 @@ async fn replay_matching_events(
     }
 }
 
-fn scope_matches(subscribed_scopes: &BTreeSet<(String, String)>, event: &StoredEvent) -> bool {
-    subscribed_scopes.contains(&(event.scope_kind.clone(), event.scope_id.clone()))
+fn target_matches(
+    subscribed_targets: &BTreeMap<String, ResolvedSubscriptionTarget>,
+    event: &StoredEvent,
+) -> bool {
+    subscribed_targets
+        .values()
+        .any(|target| target.matches_event(event))
 }
 
 pub fn event_to_json_value(store: &Store, event: &StoredEvent) -> Value {

@@ -148,6 +148,137 @@ pub struct HistoryMessage {
     pub forwarded_from: Option<ForwardedFrom>,
 }
 
+/// Explicit read-model row for conversation history while `messages` remains
+/// the transitional backing storage for the projected chat view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConversationMessageView {
+    /// Message UUID.
+    pub message_id: String,
+    /// Owning conversation UUID.
+    pub conversation_id: String,
+    /// Conversation slug for the UI/API layer.
+    pub conversation_name: String,
+    /// `channel`, `dm`, `team`, or `system`.
+    pub conversation_type: String,
+    /// Parent message id when this row is a thread reply.
+    pub thread_parent_id: Option<String>,
+    /// Author handle.
+    pub sender_name: String,
+    /// `human` or `agent`.
+    pub sender_type: String,
+    /// True when the sender has been soft-deleted.
+    pub sender_deleted: bool,
+    /// Message body.
+    pub content: String,
+    /// ISO timestamp string.
+    pub created_at: String,
+    /// Monotonic per-conversation order.
+    pub seq: i64,
+    /// Linked files when present.
+    pub attachments: Vec<AttachmentRef>,
+    /// Reply count for top-level messages.
+    pub reply_count: Option<i64>,
+    /// Forward provenance when present.
+    pub forwarded_from: Option<ForwardedFrom>,
+}
+
+/// Explicit read-model row for thread summary state projected from conversation
+/// messages while thread semantics remain conversation-local.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadSummaryView {
+    /// Owning conversation UUID.
+    pub conversation_id: String,
+    /// Top-level message id that anchors the thread.
+    pub parent_message_id: String,
+    /// Number of replies currently in the thread.
+    pub reply_count: i64,
+    /// Most recent reply id when at least one reply exists.
+    pub last_reply_message_id: Option<String>,
+    /// Timestamp for the most recent reply when present.
+    pub last_reply_at: Option<String>,
+    /// Number of unique participants including the parent author.
+    pub participant_count: i64,
+}
+
+impl ThreadSummaryView {
+    fn from_projection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        Ok(Self {
+            conversation_id: row.get("conversation_id")?,
+            parent_message_id: row.get("parent_message_id")?,
+            reply_count: row.get("reply_count")?,
+            last_reply_message_id: row.get("last_reply_message_id")?,
+            last_reply_at: row.get("last_reply_at")?,
+            participant_count: row.get("participant_count")?,
+        })
+    }
+}
+
+impl ConversationMessageView {
+    fn from_projection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let forwarded_from_raw: Option<String> = row.get("forwarded_from")?;
+        let reply_count = row
+            .get::<_, Option<i64>>("reply_count")?
+            .filter(|count| *count > 0);
+        Ok(Self {
+            message_id: row.get("message_id")?,
+            conversation_id: row.get("conversation_id")?,
+            conversation_name: row.get("conversation_name")?,
+            conversation_type: row.get("conversation_type")?,
+            thread_parent_id: row.get("thread_parent_id")?,
+            sender_name: row.get("sender_name")?,
+            sender_type: row.get("sender_type")?,
+            sender_deleted: row.get::<_, i64>("sender_deleted")? > 0,
+            content: row.get("content")?,
+            created_at: row.get("created_at")?,
+            seq: row.get("seq")?,
+            attachments: Vec::new(),
+            reply_count,
+            forwarded_from: Store::parse_forwarded_from_raw(forwarded_from_raw.as_deref()),
+        })
+    }
+
+    fn to_history_message(&self) -> HistoryMessage {
+        HistoryMessage {
+            id: self.message_id.clone(),
+            seq: self.seq,
+            content: self.content.clone(),
+            sender_name: self.sender_name.clone(),
+            sender_type: self.sender_type.clone(),
+            created_at: self.created_at.clone(),
+            sender_deleted: self.sender_deleted,
+            attachments: (!self.attachments.is_empty()).then(|| self.attachments.clone()),
+            reply_count: self.reply_count,
+            forwarded_from: self.forwarded_from.clone(),
+        }
+    }
+
+    fn to_transport_payload(&self) -> Value {
+        let attachment_ids = self
+            .attachments
+            .iter()
+            .map(|attachment| attachment.id.clone())
+            .collect::<Vec<_>>();
+
+        json!({
+            "messageId": self.message_id,
+            "conversationId": self.conversation_id,
+            "conversationType": self.conversation_type,
+            "threadParentId": self.thread_parent_id,
+            "sender": {
+                "name": self.sender_name,
+                "type": self.sender_type,
+            },
+            "senderDeleted": self.sender_deleted,
+            "content": self.content,
+            "attachmentIds": attachment_ids,
+            "attachments": self.attachments,
+            "seq": self.seq,
+            "createdAt": self.created_at,
+            "forwardedFrom": self.forwarded_from,
+        })
+    }
+}
+
 /// Consistent history bootstrap payload assembled from one store read.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HistorySnapshot {
@@ -186,7 +317,6 @@ pub struct ActivityMessage {
 struct InsertedMessage {
     id: String,
     seq: i64,
-    created_at: String,
 }
 
 impl Store {
@@ -248,16 +378,7 @@ impl Store {
             )?;
         }
 
-        let created_at: String = tx.query_row(
-            "SELECT created_at FROM messages WHERE id = ?1",
-            params![msg_id],
-            |row| row.get(0),
-        )?;
-        Ok(InsertedMessage {
-            id: msg_id,
-            seq,
-            created_at,
-        })
+        Ok(InsertedMessage { id: msg_id, seq })
     }
 
     fn append_message_created_event_tx(
@@ -350,15 +471,17 @@ impl Store {
         parent_id: &str,
         sender_name: &str,
         sender_type: SenderType,
-        inserted: &InsertedMessage,
         sender_was_participant_before: bool,
     ) -> Result<i64> {
         let (conversation_scope_kind, conversation_scope_id) =
             Self::conversation_scope_for(channel);
-        let reply_count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND thread_parent_id = ?2",
+        let summary = tx.query_row(
+            "SELECT conversation_id, parent_message_id, reply_count,
+                    last_reply_message_id, last_reply_at, participant_count
+             FROM thread_summaries_view
+             WHERE conversation_id = ?1 AND parent_message_id = ?2",
             params![channel.id, parent_id],
-            |row| row.get(0),
+            ThreadSummaryView::from_projection_row,
         )?;
         let _ = Self::append_event_tx(
             tx,
@@ -375,7 +498,7 @@ impl Store {
                 payload: json!({
                     "parentMessageId": parent_id,
                     "conversationId": channel.id.as_str(),
-                    "replyCount": reply_count,
+                    "replyCount": summary.reply_count,
                 }),
             },
         )?;
@@ -395,8 +518,8 @@ impl Store {
                 caused_by_kind: Some("send_message"),
                 payload: json!({
                     "parentMessageId": parent_id,
-                    "lastReplyAt": inserted.created_at.as_str(),
-                    "lastReplyMessageId": inserted.id.as_str(),
+                    "lastReplyAt": summary.last_reply_at.as_deref(),
+                    "lastReplyMessageId": summary.last_reply_message_id.as_deref(),
                 }),
             },
         )?;
@@ -582,15 +705,20 @@ impl Store {
                 parent_id,
                 sender_name,
                 sender_type,
-                &inserted,
                 sender_was_participant_before,
             )?;
         }
         // Treat the sender's own newly-created message as already read so it
         // does not come back later through get_messages_for_agent() as unread.
-        tx.execute(
-            "UPDATE channel_members SET last_read_seq = MAX(last_read_seq, ?1) WHERE channel_id = ?2 AND member_name = ?3",
-            params![inserted.seq, channel.id, sender_name],
+        Self::set_inbox_read_cursor_tx(
+            &tx,
+            &channel,
+            sender_name,
+            sender_type.as_str(),
+            inserted.seq,
+            Some(&inserted.id),
+            false,
+            "send_message",
         )?;
         tx.commit()?;
 
@@ -604,16 +732,28 @@ impl Store {
         agent_name: &str,
         update_read_pos: bool,
     ) -> Result<Vec<ReceivedMessage>> {
-        let conn = self.conn.lock().unwrap();
-        let memberships: Vec<(String, i64)> = conn
-            .prepare("SELECT cm.channel_id, cm.last_read_seq FROM channel_members cm WHERE cm.member_name = ?1")?
-            .query_map(params![agent_name], |row| Ok((row.get(0)?, row.get(1)?)))?
+        let mut conn = self.conn.lock().unwrap();
+        let memberships: Vec<(String, String, i64)> = conn
+            .prepare(
+                "SELECT cm.channel_id,
+                        cm.member_type,
+                        COALESCE(irs.last_read_seq, 0)
+                 FROM channel_members cm
+                 LEFT JOIN inbox_read_state irs
+                   ON irs.conversation_id = cm.channel_id
+                  AND irs.member_name = cm.member_name
+                 WHERE cm.member_name = ?1",
+            )?
+            .query_map(params![agent_name], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
             .filter_map(|r| r.ok())
             .collect();
 
         let mut result = Vec::new();
+        let mut last_event_id = None;
 
-        for (channel_id, last_read_seq) in &memberships {
+        for (channel_id, member_type, last_read_seq) in &memberships {
             let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
 
@@ -641,6 +781,7 @@ impl Store {
             };
 
             let mut max_seq = *last_read_seq;
+            let last_message_id = msgs.last().map(|(msg_id, ..)| msg_id.clone());
             for (
                 msg_id,
                 sender_name,
@@ -727,11 +868,26 @@ impl Store {
             }
 
             if update_read_pos && max_seq > *last_read_seq {
-                conn.execute(
-                    "UPDATE channel_members SET last_read_seq = ?1 WHERE channel_id = ?2 AND member_name = ?3",
-                    params![max_seq, channel_id, agent_name],
+                let tx = conn.transaction()?;
+                let event_id = Self::set_inbox_read_cursor_tx(
+                    &tx,
+                    &channel,
+                    agent_name,
+                    member_type,
+                    max_seq,
+                    last_message_id.as_deref(),
+                    true,
+                    "get_messages_for_agent",
                 )?;
+                tx.commit()?;
+                if let Some(event_id) = event_id {
+                    last_event_id = Some(event_id);
+                }
             }
+        }
+
+        if let Some(last_event_id) = last_event_id {
+            let _ = self.event_tx.send(last_event_id);
         }
 
         Ok(result)
@@ -793,7 +949,40 @@ impl Store {
         after: Option<i64>,
     ) -> Result<(Vec<HistoryMessage>, bool)> {
         let conn = self.conn.lock().unwrap();
-        Self::get_history_inner(&conn, channel_name, thread_parent_id, limit, before, after)
+        let (messages, has_more) = Self::get_conversation_history_view_inner(
+            &conn,
+            channel_name,
+            thread_parent_id,
+            limit,
+            before,
+            after,
+        )?;
+        Ok((
+            messages
+                .iter()
+                .map(ConversationMessageView::to_history_message)
+                .collect(),
+            has_more,
+        ))
+    }
+
+    /// Load one projected conversation message row from the explicit history
+    /// read model that backs both UI history and websocket rehydration.
+    pub fn get_conversation_message_view(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<ConversationMessageView>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_conversation_message_view_inner(&conn, message_id)
+    }
+
+    /// Load one projected thread summary row for a top-level parent message.
+    pub fn get_thread_summary_view(
+        &self,
+        parent_message_id: &str,
+    ) -> Result<Option<ThreadSummaryView>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_thread_summary_view_inner(&conn, parent_message_id)
     }
 
     /// Rehydrate the canonical message projection for websocket transport so
@@ -816,17 +1005,23 @@ impl Store {
         after: Option<i64>,
     ) -> Result<HistorySnapshot> {
         let conn = self.conn.lock().unwrap();
-        let (messages, has_more) =
-            Self::get_history_inner(&conn, channel_name, thread_parent_id, limit, before, after)?;
+        let (message_views, has_more) = Self::get_conversation_history_view_inner(
+            &conn,
+            channel_name,
+            thread_parent_id,
+            limit,
+            before,
+            after,
+        )?;
         let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let last_read_seq: i64 = conn
-            .query_row(
-                "SELECT last_read_seq FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
-                params![channel.id, member_name],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
+        let last_read_seq = Self::get_inbox_conversation_state_by_channel_id_inner(
+            &conn,
+            &channel.id,
+            member_name,
+        )?
+        .map(|state| state.last_read_seq)
+        .unwrap_or(0);
         let latest_event_id: i64 =
             conn.query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
                 row.get(0)
@@ -840,7 +1035,10 @@ impl Store {
             )
             .unwrap_or(0);
         Ok(HistorySnapshot {
-            messages,
+            messages: message_views
+                .iter()
+                .map(ConversationMessageView::to_history_message)
+                .collect(),
             has_more,
             last_read_seq,
             latest_event_id,
@@ -849,14 +1047,14 @@ impl Store {
         })
     }
 
-    fn get_history_inner(
+    fn get_conversation_history_view_inner(
         conn: &Connection,
         channel_name: &str,
         thread_parent_id: Option<&str>,
         limit: i64,
         before: Option<i64>,
         after: Option<i64>,
-    ) -> Result<(Vec<HistoryMessage>, bool)> {
+    ) -> Result<(Vec<ConversationMessageView>, bool)> {
         let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
@@ -871,14 +1069,22 @@ impl Store {
         let thread_param_num = if has_cursor { "?3" } else { "?2" };
 
         let thread_clause = if thread_parent_id.is_some() {
-            format!("AND thread_parent_id = {thread_param_num}")
+            format!("AND conversation_messages_view.thread_parent_id = {thread_param_num}")
         } else {
-            "AND thread_parent_id IS NULL".to_string()
+            "AND conversation_messages_view.thread_parent_id IS NULL".to_string()
         };
         let (cursor_clause, order, needs_reverse) = if before.is_some() {
-            (format!("AND seq < {cursor_param}"), "DESC", true)
+            (
+                format!("AND conversation_messages_view.seq < {cursor_param}"),
+                "DESC",
+                true,
+            )
         } else if after.is_some() {
-            (format!("AND seq > {cursor_param}"), "ASC", false)
+            (
+                format!("AND conversation_messages_view.seq > {cursor_param}"),
+                "ASC",
+                false,
+            )
         } else {
             (String::new(), "DESC", true)
         };
@@ -887,63 +1093,59 @@ impl Store {
         }
 
         let sql = format!(
-            "SELECT id, seq, content, sender_name, sender_type, sender_deleted, created_at, forwarded_from \
-             FROM messages WHERE channel_id = ?1 {thread_clause} {cursor_clause} \
-             ORDER BY seq {order} LIMIT {fetch_limit}"
+            "SELECT conversation_messages_view.message_id AS message_id,
+                    conversation_messages_view.conversation_id AS conversation_id,
+                    conversation_messages_view.conversation_name AS conversation_name,
+                    conversation_messages_view.conversation_type AS conversation_type,
+                    conversation_messages_view.thread_parent_id AS thread_parent_id,
+                    conversation_messages_view.sender_name AS sender_name,
+                    conversation_messages_view.sender_type AS sender_type,
+                    conversation_messages_view.sender_deleted AS sender_deleted,
+                    conversation_messages_view.content AS content,
+                    conversation_messages_view.created_at AS created_at,
+                    conversation_messages_view.seq AS seq,
+                    conversation_messages_view.forwarded_from AS forwarded_from,
+                    thread_summaries_view.reply_count AS reply_count
+             FROM conversation_messages_view
+             LEFT JOIN thread_summaries_view
+               ON thread_summaries_view.conversation_id = conversation_messages_view.conversation_id
+              AND thread_summaries_view.parent_message_id = conversation_messages_view.message_id
+             WHERE conversation_messages_view.conversation_id = ?1 {thread_clause} {cursor_clause} \
+             ORDER BY conversation_messages_view.seq {order} LIMIT {fetch_limit}"
         );
 
         let cursor_val = before.or(after).unwrap_or(0);
         let thread_val = thread_parent_id.unwrap_or("");
         let mut stmt = conn.prepare(&sql)?;
 
-        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<HistoryMessage> {
-            let forwarded_from_raw: Option<String> = row.get(7)?;
-            let forwarded_from = Self::parse_forwarded_from_raw(forwarded_from_raw.as_deref());
-            Ok(HistoryMessage {
-                id: row.get(0)?,
-                seq: row.get(1)?,
-                content: row.get(2)?,
-                sender_name: row.get(3)?,
-                sender_type: row.get(4)?,
-                sender_deleted: row.get::<_, i64>(5)? > 0,
-                created_at: row.get(6)?,
-                attachments: None,
-                reply_count: None,
-                forwarded_from,
-            })
-        };
-
         // Bind exactly the parameters the SQL expects: ?1=channel_id, optionally ?2=cursor, optionally ?3=thread
-        let rows: Vec<HistoryMessage> = match (has_cursor, thread_parent_id.is_some()) {
-            (true, true) => stmt.query_map(params![channel.id, cursor_val, thread_val], map_row)?,
-            (true, false) => stmt.query_map(params![channel.id, cursor_val], map_row)?,
-            (false, true) => stmt.query_map(params![channel.id, thread_val], map_row)?,
-            (false, false) => stmt.query_map(params![channel.id], map_row)?,
+        let rows: Vec<ConversationMessageView> = match (has_cursor, thread_parent_id.is_some()) {
+            (true, true) => stmt.query_map(
+                params![channel.id, cursor_val, thread_val],
+                ConversationMessageView::from_projection_row,
+            )?,
+            (true, false) => stmt.query_map(
+                params![channel.id, cursor_val],
+                ConversationMessageView::from_projection_row,
+            )?,
+            (false, true) => stmt.query_map(
+                params![channel.id, thread_val],
+                ConversationMessageView::from_projection_row,
+            )?,
+            (false, false) => stmt.query_map(
+                params![channel.id],
+                ConversationMessageView::from_projection_row,
+            )?,
         }
         .filter_map(|r| r.ok())
         .collect();
 
         let has_more = rows.len() as i64 > limit;
-        let mut msgs: Vec<HistoryMessage> = rows.into_iter().take(limit as usize).collect();
+        let mut msgs: Vec<ConversationMessageView> =
+            rows.into_iter().take(limit as usize).collect();
 
         for msg in &mut msgs {
-            let atts = Self::get_message_attachments(&conn, &msg.id)?;
-            if !atts.is_empty() {
-                msg.attachments = Some(atts);
-            }
-        }
-
-        if thread_parent_id.is_none() {
-            for msg in &mut msgs {
-                let count: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND thread_parent_id = ?2",
-                    params![channel.id, msg.id],
-                    |row| row.get(0),
-                ).unwrap_or(0);
-                if count > 0 {
-                    msg.reply_count = Some(count);
-                }
-            }
+            Self::hydrate_conversation_message_view(conn, msg)?;
         }
 
         if needs_reverse {
@@ -957,73 +1159,69 @@ impl Store {
         conn: &Connection,
         message_id: &str,
     ) -> Result<Option<Value>> {
-        let message_row = conn
+        Ok(Self::get_conversation_message_view_inner(conn, message_id)?
+            .map(|message| message.to_transport_payload()))
+    }
+
+    fn get_conversation_message_view_inner(
+        conn: &Connection,
+        message_id: &str,
+    ) -> Result<Option<ConversationMessageView>> {
+        let message = conn
             .query_row(
-                "SELECT m.id, m.channel_id, c.channel_type, m.thread_parent_id, m.sender_name,
-                        m.sender_type, m.sender_deleted, m.content, m.seq, m.created_at, m.forwarded_from
-                 FROM messages m
-                 JOIN channels c ON c.id = m.channel_id
-                 WHERE m.id = ?1",
+                "SELECT conversation_messages_view.message_id AS message_id,
+                        conversation_messages_view.conversation_id AS conversation_id,
+                        conversation_messages_view.conversation_name AS conversation_name,
+                        conversation_messages_view.conversation_type AS conversation_type,
+                        conversation_messages_view.thread_parent_id AS thread_parent_id,
+                        conversation_messages_view.sender_name AS sender_name,
+                        conversation_messages_view.sender_type AS sender_type,
+                        conversation_messages_view.sender_deleted AS sender_deleted,
+                        conversation_messages_view.content AS content,
+                        conversation_messages_view.created_at AS created_at,
+                        conversation_messages_view.seq AS seq,
+                        conversation_messages_view.forwarded_from AS forwarded_from,
+                        thread_summaries_view.reply_count AS reply_count
+                 FROM conversation_messages_view
+                 LEFT JOIN thread_summaries_view
+                   ON thread_summaries_view.conversation_id = conversation_messages_view.conversation_id
+                  AND thread_summaries_view.parent_message_id = conversation_messages_view.message_id
+                 WHERE conversation_messages_view.message_id = ?1",
                 params![message_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, Option<String>>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, i64>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, i64>(8)?,
-                        row.get::<_, String>(9)?,
-                        row.get::<_, Option<String>>(10)?,
-                    ))
-                },
+                ConversationMessageView::from_projection_row,
             )
             .ok();
 
-        let Some((
-            message_id,
-            conversation_id,
-            conversation_type,
-            thread_parent_id,
-            sender_name,
-            sender_type,
-            sender_deleted,
-            content,
-            seq,
-            created_at,
-            forwarded_from_raw,
-        )) = message_row
-        else {
+        let Some(mut message) = message else {
             return Ok(None);
         };
 
-        let attachments = Self::get_message_attachments(conn, &message_id)?;
-        let attachment_ids = attachments
-            .iter()
-            .map(|attachment| attachment.id.clone())
-            .collect::<Vec<_>>();
-        let forwarded_from = Self::parse_forwarded_from_raw(forwarded_from_raw.as_deref());
+        Self::hydrate_conversation_message_view(conn, &mut message)?;
+        Ok(Some(message))
+    }
 
-        Ok(Some(json!({
-            "messageId": message_id,
-            "conversationId": conversation_id,
-            "conversationType": conversation_type,
-            "threadParentId": thread_parent_id,
-            "sender": {
-                "name": sender_name,
-                "type": sender_type,
-            },
-            "senderDeleted": sender_deleted != 0,
-            "content": content,
-            "attachmentIds": attachment_ids,
-            "attachments": attachments,
-            "seq": seq,
-            "createdAt": created_at,
-            "forwardedFrom": forwarded_from,
-        })))
+    fn get_thread_summary_view_inner(
+        conn: &Connection,
+        parent_message_id: &str,
+    ) -> Result<Option<ThreadSummaryView>> {
+        Ok(conn
+            .query_row(
+                "SELECT conversation_id, parent_message_id, reply_count,
+                        last_reply_message_id, last_reply_at, participant_count
+                 FROM thread_summaries_view
+                 WHERE parent_message_id = ?1",
+                params![parent_message_id],
+                ThreadSummaryView::from_projection_row,
+            )
+            .ok())
+    }
+
+    fn hydrate_conversation_message_view(
+        conn: &Connection,
+        message: &mut ConversationMessageView,
+    ) -> Result<()> {
+        message.attachments = Self::get_message_attachments(conn, &message.message_id)?;
+        Ok(())
     }
 
     fn parse_forwarded_from_raw(raw: Option<&str>) -> Option<ForwardedFrom> {
@@ -1087,18 +1285,6 @@ impl Store {
             let _ = self.event_tx.send(last_event_id);
         }
         Ok(())
-    }
-
-    pub fn get_last_read_seq(&self, channel_name: &str, member_name: &str) -> Result<i64> {
-        let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
-            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let seq: i64 = conn.query_row(
-            "SELECT last_read_seq FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
-            params![channel.id, member_name],
-            |row| row.get(0),
-        )?;
-        Ok(seq)
     }
 
     pub fn get_agent_activity(&self, agent_name: &str, limit: i64) -> Result<Vec<ActivityMessage>> {

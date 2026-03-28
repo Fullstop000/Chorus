@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   applyRealtimeEvent,
   nextRealtimeCursor,
   parseHistoryTarget,
+  resolveRealtimeTarget,
 } from './realtime'
 import type { HistoryMessage, RealtimeEvent, RealtimeMessage } from '../types'
 
@@ -62,7 +63,7 @@ describe('realtime transport helpers', () => {
     const frame: RealtimeMessage = {
       type: 'subscribed',
       resumeFrom: 3,
-      scopes: [],
+      targets: [],
     }
 
     expect(nextRealtimeCursor(10, frame)).toBe(3)
@@ -74,10 +75,25 @@ describe('realtime transport helpers', () => {
       resumeFrom: 0,
       streamId: 'conversation:abc',
       resumeFromStreamPos: 7,
-      scopes: [],
+      targets: ['conversation:abc'],
     }
 
+    expect(frame.targets).toEqual(['conversation:abc'])
     expect(frame.streamId).toBe('conversation:abc')
     expect(frame.resumeFromStreamPos).toBe(7)
+  })
+
+  it('resolves thread history targets to thread subscription targets', async () => {
+    const api = await import('../api')
+    const spy = vi.spyOn(api, 'resolveChannel').mockResolvedValue({
+      channelId: 'conv-1',
+    })
+
+    await expect(resolveRealtimeTarget('alice', '#general:msg-1')).resolves.toBe('thread:msg-1')
+    await expect(resolveRealtimeTarget('alice', 'dm:@bot-a')).resolves.toBe(
+      'conversation:conv-1'
+    )
+
+    spy.mockRestore()
   })
 })

@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { openAgentChat, sendChatMessage } from './helpers/ui'
+import { openAgentChat, openThreadFromMessage, sendChatMessage } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -36,6 +36,8 @@ test.describe('MSG-002', () => {
 
     const { username } = await getWhoami(request)
     const token = `dm-check-${Date.now()}`
+    const prompt = `Reply in this DM, not in a thread. Return exact token: ${token}`
+    let replyMode: 'top-level' | 'thread' = 'top-level'
 
     await page.goto('/', { waitUntil: 'networkidle' })
 
@@ -45,8 +47,8 @@ test.describe('MSG-002', () => {
     })
 
     await test.step('Step 2–3: Send DM; human row visible', async () => {
-      await sendChatMessage(page, `Reply with exact token: ${token}`)
-      await expect(page.getByText(`Reply with exact token: ${token}`).first()).toBeVisible()
+      await sendChatMessage(page, prompt)
+      await expect(page.getByText(prompt).first()).toBeVisible()
     })
 
     await test.step('Steps 4–6: Agent reply in same DM with token', async () => {
@@ -54,7 +56,25 @@ test.describe('MSG-002', () => {
       let ok = false
       while (Date.now() < deadline) {
         const msgs = await historyForUser(request, username, 'dm:@bot-a', 40)
-        ok = msgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))
+        if (msgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))) {
+          replyMode = 'top-level'
+          ok = true
+          break
+        }
+        const parent = msgs.find(
+          (m) =>
+            m.senderType !== 'agent' &&
+            (m.content ?? '').includes(token) &&
+            (m.replyCount ?? 0) > 0
+        )
+        if (parent) {
+          const threadMsgs = await historyForUser(request, username, `dm:@bot-a:${parent.id}`, 40)
+          if (threadMsgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))) {
+            replyMode = 'thread'
+            ok = true
+            break
+          }
+        }
         if (ok) break
         await new Promise((r) => setTimeout(r, 4000))
       }
@@ -64,13 +84,23 @@ test.describe('MSG-002', () => {
     await test.step('Step 7–8: Refresh and re-open DM — history persists', async () => {
       await page.reload({ waitUntil: 'networkidle' })
       await openAgentChat(page, 'bot-a')
-      await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
+      if (replyMode === 'top-level') {
+        await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
+      } else {
+        await openThreadFromMessage(page, token)
+        await expect(page.locator('.thread-replies')).toContainText(token, { timeout: 15_000 })
+      }
     })
 
     await test.step('Step 9: Switch target and return to DM', async () => {
       await page.locator('.sidebar-item-text:text("all")').first().click()
       await openAgentChat(page, 'bot-a')
-      await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
+      if (replyMode === 'top-level') {
+        await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
+      } else {
+        await openThreadFromMessage(page, token)
+        await expect(page.locator('.thread-replies')).toContainText(token, { timeout: 15_000 })
+      }
     })
   })
 })

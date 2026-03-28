@@ -64,12 +64,7 @@ async fn test_realtime_subscription_replays_matching_events_from_cursor() {
             serde_json::json!({
                 "type": "subscribe",
                 "resumeFrom": 0,
-                "scopes": [
-                    {
-                        "kind": "channel",
-                        "id": format!("channel:{channel_id}")
-                    }
-                ]
+                "targets": [format!("conversation:{channel_id}")]
             })
             .to_string()
             .into(),
@@ -79,6 +74,10 @@ async fn test_realtime_subscription_replays_matching_events_from_cursor() {
 
     let subscribed = read_json_frame(&mut socket).await;
     assert_eq!(subscribed["type"], "subscribed");
+    assert_eq!(
+        subscribed["targets"],
+        serde_json::json!([format!("conversation:{channel_id}")])
+    );
 
     let event = read_json_frame(&mut socket).await;
     assert_eq!(event["type"], "event");
@@ -133,12 +132,7 @@ async fn test_realtime_subscription_can_resume_from_stream_position() {
                 "resumeFrom": 999,
                 "streamId": format!("conversation:{general_id}"),
                 "resumeFromStreamPos": 1,
-                "scopes": [
-                    {
-                        "kind": "channel",
-                        "id": format!("channel:{general_id}")
-                    }
-                ]
+                "targets": [format!("conversation:{general_id}")]
             })
             .to_string()
             .into(),
@@ -179,12 +173,7 @@ async fn test_realtime_subscription_receives_live_events_after_subscribe() {
             serde_json::json!({
                 "type": "subscribe",
                 "resumeFrom": 0,
-                "scopes": [
-                    {
-                        "kind": "channel",
-                        "id": format!("channel:{channel_id}")
-                    }
-                ]
+                "targets": [format!("conversation:{channel_id}")]
             })
             .to_string()
             .into(),
@@ -248,12 +237,7 @@ async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery
                 "resumeFrom": 2,
                 "streamId": format!("conversation:{general_id}"),
                 "resumeFromStreamPos": 1,
-                "scopes": [
-                    {
-                        "kind": "channel",
-                        "id": format!("channel:{general_id}")
-                    }
-                ]
+                "targets": [format!("conversation:{general_id}")]
             })
             .to_string()
             .into(),
@@ -273,12 +257,7 @@ async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery
             serde_json::json!({
                 "type": "subscribe",
                 "resumeFrom": 2,
-                "scopes": [
-                    {
-                        "kind": "channel",
-                        "id": format!("channel:{random_id}")
-                    }
-                ]
+                "targets": [format!("conversation:{random_id}")]
             })
             .to_string()
             .into(),
@@ -333,12 +312,7 @@ async fn test_realtime_subscription_rejects_forbidden_scope() {
             serde_json::json!({
                 "type": "subscribe",
                 "resumeFrom": 0,
-                "scopes": [
-                    {
-                        "kind": "channel",
-                        "id": format!("channel:{private_channel_id}")
-                    }
-                ]
+                "targets": [format!("conversation:{private_channel_id}")]
             })
             .to_string()
             .into(),
@@ -349,4 +323,77 @@ async fn test_realtime_subscription_rejects_forbidden_scope() {
     let error = read_json_frame(&mut socket).await;
     assert_eq!(error["type"], "error");
     assert_eq!(error["code"], "forbidden_scope");
+}
+
+#[tokio::test]
+async fn test_thread_target_replays_only_thread_events() {
+    let (base_url, store) = start_test_server().await;
+    let parent_id = store
+        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+    let reply_id = store
+        .send_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "reply",
+            &[],
+        )
+        .unwrap();
+    store
+        .send_message("general", None, "alice", SenderType::Human, "other", &[])
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
+        .await
+        .unwrap();
+
+    socket
+        .send(Message::Text(
+            serde_json::json!({
+                "type": "subscribe",
+                "resumeFrom": 0,
+                "streamId": format!("conversation:{}", store.find_channel_by_name("general").unwrap().unwrap().id),
+                "resumeFromStreamPos": 0,
+                "targets": [format!("thread:{parent_id}")]
+            })
+            .to_string()
+            .into(),
+        ))
+        .await
+        .unwrap();
+
+    let subscribed = read_json_frame(&mut socket).await;
+    assert_eq!(subscribed["type"], "subscribed");
+    assert_eq!(
+        subscribed["targets"],
+        serde_json::json!([format!("thread:{parent_id}")])
+    );
+
+    let mut frames = Vec::new();
+    for _ in 0..4 {
+        frames.push(read_json_frame(&mut socket).await);
+    }
+
+    let event_types: Vec<String> = frames
+        .iter()
+        .map(|frame| frame["event"]["eventType"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        event_types,
+        vec![
+            "message.created",
+            "thread.reply_count_changed",
+            "thread.activity_bumped",
+            "thread.participant_added",
+        ]
+    );
+    assert_eq!(frames[0]["event"]["payload"]["messageId"], reply_id);
 }

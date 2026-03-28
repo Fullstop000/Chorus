@@ -5,7 +5,6 @@ import type {
   HistoryMessage,
   RealtimeEvent,
   RealtimeMessage,
-  RealtimeScope,
 } from '../types'
 
 const BASE = ''
@@ -43,19 +42,16 @@ export function parseHistoryTarget(target: string): {
   return { conversationTarget: target, threadParentId: null }
 }
 
-export async function resolveRealtimeScope(
+export async function resolveRealtimeTarget(
   username: string,
   target: string
-): Promise<RealtimeScope> {
+): Promise<string> {
   const { conversationTarget, threadParentId } = parseHistoryTarget(target)
   const { channelId } = await resolveChannel(username, conversationTarget)
   if (threadParentId) {
-    return { kind: 'thread', id: `thread:${threadParentId}` }
+    return `thread:${threadParentId}`
   }
-  if (conversationTarget.startsWith('dm:@')) {
-    return { kind: 'dm', id: `dm:${channelId}` }
-  }
-  return { kind: 'channel', id: `channel:${channelId}` }
+  return `conversation:${channelId}`
 }
 
 function materializeLiveMessage(event: RealtimeEvent): HistoryMessage | null {

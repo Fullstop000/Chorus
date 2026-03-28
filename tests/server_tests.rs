@@ -2462,6 +2462,29 @@ async fn test_at_mention_forwards_to_team_channel() {
             .count(),
         1
     );
+
+    let events = store.list_events(None, 20).unwrap();
+    let delegation_event = events
+        .iter()
+        .find(|event| event.event_type == "team.delegation_requested")
+        .expect("team delegation event");
+    assert_eq!(delegation_event.stream_id, format!("team:{team_id}"));
+    assert_eq!(delegation_event.stream_kind, "team");
+    assert_eq!(delegation_event.scope_kind, "team");
+    assert_eq!(delegation_event.scope_id, format!("team:{team_id}"));
+    assert_eq!(
+        delegation_event.payload["sourceChannelName"].as_str(),
+        Some("general")
+    );
+
+    let forwarded_message_event = events
+        .iter()
+        .find(|event| {
+            event.event_type == "message.created"
+                && event.channel_name.as_deref() == Some("eng-team")
+        })
+        .expect("forwarded message event");
+    assert_eq!(forwarded_message_event.stream_kind, "conversation");
 }
 
 #[tokio::test]
@@ -2539,6 +2562,18 @@ async fn test_swarm_ready_signals_emit_consensus_system_message() {
             .any(|msg| msg.content.contains("All members ready")),
         "consensus system message should be posted"
     );
+
+    let events = store.list_events(None, 40).unwrap();
+    let coordination_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.stream_id == format!("team:{team_id}"))
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert!(coordination_events.contains(&"team.delegation_requested"));
+    assert!(coordination_events.contains(&"team.deliberation_requested"));
+    assert!(coordination_events.contains(&"team.quorum_snapshot"));
+    assert!(coordination_events.contains(&"team.quorum_signaled"));
+    assert!(coordination_events.contains(&"team.quorum_reached"));
 }
 
 // 10. tags are stored as FTS5 tokens — partial tag name does not match

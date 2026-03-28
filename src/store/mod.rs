@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod channels;
 pub mod events;
+pub mod inbox;
 pub mod knowledge;
 pub mod messages;
 pub mod tasks;
@@ -18,13 +19,14 @@ use tokio::sync::broadcast;
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
-pub use events::StoredEvent;
+pub use events::{ResolvedSubscriptionTarget, StoredEvent, SubscriptionTargetKind};
+pub use inbox::InboxConversationStateView;
 pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
 pub use messages::{
-    ActivityMessage, AttachmentRef, ForwardedFrom, HistoryMessage, HistorySnapshot, Message,
-    ReceivedMessage, SenderType,
+    ActivityMessage, AttachmentRef, ConversationMessageView, ForwardedFrom, HistoryMessage,
+    HistorySnapshot, Message, ReceivedMessage, SenderType, ThreadSummaryView,
 };
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
@@ -133,6 +135,15 @@ impl Store {
                 member_type TEXT NOT NULL,
                 last_read_seq INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (channel_id, member_name)
+            );
+            CREATE TABLE IF NOT EXISTS inbox_read_state (
+                conversation_id TEXT NOT NULL,
+                member_name TEXT NOT NULL,
+                member_type TEXT NOT NULL,
+                last_read_seq INTEGER NOT NULL DEFAULT 0,
+                last_read_message_id TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (conversation_id, member_name)
             );
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
@@ -304,6 +315,86 @@ impl Store {
             .ok();
         conn.execute("ALTER TABLE events ADD COLUMN stream_pos INTEGER", [])
             .ok();
+        inbox::migrate_inbox_read_state(conn)?;
+        Self::refresh_conversation_messages_view(conn)?;
+        Self::refresh_thread_summaries_view(conn)?;
+        inbox::refresh_inbox_conversation_state_view(conn)?;
+        Ok(())
+    }
+
+    /// Keep the explicit conversation history read model aligned with the
+    /// current backing tables while `messages` remains transitional storage.
+    fn refresh_conversation_messages_view(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "
+            DROP VIEW IF EXISTS conversation_messages_view;
+            CREATE VIEW conversation_messages_view AS
+            SELECT
+                m.id AS message_id,
+                m.channel_id AS conversation_id,
+                c.name AS conversation_name,
+                c.channel_type AS conversation_type,
+                m.thread_parent_id AS thread_parent_id,
+                m.sender_name AS sender_name,
+                m.sender_type AS sender_type,
+                m.sender_deleted AS sender_deleted,
+                m.content AS content,
+                m.created_at AS created_at,
+                m.seq AS seq,
+                m.forwarded_from AS forwarded_from
+            FROM messages m
+            JOIN channels c ON c.id = m.channel_id;
+            ",
+        )?;
+        Ok(())
+    }
+
+    /// Keep thread summary reads behind an explicit projection view while
+    /// replies continue to live in the conversation message stream.
+    fn refresh_thread_summaries_view(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "
+            DROP VIEW IF EXISTS thread_summaries_view;
+            CREATE VIEW thread_summaries_view AS
+            SELECT
+                parent.channel_id AS conversation_id,
+                parent.id AS parent_message_id,
+                COUNT(reply.id) AS reply_count,
+                (
+                    SELECT reply_last.id
+                    FROM messages reply_last
+                    WHERE reply_last.channel_id = parent.channel_id
+                      AND reply_last.thread_parent_id = parent.id
+                    ORDER BY reply_last.seq DESC
+                    LIMIT 1
+                ) AS last_reply_message_id,
+                (
+                    SELECT reply_last.created_at
+                    FROM messages reply_last
+                    WHERE reply_last.channel_id = parent.channel_id
+                      AND reply_last.thread_parent_id = parent.id
+                    ORDER BY reply_last.seq DESC
+                    LIMIT 1
+                ) AS last_reply_at,
+                (
+                    SELECT COUNT(*)
+                    FROM (
+                        SELECT parent.sender_name AS participant_name
+                        UNION
+                        SELECT reply_participant.sender_name
+                        FROM messages reply_participant
+                        WHERE reply_participant.channel_id = parent.channel_id
+                          AND reply_participant.thread_parent_id = parent.id
+                    )
+                ) AS participant_count
+            FROM messages parent
+            LEFT JOIN messages reply
+              ON reply.channel_id = parent.channel_id
+             AND reply.thread_parent_id = parent.id
+            WHERE parent.thread_parent_id IS NULL
+            GROUP BY parent.channel_id, parent.id;
+            ",
+        )?;
         Ok(())
     }
 
@@ -535,31 +626,6 @@ impl Store {
             return Ok(Some(SenderType::Human));
         }
         Ok(None)
-    }
-
-    // ── Unread summary ──
-
-    pub fn get_unread_summary(&self, agent_name: &str) -> Result<HashMap<String, i64>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT c.name, COUNT(m.id)
-             FROM channel_members cm
-             JOIN channels c ON cm.channel_id = c.id
-             JOIN messages m ON m.channel_id = cm.channel_id AND m.seq > cm.last_read_seq AND m.thread_parent_id IS NULL
-             WHERE cm.member_name = ?1
-             GROUP BY c.name",
-        )?;
-        let rows = stmt
-            .query_map(params![agent_name], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-            })?
-            .filter_map(|r| r.ok());
-
-        let mut map = HashMap::new();
-        for (name, count) in rows {
-            map.insert(name, count);
-        }
-        Ok(map)
     }
 }
 

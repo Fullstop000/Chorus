@@ -1,9 +1,11 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::params;
+use rusqlite::{params, Transaction};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use uuid::Uuid;
 
+use super::events::NewEvent;
 use super::{parse_datetime, Store};
 
 /// A named group of agents (and optional human observers) that collaborate on tasks.
@@ -67,6 +69,82 @@ impl Team {
 }
 
 impl Store {
+    fn append_team_coordination_event_tx(
+        tx: &Transaction<'_>,
+        team_id: &str,
+        event_type: &'static str,
+        actor_name: Option<&str>,
+        actor_type: Option<&str>,
+        caused_by_kind: Option<&'static str>,
+        payload: serde_json::Value,
+    ) -> Result<i64> {
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type,
+                scope_kind: "team",
+                scope_id: format!("team:{team_id}"),
+                channel_id: None,
+                channel_name: None,
+                thread_parent_id: None,
+                actor_name,
+                actor_type,
+                caused_by_kind,
+                payload,
+            },
+        )
+    }
+
+    pub fn record_team_delegation_requested(
+        &self,
+        team_id: &str,
+        trigger_message_id: &str,
+        source_channel_name: &str,
+        actor_name: &str,
+        actor_type: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let last_event_id = Self::append_team_coordination_event_tx(
+            &tx,
+            team_id,
+            "team.delegation_requested",
+            Some(actor_name),
+            Some(actor_type),
+            Some("forward_team_mentions"),
+            json!({
+                "triggerMessageId": trigger_message_id,
+                "sourceChannelName": source_channel_name,
+            }),
+        )?;
+        tx.commit()?;
+        let _ = self.event_tx.send(last_event_id);
+        Ok(())
+    }
+
+    pub fn record_team_deliberation_requested(
+        &self,
+        team_id: &str,
+        trigger_message_id: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let last_event_id = Self::append_team_coordination_event_tx(
+            &tx,
+            team_id,
+            "team.deliberation_requested",
+            Some("system"),
+            None,
+            Some("forward_team_mentions"),
+            json!({
+                "triggerMessageId": trigger_message_id,
+            }),
+        )?;
+        tx.commit()?;
+        let _ = self.event_tx.send(last_event_id);
+        Ok(())
+    }
+
     /// Create a new team and return its generated UUID.
     pub fn create_team(
         &self,
@@ -259,13 +337,37 @@ impl Store {
     /// Snapshot the current set of agent members into team_task_quorum for a new swarm task.
     /// The trigger_message_id is the message that kicked off the task.
     pub fn snapshot_swarm_quorum(&self, team_id: &str, trigger_message_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let member_names: Vec<String> = tx
+            .prepare(
+                "SELECT member_name FROM team_members
+                 WHERE team_id = ?1 AND member_type = 'agent'
+                 ORDER BY member_name",
+            )?
+            .query_map(params![team_id], |row| row.get(0))?
+            .filter_map(|row| row.ok())
+            .collect();
+        tx.execute(
             "INSERT OR IGNORE INTO team_task_quorum (trigger_message_id, team_id, member_name)
              SELECT ?1, team_id, member_name FROM team_members
              WHERE team_id = ?2 AND member_type = 'agent'",
             params![trigger_message_id, team_id],
         )?;
+        let last_event_id = Self::append_team_coordination_event_tx(
+            &tx,
+            team_id,
+            "team.quorum_snapshot",
+            Some("system"),
+            None,
+            Some("snapshot_swarm_quorum"),
+            json!({
+                "triggerMessageId": trigger_message_id,
+                "memberNames": member_names,
+            }),
+        )?;
+        tx.commit()?;
+        let _ = self.event_tx.send(last_event_id);
         Ok(())
     }
 
@@ -280,10 +382,11 @@ impl Store {
         member_name: &str,
         signal: &str,
     ) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
 
         // Find the earliest unresolved trigger_message_id for this team.
-        let trigger_id: Option<String> = conn
+        let trigger_id: Option<String> = tx
             .prepare(
                 "SELECT q.trigger_message_id FROM team_task_quorum q
                  JOIN messages m ON m.id = q.trigger_message_id
@@ -302,7 +405,7 @@ impl Store {
         // Only insert if member_name is in the quorum for this trigger; discard signals
         // from agents that joined after the quorum was snapshotted.
         let signal_id = Uuid::new_v4().to_string();
-        let inserted = conn.execute(
+        let inserted = tx.execute(
             "INSERT OR IGNORE INTO team_task_signals (id, team_id, trigger_message_id, member_name, signal)
              SELECT ?1, ?2, ?3, ?4, ?5
              WHERE EXISTS (
@@ -315,27 +418,67 @@ impl Store {
             return Ok(false); // non-quorum member, discard signal
         }
 
+        let mut last_event_id = Self::append_team_coordination_event_tx(
+            &tx,
+            team_id,
+            "team.quorum_signaled",
+            Some(member_name),
+            Some("agent"),
+            Some("record_swarm_signal"),
+            json!({
+                "triggerMessageId": trigger_id,
+                "memberName": member_name,
+                "signal": signal,
+            }),
+        )?;
+
         // Check if quorum is now complete (all expected members have signalled).
-        let quorum_size: i64 = conn.query_row(
+        let quorum_size: i64 = tx.query_row(
             "SELECT COUNT(*) FROM team_task_quorum WHERE trigger_message_id = ?1",
             params![trigger_id],
             |r| r.get(0),
         )?;
-        let signal_count: i64 = conn.query_row(
+        let signal_count: i64 = tx.query_row(
             "SELECT COUNT(*) FROM team_task_signals WHERE trigger_message_id = ?1",
             params![trigger_id],
             |r| r.get(0),
         )?;
 
         if signal_count >= quorum_size {
-            conn.execute(
+            tx.execute(
                 "UPDATE team_task_quorum SET resolved_at = datetime('now')
                  WHERE trigger_message_id = ?1",
                 params![trigger_id],
             )?;
+            let member_names: Vec<String> = tx
+                .prepare(
+                    "SELECT member_name FROM team_task_quorum
+                     WHERE trigger_message_id = ?1
+                     ORDER BY member_name",
+                )?
+                .query_map(params![trigger_id], |row| row.get(0))?
+                .filter_map(|row| row.ok())
+                .collect();
+            last_event_id = Self::append_team_coordination_event_tx(
+                &tx,
+                team_id,
+                "team.quorum_reached",
+                Some("system"),
+                None,
+                Some("record_swarm_signal"),
+                json!({
+                    "triggerMessageId": trigger_id,
+                    "memberNames": member_names,
+                    "signalCount": signal_count,
+                }),
+            )?;
+            tx.commit()?;
+            let _ = self.event_tx.send(last_event_id);
             return Ok(true);
         }
 
+        tx.commit()?;
+        let _ = self.event_tx.send(last_event_id);
         Ok(false)
     }
 }

@@ -4,9 +4,9 @@ import {
   applyRealtimeEvent,
   createRealtimeSocket,
   nextRealtimeCursor,
-  resolveRealtimeScope,
+  resolveRealtimeTarget,
 } from '../transport/realtime'
-import type { HistoryMessage, HistoryResponse, RealtimeMessage, RealtimeScope } from '../types'
+import type { HistoryMessage, HistoryResponse, RealtimeMessage } from '../types'
 
 export function useHistory(username: string, target: string | null) {
   const [messages, setMessages] = useState<HistoryMessage[]>([])
@@ -47,18 +47,18 @@ export function useHistory(username: string, target: string | null) {
     let cancelled = false
     let reconnectTimer: number | null = null
     let socket: WebSocket | null = null
-    let activeScope: RealtimeScope | null = null
+    let activeRealtimeTarget: string | null = null
     const activeTarget = target
 
     const connect = () => {
-      if (cancelled || !activeScope) return
+      if (cancelled || !activeRealtimeTarget) return
 
       socket = createRealtimeSocket(username)
       socket.onopen = () => {
         const subscribeFrame: Record<string, unknown> = {
           type: 'subscribe',
           resumeFrom: lastEventIdRef.current,
-          scopes: [activeScope],
+          targets: [activeRealtimeTarget],
         }
         if (streamIdRef.current) {
           subscribeFrame.streamId = streamIdRef.current
@@ -117,10 +117,10 @@ export function useHistory(username: string, target: string | null) {
       if (cancelled || !history) return
 
       try {
-        activeScope = await resolveRealtimeScope(username, activeTarget)
-      } catch (scopeError) {
+        activeRealtimeTarget = await resolveRealtimeTarget(username, activeTarget)
+      } catch (targetError) {
         if (!cancelled) {
-          setError(scopeError instanceof Error ? scopeError.message : String(scopeError))
+          setError(targetError instanceof Error ? targetError.message : String(targetError))
         }
         return
       }

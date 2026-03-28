@@ -99,11 +99,6 @@ export interface HistoryResponse {
   streamPos: number
 }
 
-export interface RealtimeScope {
-  kind: string
-  id: string
-}
-
 export interface RealtimeEvent {
   eventId: number
   streamId?: string
@@ -132,7 +127,7 @@ export type RealtimeMessage =
       resumeFrom: number
       streamId?: string
       resumeFromStreamPos?: number
-      scopes: RealtimeScope[]
+      targets: string[]
     }
   | {
       type: 'event'

@@ -172,6 +172,13 @@ async fn forward_team_mentions(
                 sender_name: sender_name.to_string(),
             }),
         )?;
+        state.store.record_team_delegation_requested(
+            &team.id,
+            &forwarded_message_id,
+            channel_name,
+            sender_name,
+            sender_type.as_str(),
+        )?;
 
         let collaboration_model = make_collaboration_model(&team.collaboration_model);
         if let Some(prompt) = collaboration_model.deliberation_prompt() {
@@ -179,6 +186,9 @@ async fn forward_team_mentions(
                 .store
                 .snapshot_swarm_quorum(&team.id, &forwarded_message_id)?;
             state.store.post_system_message(&team_channel.id, &prompt)?;
+            state
+                .store
+                .record_team_deliberation_requested(&team.id, &forwarded_message_id)?;
         }
 
         deliver_message_to_agents(state, &team_channel.id, sender_name, &forwarded_message_id)
