@@ -93,7 +93,11 @@ impl Store {
     /// - `tags`: optional space-separated tag filter (each tag must appear in the entry's tags field)
     ///
     /// Returns up to 20 results ordered by recency.
-    pub fn search_knowledge_entries(&self, query: Option<&str>, tags: Option<&str>) -> Result<Vec<KnowledgeEntry>> {
+    pub fn search_knowledge_entries(
+        &self,
+        query: Option<&str>,
+        tags: Option<&str>,
+    ) -> Result<Vec<KnowledgeEntry>> {
         let conn = self.conn.lock().unwrap();
 
         // Build the SQL dynamically based on which filters are provided.

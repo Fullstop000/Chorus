@@ -50,7 +50,7 @@ pub struct UpdateTaskStatusRequest {
     pub status: String,
 }
 
-// Duplicate the trivial helper locally to avoid a cross-module dependency.
+// Internal bridge routes still address task boards by `#channel` target.
 fn strip_channel_prefix(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
 }
@@ -66,8 +66,11 @@ fn load_channel_by_id(
         .ok_or_else(|| api_err("channel not found"))
 }
 
-// ── Public handlers ──
+// ── Agent-scoped compatibility handlers ──
 
+/// Bridge task tools still send `channel: "#name"` and identify the actor by
+/// `agent_id`, so these internal routes stay in place until that contract is
+/// migrated end-to-end.
 pub async fn handle_list_tasks(
     State(state): State<AppState>,
     Path(_agent_id): Path<String>,

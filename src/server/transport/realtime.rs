@@ -316,8 +316,7 @@ async fn replay_matching_events(
         ReplayCursor::Global { event_id } => {
             let mut cursor = *event_id;
             loop {
-                let events =
-                    store.get_events(if cursor > 0 { Some(cursor) } else { None }, 200)?;
+                let events = store.get_events(if cursor > 0 { Some(cursor) } else { None }, 200)?;
                 if events.is_empty() {
                     break;
                 }

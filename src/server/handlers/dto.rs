@@ -7,7 +7,10 @@ use crate::store::agents::{Agent, Human};
 use crate::store::channels::{Channel, ChannelType};
 use crate::store::Store;
 
-/// Full workspace snapshot for an agent bridge client (channels, system rooms, agents, humans).
+/// Full agent-scoped workspace snapshot for bridge/CLI discovery.
+///
+/// The type name is historical because the wire contract is still exposed at
+/// `/internal/agent/{agent_id}/server`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
     /// User/team channels the subject has joined (excludes system rooms in this list).
@@ -94,7 +97,7 @@ pub struct RuntimeStatusInfo {
     pub auth_status: Option<RuntimeAuthStatus>,
 }
 
-/// Human user row for server info and shell.
+/// Human user row for agent workspace snapshots and the UI shell.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanInfo {
     /// OS / login username used as human id.

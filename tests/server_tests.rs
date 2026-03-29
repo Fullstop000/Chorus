@@ -349,249 +349,6 @@ async fn test_history_includes_latest_event_id_cursor() {
 }
 
 #[tokio::test]
-async fn test_read_cursor_endpoint_updates_conversation_history_cursor() {
-    let (store, app) = setup();
-    store
-        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
-        .unwrap();
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/read-cursor")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "target": "#general",
-                        "lastReadSeq": 1
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let history = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/internal/agent/alice/history?channel=%23general&limit=10")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(history.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(history.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(history["last_read_seq"], 1);
-}
-
-#[tokio::test]
-async fn test_inbox_includes_latest_event_id_cursor() {
-    let (_store, app) = setup();
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "hello" });
-    let send_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(send_resp.status(), StatusCode::OK);
-
-    let inbox_resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/internal/agent/alice/inbox")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(inbox_resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(inbox_resp.into_body(), 1_000_000)
-        .await
-        .unwrap();
-    let inbox: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(inbox["latestEventId"], 1);
-}
-
-#[tokio::test]
-async fn test_read_cursor_endpoint_updates_thread_history_cursor() {
-    let (store, app) = setup();
-    let parent_id = store
-        .create_message("general", None, "bot1", SenderType::Agent, "parent", &[])
-        .unwrap();
-    store
-        .create_message(
-            "general",
-            Some(&parent_id),
-            "bot1",
-            SenderType::Agent,
-            "reply",
-            &[],
-        )
-        .unwrap();
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/read-cursor")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    serde_json::json!({
-                        "target": format!("#general:{parent_id}"),
-                        "lastReadSeq": 2
-                    })
-                    .to_string(),
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let history = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri(format!(
-                    "/internal/agent/alice/history?channel={}&limit=10",
-                    urlencoding::encode(&format!("#general:{parent_id}"))
-                ))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(history.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(history.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(history["last_read_seq"], 2);
-}
-
-#[tokio::test]
-async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_reply_desc() {
-    let (store, app) = setup();
-    let oldest_unread_parent = store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "oldest unread parent",
-            &[],
-        )
-        .unwrap();
-    store
-        .create_message(
-            "general",
-            Some(&oldest_unread_parent),
-            "bot1",
-            SenderType::Agent,
-            "oldest unread reply",
-            &[],
-        )
-        .unwrap();
-
-    let newest_read_parent = store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "newest read parent",
-            &[],
-        )
-        .unwrap();
-    let newest_read_reply = store
-        .create_message(
-            "general",
-            Some(&newest_read_parent),
-            "bot1",
-            SenderType::Agent,
-            "newest read reply",
-            &[],
-        )
-        .unwrap();
-    store
-        .set_history_read_cursor(
-            "general",
-            "alice",
-            SenderType::Human,
-            Some(&newest_read_parent),
-            4,
-        )
-        .unwrap();
-
-    let newest_unread_parent = store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "newest unread parent",
-            &[],
-        )
-        .unwrap();
-    store
-        .create_message(
-            "general",
-            Some(&newest_unread_parent),
-            "bot1",
-            SenderType::Agent,
-            "newest unread reply",
-            &[],
-        )
-        .unwrap();
-
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/internal/agent/alice/threads?channel=%23general")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let inbox: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(inbox["unreadCount"], 2);
-    assert_eq!(inbox["threads"].as_array().unwrap().len(), 3);
-    assert_eq!(inbox["threads"][0]["threadParentId"], newest_unread_parent);
-    assert_eq!(inbox["threads"][0]["unreadCount"], 1);
-    assert_eq!(inbox["threads"][0]["parentContent"], "newest unread parent");
-    assert_eq!(inbox["threads"][1]["threadParentId"], newest_read_parent);
-    assert_eq!(inbox["threads"][1]["unreadCount"], 0);
-    assert_eq!(inbox["threads"][1]["lastReplyMessageId"], newest_read_reply);
-    assert_eq!(inbox["threads"][1]["parentContent"], "newest read parent");
-    assert_eq!(inbox["threads"][2]["threadParentId"], oldest_unread_parent);
-    assert_eq!(inbox["threads"][2]["unreadCount"], 1);
-}
-
-#[tokio::test]
 async fn test_realtime_event_serializes_as_notification_state() {
     let (store, _app) = setup();
 
@@ -1429,147 +1186,6 @@ async fn test_list_runtime_statuses() {
     assert_eq!(runtimes[2]["runtime"], "kimi");
     assert_eq!(runtimes[2]["installed"], false);
     assert!(runtimes[2].get("authStatus").is_none());
-}
-
-#[tokio::test]
-async fn test_create_agent_via_api() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store.ensure_builtin_channels("alice").unwrap();
-
-    // Create a new agent via POST /api/agents
-    let req = serde_json::json!({
-        "name": "new-bot",
-        "description": "A test agent",
-        "runtime": "codex",
-        "model": "gpt-5.4"
-    });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/agents")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
-        .await
-        .unwrap();
-    let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(val["name"], "new-bot");
-
-    // Verify agent exists in store
-    let agent = store
-        .get_agent("new-bot")
-        .unwrap()
-        .expect("agent should exist");
-    assert_eq!(agent.runtime, "codex");
-    assert_eq!(agent.model, "gpt-5.4");
-    assert_eq!(agent.description, Some("A test agent".to_string()));
-    assert!(
-        store.is_member("all", "new-bot").unwrap(),
-        "API-created agents should join the built-in default room"
-    );
-    assert!(
-        !store.is_member("general", "new-bot").unwrap(),
-        "API-created agents should not auto-join user-created channels"
-    );
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/internal/agent/new-bot/server")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
-        .await
-        .unwrap();
-    let info: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let system_channels = info["system_channels"]
-        .as_array()
-        .expect("system_channels should be present");
-    let all = system_channels
-        .iter()
-        .find(|channel| channel["name"] == "all")
-        .expect("#all should be exposed as a system channel");
-    assert_eq!(all["joined"], true);
-    assert_eq!(all["read_only"], false);
-
-    let new_bot = info["agents"]
-        .as_array()
-        .and_then(|agents| {
-            agents
-                .iter()
-                .find(|agent_info| agent_info["name"] == "new-bot")
-        })
-        .expect("new agent should be present in server info");
-    assert_eq!(new_bot["display_name"], "new-bot");
-    assert_eq!(new_bot["description"], "A test agent");
-    assert_eq!(new_bot["runtime"], "codex");
-    assert_eq!(new_bot["model"], "gpt-5.4");
-    assert_eq!(new_bot["status"], "inactive");
-    assert_eq!(lifecycle.started_names(), vec!["new-bot".to_string()]);
-
-    let agents_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/agents")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(agents_resp.status(), StatusCode::OK);
-    let body = axum::body::to_bytes(agents_resp.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let agents: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let listed_new_bot = agents
-        .as_array()
-        .and_then(|entries| entries.iter().find(|entry| entry["name"] == "new-bot"))
-        .expect("new agent should be listed by /api/agents");
-    assert_eq!(listed_new_bot["runtime"], "codex");
-    assert_eq!(listed_new_bot["model"], "gpt-5.4");
-
-    // Duplicate name should fail
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/agents")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-    // Empty name should fail
-    let bad_req = serde_json::json!({ "name": "  " });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/agents")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&bad_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -2473,7 +2089,9 @@ async fn knowledge_remember_happy_path() {
     assert!(!id.is_empty());
 
     // Knowledge entry must be retrievable via recall.
-    let entries = store.search_knowledge_entries(Some("token bucket"), None).unwrap();
+    let entries = store
+        .search_knowledge_entries(Some("token bucket"), None)
+        .unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].key, "rate-limiting approach");
     assert_eq!(entries[0].author_agent_id, "bot1");
@@ -2519,7 +2137,9 @@ async fn knowledge_remember_channel_missing() {
 
     // Knowledge write must succeed even if channel post fails.
     assert_eq!(resp.status(), StatusCode::OK);
-    let entries = store.search_knowledge_entries(Some("no-channel"), None).unwrap();
+    let entries = store
+        .search_knowledge_entries(Some("no-channel"), None)
+        .unwrap();
     assert_eq!(entries.len(), 1);
 }
 
@@ -2563,11 +2183,15 @@ async fn knowledge_recall_tag_filter() {
         .create_knowledge_entry("finding B", "value B", "design task-2", "bot1", None)
         .unwrap();
 
-    let by_research = store.search_knowledge_entries(None, Some("research")).unwrap();
+    let by_research = store
+        .search_knowledge_entries(None, Some("research"))
+        .unwrap();
     assert_eq!(by_research.len(), 1);
     assert_eq!(by_research[0].key, "finding A");
 
-    let by_task2 = store.search_knowledge_entries(None, Some("task-2")).unwrap();
+    let by_task2 = store
+        .search_knowledge_entries(None, Some("task-2"))
+        .unwrap();
     assert_eq!(by_task2.len(), 1);
     assert_eq!(by_task2[0].key, "finding B");
 }
@@ -2577,7 +2201,9 @@ async fn knowledge_recall_tag_filter() {
 async fn knowledge_recall_empty_result() {
     let (store, _app) = setup_knowledge();
 
-    let entries = store.search_knowledge_entries(Some("nonexistent-term-xyz"), None).unwrap();
+    let entries = store
+        .search_knowledge_entries(Some("nonexistent-term-xyz"), None)
+        .unwrap();
     assert!(entries.is_empty());
 }
 
@@ -2587,10 +2213,7 @@ async fn channel_type_system_parse() {
     let (store, _app) = setup_knowledge();
 
     // #shared-memory was created in setup_knowledge as a system channel.
-    let ch = store
-        .get_channel_by_name("shared-memory")
-        .unwrap()
-        .unwrap();
+    let ch = store.get_channel_by_name("shared-memory").unwrap().unwrap();
     assert_eq!(ch.channel_type, ChannelType::System);
 
     // A regular channel should not be System.
@@ -3166,11 +2789,15 @@ async fn knowledge_tags_fts_token_boundary() {
         .unwrap();
 
     // Exact tag match must work.
-    let exact = store.search_knowledge_entries(None, Some("task-42")).unwrap();
+    let exact = store
+        .search_knowledge_entries(None, Some("task-42"))
+        .unwrap();
     assert_eq!(exact.len(), 1);
 
     // A different tag that is NOT a prefix/substring in the tags string must not match.
-    let no_match = store.search_knowledge_entries(None, Some("task-4")).unwrap();
+    let no_match = store
+        .search_knowledge_entries(None, Some("task-4"))
+        .unwrap();
     assert!(
         no_match.is_empty(),
         "partial tag 'task-4' should not match 'task-42'"

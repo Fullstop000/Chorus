@@ -31,7 +31,6 @@ use tracing::debug;
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::AgentLifecycle;
 use crate::store::Store;
-
 use dto::ServerInfo;
 
 // ── Core types ──
@@ -136,8 +135,14 @@ pub async fn handle_whoami() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "username": whoami::username() }))
 }
 
-// ── Server Info (bridge) ──
+// ── Agent-Scoped Workspace Snapshot (bridge/CLI compatibility) ──
 
+/// Return the full workspace snapshot as seen by one specific agent process.
+///
+/// This remains on `/internal/agent/{agent_id}/server` because bridge tools and
+/// CLI commands still need an agent-scoped discovery payload. The public
+/// `/api/server-info` route is intentionally a smaller shell bootstrap for the
+/// human UI and is not a drop-in replacement.
 pub async fn handle_server_info(
     State(state): State<AppState>,
     Path(agent_id): Path<String>,

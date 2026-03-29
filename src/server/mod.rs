@@ -52,16 +52,15 @@ pub fn build_router_with_services(
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
     };
 
+    // Agent runtimes and CLI flows still depend on an agent-scoped internal API.
+    // In particular, `/internal/agent/{agent_id}/server` is the historical
+    // workspace-discovery route for bridge clients. These routes intentionally
+    // differ from `/api/*`, which is keyed to the current human viewer and
+    // conversation IDs.
     let internal_router = Router::new()
         .route("/agent/{agent_id}/send", post(handle_send))
         .route("/agent/{agent_id}/receive", get(handle_receive))
         .route("/agent/{agent_id}/history", get(handle_history))
-        .route("/agent/{agent_id}/inbox", get(handle_inbox))
-        .route("/agent/{agent_id}/threads", get(handle_threads))
-        .route(
-            "/agent/{agent_id}/read-cursor",
-            post(handle_update_read_cursor),
-        )
         .route("/agent/{agent_id}/server", get(handle_server_info))
         .route(
             "/agent/{agent_id}/resolve-channel",

@@ -31,11 +31,6 @@ pub struct HistoryParams {
 }
 
 #[derive(Deserialize)]
-pub struct ThreadsParams {
-    pub channel: Option<String>,
-}
-
-#[derive(Deserialize)]
 pub struct PublicConversationMessagesParams {
     pub limit: Option<i64>,
     pub before: Option<i64>,
@@ -110,13 +105,6 @@ pub struct HistoryResponse {
     pub stream_id: String,
     #[serde(rename = "streamPos")]
     pub stream_pos: i64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct ReadCursorRequest {
-    pub target: String,
-    #[serde(rename = "lastReadSeq")]
-    pub last_read_seq: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -513,7 +501,9 @@ async fn forward_team_mentions(
             state
                 .store
                 .snapshot_swarm_quorum(&team.id, &forwarded_message_id)?;
-            state.store.create_system_message(&team_channel.id, &prompt)?;
+            state
+                .store
+                .create_system_message(&team_channel.id, &prompt)?;
             state
                 .store
                 .record_team_deliberation_requested(&team.id, &forwarded_message_id)?;
@@ -550,52 +540,6 @@ pub async fn handle_send(
         req.suppress_agent_delivery,
     )
     .await
-}
-
-pub async fn handle_inbox(
-    State(state): State<AppState>,
-    Path(agent_id): Path<String>,
-) -> ApiResult<InboxResponse> {
-    if state
-        .store
-        .lookup_sender_type(&agent_id)
-        .map_err(|e| api_err(e.to_string()))?
-        .is_none()
-    {
-        return Err(api_err(format!("viewer not found: {}", agent_id)));
-    }
-
-    let conversations = state
-        .store
-        .get_inbox_conversation_notifications(&agent_id)
-        .map_err(|e| internal_err(e.to_string()))?;
-    let latest_event_id = state
-        .store
-        .latest_event_id()
-        .map_err(|e| internal_err(e.to_string()))?;
-    Ok(Json(InboxResponse {
-        conversations,
-        latest_event_id,
-    }))
-}
-
-pub async fn handle_threads(
-    State(state): State<AppState>,
-    Path(agent_id): Path<String>,
-    Query(params): Query<ThreadsParams>,
-) -> ApiResult<ThreadsResponse> {
-    let channel_target = params
-        .channel
-        .as_deref()
-        .unwrap_or(Store::DEFAULT_SYSTEM_CHANNEL);
-    let (channel_name, _) = resolve_history_target(&state.store, &agent_id, channel_target)
-        .map_err(|e| api_err(e.to_string()))?;
-    let channel = state
-        .store
-        .get_channel_by_name(&channel_name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("channel not found"))?;
-    threads_for_channel(&state, &agent_id, &channel, channel_target)
 }
 
 pub async fn handle_receive(
@@ -689,28 +633,6 @@ pub async fn handle_history(
         limit,
         params.before,
         params.after,
-    )
-}
-
-pub async fn handle_update_read_cursor(
-    State(state): State<AppState>,
-    Path(agent_id): Path<String>,
-    Json(req): Json<ReadCursorRequest>,
-) -> ApiResult<ReadCursorResponse> {
-    let store = &state.store;
-    let (channel_name, thread_parent_id) = resolve_history_target(store, &agent_id, &req.target)
-        .map_err(|e| api_err(e.to_string()))?;
-    let channel = store
-        .get_channel_by_name(&channel_name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("channel not found"))?;
-    update_read_cursor_for_channel(
-        &state,
-        &agent_id,
-        &channel,
-        &req.target,
-        thread_parent_id.as_deref(),
-        req.last_read_seq,
     )
 }
 

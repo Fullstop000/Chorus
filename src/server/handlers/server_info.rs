@@ -54,6 +54,8 @@ pub fn build_ui_shell_info(store: &Store) -> Result<UiShellInfo> {
     })
 }
 
+/// Build the agent-scoped workspace snapshot served from the historical
+/// `/internal/agent/{agent_id}/server` endpoint.
 pub fn build_server_info(store: &Store, for_agent: &str) -> Result<ServerInfo> {
     let channels = channel_infos_for(
         store,

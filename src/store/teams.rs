@@ -268,7 +268,12 @@ impl Store {
     }
 
     /// Update a single member role within a team.
-    pub fn update_team_member_role(&self, team_id: &str, member_name: &str, role: &str) -> Result<()> {
+    pub fn update_team_member_role(
+        &self,
+        team_id: &str,
+        member_name: &str,
+        role: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE team_members SET role = ?1 WHERE team_id = ?2 AND member_name = ?3",
