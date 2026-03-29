@@ -12,7 +12,6 @@ import {
 } from './api'
 import { applyInboxEvent, bootstrapInboxState, buildConversationRegistry, conversationThreadUnreadCount, createInboxState, dmConversationNameForParticipants, mergeChannelThreadInboxEntries } from './inbox'
 import { isVisibleSidebarChannel } from './sidebarChannels'
-import { nextRealtimeCursor } from './transport/realtime'
 import { getRealtimeSession } from './transport/realtimeSession'
 
 export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
@@ -68,7 +67,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const selectedAgentRef = useRef<AgentInfo | null>(null)
   const selectedChannelRef = useRef<string | null>(null)
   const selectedChannelIdRef = useRef<string | null>(null)
-  const inboxCursorRef = useRef(0)
 
   // Fetch current user once on mount
   useEffect(() => {
@@ -186,7 +184,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setTeams(loadedTeams)
       setHumans(loadedHumans)
       setInboxState(bootstrapInboxState(inbox.conversations))
-      inboxCursorRef.current = inbox.latestEventId ?? 0
       setSelectedAgent((prev) => {
         if (!prev) return prev
         return loadedAgents.find((agent) => agent.name === prev.name) ?? null
@@ -207,7 +204,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!currentUser) {
-      inboxCursorRef.current = 0
       setInboxState(createInboxState())
       setConversationThreads({})
       setShellBootstrapped(false)
@@ -222,42 +218,18 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       dmChannels,
       agents,
     })
-    const targets = [
-      ...conversationRegistry.map((entry) => `conversation:${entry.conversationId}`),
-      'workspace:default',
-      `inbox:${currentUser}`,
-    ]
+    const targets = conversationRegistry.map((entry) => `conversation:${entry.conversationId}`)
     if (targets.length === 0) return
 
     return getRealtimeSession(currentUser).subscribe({
       targets,
-      resumeFrom: inboxCursorRef.current,
       onFrame: (frame) => {
         if (frame.type === 'subscribed') {
-          inboxCursorRef.current = nextRealtimeCursor(inboxCursorRef.current, frame)
           return
         }
         if (frame.type === 'error') {
           console.error('Inbox realtime subscription failed', frame.message)
           return
-        }
-        inboxCursorRef.current = nextRealtimeCursor(inboxCursorRef.current, frame)
-        if (frame.type === 'event' && frame.event.streamId === 'workspace:default') {
-          switch (frame.event.eventType) {
-            case 'conversation.membership_changed':
-            case 'conversation.archived':
-            case 'conversation.deleted':
-              void refreshChannels()
-              return
-            case 'team.updated':
-              void Promise.all([refreshTeams(), refreshChannels()])
-              return
-            case 'agent.updated':
-              void refreshAgents()
-              return
-            default:
-              return
-          }
         }
         setInboxState((current) => applyInboxEvent(current, frame.event))
       },

@@ -18,7 +18,7 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&tx, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let event_id = if let Some(parent_id) = thread_parent_id {
+        if let Some(parent_id) = thread_parent_id {
             let last_read_message_id = tx
                 .query_row(
                     "SELECT id
@@ -37,9 +37,9 @@ impl Store {
                 member_type.as_str(),
                 last_read_seq,
                 last_read_message_id.as_deref(),
-                true,
+                false,
                 "set_history_read_cursor",
-            )?
+            )?;
         } else {
             let last_read_message_id = tx
                 .query_row(
@@ -58,14 +58,11 @@ impl Store {
                 member_type.as_str(),
                 last_read_seq,
                 last_read_message_id.as_deref(),
-                true,
+                false,
                 "set_history_read_cursor",
-            )?
-        };
-        tx.commit()?;
-        if let Some(event_id) = event_id {
-            let _ = self.event_tx.send(event_id);
+            )?;
         }
+        tx.commit()?;
         Ok(())
     }
 }

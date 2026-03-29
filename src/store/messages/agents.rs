@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 
-use crate::store::channels::{Channel, ChannelType};
+use crate::store::channels::ChannelType;
 use crate::store::messages::*;
 use crate::store::Store;
 
@@ -32,7 +32,6 @@ impl Store {
             .collect();
 
         let mut result = Vec::new();
-        let mut last_event_id = None;
 
         for (channel_id, member_type, last_read_seq) in &memberships {
             let channel = Self::get_channel_by_id_inner(&conn, channel_id)?
@@ -171,7 +170,7 @@ impl Store {
 
             if update_read_pos && max_conversation_seq > *last_read_seq {
                 let tx = conn.transaction()?;
-                let conversation_event_id = Self::set_inbox_read_cursor_tx(
+                Self::set_inbox_read_cursor_tx(
                     &tx,
                     &channel,
                     agent_name,
@@ -181,9 +180,8 @@ impl Store {
                     true,
                     "get_messages_for_agent",
                 )?;
-                let mut newest_event_id = conversation_event_id;
                 for (parent_id, (seq, message_id)) in &thread_read_updates {
-                    if let Some(event_id) = Self::set_thread_read_cursor_tx(
+                    Self::set_thread_read_cursor_tx(
                         &tx,
                         &channel,
                         parent_id,
@@ -193,19 +191,13 @@ impl Store {
                         Some(message_id.as_str()),
                         true,
                         "get_messages_for_agent",
-                    )? {
-                        newest_event_id = Some(event_id);
-                    }
+                    )?;
                 }
                 tx.commit()?;
-                if let Some(event_id) = newest_event_id {
-                    last_event_id = Some(event_id);
-                }
             } else if update_read_pos && !thread_read_updates.is_empty() {
                 let tx = conn.transaction()?;
-                let mut newest_event_id = None;
                 for (parent_id, (seq, message_id)) in &thread_read_updates {
-                    if let Some(event_id) = Self::set_thread_read_cursor_tx(
+                    Self::set_thread_read_cursor_tx(
                         &tx,
                         &channel,
                         parent_id,
@@ -215,19 +207,10 @@ impl Store {
                         Some(message_id.as_str()),
                         true,
                         "get_messages_for_agent",
-                    )? {
-                        newest_event_id = Some(event_id);
-                    }
+                    )?;
                 }
                 tx.commit()?;
-                if let Some(event_id) = newest_event_id {
-                    last_event_id = Some(event_id);
-                }
             }
-        }
-
-        if let Some(last_event_id) = last_event_id {
-            let _ = self.event_tx.send(last_event_id);
         }
 
         Ok(result)
@@ -283,52 +266,12 @@ impl Store {
     pub fn mark_agent_messages_deleted(&self, name: &str) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let impacted_messages: Vec<(String, Channel, Option<String>)> = tx
-            .prepare(
-                "SELECT m.id, c.id, c.name, c.description, c.channel_type, c.created_at, m.thread_parent_id
-                 FROM messages m
-                 JOIN channels c ON c.id = m.channel_id
-                 WHERE m.sender_type = 'agent' AND m.sender_name = ?1 AND m.sender_deleted = 0",
-            )?
-            .query_map(params![name], |row| {
-                Ok((
-                    row.get(0)?,
-                    Channel {
-                        id: row.get(1)?,
-                        name: row.get(2)?,
-                        description: row.get(3)?,
-                        channel_type: match row.get::<_, String>(4)?.as_str() {
-                            "team" => ChannelType::Team,
-                            "dm" => ChannelType::Dm,
-                            "system" => ChannelType::System,
-                            _ => ChannelType::Channel,
-                        },
-                        created_at: crate::utils::parse_datetime(&row.get::<_, String>(5)?),
-                    },
-                    row.get(6)?,
-                ))
-            })?
-            .filter_map(|row| row.ok())
-            .collect();
         tx.execute(
             "UPDATE messages SET sender_deleted = 1
              WHERE sender_type = 'agent' AND sender_name = ?1 AND sender_deleted = 0",
             params![name],
         )?;
-        let mut last_event_id = None;
-        for (message_id, channel, thread_parent_id) in impacted_messages {
-            last_event_id = Some(Self::append_tombstone_changed_event_tx(
-                &tx,
-                &channel,
-                thread_parent_id.as_deref(),
-                &message_id,
-                "mark_agent_messages_deleted",
-            )?);
-        }
         tx.commit()?;
-        if let Some(last_event_id) = last_event_id {
-            let _ = self.event_tx.send(last_event_id);
-        }
         Ok(())
     }
 

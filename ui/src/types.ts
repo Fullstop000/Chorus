@@ -102,26 +102,12 @@ export interface HistoryResponse {
   streamPos: number
 }
 
-export interface RealtimeEvent {
-  eventId: number
-  streamId?: string
-  streamKind?: string
-  streamPos?: number
+export interface StreamEvent {
   eventType: string
-  scopeKind: string
-  scopeId: string
-  channelId?: string | null
-  channelName?: string | null
-  threadParentId?: string | null
-  actor?: {
-    name: string
-    type?: 'human' | 'agent' | null
-  } | null
-  causedBy?: {
-    kind: string
-  } | null
+  channelId: string
+  latestSeq: number
   payload: Record<string, unknown>
-  createdAt: string
+  schemaVersion: number
 }
 
 export interface ConversationStatePayload {
@@ -191,14 +177,11 @@ export interface ThreadInboxResponse {
 export type RealtimeMessage =
   | {
       type: 'subscribed'
-      resumeFrom: number
-      streamId?: string
-      resumeFromStreamPos?: number
       targets: string[]
     }
   | {
       type: 'event'
-      event: RealtimeEvent
+      event: StreamEvent
     }
   | {
       type: 'error'

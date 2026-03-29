@@ -113,8 +113,7 @@ impl StoredEvent {
 }
 
 impl Store {
-    /// Persist one workspace-scoped structural event and fan it out to the
-    /// single shell notification stream.
+    /// Persist one workspace-scoped structural event.
     pub fn record_workspace_event(
         &self,
         event_type: &str,
@@ -142,7 +141,6 @@ impl Store {
             },
         )?;
         tx.commit()?;
-        let _ = self.event_tx.send(event_id);
         Ok(event_id)
     }
 

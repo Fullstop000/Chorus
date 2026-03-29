@@ -61,9 +61,8 @@ test.describe('MSG-005', () => {
     const historyAfterRemoteSend = historyRequests
     expect(realtimeConsoleLogs.length).toBeGreaterThan(0)
     const consoleDump = realtimeConsoleLogs.join('\n')
-    expect(consoleDump).toContain('conversation.state')
+    expect(consoleDump).toContain('message.created')
     expect(consoleDump).toContain('latestSeq')
-    expect(consoleDump).toContain('unreadCount')
     expect(consoleDump).not.toContain(remoteToken)
 
     await page.waitForTimeout(4_000)

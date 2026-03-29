@@ -105,7 +105,7 @@ impl Store {
     ) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let last_event_id = Self::append_team_coordination_event_tx(
+        let _ = Self::append_team_coordination_event_tx(
             &tx,
             team_id,
             "team.delegation_requested",
@@ -118,7 +118,6 @@ impl Store {
             }),
         )?;
         tx.commit()?;
-        let _ = self.event_tx.send(last_event_id);
         Ok(())
     }
 
@@ -129,7 +128,7 @@ impl Store {
     ) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let last_event_id = Self::append_team_coordination_event_tx(
+        let _ = Self::append_team_coordination_event_tx(
             &tx,
             team_id,
             "team.deliberation_requested",
@@ -141,7 +140,6 @@ impl Store {
             }),
         )?;
         tx.commit()?;
-        let _ = self.event_tx.send(last_event_id);
         Ok(())
     }
 
@@ -359,7 +357,7 @@ impl Store {
              WHERE team_id = ?2 AND member_type = 'agent'",
             params![trigger_message_id, team_id],
         )?;
-        let last_event_id = Self::append_team_coordination_event_tx(
+        let _ = Self::append_team_coordination_event_tx(
             &tx,
             team_id,
             "team.quorum_snapshot",
@@ -372,7 +370,6 @@ impl Store {
             }),
         )?;
         tx.commit()?;
-        let _ = self.event_tx.send(last_event_id);
         Ok(())
     }
 
@@ -423,7 +420,7 @@ impl Store {
             return Ok(false); // non-quorum member, discard signal
         }
 
-        let mut last_event_id = Self::append_team_coordination_event_tx(
+        let _ = Self::append_team_coordination_event_tx(
             &tx,
             team_id,
             "team.quorum_signaled",
@@ -464,7 +461,7 @@ impl Store {
                 .query_map(params![trigger_id], |row| row.get(0))?
                 .filter_map(|row| row.ok())
                 .collect();
-            last_event_id = Self::append_team_coordination_event_tx(
+            let _ = Self::append_team_coordination_event_tx(
                 &tx,
                 team_id,
                 "team.quorum_reached",
@@ -478,12 +475,10 @@ impl Store {
                 }),
             )?;
             tx.commit()?;
-            let _ = self.event_tx.send(last_event_id);
             return Ok(true);
         }
 
         tx.commit()?;
-        let _ = self.event_tx.send(last_event_id);
         Ok(false)
     }
 }

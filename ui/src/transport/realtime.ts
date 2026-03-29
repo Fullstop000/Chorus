@@ -1,4 +1,4 @@
-import type { HistoryMessage, RealtimeEvent, RealtimeMessage } from '../types'
+import type { HistoryMessage, StreamEvent } from '../types'
 
 const BASE = ''
 
@@ -11,22 +11,9 @@ export function createRealtimeSocket(viewer: string): WebSocket {
 
 export function applyRealtimeEvent(
   messages: HistoryMessage[],
-  event: RealtimeEvent
+  event: StreamEvent
 ): HistoryMessage[] {
   switch (event.eventType) {
-    case 'conversation.state':
-    case 'thread.state':
-      return messages
-    case 'thread.reply_count_changed': {
-      const payload = event.payload
-      const parentMessageId =
-        typeof payload.parentMessageId === 'string' ? payload.parentMessageId : null
-      const replyCount = typeof payload.replyCount === 'number' ? payload.replyCount : null
-      if (!parentMessageId || replyCount == null) return messages
-      return messages.map((message) =>
-        message.id === parentMessageId ? { ...message, replyCount } : message
-      )
-    }
     case 'message.tombstone_changed': {
       const payload = event.payload
       const messageId = typeof payload.messageId === 'string' ? payload.messageId : null
@@ -59,55 +46,30 @@ export function mergeHistoryMessages(
   return [...byId.values()].sort((left, right) => left.seq - right.seq)
 }
 
-function notificationLatestSeq(event: RealtimeEvent): number | null {
-  const latestSeq = event.payload.latestSeq
-  return typeof latestSeq === 'number' ? latestSeq : null
-}
-
 function eventMatchesActiveRealtimeTarget(
   activeRealtimeTarget: string | null,
-  event: RealtimeEvent
+  event: StreamEvent
 ): boolean {
   if (!activeRealtimeTarget) return false
-  if (activeRealtimeTarget.startsWith('conversation:')) {
-    return event.streamId === activeRealtimeTarget
-  }
-  if (!activeRealtimeTarget.startsWith('thread:')) {
+  if (!activeRealtimeTarget.startsWith('conversation:')) {
     return false
   }
-  const threadParentId =
-    typeof event.threadParentId === 'string'
-      ? event.threadParentId
-      : typeof event.payload.threadParentId === 'string'
-        ? event.payload.threadParentId
-        : null
-  return event.scopeId === activeRealtimeTarget || threadParentId === activeRealtimeTarget.slice(7)
+  return event.channelId === activeRealtimeTarget.slice('conversation:'.length)
 }
 
 export function historyFetchAfterForNotification(
   activeRealtimeTarget: string | null,
-  event: RealtimeEvent,
+  event: StreamEvent,
   loadedMaxSeq: number
 ): number | null {
-  if (event.eventType !== 'conversation.state' && event.eventType !== 'thread.state') {
+  if (event.eventType !== 'message.created') {
     return null
   }
   if (!eventMatchesActiveRealtimeTarget(activeRealtimeTarget, event)) {
     return null
   }
-  const latestSeq = notificationLatestSeq(event)
-  if (latestSeq == null || latestSeq <= loadedMaxSeq) {
+  if (event.latestSeq <= loadedMaxSeq) {
     return null
   }
   return loadedMaxSeq
-}
-
-export function nextRealtimeCursor(currentCursor: number, frame: RealtimeMessage): number {
-  if (frame.type === 'subscribed') {
-    return frame.resumeFrom ?? 0
-  }
-  if (frame.type === 'event') {
-    return Math.max(currentCursor, frame.event.eventId)
-  }
-  return currentCursor
 }

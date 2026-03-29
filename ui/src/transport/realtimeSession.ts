@@ -3,9 +3,6 @@ import type { RealtimeMessage } from '../types'
 
 interface RealtimeSubscription {
   targets: string[]
-  resumeFrom: number
-  streamId?: string | null
-  resumeFromStreamPos?: number
   onFrame: (frame: RealtimeMessage) => void
 }
 
@@ -122,25 +119,11 @@ class RealtimeSession {
   private eventTargets(frame: RealtimeMessage): string[] {
     if (frame.type !== 'event') return []
     const targets = new Set<string>()
-    if (frame.event.streamId) {
-      targets.add(frame.event.streamId)
+    if (frame.event.channelId) {
+      targets.add(`conversation:${frame.event.channelId}`)
     }
-    const conversationId =
-      typeof frame.event.payload.conversationId === 'string'
-        ? frame.event.payload.conversationId
-        : typeof frame.event.channelId === 'string'
-          ? frame.event.channelId
-          : null
-    if (conversationId) {
-      targets.add(`conversation:${conversationId}`)
-    }
-    const threadParentId =
-      typeof frame.event.threadParentId === 'string'
-        ? frame.event.threadParentId
-        : typeof frame.event.payload.threadParentId === 'string'
-          ? frame.event.payload.threadParentId
-          : null
-    if (threadParentId) {
+    const threadParentId = frame.event.payload.threadParentId
+    if (typeof threadParentId === 'string') {
       targets.add(`thread:${threadParentId}`)
     }
     return [...targets]
@@ -156,37 +139,11 @@ class RealtimeSession {
   private syncSubscriptions() {
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return
 
-    const subscriptions = [...this.subscriptions.values()]
     const targets = this.currentTargets()
-    const resumeFrom =
-      subscriptions.length > 0
-        ? Math.min(...subscriptions.map((subscription) => subscription.resumeFrom))
-        : 0
-
-    const streamIds = [...new Set(
-      subscriptions
-        .map((subscription) => subscription.streamId ?? null)
-        .filter((streamId): streamId is string => Boolean(streamId))
-    )]
-    const sharedStreamId = streamIds.length === 1 ? streamIds[0] : null
-    const streamResumeFrom =
-      sharedStreamId != null
-        ? Math.min(
-            ...subscriptions
-              .filter((subscription) => subscription.streamId === sharedStreamId)
-              .map((subscription) => subscription.resumeFromStreamPos ?? 0)
-          )
-        : null
-
     const frame: Record<string, unknown> = {
       type: 'subscribe',
       replace: true,
-      resumeFrom,
       targets,
-    }
-    if (sharedStreamId) {
-      frame.streamId = sharedStreamId
-      frame.resumeFromStreamPos = streamResumeFrom ?? 0
     }
 
     logRealtime('send', frame)
