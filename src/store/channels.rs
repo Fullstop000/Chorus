@@ -460,4 +460,97 @@ impl Store {
             }
         }
     }
+
+    /// Ensure a system channel with the given name exists. Idempotent — safe to call on every startup.
+    pub fn ensure_system_channel(&self, name: &str, description: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        Self::ensure_system_channel_inner(&conn, name, description)?;
+        Ok(())
+    }
+
+    /// Ensure built-in channels exist and upgrade legacy `#general` installs to
+    /// the new writable `#all` system channel without changing its stable id.
+    pub fn ensure_builtin_channels(&self, default_human: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let all_id = if let Some(existing) =
+            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+        {
+            conn.execute(
+                "UPDATE channels
+                 SET description = ?1, channel_type = 'system', archived = 0
+                 WHERE id = ?2",
+                params![Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION, existing.id],
+            )?;
+            existing.id
+        } else if let Some(legacy) = Self::find_channel_by_name_inner(&conn, "general")? {
+            conn.execute(
+                "UPDATE channels
+                 SET name = ?1, description = ?2, channel_type = 'system', archived = 0
+                 WHERE id = ?3",
+                params![
+                    Self::DEFAULT_SYSTEM_CHANNEL,
+                    Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION,
+                    legacy.id
+                ],
+            )?;
+            tracing::info!("migrated built-in channel #general to #all");
+            legacy.id
+        } else {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO channels (id, name, description, channel_type)
+                 VALUES (?1, ?2, ?3, 'system')",
+                params![
+                    id,
+                    Self::DEFAULT_SYSTEM_CHANNEL,
+                    Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION
+                ],
+            )?;
+            tracing::info!(
+                channel = Self::DEFAULT_SYSTEM_CHANNEL,
+                "created built-in system channel"
+            );
+            id
+        };
+
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             VALUES (?1, ?2, 'human', 0)",
+            params![all_id, default_human],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             SELECT ?1, name, 'human', 0 FROM humans",
+            params![all_id],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             SELECT ?1, name, 'agent', 0 FROM agents",
+            params![all_id],
+        )?;
+
+        Self::ensure_system_channel_inner(
+            &conn,
+            Self::SHARED_MEMORY_CHANNEL,
+            Self::SHARED_MEMORY_DESCRIPTION,
+        )?;
+        Ok(())
+    }
+
+    fn ensure_system_channel_inner(conn: &Connection, name: &str, description: &str) -> Result<()> {
+        let exists: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM channels WHERE name = ?1 AND channel_type = 'system'",
+            params![name],
+            |row| row.get(0),
+        )?;
+        if exists == 0 {
+            let id = uuid::Uuid::new_v4().to_string();
+            conn.execute(
+                "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, 'system')",
+                params![id, name, description],
+            )?;
+            tracing::info!(channel = %name, "created system channel");
+        }
+        Ok(())
+    }
 }

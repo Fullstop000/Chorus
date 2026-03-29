@@ -225,3 +225,119 @@ CREATE TABLE IF NOT EXISTS team_task_quorum (
     resolved_at TEXT, -- Timestamp when the quorum was resolved
     PRIMARY KEY (trigger_message_id, member_name)
 );
+
+-- Views
+
+-- Explicit conversation history read model aligned with the current backing tables.
+DROP VIEW IF EXISTS conversation_messages_view;
+CREATE VIEW conversation_messages_view AS
+SELECT
+    m.id AS message_id,
+    m.channel_id AS conversation_id,
+    c.name AS conversation_name,
+    c.channel_type AS conversation_type,
+    m.thread_parent_id AS thread_parent_id,
+    m.sender_name AS sender_name,
+    m.sender_type AS sender_type,
+    m.sender_deleted AS sender_deleted,
+    m.content AS content,
+    m.created_at AS created_at,
+    m.seq AS seq,
+    m.forwarded_from AS forwarded_from
+FROM messages m
+JOIN channels c ON c.id = m.channel_id;
+
+-- Thread summary reads projection view.
+DROP VIEW IF EXISTS thread_summaries_view;
+CREATE VIEW thread_summaries_view AS
+SELECT
+    parent.channel_id AS conversation_id,
+    parent.id AS parent_message_id,
+    COUNT(reply.id) AS reply_count,
+    (
+        SELECT reply_last.id
+        FROM messages reply_last
+        WHERE reply_last.channel_id = parent.channel_id
+          AND reply_last.thread_parent_id = parent.id
+        ORDER BY reply_last.seq DESC
+        LIMIT 1
+    ) AS last_reply_message_id,
+    (
+        SELECT reply_last.created_at
+        FROM messages reply_last
+        WHERE reply_last.channel_id = parent.channel_id
+          AND reply_last.thread_parent_id = parent.id
+        ORDER BY reply_last.seq DESC
+        LIMIT 1
+    ) AS last_reply_at,
+    (
+        SELECT COUNT(*)
+        FROM (
+            SELECT parent.sender_name AS participant_name
+            UNION
+            SELECT reply_participant.sender_name
+            FROM messages reply_participant
+            WHERE reply_participant.channel_id = parent.channel_id
+              AND reply_participant.thread_parent_id = parent.id
+        )
+    ) AS participant_count
+FROM messages parent
+LEFT JOIN messages reply
+  ON reply.channel_id = parent.channel_id
+ AND reply.thread_parent_id = parent.id
+WHERE parent.thread_parent_id IS NULL
+GROUP BY parent.channel_id, parent.id;
+
+-- Inbox conversation state view
+DROP VIEW IF EXISTS inbox_conversation_state_view;
+CREATE VIEW inbox_conversation_state_view AS
+SELECT
+    cm.channel_id AS conversation_id,
+    c.name AS conversation_name,
+    c.channel_type AS conversation_type,
+    cm.member_name AS member_name,
+    cm.member_type AS member_type,
+    COALESCE(irs.last_read_seq, 0) AS last_read_seq,
+    irs.last_read_message_id AS last_read_message_id,
+    (
+        SELECT COUNT(*)
+        FROM messages top_level
+        WHERE top_level.channel_id = cm.channel_id
+          AND top_level.thread_parent_id IS NULL
+          AND top_level.seq > COALESCE(irs.last_read_seq, 0)
+    ) + (
+        SELECT COUNT(*)
+        FROM messages reply
+        LEFT JOIN inbox_thread_read_state itrs
+          ON itrs.conversation_id = reply.channel_id
+         AND itrs.thread_parent_id = reply.thread_parent_id
+         AND itrs.member_name = cm.member_name
+        WHERE reply.channel_id = cm.channel_id
+          AND reply.thread_parent_id IS NOT NULL
+          AND reply.seq > COALESCE(itrs.last_read_seq, 0)
+          AND (
+            cm.member_type != 'agent'
+            OR EXISTS (
+                SELECT 1
+                FROM messages parent
+                WHERE parent.id = reply.thread_parent_id
+                  AND parent.channel_id = cm.channel_id
+                  AND parent.sender_type = 'agent'
+                  AND parent.sender_name = cm.member_name
+            )
+            OR EXISTS (
+                SELECT 1
+                FROM messages prior
+                WHERE prior.channel_id = cm.channel_id
+                  AND prior.thread_parent_id = reply.thread_parent_id
+                  AND prior.sender_type = 'agent'
+                  AND prior.sender_name = cm.member_name
+                  AND prior.seq < reply.seq
+            )
+          )
+    ) AS unread_count
+FROM channel_members cm
+JOIN channels c ON c.id = cm.channel_id
+LEFT JOIN inbox_read_state irs
+  ON irs.conversation_id = cm.channel_id
+ AND irs.member_name = cm.member_name;

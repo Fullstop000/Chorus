@@ -4,7 +4,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_datetime, Attachment, Store};
+use super::{parse_datetime, Store};
 use crate::store::teams::TeamMembership;
 
 // ── Types owned by this module ──
@@ -401,39 +401,5 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
-    }
-
-    pub fn store_attachment(
-        &self,
-        filename: &str,
-        mime_type: &str,
-        size: i64,
-        stored_path: &str,
-    ) -> Result<String> {
-        let conn = self.conn.lock().unwrap();
-        let id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, filename, mime_type, size, stored_path],
-        )?;
-        Ok(id)
-    }
-
-    pub fn get_attachment(&self, id: &str) -> Result<Option<Attachment>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, filename, mime_type, size_bytes, stored_path, uploaded_at FROM attachments WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Attachment {
-                id: row.get(0)?,
-                filename: row.get(1)?,
-                mime_type: row.get(2)?,
-                size_bytes: row.get(3)?,
-                stored_path: row.get(4)?,
-                uploaded_at: parse_datetime(&row.get::<_, String>(5)?),
-            })
-        })?;
-        Ok(rows.next().transpose()?)
     }
 }
