@@ -1621,7 +1621,7 @@ impl Store {
                             "system" => ChannelType::System,
                             _ => ChannelType::Channel,
                         },
-                        created_at: super::parse_datetime(&row.get::<_, String>(5)?),
+                        created_at: crate::utils::parse_datetime(&row.get::<_, String>(5)?),
                     },
                     row.get(6)?,
                 ))

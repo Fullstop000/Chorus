@@ -4,7 +4,8 @@ use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::{parse_datetime, Store};
+use crate::utils::parse_datetime;
+use super::Store;
 
 /// One durable IM event persisted for replay and realtime fanout.
 #[derive(Debug, Clone, Serialize, Deserialize)]

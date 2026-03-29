@@ -16,6 +16,8 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use tokio::sync::broadcast;
 
+use crate::utils::{derive_data_dir, parse_datetime};
+
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
 pub use attachments::Attachment;
@@ -142,23 +144,3 @@ impl Store {
     }
 }
 
-/// Derive the server data directory from the SQLite path.
-fn derive_data_dir(path: &str) -> PathBuf {
-    if path == ":memory:" {
-        return std::env::temp_dir().join(format!("chorus-memory-{}", uuid::Uuid::new_v4()));
-    }
-
-    Path::new(path)
-        .parent()
-        .filter(|dir| !dir.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-        .to_path_buf()
-}
-
-// ── Helpers (shared across submodules) ──
-
-pub(crate) fn parse_datetime(s: &str) -> chrono::DateTime<chrono::Utc> {
-    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-        .map(|dt| dt.and_utc())
-        .unwrap_or_else(|_| chrono::Utc::now())
-}

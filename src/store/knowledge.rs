@@ -3,7 +3,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_datetime, Store};
+use crate::utils::{parse_datetime, sanitize_fts_query};
+use super::Store;
 
 // ── Types owned by this module ──
 
@@ -63,17 +64,6 @@ pub struct RecallQuery {
 pub struct RecallResponse {
     /// Ranked or filtered entries.
     pub entries: Vec<KnowledgeEntry>,
-}
-
-/// Sanitize a raw FTS5 query string so agent-supplied input cannot inject FTS5 syntax
-/// that causes a parse error. We escape double-quotes and strip bare operators.
-fn sanitize_fts_query(raw: &str) -> String {
-    // Wrap each word in double-quotes so FTS5 treats them as phrase literals.
-    // This prevents injection of FTS5 operators like AND/OR/NOT/NEAR.
-    raw.split_whitespace()
-        .map(|w| format!("\"{}\"", w.replace('"', "")))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 impl Store {
