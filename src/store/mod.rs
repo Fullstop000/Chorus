@@ -19,7 +19,7 @@ use tokio::sync::broadcast;
 use crate::utils::{derive_data_dir, parse_datetime};
 
 pub use agents::AgentRecordUpsert;
-pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
+pub use agents::{Agent, AgentEnvVar, AgentStatus, Human};
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
 pub use events::{ResolvedSubscriptionTarget, StoredEvent, SubscriptionTargetKind};
@@ -143,4 +143,3 @@ impl Store {
         Ok(None)
     }
 }
-

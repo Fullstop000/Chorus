@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use rusqlite::{params, Connection};
 use anyhow::Result;
+use rusqlite::{params, Connection};
+use std::collections::HashMap;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_remove_spurious_dm_members(conn)?;
@@ -76,12 +76,11 @@ fn migrate_event_stream_identity(conn: &Connection) -> Result<()> {
     let mut stream_meta: HashMap<String, (String, String, i64)> = HashMap::new();
 
     for (event_id, scope_kind, scope_id, channel_id) in rows {
-        let (stream_id, stream_kind, aggregate_id) =
-            crate::store::events::derive_stream_identity(
-                &scope_kind,
-                &scope_id,
-                channel_id.as_deref(),
-            );
+        let (stream_id, stream_kind, aggregate_id) = crate::store::events::derive_stream_identity(
+            &scope_kind,
+            &scope_id,
+            channel_id.as_deref(),
+        );
         let next_pos = stream_positions.get(&stream_id).copied().unwrap_or(0) + 1;
         stream_positions.insert(stream_id.clone(), next_pos);
         stream_meta.insert(

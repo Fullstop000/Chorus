@@ -9,9 +9,10 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
+use crate::agent::config::AgentConfig;
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::AgentLifecycle;
-use crate::store::agents::{AgentConfig, AgentRuntime, AgentStatus};
+use crate::store::agents::{AgentRuntime, AgentStatus};
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 

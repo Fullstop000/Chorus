@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::{parse_datetime, Store};
-use crate::store::teams::TeamMembership;
 
 // ── Types owned by this module ──
 
@@ -105,29 +104,6 @@ impl AgentRuntime {
             _ => None,
         }
     }
-}
-
-/// Snapshot passed to the bridge when spawning an agent (includes team context).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    /// Agent handle.
-    pub name: String,
-    /// Display name for prompts.
-    pub display_name: String,
-    /// Optional description for system prompt.
-    pub description: Option<String>,
-    /// Driver key.
-    pub runtime: String,
-    /// Model id.
-    pub model: String,
-    /// Active session id if resuming.
-    pub session_id: Option<String>,
-    /// Reasoning effort for Codex.
-    pub reasoning_effort: Option<String>,
-    /// Environment variables for the child process.
-    pub env_vars: Vec<AgentEnvVar>,
-    /// Team memberships injected into the agent's system prompt at spawn time.
-    pub teams: Vec<TeamMembership>,
 }
 
 /// Registered human user (can post and own channels).

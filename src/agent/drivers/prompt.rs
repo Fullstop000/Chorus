@@ -1,4 +1,4 @@
-use crate::store::agents::AgentConfig;
+use crate::agent::config::AgentConfig;
 use crate::store::teams::TeamMembership;
 
 pub struct PromptOptions {

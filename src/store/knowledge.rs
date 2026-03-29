@@ -3,8 +3,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::utils::{parse_datetime, sanitize_fts_query};
 use super::Store;
+use crate::utils::{parse_datetime, sanitize_fts_query};
 
 // ── Types owned by this module ──
 
