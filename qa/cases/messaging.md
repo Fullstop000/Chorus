@@ -120,6 +120,147 @@
   - reply appears under the wrong DM or in `#general`
   - UI target changes unexpectedly during the wake-up flow
 
+### MSG-005 Notification-Driven Incremental History Fetch
+
+- Tier: 0
+- Release-sensitive: yes
+- Goal:
+  - verify chat stays websocket-driven after bootstrap and only fetches incremental history windows when notification events advance the active room
+- Script:
+  - [`playwright/MSG-005.spec.ts`](./playwright/MSG-005.spec.ts) (websocket console + `history?after=` assertions)
+- Preconditions:
+  - shared channel is selected
+  - websocket console logging is enabled in the current build
+- Steps:
+  1. Open the app and wait for the initial chat bootstrap to settle.
+  2. Record the initial `/internal/agent/{id}/history` requests and verify they do not include `after`.
+  3. Send one local message in the active room.
+  4. Verify the optimistic local row appears immediately; if the client performs any follow-up history fetch, it must use an `after` cursor rather than a full reload.
+  5. Inject one new message into the same room from another actor.
+  6. Verify the UI logs a `conversation.state` websocket event and performs one incremental `history` fetch with `after`.
+  7. Wait several more seconds and verify no periodic history polling resumes.
+- Expected:
+  - bootstrap uses full history fetch once
+  - local human send is visible immediately via optimistic UI plus durable ack
+  - any local reconciliation fetch is incremental `history?after=...`, not a full history reload
+  - remote active-room updates use incremental `history?after=...`
+  - websocket notification payload contains metadata such as `latestSeq` and `unreadCount`, not message bodies
+  - no background history polling continues after the room is idle again
+- Common failure signals:
+  - repeated full-history fetches while idle
+  - local optimistic send is not visible until a background history reload completes
+  - websocket receives full message content instead of notification metadata
+  - remote message appears only after a timer-driven poll
+
+### MSG-006 Thread Read Cursor Advances On Visibility
+
+- Tier: 0
+- Release-sensitive: yes
+- Goal:
+  - verify a thread read cursor is only advanced after thread replies become visible in the thread panel
+- Script:
+  - [`playwright/MSG-006.spec.ts`](./playwright/MSG-006.spec.ts) (thread open + `read-cursor` request assertions)
+- Preconditions:
+  - at least one agent exists, or the test can create a disposable one
+  - one parent channel message and one thread reply can be seeded before opening the UI
+- Steps:
+  1. Seed a parent message and a thread reply under it.
+  2. Open the app with the parent conversation selected.
+  3. Verify no `POST /internal/agent/{id}/read-cursor` has yet been sent for the thread target.
+  4. Open the thread panel from the parent message.
+  5. Wait until the reply is visibly rendered in the thread panel.
+  6. Verify a thread-targeted `read-cursor` POST is then sent with a concrete `lastReadSeq`.
+- Expected:
+  - conversation selection alone does not mark the thread read
+  - thread read state advances after the reply is actually visible
+  - read-cursor payload identifies the thread target correctly
+- Common failure signals:
+  - thread is marked read before it is opened
+  - no read-cursor update occurs after the reply becomes visible
+  - conversation read state is updated when only the thread should be
+
+### MSG-007 Optimistic Send Success And Failure States
+
+- Tier: 0
+- Release-sensitive: yes
+- Goal:
+  - verify human-sent messages remain visible with local sending state until durable ack, and stay visible as failed rows with a toast when send fails
+- Script:
+  - [`playwright/MSG-007.spec.ts`](./playwright/MSG-007.spec.ts) (main chat and thread optimistic-send interception)
+- Preconditions:
+  - request interception is available in the browser harness
+  - a thread can be opened for the thread-composer portion of the case
+- Steps:
+  1. Intercept `/internal/agent/{id}/send` so the first send succeeds after a short delay and the second send fails.
+  2. Send one top-level message.
+  3. Verify the message appears immediately with a sending indicator, then clears that indicator after the delayed success response.
+  4. Send one more top-level message through the forced-failure path.
+  5. Verify the failed message remains visible with failed styling and a visible failure toast.
+  6. Repeat the same success-then-failure sequence inside an open thread.
+- Expected:
+  - optimistic rows appear immediately in both main chat and thread chat
+  - success reconciles the optimistic row without removing it
+  - failure keeps the row visible, marks it failed, and surfaces a toast
+- Common failure signals:
+  - sent message does not appear until the network response returns
+  - failed message disappears entirely
+  - no visible distinction between sending and failed states
+  - thread composer behaves differently from the main composer without reason
+
+### MSG-008 Conversation Read Cursor Advances On Visibility
+
+- Tier: 1
+- Release-sensitive: yes when touching read/unread state, viewport reporting, or conversation history bootstrapping
+- Goal:
+  - verify an unread top-level conversation message is marked read only after it becomes visible in the active chat viewport
+- Script:
+  - [`playwright/MSG-008.spec.ts`](./playwright/MSG-008.spec.ts) (seed unread top-level message + conversation `read-cursor` assertion)
+- Preconditions:
+  - at least one agent exists, or the test can create a disposable one
+  - the default conversation target can be opened in the browser
+- Steps:
+  1. Seed one unread top-level message into the active conversation before opening the UI.
+  2. Start capturing `POST /internal/agent/{id}/read-cursor` requests.
+  3. Open the app with that conversation selected.
+  4. Wait until the seeded message is visibly rendered in the main chat viewport.
+  5. Verify a conversation-targeted `read-cursor` POST is sent with a `lastReadSeq` at or beyond the seeded message sequence.
+- Expected:
+  - visible top-level messages advance the conversation read cursor
+  - the payload identifies the conversation target, not a thread target
+  - read advancement happens from viewport visibility without any manual refresh
+- Common failure signals:
+  - conversation read cursor never advances for visible messages
+  - only thread targets emit read-cursor updates
+  - read cursor advances to the wrong target
+
+### MSG-009 Single Websocket Tunnel Across Target Switches
+
+- Tier: 0
+- Release-sensitive: yes
+- Goal:
+  - verify the frontend keeps one session-wide realtime websocket while switching among channel, DM, and back again
+- Script:
+  - [`playwright/MSG-009.spec.ts`](./playwright/MSG-009.spec.ts) (websocket-count assertion during channel/DM switches)
+- Preconditions:
+  - at least one agent exists, or the test can create a disposable one
+  - one disposable user channel can be created before loading the UI
+- Steps:
+  1. Seed a disposable user channel and ensure one agent exists for DM navigation.
+  2. Start counting browser websocket connections targeting `/api/events/ws`.
+  3. Open the app.
+  4. Switch from the default room to the disposable channel.
+  5. Switch from that channel to a DM with the agent.
+  6. Switch back to the disposable channel.
+  7. Verify the browser created only one realtime websocket for the whole sequence.
+- Expected:
+  - one websocket tunnel survives target switches
+  - channel/DM switches update subscriptions in place
+  - target changes do not create websocket fan-out in the browser
+- Common failure signals:
+  - one new websocket per clicked target
+  - DM open creates an additional websocket next to the channel websocket
+  - target switching only works by tearing down and rebuilding the realtime transport
+
 ### HIS-001 History Reload And Selection Stability
 
 - Tier: 0

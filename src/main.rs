@@ -273,7 +273,7 @@ async fn main() -> anyhow::Result<()> {
                         &[],
                     )?;
                     // Join default channels
-                    for ch in store.list_channels()? {
+                    for ch in store.get_channels()? {
                         let _ = store.join_channel(&ch.name, &name, SenderType::Agent);
                     }
                     println!("Agent @{name} created (runtime: {runtime}, model: {model}).");
@@ -326,7 +326,7 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
 
     // Default human = OS username
     let username = whoami::username();
-    let _ = store.add_human(&username);
+    let _ = store.create_human(&username);
 
     // Ensure built-in system channels exist and upgrade legacy installs to #all.
     store.ensure_builtin_channels(&username)?;
@@ -343,7 +343,7 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
     // Auto-restart agents that were active before server restart
     {
         let active_agents: Vec<String> = store
-            .list_agents()
+            .get_agents()
             .unwrap_or_default()
             .into_iter()
             .filter(|a| a.status == AgentStatus::Active)

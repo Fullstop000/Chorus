@@ -369,6 +369,31 @@
   - selected target and rendered content disagree
   - switching tabs changes the underlying target unexpectedly
 
+### NAV-002 Idle Shell Does Not Poll Sidebar Resources
+
+- Tier: 1
+- Release-sensitive: yes when touching shell bootstrap, sidebar refresh logic, or server-info fetching
+- Goal:
+  - verify the app shell does one bootstrap fetch for sidebar resources and then remains idle until a real user action requires refresh
+- Script:
+  - [`playwright/NAV-002.spec.ts`](./playwright/NAV-002.spec.ts) (request-count assertions for idle shell behavior)
+- Preconditions:
+  - fresh app load
+  - no user action after initial shell render
+- Steps:
+  1. Open the app root.
+  2. Wait for the shell to render and then remain idle for at least 6 seconds.
+  3. Count requests to `/api/humans`, `/api/channels`, `/api/agents`, and `/api/teams`.
+  4. Verify each endpoint is fetched exactly once during bootstrap.
+- Expected:
+  - shell bootstraps correctly
+  - sidebar data is fetched once
+  - no background polling resumes while the shell is idle
+- Common failure signals:
+  - repeated humans-list polling
+  - channels, agents, or teams lists refetch without user action
+  - idle shell continuously wakes the network panel
+
 ### WRK-001 Workspace Tab Path And File Visibility
 
 - Tier: 1

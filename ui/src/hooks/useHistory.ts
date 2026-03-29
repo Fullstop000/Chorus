@@ -1,41 +1,346 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { getHistory } from '../api'
-import type { HistoryMessage } from '../types'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { getHistory, getHistoryAfter, updateReadCursor } from '../api'
+import {
+  applyRealtimeEvent,
+  historyFetchAfterForNotification,
+  maxHistorySeq,
+  mergeHistoryMessages,
+  nextRealtimeCursor,
+} from '../transport/realtime'
+import { getRealtimeSession } from '../transport/realtimeSession'
+import type { HistoryMessage, HistoryResponse, RealtimeMessage } from '../types'
+import { loadSharedRequest } from './historyRequestCache'
 
-export function useHistory(username: string, target: string | null) {
+interface UseHistoryOptions {
+  threadParentId?: string | null
+}
+
+interface OptimisticMessageHandle {
+  tempId: string
+  clientNonce: string
+}
+
+function createClientNonce(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
+}
+
+export function useHistory(
+  username: string,
+  targetKey: string | null,
+  conversationId: string | null,
+  options?: UseHistoryOptions
+) {
   const [messages, setMessages] = useState<HistoryMessage[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const lastSeqRef = useRef<number>(0)
-
-  const fetchHistory = useCallback(async () => {
-    if (!username || !target) return
-    try {
-      const res = await getHistory(username, target, 50)
-      setMessages(res.messages)
-      if (res.messages.length > 0) {
-        lastSeqRef.current = res.messages[res.messages.length - 1].seq
-      }
-      setError(null)
-    } catch (e) {
-      setError(String(e))
-    } finally {
-      setLoading(false)
-    }
-  }, [username, target])
+  const [lastReadSeq, setLastReadSeq] = useState(0)
+  const [loadedTarget, setLoadedTarget] = useState<string | null>(null)
+  const lastEventIdRef = useRef(0)
+  const streamIdRef = useRef<string | null>(null)
+  const lastStreamPosRef = useRef(0)
+  const maxLoadedSeqRef = useRef(0)
+  const incrementalFetchAfterRef = useRef<number | null>(null)
+  const lastReadSeqRef = useRef(0)
+  const pendingReadSeqRef = useRef<number | null>(null)
+  const readCursorTimerRef = useRef<number | null>(null)
 
   useEffect(() => {
-    if (!target) {
+    lastReadSeqRef.current = lastReadSeq
+  }, [lastReadSeq])
+
+  const commitMessages = useCallback((updater: (current: HistoryMessage[]) => HistoryMessage[]) => {
+    setMessages((current) => {
+      const next = updater(current).sort((left, right) => left.seq - right.seq)
+      maxLoadedSeqRef.current = maxHistorySeq(next)
+      return next
+    })
+  }, [])
+
+  const fetchHistory = useCallback(async (after?: number): Promise<HistoryResponse | null> => {
+    if (!username || !targetKey || !conversationId) return null
+    if (after != null && incrementalFetchAfterRef.current === after) {
+      return null
+    }
+    if (after != null) {
+      incrementalFetchAfterRef.current = after
+    }
+    try {
+      const res =
+        after != null
+          ? await getHistoryAfter(
+              conversationId,
+              after,
+              50,
+              options?.threadParentId ?? undefined
+            )
+          : await loadSharedRequest(
+              `history:${conversationId}:${options?.threadParentId ?? 'root'}:bootstrap`,
+              () => getHistory(conversationId, 50, options?.threadParentId ?? undefined)
+            )
+      if (after != null) {
+        commitMessages((current) => {
+          const merged = mergeHistoryMessages(current, res.messages)
+          return merged
+        })
+      } else {
+        setMessages(res.messages)
+        maxLoadedSeqRef.current = maxHistorySeq(res.messages)
+      }
+      setLastReadSeq(res.last_read_seq ?? 0)
+      setLoadedTarget(targetKey)
+      lastEventIdRef.current = Math.max(lastEventIdRef.current, res.latestEventId ?? 0)
+      streamIdRef.current = res.streamId ?? streamIdRef.current
+      lastStreamPosRef.current = Math.max(lastStreamPosRef.current, res.streamPos ?? 0)
+      setError(null)
+      return res
+    } catch (e) {
+      setError(String(e))
+      return null
+    } finally {
+      if (after == null) {
+        setLoading(false)
+      }
+      if (incrementalFetchAfterRef.current === after) {
+        incrementalFetchAfterRef.current = null
+      }
+    }
+  }, [conversationId, options?.threadParentId, targetKey, username])
+
+  useEffect(() => {
+    if (!username || !targetKey || !conversationId) {
       setMessages([])
+      setError(null)
+      setLastReadSeq(0)
+      setLoadedTarget(null)
+      lastEventIdRef.current = 0
+      streamIdRef.current = null
+      lastStreamPosRef.current = 0
+      maxLoadedSeqRef.current = 0
+      incrementalFetchAfterRef.current = null
       return
     }
-    setLoading(true)
-    setMessages([])
-    lastSeqRef.current = 0
-    fetchHistory()
-    const id = setInterval(fetchHistory, 2_000)
-    return () => clearInterval(id)
-  }, [target, fetchHistory])
 
-  return { messages, loading, error, refresh: fetchHistory }
+    let cancelled = false
+    let unsubscribeRealtime: (() => void) | null = null
+    let activeRealtimeTarget: string | null = null
+    async function bootstrap() {
+      setLoading(true)
+      setMessages([])
+      setError(null)
+      setLastReadSeq(0)
+      setLoadedTarget(null)
+      lastEventIdRef.current = 0
+      streamIdRef.current = null
+      lastStreamPosRef.current = 0
+      maxLoadedSeqRef.current = 0
+      incrementalFetchAfterRef.current = null
+      pendingReadSeqRef.current = null
+      if (readCursorTimerRef.current != null) {
+        window.clearTimeout(readCursorTimerRef.current)
+        readCursorTimerRef.current = null
+      }
+
+      const history = await fetchHistory()
+      if (cancelled || !history) return
+
+      try {
+        activeRealtimeTarget = options?.threadParentId
+          ? `thread:${options.threadParentId}`
+          : `conversation:${conversationId}`
+      } catch (targetError) {
+        if (!cancelled) {
+          setError(targetError instanceof Error ? targetError.message : String(targetError))
+        }
+        return
+      }
+
+      unsubscribeRealtime = getRealtimeSession(username).subscribe({
+        targets: [activeRealtimeTarget],
+        resumeFrom: lastEventIdRef.current,
+        streamId: streamIdRef.current,
+        resumeFromStreamPos: lastStreamPosRef.current,
+        onFrame: (frame: RealtimeMessage) => {
+          if (cancelled) return
+          if (frame.type === 'subscribed') {
+            lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
+            if (frame.streamId) {
+              streamIdRef.current = frame.streamId
+              lastStreamPosRef.current = frame.resumeFromStreamPos ?? lastStreamPosRef.current
+            }
+            return
+          }
+          if (frame.type === 'error') {
+            setError(frame.message)
+            return
+          }
+          lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
+          if (streamIdRef.current && frame.event.streamId === streamIdRef.current) {
+            lastStreamPosRef.current = Math.max(
+              lastStreamPosRef.current,
+              frame.event.streamPos ?? 0
+            )
+          }
+          const incrementalAfter = historyFetchAfterForNotification(
+            activeRealtimeTarget,
+            frame.event,
+            maxLoadedSeqRef.current
+          )
+          if (incrementalAfter != null) {
+            void fetchHistory(incrementalAfter)
+            return
+          }
+          if (frame.event.eventType === 'conversation.state' || frame.event.eventType === 'thread.state') {
+            return
+          }
+          if (
+            frame.event.eventType === 'conversation.read_cursor_set' ||
+            frame.event.eventType === 'thread.read_cursor_set'
+          ) {
+            const nextReadSeq = frame.event.payload.lastReadSeq
+            if (typeof nextReadSeq === 'number') {
+              setLastReadSeq((current) => Math.max(current, nextReadSeq))
+            }
+            return
+          }
+          commitMessages((current) => applyRealtimeEvent(current, frame.event))
+          setError(null)
+        },
+      })
+    }
+
+    void bootstrap()
+
+    return () => {
+      cancelled = true
+      if (readCursorTimerRef.current != null) {
+        window.clearTimeout(readCursorTimerRef.current)
+        readCursorTimerRef.current = null
+      }
+      unsubscribeRealtime?.()
+    }
+  }, [conversationId, fetchHistory, options?.threadParentId, targetKey, username])
+
+  const reportVisibleSeq = useCallback((visibleSeq: number) => {
+    if (!username || !targetKey || !conversationId || visibleSeq <= 0) return
+    if (loadedTarget !== targetKey) return
+    if (document.visibilityState !== 'visible') return
+    const nextSeq = Math.max(visibleSeq, pendingReadSeqRef.current ?? 0)
+    if (nextSeq <= lastReadSeqRef.current) return
+    pendingReadSeqRef.current = nextSeq
+    if (readCursorTimerRef.current != null) return
+
+    readCursorTimerRef.current = window.setTimeout(async () => {
+      readCursorTimerRef.current = null
+      const flushSeq = pendingReadSeqRef.current
+      pendingReadSeqRef.current = null
+      if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return
+      if (document.visibilityState !== 'visible') return
+      try {
+        await updateReadCursor(
+          conversationId,
+          flushSeq,
+          options?.threadParentId ?? undefined
+        )
+        setLastReadSeq((current) => Math.max(current, flushSeq))
+      } catch (cursorError) {
+        console.error('Failed to update read cursor', cursorError)
+      }
+    }, 150)
+  }, [conversationId, loadedTarget, options?.threadParentId, targetKey, username])
+
+  const addOptimisticMessage = useCallback((draft: {
+    content: string
+    attachments?: HistoryMessage['attachments']
+  }): OptimisticMessageHandle => {
+    const tempId = `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
+    const clientNonce = createClientNonce()
+    const optimisticMessage: HistoryMessage = {
+      id: tempId,
+      seq: maxLoadedSeqRef.current + 1,
+      content: draft.content,
+      senderName: username,
+      senderType: 'human',
+      senderDeleted: false,
+      createdAt: new Date().toISOString(),
+      attachments: draft.attachments,
+      clientNonce,
+      clientStatus: 'sending',
+    }
+    commitMessages((current) => [...current, optimisticMessage])
+    return { tempId, clientNonce }
+  }, [commitMessages, username])
+
+  const ackOptimisticMessage = useCallback((handle: OptimisticMessageHandle, ack: {
+    messageId: string
+    seq: number
+    createdAt: string
+    clientNonce?: string
+  }) => {
+    const nonce = ack.clientNonce ?? handle.clientNonce
+    commitMessages((current) =>
+      current.map((message) =>
+        message.clientNonce === nonce || message.id === handle.tempId
+          ? {
+              ...message,
+              id: ack.messageId,
+              seq: ack.seq,
+              createdAt: ack.createdAt,
+              clientNonce: nonce,
+              clientStatus: undefined,
+              clientError: undefined,
+            }
+          : message
+      )
+    )
+  }, [commitMessages])
+
+  const failOptimisticMessage = useCallback((handle: OptimisticMessageHandle, errorMessage: string) => {
+    commitMessages((current) =>
+      current.map((message) =>
+        message.clientNonce === handle.clientNonce || message.id === handle.tempId
+          ? {
+              ...message,
+              clientStatus: 'failed',
+              clientError: errorMessage,
+            }
+          : message
+      )
+    )
+  }, [commitMessages])
+
+  const retryOptimisticMessage = useCallback((messageId: string): OptimisticMessageHandle | null => {
+    const nextHandle = {
+      tempId: messageId,
+      clientNonce: createClientNonce(),
+    }
+    commitMessages((current) =>
+      current.map((message) => {
+        if (message.id !== messageId) return message
+        return {
+          ...message,
+          clientNonce: nextHandle.clientNonce,
+          clientStatus: 'sending',
+          clientError: undefined,
+        }
+      })
+    )
+    return nextHandle
+  }, [commitMessages])
+
+  return {
+    messages,
+    loading,
+    error,
+    lastReadSeq,
+    loadedTarget,
+    refresh: fetchHistory,
+    reportVisibleSeq,
+    addOptimisticMessage,
+    ackOptimisticMessage,
+    failOptimisticMessage,
+    retryOptimisticMessage,
+  }
 }

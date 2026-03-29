@@ -1,23 +1,35 @@
-import { useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { Paperclip, Plus } from 'lucide-react'
-import { useApp, useTarget } from '../store'
+import { useApp } from '../store'
+import { useHistory } from '../hooks/useHistory'
 import { sendMessage, createTasks, uploadFile } from '../api'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
+import { ToastRegion } from './ToastRegion'
 
 interface Props {
-  onMessageSent?: () => void
+  target: string | null
+  conversationId: string | null
+  history: ReturnType<typeof useHistory>
 }
 
-export function MessageInput({ onMessageSent }: Props) {
-  const { currentUser, selectedChannel, serverInfo, agents, teams } = useApp()
-  const target = useTarget()
+export function MessageInput({ target, conversationId, history }: Props) {
+  const { currentUser, selectedChannel, selectedChannelId, serverInfo, agents, teams } = useApp()
   const [content, setContent] = useState('')
   const [alsoTask, setAlsoTask] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (toasts.length === 0) return
+    const timer = window.setTimeout(() => {
+      setToasts((current) => current.slice(1))
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [toasts])
 
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
@@ -40,31 +52,66 @@ export function MessageInput({ onMessageSent }: Props) {
     if (!target || !currentUser || (!content.trim() && pendingFiles.length === 0)) return
     setSending(true)
     setError(null)
+    let optimisticHandle: ReturnType<typeof history.addOptimisticMessage> | null = null
+    const trimmedContent = content.trim()
     try {
       // Upload files first
       const attachmentIds: string[] = []
       for (const file of pendingFiles) {
-        const res = await uploadFile(currentUser, file)
+        const res = await uploadFile(file)
         attachmentIds.push(res.id)
       }
 
-      await sendMessage(currentUser, target, content.trim(), attachmentIds, {
+      const handle = history.addOptimisticMessage({
+        content: trimmedContent,
+        attachments: attachmentIds.map((id, index) => ({
+          id,
+          filename: pendingFiles[index]?.name ?? 'attachment',
+        })),
+      })
+      optimisticHandle = handle
+
+      if (!conversationId) throw new Error('conversation unavailable')
+      const sendAck = await sendMessage(conversationId, trimmedContent, attachmentIds, {
+        clientNonce: handle.clientNonce,
         suppressAgentDelivery: alsoTask && !!selectedChannel,
       })
-
-      if (alsoTask && selectedChannel && content.trim()) {
-        await createTasks(currentUser, selectedChannel, [content.trim()])
-      }
-
+      history.ackOptimisticMessage(handle, {
+        messageId: sendAck.messageId,
+        seq: sendAck.seq,
+        createdAt: sendAck.createdAt,
+        clientNonce: sendAck.clientNonce,
+      })
       setContent('')
       setPendingFiles([])
       setAlsoTask(false)
-      onMessageSent?.()
     } catch (e) {
       console.error('Send failed:', e)
-      setError(e instanceof Error ? e.message : String(e))
+      const message = e instanceof Error ? e.message : String(e)
+      if (optimisticHandle) {
+        history.failOptimisticMessage(optimisticHandle, message)
+      }
+      setError(message)
+      setToasts((current) => [
+        ...current,
+        { id: `send-failed-${Date.now()}`, message: 'Message failed to send' },
+      ])
     } finally {
       setSending(false)
+    }
+
+    if (alsoTask && selectedChannel && trimmedContent) {
+      try {
+        if (!selectedChannelId) throw new Error('channel unavailable')
+        await createTasks(selectedChannelId, [trimmedContent])
+      } catch (taskError) {
+        const message = taskError instanceof Error ? taskError.message : String(taskError)
+        setError(message)
+        setToasts((current) => [
+          ...current,
+          { id: `task-create-failed-${Date.now()}`, message: 'Task creation failed' },
+        ])
+      }
     }
   }
 
@@ -145,6 +192,10 @@ export function MessageInput({ onMessageSent }: Props) {
           </label>
         </div>
       )}
+      <ToastRegion
+        toasts={toasts}
+        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+      />
     </div>
   )
 }

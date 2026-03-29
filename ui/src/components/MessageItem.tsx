@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
-import { MessageSquare, Copy, Paperclip } from 'lucide-react'
+import { MessageSquare, Copy, Paperclip, LoaderCircle, CircleAlert, RotateCcw } from 'lucide-react'
 import type { HistoryMessage } from '../types'
 import { attachmentUrl } from '../api'
 
@@ -80,9 +80,10 @@ interface MessageItemProps {
   currentUser: string
   prevMessage?: HistoryMessage
   onReply?: (msg: HistoryMessage) => void
+  onRetry?: (msg: HistoryMessage) => void
 }
 
-export function MessageItem({ message, currentUser, prevMessage, onReply }: MessageItemProps) {
+export function MessageItem({ message, currentUser, prevMessage, onReply, onRetry }: MessageItemProps) {
   const isMe = message.senderName === currentUser
   const initial = message.senderName[0]?.toUpperCase() ?? '?'
   const color = senderColor(message.senderName)
@@ -90,6 +91,8 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
 
   // Group messages from the same sender within 5 minutes
   const isGrouped =
+    !message.clientStatus &&
+    !prevMessage?.clientStatus &&
     prevMessage?.senderName === message.senderName &&
     Math.abs(
       new Date(message.createdAt).getTime() - new Date(prevMessage.createdAt).getTime()
@@ -132,6 +135,31 @@ export function MessageItem({ message, currentUser, prevMessage, onReply }: Mess
             <span className="message-time">
               {formatDate(message.createdAt)} {formatTime(message.createdAt)}
             </span>
+            {message.clientStatus === 'sending' && (
+              <span className="message-status message-status-sending" aria-label="Sending">
+                <LoaderCircle size={12} className="message-status-spin" />
+                Sending
+              </span>
+            )}
+            {message.clientStatus === 'failed' && (
+              <>
+                <span className="message-status message-status-failed" aria-label="Failed to send">
+                  <CircleAlert size={12} />
+                  Failed
+                </span>
+                {onRetry && (
+                  <button
+                    className="message-action-btn"
+                    type="button"
+                    aria-label="Retry send"
+                    title="Retry send"
+                    onClick={() => onRetry(message)}
+                  >
+                    <RotateCcw size={13} />
+                  </button>
+                )}
+              </>
+            )}
           </div>
         )}
         <div className="message-content">{renderContent(message.content)}</div>

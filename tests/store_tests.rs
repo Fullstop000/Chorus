@@ -1,9 +1,11 @@
 use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
+use chorus::store::events::StoredEvent;
 use chorus::store::messages::SenderType;
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
 use rusqlite::{params, Connection};
+use serde_json::Value;
 use tempfile::tempdir;
 
 #[test]
@@ -42,10 +44,10 @@ fn test_add_and_list_team_members() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .create_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
         .unwrap();
     store
-        .add_team_member(&team_id, "bob", "human", "bob", "observer")
+        .create_team_member(&team_id, "bob", "human", "bob", "observer")
         .unwrap();
     let members = store.get_team_members(&team_id).unwrap();
     assert_eq!(members.len(), 2);
@@ -56,9 +58,9 @@ fn test_list_teams_for_agent() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .create_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
         .unwrap();
-    let teams = store.list_teams_for_agent("alice").unwrap();
+    let teams = store.get_teams_by_agent_name("alice").unwrap();
     assert_eq!(teams.len(), 1);
     assert_eq!(teams[0].team_name, "eng-team");
 }
@@ -68,7 +70,7 @@ fn test_delete_team_cascades() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "uuid-1", "operator")
+        .create_team_member(&team_id, "alice", "agent", "uuid-1", "operator")
         .unwrap();
     store.delete_team(&team_id).unwrap();
     assert!(store.get_team("eng-team").unwrap().is_none());
@@ -100,7 +102,7 @@ fn test_create_and_list_channels() {
     store
         .create_channel("random", None, ChannelType::Channel)
         .unwrap();
-    let channels = store.list_channels().unwrap();
+    let channels = store.get_channels().unwrap();
     assert_eq!(channels.len(), 2);
     assert_eq!(channels[0].name, "general");
 }
@@ -111,13 +113,13 @@ fn test_send_and_receive_messages() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     let msg_id = store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
     assert!(!msg_id.is_empty());
 
@@ -132,7 +134,7 @@ fn test_send_and_receive_messages() {
         .unwrap();
 
     let _msg_id2 = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -151,12 +153,12 @@ fn test_agent_does_not_receive_its_own_sent_message() {
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     let (dm_channel_id, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
-    let dm_channel = store.find_channel_by_id(&dm_channel_id).unwrap().unwrap();
+    let dm_channel = store.get_channel_by_id(&dm_channel_id).unwrap().unwrap();
 
     store
-        .send_message(
+        .create_message(
             &dm_channel.name,
             None,
             "bot1",
@@ -182,14 +184,14 @@ fn test_message_history_pagination() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     for i in 0..10 {
         store
-            .send_message(
+            .create_message(
                 "general",
                 None,
                 "alice",
@@ -209,6 +211,541 @@ fn test_message_history_pagination() {
         .get_history("general", None, 5, Some(first_seq), None)
         .unwrap();
     assert_eq!(older.len(), 5);
+}
+
+#[test]
+fn test_history_snapshot_returns_messages_and_event_cursor_together() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    store
+        .create_message("general", None, "alice", SenderType::Human, "one", &[])
+        .unwrap();
+    store
+        .create_message("general", None, "alice", SenderType::Human, "two", &[])
+        .unwrap();
+
+    let snapshot = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+
+    assert_eq!(snapshot.messages.len(), 2);
+    assert!(!snapshot.has_more);
+    assert_eq!(snapshot.last_read_seq, 2);
+    assert_eq!(snapshot.latest_event_id, 2);
+    assert_eq!(snapshot.messages[0].content, "one");
+    assert_eq!(snapshot.messages[1].content, "two");
+}
+
+#[test]
+fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let first_top_level = store
+        .create_message("general", None, "alice", SenderType::Human, "one", &[])
+        .unwrap();
+    store
+        .create_message(
+            "general",
+            Some(&first_top_level),
+            "alice",
+            SenderType::Human,
+            "thread reply",
+            &[],
+        )
+        .unwrap();
+    let second_top_level = store
+        .create_message("general", None, "alice", SenderType::Human, "two", &[])
+        .unwrap();
+
+    let state_before = store
+        .get_inbox_conversation_state("general", "bot1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(state_before.conversation_name, "general");
+    assert_eq!(state_before.member_name, "bot1");
+    assert_eq!(state_before.last_read_seq, 0);
+    assert_eq!(state_before.last_read_message_id, None);
+    assert_eq!(state_before.unread_count, 2);
+
+    let conn = store.conn_for_test();
+    let row = conn
+        .query_row(
+            "SELECT conversation_name, member_name, last_read_seq, last_read_message_id, unread_count
+             FROM inbox_conversation_state_view
+             WHERE conversation_name = 'general' AND member_name = 'bot1'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            },
+        )
+        .unwrap();
+    assert_eq!(row.0, "general");
+    assert_eq!(row.1, "bot1");
+    assert_eq!(row.2, 0);
+    assert_eq!(row.3, None);
+    assert_eq!(row.4, 2);
+    drop(conn);
+
+    let unread = store.get_messages_for_agent("bot1", true).unwrap();
+    assert_eq!(unread.len(), 2);
+
+    let events = store.get_events(None, 20).unwrap();
+    let read_cursor_event = events
+        .iter()
+        .find(|event| event.event_type == "conversation.read_cursor_set")
+        .expect("expected inbox read cursor event after advancing agent read position");
+    assert_eq!(read_cursor_event.stream_kind, "inbox");
+    assert_eq!(read_cursor_event.stream_id, "inbox:bot1");
+    assert_eq!(
+        payload_field(read_cursor_event, "conversationName").as_str(),
+        Some("general")
+    );
+    assert_eq!(
+        payload_field(read_cursor_event, "lastReadMessageId").as_str(),
+        Some(second_top_level.as_str())
+    );
+    assert_eq!(
+        payload_field(read_cursor_event, "lastReadSeq").as_i64(),
+        Some(3)
+    );
+    assert_eq!(
+        payload_field(read_cursor_event, "latestSeq").as_i64(),
+        Some(3)
+    );
+    assert_eq!(
+        payload_field(read_cursor_event, "unreadCount").as_i64(),
+        Some(0)
+    );
+
+    let state_after = store
+        .get_inbox_conversation_state("general", "bot1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(state_after.last_read_seq, 3);
+    assert_eq!(
+        state_after.last_read_message_id.as_deref(),
+        Some(second_top_level.as_str())
+    );
+    assert_eq!(state_after.unread_count, 0);
+
+    let conn = store.conn_for_test();
+    let legacy_last_read_seq: i64 = conn
+        .query_row(
+            "SELECT last_read_seq FROM channel_members
+             WHERE channel_id = ?1 AND member_name = 'bot1'",
+            params![state_after.conversation_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        legacy_last_read_seq, 0,
+        "legacy channel_members.last_read_seq should no longer own inbox read state"
+    );
+}
+
+#[test]
+fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    store
+        .create_message("general", None, "alice", SenderType::Human, "one", &[])
+        .unwrap();
+    store
+        .create_message("general", None, "alice", SenderType::Human, "two", &[])
+        .unwrap();
+
+    let unread_before = store.get_unread_summary("bot1").unwrap();
+    assert_eq!(unread_before.get("general"), Some(&2));
+
+    let snapshot_before = store
+        .get_history_snapshot("general", "bot1", None, 10, None, None)
+        .unwrap();
+    assert_eq!(snapshot_before.last_read_seq, 0);
+
+    store.get_messages_for_agent("bot1", true).unwrap();
+
+    let unread_after = store.get_unread_summary("bot1").unwrap();
+    assert_eq!(unread_after.get("general"), None);
+
+    let snapshot_after = store
+        .get_history_snapshot("general", "bot1", None, 10, None, None)
+        .unwrap();
+    assert_eq!(snapshot_after.last_read_seq, 2);
+    assert_eq!(store.get_last_read_seq("general", "bot1").unwrap(), 2);
+}
+
+#[test]
+fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let parent_id = store
+        .create_message("general", None, "bot1", SenderType::Agent, "parent", &[])
+        .unwrap();
+    let reply_id = store
+        .create_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let thread_before = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread_before.last_read_seq, 0);
+    assert_eq!(thread_before.unread_count, 1);
+
+    store
+        .set_history_read_cursor("general", "alice", SenderType::Human, Some(&parent_id), 2)
+        .unwrap();
+
+    let thread_after = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread_after.last_read_seq, 2);
+    assert_eq!(thread_after.unread_count, 0);
+    assert_eq!(
+        thread_after.last_reply_message_id.as_deref(),
+        Some(reply_id.as_str())
+    );
+
+    let conversation_snapshot = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+    assert_eq!(conversation_snapshot.last_read_seq, 0);
+
+    let thread_snapshot = store
+        .get_history_snapshot("general", "alice", Some(&parent_id), 10, None, None)
+        .unwrap();
+    assert_eq!(thread_snapshot.last_read_seq, 2);
+
+    let events = store.get_events(None, 20).unwrap();
+    let thread_read_event = events
+        .iter()
+        .find(|event| event.event_type == "thread.read_cursor_set")
+        .expect("expected thread read cursor event");
+    assert_eq!(thread_read_event.stream_kind, "inbox");
+    assert_eq!(thread_read_event.stream_id, "inbox:alice");
+    assert_eq!(
+        payload_field(thread_read_event, "threadParentId").as_str(),
+        Some(parent_id.as_str())
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "lastReadMessageId").as_str(),
+        Some(reply_id.as_str())
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "lastReadSeq").as_i64(),
+        Some(2)
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "latestSeq").as_i64(),
+        Some(2)
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "unreadCount").as_i64(),
+        Some(0)
+    );
+}
+
+#[test]
+fn test_conversation_messages_view_projects_message_rows() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let message_id = store
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .unwrap();
+    let channel = store.get_channel_by_name("general").unwrap().unwrap();
+
+    let conn = store.conn_for_test();
+    let row = conn
+        .query_row(
+            "SELECT message_id, conversation_id, conversation_name, conversation_type,
+                    thread_parent_id, sender_name, sender_type, sender_deleted, content, seq
+             FROM conversation_messages_view
+             WHERE message_id = ?1",
+            params![message_id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                    row.get::<_, String>(8)?,
+                    row.get::<_, i64>(9)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(row.0, message_id);
+    assert_eq!(row.1, channel.id);
+    assert_eq!(row.2, "general");
+    assert_eq!(row.3, "channel");
+    assert_eq!(row.4, None);
+    assert_eq!(row.5, "alice");
+    assert_eq!(row.6, "human");
+    assert_eq!(row.7, 0);
+    assert_eq!(row.8, "hello");
+    assert_eq!(row.9, 1);
+}
+
+#[test]
+fn test_conversation_message_view_matches_history_projection() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let parent_id = store
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .unwrap();
+    store
+        .create_message(
+            "general",
+            Some(&parent_id),
+            "alice",
+            SenderType::Human,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let projection = store
+        .get_conversation_message_view(&parent_id)
+        .unwrap()
+        .unwrap();
+    let snapshot = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+
+    assert_eq!(projection.message_id, parent_id);
+    assert_eq!(projection.conversation_name, "general");
+    assert_eq!(projection.conversation_type, "channel");
+    assert_eq!(projection.thread_parent_id, None);
+    assert_eq!(projection.sender_name, "alice");
+    assert_eq!(projection.sender_type, "human");
+    assert!(!projection.sender_deleted);
+    assert_eq!(projection.content, "parent");
+    assert_eq!(projection.reply_count, Some(1));
+    assert_eq!(projection.attachments.len(), 0);
+
+    let history_message = &snapshot.messages[0];
+    assert_eq!(history_message.id, projection.message_id);
+    assert_eq!(history_message.content, projection.content);
+    assert_eq!(history_message.sender_name, projection.sender_name);
+    assert_eq!(history_message.sender_type, projection.sender_type);
+    assert_eq!(history_message.created_at, projection.created_at);
+    assert_eq!(history_message.sender_deleted, projection.sender_deleted);
+    assert_eq!(history_message.reply_count, projection.reply_count);
+    assert!(history_message.attachments.is_none());
+}
+
+#[test]
+fn test_thread_summaries_view_projects_thread_metadata() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let parent_id = store
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .unwrap();
+    store
+        .create_message(
+            "general",
+            Some(&parent_id),
+            "alice",
+            SenderType::Human,
+            "reply one",
+            &[],
+        )
+        .unwrap();
+    let last_reply_id = store
+        .create_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "reply two",
+            &[],
+        )
+        .unwrap();
+    let channel = store.get_channel_by_name("general").unwrap().unwrap();
+
+    let conn = store.conn_for_test();
+    let row = conn
+        .query_row(
+            "SELECT conversation_id, parent_message_id, reply_count,
+                    last_reply_message_id, last_reply_at, participant_count
+             FROM thread_summaries_view
+             WHERE conversation_id = ?1 AND parent_message_id = ?2",
+            params![channel.id.as_str(), parent_id.as_str()],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, i64>(5)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    assert_eq!(row.0, channel.id);
+    assert_eq!(row.1, parent_id);
+    assert_eq!(row.2, 2);
+    assert_eq!(row.3.as_deref(), Some(last_reply_id.as_str()));
+    assert!(row.4.is_some());
+    assert_eq!(row.5, 2);
+}
+
+#[test]
+fn test_thread_summary_projection_matches_history_and_thread_events() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let parent_id = store
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .unwrap();
+    let last_reply_id = store
+        .create_message(
+            "general",
+            Some(&parent_id),
+            "alice",
+            SenderType::Human,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let summary = store.get_thread_summary_view(&parent_id).unwrap().unwrap();
+    let snapshot = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+    let events = store.get_events(None, 20).unwrap();
+
+    assert_eq!(summary.parent_message_id, parent_id);
+    assert_eq!(summary.reply_count, 1);
+    assert_eq!(
+        summary.last_reply_message_id.as_deref(),
+        Some(last_reply_id.as_str())
+    );
+    assert!(summary.last_reply_at.is_some());
+    assert_eq!(summary.participant_count, 1);
+    assert_eq!(snapshot.messages[0].reply_count, Some(summary.reply_count));
+
+    let reply_count_event = events
+        .iter()
+        .find(|event| event.event_type == "thread.reply_count_changed")
+        .unwrap();
+    assert_eq!(
+        payload_field(reply_count_event, "replyCount").as_i64(),
+        Some(summary.reply_count)
+    );
+
+    let activity_event = events
+        .iter()
+        .find(|event| event.event_type == "thread.activity_bumped")
+        .unwrap();
+    assert_eq!(
+        payload_field(activity_event, "lastReplyMessageId").as_str(),
+        summary.last_reply_message_id.as_deref()
+    );
+    assert_eq!(
+        payload_field(activity_event, "lastReplyAt").as_str(),
+        summary.last_reply_at.as_deref()
+    );
 }
 
 #[test]
@@ -281,13 +818,307 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
-        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
         .unwrap();
 
     store.mark_agent_messages_deleted("bot1").unwrap();
     let (history, _) = store.get_history("general", None, 10, None, None).unwrap();
     assert_eq!(history.len(), 1);
     assert!(history[0].sender_deleted);
+}
+
+fn payload_field<'a>(event: &'a StoredEvent, key: &str) -> &'a Value {
+    event
+        .payload
+        .get(key)
+        .unwrap_or_else(|| panic!("missing payload field {key} in {:?}", event.payload))
+}
+
+#[test]
+fn test_send_message_emits_conversation_state_event() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let message_id = store
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .unwrap();
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+
+    let events = store.get_events(None, 20).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "conversation.state");
+    assert_eq!(events[0].scope_kind, "channel");
+    assert_eq!(events[0].stream_kind, "conversation");
+    assert_eq!(events[0].stream_id, format!("conversation:{channel_id}"));
+    assert_eq!(events[0].stream_pos, 1);
+    assert_eq!(events[0].actor_name.as_deref(), Some("alice"));
+    assert_eq!(events[0].actor_type.as_deref(), Some("human"));
+    assert_eq!(
+        payload_field(&events[0], "messageId").as_str(),
+        Some(message_id.as_str())
+    );
+    assert_eq!(
+        payload_field(&events[0], "conversationType").as_str(),
+        Some("channel")
+    );
+    assert_eq!(payload_field(&events[0], "latestSeq").as_i64(), Some(1));
+    assert!(events[0].payload.get("content").is_none());
+    assert!(events[0].payload.get("attachments").is_none());
+    assert!(events[0].payload.get("attachmentIds").is_none());
+    assert!(events[0].payload.get("unreadDelta").is_none());
+}
+
+#[test]
+fn test_thread_reply_emits_conversation_and_thread_state_events() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let parent_id = store
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .unwrap();
+    let reply_id = store
+        .create_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let events = store.get_events(None, 20).unwrap();
+    let event_types: Vec<_> = events
+        .iter()
+        .map(|event| event.event_type.as_str())
+        .collect();
+    assert_eq!(
+        event_types,
+        vec![
+            "conversation.state",
+            "conversation.state",
+            "thread.state",
+            "thread.reply_count_changed",
+            "thread.activity_bumped",
+            "thread.participant_added",
+        ]
+    );
+    let stream_positions: Vec<_> = events.iter().map(|event| event.stream_pos).collect();
+    assert_eq!(stream_positions, vec![1, 2, 3, 4, 5, 6]);
+    assert!(events
+        .iter()
+        .all(|event| event.stream_kind == "conversation"));
+
+    let reply_event = &events[1];
+    assert_eq!(reply_event.scope_kind, "channel");
+    assert_eq!(
+        payload_field(reply_event, "messageId").as_str(),
+        Some(reply_id.as_str())
+    );
+    assert_eq!(
+        payload_field(reply_event, "threadParentId").as_str(),
+        Some(parent_id.as_str())
+    );
+    assert_eq!(payload_field(reply_event, "latestSeq").as_i64(), Some(2));
+    assert!(reply_event.payload.get("content").is_none());
+
+    let thread_state_event = &events[2];
+    assert_eq!(thread_state_event.scope_kind, "thread");
+    assert_eq!(
+        payload_field(thread_state_event, "threadParentId").as_str(),
+        Some(parent_id.as_str())
+    );
+    assert_eq!(
+        payload_field(thread_state_event, "lastReplyMessageId").as_str(),
+        Some(reply_id.as_str())
+    );
+    assert_eq!(
+        payload_field(thread_state_event, "latestSeq").as_i64(),
+        Some(2)
+    );
+    assert!(thread_state_event.payload.get("replyCountDelta").is_none());
+
+    let reply_count_event = &events[3];
+    assert_eq!(reply_count_event.scope_kind, "channel");
+    assert_eq!(
+        payload_field(reply_count_event, "replyCount").as_i64(),
+        Some(1)
+    );
+
+    let alice_conversation_state = store
+        .get_inbox_conversation_state("general", "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice_conversation_state.last_read_seq, 1);
+    assert_eq!(alice_conversation_state.unread_count, 1);
+
+    let alice_thread_state = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice_thread_state.latest_seq, 2);
+    assert_eq!(alice_thread_state.last_read_seq, 0);
+    assert_eq!(alice_thread_state.unread_count, 1);
+}
+
+#[test]
+fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let oldest_unread_parent = store
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "oldest unread parent",
+            &[],
+        )
+        .unwrap();
+    store
+        .create_message(
+            "general",
+            Some(&oldest_unread_parent),
+            "bot1",
+            SenderType::Agent,
+            "oldest unread reply",
+            &[],
+        )
+        .unwrap();
+
+    let newest_read_parent = store
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "newest read parent",
+            &[],
+        )
+        .unwrap();
+    let _newest_read_reply = store
+        .create_message(
+            "general",
+            Some(&newest_read_parent),
+            "bot1",
+            SenderType::Agent,
+            "newest read reply",
+            &[],
+        )
+        .unwrap();
+    store
+        .set_history_read_cursor(
+            "general",
+            "alice",
+            SenderType::Human,
+            Some(&newest_read_parent),
+            4,
+        )
+        .unwrap();
+
+    let newest_unread_parent = store
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "newest unread parent",
+            &[],
+        )
+        .unwrap();
+    let _newest_unread_reply = store
+        .create_message(
+            "general",
+            Some(&newest_unread_parent),
+            "bot1",
+            SenderType::Agent,
+            "newest unread reply",
+            &[],
+        )
+        .unwrap();
+
+    let inbox = store.get_channel_thread_inbox("general", "alice").unwrap();
+
+    assert_eq!(inbox.unread_count, 2);
+    assert_eq!(inbox.threads.len(), 3);
+
+    assert_eq!(inbox.threads[0].thread_parent_id, newest_unread_parent);
+    assert_eq!(inbox.threads[0].unread_count, 1);
+    assert_eq!(inbox.threads[0].reply_count, 1);
+    assert_eq!(
+        inbox.threads[0].last_reply_message_id.as_deref(),
+        Some(_newest_unread_reply.as_str())
+    );
+    assert_eq!(inbox.threads[0].parent_content, "newest unread parent");
+
+    assert_eq!(inbox.threads[1].thread_parent_id, newest_read_parent);
+    assert_eq!(inbox.threads[1].unread_count, 0);
+    assert_eq!(inbox.threads[1].parent_content, "newest read parent");
+
+    assert_eq!(inbox.threads[2].thread_parent_id, oldest_unread_parent);
+    assert_eq!(inbox.threads[2].unread_count, 1);
+    assert_eq!(inbox.threads[2].parent_content, "oldest unread parent");
+}
+
+#[test]
+fn test_mark_agent_messages_deleted_emits_tombstone_events() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    let message_id = store
+        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .unwrap();
+
+    store.mark_agent_messages_deleted("bot1").unwrap();
+
+    let events = store.get_events(None, 20).unwrap();
+    let tombstone_event = events
+        .iter()
+        .find(|event| event.event_type == "message.tombstone_changed")
+        .expect("expected tombstone event after sender deletion");
+    assert_eq!(
+        payload_field(tombstone_event, "messageId").as_str(),
+        Some(message_id.as_str())
+    );
+    assert_eq!(
+        payload_field(tombstone_event, "senderDeleted").as_bool(),
+        Some(true)
+    );
 }
 
 #[test]
@@ -307,8 +1138,33 @@ fn test_tasks_crud() {
     assert_eq!(tasks[0].task_number, 1);
     assert_eq!(tasks[1].task_number, 2);
 
-    let listed = store.list_tasks("eng", None).unwrap();
+    let listed = store.get_tasks("eng", None).unwrap();
     assert_eq!(listed.len(), 2);
+}
+
+#[test]
+fn test_tasks_crud_does_not_append_durable_stream_events() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("eng", None, ChannelType::Channel)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+
+    store
+        .create_tasks("eng", "bot1", &["Freeze boundary"])
+        .unwrap();
+    store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
+    store
+        .update_task_status("eng", 1, "bot1", TaskStatus::Done)
+        .unwrap();
+
+    let events = store.get_events(None, 20).unwrap();
+    assert!(
+        events.is_empty(),
+        "tasks should remain outside the canonical messaging stream runtime"
+    );
 }
 
 #[test]
@@ -325,16 +1181,16 @@ fn test_task_claim_and_status() {
         .unwrap();
     store.create_tasks("eng", "bot1", &["Task A"]).unwrap();
 
-    let results = store.claim_tasks("eng", "bot1", &[1]).unwrap();
+    let results = store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
     assert!(results[0].success);
 
-    let results = store.claim_tasks("eng", "bot2", &[1]).unwrap();
+    let results = store.update_tasks_claim("eng", "bot2", &[1]).unwrap();
     assert!(!results[0].success);
 
     store
         .update_task_status("eng", 1, "bot1", TaskStatus::InReview)
         .unwrap();
-    let tasks = store.list_tasks("eng", Some(TaskStatus::InReview)).unwrap();
+    let tasks = store.get_tasks("eng", Some(TaskStatus::InReview)).unwrap();
     assert_eq!(tasks.len(), 1);
 }
 
@@ -344,7 +1200,7 @@ fn test_resolve_target() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -363,14 +1219,14 @@ fn test_list_channels_excludes_dm() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     // Create a DM channel via resolve_target
     store.resolve_target("dm:@alice", "bot1").unwrap();
 
-    let channels = store.list_channels().unwrap();
+    let channels = store.get_channels().unwrap();
     assert_eq!(
         channels.len(),
         1,
@@ -385,7 +1241,7 @@ fn test_dm_only_has_two_members() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -421,7 +1277,7 @@ fn test_dm_only_has_two_members() {
 #[test]
 fn test_dm_channels() {
     let (store, _dir) = make_store();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -437,7 +1293,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -455,7 +1311,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
         .unwrap();
 
     let parent_id = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -473,7 +1329,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
     );
 
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",
@@ -509,11 +1365,11 @@ fn test_update_channel_preserves_id_and_metadata() {
         .update_channel(&channel_id, "engineering", Some("Engineering"))
         .unwrap();
 
-    let renamed = store.find_channel_by_name("engineering").unwrap().unwrap();
+    let renamed = store.get_channel_by_name("engineering").unwrap().unwrap();
     assert_eq!(renamed.id, channel_id);
     assert_eq!(renamed.description.as_deref(), Some("Engineering"));
     assert!(
-        store.find_channel_by_name("general").unwrap().is_none(),
+        store.get_channel_by_name("general").unwrap().is_none(),
         "old name should no longer resolve after rename"
     );
 
@@ -534,7 +1390,7 @@ fn test_archive_channel_hides_it_from_active_listings() {
     let channel_id = store
         .create_channel("general", Some("General channel"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -542,11 +1398,11 @@ fn test_archive_channel_hides_it_from_active_listings() {
     store.archive_channel(&channel_id).unwrap();
 
     assert!(
-        store.find_channel_by_id(&channel_id).unwrap().is_some(),
+        store.get_channel_by_id(&channel_id).unwrap().is_some(),
         "archive should preserve the underlying channel row"
     );
     assert!(
-        store.list_channels().unwrap().is_empty(),
+        store.get_channels().unwrap().is_empty(),
         "archived channels must be hidden from active channel listings"
     );
     assert!(
@@ -564,21 +1420,21 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
     store
         .create_channel("general", Some("General channel"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
-    let original = store.find_channel_by_name("general").unwrap().unwrap();
+    let original = store.get_channel_by_name("general").unwrap().unwrap();
 
     store.ensure_builtin_channels("alice").unwrap();
 
     assert!(
-        store.find_channel_by_name("general").unwrap().is_none(),
+        store.get_channel_by_name("general").unwrap().is_none(),
         "startup migration should rename #general to #all"
     );
 
-    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let all = store.get_channel_by_name("all").unwrap().unwrap();
     assert_eq!(all.id, original.id);
     assert_eq!(all.channel_type, ChannelType::System);
     assert_eq!(
@@ -613,8 +1469,8 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
 #[test]
 fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
     let (store, _dir) = make_store();
-    store.add_human("alice").unwrap();
-    store.add_human("zoe").unwrap();
+    store.create_human("alice").unwrap();
+    store.create_human("zoe").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -624,7 +1480,7 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
 
     store.ensure_builtin_channels("alice").unwrap();
 
-    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let all = store.get_channel_by_name("all").unwrap().unwrap();
     let members = store.get_channel_members(&all.id).unwrap();
     let names: Vec<_> = members
         .iter()
@@ -639,10 +1495,10 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
 #[test]
 fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
     let (store, _dir) = make_store();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store.ensure_builtin_channels("alice").unwrap();
 
-    store.add_human("zoe").unwrap();
+    store.create_human("zoe").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -658,7 +1514,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
     let channel_id = store
         .create_channel("eng", Some("Engineering"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
@@ -670,10 +1526,10 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
         .unwrap();
 
     let parent_id = store
-        .send_message("eng", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("eng", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "eng",
             Some(&parent_id),
             "bot1",
@@ -687,7 +1543,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
     store.delete_channel(&channel_id).unwrap();
 
     assert!(
-        store.find_channel_by_id(&channel_id).unwrap().is_none(),
+        store.get_channel_by_id(&channel_id).unwrap().is_none(),
         "channel row should be removed after hard delete"
     );
     let conn = Connection::open(dir.path().join("test.db")).unwrap();
@@ -743,10 +1599,10 @@ fn test_record_swarm_signal_ignores_non_quorum_agent() {
         .create_team("qa-swarm", "QA Swarm", "swarm", None)
         .unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "uuid-alice", "member")
+        .create_team_member(&team_id, "alice", "agent", "uuid-alice", "member")
         .unwrap();
     store
-        .add_team_member(&team_id, "bob", "agent", "uuid-bob", "member")
+        .create_team_member(&team_id, "bob", "agent", "uuid-bob", "member")
         .unwrap();
     // Snapshot quorum — only alice and bob are captured.
     store.snapshot_swarm_quorum(&team_id, &trigger_id).unwrap();

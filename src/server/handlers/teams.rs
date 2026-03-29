@@ -1,6 +1,7 @@
 use axum::extract::{Path, State};
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::{api_err, internal_err, ApiResult, AppState};
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
@@ -119,7 +120,7 @@ async fn sync_team_roles_and_agents(
         if desired_role != member.role {
             state
                 .store
-                .set_team_member_role(&team.id, &member.member_name, &desired_role)
+                .update_team_member_role(&team.id, &member.member_name, &desired_role)
                 .map_err(|e| api_err(e.to_string()))?;
         }
 
@@ -207,7 +208,7 @@ pub async fn handle_create_team(
         );
         state
             .store
-            .add_team_member(
+            .create_team_member(
                 &team_id,
                 &member.member_name,
                 &member.member_type,
@@ -237,13 +238,30 @@ pub async fn handle_create_team(
         .store
         .get_team_members(&team_id)
         .map_err(|e| internal_err(e.to_string()))?;
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "team.updated",
+        team.channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, team.name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("create_team"),
+        json!({
+            "action": "created",
+            "teamId": team.id,
+            "teamName": team.name,
+            "displayName": team.display_name,
+            "channelId": team.channel_id,
+        }),
+    );
     Ok(Json(TeamResponse { team, members }))
 }
 
 pub async fn handle_list_teams(State(state): State<AppState>) -> ApiResult<Vec<Team>> {
     let teams = state
         .store
-        .list_teams()
+        .get_teams()
         .map_err(|e| internal_err(e.to_string()))?;
     Ok(Json(teams))
 }
@@ -316,6 +334,24 @@ pub async fn handle_update_team(
         .get_team_members(&team.id)
         .map_err(|e| internal_err(e.to_string()))?;
     sync_team_roles_and_agents(&state, &updated, &members).await?;
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "team.updated",
+        updated
+            .channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, updated.name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("update_team"),
+        json!({
+            "action": "updated",
+            "teamId": updated.id,
+            "teamName": updated.name,
+            "displayName": updated.display_name,
+            "channelId": updated.channel_id,
+        }),
+    );
     Ok(Json(updated))
 }
 
@@ -345,7 +381,7 @@ pub async fn handle_delete_team(
 
     if let Some(channel) = state
         .store
-        .find_channel_by_name(&name)
+        .get_channel_by_name(&name)
         .map_err(|e| internal_err(e.to_string()))?
     {
         state
@@ -367,6 +403,21 @@ pub async fn handle_delete_team(
             .map_err(|e| internal_err(e.to_string()))?;
         restart_agent_member(&state, agent_name).await?;
     }
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "team.updated",
+        team.channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, team.name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("delete_team"),
+        json!({
+            "action": "deleted",
+            "teamId": team.id,
+            "teamName": team.name,
+        }),
+    );
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -385,7 +436,7 @@ pub async fn handle_add_team_member(
 
     state
         .store
-        .add_team_member(
+        .create_team_member(
             &team.id,
             &req.member_name,
             &req.member_type,
@@ -420,6 +471,23 @@ pub async fn handle_add_team_member(
         .get_team_members(&team.id)
         .map_err(|e| internal_err(e.to_string()))?;
     sync_team_roles_and_agents(&state, &updated_team, &members).await?;
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "team.updated",
+        updated_team
+            .channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, updated_team.name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("add_team_member"),
+        json!({
+            "action": "member_joined",
+            "teamId": updated_team.id,
+            "teamName": updated_team.name,
+            "memberName": req.member_name,
+        }),
+    );
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -446,7 +514,7 @@ pub async fn handle_remove_team_member(
 
     state
         .store
-        .remove_team_member(&team.id, &member_name)
+        .delete_team_member(&team.id, &member_name)
         .map_err(|e| api_err(e.to_string()))?;
     state
         .store
@@ -456,6 +524,22 @@ pub async fn handle_remove_team_member(
     if removed_member.member_type == "agent" {
         restart_agent_member(&state, &member_name).await?;
     }
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "team.updated",
+        team.channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, team.name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("remove_team_member"),
+        json!({
+            "action": "member_left",
+            "teamId": team.id,
+            "teamName": team.name,
+            "memberName": member_name,
+        }),
+    );
 
     Ok(Json(serde_json::json!({ "ok": true })))
 }

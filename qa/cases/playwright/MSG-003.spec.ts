@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
-import { clickSidebarChannel } from './helpers/ui'
+import { clickSidebarChannel, openThreadFromMessage } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -42,14 +42,17 @@ test.describe('MSG-003', () => {
 
     await test.step('Step 1: Open thread from an agent reply', async () => {
       const deadline = Date.now() + 180_000
+      let opened = false
       while (Date.now() < deadline) {
-        const btn = page.locator('button[title="Reply in thread"]').first()
-        if (await btn.isVisible().catch(() => false)) {
-          await btn.click()
+        const seededReply = page.locator('.message-item').filter({ hasText: 'thread-seed-ok' }).first()
+        if (await seededReply.isVisible().catch(() => false)) {
+          await openThreadFromMessage(page, 'thread-seed-ok')
+          opened = true
           break
         }
         await page.waitForTimeout(3000)
       }
+      expect(opened).toBeTruthy()
       await expect(page.locator('.thread-panel')).toBeVisible({ timeout: 10_000 })
     })
 

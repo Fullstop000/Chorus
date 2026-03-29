@@ -2,6 +2,7 @@ import type {
   ServerInfo,
   ChannelInfo,
   AgentInfo,
+  HumanInfo,
   HistoryResponse,
   TasksResponse,
   TaskStatus,
@@ -18,9 +19,15 @@ import type {
   ChannelMembersResponse,
   Team,
   TeamResponse,
+  InboxResponse,
+  ThreadInboxResponse,
 } from './types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
+
+function conversationApiPath(conversationId: string, suffix = ''): string {
+  return `${BASE}/api/conversations/${encodeURIComponent(conversationId)}${suffix}`
+}
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -36,6 +43,10 @@ export async function getWhoami(): Promise<WhoamiResponse> {
 
 export async function getServerInfo(_username: string): Promise<ServerInfo> {
   return json(await fetch(`${BASE}/api/server-info`))
+}
+
+export async function listHumans(): Promise<HumanInfo[]> {
+  return json(await fetch(`${BASE}/api/humans`))
 }
 
 export async function listChannels(params?: {
@@ -57,6 +68,16 @@ export async function listChannels(params?: {
 
 export async function listAgents(): Promise<AgentInfo[]> {
   return json(await fetch(`${BASE}/api/agents`))
+}
+
+export async function ensureDirectMessageConversation(
+  peerName: string
+): Promise<ChannelInfo> {
+  return json(
+    await fetch(`${BASE}/api/dms/${encodeURIComponent(peerName)}`, {
+      method: 'PUT',
+    })
+  )
 }
 
 export async function listRuntimeStatuses(): Promise<RuntimeStatusInfo[]> {
@@ -123,124 +144,146 @@ export async function inviteChannelMember(
 }
 
 export async function sendMessage(
-  username: string,
-  target: string,
+  conversationId: string,
   content: string,
   attachmentIds?: string[],
-  options?: { suppressAgentDelivery?: boolean }
-): Promise<{ messageId: string }> {
+  options?: {
+    suppressAgentDelivery?: boolean
+    clientNonce?: string
+    threadParentId?: string
+  }
+): Promise<{ messageId: string; seq: number; createdAt: string; clientNonce?: string }> {
   return json(
-    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/send`, {
+    await fetch(conversationApiPath(conversationId, '/messages'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        target,
         content,
         attachmentIds: attachmentIds ?? [],
+        clientNonce: options?.clientNonce,
         suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
+        threadParentId: options?.threadParentId,
       }),
     })
   )
 }
 
+export async function getInboxState(username: string): Promise<InboxResponse> {
+  void username
+  return json(await fetch(`${BASE}/api/inbox`))
+}
+
+export async function getChannelThreads(
+  conversationId: string
+): Promise<ThreadInboxResponse> {
+  return json(await fetch(conversationApiPath(conversationId, '/threads')))
+}
+
 export async function getHistory(
-  username: string,
-  channel: string,
+  conversationId: string,
   limit = 50,
+  threadParentId?: string,
   before?: number,
   after?: number
 ): Promise<HistoryResponse> {
-  const params = new URLSearchParams({ channel, limit: String(limit) })
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (threadParentId) params.set('threadParentId', threadParentId)
   if (before != null) params.set('before', String(before))
   if (after != null) params.set('after', String(after))
+  return json(await fetch(`${conversationApiPath(conversationId, '/messages')}?${params}`))
+}
+
+export async function getHistoryAfter(
+  conversationId: string,
+  after: number,
+  limit = 50,
+  threadParentId?: string
+): Promise<HistoryResponse> {
+  return getHistory(conversationId, limit, threadParentId, undefined, after)
+}
+
+export async function updateReadCursor(
+  conversationId: string,
+  lastReadSeq: number,
+  threadParentId?: string
+): Promise<{ ok: boolean }> {
   return json(
-    await fetch(
-      `${BASE}/internal/agent/${encodeURIComponent(username)}/history?${params}`
-    )
+    await fetch(conversationApiPath(conversationId, '/read-cursor'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lastReadSeq, threadParentId }),
+    })
   )
 }
 
 export async function getTasks(
-  username: string,
-  channel: string,
+  conversationId: string,
   status: 'all' | TaskStatus = 'all'
 ): Promise<TasksResponse> {
-  const params = new URLSearchParams({ channel, status })
-  return json(
-    await fetch(
-      `${BASE}/internal/agent/${encodeURIComponent(username)}/tasks?${params}`
-    )
-  )
+  const params = new URLSearchParams({ status })
+  return json(await fetch(`${conversationApiPath(conversationId, '/tasks')}?${params}`))
 }
 
 export async function createTasks(
-  username: string,
-  channel: string,
+  conversationId: string,
   titles: string[]
 ): Promise<TasksResponse> {
   return json(
-    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/tasks`, {
+    await fetch(conversationApiPath(conversationId, '/tasks'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, tasks: titles.map((title) => ({ title })) }),
+      body: JSON.stringify({ tasks: titles.map((title) => ({ title })) }),
     })
   )
 }
 
 export async function claimTasks(
-  username: string,
-  channel: string,
+  conversationId: string,
   taskNumbers: number[]
 ): Promise<{ results: Array<{ taskNumber: number; success: boolean; reason?: string }> }> {
   return json(
-    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/tasks/claim`, {
+    await fetch(conversationApiPath(conversationId, '/tasks/claim'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, task_numbers: taskNumbers }),
+      body: JSON.stringify({ task_numbers: taskNumbers }),
     })
   )
 }
 
 export async function unclaimTask(
-  username: string,
-  channel: string,
+  conversationId: string,
   taskNumber: number
 ): Promise<void> {
   await json(
-    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/tasks/unclaim`, {
+    await fetch(conversationApiPath(conversationId, '/tasks/unclaim'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel, task_number: taskNumber }),
+      body: JSON.stringify({ task_number: taskNumber }),
     })
   )
 }
 
 export async function updateTaskStatus(
-  username: string,
-  channel: string,
+  conversationId: string,
   taskNumber: number,
   status: TaskStatus
 ): Promise<void> {
   await json(
-    await fetch(
-      `${BASE}/internal/agent/${encodeURIComponent(username)}/tasks/update-status`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel, task_number: taskNumber, status }),
-      }
-    )
+    await fetch(conversationApiPath(conversationId, '/tasks/update-status'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_number: taskNumber, status }),
+    })
   )
 }
 
 export async function uploadFile(
-  username: string,
   file: File
 ): Promise<UploadResponse> {
   const form = new FormData()
   form.append('file', file)
   return json(
-    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/upload`, {
+    await fetch(`${BASE}/api/attachments`, {
       method: 'POST',
       body: form,
     })

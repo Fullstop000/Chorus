@@ -275,6 +275,20 @@
   color: var(--text-primary);
 }
 
+.sidebar-unread-badge {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-width: 20px;
+  padding: 1px 6px 2px;
+  border: 1px solid rgba(181, 75, 18, 0.22);
+  background: rgba(181, 75, 18, 0.12);
+  color: #8a3d0c;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-align: center;
+}
+
 .agent-avatar {
   width: 30px;
   height: 30px;

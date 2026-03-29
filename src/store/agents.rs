@@ -4,8 +4,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_datetime, Attachment, Store};
-use crate::store::teams::TeamMembership;
+use super::{parse_datetime, Store};
 
 // ── Types owned by this module ──
 
@@ -107,29 +106,6 @@ impl AgentRuntime {
     }
 }
 
-/// Snapshot passed to the bridge when spawning an agent (includes team context).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    /// Agent handle.
-    pub name: String,
-    /// Display name for prompts.
-    pub display_name: String,
-    /// Optional description for system prompt.
-    pub description: Option<String>,
-    /// Driver key.
-    pub runtime: String,
-    /// Model id.
-    pub model: String,
-    /// Active session id if resuming.
-    pub session_id: Option<String>,
-    /// Reasoning effort for Codex.
-    pub reasoning_effort: Option<String>,
-    /// Environment variables for the child process.
-    pub env_vars: Vec<AgentEnvVar>,
-    /// Team memberships injected into the agent's system prompt at spawn time.
-    pub teams: Vec<TeamMembership>,
-}
-
 /// Registered human user (can post and own channels).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Human {
@@ -198,7 +174,7 @@ impl Store {
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
         if let Some(all_channel) =
-            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
         {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
@@ -219,7 +195,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_agents(&self) -> Result<Vec<Agent>> {
+    pub fn get_agents(&self) -> Result<Vec<Agent>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
@@ -318,7 +294,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
+    pub fn get_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
         let conn = self.conn.lock().unwrap();
         Self::list_agent_env_vars_inner(&conn, name)
     }
@@ -370,14 +346,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn add_human(&self, name: &str) -> Result<()> {
+    pub fn create_human(&self, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
             params![name],
         )?;
         if let Some(all_channel) =
-            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
         {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
@@ -388,7 +364,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_humans(&self) -> Result<Vec<Human>> {
+    pub fn get_humans(&self) -> Result<Vec<Human>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare("SELECT name, created_at FROM humans ORDER BY name")?
@@ -401,39 +377,5 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
-    }
-
-    pub fn store_attachment(
-        &self,
-        filename: &str,
-        mime_type: &str,
-        size: i64,
-        stored_path: &str,
-    ) -> Result<String> {
-        let conn = self.conn.lock().unwrap();
-        let id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, filename, mime_type, size, stored_path],
-        )?;
-        Ok(id)
-    }
-
-    pub fn get_attachment(&self, id: &str) -> Result<Option<Attachment>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, filename, mime_type, size_bytes, stored_path, uploaded_at FROM attachments WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Attachment {
-                id: row.get(0)?,
-                filename: row.get(1)?,
-                mime_type: row.get(2)?,
-                size_bytes: row.get(3)?,
-                stored_path: row.get(4)?,
-                uploaded_at: parse_datetime(&row.get::<_, String>(5)?),
-            })
-        })?;
-        Ok(rows.next().transpose()?)
     }
 }

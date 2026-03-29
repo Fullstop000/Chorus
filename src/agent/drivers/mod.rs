@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 
+use crate::agent::config::AgentConfig;
 use crate::agent::runtime_status::RuntimeStatus;
 use crate::store::agents::AgentRuntime;
 
@@ -43,7 +44,7 @@ pub enum ParsedEvent {
 pub struct SpawnContext {
     pub agent_id: String,
     pub agent_name: String,
-    pub config: crate::store::agents::AgentConfig,
+    pub config: AgentConfig,
     pub prompt: String,
     pub working_directory: String,
     pub bridge_binary: String,
@@ -68,11 +69,7 @@ pub trait Driver: Send + Sync {
     /// Encode a wake-up notification for stdin-based runtimes, if supported.
     fn encode_stdin_message(&self, text: &str, session_id: &str) -> Option<String>;
     /// Build the runtime-specific system prompt for a given agent configuration.
-    fn build_system_prompt(
-        &self,
-        config: &crate::store::agents::AgentConfig,
-        agent_id: &str,
-    ) -> String;
+    fn build_system_prompt(&self, config: &AgentConfig, agent_id: &str) -> String;
     /// Convert a raw tool name into the short label shown in the activity log.
     fn tool_display_name(&self, name: &str) -> String;
     /// Produce a compact summary of tool input for UI activity rows and tracing.

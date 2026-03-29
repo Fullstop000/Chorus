@@ -71,9 +71,9 @@ Cases are split into focused modules under [`cases/`](./cases/):
 
 | Module | Cases |
 | ------ | ----- |
-| [`cases/agents.md`](./cases/agents.md) | ENV-001, AGT-001, AGT-002, AGT-003, AGT-004, PRF-001, LFC-001, LFC-002, ACT-001, ACT-002, NAV-001, WRK-001, REC-001, REC-002 |
-| [`cases/channels.md`](./cases/channels.md) | CHN-001, CHN-002, CHN-003, CHN-004 |
-| [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, HIS-001, ATT-001, ERR-001 |
+| [`cases/agents.md`](./cases/agents.md) | ENV-001, AGT-001, AGT-002, AGT-003, AGT-004, PRF-001, LFC-001, LFC-002, ACT-001, ACT-002, NAV-001, NAV-002, WRK-001, REC-001, REC-002 |
+| [`cases/channels.md`](./cases/channels.md) | CHN-001, CHN-002, CHN-003, CHN-004, CHN-005 |
+| [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, MSG-005, MSG-006, MSG-007, MSG-008, MSG-009, HIS-001, ATT-001, ERR-001 |
 | [`cases/tasks.md`](./cases/tasks.md) | TSK-001, TSK-002 |
 | [`cases/teams.md`](./cases/teams.md) | TMT-001, TMT-002, TMT-003, TMT-004, TMT-005, TMT-006, TMT-007, TMT-008, TMT-009 |
 | [`cases/shared_memory.md`](./cases/shared_memory.md) | MEM-001, MEM-002, MEM-003, MEM-004, MEM-005, MEM-006, MEM-007, MEM-008, MEM-009, MEM-010 |

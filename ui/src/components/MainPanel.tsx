@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { getChannelMembers, getTeam } from '../api'
+import { getChannelMembers, getTeam, sendMessage } from '../api'
 import { useApp, useTarget } from '../store'
+import { useHistory } from '../hooks/useHistory'
 import { TabBar } from './TabBar'
 import { ChatHeader, ChatPanel } from './ChatPanel'
 import { TasksPanel } from './TasksPanel'
@@ -9,7 +10,7 @@ import { ActivityPanel } from './ActivityPanel'
 import { WorkspacePanel } from './WorkspacePanel'
 import { MessageInput } from './MessageInput'
 import { ThreadPanel } from './ThreadPanel'
-import { useHistory } from '../hooks/useHistory'
+import { ThreadsTab } from './ThreadsTab'
 import { ChannelMembersPanel } from './ChannelMembersPanel'
 import type { ChannelMemberInfo, TeamResponse } from '../types'
 import { TeamSettings } from './TeamSettings'
@@ -18,7 +19,9 @@ export function MainPanel() {
   const {
     activeTab,
     currentUser,
-    refreshServerInfo,
+    getAgentConversationId,
+    refreshChannels,
+    refreshAgents,
     refreshTeams,
     channels,
     agents,
@@ -28,8 +31,14 @@ export function MainPanel() {
     openThreadMsg,
     serverInfo,
   } = useApp()
-  const target = useTarget()
-  const { refresh: refreshHistory } = useHistory(currentUser, target)
+  const chatTarget = useTarget()
+  const activeConversationId =
+    selectedChannelId ?? (selectedAgent ? getAgentConversationId(selectedAgent.name) : null)
+  const chatHistory = useHistory(
+    currentUser,
+    activeTab === 'chat' ? chatTarget : null,
+    activeConversationId
+  )
   const [members, setMembers] = useState<ChannelMemberInfo[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [showMembersPanel, setShowMembersPanel] = useState(false)
@@ -124,6 +133,29 @@ export function MainPanel() {
     }
   }
 
+  async function handleRetryChatMessage(message: typeof chatHistory.messages[number]) {
+    if (!chatTarget || !currentUser || !activeConversationId) return
+    const retryHandle = chatHistory.retryOptimisticMessage(message.id)
+    if (!retryHandle) return
+    try {
+      const sendAck = await sendMessage(
+        activeConversationId,
+        message.content,
+        message.attachments?.map((attachment) => attachment.id) ?? [],
+        { clientNonce: retryHandle.clientNonce }
+      )
+      chatHistory.ackOptimisticMessage(retryHandle, {
+        messageId: sendAck.messageId,
+        seq: sendAck.seq,
+        createdAt: sendAck.createdAt,
+        clientNonce: sendAck.clientNonce,
+      })
+    } catch (retryError) {
+      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
+      chatHistory.failOptimisticMessage(retryHandle, retryMessage)
+    }
+  }
+
   return (
     <div
       style={{
@@ -158,10 +190,23 @@ export function MainPanel() {
         <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
           {activeTab === 'chat' && (
             <>
-              <ChatPanel />
-              <MessageInput onMessageSent={refreshHistory} />
+              <ChatPanel
+                target={chatTarget}
+                messages={chatHistory.messages}
+                loading={chatHistory.loading}
+                lastReadSeq={chatHistory.lastReadSeq}
+                loadedTarget={chatHistory.loadedTarget}
+                reportVisibleSeq={chatHistory.reportVisibleSeq}
+                onRetryMessage={handleRetryChatMessage}
+              />
+              <MessageInput
+                target={chatTarget}
+                conversationId={activeConversationId}
+                history={chatHistory}
+              />
             </>
           )}
+          {activeTab === 'threads' && <ThreadsTab />}
           {activeTab === 'tasks' && <TasksPanel />}
           {activeTab === 'profile' && <ProfilePanel />}
           {activeTab === 'activity' && selectedAgent && <ActivityPanel agentName={selectedAgent.name} />}
@@ -205,12 +250,12 @@ export function MainPanel() {
           members={teamDetails.members}
           onClose={() => setShowTeamSettings(false)}
           onRefresh={async () => {
-            await Promise.all([refreshServerInfo(), refreshTeams()])
+            await Promise.all([refreshChannels(), refreshTeams(), refreshAgents()])
             await refreshSelectedTeam()
             await refreshCurrentChannelMembers()
           }}
           onDeleted={async () => {
-            await Promise.all([refreshServerInfo(), refreshTeams()])
+            await Promise.all([refreshChannels(), refreshTeams()])
           }}
         />
       )}

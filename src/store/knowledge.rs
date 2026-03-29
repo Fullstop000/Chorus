@@ -3,7 +3,8 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_datetime, Store};
+use super::Store;
+use crate::utils::{parse_datetime, sanitize_fts_query};
 
 // ── Types owned by this module ──
 
@@ -65,21 +66,10 @@ pub struct RecallResponse {
     pub entries: Vec<KnowledgeEntry>,
 }
 
-/// Sanitize a raw FTS5 query string so agent-supplied input cannot inject FTS5 syntax
-/// that causes a parse error. We escape double-quotes and strip bare operators.
-fn sanitize_fts_query(raw: &str) -> String {
-    // Wrap each word in double-quotes so FTS5 treats them as phrase literals.
-    // This prevents injection of FTS5 operators like AND/OR/NOT/NEAR.
-    raw.split_whitespace()
-        .map(|w| format!("\"{}\"", w.replace('"', "")))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 impl Store {
     /// Write a new knowledge entry and return its ID.
     /// Caller is responsible for also posting the breadcrumb message to #shared-memory.
-    pub fn remember(
+    pub fn create_knowledge_entry(
         &self,
         key: &str,
         value: &str,
@@ -103,7 +93,11 @@ impl Store {
     /// - `tags`: optional space-separated tag filter (each tag must appear in the entry's tags field)
     ///
     /// Returns up to 20 results ordered by recency.
-    pub fn recall(&self, query: Option<&str>, tags: Option<&str>) -> Result<Vec<KnowledgeEntry>> {
+    pub fn search_knowledge_entries(
+        &self,
+        query: Option<&str>,
+        tags: Option<&str>,
+    ) -> Result<Vec<KnowledgeEntry>> {
         let conn = self.conn.lock().unwrap();
 
         // Build the SQL dynamically based on which filters are provided.

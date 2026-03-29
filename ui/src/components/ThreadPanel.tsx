@@ -3,13 +3,28 @@ import { X, Paperclip } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
+import { ToastRegion } from './ToastRegion'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
 import { sendMessage } from '../api'
 import './ThreadPanel.css'
 
-export function ThreadPanel() {
-  const { currentUser, openThreadMsg, setOpenThreadMsg, serverInfo, agents, teams } = useApp()
+interface ThreadPanelProps {
+  variant?: 'drawer' | 'content'
+}
+
+export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
+  const {
+    currentUser,
+    openThreadMsg,
+    setOpenThreadMsg,
+    serverInfo,
+    agents,
+    teams,
+    selectedAgent,
+    selectedChannelId,
+    getAgentConversationId,
+  } = useApp()
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
     ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
@@ -19,39 +34,213 @@ export function ThreadPanel() {
   const threadTarget = mainTarget && openThreadMsg
     ? `${mainTarget}:${openThreadMsg.id}`
     : null
+  const threadConversationId =
+    selectedChannelId ?? (selectedAgent ? getAgentConversationId(selectedAgent.name) : null)
 
-  const { messages, refresh } = useHistory(currentUser, threadTarget)
+  const {
+    messages,
+    loading,
+    lastReadSeq,
+    loadedTarget,
+    reportVisibleSeq,
+    addOptimisticMessage,
+    ackOptimisticMessage,
+    failOptimisticMessage,
+    retryOptimisticMessage,
+  } = useHistory(currentUser, threadTarget, threadConversationId, {
+    threadParentId: openThreadMsg?.id ?? null,
+  })
   const [content, setContent] = useState('')
   const [sending, setSending] = useState(false)
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
   const bottomRef = useRef<HTMLDivElement>(null)
+  const repliesContainerRef = useRef<HTMLDivElement>(null)
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    pendingInitialScrollTargetRef.current = threadTarget
+  }, [threadTarget])
+
+  useEffect(() => {
+    const container = repliesContainerRef.current
+    if (!container) return
+
+    const collectHighestVisibleSeq = () => {
+      if (document.visibilityState !== 'visible') return 0
+      let highestVisibleSeq = 0
+      for (const message of messages) {
+        const node = messageRefs.current[message.id]
+        if (!node) continue
+        const top = node.offsetTop
+        const bottom = top + node.offsetHeight
+        const visibleTop = container.scrollTop
+        const visibleBottom = visibleTop + container.clientHeight
+        if (bottom > visibleTop && top < visibleBottom) {
+          highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
+        }
+      }
+      return highestVisibleSeq
+    }
+
+    const scheduleInitialVisibilityRead = (attempt = 0) => {
+      requestAnimationFrame(() => {
+        const highestVisibleSeq = collectHighestVisibleSeq()
+        if (highestVisibleSeq > 0) {
+          reportVisibleSeq(highestVisibleSeq)
+          return
+        }
+        if (attempt >= 4) return
+        window.setTimeout(() => scheduleInitialVisibilityRead(attempt + 1), 50)
+      })
+    }
+
+    const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
+
+    if (
+      pendingInitialScrollTargetRef.current === threadTarget &&
+      loadedTarget === threadTarget &&
+      !loading
+    ) {
+      const unreadAnchor = firstUnreadMessage
+        ? messageRefs.current[firstUnreadMessage.id]
+        : null
+      if (unreadAnchor) {
+        container.scrollTop = Math.max(unreadAnchor.offsetTop - 96, 0)
+      } else {
+        bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+      }
+      scheduleInitialVisibilityRead()
+      pendingInitialScrollTargetRef.current = null
+      return
+    }
+
+    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distFromBottom < 100) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [lastReadSeq, loadedTarget, loading, messages, reportVisibleSeq, threadTarget])
+
+  useEffect(() => {
+    const container = repliesContainerRef.current
+    if (!container || !threadTarget || loadedTarget !== threadTarget || loading) return
+
+    let rafId = 0
+    const scheduleVisibilityRead = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => {
+        if (document.visibilityState !== 'visible') return
+        let highestVisibleSeq = 0
+        for (const message of messages) {
+          const node = messageRefs.current[message.id]
+          if (!node) continue
+          const top = node.offsetTop
+          const bottom = top + node.offsetHeight
+          const visibleTop = container.scrollTop
+          const visibleBottom = visibleTop + container.clientHeight
+          if (bottom > visibleTop && top < visibleBottom) {
+            highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
+          }
+        }
+        if (highestVisibleSeq > 0) {
+          reportVisibleSeq(highestVisibleSeq)
+        }
+      })
+    }
+
+    scheduleVisibilityRead()
+    container.addEventListener('scroll', scheduleVisibilityRead, { passive: true })
+    window.addEventListener('resize', scheduleVisibilityRead)
+    document.addEventListener('visibilitychange', scheduleVisibilityRead)
+    return () => {
+      cancelAnimationFrame(rafId)
+      container.removeEventListener('scroll', scheduleVisibilityRead)
+      window.removeEventListener('resize', scheduleVisibilityRead)
+      document.removeEventListener('visibilitychange', scheduleVisibilityRead)
+    }
+  }, [loadedTarget, loading, messages, reportVisibleSeq, threadTarget])
 
   // Reset input when switching thread
   useEffect(() => {
     setContent('')
   }, [openThreadMsg?.id])
 
+  useEffect(() => {
+    if (toasts.length === 0) return
+    const timer = window.setTimeout(() => {
+      setToasts((current) => current.slice(1))
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [toasts])
+
   async function handleSend() {
     if (!threadTarget || !currentUser || !content.trim()) return
     setSending(true)
+    let optimisticHandle: ReturnType<typeof addOptimisticMessage> | null = null
     try {
-      await sendMessage(currentUser, threadTarget, content.trim())
+      const handle = addOptimisticMessage({
+        content: content.trim(),
+      })
+      optimisticHandle = handle
+      if (!threadConversationId || !openThreadMsg) throw new Error('thread unavailable')
+      const sendAck = await sendMessage(threadConversationId, content.trim(), [], {
+        clientNonce: handle.clientNonce,
+        threadParentId: openThreadMsg.id,
+      })
+      ackOptimisticMessage(handle, {
+        messageId: sendAck.messageId,
+        seq: sendAck.seq,
+        createdAt: sendAck.createdAt,
+        clientNonce: sendAck.clientNonce,
+      })
       setContent('')
-      refresh()
     } catch (e) {
       console.error('Thread send failed:', e)
+      const message = e instanceof Error ? e.message : String(e)
+      if (optimisticHandle) {
+        failOptimisticMessage(optimisticHandle, message)
+      }
+      setToasts((current) => [
+        ...current,
+        { id: `thread-send-failed-${Date.now()}`, message: 'Message failed to send' },
+      ])
     } finally {
       setSending(false)
+    }
+  }
+
+  async function handleRetryMessage(message: typeof messages[number]) {
+    if (!threadTarget || !currentUser) return
+    const retryHandle = retryOptimisticMessage(message.id)
+    if (!retryHandle) return
+    try {
+      if (!threadConversationId || !openThreadMsg) throw new Error('thread unavailable')
+      const sendAck = await sendMessage(
+        threadConversationId,
+        message.content,
+        message.attachments?.map((attachment) => attachment.id) ?? [],
+        { clientNonce: retryHandle.clientNonce, threadParentId: openThreadMsg.id }
+      )
+      ackOptimisticMessage(retryHandle, {
+        messageId: sendAck.messageId,
+        seq: sendAck.seq,
+        createdAt: sendAck.createdAt,
+        clientNonce: sendAck.clientNonce,
+      })
+    } catch (retryError) {
+      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
+      failOptimisticMessage(retryHandle, retryMessage)
+      setToasts((current) => [
+        ...current,
+        { id: `thread-retry-failed-${Date.now()}`, message: 'Message failed to send' },
+      ])
     }
   }
 
   if (!openThreadMsg) return null
 
   return (
-    <div className="thread-panel">
+    <div className={`thread-panel${variant === 'content' ? ' thread-panel--content' : ''}`}>
       {/* Header */}
       <div className="thread-header">
         <div className="thread-header-copy">
@@ -73,17 +262,25 @@ export function ThreadPanel() {
         </div>
 
         {/* Replies */}
-        <div className="thread-replies">
+        <div className="thread-replies" ref={repliesContainerRef}>
           {messages.length === 0 ? (
             <div className="thread-empty">No replies yet</div>
           ) : (
             messages.map((msg, i) => (
-              <MessageItem
+              <div
                 key={msg.id}
-                message={msg}
-                currentUser={currentUser}
-                prevMessage={messages[i - 1]}
-              />
+                ref={(node) => {
+                  messageRefs.current[msg.id] = node
+                }}
+                style={{ scrollMarginTop: 96 }}
+              >
+                <MessageItem
+                  message={msg}
+                  currentUser={currentUser}
+                  prevMessage={messages[i - 1]}
+                  onRetry={handleRetryMessage}
+                />
+              </div>
             ))
           )}
           <div ref={bottomRef} />
@@ -118,6 +315,10 @@ export function ThreadPanel() {
           </div>
         </div>
       </div>
+      <ToastRegion
+        toasts={toasts}
+        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+      />
     </div>
   )
 }

@@ -44,12 +44,12 @@ function TaskCard({
     try {
       // Auto-claim when starting a task (backend requires claim before status update)
       if (task.status === 'todo') {
-        await claimTasks(currentUser, channel, [task.taskNumber])
+        await claimTasks(channel, [task.taskNumber])
         onError(null)
         onRefresh()
         return
       }
-      await updateTaskStatus(currentUser, channel, task.taskNumber, next)
+      await updateTaskStatus(channel, task.taskNumber, next)
       onError(null)
       onRefresh()
     } catch (e) {
@@ -88,17 +88,17 @@ function TaskCard({
 }
 
 export function TasksPanel() {
-  const { currentUser, selectedChannel } = useApp()
-  const { tasks, loading, refresh } = useTasks(currentUser, selectedChannel)
+  const { currentUser, selectedChannel, selectedChannelId } = useApp()
+  const { tasks, loading, refresh } = useTasks(currentUser, selectedChannelId)
   const [newTaskTitle, setNewTaskTitle] = useState('')
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   async function handleCreate() {
-    if (!selectedChannel || !newTaskTitle.trim()) return
+    if (!selectedChannel || !selectedChannelId || !newTaskTitle.trim()) return
     setCreating(true)
     try {
-      await createTasks(currentUser, selectedChannel, [newTaskTitle.trim()])
+      await createTasks(selectedChannelId, [newTaskTitle.trim()])
       setNewTaskTitle('')
       setError(null)
       refresh()
@@ -146,7 +146,7 @@ export function TasksPanel() {
                     key={task.taskNumber}
                     task={task}
                     currentUser={currentUser}
-                    channel={selectedChannel}
+                    channel={selectedChannelId ?? ''}
                     onRefresh={refresh}
                     onError={setError}
                   />

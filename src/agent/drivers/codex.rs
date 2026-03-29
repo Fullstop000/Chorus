@@ -2,8 +2,9 @@ use std::process::{Child, Command, Stdio};
 
 use super::prompt::{build_base_system_prompt, PromptOptions};
 use super::{command_exists, run_command, Driver, ParsedEvent, SpawnContext};
+use crate::agent::config::AgentConfig;
 use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
-use crate::store::agents::{AgentConfig, AgentRuntime};
+use crate::store::agents::AgentRuntime;
 
 pub struct CodexDriver;
 

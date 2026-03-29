@@ -7,8 +7,14 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      '/internal': `http://localhost:${apiPort}`,
-      '/api': `http://localhost:${apiPort}`,
+      '/internal': {
+        target: `http://localhost:${apiPort}`,
+        ws: true,
+      },
+      '/api': {
+        target: `http://localhost:${apiPort}`,
+        ws: true,
+      },
     },
   },
   build: {

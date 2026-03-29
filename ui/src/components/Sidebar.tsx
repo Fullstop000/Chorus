@@ -58,7 +58,11 @@ export function Sidebar() {
     selectedAgent,
     setSelectedChannel,
     setSelectedAgent,
-    refreshServerInfo,
+    getConversationUnread,
+    getAgentUnread,
+    refreshChannels,
+    refreshAgents,
+    refreshTeams,
   } = useApp()
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showCreateChannel, setShowCreateChannel] = useState(false)
@@ -150,6 +154,7 @@ export function Sidebar() {
             </div>
             {systemChannels.map((ch) => {
               const target = `#${ch.name}`
+              const unreadCount = getConversationUnread(ch.id ?? null)
               return (
                 <button
                   key={ch.id ?? ch.name}
@@ -162,6 +167,9 @@ export function Sidebar() {
                   <span className="sidebar-item-main">
                     <span className="sidebar-item-text">{ch.name}</span>
                   </span>
+                  {unreadCount > 0 && (
+                    <span className="sidebar-unread-badge">{unreadCount}</span>
+                  )}
                   <span className="sidebar-channel-badge">sys</span>
                 </button>
               )
@@ -170,6 +178,7 @@ export function Sidebar() {
               const target = `#${ch.name}`
               const isActive = selectedChannel === target
               const isMenuOpen = openChannelMenuId === ch.id
+              const unreadCount = getConversationUnread(ch.id ?? null)
               return (
                 <div
                   key={ch.id ?? ch.name}
@@ -189,6 +198,9 @@ export function Sidebar() {
                       <span className="sidebar-item-text">{ch.name}</span>
                       {ch.description && <span className="sidebar-item-meta">{ch.description}</span>}
                     </span>
+                    {unreadCount > 0 && (
+                      <span className="sidebar-unread-badge">{unreadCount}</span>
+                    )}
                     {ch.channel_type === 'team' && (
                       <span className="sidebar-channel-badge team">team</span>
                     )}
@@ -253,22 +265,28 @@ export function Sidebar() {
                 <Plus size={14} />
               </button>
             </div>
-            {agents.map((agent) => (
-              <button
-                key={agent.name}
-                type="button"
-                className={`sidebar-item${
-                  selectedAgent?.name === agent.name ? ' active' : ''
-                }`}
-                onClick={() => setSelectedAgent(agent as AgentInfo)}
-              >
-                <AgentAvatar name={agent.name} status={agent.status} activity={agent.activity} />
-                <span className="sidebar-item-main">
-                  <span className="sidebar-item-text">{agent.display_name ?? agent.name}</span>
-                  <span className="sidebar-item-meta">:: {agent.runtime ?? 'agent'}</span>
-                </span>
-              </button>
-            ))}
+            {agents.map((agent) => {
+              const unreadCount = getAgentUnread(agent.name)
+              return (
+                <button
+                  key={agent.name}
+                  type="button"
+                  className={`sidebar-item${
+                    selectedAgent?.name === agent.name ? ' active' : ''
+                  }`}
+                  onClick={() => setSelectedAgent(agent as AgentInfo)}
+                >
+                  <AgentAvatar name={agent.name} status={agent.status} activity={agent.activity} />
+                  <span className="sidebar-item-main">
+                    <span className="sidebar-item-text">{agent.display_name ?? agent.name}</span>
+                    <span className="sidebar-item-meta">:: {agent.runtime ?? 'agent'}</span>
+                  </span>
+                  {unreadCount > 0 && (
+                    <span className="sidebar-unread-badge">{unreadCount}</span>
+                  )}
+                </button>
+              )
+            })}
           </div>
 
           <div className="sidebar-section">
@@ -336,7 +354,7 @@ export function Sidebar() {
           onClose={() => setShowCreateAgent(false)}
           onCreated={() => {
             setShowCreateAgent(false)
-            refreshServerInfo()
+            void refreshAgents()
           }}
         />
       )}
@@ -347,7 +365,8 @@ export function Sidebar() {
           onCreated={(created) => {
             setShowCreateChannel(false)
             setSelectedChannel(`#${created.name}`, created.id ?? null)
-            refreshServerInfo()
+            void refreshChannels()
+            void refreshTeams()
           }}
         />
       )}
@@ -360,7 +379,7 @@ export function Sidebar() {
               setSelectedChannel(`#${updated.name}`, updated.id)
             }
             setEditingChannel(null)
-            refreshServerInfo()
+            void refreshChannels()
           }}
         />
       )}
@@ -371,12 +390,12 @@ export function Sidebar() {
           onArchived={() => {
             recoverSelectionAfterChannelRemoval(deleteTarget.id)
             setDeleteTarget(null)
-            refreshServerInfo()
+            void refreshChannels()
           }}
           onDeleted={() => {
             recoverSelectionAfterChannelRemoval(deleteTarget.id)
             setDeleteTarget(null)
-            refreshServerInfo()
+            void refreshChannels()
           }}
         />
       )}

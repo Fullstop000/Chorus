@@ -71,6 +71,11 @@ export interface AttachmentRef {
   filename: string
 }
 
+export interface ForwardedFrom {
+  channelName: string
+  senderName: string
+}
+
 export interface HistoryMessage {
   id: string
   seq: number
@@ -82,13 +87,124 @@ export interface HistoryMessage {
   thread_parent_id?: string
   attachments?: AttachmentRef[]
   replyCount?: number
+  forwardedFrom?: ForwardedFrom
+  clientNonce?: string
+  clientStatus?: 'sending' | 'failed'
+  clientError?: string
 }
 
 export interface HistoryResponse {
   messages: HistoryMessage[]
   has_more: boolean
   last_read_seq: number
+  latestEventId: number
+  streamId: string
+  streamPos: number
 }
+
+export interface RealtimeEvent {
+  eventId: number
+  streamId?: string
+  streamKind?: string
+  streamPos?: number
+  eventType: string
+  scopeKind: string
+  scopeId: string
+  channelId?: string | null
+  channelName?: string | null
+  threadParentId?: string | null
+  actor?: {
+    name: string
+    type?: 'human' | 'agent' | null
+  } | null
+  causedBy?: {
+    kind: string
+  } | null
+  payload: Record<string, unknown>
+  createdAt: string
+}
+
+export interface ConversationStatePayload {
+  conversationId: string
+  target?: string
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  lastMessageId?: string
+  lastMessageAt?: string
+  lastReadMessageId?: string
+  messageId?: string
+  conversationType?: string
+  threadParentId?: string | null
+}
+
+export interface ThreadStatePayload {
+  conversationId: string
+  threadParentId: string
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  lastReadMessageId?: string
+  lastReplyMessageId?: string
+  lastReplyAt?: string
+}
+
+export interface InboxConversationState {
+  conversationId: string
+  conversationName: string
+  conversationType: string
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  lastReadMessageId?: string | null
+  lastMessageId?: string | null
+  lastMessageAt?: string | null
+}
+
+export interface InboxResponse {
+  conversations: InboxConversationState[]
+  latestEventId: number
+}
+
+export interface ThreadInboxEntry {
+  conversationId: string
+  threadParentId: string
+  parentSeq: number
+  parentSenderName: string
+  parentSenderType: 'human' | 'agent'
+  parentContent: string
+  parentCreatedAt: string
+  replyCount: number
+  participantCount: number
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  lastReplyMessageId?: string | null
+  lastReplyAt?: string | null
+}
+
+export interface ThreadInboxResponse {
+  unreadCount: number
+  threads: ThreadInboxEntry[]
+}
+
+export type RealtimeMessage =
+  | {
+      type: 'subscribed'
+      resumeFrom: number
+      streamId?: string
+      resumeFromStreamPos?: number
+      targets: string[]
+    }
+  | {
+      type: 'event'
+      event: RealtimeEvent
+    }
+  | {
+      type: 'error'
+      code: string
+      message: string
+    }
 
 // ── Tasks ──
 

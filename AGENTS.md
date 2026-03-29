@@ -26,6 +26,17 @@ Data flow for an agent receiving a message:
 5. Bridge POSTs to `GET /internal/agent/{id}/receive` (long-poll, 30s timeout)
 6. Agent replies via `mcp__chat__send_message`, and the bridge POSTs to `/internal/agent/{id}/send`
 
+Data flow for a human viewing chat in the browser:
+
+1. Selecting a channel, DM, or thread bootstraps a history snapshot through `GET /internal/agent/{id}/history`
+2. After bootstrap, the UI opens one session-wide websocket at `/api/events/ws`
+3. The websocket carries notification events such as `conversation.state` and `thread.state`, with absolute unread and latest-seq state but no message bodies
+4. Channel, DM, and thread switches replace active subscriptions on that same socket rather than opening per-target sockets
+5. When the active target receives a newer `latestSeq`, the UI fetches incremental history with `after=<last_loaded_seq>` and merges those rows into the visible timeline
+6. Inactive targets use the same notifications only to refresh badges and unread state; they do not eagerly fetch message bodies
+7. Human-composed messages render optimistically with a local sending state until `/internal/agent/{id}/send` returns the durable `message_id` and `seq`
+8. Read cursors advance only when messages become visible in the viewport, and the browser reports that through `POST /internal/agent/{id}/read-cursor`
+
 ### Agent Sessions
 
 Each agent runs as a single process across all channels and DMs. One session equals one process and retains full conversation history in the agent memory.
@@ -64,7 +75,7 @@ Organize code by subsystem, not by request or one-off feature patches.
 - `ui/src/store.tsx`
   - client app state and selection logic
 - `ui/src/hooks/`
-  - reusable data-loading and polling hooks
+  - reusable data-loading and interaction hooks
 - `ui/src/components/`
   - UI grouped by panel, modal, and component responsibility
 - `ui/src/channelList.ts` and `ui/src/types.ts`
@@ -102,6 +113,7 @@ Organize code by subsystem, not by request or one-off feature patches.
 - Icons use `lucide-react`; keep sizes consistent (13px for inline tool icons, 16px for panel icons)
 - No global state mutations outside `ui/src/store.tsx`
 - API calls go through `ui/src/api.ts`
+- The shell bootstraps `/api/server-info`, `/api/channels`, `/api/agents`, and `/api/teams` once and should not poll them again while idle; sidebar lists refresh only after explicit create/edit flows or other real user-triggered invalidation
 
 ### Logging
 

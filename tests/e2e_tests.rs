@@ -7,7 +7,7 @@ use chorus::store::Store;
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.add_human("testuser").unwrap();
+    store.create_human("testuser").unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
@@ -37,7 +37,7 @@ async fn test_human_to_agent_message_flow() {
         .unwrap();
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "testuser",
@@ -135,7 +135,7 @@ async fn test_blocking_receive_wakes_on_message() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "testuser",
@@ -168,11 +168,12 @@ async fn test_task_board_e2e() {
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
 
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+
     // Create tasks
     let resp: serde_json::Value = client
-        .post(format!("{url}/internal/agent/bot1/tasks"))
+        .post(format!("{url}/api/conversations/{channel_id}/tasks"))
         .json(&serde_json::json!({
-            "channel": "#general",
             "tasks": [{"title": "Task A"}, {"title": "Task B"}]
         }))
         .send()
@@ -185,9 +186,8 @@ async fn test_task_board_e2e() {
 
     // Claim task 1 (transitions from todo -> in_progress)
     let resp: serde_json::Value = client
-        .post(format!("{url}/internal/agent/bot1/tasks/claim"))
+        .post(format!("{url}/api/conversations/{channel_id}/tasks/claim"))
         .json(&serde_json::json!({
-            "channel": "#general",
             "task_numbers": [1]
         }))
         .send()
@@ -200,9 +200,10 @@ async fn test_task_board_e2e() {
 
     // Update status to in_review (in_progress -> in_review)
     let resp = client
-        .post(format!("{url}/internal/agent/bot1/tasks/update-status"))
+        .post(format!(
+            "{url}/api/conversations/{channel_id}/tasks/update-status"
+        ))
         .json(&serde_json::json!({
-            "channel": "#general",
             "task_number": 1,
             "status": "in_review"
         }))
@@ -213,9 +214,7 @@ async fn test_task_board_e2e() {
 
     // List tasks — task 1 should be in_review
     let resp: serde_json::Value = client
-        .get(format!(
-            "{url}/internal/agent/bot1/tasks?channel=%23general"
-        ))
+        .get(format!("{url}/api/conversations/{channel_id}/tasks"))
         .send()
         .await
         .unwrap()
@@ -438,10 +437,10 @@ async fn test_team_thread_target_round_trip_for_codex_agent() {
         .create_agent_record("bot1", "Bot 1", None, "codex", "gpt-5.4-mini", &[])
         .unwrap();
     store
-        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
         .unwrap();
     store
-        .add_team_member(&team_id, "testuser", "human", "testuser", "observer")
+        .create_team_member(&team_id, "testuser", "human", "testuser", "observer")
         .unwrap();
     store
         .join_channel("qa-eng", "bot1", SenderType::Agent)
