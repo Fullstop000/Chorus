@@ -110,6 +110,7 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
                         match replay_matching_events(
                             &mut socket,
                             store.as_ref(),
+                            &viewer,
                             &subscribed_targets,
                             &replay_cursor,
                         ).await {
@@ -257,7 +258,8 @@ async fn handle_client_frame(
             )
             .await?;
             *replay_cursor =
-                replay_matching_events(socket, store, subscribed_targets, replay_cursor).await?;
+                replay_matching_events(socket, store, viewer, subscribed_targets, replay_cursor)
+                    .await?;
         }
     }
     Ok(())
@@ -299,6 +301,7 @@ async fn validate_targets(
 async fn replay_matching_events(
     socket: &mut WebSocket,
     store: &Store,
+    viewer: &str,
     subscribed_targets: &BTreeMap<String, ResolvedSubscriptionTarget>,
     replay_cursor: &ReplayCursor,
 ) -> anyhow::Result<ReplayCursor> {
@@ -319,7 +322,7 @@ async fn replay_matching_events(
                             socket,
                             json!({
                                 "type": "event",
-                                "event": event_to_json_value(store, &event),
+                                "event": event_to_json_value_for_viewer(store, viewer, &event),
                             }),
                         )
                         .await?;
@@ -357,7 +360,7 @@ async fn replay_matching_events(
                             socket,
                             json!({
                                 "type": "event",
-                                "event": event_to_json_value(store, &event),
+                                "event": event_to_json_value_for_viewer(store, viewer, &event),
                             }),
                         )
                         .await?;
@@ -390,10 +393,18 @@ fn target_matches(
 }
 
 pub fn event_to_json_value(store: &Store, event: &StoredEvent) -> Value {
-    event_to_json_value_with_store(Some(store), event)
+    event_to_json_value_with_store(Some(store), event.actor_name.as_deref(), event)
 }
 
-fn event_to_json_value_with_store(store: Option<&Store>, event: &StoredEvent) -> Value {
+pub fn event_to_json_value_for_viewer(store: &Store, viewer: &str, event: &StoredEvent) -> Value {
+    event_to_json_value_with_store(Some(store), Some(viewer), event)
+}
+
+fn event_to_json_value_with_store(
+    store: Option<&Store>,
+    viewer: Option<&str>,
+    event: &StoredEvent,
+) -> Value {
     let actor = event
         .actor_name
         .as_ref()
@@ -402,13 +413,17 @@ fn event_to_json_value_with_store(store: Option<&Store>, event: &StoredEvent) ->
         .caused_by_kind
         .as_ref()
         .map(|kind| json!({ "kind": kind }));
-    let payload = transport_payload_for_event(store, event);
+    let payload = transport_payload_for_event(store, viewer, event);
     json!({
         "eventId": event.event_id,
         "streamId": event.stream_id,
         "streamKind": event.stream_kind,
         "streamPos": event.stream_pos,
-        "eventType": event.event_type,
+        "eventType": if event.is_message_created() {
+            "conversation.state"
+        } else {
+            event.event_type.as_str()
+        },
         "scopeKind": event.scope_kind,
         "scopeId": event.scope_id,
         "channelId": event.channel_id,
@@ -421,8 +436,12 @@ fn event_to_json_value_with_store(store: Option<&Store>, event: &StoredEvent) ->
     })
 }
 
-fn transport_payload_for_event(store: Option<&Store>, event: &StoredEvent) -> Value {
-    if event.event_type != "message.created" {
+fn transport_payload_for_event(
+    store: Option<&Store>,
+    viewer: Option<&str>,
+    event: &StoredEvent,
+) -> Value {
+    if !event.is_message_created() {
         return event.payload.clone();
     }
 
@@ -435,9 +454,41 @@ fn transport_payload_for_event(store: Option<&Store>, event: &StoredEvent) -> Va
         return event.payload.clone();
     }
 
-    store
-        .and_then(|store| store.get_message_event_payload(message_id).ok().flatten())
-        .unwrap_or_else(|| event.payload.clone())
+    let Some(store) = store else {
+        return event.payload.clone();
+    };
+    let Some(message_view) = store
+        .get_conversation_message_view(message_id)
+        .ok()
+        .flatten()
+    else {
+        return event.payload.clone();
+    };
+
+    let (last_read_seq, unread_count) = event
+        .channel_name
+        .as_deref()
+        .and_then(|channel_name| {
+            viewer.and_then(|viewer_name| {
+                store
+                    .get_inbox_conversation_state(channel_name, viewer_name)
+                    .ok()
+                    .flatten()
+            })
+        })
+        .map(|state| (state.last_read_seq, state.unread_count))
+        .unwrap_or((0, 0));
+
+    json!({
+        "conversationId": message_view.conversation_id,
+        "conversationType": message_view.conversation_type,
+        "messageId": message_view.message_id,
+        "latestSeq": message_view.seq,
+        "lastReadSeq": last_read_seq,
+        "unreadCount": unread_count,
+        "threadParentId": message_view.thread_parent_id,
+        "createdAt": message_view.created_at,
+    })
 }
 
 async fn send_json(socket: &mut WebSocket, value: Value) -> anyhow::Result<()> {

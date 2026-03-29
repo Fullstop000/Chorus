@@ -1,11 +1,5 @@
 import { resolveChannel } from '../api'
-import type {
-  AttachmentRef,
-  ForwardedFrom,
-  HistoryMessage,
-  RealtimeEvent,
-  RealtimeMessage,
-} from '../types'
+import type { HistoryMessage, RealtimeEvent, RealtimeMessage } from '../types'
 
 const BASE = ''
 
@@ -54,82 +48,14 @@ export async function resolveRealtimeTarget(
   return `conversation:${channelId}`
 }
 
-function materializeLiveMessage(event: RealtimeEvent): HistoryMessage | null {
-  const payload = event.payload
-  const messageId = typeof payload.messageId === 'string' ? payload.messageId : null
-  const content = typeof payload.content === 'string' ? payload.content : null
-  const sender =
-    typeof payload.sender === 'object' && payload.sender !== null
-      ? (payload.sender as { name?: unknown; type?: unknown })
-      : null
-  const senderName = typeof sender?.name === 'string' ? sender.name : null
-  if (!messageId || content == null || !senderName) {
-    return null
-  }
-
-  const senderDeleted = payload.senderDeleted === true
-  const attachments = Array.isArray(payload.attachments)
-    ? payload.attachments
-        .map((attachment) => {
-          if (typeof attachment !== 'object' || attachment == null) return null
-          const value = attachment as { id?: unknown; filename?: unknown }
-          if (typeof value.id !== 'string' || typeof value.filename !== 'string') return null
-          return {
-            id: value.id,
-            filename: value.filename,
-          } satisfies AttachmentRef
-        })
-        .filter((attachment): attachment is AttachmentRef => attachment != null)
-    : undefined
-  const forwardedFrom =
-    typeof payload.forwardedFrom === 'object' && payload.forwardedFrom !== null
-      ? (() => {
-          const value = payload.forwardedFrom as {
-            channelName?: unknown
-            senderName?: unknown
-          }
-          if (
-            typeof value.channelName !== 'string' ||
-            typeof value.senderName !== 'string'
-          ) {
-            return undefined
-          }
-          return {
-            channelName: value.channelName,
-            senderName: value.senderName,
-          } satisfies ForwardedFrom
-        })()
-      : undefined
-
-  return {
-    id: messageId,
-    seq: typeof payload.seq === 'number' ? payload.seq : 0,
-    content,
-    senderName,
-    senderType: sender?.type === 'agent' ? 'agent' : 'human',
-    senderDeleted,
-    createdAt: typeof payload.createdAt === 'string' ? payload.createdAt : event.createdAt,
-    ...(attachments ? { attachments } : {}),
-    ...(forwardedFrom ? { forwardedFrom } : {}),
-  }
-}
-
 export function applyRealtimeEvent(
   messages: HistoryMessage[],
   event: RealtimeEvent
 ): HistoryMessage[] {
   switch (event.eventType) {
-    case 'message.created': {
-      const liveMessage = materializeLiveMessage(event)
-      if (!liveMessage) return messages
-      const existingIndex = messages.findIndex((message) => message.id === liveMessage.id)
-      if (existingIndex >= 0) {
-        return messages.map((message, index) =>
-          index === existingIndex ? { ...message, ...liveMessage } : message
-        )
-      }
-      return [...messages, liveMessage].sort((left, right) => left.seq - right.seq)
-    }
+    case 'message.created':
+    case 'conversation.state':
+      return messages
     case 'thread.reply_count_changed': {
       const payload = event.payload
       const parentMessageId =

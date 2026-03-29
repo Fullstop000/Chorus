@@ -94,6 +94,13 @@ impl ResolvedSubscriptionTarget {
     }
 }
 
+impl StoredEvent {
+    /// Message-arrival events are rendered as notification frames on the websocket.
+    pub fn is_message_created(&self) -> bool {
+        self.event_type == "message.created"
+    }
+}
+
 impl Store {
     /// Return the latest committed global event cursor.
     pub fn latest_event_id(&self) -> Result<i64> {

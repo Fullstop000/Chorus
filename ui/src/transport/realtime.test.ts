@@ -20,7 +20,7 @@ describe('realtime transport helpers', () => {
     })
   })
 
-  it('applies message.created events incrementally', () => {
+  it('treats message.created bus frames as notification-only', () => {
     const messages: HistoryMessage[] = []
     const event: RealtimeEvent = {
       eventId: 7,
@@ -42,21 +42,32 @@ describe('realtime transport helpers', () => {
       createdAt: '2026-03-28T00:00:00Z',
     }
 
-    expect(applyRealtimeEvent(messages, event)).toEqual([
-      {
-        id: 'msg-1',
-        seq: 1,
-        content: 'hello',
-        senderName: 'alice',
-        senderType: 'human',
-        senderDeleted: true,
-        forwardedFrom: {
-          channelName: 'eng-team',
-          senderName: 'bob',
-        },
-        createdAt: '2026-03-28T00:00:00Z',
+    expect(applyRealtimeEvent(messages, event)).toEqual([])
+  })
+
+  it('expects conversation.state notifications to carry absolute unread state', () => {
+    const event: RealtimeEvent = {
+      eventId: 8,
+      eventType: 'conversation.state',
+      scopeKind: 'channel',
+      scopeId: 'channel:abc',
+      payload: {
+        conversationId: 'channel:abc',
+        latestSeq: 12,
+        lastReadSeq: 9,
+        unreadCount: 3,
       },
-    ])
+      createdAt: '2026-03-28T00:00:00Z',
+    }
+
+    expect(event.eventType).toBe('conversation.state')
+    expect(event.payload).not.toHaveProperty('content')
+    expect(event.payload).toMatchObject({
+      conversationId: 'channel:abc',
+      latestSeq: 12,
+      lastReadSeq: 9,
+      unreadCount: 3,
+    })
   })
 
   it('trusts subscribed resumeFrom as the authoritative cursor', () => {

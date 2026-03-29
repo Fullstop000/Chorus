@@ -9,7 +9,17 @@ import {
 import type { HistoryMessage, HistoryResponse, RealtimeMessage } from '../types'
 
 function logRealtime(event: string, detail: unknown) {
-  console.debug(`[chorus:realtime] ${event}`, detail)
+  let rendered = String(detail)
+  if (typeof detail === 'string') {
+    rendered = detail
+  } else {
+    try {
+      rendered = JSON.stringify(detail)
+    } catch {
+      rendered = String(detail)
+    }
+  }
+  console.debug(`[chorus:realtime] ${event} ${rendered}`)
 }
 
 export function useHistory(username: string, target: string | null) {
@@ -108,6 +118,10 @@ export function useHistory(username: string, target: string | null) {
               lastStreamPosRef.current,
               frame.event.streamPos ?? 0
             )
+          }
+          if (frame.event.eventType === 'conversation.state') {
+            void fetchHistory()
+            return
           }
           setMessages((current) => applyRealtimeEvent(current, frame.event))
           setError(null)

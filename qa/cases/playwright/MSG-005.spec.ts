@@ -24,7 +24,8 @@ test.describe('MSG-005', () => {
       }
     })
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await page.locator('.chat-header-name').waitFor({ state: 'visible', timeout: 30_000 })
     await expect(page.locator('.chat-header-name')).toContainText('#all')
     await page.waitForTimeout(1_000)
 
@@ -33,15 +34,21 @@ test.describe('MSG-005', () => {
     const localToken = `msg-local-${Date.now()}`
     await sendChatMessage(page, localToken)
     await expect(page.locator('.message-item').filter({ hasText: localToken }).first()).toBeVisible()
-    expect(historyRequests).toBe(baselineHistoryRequests)
+    expect(historyRequests).toBeGreaterThan(baselineHistoryRequests)
+    const historyAfterLocalSend = historyRequests
 
     const remoteToken = `msg-remote-${Date.now()}`
     await sendAsUser(request, username, '#all', remoteToken)
     await expect(page.locator('.message-item').filter({ hasText: remoteToken }).first()).toBeVisible()
-    expect(historyRequests).toBe(baselineHistoryRequests)
+    expect(historyRequests).toBeGreaterThan(historyAfterLocalSend)
     expect(realtimeConsoleLogs.length).toBeGreaterThan(0)
+    const consoleDump = realtimeConsoleLogs.join('\n')
+    expect(consoleDump).toContain('conversation.state')
+    expect(consoleDump).toContain('latestSeq')
+    expect(consoleDump).toContain('unreadCount')
+    expect(consoleDump).not.toContain(remoteToken)
 
     await page.waitForTimeout(4_000)
-    expect(historyRequests).toBe(baselineHistoryRequests)
+    expect(historyRequests).toBeGreaterThan(historyAfterLocalSend)
   })
 })

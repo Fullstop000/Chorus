@@ -81,9 +81,12 @@ async fn test_realtime_subscription_replays_matching_events_from_cursor() {
 
     let event = read_json_frame(&mut socket).await;
     assert_eq!(event["type"], "event");
-    assert_eq!(event["event"]["eventType"], "message.created");
+    assert_eq!(event["event"]["eventType"], "conversation.state");
     assert_eq!(event["event"]["scopeKind"], "channel");
-    assert_eq!(event["event"]["payload"]["content"], "hello");
+    assert_eq!(event["event"]["payload"]["latestSeq"], 1);
+    assert_eq!(event["event"]["payload"]["lastReadSeq"], 1);
+    assert_eq!(event["event"]["payload"]["unreadCount"], 0);
+    assert!(event["event"]["payload"].get("content").is_none());
 }
 
 #[tokio::test]
@@ -150,13 +153,16 @@ async fn test_realtime_subscription_can_resume_from_stream_position() {
 
     let event = read_json_frame(&mut socket).await;
     assert_eq!(event["type"], "event");
-    assert_eq!(event["event"]["eventType"], "message.created");
+    assert_eq!(event["event"]["eventType"], "conversation.state");
     assert_eq!(
         event["event"]["streamId"],
         format!("conversation:{general_id}")
     );
     assert_eq!(event["event"]["streamPos"], 2);
-    assert_eq!(event["event"]["payload"]["content"], "general-2");
+    assert_eq!(event["event"]["payload"]["latestSeq"], 2);
+    assert_eq!(event["event"]["payload"]["lastReadSeq"], 2);
+    assert_eq!(event["event"]["payload"]["unreadCount"], 0);
+    assert!(event["event"]["payload"].get("content").is_none());
 }
 
 #[tokio::test]
@@ -190,8 +196,11 @@ async fn test_realtime_subscription_receives_live_events_after_subscribe() {
 
     let event = read_json_frame(&mut socket).await;
     assert_eq!(event["type"], "event");
-    assert_eq!(event["event"]["eventType"], "message.created");
-    assert_eq!(event["event"]["payload"]["content"], "live");
+    assert_eq!(event["event"]["eventType"], "conversation.state");
+    assert_eq!(event["event"]["payload"]["latestSeq"], 1);
+    assert_eq!(event["event"]["payload"]["lastReadSeq"], 1);
+    assert_eq!(event["event"]["payload"]["unreadCount"], 0);
+    assert!(event["event"]["payload"].get("content").is_none());
 }
 
 #[tokio::test]
@@ -287,10 +296,11 @@ async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery
         event["event"]["scopeId"],
         Value::String(format!("channel:{general_id}"))
     );
-    assert_eq!(
-        event["event"]["payload"]["content"],
-        "general-live-after-multi-subscribe"
-    );
+    assert_eq!(event["event"]["eventType"], "conversation.state");
+    assert!(event["event"]["payload"].get("content").is_none());
+    assert_eq!(event["event"]["payload"]["latestSeq"], 2);
+    assert_eq!(event["event"]["payload"]["lastReadSeq"], 2);
+    assert_eq!(event["event"]["payload"]["unreadCount"], 0);
 }
 
 #[tokio::test]
@@ -389,11 +399,15 @@ async fn test_thread_target_replays_only_thread_events() {
     assert_eq!(
         event_types,
         vec![
-            "message.created",
+            "conversation.state",
             "thread.reply_count_changed",
             "thread.activity_bumped",
             "thread.participant_added",
         ]
     );
+    assert!(frames[0]["event"]["payload"].get("content").is_none());
+    assert_eq!(frames[0]["event"]["payload"]["latestSeq"], 2);
+    assert_eq!(frames[0]["event"]["payload"]["lastReadSeq"], 3);
+    assert_eq!(frames[0]["event"]["payload"]["unreadCount"], 0);
     assert_eq!(frames[0]["event"]["payload"]["messageId"], reply_id);
 }

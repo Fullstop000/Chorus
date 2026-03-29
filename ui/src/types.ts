@@ -121,6 +121,16 @@ export interface RealtimeEvent {
   createdAt: string
 }
 
+export interface ConversationStatePayload {
+  conversationId: string
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  messageId?: string
+  conversationType?: string
+  threadParentId?: string | null
+}
+
 export type RealtimeMessage =
   | {
       type: 'subscribed'

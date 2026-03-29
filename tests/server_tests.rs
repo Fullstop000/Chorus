@@ -5,6 +5,7 @@ use chorus::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus, RuntimeSta
 use chorus::agent::AgentLifecycle;
 use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
+use chorus::server::transport::realtime::event_to_json_value;
 use chorus::server::{
     build_router, build_router_with_lifecycle, build_router_with_services, AgentDetailResponse,
     HistoryResponse,
@@ -301,6 +302,30 @@ async fn test_history_includes_latest_event_id_cursor() {
     assert_eq!(history["latestEventId"], 1);
     assert_eq!(history["streamId"], format!("conversation:{channel_id}"));
     assert_eq!(history["streamPos"], 1);
+}
+
+#[tokio::test]
+async fn test_realtime_event_serializes_as_notification_state() {
+    let (store, _app) = setup();
+
+    store
+        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .unwrap();
+
+    let event = store
+        .list_events(None, 10)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "message.created")
+        .expect("message.created event");
+    let frame = event_to_json_value(&store, &event);
+
+    assert_eq!(frame["eventType"], "conversation.state");
+    assert_eq!(frame["scopeKind"], "channel");
+    assert_eq!(frame["payload"]["latestSeq"], 1);
+    assert_eq!(frame["payload"]["lastReadSeq"], 1);
+    assert_eq!(frame["payload"]["unreadCount"], 0);
+    assert!(frame["payload"].get("content").is_none());
 }
 
 #[tokio::test]
