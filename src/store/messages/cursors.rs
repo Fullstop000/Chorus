@@ -15,7 +15,7 @@ impl Store {
     ) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let channel = Self::find_channel_by_name_inner(&tx, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&tx, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let event_id = if let Some(parent_id) = thread_parent_id {

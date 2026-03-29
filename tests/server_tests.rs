@@ -34,7 +34,7 @@ fn setup() -> (Arc<Store>, axum::Router) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -55,7 +55,7 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -211,7 +211,7 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -233,7 +233,7 @@ fn setup_with_runtime_statuses(
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -262,7 +262,7 @@ fn setup_with_lifecycle_and_data_dir() -> (
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -342,7 +342,7 @@ async fn test_history_includes_latest_event_id_cursor() {
         .await
         .unwrap();
     let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     assert_eq!(history["latestEventId"], 1);
     assert_eq!(history["streamId"], format!("conversation:{channel_id}"));
     assert_eq!(history["streamPos"], 1);
@@ -352,7 +352,7 @@ async fn test_history_includes_latest_event_id_cursor() {
 async fn test_read_cursor_endpoint_updates_conversation_history_cursor() {
     let (store, app) = setup();
     store
-        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
         .unwrap();
 
     let response = app
@@ -433,10 +433,10 @@ async fn test_inbox_includes_latest_event_id_cursor() {
 async fn test_read_cursor_endpoint_updates_thread_history_cursor() {
     let (store, app) = setup();
     let parent_id = store
-        .send_message("general", None, "bot1", SenderType::Agent, "parent", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "parent", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",
@@ -491,7 +491,7 @@ async fn test_read_cursor_endpoint_updates_thread_history_cursor() {
 async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_reply_desc() {
     let (store, app) = setup();
     let oldest_unread_parent = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -501,7 +501,7 @@ async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_repl
         )
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&oldest_unread_parent),
             "bot1",
@@ -512,7 +512,7 @@ async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_repl
         .unwrap();
 
     let newest_read_parent = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -522,7 +522,7 @@ async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_repl
         )
         .unwrap();
     let newest_read_reply = store
-        .send_message(
+        .create_message(
             "general",
             Some(&newest_read_parent),
             "bot1",
@@ -542,7 +542,7 @@ async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_repl
         .unwrap();
 
     let newest_unread_parent = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -552,7 +552,7 @@ async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_repl
         )
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&newest_unread_parent),
             "bot1",
@@ -596,11 +596,11 @@ async fn test_realtime_event_serializes_as_notification_state() {
     let (store, _app) = setup();
 
     store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
 
     let event = store
-        .list_events(None, 10)
+        .get_events(None, 10)
         .unwrap()
         .into_iter()
         .find(|event| event.event_type == "conversation.state")
@@ -805,7 +805,7 @@ async fn test_public_inbox_matches_current_human() {
     let (store, app) = setup();
     let viewer = whoami::username();
     if viewer != "alice" {
-        store.add_human(&viewer).unwrap();
+        store.create_human(&viewer).unwrap();
         store
             .join_channel("general", &viewer, SenderType::Human)
             .unwrap();
@@ -833,13 +833,13 @@ async fn test_public_conversation_messages_route_uses_conversation_id() {
     let (store, app) = setup();
     let viewer = whoami::username();
     if viewer != "alice" {
-        store.add_human(&viewer).unwrap();
+        store.create_human(&viewer).unwrap();
         store
             .join_channel("general", &viewer, SenderType::Human)
             .unwrap();
     }
     let channel_id = store
-        .find_channel_by_name("general")
+        .get_channel_by_name("general")
         .unwrap()
         .expect("general channel should exist")
         .id;
@@ -868,7 +868,7 @@ async fn test_public_conversation_tasks_route_uses_conversation_id() {
         .create_tasks("general", "alice", &["task from public route"])
         .unwrap();
     let channel_id = store
-        .find_channel_by_name("general")
+        .get_channel_by_name("general")
         .unwrap()
         .expect("general channel should exist")
         .id;
@@ -894,7 +894,7 @@ async fn test_public_dm_route_returns_or_creates_dm_for_current_human() {
     let (store, app) = setup();
     let viewer = whoami::username();
     if viewer != "alice" {
-        store.add_human(&viewer).unwrap();
+        store.create_human(&viewer).unwrap();
     }
 
     let resp = app
@@ -973,7 +973,7 @@ async fn test_list_channels_honors_search_params() {
 #[tokio::test]
 async fn test_update_channel_via_api_normalizes_and_preserves_identity() {
     let (store, app) = setup();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     let req = serde_json::json!({
         "name": "#Engineering",
@@ -993,10 +993,10 @@ async fn test_update_channel_via_api_normalizes_and_preserves_identity() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let renamed = store.find_channel_by_name("engineering").unwrap().unwrap();
+    let renamed = store.get_channel_by_name("engineering").unwrap().unwrap();
     assert_eq!(renamed.id, channel_id);
     assert_eq!(renamed.description.as_deref(), Some("Platform work"));
-    assert!(store.find_channel_by_name("general").unwrap().is_none());
+    assert!(store.get_channel_by_name("general").unwrap().is_none());
 }
 
 #[tokio::test]
@@ -1005,7 +1005,7 @@ async fn test_update_channel_via_api_rejects_duplicate_name() {
     store
         .create_channel("random", Some("Random"), ChannelType::Channel)
         .unwrap();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     let req = serde_json::json!({
         "name": "#RANDOM",
@@ -1047,7 +1047,7 @@ async fn test_create_channel_via_api_only_adds_current_human_member() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let channel = store.find_channel_by_name("engineering").unwrap().unwrap();
+    let channel = store.get_channel_by_name("engineering").unwrap().unwrap();
     let members = store.get_channel_members(&channel.id).unwrap();
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].member_name, whoami::username());
@@ -1073,11 +1073,11 @@ async fn test_create_channel_via_api_only_adds_current_human_member() {
 #[tokio::test]
 async fn test_channel_members_api_lists_members_and_supports_invite() {
     let (store, app) = setup();
-    store.add_human("zoe").unwrap();
+    store.create_human("zoe").unwrap();
     store
         .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     let initial = app
         .clone()
@@ -1152,7 +1152,7 @@ async fn test_channel_members_api_lists_members_and_supports_invite() {
 #[tokio::test]
 async fn test_channel_members_api_rejects_unknown_member() {
     let (store, app) = setup();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     let req = serde_json::json!({ "memberName": "missing-user" });
 
     let resp = app
@@ -1173,12 +1173,12 @@ async fn test_channel_members_api_rejects_unknown_member() {
 async fn test_all_channel_member_count_matches_agents_plus_humans() {
     let (store, app) = setup();
     store.ensure_builtin_channels("alice").unwrap();
-    store.add_human("zoe").unwrap();
+    store.create_human("zoe").unwrap();
     store
         .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
 
-    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let all = store.get_channel_by_name("all").unwrap().unwrap();
     let resp = app
         .oneshot(
             Request::builder()
@@ -1195,7 +1195,7 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
     let expected_member_count =
-        store.list_agents().unwrap().len() + store.list_humans().unwrap().len();
+        store.get_agents().unwrap().len() + store.get_humans().unwrap().len();
     assert_eq!(
         json["memberCount"].as_u64().unwrap(),
         expected_member_count as u64
@@ -1209,7 +1209,7 @@ async fn test_history_rejects_non_member_agent() {
         .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -1242,7 +1242,7 @@ async fn test_history_rejects_non_member_agent() {
 #[tokio::test]
 async fn test_archive_channel_via_api_hides_it_from_server_info() {
     let (store, app) = setup();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     let resp = app
         .clone()
@@ -1256,7 +1256,7 @@ async fn test_archive_channel_via_api_hides_it_from_server_info() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(store.find_channel_by_id(&channel_id).unwrap().is_some());
+    assert!(store.get_channel_by_id(&channel_id).unwrap().is_some());
 
     let channels_resp = app
         .oneshot(
@@ -1278,10 +1278,10 @@ async fn test_archive_channel_via_api_hides_it_from_server_info() {
 #[tokio::test]
 async fn test_delete_channel_via_api_removes_channel_owned_data() {
     let (store, app) = setup();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     store.create_tasks("general", "bot1", &["Fix bug"]).unwrap();
     store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
 
     let resp = app
@@ -1296,7 +1296,7 @@ async fn test_delete_channel_via_api_removes_channel_owned_data() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(store.find_channel_by_id(&channel_id).unwrap().is_none());
+    assert!(store.get_channel_by_id(&channel_id).unwrap().is_none());
 
     let channels_resp = app
         .oneshot(
@@ -1578,7 +1578,7 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1791,7 +1791,7 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
     store
-        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
         .unwrap();
 
     let app = build_router_with_lifecycle(store.clone(), Arc::new(MockLifecycle::default()));
@@ -1867,7 +1867,7 @@ async fn test_send_persists_message_even_if_agent_delivery_fails() {
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1914,7 +1914,7 @@ async fn test_thread_send_only_starts_parent_author_agent() {
         .unwrap();
 
     let parent_message_id = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "bot1",
@@ -1967,7 +1967,7 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
         .unwrap();
 
     let parent_message_id = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "bot1",
@@ -1977,7 +1977,7 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
         )
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_message_id),
             "bot2",
@@ -2027,7 +2027,7 @@ async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents
         .unwrap();
 
     let parent_message_id = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -2147,10 +2147,10 @@ async fn test_send_notifies_active_agents() {
 async fn test_history() {
     let (store, app) = setup();
     store
-        .send_message("general", None, "alice", SenderType::Human, "msg 1", &[])
+        .create_message("general", None, "alice", SenderType::Human, "msg 1", &[])
         .unwrap();
     store
-        .send_message("general", None, "alice", SenderType::Human, "msg 2", &[])
+        .create_message("general", None, "alice", SenderType::Human, "msg 2", &[])
         .unwrap();
 
     let resp = app
@@ -2216,7 +2216,7 @@ async fn test_activity_log_includes_message_send_and_receive_events() {
         .unwrap();
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -2422,7 +2422,7 @@ fn setup_knowledge() -> (Arc<Store>, axum::Router) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -2473,7 +2473,7 @@ async fn knowledge_remember_happy_path() {
     assert!(!id.is_empty());
 
     // Knowledge entry must be retrievable via recall.
-    let entries = store.recall(Some("token bucket"), None).unwrap();
+    let entries = store.search_knowledge_entries(Some("token bucket"), None).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].key, "rate-limiting approach");
     assert_eq!(entries[0].author_agent_id, "bot1");
@@ -2494,7 +2494,7 @@ async fn knowledge_remember_channel_missing() {
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -2519,7 +2519,7 @@ async fn knowledge_remember_channel_missing() {
 
     // Knowledge write must succeed even if channel post fails.
     assert_eq!(resp.status(), StatusCode::OK);
-    let entries = store.recall(Some("no-channel"), None).unwrap();
+    let entries = store.search_knowledge_entries(Some("no-channel"), None).unwrap();
     assert_eq!(entries.len(), 1);
 }
 
@@ -2546,7 +2546,7 @@ async fn knowledge_recall_fts_match() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let entries = store.recall(Some("JWT"), None).unwrap();
+    let entries = store.search_knowledge_entries(Some("JWT"), None).unwrap();
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].key, "auth flow");
 }
@@ -2557,17 +2557,17 @@ async fn knowledge_recall_tag_filter() {
     let (store, _app) = setup_knowledge();
 
     store
-        .remember("finding A", "value A", "research task-1", "bot1", None)
+        .create_knowledge_entry("finding A", "value A", "research task-1", "bot1", None)
         .unwrap();
     store
-        .remember("finding B", "value B", "design task-2", "bot1", None)
+        .create_knowledge_entry("finding B", "value B", "design task-2", "bot1", None)
         .unwrap();
 
-    let by_research = store.recall(None, Some("research")).unwrap();
+    let by_research = store.search_knowledge_entries(None, Some("research")).unwrap();
     assert_eq!(by_research.len(), 1);
     assert_eq!(by_research[0].key, "finding A");
 
-    let by_task2 = store.recall(None, Some("task-2")).unwrap();
+    let by_task2 = store.search_knowledge_entries(None, Some("task-2")).unwrap();
     assert_eq!(by_task2.len(), 1);
     assert_eq!(by_task2[0].key, "finding B");
 }
@@ -2577,7 +2577,7 @@ async fn knowledge_recall_tag_filter() {
 async fn knowledge_recall_empty_result() {
     let (store, _app) = setup_knowledge();
 
-    let entries = store.recall(Some("nonexistent-term-xyz"), None).unwrap();
+    let entries = store.search_knowledge_entries(Some("nonexistent-term-xyz"), None).unwrap();
     assert!(entries.is_empty());
 }
 
@@ -2588,13 +2588,13 @@ async fn channel_type_system_parse() {
 
     // #shared-memory was created in setup_knowledge as a system channel.
     let ch = store
-        .find_channel_by_name("shared-memory")
+        .get_channel_by_name("shared-memory")
         .unwrap()
         .unwrap();
     assert_eq!(ch.channel_type, ChannelType::System);
 
     // A regular channel should not be System.
-    let gen = store.find_channel_by_name("general").unwrap().unwrap();
+    let gen = store.get_channel_by_name("general").unwrap().unwrap();
     assert_eq!(gen.channel_type, ChannelType::Channel);
 }
 
@@ -2603,7 +2603,7 @@ async fn channel_type_system_parse() {
 async fn list_channels_excludes_system() {
     let (store, _app) = setup_knowledge();
 
-    let channels = store.list_channels().unwrap();
+    let channels = store.get_channels().unwrap();
     let names: Vec<&str> = channels.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains(&"general"), "general must be listed");
     assert!(
@@ -2665,13 +2665,13 @@ async fn shared_memory_auto_creation_idempotent() {
 
     // Verify it exists and is of the correct type.
     let ch = store
-        .find_channel_by_name("shared-memory")
+        .get_channel_by_name("shared-memory")
         .unwrap()
         .expect("channel should exist after ensure");
     assert_eq!(ch.channel_type, ChannelType::System);
 
     // Verify list_channels (which excludes system) still lists nothing for this fresh store.
-    let listed = store.list_channels().unwrap();
+    let listed = store.get_channels().unwrap();
     assert!(
         listed.iter().all(|c| c.name != "shared-memory"),
         "shared-memory must not appear in list_channels"
@@ -2714,7 +2714,7 @@ async fn test_create_team_endpoint() {
         .unwrap();
     let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
 
-    let ch = store.find_channel_by_name("eng-team").unwrap().unwrap();
+    let ch = store.get_channel_by_name("eng-team").unwrap().unwrap();
     assert_eq!(ch.channel_type, ChannelType::Team);
     assert_eq!(payload["team"]["channel_id"], ch.id);
 
@@ -2802,10 +2802,10 @@ async fn test_list_and_update_team_endpoints() {
     assert_eq!(updated.leader_agent_name, None);
 
     store
-        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
         .unwrap();
     store
-        .add_team_member(&team_id, "bot2", "agent", "bot2", "operator")
+        .create_team_member(&team_id, "bot2", "agent", "bot2", "operator")
         .unwrap();
 
     let leader_patch_body = serde_json::json!({
@@ -2851,7 +2851,7 @@ async fn test_list_channels_includes_team_without_human_membership() {
         .create_channel("qa-eng", None, ChannelType::Team)
         .unwrap();
     store
-        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
         .unwrap();
     store
         .join_channel("qa-eng", "bot1", SenderType::Agent)
@@ -2916,7 +2916,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .unwrap();
     assert_eq!(add_resp.status(), StatusCode::OK);
     assert_eq!(
-        store.list_teams_for_agent("bot1").unwrap()[0].team_name,
+        store.get_teams_by_agent_name("bot1").unwrap()[0].team_name,
         "eng-team"
     );
     assert!(dir
@@ -2940,7 +2940,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .await
         .unwrap();
     assert_eq!(remove_resp.status(), StatusCode::OK);
-    assert!(store.list_teams_for_agent("bot1").unwrap().is_empty());
+    assert!(store.get_teams_by_agent_name("bot1").unwrap().is_empty());
     assert_eq!(
         store
             .get_last_read_seq("eng-team", "bot1")
@@ -2961,7 +2961,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .unwrap();
     assert_eq!(delete_resp.status(), StatusCode::OK);
     assert!(store.get_team_by_id(&team_id).unwrap().is_none());
-    let listed = store.list_channels().unwrap();
+    let listed = store.get_channels().unwrap();
     assert!(listed.iter().all(|channel| channel.name != "eng-team"));
     assert!(!dir.path().join("teams").join("eng-team").exists());
     assert_eq!(lifecycle.started_names().len(), 2);
@@ -2989,10 +2989,10 @@ async fn test_at_mention_forwards_to_team_channel() {
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let bot2 = store.get_agent("bot2").unwrap().unwrap();
     store
-        .add_team_member(&team_id, "bot1", "agent", &bot1.id, "leader")
+        .create_team_member(&team_id, "bot1", "agent", &bot1.id, "leader")
         .unwrap();
     store
-        .add_team_member(&team_id, "bot2", "agent", &bot2.id, "operator")
+        .create_team_member(&team_id, "bot2", "agent", &bot2.id, "operator")
         .unwrap();
     store
         .join_channel("eng-team", "bot1", SenderType::Agent)
@@ -3043,7 +3043,7 @@ async fn test_at_mention_forwards_to_team_channel() {
         1
     );
 
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
     let delegation_event = events
         .iter()
         .find(|event| event.event_type == "team.delegation_requested")
@@ -3085,10 +3085,10 @@ async fn test_swarm_ready_signals_emit_consensus_system_message() {
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let bot2 = store.get_agent("bot2").unwrap().unwrap();
     store
-        .add_team_member(&team_id, "bot1", "agent", &bot1.id, "builder")
+        .create_team_member(&team_id, "bot1", "agent", &bot1.id, "builder")
         .unwrap();
     store
-        .add_team_member(&team_id, "bot2", "agent", &bot2.id, "reviewer")
+        .create_team_member(&team_id, "bot2", "agent", &bot2.id, "reviewer")
         .unwrap();
     store
         .join_channel("eng-team", "bot1", SenderType::Agent)
@@ -3143,7 +3143,7 @@ async fn test_swarm_ready_signals_emit_consensus_system_message() {
         "consensus system message should be posted"
     );
 
-    let events = store.list_events(None, 40).unwrap();
+    let events = store.get_events(None, 40).unwrap();
     let coordination_events: Vec<_> = events
         .iter()
         .filter(|event| event.stream_id == format!("team:{team_id}"))
@@ -3162,15 +3162,15 @@ async fn knowledge_tags_fts_token_boundary() {
     let (store, _app) = setup_knowledge();
 
     store
-        .remember("boundary test", "some value", "task-42", "bot1", None)
+        .create_knowledge_entry("boundary test", "some value", "task-42", "bot1", None)
         .unwrap();
 
     // Exact tag match must work.
-    let exact = store.recall(None, Some("task-42")).unwrap();
+    let exact = store.search_knowledge_entries(None, Some("task-42")).unwrap();
     assert_eq!(exact.len(), 1);
 
     // A different tag that is NOT a prefix/substring in the tags string must not match.
-    let no_match = store.recall(None, Some("task-4")).unwrap();
+    let no_match = store.search_knowledge_entries(None, Some("task-4")).unwrap();
     assert!(
         no_match.is_empty(),
         "partial tag 'task-4' should not match 'task-42'"
@@ -3200,7 +3200,7 @@ async fn test_shell_mutations_emit_workspace_structural_events() {
         .unwrap();
     assert_eq!(create_channel_resp.status(), StatusCode::OK);
 
-    let channel_id = store.find_channel_by_name("ops-room").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("ops-room").unwrap().unwrap().id;
     let archive_channel_resp = app
         .clone()
         .oneshot(
@@ -3263,7 +3263,7 @@ async fn test_shell_mutations_emit_workspace_structural_events() {
     assert_eq!(update_agent_resp.status(), StatusCode::OK);
 
     let workspace_events: Vec<_> = store
-        .list_events(None, 200)
+        .get_events(None, 200)
         .unwrap()
         .into_iter()
         .filter(|event| event.stream_id == "workspace:default")

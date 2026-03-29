@@ -61,7 +61,7 @@ fn load_channel_by_id(
 ) -> Result<Channel, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
     state
         .store
-        .find_channel_by_id(conversation_id)
+        .get_channel_by_id(conversation_id)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))
 }
@@ -83,7 +83,7 @@ pub async fn handle_list_tasks(
         .and_then(TaskStatus::from_status_str);
     let tasks = state
         .store
-        .list_tasks(channel_name, status_filter)
+        .get_tasks(channel_name, status_filter)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
@@ -110,7 +110,7 @@ pub async fn handle_claim_tasks(
     let channel_name = strip_channel_prefix(&req.channel);
     let results = state
         .store
-        .claim_tasks(channel_name, &agent_id, &req.task_numbers)
+        .update_tasks_claim(channel_name, &agent_id, &req.task_numbers)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "results": results })))
 }
@@ -123,7 +123,7 @@ pub async fn handle_unclaim_task(
     let channel_name = strip_channel_prefix(&req.channel);
     state
         .store
-        .unclaim_task(channel_name, &agent_id, req.task_number)
+        .update_task_unclaim(channel_name, &agent_id, req.task_number)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -155,7 +155,7 @@ pub async fn handle_public_list_tasks(
         .and_then(TaskStatus::from_status_str);
     let tasks = state
         .store
-        .list_tasks(&channel.name, status_filter)
+        .get_tasks(&channel.name, status_filter)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
@@ -184,7 +184,7 @@ pub async fn handle_public_claim_tasks(
     let channel = load_channel_by_id(&state, &conversation_id)?;
     let results = state
         .store
-        .claim_tasks(&channel.name, &actor_id, &req.task_numbers)
+        .update_tasks_claim(&channel.name, &actor_id, &req.task_numbers)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "results": results })))
 }
@@ -198,7 +198,7 @@ pub async fn handle_public_unclaim_task(
     let channel = load_channel_by_id(&state, &conversation_id)?;
     state
         .store
-        .unclaim_task(&channel.name, &actor_id, req.task_number)
+        .update_task_unclaim(&channel.name, &actor_id, req.task_number)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

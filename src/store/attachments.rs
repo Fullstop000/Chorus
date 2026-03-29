@@ -23,7 +23,7 @@ pub struct Attachment {
 }
 
 impl Store {
-    pub fn store_attachment(
+    pub fn create_attachment(
         &self,
         filename: &str,
         mime_type: &str,

@@ -12,8 +12,8 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.add_human("alice").unwrap();
-    store.add_human("zoe").unwrap();
+    store.create_human("alice").unwrap();
+    store.create_human("zoe").unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
@@ -50,10 +50,10 @@ async fn read_json_frame(
 #[tokio::test]
 async fn test_realtime_subscription_replays_matching_events_from_cursor() {
     let (base_url, store) = start_test_server().await;
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
 
     let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
@@ -93,7 +93,7 @@ async fn test_realtime_subscription_replays_matching_events_from_cursor() {
 #[tokio::test]
 async fn test_realtime_subscription_can_resume_from_stream_position() {
     let (base_url, store) = start_test_server().await;
-    let general_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let general_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     store
         .create_channel("random", Some("Random"), ChannelType::Channel)
         .unwrap();
@@ -102,7 +102,7 @@ async fn test_realtime_subscription_can_resume_from_stream_position() {
         .unwrap();
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -112,10 +112,10 @@ async fn test_realtime_subscription_can_resume_from_stream_position() {
         )
         .unwrap();
     store
-        .send_message("random", None, "alice", SenderType::Human, "random-1", &[])
+        .create_message("random", None, "alice", SenderType::Human, "random-1", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -169,7 +169,7 @@ async fn test_realtime_subscription_can_resume_from_stream_position() {
 #[tokio::test]
 async fn test_realtime_subscription_receives_live_events_after_subscribe() {
     let (base_url, store) = start_test_server().await;
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
         .await
@@ -192,7 +192,7 @@ async fn test_realtime_subscription_receives_live_events_after_subscribe() {
     assert_eq!(subscribed["type"], "subscribed");
 
     store
-        .send_message("general", None, "alice", SenderType::Human, "live", &[])
+        .create_message("general", None, "alice", SenderType::Human, "live", &[])
         .unwrap();
 
     let event = read_json_frame(&mut socket).await;
@@ -207,7 +207,7 @@ async fn test_realtime_subscription_receives_live_events_after_subscribe() {
 #[tokio::test]
 async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery() {
     let (base_url, store) = start_test_server().await;
-    let general_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let general_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     let random_id = store
         .create_channel("random", Some("Random"), ChannelType::Channel)
         .unwrap();
@@ -216,7 +216,7 @@ async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery
         .unwrap();
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -226,7 +226,7 @@ async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery
         )
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "random",
             None,
             "alice",
@@ -280,7 +280,7 @@ async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery
     assert_eq!(second_subscribed["streamId"], Value::Null);
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -307,7 +307,7 @@ async fn test_additive_subscribe_across_conversations_keeps_global_live_delivery
 #[tokio::test]
 async fn test_replace_subscribe_swaps_live_delivery_without_reconnecting() {
     let (base_url, store) = start_test_server().await;
-    let general_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let general_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     let random_id = store
         .create_channel("random", Some("Random"), ChannelType::Channel)
         .unwrap();
@@ -362,7 +362,7 @@ async fn test_replace_subscribe_swaps_live_delivery_without_reconnecting() {
     );
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -379,7 +379,7 @@ async fn test_replace_subscribe_swaps_live_delivery_without_reconnecting() {
     );
 
     store
-        .send_message(
+        .create_message(
             "random",
             None,
             "alice",
@@ -434,7 +434,7 @@ async fn test_realtime_subscription_rejects_forbidden_scope() {
 async fn test_thread_target_replays_only_thread_events() {
     let (base_url, store) = start_test_server().await;
     let parent_id = store
-        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
         .unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
@@ -443,7 +443,7 @@ async fn test_thread_target_replays_only_thread_events() {
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
     let reply_id = store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",
@@ -453,7 +453,7 @@ async fn test_thread_target_replays_only_thread_events() {
         )
         .unwrap();
     store
-        .send_message("general", None, "alice", SenderType::Human, "other", &[])
+        .create_message("general", None, "alice", SenderType::Human, "other", &[])
         .unwrap();
 
     let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
@@ -465,7 +465,7 @@ async fn test_thread_target_replays_only_thread_events() {
             serde_json::json!({
                 "type": "subscribe",
                 "resumeFrom": 0,
-                "streamId": format!("conversation:{}", store.find_channel_by_name("general").unwrap().unwrap().id),
+                "streamId": format!("conversation:{}", store.get_channel_by_name("general").unwrap().unwrap().id),
                 "resumeFromStreamPos": 0,
                 "targets": [format!("thread:{parent_id}")]
             })
@@ -527,7 +527,7 @@ async fn test_thread_reply_increments_parent_conversation_and_thread_unread_coun
     let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=zoe"))
         .await
         .unwrap();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     socket
         .send(Message::Text(
             serde_json::json!({
@@ -545,7 +545,7 @@ async fn test_thread_reply_increments_parent_conversation_and_thread_unread_coun
     assert_eq!(subscribed["type"], "subscribed");
 
     let parent_id = store
-        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
         .unwrap();
 
     let first_event = read_json_frame(&mut socket).await;
@@ -576,7 +576,7 @@ async fn test_thread_reply_increments_parent_conversation_and_thread_unread_coun
     assert_eq!(thread_subscribed["type"], "subscribed");
 
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",

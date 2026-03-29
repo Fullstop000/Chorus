@@ -312,7 +312,7 @@ impl Store {
         channel_name: &str,
         member_name: &str,
     ) -> Result<Option<InboxConversationStateView>> {
-        let channel = Self::find_channel_by_name_inner(conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         Self::get_inbox_conversation_state_by_channel_id_inner(conn, &channel.id, member_name)
     }
@@ -337,7 +337,7 @@ impl Store {
 
     pub fn get_last_read_seq(&self, channel_name: &str, member_name: &str) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let seq: i64 = conn.query_row(
             "SELECT last_read_seq
@@ -370,7 +370,7 @@ impl Store {
     }
 
     /// Load absolute conversation notification state for sidebar/bootstrap use.
-    pub fn list_inbox_conversation_notifications(
+    pub fn get_inbox_conversation_notifications(
         &self,
         member_name: &str,
     ) -> Result<Vec<InboxConversationNotificationView>> {
@@ -428,7 +428,7 @@ impl Store {
         member_name: &str,
     ) -> Result<Option<ThreadNotificationStateView>> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         Self::get_thread_notification_state_by_channel_id_inner(
             &conn,

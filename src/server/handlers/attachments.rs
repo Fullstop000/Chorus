@@ -36,7 +36,7 @@ async fn store_upload(state: AppState, mut multipart: Multipart) -> ApiResult<se
     let size = data.len() as i64;
     let att_id = state
         .store
-        .store_attachment(
+        .create_attachment(
             &filename,
             &content_type,
             size,

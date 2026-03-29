@@ -203,7 +203,7 @@ fn resolve_history_target(
     if channel_target.starts_with('#') || channel_target.starts_with("dm:@") {
         let (channel_id, thread_parent_id) = store.resolve_target(channel_target, agent_id)?;
         let channel = store
-            .find_channel_by_id(&channel_id)?
+            .get_channel_by_id(&channel_id)?
             .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel_target))?;
         return Ok((channel.name, thread_parent_id));
     }
@@ -229,7 +229,7 @@ fn load_channel_by_id(
     channel_id: &str,
 ) -> Result<Channel, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
     store
-        .find_channel_by_id(channel_id)
+        .get_channel_by_id(channel_id)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))
 }
@@ -369,7 +369,7 @@ async fn send_message_to_channel(
     info!(agent = %actor_id, target = %target_label, content = %preview, "send_message");
 
     let message_id = store
-        .send_message(
+        .create_message(
             &channel.name,
             thread_parent_id,
             actor_id,
@@ -406,7 +406,7 @@ async fn send_message_to_channel(
                 match store.record_swarm_signal(&team.id, actor_id, content) {
                     Ok(true) => {
                         let system_message_id = store
-                            .post_system_message(
+                            .create_system_message(
                                 &channel.id,
                                 "[System] All members ready - execution begins.",
                             )
@@ -485,11 +485,11 @@ async fn forward_team_mentions(
         let Some(team) = state.store.get_team(&mention)? else {
             continue;
         };
-        let Some(team_channel) = state.store.find_channel_by_name(&team.name)? else {
+        let Some(team_channel) = state.store.get_channel_by_name(&team.name)? else {
             continue;
         };
 
-        let forwarded_message_id = state.store.post_message_with_forwarded_from(
+        let forwarded_message_id = state.store.create_message_with_forwarded_from(
             &team_channel.id,
             sender_name,
             sender_type,
@@ -513,7 +513,7 @@ async fn forward_team_mentions(
             state
                 .store
                 .snapshot_swarm_quorum(&team.id, &forwarded_message_id)?;
-            state.store.post_system_message(&team_channel.id, &prompt)?;
+            state.store.create_system_message(&team_channel.id, &prompt)?;
             state
                 .store
                 .record_team_deliberation_requested(&team.id, &forwarded_message_id)?;
@@ -567,7 +567,7 @@ pub async fn handle_inbox(
 
     let conversations = state
         .store
-        .list_inbox_conversation_notifications(&agent_id)
+        .get_inbox_conversation_notifications(&agent_id)
         .map_err(|e| internal_err(e.to_string()))?;
     let latest_event_id = state
         .store
@@ -592,7 +592,7 @@ pub async fn handle_threads(
         .map_err(|e| api_err(e.to_string()))?;
     let channel = state
         .store
-        .find_channel_by_name(&channel_name)
+        .get_channel_by_name(&channel_name)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
     threads_for_channel(&state, &agent_id, &channel, channel_target)
@@ -677,7 +677,7 @@ pub async fn handle_history(
             .map_err(|e| api_err(e.to_string()))?;
     let limit = params.limit.unwrap_or(50);
     let channel = store
-        .find_channel_by_name(&channel_name)
+        .get_channel_by_name(&channel_name)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
     history_for_channel(
@@ -701,7 +701,7 @@ pub async fn handle_update_read_cursor(
     let (channel_name, thread_parent_id) = resolve_history_target(store, &agent_id, &req.target)
         .map_err(|e| api_err(e.to_string()))?;
     let channel = store
-        .find_channel_by_name(&channel_name)
+        .get_channel_by_name(&channel_name)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
     update_read_cursor_for_channel(
@@ -739,7 +739,7 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
 
     let conversations = state
         .store
-        .list_inbox_conversation_notifications(&actor_id)
+        .get_inbox_conversation_notifications(&actor_id)
         .map_err(|e| internal_err(e.to_string()))?;
     let latest_event_id = state
         .store

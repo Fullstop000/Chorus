@@ -159,7 +159,7 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
 pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<dto::HumanInfo>> {
     let humans = state
         .store
-        .list_humans()
+        .get_humans()
         .map_err(|e| api_err(e.to_string()))?
         .into_iter()
         .map(dto::HumanInfo::from)

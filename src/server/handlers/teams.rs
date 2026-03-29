@@ -120,7 +120,7 @@ async fn sync_team_roles_and_agents(
         if desired_role != member.role {
             state
                 .store
-                .set_team_member_role(&team.id, &member.member_name, &desired_role)
+                .update_team_member_role(&team.id, &member.member_name, &desired_role)
                 .map_err(|e| api_err(e.to_string()))?;
         }
 
@@ -208,7 +208,7 @@ pub async fn handle_create_team(
         );
         state
             .store
-            .add_team_member(
+            .create_team_member(
                 &team_id,
                 &member.member_name,
                 &member.member_type,
@@ -261,7 +261,7 @@ pub async fn handle_create_team(
 pub async fn handle_list_teams(State(state): State<AppState>) -> ApiResult<Vec<Team>> {
     let teams = state
         .store
-        .list_teams()
+        .get_teams()
         .map_err(|e| internal_err(e.to_string()))?;
     Ok(Json(teams))
 }
@@ -381,7 +381,7 @@ pub async fn handle_delete_team(
 
     if let Some(channel) = state
         .store
-        .find_channel_by_name(&name)
+        .get_channel_by_name(&name)
         .map_err(|e| internal_err(e.to_string()))?
     {
         state
@@ -436,7 +436,7 @@ pub async fn handle_add_team_member(
 
     state
         .store
-        .add_team_member(
+        .create_team_member(
             &team.id,
             &req.member_name,
             &req.member_type,
@@ -514,7 +514,7 @@ pub async fn handle_remove_team_member(
 
     state
         .store
-        .remove_team_member(&team.id, &member_name)
+        .delete_team_member(&team.id, &member_name)
         .map_err(|e| api_err(e.to_string()))?;
     state
         .store

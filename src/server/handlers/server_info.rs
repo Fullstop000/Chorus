@@ -12,7 +12,7 @@ pub fn channel_infos_for(
     store: &Store,
     params: &ChannelListParams<'_>,
 ) -> Result<Vec<ChannelInfo>> {
-    let channels = store.list_channels_for_params(params)?;
+    let channels = store.get_channels_by_params(params)?;
     let mut out = Vec::with_capacity(channels.len());
     for channel in channels {
         let joined = match params.for_member {
@@ -43,7 +43,7 @@ pub fn build_ui_shell_info(store: &Store) -> Result<UiShellInfo> {
     });
 
     let humans: Vec<HumanInfo> = store
-        .list_humans()?
+        .get_humans()?
         .into_iter()
         .map(HumanInfo::from)
         .collect();
@@ -63,7 +63,7 @@ pub fn build_server_info(store: &Store, for_agent: &str) -> Result<ServerInfo> {
             ..ChannelListParams::default()
         },
     )?;
-    let agents: Vec<AgentInfo> = store.list_agents()?.iter().map(AgentInfo::from).collect();
+    let agents: Vec<AgentInfo> = store.get_agents()?.iter().map(AgentInfo::from).collect();
     let shell = build_ui_shell_info(store)?;
     Ok(ServerInfo {
         channels,

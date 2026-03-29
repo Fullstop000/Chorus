@@ -7,7 +7,7 @@ use chorus::store::Store;
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.add_human("testuser").unwrap();
+    store.create_human("testuser").unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
@@ -37,7 +37,7 @@ async fn test_human_to_agent_message_flow() {
         .unwrap();
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "testuser",
@@ -135,7 +135,7 @@ async fn test_blocking_receive_wakes_on_message() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     store
-        .send_message(
+        .create_message(
             "general",
             None,
             "testuser",
@@ -438,10 +438,10 @@ async fn test_team_thread_target_round_trip_for_codex_agent() {
         .create_agent_record("bot1", "Bot 1", None, "codex", "gpt-5.4-mini", &[])
         .unwrap();
     store
-        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
         .unwrap();
     store
-        .add_team_member(&team_id, "testuser", "human", "testuser", "observer")
+        .create_team_member(&team_id, "testuser", "human", "testuser", "observer")
         .unwrap();
     store
         .join_channel("qa-eng", "bot1", SenderType::Agent)

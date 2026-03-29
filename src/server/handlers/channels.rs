@@ -82,7 +82,7 @@ pub(super) fn validate_channel_mutation(
 ) -> Result<Channel, (StatusCode, Json<super::ErrorResponse>)> {
     let channel = state
         .store
-        .find_channel_by_id(channel_id)
+        .get_channel_by_id(channel_id)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
     if channel.channel_type != ChannelType::Channel {
@@ -164,7 +164,7 @@ pub async fn handle_list_channel_members(
 ) -> ApiResult<ChannelMembersResponse> {
     let channel = state
         .store
-        .find_channel_by_id(&channel_id)
+        .get_channel_by_id(&channel_id)
         .map_err(|e| api_err(e.to_string()))?
         .ok_or_else(|| api_err("channel not found"))?;
     if channel.channel_type == ChannelType::Dm {
@@ -257,7 +257,7 @@ pub async fn handle_update_channel(
     if name != channel.name
         && state
             .store
-            .find_channel_by_name(&name)
+            .get_channel_by_name(&name)
             .map_err(|e| api_err(e.to_string()))?
             .is_some()
     {

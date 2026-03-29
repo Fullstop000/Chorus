@@ -317,7 +317,7 @@ async fn replay_matching_events(
             let mut cursor = *event_id;
             loop {
                 let events =
-                    store.list_events(if cursor > 0 { Some(cursor) } else { None }, 200)?;
+                    store.get_events(if cursor > 0 { Some(cursor) } else { None }, 200)?;
                 if events.is_empty() {
                     break;
                 }
@@ -336,7 +336,7 @@ async fn replay_matching_events(
                     }
                 }
 
-                if store.list_events(Some(cursor), 1)?.is_empty() {
+                if store.get_events(Some(cursor), 1)?.is_empty() {
                     break;
                 }
             }
@@ -350,7 +350,7 @@ async fn replay_matching_events(
             let mut cursor = *stream_pos;
             let mut latest_event_id = *fallback_event_id;
             loop {
-                let events = store.list_events_for_stream(
+                let events = store.get_events_by_stream(
                     stream_id,
                     if cursor > 0 { Some(cursor) } else { None },
                     200,
@@ -375,7 +375,7 @@ async fn replay_matching_events(
                 }
 
                 if store
-                    .list_events_for_stream(stream_id, Some(cursor), 1)?
+                    .get_events_by_stream(stream_id, Some(cursor), 1)?
                     .is_empty()
                 {
                     break;

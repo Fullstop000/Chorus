@@ -325,7 +325,7 @@ impl Store {
 
     /// Insert a message row directly by channel id, optionally attaching
     /// provenance metadata for forwarded copies.
-    pub fn post_message_with_forwarded_from(
+    pub fn create_message_with_forwarded_from(
         &self,
         channel_id: &str,
         sender_name: &str,
@@ -336,7 +336,7 @@ impl Store {
     ) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let channel = Self::find_channel_by_id_inner(&tx, channel_id)?
+        let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
             .ok_or_else(|| anyhow!("channel not found by id"))?;
         let inserted = Self::insert_message_tx(
             &tx,
@@ -367,10 +367,10 @@ impl Store {
     }
 
     /// Post a server-authored message into a channel.
-    pub fn post_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
+    pub fn create_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let channel = Self::find_channel_by_id_inner(&tx, channel_id)?
+        let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
             .ok_or_else(|| anyhow!("channel not found by id"))?;
         let inserted = Self::insert_message_tx(
             &tx,
@@ -401,7 +401,7 @@ impl Store {
         Ok(inserted.id)
     }
 
-    pub fn send_message(
+    pub fn create_message(
         &self,
         channel_name: &str,
         thread_parent_id: Option<&str>,
@@ -412,7 +412,7 @@ impl Store {
     ) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let channel = Self::find_channel_by_name_inner(&tx, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&tx, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let sender_was_participant_before = match thread_parent_id {
             Some(parent_id) => {

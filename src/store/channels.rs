@@ -125,7 +125,7 @@ impl Store {
         types
     }
 
-    fn list_channels_inner(
+    fn get_channels_inner(
         conn: &Connection,
         params: &ChannelListParams<'_>,
     ) -> Result<Vec<Channel>> {
@@ -175,10 +175,9 @@ impl Store {
         Ok(id)
     }
 
-    pub fn list_channels(&self) -> Result<Vec<Channel>> {
+    pub fn get_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
-        // Exclude DM and system channels — return user-visible and team channels.
-        Self::list_channels_inner(
+        Self::get_channels_inner(
             &conn,
             &ChannelListParams {
                 include_team: true,
@@ -188,9 +187,9 @@ impl Store {
     }
 
     /// Return channel rows matching the filter list (archived, DM, system, team).
-    pub fn list_channels_for_params(&self, params: &ChannelListParams<'_>) -> Result<Vec<Channel>> {
+    pub fn get_channels_by_params(&self, params: &ChannelListParams<'_>) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
-        Self::list_channels_inner(&conn, params)
+        Self::get_channels_inner(&conn, params)
     }
 
     pub fn channel_member_exists(&self, channel_id: &str, member_name: &str) -> Result<bool> {
@@ -209,7 +208,7 @@ impl Store {
     /// Channels that newly created agents should join automatically. User-created
     /// channels stay invite-only; only writable built-in system rooms such as
     /// `#all` are auto-joined.
-    pub fn list_auto_join_channels(&self) -> Result<Vec<Channel>> {
+    pub fn get_auto_join_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, name, description, channel_type, created_at
@@ -233,7 +232,7 @@ impl Store {
         description: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
+        let channel = Self::get_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
         if !matches!(
             channel.channel_type,
@@ -253,7 +252,7 @@ impl Store {
     /// it from normal navigation while retaining auditability.
     pub fn archive_channel(&self, channel_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
+        let channel = Self::get_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
         if !matches!(
             channel.channel_type,
@@ -273,7 +272,7 @@ impl Store {
     /// data does not currently use foreign-key cascades, so cleanup is explicit.
     pub fn delete_channel(&self, channel_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
+        let channel = Self::get_channel_by_id_inner(&conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
         if channel.channel_type == ChannelType::Team {
             return Err(anyhow!(
@@ -332,12 +331,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn find_channel_by_name(&self, name: &str) -> Result<Option<Channel>> {
+    pub fn get_channel_by_name(&self, name: &str) -> Result<Option<Channel>> {
         let conn = self.conn.lock().unwrap();
-        Self::find_channel_by_name_inner(&conn, name)
+        Self::get_channel_by_name_inner(&conn, name)
     }
 
-    pub(crate) fn find_channel_by_name_inner(
+    pub(crate) fn get_channel_by_name_inner(
         conn: &Connection,
         name: &str,
     ) -> Result<Option<Channel>> {
@@ -348,12 +347,12 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
-    pub fn find_channel_by_id(&self, id: &str) -> Result<Option<Channel>> {
+    pub fn get_channel_by_id(&self, id: &str) -> Result<Option<Channel>> {
         let conn = self.conn.lock().unwrap();
-        Self::find_channel_by_id_inner(&conn, id)
+        Self::get_channel_by_id_inner(&conn, id)
     }
 
-    pub(crate) fn find_channel_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Channel>> {
+    pub(crate) fn get_channel_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Channel>> {
         let mut stmt = conn.prepare(
             "SELECT id, name, description, channel_type, created_at FROM channels WHERE id = ?1",
         )?;
@@ -368,7 +367,7 @@ impl Store {
         member_type: SenderType,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let mt = member_type.as_str();
         conn.execute(
@@ -447,7 +446,7 @@ impl Store {
 
     pub fn is_member(&self, channel_name: &str, member_name: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?;
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?;
         match channel {
             None => Ok(false),
             Some(ch) => {
@@ -473,7 +472,7 @@ impl Store {
     pub fn ensure_builtin_channels(&self, default_human: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let all_id = if let Some(existing) =
-            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
         {
             conn.execute(
                 "UPDATE channels
@@ -482,7 +481,7 @@ impl Store {
                 params![Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION, existing.id],
             )?;
             existing.id
-        } else if let Some(legacy) = Self::find_channel_by_name_inner(&conn, "general")? {
+        } else if let Some(legacy) = Self::get_channel_by_name_inner(&conn, "general")? {
             conn.execute(
                 "UPDATE channels
                  SET name = ?1, description = ?2, channel_type = 'system', archived = 0

@@ -35,7 +35,7 @@ impl Store {
         let mut last_event_id = None;
 
         for (channel_id, member_type, last_read_seq) in &memberships {
-            let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
+            let channel = Self::get_channel_by_id_inner(&conn, channel_id)?
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
             let thread_last_read: std::collections::BTreeMap<String, i64> = conn
                 .prepare(

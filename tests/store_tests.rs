@@ -44,10 +44,10 @@ fn test_add_and_list_team_members() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .create_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
         .unwrap();
     store
-        .add_team_member(&team_id, "bob", "human", "bob", "observer")
+        .create_team_member(&team_id, "bob", "human", "bob", "observer")
         .unwrap();
     let members = store.get_team_members(&team_id).unwrap();
     assert_eq!(members.len(), 2);
@@ -58,9 +58,9 @@ fn test_list_teams_for_agent() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .create_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
         .unwrap();
-    let teams = store.list_teams_for_agent("alice").unwrap();
+    let teams = store.get_teams_by_agent_name("alice").unwrap();
     assert_eq!(teams.len(), 1);
     assert_eq!(teams[0].team_name, "eng-team");
 }
@@ -70,7 +70,7 @@ fn test_delete_team_cascades() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "uuid-1", "operator")
+        .create_team_member(&team_id, "alice", "agent", "uuid-1", "operator")
         .unwrap();
     store.delete_team(&team_id).unwrap();
     assert!(store.get_team("eng-team").unwrap().is_none());
@@ -102,7 +102,7 @@ fn test_create_and_list_channels() {
     store
         .create_channel("random", None, ChannelType::Channel)
         .unwrap();
-    let channels = store.list_channels().unwrap();
+    let channels = store.get_channels().unwrap();
     assert_eq!(channels.len(), 2);
     assert_eq!(channels[0].name, "general");
 }
@@ -113,13 +113,13 @@ fn test_send_and_receive_messages() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     let msg_id = store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
     assert!(!msg_id.is_empty());
 
@@ -134,7 +134,7 @@ fn test_send_and_receive_messages() {
         .unwrap();
 
     let _msg_id2 = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -153,12 +153,12 @@ fn test_agent_does_not_receive_its_own_sent_message() {
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     let (dm_channel_id, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
-    let dm_channel = store.find_channel_by_id(&dm_channel_id).unwrap().unwrap();
+    let dm_channel = store.get_channel_by_id(&dm_channel_id).unwrap().unwrap();
 
     store
-        .send_message(
+        .create_message(
             &dm_channel.name,
             None,
             "bot1",
@@ -184,14 +184,14 @@ fn test_message_history_pagination() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     for i in 0..10 {
         store
-            .send_message(
+            .create_message(
                 "general",
                 None,
                 "alice",
@@ -219,16 +219,16 @@ fn test_history_snapshot_returns_messages_and_event_cursor_together() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     store
-        .send_message("general", None, "alice", SenderType::Human, "one", &[])
+        .create_message("general", None, "alice", SenderType::Human, "one", &[])
         .unwrap();
     store
-        .send_message("general", None, "alice", SenderType::Human, "two", &[])
+        .create_message("general", None, "alice", SenderType::Human, "two", &[])
         .unwrap();
 
     let snapshot = store
@@ -249,7 +249,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -261,10 +261,10 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         .unwrap();
 
     let first_top_level = store
-        .send_message("general", None, "alice", SenderType::Human, "one", &[])
+        .create_message("general", None, "alice", SenderType::Human, "one", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&first_top_level),
             "alice",
@@ -274,7 +274,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         )
         .unwrap();
     let second_top_level = store
-        .send_message("general", None, "alice", SenderType::Human, "two", &[])
+        .create_message("general", None, "alice", SenderType::Human, "two", &[])
         .unwrap();
 
     let state_before = store
@@ -315,7 +315,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     let unread = store.get_messages_for_agent("bot1", true).unwrap();
     assert_eq!(unread.len(), 2);
 
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
     let read_cursor_event = events
         .iter()
         .find(|event| event.event_type == "conversation.read_cursor_set")
@@ -375,7 +375,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -387,10 +387,10 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         .unwrap();
 
     store
-        .send_message("general", None, "alice", SenderType::Human, "one", &[])
+        .create_message("general", None, "alice", SenderType::Human, "one", &[])
         .unwrap();
     store
-        .send_message("general", None, "alice", SenderType::Human, "two", &[])
+        .create_message("general", None, "alice", SenderType::Human, "two", &[])
         .unwrap();
 
     let unread_before = store.get_unread_summary("bot1").unwrap();
@@ -419,7 +419,7 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -431,10 +431,10 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
         .unwrap();
 
     let parent_id = store
-        .send_message("general", None, "bot1", SenderType::Agent, "parent", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "parent", &[])
         .unwrap();
     let reply_id = store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",
@@ -476,7 +476,7 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
         .unwrap();
     assert_eq!(thread_snapshot.last_read_seq, 2);
 
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
     let thread_read_event = events
         .iter()
         .find(|event| event.event_type == "thread.read_cursor_set")
@@ -511,15 +511,15 @@ fn test_conversation_messages_view_projects_message_rows() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     let message_id = store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
-    let channel = store.find_channel_by_name("general").unwrap().unwrap();
+    let channel = store.get_channel_by_name("general").unwrap().unwrap();
 
     let conn = store.conn_for_test();
     let row = conn
@@ -564,16 +564,16 @@ fn test_conversation_message_view_matches_history_projection() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     let parent_id = store
-        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "alice",
@@ -619,7 +619,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -631,10 +631,10 @@ fn test_thread_summaries_view_projects_thread_metadata() {
         .unwrap();
 
     let parent_id = store
-        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "alice",
@@ -644,7 +644,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
         )
         .unwrap();
     let last_reply_id = store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",
@@ -653,7 +653,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
             &[],
         )
         .unwrap();
-    let channel = store.find_channel_by_name("general").unwrap().unwrap();
+    let channel = store.get_channel_by_name("general").unwrap().unwrap();
 
     let conn = store.conn_for_test();
     let row = conn
@@ -690,16 +690,16 @@ fn test_thread_summary_projection_matches_history_and_thread_events() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     let parent_id = store
-        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
         .unwrap();
     let last_reply_id = store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "alice",
@@ -713,7 +713,7 @@ fn test_thread_summary_projection_matches_history_and_thread_events() {
     let snapshot = store
         .get_history_snapshot("general", "alice", None, 10, None, None)
         .unwrap();
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
 
     assert_eq!(summary.parent_message_id, parent_id);
     assert_eq!(summary.reply_count, 1);
@@ -818,7 +818,7 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
-        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
         .unwrap();
 
     store.mark_agent_messages_deleted("bot1").unwrap();
@@ -840,17 +840,17 @@ fn test_send_message_emits_conversation_state_event() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     let message_id = store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
-    let channel_id = store.find_channel_by_name("general").unwrap().unwrap().id;
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].event_type, "conversation.state");
     assert_eq!(events[0].scope_kind, "channel");
@@ -880,7 +880,7 @@ fn test_thread_reply_emits_conversation_and_thread_state_events() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -892,10 +892,10 @@ fn test_thread_reply_emits_conversation_and_thread_state_events() {
         .unwrap();
 
     let parent_id = store
-        .send_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
         .unwrap();
     let reply_id = store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",
@@ -905,7 +905,7 @@ fn test_thread_reply_emits_conversation_and_thread_state_events() {
         )
         .unwrap();
 
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
     let event_types: Vec<_> = events
         .iter()
         .map(|event| event.event_type.as_str())
@@ -985,7 +985,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -997,7 +997,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
         .unwrap();
 
     let oldest_unread_parent = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -1007,7 +1007,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
         )
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&oldest_unread_parent),
             "bot1",
@@ -1018,7 +1018,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
         .unwrap();
 
     let newest_read_parent = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -1028,7 +1028,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
         )
         .unwrap();
     let _newest_read_reply = store
-        .send_message(
+        .create_message(
             "general",
             Some(&newest_read_parent),
             "bot1",
@@ -1048,7 +1048,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
         .unwrap();
 
     let newest_unread_parent = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -1058,7 +1058,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
         )
         .unwrap();
     let _newest_unread_reply = store
-        .send_message(
+        .create_message(
             "general",
             Some(&newest_unread_parent),
             "bot1",
@@ -1101,12 +1101,12 @@ fn test_mark_agent_messages_deleted_emits_tombstone_events() {
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     let message_id = store
-        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
         .unwrap();
 
     store.mark_agent_messages_deleted("bot1").unwrap();
 
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
     let tombstone_event = events
         .iter()
         .find(|event| event.event_type == "message.tombstone_changed")
@@ -1138,7 +1138,7 @@ fn test_tasks_crud() {
     assert_eq!(tasks[0].task_number, 1);
     assert_eq!(tasks[1].task_number, 2);
 
-    let listed = store.list_tasks("eng", None).unwrap();
+    let listed = store.get_tasks("eng", None).unwrap();
     assert_eq!(listed.len(), 2);
 }
 
@@ -1155,12 +1155,12 @@ fn test_tasks_crud_does_not_append_durable_stream_events() {
     store
         .create_tasks("eng", "bot1", &["Freeze boundary"])
         .unwrap();
-    store.claim_tasks("eng", "bot1", &[1]).unwrap();
+    store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
     store
         .update_task_status("eng", 1, "bot1", TaskStatus::Done)
         .unwrap();
 
-    let events = store.list_events(None, 20).unwrap();
+    let events = store.get_events(None, 20).unwrap();
     assert!(
         events.is_empty(),
         "tasks should remain outside the canonical messaging stream runtime"
@@ -1181,16 +1181,16 @@ fn test_task_claim_and_status() {
         .unwrap();
     store.create_tasks("eng", "bot1", &["Task A"]).unwrap();
 
-    let results = store.claim_tasks("eng", "bot1", &[1]).unwrap();
+    let results = store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
     assert!(results[0].success);
 
-    let results = store.claim_tasks("eng", "bot2", &[1]).unwrap();
+    let results = store.update_tasks_claim("eng", "bot2", &[1]).unwrap();
     assert!(!results[0].success);
 
     store
         .update_task_status("eng", 1, "bot1", TaskStatus::InReview)
         .unwrap();
-    let tasks = store.list_tasks("eng", Some(TaskStatus::InReview)).unwrap();
+    let tasks = store.get_tasks("eng", Some(TaskStatus::InReview)).unwrap();
     assert_eq!(tasks.len(), 1);
 }
 
@@ -1200,7 +1200,7 @@ fn test_resolve_target() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -1219,14 +1219,14 @@ fn test_list_channels_excludes_dm() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     // Create a DM channel via resolve_target
     store.resolve_target("dm:@alice", "bot1").unwrap();
 
-    let channels = store.list_channels().unwrap();
+    let channels = store.get_channels().unwrap();
     assert_eq!(
         channels.len(),
         1,
@@ -1241,7 +1241,7 @@ fn test_dm_only_has_two_members() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -1277,7 +1277,7 @@ fn test_dm_only_has_two_members() {
 #[test]
 fn test_dm_channels() {
     let (store, _dir) = make_store();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -1293,7 +1293,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1311,7 +1311,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
         .unwrap();
 
     let parent_id = store
-        .send_message(
+        .create_message(
             "general",
             None,
             "alice",
@@ -1329,7 +1329,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
     );
 
     store
-        .send_message(
+        .create_message(
             "general",
             Some(&parent_id),
             "bot1",
@@ -1365,11 +1365,11 @@ fn test_update_channel_preserves_id_and_metadata() {
         .update_channel(&channel_id, "engineering", Some("Engineering"))
         .unwrap();
 
-    let renamed = store.find_channel_by_name("engineering").unwrap().unwrap();
+    let renamed = store.get_channel_by_name("engineering").unwrap().unwrap();
     assert_eq!(renamed.id, channel_id);
     assert_eq!(renamed.description.as_deref(), Some("Engineering"));
     assert!(
-        store.find_channel_by_name("general").unwrap().is_none(),
+        store.get_channel_by_name("general").unwrap().is_none(),
         "old name should no longer resolve after rename"
     );
 
@@ -1390,7 +1390,7 @@ fn test_archive_channel_hides_it_from_active_listings() {
     let channel_id = store
         .create_channel("general", Some("General channel"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1398,11 +1398,11 @@ fn test_archive_channel_hides_it_from_active_listings() {
     store.archive_channel(&channel_id).unwrap();
 
     assert!(
-        store.find_channel_by_id(&channel_id).unwrap().is_some(),
+        store.get_channel_by_id(&channel_id).unwrap().is_some(),
         "archive should preserve the underlying channel row"
     );
     assert!(
-        store.list_channels().unwrap().is_empty(),
+        store.get_channels().unwrap().is_empty(),
         "archived channels must be hidden from active channel listings"
     );
     assert!(
@@ -1420,21 +1420,21 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
     store
         .create_channel("general", Some("General channel"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
-    let original = store.find_channel_by_name("general").unwrap().unwrap();
+    let original = store.get_channel_by_name("general").unwrap().unwrap();
 
     store.ensure_builtin_channels("alice").unwrap();
 
     assert!(
-        store.find_channel_by_name("general").unwrap().is_none(),
+        store.get_channel_by_name("general").unwrap().is_none(),
         "startup migration should rename #general to #all"
     );
 
-    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let all = store.get_channel_by_name("all").unwrap().unwrap();
     assert_eq!(all.id, original.id);
     assert_eq!(all.channel_type, ChannelType::System);
     assert_eq!(
@@ -1469,8 +1469,8 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
 #[test]
 fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
     let (store, _dir) = make_store();
-    store.add_human("alice").unwrap();
-    store.add_human("zoe").unwrap();
+    store.create_human("alice").unwrap();
+    store.create_human("zoe").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -1480,7 +1480,7 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
 
     store.ensure_builtin_channels("alice").unwrap();
 
-    let all = store.find_channel_by_name("all").unwrap().unwrap();
+    let all = store.get_channel_by_name("all").unwrap().unwrap();
     let members = store.get_channel_members(&all.id).unwrap();
     let names: Vec<_> = members
         .iter()
@@ -1495,10 +1495,10 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
 #[test]
 fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
     let (store, _dir) = make_store();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store.ensure_builtin_channels("alice").unwrap();
 
-    store.add_human("zoe").unwrap();
+    store.create_human("zoe").unwrap();
     store
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
@@ -1514,7 +1514,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
     let channel_id = store
         .create_channel("eng", Some("Engineering"), ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
@@ -1526,10 +1526,10 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
         .unwrap();
 
     let parent_id = store
-        .send_message("eng", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("eng", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
     store
-        .send_message(
+        .create_message(
             "eng",
             Some(&parent_id),
             "bot1",
@@ -1543,7 +1543,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
     store.delete_channel(&channel_id).unwrap();
 
     assert!(
-        store.find_channel_by_id(&channel_id).unwrap().is_none(),
+        store.get_channel_by_id(&channel_id).unwrap().is_none(),
         "channel row should be removed after hard delete"
     );
     let conn = Connection::open(dir.path().join("test.db")).unwrap();
@@ -1599,10 +1599,10 @@ fn test_record_swarm_signal_ignores_non_quorum_agent() {
         .create_team("qa-swarm", "QA Swarm", "swarm", None)
         .unwrap();
     store
-        .add_team_member(&team_id, "alice", "agent", "uuid-alice", "member")
+        .create_team_member(&team_id, "alice", "agent", "uuid-alice", "member")
         .unwrap();
     store
-        .add_team_member(&team_id, "bob", "agent", "uuid-bob", "member")
+        .create_team_member(&team_id, "bob", "agent", "uuid-bob", "member")
         .unwrap();
     // Snapshot quorum — only alice and bob are captured.
     store.snapshot_swarm_quorum(&team_id, &trigger_id).unwrap();

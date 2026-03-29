@@ -12,7 +12,7 @@ impl Store {
         member_name: &str,
     ) -> Result<ChannelThreadInbox> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let mut threads = Vec::new();
 

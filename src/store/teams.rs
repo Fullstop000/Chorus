@@ -196,7 +196,7 @@ impl Store {
     }
 
     /// List all teams ordered by name.
-    pub fn list_teams(&self) -> Result<Vec<Team>> {
+    pub fn get_teams(&self) -> Result<Vec<Team>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
@@ -240,7 +240,7 @@ impl Store {
     }
 
     /// Add a member to a team. Silently no-ops if the (team_id, member_name) pair already exists.
-    pub fn add_team_member(
+    pub fn create_team_member(
         &self,
         team_id: &str,
         member_name: &str,
@@ -258,7 +258,7 @@ impl Store {
     }
 
     /// Remove a single member from a team.
-    pub fn remove_team_member(&self, team_id: &str, member_name: &str) -> Result<()> {
+    pub fn delete_team_member(&self, team_id: &str, member_name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM team_members WHERE team_id = ?1 AND member_name = ?2",
@@ -268,7 +268,7 @@ impl Store {
     }
 
     /// Update a single member role within a team.
-    pub fn set_team_member_role(&self, team_id: &str, member_name: &str, role: &str) -> Result<()> {
+    pub fn update_team_member_role(&self, team_id: &str, member_name: &str, role: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE team_members SET role = ?1 WHERE team_id = ?2 AND member_name = ?3",
@@ -281,7 +281,7 @@ impl Store {
     /// so their channel membership is cleaned up alongside the team membership.
     pub fn leave_channel(&self, channel_name: &str, member_name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        if let Some(ch) = Self::find_channel_by_name_inner(&conn, channel_name)? {
+        if let Some(ch) = Self::get_channel_by_name_inner(&conn, channel_name)? {
             conn.execute(
                 "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
                 params![ch.id, member_name],
@@ -314,7 +314,7 @@ impl Store {
     }
 
     /// List all teams an agent belongs to, along with their role in each team.
-    pub fn list_teams_for_agent(&self, agent_name: &str) -> Result<Vec<TeamMembership>> {
+    pub fn get_teams_by_agent_name(&self, agent_name: &str) -> Result<Vec<TeamMembership>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(

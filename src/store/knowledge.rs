@@ -69,7 +69,7 @@ pub struct RecallResponse {
 impl Store {
     /// Write a new knowledge entry and return its ID.
     /// Caller is responsible for also posting the breadcrumb message to #shared-memory.
-    pub fn remember(
+    pub fn create_knowledge_entry(
         &self,
         key: &str,
         value: &str,
@@ -93,7 +93,7 @@ impl Store {
     /// - `tags`: optional space-separated tag filter (each tag must appear in the entry's tags field)
     ///
     /// Returns up to 20 results ordered by recency.
-    pub fn recall(&self, query: Option<&str>, tags: Option<&str>) -> Result<Vec<KnowledgeEntry>> {
+    pub fn search_knowledge_entries(&self, query: Option<&str>, tags: Option<&str>) -> Result<Vec<KnowledgeEntry>> {
         let conn = self.conn.lock().unwrap();
 
         // Build the SQL dynamically based on which filters are provided.

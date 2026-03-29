@@ -104,7 +104,7 @@ impl AgentManager {
             env_vars: agent.env_vars.clone(),
             teams: self
                 .store
-                .list_teams_for_agent(agent_name)
+                .get_teams_by_agent_name(agent_name)
                 .unwrap_or_default(),
         };
 

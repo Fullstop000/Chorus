@@ -20,7 +20,7 @@ pub async fn handle_remember(
     let tags = req.tags.join(" ");
 
     let id = store
-        .remember(
+        .create_knowledge_entry(
             &req.key,
             &req.value,
             &tags,
@@ -38,7 +38,7 @@ pub async fn handle_remember(
     } else {
         format!("[🧠 @{}] {} [{}]: {}", agent_id, req.key, tags, req.value)
     };
-    let _ = store.send_message(
+    let _ = store.create_message(
         "shared-memory",
         None,
         &agent_id,
@@ -58,7 +58,7 @@ pub async fn handle_recall(
 ) -> ApiResult<RecallResponse> {
     let entries = state
         .store
-        .recall(q.query.as_deref(), q.tags.as_deref())
+        .search_knowledge_entries(q.query.as_deref(), q.tags.as_deref())
         .map_err(|e| internal_err(e.to_string()))?;
 
     debug!(agent = %agent_id, query = ?q.query, count = entries.len(), "knowledge recall");

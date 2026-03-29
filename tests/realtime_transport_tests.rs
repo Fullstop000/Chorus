@@ -51,13 +51,13 @@ fn test_event_to_json_value_uses_conversation_state_without_message_body() {
     store
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
-    store.add_human("alice").unwrap();
+    store.create_human("alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
 
     let message_id = store
-        .send_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
 
     {
@@ -75,7 +75,7 @@ fn test_event_to_json_value_uses_conversation_state_without_message_body() {
         .unwrap();
     }
 
-    let event = store.list_events(None, 1).unwrap().remove(0);
+    let event = store.get_events(None, 1).unwrap().remove(0);
     let value = event_to_json_value(&store, &event);
 
     assert_eq!(value["eventType"], "conversation.state");

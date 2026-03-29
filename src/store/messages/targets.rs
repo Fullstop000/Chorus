@@ -25,7 +25,7 @@ impl Store {
             names.sort();
             let dm_name = format!("dm-{}-{}", names[0], names[1]);
 
-            let channel = match Self::find_channel_by_name_inner(&conn, &dm_name)? {
+            let channel = match Self::get_channel_by_name_inner(&conn, &dm_name)? {
                 Some(ch) => ch,
                 None => {
                     let id = Uuid::new_v4().to_string();
@@ -72,7 +72,7 @@ impl Store {
             let channel_name = parts[0];
             let thread_short = parts.get(1).copied();
 
-            let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+            let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
                 .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
             let thread_parent_id = thread_short.and_then(|short| {

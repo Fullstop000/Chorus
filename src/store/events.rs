@@ -158,23 +158,23 @@ impl Store {
 
     /// List persisted events ordered by global cursor, optionally starting after
     /// a previously-seen cursor.
-    pub fn list_events(&self, after_event_id: Option<i64>, limit: i64) -> Result<Vec<StoredEvent>> {
+    pub fn get_events(&self, after_event_id: Option<i64>, limit: i64) -> Result<Vec<StoredEvent>> {
         let conn = self.conn.lock().unwrap();
-        Self::list_events_inner(&conn, after_event_id, limit)
+        Self::get_events_inner(&conn, after_event_id, limit)
     }
 
     /// List persisted events for a single stream ordered by stream position.
-    pub fn list_events_for_stream(
+    pub fn get_events_by_stream(
         &self,
         stream_id: &str,
         after_stream_pos: Option<i64>,
         limit: i64,
     ) -> Result<Vec<StoredEvent>> {
         let conn = self.conn.lock().unwrap();
-        Self::list_events_for_stream_inner(&conn, stream_id, after_stream_pos, limit)
+        Self::get_events_by_stream_inner(&conn, stream_id, after_stream_pos, limit)
     }
 
-    fn list_events_inner(
+    fn get_events_inner(
         conn: &Connection,
         after_event_id: Option<i64>,
         limit: i64,
@@ -207,7 +207,7 @@ impl Store {
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
-    fn list_events_for_stream_inner(
+    fn get_events_by_stream_inner(
         conn: &Connection,
         stream_id: &str,
         after_stream_pos: Option<i64>,

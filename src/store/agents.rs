@@ -174,7 +174,7 @@ impl Store {
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
         if let Some(all_channel) =
-            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
         {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
@@ -195,7 +195,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_agents(&self) -> Result<Vec<Agent>> {
+    pub fn get_agents(&self) -> Result<Vec<Agent>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
@@ -294,7 +294,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
+    pub fn get_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
         let conn = self.conn.lock().unwrap();
         Self::list_agent_env_vars_inner(&conn, name)
     }
@@ -346,14 +346,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn add_human(&self, name: &str) -> Result<()> {
+    pub fn create_human(&self, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
             params![name],
         )?;
         if let Some(all_channel) =
-            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
         {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
@@ -364,7 +364,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_humans(&self) -> Result<Vec<Human>> {
+    pub fn get_humans(&self) -> Result<Vec<Human>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare("SELECT name, created_at FROM humans ORDER BY name")?

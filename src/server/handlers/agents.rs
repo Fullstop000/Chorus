@@ -171,7 +171,7 @@ pub(super) fn normalize_reasoning_effort(
 pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<AgentInfo>> {
     let mut agents: Vec<AgentInfo> = state
         .store
-        .list_agents()
+        .get_agents()
         .map_err(|e| api_err(e.to_string()))?
         .iter()
         .map(AgentInfo::from)
@@ -224,7 +224,7 @@ pub async fn handle_create_agent(
         .map_err(|e| api_err(e.to_string()))?;
     for channel in state
         .store
-        .list_auto_join_channels()
+        .get_auto_join_channels()
         .map_err(|e| internal_err(e.to_string()))?
     {
         let _ = state

@@ -52,7 +52,7 @@ impl Store {
             before,
             after,
         )?;
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let last_read_seq = if let Some(parent_id) = thread_parent_id {
             Self::get_thread_notification_state_by_channel_id_inner(
@@ -101,7 +101,7 @@ impl Store {
         before: Option<i64>,
         after: Option<i64>,
     ) -> Result<(Vec<ConversationMessageView>, bool)> {
-        let channel = Self::find_channel_by_name_inner(conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let fetch_limit = limit + 1;
