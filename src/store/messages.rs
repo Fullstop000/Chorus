@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -792,18 +792,32 @@ impl Store {
                 sender_was_participant_before,
             )?;
         }
-        // Treat the sender's own newly-created message as already read so it
-        // does not come back later through get_messages_for_agent() as unread.
-        Self::set_inbox_read_cursor_tx(
-            &tx,
-            &channel,
-            sender_name,
-            sender_type.as_str(),
-            inserted.seq,
-            Some(&inserted.id),
-            false,
-            "send_message",
-        )?;
+        // Treat the sender's own newly-created message as already read in the
+        // surface where it was composed so it does not come back later as unread.
+        if let Some(parent_id) = thread_parent_id {
+            Self::set_thread_read_cursor_tx(
+                &tx,
+                &channel,
+                parent_id,
+                sender_name,
+                sender_type.as_str(),
+                inserted.seq,
+                Some(&inserted.id),
+                false,
+                "send_message",
+            )?;
+        } else {
+            Self::set_inbox_read_cursor_tx(
+                &tx,
+                &channel,
+                sender_name,
+                sender_type.as_str(),
+                inserted.seq,
+                Some(&inserted.id),
+                false,
+                "send_message",
+            )?;
+        }
         tx.commit()?;
 
         let _ = self.msg_tx.send((channel.id.clone(), inserted.id.clone()));
@@ -840,6 +854,17 @@ impl Store {
         for (channel_id, member_type, last_read_seq) in &memberships {
             let channel = Self::find_channel_by_id_inner(&conn, channel_id)?
                 .ok_or_else(|| anyhow!("channel not found by id"))?;
+            let thread_last_read: std::collections::BTreeMap<String, i64> = conn
+                .prepare(
+                    "SELECT thread_parent_id, last_read_seq
+                     FROM inbox_thread_read_state
+                     WHERE conversation_id = ?1 AND member_name = ?2",
+                )?
+                .query_map(params![channel_id, agent_name], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })?
+                .filter_map(|row| row.ok())
+                .collect();
 
             #[allow(clippy::type_complexity)]
             let msgs: Vec<(String, String, String, String, String, i64, Option<String>, Option<String>)> = conn
@@ -864,8 +889,9 @@ impl Store {
                 None
             };
 
-            let mut max_seq = *last_read_seq;
-            let last_message_id = msgs.last().map(|(msg_id, ..)| msg_id.clone());
+            let mut max_conversation_seq = *last_read_seq;
+            let mut last_conversation_message_id = None::<String>;
+            let mut thread_read_updates = std::collections::BTreeMap::<String, (i64, String)>::new();
             for (
                 msg_id,
                 sender_name,
@@ -877,16 +903,24 @@ impl Store {
                 forwarded_from_raw,
             ) in &msgs
             {
-                if *seq > max_seq {
-                    max_seq = *seq;
-                }
-
                 if let Some(parent_id) = thread_parent_id {
+                    if *seq <= thread_last_read.get(parent_id).copied().unwrap_or(0) {
+                        continue;
+                    }
                     if !Self::agent_can_access_thread_inner(
                         &conn, channel_id, parent_id, agent_name,
                     )? {
                         continue;
                     }
+                    let entry = thread_read_updates
+                        .entry(parent_id.clone())
+                        .or_insert((*seq, msg_id.clone()));
+                    if *seq > entry.0 {
+                        *entry = (*seq, msg_id.clone());
+                    }
+                } else if *seq > max_conversation_seq {
+                    max_conversation_seq = *seq;
+                    last_conversation_message_id = Some(msg_id.clone());
                 }
 
                 let attachments = Self::get_message_attachments(&conn, msg_id)?;
@@ -951,20 +985,58 @@ impl Store {
                 });
             }
 
-            if update_read_pos && max_seq > *last_read_seq {
+            if update_read_pos && max_conversation_seq > *last_read_seq {
                 let tx = conn.transaction()?;
-                let event_id = Self::set_inbox_read_cursor_tx(
+                let conversation_event_id = Self::set_inbox_read_cursor_tx(
                     &tx,
                     &channel,
                     agent_name,
                     member_type,
-                    max_seq,
-                    last_message_id.as_deref(),
+                    max_conversation_seq,
+                    last_conversation_message_id.as_deref(),
                     true,
                     "get_messages_for_agent",
                 )?;
+                let mut newest_event_id = conversation_event_id;
+                for (parent_id, (seq, message_id)) in &thread_read_updates {
+                    if let Some(event_id) = Self::set_thread_read_cursor_tx(
+                        &tx,
+                        &channel,
+                        parent_id,
+                        agent_name,
+                        member_type,
+                        *seq,
+                        Some(message_id.as_str()),
+                        true,
+                        "get_messages_for_agent",
+                    )? {
+                        newest_event_id = Some(event_id);
+                    }
+                }
                 tx.commit()?;
-                if let Some(event_id) = event_id {
+                if let Some(event_id) = newest_event_id {
+                    last_event_id = Some(event_id);
+                }
+            } else if update_read_pos && !thread_read_updates.is_empty() {
+                let tx = conn.transaction()?;
+                let mut newest_event_id = None;
+                for (parent_id, (seq, message_id)) in &thread_read_updates {
+                    if let Some(event_id) = Self::set_thread_read_cursor_tx(
+                        &tx,
+                        &channel,
+                        parent_id,
+                        agent_name,
+                        member_type,
+                        *seq,
+                        Some(message_id.as_str()),
+                        true,
+                        "get_messages_for_agent",
+                    )? {
+                        newest_event_id = Some(event_id);
+                    }
+                }
+                tx.commit()?;
+                if let Some(event_id) = newest_event_id {
                     last_event_id = Some(event_id);
                 }
             }
@@ -975,6 +1047,70 @@ impl Store {
         }
 
         Ok(result)
+    }
+
+    pub fn set_history_read_cursor(
+        &self,
+        channel_name: &str,
+        member_name: &str,
+        member_type: SenderType,
+        thread_parent_id: Option<&str>,
+        last_read_seq: i64,
+    ) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let channel = Self::find_channel_by_name_inner(&tx, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+
+        let event_id = if let Some(parent_id) = thread_parent_id {
+            let last_read_message_id = tx
+                .query_row(
+                    "SELECT id
+                     FROM messages
+                     WHERE channel_id = ?1 AND thread_parent_id = ?2 AND seq = ?3
+                     LIMIT 1",
+                    params![channel.id, parent_id, last_read_seq],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            Self::set_thread_read_cursor_tx(
+                &tx,
+                &channel,
+                parent_id,
+                member_name,
+                member_type.as_str(),
+                last_read_seq,
+                last_read_message_id.as_deref(),
+                true,
+                "set_history_read_cursor",
+            )?
+        } else {
+            let last_read_message_id = tx
+                .query_row(
+                    "SELECT id
+                     FROM messages
+                     WHERE channel_id = ?1 AND thread_parent_id IS NULL AND seq = ?2
+                     LIMIT 1",
+                    params![channel.id, last_read_seq],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?;
+            Self::set_inbox_read_cursor_tx(
+                &tx,
+                &channel,
+                member_name,
+                member_type.as_str(),
+                last_read_seq,
+                last_read_message_id.as_deref(),
+                true,
+                "set_history_read_cursor",
+            )?
+        };
+        tx.commit()?;
+        if let Some(event_id) = event_id {
+            let _ = self.event_tx.send(event_id);
+        }
+        Ok(())
     }
 
     /// Resolve a specific unread message using the same shaping logic the normal
@@ -1099,13 +1235,24 @@ impl Store {
         )?;
         let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let last_read_seq = Self::get_inbox_conversation_state_by_channel_id_inner(
-            &conn,
-            &channel.id,
-            member_name,
-        )?
-        .map(|state| state.last_read_seq)
-        .unwrap_or(0);
+        let last_read_seq = if let Some(parent_id) = thread_parent_id {
+            Self::get_thread_notification_state_by_channel_id_inner(
+                &conn,
+                &channel.id,
+                parent_id,
+                member_name,
+            )?
+            .map(|state| state.last_read_seq)
+            .unwrap_or(0)
+        } else {
+            Self::get_inbox_conversation_state_by_channel_id_inner(
+                &conn,
+                &channel.id,
+                member_name,
+            )?
+            .map(|state| state.last_read_seq)
+            .unwrap_or(0)
+        };
         let latest_event_id: i64 =
             conn.query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
                 row.get(0)

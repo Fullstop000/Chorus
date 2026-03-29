@@ -37,6 +37,8 @@ pub struct SendRequest {
     pub content: String,
     #[serde(default, rename = "attachmentIds")]
     pub attachment_ids: Vec<String>,
+    #[serde(default, rename = "clientNonce")]
+    pub client_nonce: Option<String>,
     /// Skip fan-out to other agents when the caller wants a human-only side effect,
     /// such as "send this message and create one task" without triggering agent replies.
     #[serde(default, rename = "suppressAgentDelivery")]
@@ -47,6 +49,11 @@ pub struct SendRequest {
 pub struct SendResponse {
     #[serde(rename = "messageId")]
     pub message_id: String,
+    pub seq: i64,
+    #[serde(rename = "createdAt")]
+    pub created_at: String,
+    #[serde(rename = "clientNonce", skip_serializing_if = "Option::is_none")]
+    pub client_nonce: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -65,6 +72,25 @@ pub struct HistoryResponse {
     pub stream_id: String,
     #[serde(rename = "streamPos")]
     pub stream_pos: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReadCursorRequest {
+    pub target: String,
+    #[serde(rename = "lastReadSeq")]
+    pub last_read_seq: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct InboxResponse {
+    pub conversations: Vec<crate::store::InboxConversationNotificationView>,
+    #[serde(rename = "latestEventId")]
+    pub latest_event_id: i64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct ReadCursorResponse {
+    pub ok: bool,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -302,7 +328,44 @@ pub async fn handle_send(
             .map_err(|e| internal_err(e.to_string()))?;
     }
 
-    Ok(Json(SendResponse { message_id }))
+    let message_view = store
+        .get_conversation_message_view(&message_id)
+        .map_err(|e| internal_err(e.to_string()))?
+        .ok_or_else(|| internal_err("sent message missing from projection"))?;
+
+    Ok(Json(SendResponse {
+        message_id,
+        seq: message_view.seq,
+        created_at: message_view.created_at,
+        client_nonce: req.client_nonce,
+    }))
+}
+
+pub async fn handle_inbox(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+) -> ApiResult<InboxResponse> {
+    if state
+        .store
+        .lookup_sender_type(&agent_id)
+        .map_err(|e| api_err(e.to_string()))?
+        .is_none()
+    {
+        return Err(api_err(format!("viewer not found: {}", agent_id)));
+    }
+
+    let conversations = state
+        .store
+        .list_inbox_conversation_notifications(&agent_id)
+        .map_err(|e| internal_err(e.to_string()))?;
+    let latest_event_id = state
+        .store
+        .latest_event_id()
+        .map_err(|e| internal_err(e.to_string()))?;
+    Ok(Json(InboxResponse {
+        conversations,
+        latest_event_id,
+    }))
 }
 
 pub async fn handle_receive(
@@ -412,6 +475,41 @@ pub async fn handle_history(
         stream_id: snapshot.stream_id,
         stream_pos: snapshot.stream_pos,
     }))
+}
+
+pub async fn handle_update_read_cursor(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<ReadCursorRequest>,
+) -> ApiResult<ReadCursorResponse> {
+    let store = &state.store;
+    let sender_type = store
+        .lookup_sender_type(&agent_id)
+        .map_err(|e| api_err(e.to_string()))?
+        .unwrap_or(SenderType::Human);
+    let (channel_name, thread_parent_id) = resolve_history_target(store, &agent_id, &req.target)
+        .map_err(|e| api_err(e.to_string()))?;
+    if !store
+        .is_member(&channel_name, &agent_id)
+        .map_err(|e| api_err(e.to_string()))?
+    {
+        return Err(api_err(format!(
+            "you are not a member of channel {}",
+            req.target
+        )));
+    }
+
+    store
+        .set_history_read_cursor(
+            &channel_name,
+            &agent_id,
+            sender_type,
+            thread_parent_id.as_deref(),
+            req.last_read_seq,
+        )
+        .map_err(|e| api_err(e.to_string()))?;
+
+    Ok(Json(ReadCursorResponse { ok: true }))
 }
 
 pub async fn handle_resolve_channel(

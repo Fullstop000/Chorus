@@ -57,6 +57,11 @@ pub fn build_router_with_services(
         .route("/internal/agent/{agent_id}/send", post(handle_send))
         .route("/internal/agent/{agent_id}/receive", get(handle_receive))
         .route("/internal/agent/{agent_id}/history", get(handle_history))
+        .route("/internal/agent/{agent_id}/inbox", get(handle_inbox))
+        .route(
+            "/internal/agent/{agent_id}/read-cursor",
+            post(handle_update_read_cursor),
+        )
         .route("/internal/agent/{agent_id}/server", get(handle_server_info))
         .route(
             "/internal/agent/{agent_id}/resolve-channel",

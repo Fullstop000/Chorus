@@ -18,6 +18,7 @@ import type {
   ChannelMembersResponse,
   Team,
   TeamResponse,
+  InboxResponse,
 } from './types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
@@ -127,8 +128,8 @@ export async function sendMessage(
   target: string,
   content: string,
   attachmentIds?: string[],
-  options?: { suppressAgentDelivery?: boolean }
-): Promise<{ messageId: string }> {
+  options?: { suppressAgentDelivery?: boolean; clientNonce?: string }
+): Promise<{ messageId: string; seq: number; createdAt: string; clientNonce?: string }> {
   return json(
     await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/send`, {
       method: 'POST',
@@ -137,9 +138,16 @@ export async function sendMessage(
         target,
         content,
         attachmentIds: attachmentIds ?? [],
+        clientNonce: options?.clientNonce,
         suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
       }),
     })
+  )
+}
+
+export async function getInboxState(username: string): Promise<InboxResponse> {
+  return json(
+    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/inbox`)
   )
 }
 
@@ -167,6 +175,20 @@ export async function getHistoryAfter(
   limit = 50
 ): Promise<HistoryResponse> {
   return getHistory(username, channel, limit, undefined, after)
+}
+
+export async function updateReadCursor(
+  username: string,
+  target: string,
+  lastReadSeq: number
+): Promise<{ ok: boolean }> {
+  return json(
+    await fetch(`${BASE}/internal/agent/${encodeURIComponent(username)}/read-cursor`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ target, lastReadSeq }),
+    })
+  )
 }
 
 export async function getTasks(

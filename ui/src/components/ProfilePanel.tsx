@@ -46,7 +46,7 @@ type RestartMode = 'restart' | 'reset_session' | 'full_reset'
 type DeleteMode = 'preserve_workspace' | 'delete_workspace'
 
 export function ProfilePanel() {
-  const { selectedAgent, refreshServerInfo, setSelectedAgent } = useApp()
+  const { selectedAgent, refreshAgents, setSelectedAgent } = useApp()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [detail, setDetail] = useState<AgentDetailResponse | null>(null)
@@ -93,7 +93,7 @@ export function ProfilePanel() {
       } else {
         await startAgent(agent.name)
       }
-      refreshServerInfo()
+      refreshAgents()
     } catch (e) {
       setError(String(e))
     } finally {
@@ -104,7 +104,7 @@ export function ProfilePanel() {
   async function reloadDetail() {
     const nextDetail = await getAgentDetail(agent.name)
     setDetail(nextDetail)
-    refreshServerInfo()
+    refreshAgents()
   }
 
   return (
@@ -236,7 +236,7 @@ export function ProfilePanel() {
           onDeleted={async () => {
             setShowDelete(false)
             setSelectedAgent(null)
-            refreshServerInfo()
+            await refreshAgents()
           }}
         />
       )}

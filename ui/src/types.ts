@@ -88,6 +88,9 @@ export interface HistoryMessage {
   attachments?: AttachmentRef[]
   replyCount?: number
   forwardedFrom?: ForwardedFrom
+  clientNonce?: string
+  clientStatus?: 'sending' | 'failed'
+  clientError?: string
 }
 
 export interface HistoryResponse {
@@ -123,9 +126,13 @@ export interface RealtimeEvent {
 
 export interface ConversationStatePayload {
   conversationId: string
+  target?: string
   latestSeq: number
   lastReadSeq: number
   unreadCount: number
+  lastMessageId?: string
+  lastMessageAt?: string
+  lastReadMessageId?: string
   messageId?: string
   conversationType?: string
   threadParentId?: string | null
@@ -137,7 +144,26 @@ export interface ThreadStatePayload {
   latestSeq: number
   lastReadSeq: number
   unreadCount: number
+  lastReadMessageId?: string
   lastReplyMessageId?: string
+  lastReplyAt?: string
+}
+
+export interface InboxConversationState {
+  conversationId: string
+  conversationName: string
+  conversationType: string
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  lastReadMessageId?: string | null
+  lastMessageId?: string | null
+  lastMessageAt?: string | null
+}
+
+export interface InboxResponse {
+  conversations: InboxConversationState[]
+  latestEventId: number
 }
 
 export type RealtimeMessage =

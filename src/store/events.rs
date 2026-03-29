@@ -112,6 +112,39 @@ impl StoredEvent {
 }
 
 impl Store {
+    /// Persist one workspace-scoped structural event and fan it out to the
+    /// single shell notification stream.
+    pub fn record_workspace_event(
+        &self,
+        event_type: &str,
+        channel: Option<(&str, &str)>,
+        actor_name: Option<&str>,
+        actor_type: Option<&str>,
+        caused_by_kind: Option<&str>,
+        payload: Value,
+    ) -> Result<i64> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let event_id = Self::append_event_tx(
+            &tx,
+            NewEvent {
+                event_type,
+                scope_kind: "workspace",
+                scope_id: "workspace:default".to_string(),
+                channel_id: channel.map(|(channel_id, _)| channel_id),
+                channel_name: channel.map(|(_, channel_name)| channel_name),
+                thread_parent_id: None,
+                actor_name,
+                actor_type,
+                caused_by_kind,
+                payload,
+            },
+        )?;
+        tx.commit()?;
+        let _ = self.event_tx.send(event_id);
+        Ok(event_id)
+    }
+
     /// Return the latest committed global event cursor.
     pub fn latest_event_id(&self) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
@@ -608,6 +641,14 @@ pub(crate) fn derive_stream_identity(
     scope_id: &str,
     channel_id: Option<&str>,
 ) -> (String, String, String) {
+    if scope_kind == "workspace" {
+        return (
+            "workspace:default".to_string(),
+            "workspace".to_string(),
+            "default".to_string(),
+        );
+    }
+
     if let Some(user_name) = scope_id.strip_prefix("user:") {
         return (
             format!("inbox:{user_name}"),
@@ -637,14 +678,6 @@ pub(crate) fn derive_stream_identity(
             format!("conversation:{channel_id}"),
             "conversation".to_string(),
             channel_id.to_string(),
-        );
-    }
-
-    if scope_kind == "workspace" {
-        return (
-            "workspace:default".to_string(),
-            "workspace".to_string(),
-            "default".to_string(),
         );
     }
 

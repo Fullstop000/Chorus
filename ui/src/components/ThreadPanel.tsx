@@ -3,6 +3,7 @@ import { X, Paperclip } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { useHistory } from '../hooks/useHistory'
 import { MessageItem } from './MessageItem'
+import { ToastRegion } from './ToastRegion'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
 import { sendMessage } from '../api'
@@ -20,9 +21,20 @@ export function ThreadPanel() {
     ? `${mainTarget}:${openThreadMsg.id}`
     : null
 
-  const { messages, loading, lastReadSeq, loadedTarget } = useHistory(currentUser, threadTarget)
+  const {
+    messages,
+    loading,
+    lastReadSeq,
+    loadedTarget,
+    reportVisibleSeq,
+    addOptimisticMessage,
+    ackOptimisticMessage,
+    failOptimisticMessage,
+    retryOptimisticMessage,
+  } = useHistory(currentUser, threadTarget)
   const [content, setContent] = useState('')
   const [sending, setSending] = useState(false)
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
   const bottomRef = useRef<HTMLDivElement>(null)
   const repliesContainerRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -35,6 +47,35 @@ export function ThreadPanel() {
   useEffect(() => {
     const container = repliesContainerRef.current
     if (!container) return
+
+    const collectHighestVisibleSeq = () => {
+      if (document.visibilityState !== 'visible') return 0
+      let highestVisibleSeq = 0
+      for (const message of messages) {
+        const node = messageRefs.current[message.id]
+        if (!node) continue
+        const top = node.offsetTop
+        const bottom = top + node.offsetHeight
+        const visibleTop = container.scrollTop
+        const visibleBottom = visibleTop + container.clientHeight
+        if (bottom > visibleTop && top < visibleBottom) {
+          highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
+        }
+      }
+      return highestVisibleSeq
+    }
+
+    const scheduleInitialVisibilityRead = (attempt = 0) => {
+      requestAnimationFrame(() => {
+        const highestVisibleSeq = collectHighestVisibleSeq()
+        if (highestVisibleSeq > 0) {
+          reportVisibleSeq(highestVisibleSeq)
+          return
+        }
+        if (attempt >= 4) return
+        window.setTimeout(() => scheduleInitialVisibilityRead(attempt + 1), 50)
+      })
+    }
 
     const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
 
@@ -51,6 +92,7 @@ export function ThreadPanel() {
       } else {
         bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       }
+      scheduleInitialVisibilityRead()
       pendingInitialScrollTargetRef.current = null
       return
     }
@@ -59,23 +101,119 @@ export function ThreadPanel() {
     if (distFromBottom < 100) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [lastReadSeq, loadedTarget, loading, messages, threadTarget])
+  }, [lastReadSeq, loadedTarget, loading, messages, reportVisibleSeq, threadTarget])
+
+  useEffect(() => {
+    const container = repliesContainerRef.current
+    if (!container || !threadTarget || loadedTarget !== threadTarget || loading) return
+
+    let rafId = 0
+    const scheduleVisibilityRead = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => {
+        if (document.visibilityState !== 'visible') return
+        let highestVisibleSeq = 0
+        for (const message of messages) {
+          const node = messageRefs.current[message.id]
+          if (!node) continue
+          const top = node.offsetTop
+          const bottom = top + node.offsetHeight
+          const visibleTop = container.scrollTop
+          const visibleBottom = visibleTop + container.clientHeight
+          if (bottom > visibleTop && top < visibleBottom) {
+            highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
+          }
+        }
+        if (highestVisibleSeq > 0) {
+          reportVisibleSeq(highestVisibleSeq)
+        }
+      })
+    }
+
+    scheduleVisibilityRead()
+    container.addEventListener('scroll', scheduleVisibilityRead, { passive: true })
+    window.addEventListener('resize', scheduleVisibilityRead)
+    document.addEventListener('visibilitychange', scheduleVisibilityRead)
+    return () => {
+      cancelAnimationFrame(rafId)
+      container.removeEventListener('scroll', scheduleVisibilityRead)
+      window.removeEventListener('resize', scheduleVisibilityRead)
+      document.removeEventListener('visibilitychange', scheduleVisibilityRead)
+    }
+  }, [loadedTarget, loading, messages, reportVisibleSeq, threadTarget])
 
   // Reset input when switching thread
   useEffect(() => {
     setContent('')
   }, [openThreadMsg?.id])
 
+  useEffect(() => {
+    if (toasts.length === 0) return
+    const timer = window.setTimeout(() => {
+      setToasts((current) => current.slice(1))
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [toasts])
+
   async function handleSend() {
     if (!threadTarget || !currentUser || !content.trim()) return
     setSending(true)
+    let optimisticHandle: ReturnType<typeof addOptimisticMessage> | null = null
     try {
-      await sendMessage(currentUser, threadTarget, content.trim())
+      const handle = addOptimisticMessage({
+        content: content.trim(),
+      })
+      optimisticHandle = handle
+      const sendAck = await sendMessage(currentUser, threadTarget, content.trim(), [], {
+        clientNonce: handle.clientNonce,
+      })
+      ackOptimisticMessage(handle, {
+        messageId: sendAck.messageId,
+        seq: sendAck.seq,
+        createdAt: sendAck.createdAt,
+        clientNonce: sendAck.clientNonce,
+      })
       setContent('')
     } catch (e) {
       console.error('Thread send failed:', e)
+      const message = e instanceof Error ? e.message : String(e)
+      if (optimisticHandle) {
+        failOptimisticMessage(optimisticHandle, message)
+      }
+      setToasts((current) => [
+        ...current,
+        { id: `thread-send-failed-${Date.now()}`, message: 'Message failed to send' },
+      ])
     } finally {
       setSending(false)
+    }
+  }
+
+  async function handleRetryMessage(message: typeof messages[number]) {
+    if (!threadTarget || !currentUser) return
+    const retryHandle = retryOptimisticMessage(message.id)
+    if (!retryHandle) return
+    try {
+      const sendAck = await sendMessage(
+        currentUser,
+        threadTarget,
+        message.content,
+        message.attachments?.map((attachment) => attachment.id) ?? [],
+        { clientNonce: retryHandle.clientNonce }
+      )
+      ackOptimisticMessage(retryHandle, {
+        messageId: sendAck.messageId,
+        seq: sendAck.seq,
+        createdAt: sendAck.createdAt,
+        clientNonce: sendAck.clientNonce,
+      })
+    } catch (retryError) {
+      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
+      failOptimisticMessage(retryHandle, retryMessage)
+      setToasts((current) => [
+        ...current,
+        { id: `thread-retry-failed-${Date.now()}`, message: 'Message failed to send' },
+      ])
     }
   }
 
@@ -120,6 +258,7 @@ export function ThreadPanel() {
                   message={msg}
                   currentUser={currentUser}
                   prevMessage={messages[i - 1]}
+                  onRetry={handleRetryMessage}
                 />
               </div>
             ))
@@ -156,6 +295,10 @@ export function ThreadPanel() {
           </div>
         </div>
       </div>
+      <ToastRegion
+        toasts={toasts}
+        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+      />
     </div>
   )
 }

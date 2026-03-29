@@ -216,11 +216,41 @@
   align-items: baseline;
   gap: 6px;
   margin-bottom: 3px;
+  flex-wrap: wrap;
 }
 
 .message-sender {
   font-weight: 700;
   font-size: 14px;
+}
+
+.message-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+.message-status-failed {
+  color: #b23a2f;
+}
+
+.message-status-spin {
+  animation: message-status-spin 0.9s linear infinite;
+}
+
+@keyframes message-status-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .agent-badge,

@@ -305,6 +305,145 @@ async fn test_history_includes_latest_event_id_cursor() {
 }
 
 #[tokio::test]
+async fn test_read_cursor_endpoint_updates_conversation_history_cursor() {
+    let (store, app) = setup();
+    store
+        .send_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/read-cursor")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "target": "#general",
+                        "lastReadSeq": 1
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let history = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/alice/history?channel=%23general&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(history.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(history.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(history["last_read_seq"], 1);
+}
+
+#[tokio::test]
+async fn test_inbox_includes_latest_event_id_cursor() {
+    let (_store, app) = setup();
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "hello" });
+    let send_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(send_resp.status(), StatusCode::OK);
+
+    let inbox_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/alice/inbox")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inbox_resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(inbox_resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let inbox: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(inbox["latestEventId"], 1);
+}
+
+#[tokio::test]
+async fn test_read_cursor_endpoint_updates_thread_history_cursor() {
+    let (store, app) = setup();
+    let parent_id = store
+        .send_message("general", None, "bot1", SenderType::Agent, "parent", &[])
+        .unwrap();
+    store
+        .send_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/read-cursor")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "target": format!("#general:{parent_id}"),
+                        "lastReadSeq": 2
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let history = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/internal/agent/alice/history?channel={}&limit=10",
+                    urlencoding::encode(&format!("#general:{parent_id}"))
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(history.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(history.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(history["last_read_seq"], 2);
+}
+
+#[tokio::test]
 async fn test_realtime_event_serializes_as_notification_state() {
     let (store, _app) = setup();
 
@@ -326,6 +465,37 @@ async fn test_realtime_event_serializes_as_notification_state() {
     assert_eq!(frame["payload"]["lastReadSeq"], 1);
     assert_eq!(frame["payload"]["unreadCount"], 0);
     assert!(frame["payload"].get("content").is_none());
+}
+
+#[tokio::test]
+async fn test_send_echoes_client_nonce_for_optimistic_reconciliation() {
+    let (_store, app) = setup();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "target": "#general",
+                        "content": "hello",
+                        "clientNonce": "client-nonce-123"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload["clientNonce"], "client-nonce-123");
 }
 
 #[tokio::test]
@@ -2619,5 +2789,130 @@ async fn knowledge_tags_fts_token_boundary() {
     assert!(
         no_match.is_empty(),
         "partial tag 'task-4' should not match 'task-42'"
+    );
+}
+
+#[tokio::test]
+async fn test_shell_mutations_emit_workspace_structural_events() {
+    let (store, app, _lifecycle, _dir) = setup_with_lifecycle_and_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+
+    let create_channel_req = serde_json::json!({
+        "name": "ops-room",
+        "description": "Shell structural event coverage"
+    });
+    let create_channel_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/channels")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create_channel_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_channel_resp.status(), StatusCode::OK);
+
+    let channel_id = store.find_channel_by_name("ops-room").unwrap().unwrap().id;
+    let archive_channel_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/channels/{channel_id}/archive"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(archive_channel_resp.status(), StatusCode::OK);
+
+    let create_team_req = serde_json::json!({
+        "name": "ops-team",
+        "display_name": "Ops Team",
+        "collaboration_model": "leader_operators",
+        "leader_agent_name": "bot1",
+        "members": [{
+            "member_name": "bot1",
+            "member_type": "agent",
+            "member_id": bot1.id,
+            "role": "operator"
+        }]
+    });
+    let create_team_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/teams")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create_team_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create_team_resp.status(), StatusCode::OK);
+
+    let update_agent_req = serde_json::json!({
+        "display_name": "Ops Bot",
+        "description": "Updated from workspace event test",
+        "runtime": "codex",
+        "model": "gpt-5.4",
+        "reasoningEffort": "low",
+        "envVars": []
+    });
+    let update_agent_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/agents/bot1")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&update_agent_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(update_agent_resp.status(), StatusCode::OK);
+
+    let workspace_events: Vec<_> = store
+        .list_events(None, 200)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.stream_id == "workspace:default")
+        .collect();
+
+    assert!(
+        workspace_events.iter().all(|event| event.stream_kind == "workspace"),
+        "workspace structural events should use workspace stream kind"
+    );
+    assert!(
+        workspace_events
+            .iter()
+            .any(|event| event.event_type == "conversation.membership_changed"
+                && event.payload["action"] == "created"
+                && event.payload["conversationName"] == "ops-room")
+    );
+    assert!(
+        workspace_events
+            .iter()
+            .any(|event| event.event_type == "conversation.archived"
+                && event.payload["conversationId"] == channel_id)
+    );
+    assert!(
+        workspace_events
+            .iter()
+            .any(|event| event.event_type == "team.updated"
+                && event.payload["action"] == "created"
+                && event.payload["teamName"] == "ops-team")
+    );
+    assert!(
+        workspace_events
+            .iter()
+            .any(|event| event.event_type == "agent.updated"
+                && event.payload["action"] == "updated"
+                && event.payload["agentName"] == "bot1")
     );
 }

@@ -42,6 +42,8 @@ enum ClientFrame {
     Subscribe {
         #[serde(default, rename = "resumeFrom")]
         resume_from: Option<i64>,
+        #[serde(default)]
+        replace: bool,
         #[serde(default, rename = "streamId")]
         stream_id: Option<String>,
         #[serde(default, rename = "resumeFromStreamPos")]
@@ -156,6 +158,7 @@ async fn handle_client_frame(
     match frame {
         ClientFrame::Subscribe {
             resume_from,
+            replace,
             stream_id,
             resume_from_stream_pos,
             targets,
@@ -184,7 +187,11 @@ async fn handle_client_frame(
                     return Ok(());
                 }
             };
-            let mut next_subscribed_targets = subscribed_targets.clone();
+            let mut next_subscribed_targets = if replace {
+                BTreeMap::new()
+            } else {
+                subscribed_targets.clone()
+            };
             for target in requested_targets {
                 next_subscribed_targets.insert(target.target_id.clone(), target);
             }

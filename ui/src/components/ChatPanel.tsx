@@ -1,8 +1,8 @@
 import { useEffect, useRef } from 'react'
 import { Search, Settings2, Users } from 'lucide-react'
-import { useApp, useTarget } from '../store'
-import { useHistory } from '../hooks/useHistory'
+import { useApp } from '../store'
 import { MessageItem } from './MessageItem'
+import type { HistoryMessage } from '../types'
 import './ChatPanel.css'
 
 interface ChatHeaderProps {
@@ -73,10 +73,26 @@ export function ChatHeader({
   )
 }
 
-export function ChatPanel() {
+interface ChatPanelProps {
+  target: string | null
+  messages: HistoryMessage[]
+  loading: boolean
+  lastReadSeq: number
+  loadedTarget: string | null
+  reportVisibleSeq: (seq: number) => void
+  onRetryMessage?: (message: HistoryMessage) => void
+}
+
+export function ChatPanel({
+  target,
+  messages,
+  loading,
+  lastReadSeq,
+  loadedTarget,
+  reportVisibleSeq,
+  onRetryMessage,
+}: ChatPanelProps) {
   const { currentUser, setOpenThreadMsg } = useApp()
-  const target = useTarget()
-  const { messages, loading, lastReadSeq, loadedTarget } = useHistory(currentUser, target)
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -89,6 +105,35 @@ export function ChatPanel() {
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
+
+    const collectHighestVisibleSeq = () => {
+      if (document.visibilityState !== 'visible') return 0
+      let highestVisibleSeq = 0
+      for (const message of messages) {
+        const node = messageRefs.current[message.id]
+        if (!node) continue
+        const top = node.offsetTop
+        const bottom = top + node.offsetHeight
+        const visibleTop = container.scrollTop
+        const visibleBottom = visibleTop + container.clientHeight
+        if (bottom > visibleTop && top < visibleBottom) {
+          highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
+        }
+      }
+      return highestVisibleSeq
+    }
+
+    const scheduleInitialVisibilityRead = (attempt = 0) => {
+      requestAnimationFrame(() => {
+        const highestVisibleSeq = collectHighestVisibleSeq()
+        if (highestVisibleSeq > 0) {
+          reportVisibleSeq(highestVisibleSeq)
+          return
+        }
+        if (attempt >= 4) return
+        window.setTimeout(() => scheduleInitialVisibilityRead(attempt + 1), 50)
+      })
+    }
 
     const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
 
@@ -105,6 +150,7 @@ export function ChatPanel() {
       } else {
         bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       }
+      scheduleInitialVisibilityRead()
       pendingInitialScrollTargetRef.current = null
       return
     }
@@ -113,7 +159,46 @@ export function ChatPanel() {
     if (distFromBottom < 100) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [lastReadSeq, loadedTarget, loading, messages, target])
+  }, [lastReadSeq, loadedTarget, loading, messages, reportVisibleSeq, target])
+
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container || !target || loadedTarget !== target || loading) return
+
+    let rafId = 0
+    const scheduleVisibilityRead = () => {
+      cancelAnimationFrame(rafId)
+      rafId = requestAnimationFrame(() => {
+        if (document.visibilityState !== 'visible') return
+        let highestVisibleSeq = 0
+        for (const message of messages) {
+          const node = messageRefs.current[message.id]
+          if (!node) continue
+          const top = node.offsetTop
+          const bottom = top + node.offsetHeight
+          const visibleTop = container.scrollTop
+          const visibleBottom = visibleTop + container.clientHeight
+          if (bottom > visibleTop && top < visibleBottom) {
+            highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
+          }
+        }
+        if (highestVisibleSeq > 0) {
+          reportVisibleSeq(highestVisibleSeq)
+        }
+      })
+    }
+
+    scheduleVisibilityRead()
+    container.addEventListener('scroll', scheduleVisibilityRead, { passive: true })
+    window.addEventListener('resize', scheduleVisibilityRead)
+    document.addEventListener('visibilitychange', scheduleVisibilityRead)
+    return () => {
+      cancelAnimationFrame(rafId)
+      container.removeEventListener('scroll', scheduleVisibilityRead)
+      window.removeEventListener('resize', scheduleVisibilityRead)
+      document.removeEventListener('visibilitychange', scheduleVisibilityRead)
+    }
+  }, [loadedTarget, loading, messages, reportVisibleSeq, target])
 
   return (
     <div className="chat-panel">
@@ -142,6 +227,7 @@ export function ChatPanel() {
               currentUser={currentUser}
               prevMessage={messages[i - 1]}
               onReply={setOpenThreadMsg}
+              onRetry={onRetryMessage}
             />
           </div>
         ))}

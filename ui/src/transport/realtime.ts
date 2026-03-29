@@ -53,7 +53,6 @@ export function applyRealtimeEvent(
   event: RealtimeEvent
 ): HistoryMessage[] {
   switch (event.eventType) {
-    case 'message.created':
     case 'conversation.state':
     case 'thread.state':
       return messages

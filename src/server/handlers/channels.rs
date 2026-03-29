@@ -2,6 +2,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use super::{api_err, ApiResult, AppState};
 use crate::store::channels::{Channel, ChannelMemberProfile, ChannelType};
@@ -140,6 +141,20 @@ pub async fn handle_create_channel(
     let _ = state
         .store
         .join_channel(&name, &username, SenderType::Human);
+    let _ = state.store.record_workspace_event(
+        "conversation.membership_changed",
+        Some((channel_id.as_str(), name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("create_channel"),
+        json!({
+            "action": "created",
+            "conversationId": channel_id,
+            "conversationName": name,
+            "conversationType": "channel",
+            "memberName": username,
+        }),
+    );
     Ok(Json(serde_json::json!({ "id": channel_id, "name": name })))
 }
 
@@ -191,6 +206,21 @@ pub async fn handle_invite_channel_member(
         .store
         .join_channel_by_id(&channel.id, member_name, member_type)
         .map_err(|e| api_err(e.to_string()))?;
+    let _ = state.store.record_workspace_event(
+        "conversation.membership_changed",
+        Some((channel.id.as_str(), channel.name.as_str())),
+        Some(member_name),
+        Some(member_type.as_str()),
+        Some("invite_channel_member"),
+        json!({
+            "action": "member_joined",
+            "conversationId": channel.id,
+            "conversationName": channel.name,
+            "conversationType": channel.channel_type.as_api_str(),
+            "memberName": member_name,
+            "memberType": member_type.as_str(),
+        }),
+    );
 
     let members = state
         .store
@@ -238,6 +268,21 @@ pub async fn handle_update_channel(
         .store
         .update_channel(&channel_id, &name, description)
         .map_err(|e| api_err(e.to_string()))?;
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "conversation.membership_changed",
+        Some((channel_id.as_str(), name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("update_channel"),
+        json!({
+            "action": "updated",
+            "conversationId": channel_id,
+            "conversationName": name,
+            "conversationType": channel.channel_type.as_api_str(),
+            "description": description,
+        }),
+    );
 
     Ok(Json(serde_json::json!({
         "id": channel_id,
@@ -250,11 +295,24 @@ pub async fn handle_archive_channel(
     State(state): State<AppState>,
     Path(channel_id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    validate_channel_mutation(&state, &channel_id)?;
+    let channel = validate_channel_mutation(&state, &channel_id)?;
     state
         .store
         .archive_channel(&channel_id)
         .map_err(|e| api_err(e.to_string()))?;
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "conversation.archived",
+        Some((channel.id.as_str(), channel.name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("archive_channel"),
+        json!({
+            "conversationId": channel.id,
+            "conversationName": channel.name,
+            "conversationType": channel.channel_type.as_api_str(),
+        }),
+    );
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -262,10 +320,23 @@ pub async fn handle_delete_channel(
     State(state): State<AppState>,
     Path(channel_id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    validate_channel_mutation(&state, &channel_id)?;
+    let channel = validate_channel_mutation(&state, &channel_id)?;
     state
         .store
         .delete_channel(&channel_id)
         .map_err(|e| api_err(e.to_string()))?;
+    let username = whoami::username();
+    let _ = state.store.record_workspace_event(
+        "conversation.deleted",
+        Some((channel.id.as_str(), channel.name.as_str())),
+        Some(username.as_str()),
+        Some(SenderType::Human.as_str()),
+        Some("delete_channel"),
+        json!({
+            "conversationId": channel.id,
+            "conversationName": channel.name,
+            "conversationType": channel.channel_type.as_api_str(),
+        }),
+    );
     Ok(Json(serde_json::json!({ "ok": true })))
 }

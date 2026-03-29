@@ -1,28 +1,26 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getHistory, getHistoryAfter } from '../api'
+import { getHistory, getHistoryAfter, updateReadCursor } from '../api'
 import {
   applyRealtimeEvent,
-  createRealtimeSocket,
   historyFetchAfterForNotification,
   maxHistorySeq,
   mergeHistoryMessages,
   nextRealtimeCursor,
   resolveRealtimeTarget,
 } from '../transport/realtime'
+import { getRealtimeSession } from '../transport/realtimeSession'
 import type { HistoryMessage, HistoryResponse, RealtimeMessage } from '../types'
 
-function logRealtime(event: string, detail: unknown) {
-  let rendered = String(detail)
-  if (typeof detail === 'string') {
-    rendered = detail
-  } else {
-    try {
-      rendered = JSON.stringify(detail)
-    } catch {
-      rendered = String(detail)
-    }
+interface OptimisticMessageHandle {
+  tempId: string
+  clientNonce: string
+}
+
+function createClientNonce(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
   }
-  console.debug(`[chorus:realtime] ${event} ${rendered}`)
+  return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
 }
 
 export function useHistory(username: string, target: string | null) {
@@ -36,6 +34,21 @@ export function useHistory(username: string, target: string | null) {
   const lastStreamPosRef = useRef(0)
   const maxLoadedSeqRef = useRef(0)
   const incrementalFetchAfterRef = useRef<number | null>(null)
+  const lastReadSeqRef = useRef(0)
+  const pendingReadSeqRef = useRef<number | null>(null)
+  const readCursorTimerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    lastReadSeqRef.current = lastReadSeq
+  }, [lastReadSeq])
+
+  const commitMessages = useCallback((updater: (current: HistoryMessage[]) => HistoryMessage[]) => {
+    setMessages((current) => {
+      const next = updater(current).sort((left, right) => left.seq - right.seq)
+      maxLoadedSeqRef.current = maxHistorySeq(next)
+      return next
+    })
+  }, [])
 
   const fetchHistory = useCallback(async (after?: number): Promise<HistoryResponse | null> => {
     if (!username || !target) return null
@@ -51,9 +64,8 @@ export function useHistory(username: string, target: string | null) {
           ? await getHistoryAfter(username, target, after, 50)
           : await getHistory(username, target, 50)
       if (after != null) {
-        setMessages((current) => {
+        commitMessages((current) => {
           const merged = mergeHistoryMessages(current, res.messages)
-          maxLoadedSeqRef.current = maxHistorySeq(merged)
           return merged
         })
       } else {
@@ -95,41 +107,46 @@ export function useHistory(username: string, target: string | null) {
     }
 
     let cancelled = false
-    let reconnectTimer: number | null = null
-    let socket: WebSocket | null = null
+    let unsubscribeRealtime: (() => void) | null = null
     let activeRealtimeTarget: string | null = null
     const activeTarget = target
 
-    const connect = () => {
-      if (cancelled || !activeRealtimeTarget) return
-
-      socket = createRealtimeSocket(username)
-      socket.onopen = () => {
-        const subscribeFrame: Record<string, unknown> = {
-          type: 'subscribe',
-          resumeFrom: lastEventIdRef.current,
-          targets: [activeRealtimeTarget],
-        }
-        if (streamIdRef.current) {
-          subscribeFrame.streamId = streamIdRef.current
-          subscribeFrame.resumeFromStreamPos = lastStreamPosRef.current
-        }
-        logRealtime('open', {
-          viewer: username,
-          target: activeRealtimeTarget,
-          streamId: streamIdRef.current,
-          resumeFrom: lastEventIdRef.current,
-          resumeFromStreamPos: lastStreamPosRef.current,
-        })
-        logRealtime('send', subscribeFrame)
-        socket?.send(
-          JSON.stringify(subscribeFrame)
-        )
+    async function bootstrap() {
+      setLoading(true)
+      setMessages([])
+      setError(null)
+      setLastReadSeq(0)
+      setLoadedTarget(null)
+      lastEventIdRef.current = 0
+      streamIdRef.current = null
+      lastStreamPosRef.current = 0
+      maxLoadedSeqRef.current = 0
+      incrementalFetchAfterRef.current = null
+      pendingReadSeqRef.current = null
+      if (readCursorTimerRef.current != null) {
+        window.clearTimeout(readCursorTimerRef.current)
+        readCursorTimerRef.current = null
       }
-      socket.onmessage = (messageEvent) => {
-        try {
-          const frame = JSON.parse(String(messageEvent.data)) as RealtimeMessage
-          logRealtime('recv', frame)
+
+      const history = await fetchHistory()
+      if (cancelled || !history) return
+
+      try {
+        activeRealtimeTarget = await resolveRealtimeTarget(username, activeTarget)
+      } catch (targetError) {
+        if (!cancelled) {
+          setError(targetError instanceof Error ? targetError.message : String(targetError))
+        }
+        return
+      }
+
+      unsubscribeRealtime = getRealtimeSession(username).subscribe({
+        targets: [activeRealtimeTarget],
+        resumeFrom: lastEventIdRef.current,
+        streamId: streamIdRef.current,
+        resumeFromStreamPos: lastStreamPosRef.current,
+        onFrame: (frame: RealtimeMessage) => {
+          if (cancelled) return
           if (frame.type === 'subscribed') {
             lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
             if (frame.streamId) {
@@ -161,61 +178,148 @@ export function useHistory(username: string, target: string | null) {
           if (frame.event.eventType === 'conversation.state' || frame.event.eventType === 'thread.state') {
             return
           }
-          setMessages((current) => applyRealtimeEvent(current, frame.event))
+          if (
+            frame.event.eventType === 'conversation.read_cursor_set' ||
+            frame.event.eventType === 'thread.read_cursor_set'
+          ) {
+            const nextReadSeq = frame.event.payload.lastReadSeq
+            if (typeof nextReadSeq === 'number') {
+              setLastReadSeq((current) => Math.max(current, nextReadSeq))
+            }
+            return
+          }
+          commitMessages((current) => applyRealtimeEvent(current, frame.event))
           setError(null)
-        } catch (eventError) {
-          console.error('Failed to parse realtime frame', eventError)
-        }
-      }
-      socket.onerror = (event) => {
-        logRealtime('error', event)
-        socket?.close()
-      }
-      socket.onclose = () => {
-        logRealtime('close', {
-          viewer: username,
-          target: activeRealtimeTarget,
-        })
-        if (cancelled) return
-        reconnectTimer = window.setTimeout(connect, 1_000)
-      }
-    }
-
-    async function bootstrap() {
-      setLoading(true)
-      setMessages([])
-      setError(null)
-      setLastReadSeq(0)
-      setLoadedTarget(null)
-      lastEventIdRef.current = 0
-      streamIdRef.current = null
-      lastStreamPosRef.current = 0
-      maxLoadedSeqRef.current = 0
-      incrementalFetchAfterRef.current = null
-
-      const history = await fetchHistory()
-      if (cancelled || !history) return
-
-      try {
-        activeRealtimeTarget = await resolveRealtimeTarget(username, activeTarget)
-      } catch (targetError) {
-        if (!cancelled) {
-          setError(targetError instanceof Error ? targetError.message : String(targetError))
-        }
-        return
-      }
-
-      connect()
+        },
+      })
     }
 
     void bootstrap()
 
     return () => {
       cancelled = true
-      if (reconnectTimer != null) window.clearTimeout(reconnectTimer)
-      socket?.close()
+      if (readCursorTimerRef.current != null) {
+        window.clearTimeout(readCursorTimerRef.current)
+        readCursorTimerRef.current = null
+      }
+      unsubscribeRealtime?.()
     }
   }, [fetchHistory, target, username])
 
-  return { messages, loading, error, lastReadSeq, loadedTarget, refresh: fetchHistory }
+  const reportVisibleSeq = useCallback((visibleSeq: number) => {
+    if (!username || !target || visibleSeq <= 0) return
+    if (loadedTarget !== target) return
+    if (document.visibilityState !== 'visible') return
+    const nextSeq = Math.max(visibleSeq, pendingReadSeqRef.current ?? 0)
+    if (nextSeq <= lastReadSeqRef.current) return
+    pendingReadSeqRef.current = nextSeq
+    if (readCursorTimerRef.current != null) return
+
+    readCursorTimerRef.current = window.setTimeout(async () => {
+      readCursorTimerRef.current = null
+      const flushSeq = pendingReadSeqRef.current
+      pendingReadSeqRef.current = null
+      if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return
+      if (document.visibilityState !== 'visible') return
+      try {
+        await updateReadCursor(username, target, flushSeq)
+        setLastReadSeq((current) => Math.max(current, flushSeq))
+      } catch (cursorError) {
+        console.error('Failed to update read cursor', cursorError)
+      }
+    }, 150)
+  }, [loadedTarget, target, username])
+
+  const addOptimisticMessage = useCallback((draft: {
+    content: string
+    attachments?: HistoryMessage['attachments']
+  }): OptimisticMessageHandle => {
+    const tempId = `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
+    const clientNonce = createClientNonce()
+    const optimisticMessage: HistoryMessage = {
+      id: tempId,
+      seq: maxLoadedSeqRef.current + 1,
+      content: draft.content,
+      senderName: username,
+      senderType: 'human',
+      senderDeleted: false,
+      createdAt: new Date().toISOString(),
+      attachments: draft.attachments,
+      clientNonce,
+      clientStatus: 'sending',
+    }
+    commitMessages((current) => [...current, optimisticMessage])
+    return { tempId, clientNonce }
+  }, [commitMessages, username])
+
+  const ackOptimisticMessage = useCallback((handle: OptimisticMessageHandle, ack: {
+    messageId: string
+    seq: number
+    createdAt: string
+    clientNonce?: string
+  }) => {
+    const nonce = ack.clientNonce ?? handle.clientNonce
+    commitMessages((current) =>
+      current.map((message) =>
+        message.clientNonce === nonce || message.id === handle.tempId
+          ? {
+              ...message,
+              id: ack.messageId,
+              seq: ack.seq,
+              createdAt: ack.createdAt,
+              clientNonce: nonce,
+              clientStatus: undefined,
+              clientError: undefined,
+            }
+          : message
+      )
+    )
+  }, [commitMessages])
+
+  const failOptimisticMessage = useCallback((handle: OptimisticMessageHandle, errorMessage: string) => {
+    commitMessages((current) =>
+      current.map((message) =>
+        message.clientNonce === handle.clientNonce || message.id === handle.tempId
+          ? {
+              ...message,
+              clientStatus: 'failed',
+              clientError: errorMessage,
+            }
+          : message
+      )
+    )
+  }, [commitMessages])
+
+  const retryOptimisticMessage = useCallback((messageId: string): OptimisticMessageHandle | null => {
+    const nextHandle = {
+      tempId: messageId,
+      clientNonce: createClientNonce(),
+    }
+    commitMessages((current) =>
+      current.map((message) => {
+        if (message.id !== messageId) return message
+        return {
+          ...message,
+          clientNonce: nextHandle.clientNonce,
+          clientStatus: 'sending',
+          clientError: undefined,
+        }
+      })
+    )
+    return nextHandle
+  }, [commitMessages])
+
+  return {
+    messages,
+    loading,
+    error,
+    lastReadSeq,
+    loadedTarget,
+    refresh: fetchHistory,
+    reportVisibleSeq,
+    addOptimisticMessage,
+    ackOptimisticMessage,
+    failOptimisticMessage,
+    retryOptimisticMessage,
+  }
 }

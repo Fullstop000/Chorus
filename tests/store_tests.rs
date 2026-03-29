@@ -334,6 +334,14 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         payload_field(read_cursor_event, "lastReadSeq").as_i64(),
         Some(3)
     );
+    assert_eq!(
+        payload_field(read_cursor_event, "latestSeq").as_i64(),
+        Some(3)
+    );
+    assert_eq!(
+        payload_field(read_cursor_event, "unreadCount").as_i64(),
+        Some(0)
+    );
 
     let state_after = store
         .get_inbox_conversation_state("general", "bot1")
@@ -403,6 +411,101 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         .unwrap();
     assert_eq!(snapshot_after.last_read_seq, 2);
     assert_eq!(store.get_last_read_seq("general", "bot1").unwrap(), 2);
+}
+
+#[test]
+fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let parent_id = store
+        .send_message("general", None, "bot1", SenderType::Agent, "parent", &[])
+        .unwrap();
+    let reply_id = store
+        .send_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let thread_before = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread_before.last_read_seq, 0);
+    assert_eq!(thread_before.unread_count, 1);
+
+    store
+        .set_history_read_cursor(
+            "general",
+            "alice",
+            SenderType::Human,
+            Some(&parent_id),
+            2,
+        )
+        .unwrap();
+
+    let thread_after = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread_after.last_read_seq, 2);
+    assert_eq!(thread_after.unread_count, 0);
+    assert_eq!(thread_after.last_reply_message_id.as_deref(), Some(reply_id.as_str()));
+
+    let conversation_snapshot = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+    assert_eq!(conversation_snapshot.last_read_seq, 0);
+
+    let thread_snapshot = store
+        .get_history_snapshot("general", "alice", Some(&parent_id), 10, None, None)
+        .unwrap();
+    assert_eq!(thread_snapshot.last_read_seq, 2);
+
+    let events = store.list_events(None, 20).unwrap();
+    let thread_read_event = events
+        .iter()
+        .find(|event| event.event_type == "thread.read_cursor_set")
+        .expect("expected thread read cursor event");
+    assert_eq!(thread_read_event.stream_kind, "inbox");
+    assert_eq!(thread_read_event.stream_id, "inbox:alice");
+    assert_eq!(
+        payload_field(thread_read_event, "threadParentId").as_str(),
+        Some(parent_id.as_str())
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "lastReadMessageId").as_str(),
+        Some(reply_id.as_str())
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "lastReadSeq").as_i64(),
+        Some(2)
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "latestSeq").as_i64(),
+        Some(2)
+    );
+    assert_eq!(
+        payload_field(thread_read_event, "unreadCount").as_i64(),
+        Some(0)
+    );
 }
 
 #[test]
@@ -859,6 +962,21 @@ fn test_thread_reply_emits_conversation_and_thread_state_events() {
         payload_field(reply_count_event, "replyCount").as_i64(),
         Some(1)
     );
+
+    let alice_conversation_state = store
+        .get_inbox_conversation_state("general", "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice_conversation_state.last_read_seq, 1);
+    assert_eq!(alice_conversation_state.unread_count, 1);
+
+    let alice_thread_state = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice_thread_state.latest_seq, 2);
+    assert_eq!(alice_thread_state.last_read_seq, 0);
+    assert_eq!(alice_thread_state.unread_count, 1);
 }
 
 #[test]

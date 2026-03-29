@@ -20,7 +20,7 @@ pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentConfig, AgentEnvVar, AgentStatus, Human};
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
 pub use events::{ResolvedSubscriptionTarget, StoredEvent, SubscriptionTargetKind};
-pub use inbox::InboxConversationStateView;
+pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
 pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
@@ -144,6 +144,16 @@ impl Store {
                 last_read_message_id TEXT,
                 updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (conversation_id, member_name)
+            );
+            CREATE TABLE IF NOT EXISTS inbox_thread_read_state (
+                conversation_id TEXT NOT NULL,
+                thread_parent_id TEXT NOT NULL,
+                member_name TEXT NOT NULL,
+                member_type TEXT NOT NULL,
+                last_read_seq INTEGER NOT NULL DEFAULT 0,
+                last_read_message_id TEXT,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (conversation_id, thread_parent_id, member_name)
             );
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY,
