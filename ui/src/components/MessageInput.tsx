@@ -9,11 +9,12 @@ import { ToastRegion } from './ToastRegion'
 
 interface Props {
   target: string | null
+  conversationId: string | null
   history: ReturnType<typeof useHistory>
 }
 
-export function MessageInput({ target, history }: Props) {
-  const { currentUser, selectedChannel, serverInfo, agents, teams } = useApp()
+export function MessageInput({ target, conversationId, history }: Props) {
+  const { currentUser, selectedChannel, selectedChannelId, serverInfo, agents, teams } = useApp()
   const [content, setContent] = useState('')
   const [alsoTask, setAlsoTask] = useState(false)
   const [sending, setSending] = useState(false)
@@ -57,7 +58,7 @@ export function MessageInput({ target, history }: Props) {
       // Upload files first
       const attachmentIds: string[] = []
       for (const file of pendingFiles) {
-        const res = await uploadFile(currentUser, file)
+        const res = await uploadFile(file)
         attachmentIds.push(res.id)
       }
 
@@ -70,7 +71,8 @@ export function MessageInput({ target, history }: Props) {
       })
       optimisticHandle = handle
 
-      const sendAck = await sendMessage(currentUser, target, trimmedContent, attachmentIds, {
+      if (!conversationId) throw new Error('conversation unavailable')
+      const sendAck = await sendMessage(conversationId, trimmedContent, attachmentIds, {
         clientNonce: handle.clientNonce,
         suppressAgentDelivery: alsoTask && !!selectedChannel,
       })
@@ -100,7 +102,8 @@ export function MessageInput({ target, history }: Props) {
 
     if (alsoTask && selectedChannel && trimmedContent) {
       try {
-        await createTasks(currentUser, selectedChannel, [trimmedContent])
+        if (!selectedChannelId) throw new Error('channel unavailable')
+        await createTasks(selectedChannelId, [trimmedContent])
       } catch (taskError) {
         const message = taskError instanceof Error ? taskError.message : String(taskError)
         setError(message)

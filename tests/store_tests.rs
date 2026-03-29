@@ -452,13 +452,7 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
     assert_eq!(thread_before.unread_count, 1);
 
     store
-        .set_history_read_cursor(
-            "general",
-            "alice",
-            SenderType::Human,
-            Some(&parent_id),
-            2,
-        )
+        .set_history_read_cursor("general", "alice", SenderType::Human, Some(&parent_id), 2)
         .unwrap();
 
     let thread_after = store
@@ -467,7 +461,10 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
         .unwrap();
     assert_eq!(thread_after.last_read_seq, 2);
     assert_eq!(thread_after.unread_count, 0);
-    assert_eq!(thread_after.last_reply_message_id.as_deref(), Some(reply_id.as_str()));
+    assert_eq!(
+        thread_after.last_reply_message_id.as_deref(),
+        Some(reply_id.as_str())
+    );
 
     let conversation_snapshot = store
         .get_history_snapshot("general", "alice", None, 10, None, None)
@@ -953,7 +950,10 @@ fn test_thread_reply_emits_conversation_and_thread_state_events() {
         payload_field(thread_state_event, "lastReplyMessageId").as_str(),
         Some(reply_id.as_str())
     );
-    assert_eq!(payload_field(thread_state_event, "latestSeq").as_i64(), Some(2));
+    assert_eq!(
+        payload_field(thread_state_event, "latestSeq").as_i64(),
+        Some(2)
+    );
     assert!(thread_state_event.payload.get("replyCountDelta").is_none());
 
     let reply_count_event = &events[3];
@@ -977,6 +977,118 @@ fn test_thread_reply_emits_conversation_and_thread_state_events() {
     assert_eq!(alice_thread_state.latest_seq, 2);
     assert_eq!(alice_thread_state.last_read_seq, 0);
     assert_eq!(alice_thread_state.unread_count, 1);
+}
+
+#[test]
+fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    let oldest_unread_parent = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "oldest unread parent",
+            &[],
+        )
+        .unwrap();
+    store
+        .send_message(
+            "general",
+            Some(&oldest_unread_parent),
+            "bot1",
+            SenderType::Agent,
+            "oldest unread reply",
+            &[],
+        )
+        .unwrap();
+
+    let newest_read_parent = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "newest read parent",
+            &[],
+        )
+        .unwrap();
+    let _newest_read_reply = store
+        .send_message(
+            "general",
+            Some(&newest_read_parent),
+            "bot1",
+            SenderType::Agent,
+            "newest read reply",
+            &[],
+        )
+        .unwrap();
+    store
+        .set_history_read_cursor(
+            "general",
+            "alice",
+            SenderType::Human,
+            Some(&newest_read_parent),
+            4,
+        )
+        .unwrap();
+
+    let newest_unread_parent = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "newest unread parent",
+            &[],
+        )
+        .unwrap();
+    let _newest_unread_reply = store
+        .send_message(
+            "general",
+            Some(&newest_unread_parent),
+            "bot1",
+            SenderType::Agent,
+            "newest unread reply",
+            &[],
+        )
+        .unwrap();
+
+    let inbox = store.get_channel_thread_inbox("general", "alice").unwrap();
+
+    assert_eq!(inbox.unread_count, 2);
+    assert_eq!(inbox.threads.len(), 3);
+
+    assert_eq!(inbox.threads[0].thread_parent_id, newest_unread_parent);
+    assert_eq!(inbox.threads[0].unread_count, 1);
+    assert_eq!(inbox.threads[0].reply_count, 1);
+    assert_eq!(
+        inbox.threads[0].last_reply_message_id.as_deref(),
+        Some(_newest_unread_reply.as_str())
+    );
+    assert_eq!(inbox.threads[0].parent_content, "newest unread parent");
+
+    assert_eq!(inbox.threads[1].thread_parent_id, newest_read_parent);
+    assert_eq!(inbox.threads[1].unread_count, 0);
+    assert_eq!(inbox.threads[1].parent_content, "newest read parent");
+
+    assert_eq!(inbox.threads[2].thread_parent_id, oldest_unread_parent);
+    assert_eq!(inbox.threads[2].unread_count, 1);
+    assert_eq!(inbox.threads[2].parent_content, "oldest unread parent");
 }
 
 #[test]

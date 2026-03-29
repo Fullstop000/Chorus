@@ -19,7 +19,9 @@ pub use teams::*;
 pub use workspace::*;
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
+use std::backtrace::{Backtrace, BacktraceStatus};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -69,6 +71,53 @@ pub(super) fn conflict_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorRes
         StatusCode::CONFLICT,
         Json(ErrorResponse { error: msg.into() }),
     )
+}
+
+pub(super) fn format_anyhow_error(err: &anyhow::Error) -> String {
+    let mut rendered = String::new();
+    let _ = write!(&mut rendered, "{}", err);
+
+    let mut chain = err.chain();
+    let _ = chain.next();
+    let causes: Vec<String> = chain.map(ToString::to_string).collect();
+    if !causes.is_empty() {
+        rendered.push_str("\ncaused by:");
+        for (index, cause) in causes.iter().enumerate() {
+            let _ = write!(&mut rendered, "\n  {}. {}", index + 1, cause);
+        }
+    }
+
+    let backtrace = err.backtrace();
+    if matches!(backtrace.status(), BacktraceStatus::Captured) {
+        let _ = write!(&mut rendered, "\nbacktrace:\n{backtrace}");
+    } else {
+        let forced_backtrace = Backtrace::force_capture();
+        let _ = write!(&mut rendered, "\nbacktrace:\n{forced_backtrace}");
+    }
+
+    rendered
+}
+
+#[cfg(test)]
+mod tests {
+    use anyhow::anyhow;
+
+    use super::format_anyhow_error;
+
+    #[test]
+    fn formats_anyhow_error_with_cause_chain() {
+        let err = anyhow!("No such file or directory (os error 2)")
+            .context("failed to spawn codex runtime")
+            .context("failed to start agent");
+
+        let rendered = format_anyhow_error(&err);
+
+        assert!(rendered.contains("failed to start agent"));
+        assert!(rendered.contains("caused by:"));
+        assert!(rendered.contains("failed to spawn codex runtime"));
+        assert!(rendered.contains("No such file or directory (os error 2)"));
+        assert!(rendered.contains("backtrace:"));
+    }
 }
 
 pub(super) struct TransitionGuard {
@@ -127,6 +176,19 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
     let info = server_info::build_ui_shell_info(state.store.as_ref())
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::to_value(info).unwrap()))
+}
+
+pub async fn handle_list_humans(
+    State(state): State<AppState>,
+) -> ApiResult<Vec<dto::HumanInfo>> {
+    let humans = state
+        .store
+        .list_humans()
+        .map_err(|e| api_err(e.to_string()))?
+        .into_iter()
+        .map(dto::HumanInfo::from)
+        .collect();
+    Ok(Json(humans))
 }
 
 pub async fn handle_list_runtime_statuses(

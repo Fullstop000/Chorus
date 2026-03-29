@@ -5,9 +5,9 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
-use tracing::info;
+use tracing::{info, warn};
 
-use super::{acquire_transition, api_err, internal_err, ApiResult, AppState};
+use super::{acquire_transition, api_err, format_anyhow_error, internal_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::store::agents::{AgentEnvVar, AgentRuntime, AgentStatus};
@@ -231,9 +231,13 @@ pub async fn handle_create_agent(
             .store
             .join_channel(&channel.name, &name, SenderType::Agent);
     }
+    let mut created_status = "active";
+    let mut start_warning = None;
     if let Err(err) = state.lifecycle.start_agent(&name, None).await {
-        let _ = state.store.delete_agent_record(&name);
-        return Err(internal_err(format!("failed to start agent: {err}")));
+        let error_detail = format_anyhow_error(&err);
+        warn!(agent = %name, error = %error_detail, "agent created but failed to start");
+        created_status = "inactive";
+        start_warning = Some(format!("failed to start agent: {err}"));
     }
     let username = whoami::username();
     let _ = state.store.record_workspace_event(
@@ -245,12 +249,17 @@ pub async fn handle_create_agent(
         json!({
             "action": "created",
             "agentName": name,
-            "status": "active",
+            "status": created_status,
             "runtime": req.runtime,
             "model": req.model,
+            "startWarning": start_warning,
         }),
     );
-    Ok(Json(serde_json::json!({ "name": name })))
+    Ok(Json(serde_json::json!({
+        "name": name,
+        "status": created_status,
+        "warning": start_warning,
+    })))
 }
 
 pub async fn handle_get_agent(

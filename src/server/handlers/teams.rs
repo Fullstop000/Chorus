@@ -241,7 +241,9 @@ pub async fn handle_create_team(
     let username = whoami::username();
     let _ = state.store.record_workspace_event(
         "team.updated",
-        team.channel_id.as_deref().map(|channel_id| (channel_id, team.name.as_str())),
+        team.channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, team.name.as_str())),
         Some(username.as_str()),
         Some(SenderType::Human.as_str()),
         Some("create_team"),
@@ -404,7 +406,9 @@ pub async fn handle_delete_team(
     let username = whoami::username();
     let _ = state.store.record_workspace_event(
         "team.updated",
-        team.channel_id.as_deref().map(|channel_id| (channel_id, team.name.as_str())),
+        team.channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, team.name.as_str())),
         Some(username.as_str()),
         Some(SenderType::Human.as_str()),
         Some("delete_team"),
@@ -523,7 +527,9 @@ pub async fn handle_remove_team_member(
     let username = whoami::username();
     let _ = state.store.record_workspace_event(
         "team.updated",
-        team.channel_id.as_deref().map(|channel_id| (channel_id, team.name.as_str())),
+        team.channel_id
+            .as_deref()
+            .map(|channel_id| (channel_id, team.name.as_str())),
         Some(username.as_str()),
         Some(SenderType::Human.as_str()),
         Some("remove_team_member"),

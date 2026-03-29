@@ -2,11 +2,6 @@ import { useApp } from '../store'
 import type { ActiveTab } from '../store'
 import './TabBar.css'
 
-const CHANNEL_TABS: { id: ActiveTab; label: string }[] = [
-  { id: 'chat', label: 'Chat' },
-  { id: 'tasks', label: 'Tasks' },
-]
-
 const AGENT_TABS: { id: ActiveTab; label: string }[] = [
   { id: 'chat', label: 'Chat' },
   { id: 'tasks', label: 'Tasks' },
@@ -16,8 +11,20 @@ const AGENT_TABS: { id: ActiveTab; label: string }[] = [
 ]
 
 export function TabBar() {
-  const { selectedAgent, activeTab, setActiveTab } = useApp()
-  const tabs = selectedAgent ? AGENT_TABS : CHANNEL_TABS
+  const {
+    selectedAgent,
+    selectedChannelId,
+    activeTab,
+    getConversationThreadUnread,
+    setActiveTab,
+  } = useApp()
+  const threadUnread = getConversationThreadUnread(selectedChannelId)
+  const channelTabs: { id: ActiveTab; label: string }[] = [
+    { id: 'chat', label: 'Chat' },
+    { id: 'threads', label: threadUnread > 0 ? `Threads (${threadUnread})` : 'Threads' },
+    { id: 'tasks', label: 'Tasks' },
+  ]
+  const tabs = selectedAgent ? AGENT_TABS : channelTabs
 
   return (
     <div className="tab-bar">

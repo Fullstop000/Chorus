@@ -166,6 +166,28 @@ export interface InboxResponse {
   latestEventId: number
 }
 
+export interface ThreadInboxEntry {
+  conversationId: string
+  threadParentId: string
+  parentSeq: number
+  parentSenderName: string
+  parentSenderType: 'human' | 'agent'
+  parentContent: string
+  parentCreatedAt: string
+  replyCount: number
+  participantCount: number
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  lastReplyMessageId?: string | null
+  lastReplyAt?: string | null
+}
+
+export interface ThreadInboxResponse {
+  unreadCount: number
+  threads: ThreadInboxEntry[]
+}
+
 export type RealtimeMessage =
   | {
       type: 'subscribed'

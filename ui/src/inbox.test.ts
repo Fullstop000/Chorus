@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyInboxEvent, buildConversationRegistry, createInboxState, threadNotificationKey } from './inbox'
+import {
+  applyInboxEvent,
+  buildConversationRegistry,
+  conversationThreadUnreadCount,
+  createInboxState,
+  mergeChannelThreadInboxEntries,
+  threadNotificationKey,
+} from './inbox'
 import type { AgentInfo, RealtimeEvent } from './types'
 
 describe('inbox notification state', () => {
@@ -162,6 +169,114 @@ describe('inbox notification state', () => {
       lastReadSeq: 7,
       unreadCount: 0,
       lastReadMessageId: 'msg-7',
+    })
+  })
+
+  it('computes per-conversation thread unread totals from tracked thread state', () => {
+    let state = createInboxState()
+    state = applyInboxEvent(state, {
+      eventId: 1,
+      eventType: 'thread.state',
+      scopeKind: 'thread',
+      scopeId: 'thread:msg-1',
+      threadParentId: 'msg-1',
+      payload: {
+        conversationId: 'ch-1',
+        threadParentId: 'msg-1',
+        latestSeq: 5,
+        lastReadSeq: 3,
+        unreadCount: 2,
+      },
+      createdAt: '2026-03-29T10:00:00Z',
+    })
+    state = applyInboxEvent(state, {
+      eventId: 2,
+      eventType: 'thread.state',
+      scopeKind: 'thread',
+      scopeId: 'thread:msg-2',
+      threadParentId: 'msg-2',
+      payload: {
+        conversationId: 'ch-1',
+        threadParentId: 'msg-2',
+        latestSeq: 8,
+        lastReadSeq: 7,
+        unreadCount: 1,
+      },
+      createdAt: '2026-03-29T10:01:00Z',
+    })
+
+    expect(conversationThreadUnreadCount(state, 'ch-1')).toBe(3)
+    expect(conversationThreadUnreadCount(state, 'ch-2')).toBe(0)
+  })
+
+  it('merges fetched channel thread rows with live thread state and keeps latest-reply ordering', () => {
+    let state = createInboxState()
+    state = applyInboxEvent(state, {
+      eventId: 3,
+      eventType: 'thread.state',
+      scopeKind: 'thread',
+      scopeId: 'thread:msg-old',
+      threadParentId: 'msg-old',
+      payload: {
+        conversationId: 'ch-1',
+        threadParentId: 'msg-old',
+        latestSeq: 11,
+        lastReadSeq: 10,
+        unreadCount: 1,
+        lastReplyMessageId: 'reply-old',
+        lastReplyAt: '2026-03-29T10:10:00Z',
+      },
+      createdAt: '2026-03-29T10:10:00Z',
+    })
+
+    const merged = mergeChannelThreadInboxEntries(
+      [
+        {
+          conversationId: 'ch-1',
+          threadParentId: 'msg-old',
+          parentSeq: 1,
+          parentSenderName: 'alice',
+          parentSenderType: 'human',
+          parentContent: 'older unread thread',
+          parentCreatedAt: '2026-03-29T08:00:00Z',
+          replyCount: 1,
+          participantCount: 2,
+          latestSeq: 9,
+          lastReadSeq: 9,
+          unreadCount: 0,
+          lastReplyMessageId: 'reply-old-initial',
+          lastReplyAt: '2026-03-29T09:30:00Z',
+        },
+        {
+          conversationId: 'ch-1',
+          threadParentId: 'msg-read',
+          parentSeq: 3,
+          parentSenderName: 'alice',
+          parentSenderType: 'human',
+          parentContent: 'already read thread',
+          parentCreatedAt: '2026-03-29T09:00:00Z',
+          replyCount: 1,
+          participantCount: 2,
+          latestSeq: 12,
+          lastReadSeq: 12,
+          unreadCount: 0,
+          lastReplyMessageId: 'reply-read',
+          lastReplyAt: '2026-03-29T10:12:00Z',
+        },
+      ],
+      state,
+      'ch-1'
+    )
+
+    expect(merged[0]).toMatchObject({
+      threadParentId: 'msg-read',
+      unreadCount: 0,
+    })
+    expect(merged[1]).toMatchObject({
+      threadParentId: 'msg-old',
+      unreadCount: 1,
+      latestSeq: 11,
+      lastReplyMessageId: 'reply-old',
     })
   })
 })

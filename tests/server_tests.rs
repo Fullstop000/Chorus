@@ -81,6 +81,8 @@ struct MockRuntimeStatusProvider {
     statuses: Vec<RuntimeStatus>,
 }
 
+struct FailStartLifecycle;
+
 impl RuntimeStatusProvider for MockRuntimeStatusProvider {
     fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatus>> {
         Ok(self.statuses.clone())
@@ -160,6 +162,48 @@ impl AgentLifecycle for MockLifecycle {
     fn push_activity_entry(&self, agent_name: &str, entry: ActivityEntry) {
         activity_log::push_activity(&self.activity_logs, agent_name, entry);
     }
+}
+
+impl AgentLifecycle for FailStartLifecycle {
+    fn start_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+        _wake_message: Option<ReceivedMessage>,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Err(anyhow::anyhow!("runtime unavailable")) })
+    }
+
+    fn notify_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_activity_log_data(
+        &self,
+        _agent_name: &str,
+        _after_seq: Option<u64>,
+    ) -> ActivityLogResponse {
+        ActivityLogResponse {
+            entries: vec![],
+            agent_activity: "offline".to_string(),
+            agent_detail: String::new(),
+        }
+    }
+
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
+        vec![]
+    }
+
+    fn push_activity_entry(&self, _agent_name: &str, _entry: ActivityEntry) {}
 }
 
 fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
@@ -444,6 +488,110 @@ async fn test_read_cursor_endpoint_updates_thread_history_cursor() {
 }
 
 #[tokio::test]
+async fn test_threads_endpoint_returns_channel_scoped_rows_sorted_by_latest_reply_desc() {
+    let (store, app) = setup();
+    let oldest_unread_parent = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "oldest unread parent",
+            &[],
+        )
+        .unwrap();
+    store
+        .send_message(
+            "general",
+            Some(&oldest_unread_parent),
+            "bot1",
+            SenderType::Agent,
+            "oldest unread reply",
+            &[],
+        )
+        .unwrap();
+
+    let newest_read_parent = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "newest read parent",
+            &[],
+        )
+        .unwrap();
+    let newest_read_reply = store
+        .send_message(
+            "general",
+            Some(&newest_read_parent),
+            "bot1",
+            SenderType::Agent,
+            "newest read reply",
+            &[],
+        )
+        .unwrap();
+    store
+        .set_history_read_cursor(
+            "general",
+            "alice",
+            SenderType::Human,
+            Some(&newest_read_parent),
+            4,
+        )
+        .unwrap();
+
+    let newest_unread_parent = store
+        .send_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "newest unread parent",
+            &[],
+        )
+        .unwrap();
+    store
+        .send_message(
+            "general",
+            Some(&newest_unread_parent),
+            "bot1",
+            SenderType::Agent,
+            "newest unread reply",
+            &[],
+        )
+        .unwrap();
+
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/alice/threads?channel=%23general")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let inbox: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(inbox["unreadCount"], 2);
+    assert_eq!(inbox["threads"].as_array().unwrap().len(), 3);
+    assert_eq!(inbox["threads"][0]["threadParentId"], newest_unread_parent);
+    assert_eq!(inbox["threads"][0]["unreadCount"], 1);
+    assert_eq!(inbox["threads"][0]["parentContent"], "newest unread parent");
+    assert_eq!(inbox["threads"][1]["threadParentId"], newest_read_parent);
+    assert_eq!(inbox["threads"][1]["unreadCount"], 0);
+    assert_eq!(inbox["threads"][1]["lastReplyMessageId"], newest_read_reply);
+    assert_eq!(inbox["threads"][1]["parentContent"], "newest read parent");
+    assert_eq!(inbox["threads"][2]["threadParentId"], oldest_unread_parent);
+    assert_eq!(inbox["threads"][2]["unreadCount"], 1);
+}
+
+#[tokio::test]
 async fn test_realtime_event_serializes_as_notification_state() {
     let (store, _app) = setup();
 
@@ -629,6 +777,162 @@ async fn test_ui_server_info_is_shell_only() {
     assert!(info.get("humans").is_some());
     assert!(info.get("channels").is_none());
     assert!(info.get("agents").is_none());
+}
+
+#[tokio::test]
+async fn test_list_humans_via_public_api() {
+    let (_store, app) = setup();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/humans")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let humans: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(humans.as_array().unwrap().len(), 1);
+    assert_eq!(humans[0]["name"], "alice");
+}
+
+#[tokio::test]
+async fn test_public_inbox_matches_current_human() {
+    let (store, app) = setup();
+    let viewer = whoami::username();
+    if viewer != "alice" {
+        store.add_human(&viewer).unwrap();
+        store
+            .join_channel("general", &viewer, SenderType::Human)
+            .unwrap();
+    }
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/inbox")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let inbox: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(inbox["conversations"].is_array());
+    assert!(inbox["latestEventId"].is_number());
+}
+
+#[tokio::test]
+async fn test_public_conversation_messages_route_uses_conversation_id() {
+    let (store, app) = setup();
+    let viewer = whoami::username();
+    if viewer != "alice" {
+        store.add_human(&viewer).unwrap();
+        store
+            .join_channel("general", &viewer, SenderType::Human)
+            .unwrap();
+    }
+    let channel_id = store
+        .find_channel_by_name("general")
+        .unwrap()
+        .expect("general channel should exist")
+        .id;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/conversations/{channel_id}/messages?limit=10"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(history["messages"].is_array());
+    assert_eq!(history["last_read_seq"], 0);
+}
+
+#[tokio::test]
+async fn test_public_conversation_tasks_route_uses_conversation_id() {
+    let (store, app) = setup();
+    store
+        .create_tasks("general", "alice", &["task from public route"])
+        .unwrap();
+    let channel_id = store
+        .find_channel_by_name("general")
+        .unwrap()
+        .expect("general channel should exist")
+        .id;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/conversations/{channel_id}/tasks?status=all"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let tasks: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(tasks["tasks"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn test_public_dm_route_returns_or_creates_dm_for_current_human() {
+    let (store, app) = setup();
+    let viewer = whoami::username();
+    if viewer != "alice" {
+        store.add_human(&viewer).unwrap();
+    }
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/api/dms/bot1")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let dm: ChannelInfo = serde_json::from_slice(&body).unwrap();
+    assert_eq!(dm.channel_type.as_deref(), Some("dm"));
+    assert!(dm.joined);
+
+    let list_resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/channels?member={viewer}&include_dm=true&include_system=true"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(list_resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let channels: Vec<ChannelInfo> = serde_json::from_slice(&body).unwrap();
+    assert!(channels.iter().any(|channel| channel.id == dm.id));
 }
 
 #[tokio::test]
@@ -1269,6 +1573,45 @@ async fn test_create_agent_via_api() {
 }
 
 #[tokio::test]
+async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store.ensure_builtin_channels("alice").unwrap();
+    let app = build_router_with_lifecycle(store.clone(), Arc::new(FailStartLifecycle));
+
+    let req = serde_json::json!({
+        "name": "stuck-bot",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let agent = store
+        .get_agent("stuck-bot")
+        .unwrap()
+        .expect("agent should remain in the store");
+    assert_eq!(agent.status, AgentStatus::Inactive);
+    assert!(store.is_member("all", "stuck-bot").unwrap());
+}
+
+#[tokio::test]
 async fn test_create_kimi_agent_via_api() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store.ensure_builtin_channels("alice").unwrap();
@@ -1516,6 +1859,47 @@ async fn test_send_starts_inactive_agent_recipients() {
         vec!["bot1".to_string(), "bot2".to_string()]
     );
     assert!(lifecycle.notified_names().is_empty());
+}
+
+#[tokio::test]
+async fn test_send_persists_message_even_if_agent_delivery_fails() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.add_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+    let app = build_router_with_lifecycle(store.clone(), Arc::new(FailStartLifecycle));
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "persist despite delivery failure" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let history = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+    assert!(history
+        .messages
+        .iter()
+        .any(|message| message.content == "persist despite delivery failure"));
 }
 
 #[tokio::test]
@@ -2885,34 +3269,27 @@ async fn test_shell_mutations_emit_workspace_structural_events() {
         .collect();
 
     assert!(
-        workspace_events.iter().all(|event| event.stream_kind == "workspace"),
+        workspace_events
+            .iter()
+            .all(|event| event.stream_kind == "workspace"),
         "workspace structural events should use workspace stream kind"
     );
-    assert!(
-        workspace_events
-            .iter()
-            .any(|event| event.event_type == "conversation.membership_changed"
-                && event.payload["action"] == "created"
-                && event.payload["conversationName"] == "ops-room")
-    );
-    assert!(
-        workspace_events
-            .iter()
-            .any(|event| event.event_type == "conversation.archived"
-                && event.payload["conversationId"] == channel_id)
-    );
-    assert!(
-        workspace_events
-            .iter()
-            .any(|event| event.event_type == "team.updated"
-                && event.payload["action"] == "created"
-                && event.payload["teamName"] == "ops-team")
-    );
-    assert!(
-        workspace_events
-            .iter()
-            .any(|event| event.event_type == "agent.updated"
-                && event.payload["action"] == "updated"
-                && event.payload["agentName"] == "bot1")
-    );
+    assert!(workspace_events.iter().any(|event| event.event_type
+        == "conversation.membership_changed"
+        && event.payload["action"] == "created"
+        && event.payload["conversationName"] == "ops-room"));
+    assert!(workspace_events
+        .iter()
+        .any(|event| event.event_type == "conversation.archived"
+            && event.payload["conversationId"] == channel_id));
+    assert!(workspace_events
+        .iter()
+        .any(|event| event.event_type == "team.updated"
+            && event.payload["action"] == "created"
+            && event.payload["teamName"] == "ops-team"));
+    assert!(workspace_events
+        .iter()
+        .any(|event| event.event_type == "agent.updated"
+            && event.payload["action"] == "updated"
+            && event.payload["agentName"] == "bot1"));
 }

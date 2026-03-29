@@ -6,10 +6,14 @@ import {
   maxHistorySeq,
   mergeHistoryMessages,
   nextRealtimeCursor,
-  resolveRealtimeTarget,
 } from '../transport/realtime'
 import { getRealtimeSession } from '../transport/realtimeSession'
 import type { HistoryMessage, HistoryResponse, RealtimeMessage } from '../types'
+import { loadSharedRequest } from './historyRequestCache'
+
+interface UseHistoryOptions {
+  threadParentId?: string | null
+}
 
 interface OptimisticMessageHandle {
   tempId: string
@@ -23,7 +27,12 @@ function createClientNonce(): string {
   return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
 }
 
-export function useHistory(username: string, target: string | null) {
+export function useHistory(
+  username: string,
+  targetKey: string | null,
+  conversationId: string | null,
+  options?: UseHistoryOptions
+) {
   const [messages, setMessages] = useState<HistoryMessage[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -51,7 +60,7 @@ export function useHistory(username: string, target: string | null) {
   }, [])
 
   const fetchHistory = useCallback(async (after?: number): Promise<HistoryResponse | null> => {
-    if (!username || !target) return null
+    if (!username || !targetKey || !conversationId) return null
     if (after != null && incrementalFetchAfterRef.current === after) {
       return null
     }
@@ -61,8 +70,16 @@ export function useHistory(username: string, target: string | null) {
     try {
       const res =
         after != null
-          ? await getHistoryAfter(username, target, after, 50)
-          : await getHistory(username, target, 50)
+          ? await getHistoryAfter(
+              conversationId,
+              after,
+              50,
+              options?.threadParentId ?? undefined
+            )
+          : await loadSharedRequest(
+              `history:${conversationId}:${options?.threadParentId ?? 'root'}:bootstrap`,
+              () => getHistory(conversationId, 50, options?.threadParentId ?? undefined)
+            )
       if (after != null) {
         commitMessages((current) => {
           const merged = mergeHistoryMessages(current, res.messages)
@@ -73,7 +90,7 @@ export function useHistory(username: string, target: string | null) {
         maxLoadedSeqRef.current = maxHistorySeq(res.messages)
       }
       setLastReadSeq(res.last_read_seq ?? 0)
-      setLoadedTarget(target)
+      setLoadedTarget(targetKey)
       lastEventIdRef.current = Math.max(lastEventIdRef.current, res.latestEventId ?? 0)
       streamIdRef.current = res.streamId ?? streamIdRef.current
       lastStreamPosRef.current = Math.max(lastStreamPosRef.current, res.streamPos ?? 0)
@@ -90,10 +107,10 @@ export function useHistory(username: string, target: string | null) {
         incrementalFetchAfterRef.current = null
       }
     }
-  }, [username, target])
+  }, [conversationId, options?.threadParentId, targetKey, username])
 
   useEffect(() => {
-    if (!username || !target) {
+    if (!username || !targetKey || !conversationId) {
       setMessages([])
       setError(null)
       setLastReadSeq(0)
@@ -109,8 +126,6 @@ export function useHistory(username: string, target: string | null) {
     let cancelled = false
     let unsubscribeRealtime: (() => void) | null = null
     let activeRealtimeTarget: string | null = null
-    const activeTarget = target
-
     async function bootstrap() {
       setLoading(true)
       setMessages([])
@@ -132,7 +147,9 @@ export function useHistory(username: string, target: string | null) {
       if (cancelled || !history) return
 
       try {
-        activeRealtimeTarget = await resolveRealtimeTarget(username, activeTarget)
+        activeRealtimeTarget = options?.threadParentId
+          ? `thread:${options.threadParentId}`
+          : `conversation:${conversationId}`
       } catch (targetError) {
         if (!cancelled) {
           setError(targetError instanceof Error ? targetError.message : String(targetError))
@@ -204,11 +221,11 @@ export function useHistory(username: string, target: string | null) {
       }
       unsubscribeRealtime?.()
     }
-  }, [fetchHistory, target, username])
+  }, [conversationId, fetchHistory, options?.threadParentId, targetKey, username])
 
   const reportVisibleSeq = useCallback((visibleSeq: number) => {
-    if (!username || !target || visibleSeq <= 0) return
-    if (loadedTarget !== target) return
+    if (!username || !targetKey || !conversationId || visibleSeq <= 0) return
+    if (loadedTarget !== targetKey) return
     if (document.visibilityState !== 'visible') return
     const nextSeq = Math.max(visibleSeq, pendingReadSeqRef.current ?? 0)
     if (nextSeq <= lastReadSeqRef.current) return
@@ -222,13 +239,17 @@ export function useHistory(username: string, target: string | null) {
       if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return
       if (document.visibilityState !== 'visible') return
       try {
-        await updateReadCursor(username, target, flushSeq)
+        await updateReadCursor(
+          conversationId,
+          flushSeq,
+          options?.threadParentId ?? undefined
+        )
         setLastReadSeq((current) => Math.max(current, flushSeq))
       } catch (cursorError) {
         console.error('Failed to update read cursor', cursorError)
       }
     }, 150)
-  }, [loadedTarget, target, username])
+  }, [conversationId, loadedTarget, options?.threadParentId, targetKey, username])
 
   const addOptimisticMessage = useCallback((draft: {
     content: string

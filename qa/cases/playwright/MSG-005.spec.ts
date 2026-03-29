@@ -19,7 +19,7 @@ test.describe('MSG-005', () => {
 
     page.on('request', (req) => {
       const url = new URL(req.url())
-      if (/^\/internal\/agent\/[^/]+\/history$/.test(url.pathname)) {
+      if (req.method() === 'GET' && /^\/api\/conversations\/[^/]+\/messages$/.test(url.pathname)) {
         historyRequests += 1
         const after = url.searchParams.get('after')
         historyAfterParams.push(after == null ? null : Number(after))

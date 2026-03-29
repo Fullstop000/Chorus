@@ -7,14 +7,17 @@ test.describe('MSG-007', () => {
     page,
     request,
   }) => {
-    const { username } = await getWhoami(request)
     const channelName = `msg007-${Date.now()}`
-    await createChannelApi(request, {
+    const channel = await createChannelApi(request, {
       name: channelName,
       description: 'MSG-007 optimistic main chat coverage',
     })
     let sendCount = 0
-    await page.route(`**/internal/agent/${encodeURIComponent(username)}/send`, async (route) => {
+    await page.route(`**/api/conversations/${channel.id}/messages`, async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
       sendCount += 1
       if (sendCount === 1) {
         await new Promise((resolve) => setTimeout(resolve, 500))
@@ -58,7 +61,7 @@ test.describe('MSG-007', () => {
   }) => {
     const { username } = await getWhoami(request)
     const channelName = `msg007-thread-${Date.now()}`
-    await createChannelApi(request, {
+    const channel = await createChannelApi(request, {
       name: channelName,
       description: 'MSG-007 optimistic thread coverage',
     })
@@ -69,7 +72,11 @@ test.describe('MSG-007', () => {
     expect(parentResponse.ok(), await parentResponse.text()).toBeTruthy()
 
     let sendCount = 0
-    await page.route(`**/internal/agent/${encodeURIComponent(username)}/send`, async (route) => {
+    await page.route(`**/api/conversations/${channel.id}/messages`, async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue()
+        return
+      }
       sendCount += 1
       if (sendCount === 1) {
         await new Promise((resolve) => setTimeout(resolve, 500))

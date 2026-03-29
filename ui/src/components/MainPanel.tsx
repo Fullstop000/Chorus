@@ -10,6 +10,7 @@ import { ActivityPanel } from './ActivityPanel'
 import { WorkspacePanel } from './WorkspacePanel'
 import { MessageInput } from './MessageInput'
 import { ThreadPanel } from './ThreadPanel'
+import { ThreadsTab } from './ThreadsTab'
 import { ChannelMembersPanel } from './ChannelMembersPanel'
 import type { ChannelMemberInfo, TeamResponse } from '../types'
 import { TeamSettings } from './TeamSettings'
@@ -18,6 +19,7 @@ export function MainPanel() {
   const {
     activeTab,
     currentUser,
+    getAgentConversationId,
     refreshChannels,
     refreshAgents,
     refreshTeams,
@@ -30,7 +32,13 @@ export function MainPanel() {
     serverInfo,
   } = useApp()
   const chatTarget = useTarget()
-  const chatHistory = useHistory(currentUser, activeTab === 'chat' ? chatTarget : null)
+  const activeConversationId =
+    selectedChannelId ?? (selectedAgent ? getAgentConversationId(selectedAgent.name) : null)
+  const chatHistory = useHistory(
+    currentUser,
+    activeTab === 'chat' ? chatTarget : null,
+    activeConversationId
+  )
   const [members, setMembers] = useState<ChannelMemberInfo[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [showMembersPanel, setShowMembersPanel] = useState(false)
@@ -126,13 +134,12 @@ export function MainPanel() {
   }
 
   async function handleRetryChatMessage(message: typeof chatHistory.messages[number]) {
-    if (!chatTarget || !currentUser) return
+    if (!chatTarget || !currentUser || !activeConversationId) return
     const retryHandle = chatHistory.retryOptimisticMessage(message.id)
     if (!retryHandle) return
     try {
       const sendAck = await sendMessage(
-        currentUser,
-        chatTarget,
+        activeConversationId,
         message.content,
         message.attachments?.map((attachment) => attachment.id) ?? [],
         { clientNonce: retryHandle.clientNonce }
@@ -194,10 +201,12 @@ export function MainPanel() {
               />
               <MessageInput
                 target={chatTarget}
+                conversationId={activeConversationId}
                 history={chatHistory}
               />
             </>
           )}
+          {activeTab === 'threads' && <ThreadsTab />}
           {activeTab === 'tasks' && <TasksPanel />}
           {activeTab === 'profile' && <ProfilePanel />}
           {activeTab === 'activity' && selectedAgent && <ActivityPanel agentName={selectedAgent.name} />}

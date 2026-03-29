@@ -328,9 +328,16 @@ impl Store {
             return Ok(None);
         }
 
-        let thread_state =
-            Self::get_thread_notification_state_by_channel_id_inner(tx, &channel.id, thread_parent_id, member_name)?;
-        let latest_seq = thread_state.as_ref().map(|state| state.latest_seq).unwrap_or(0);
+        let thread_state = Self::get_thread_notification_state_by_channel_id_inner(
+            tx,
+            &channel.id,
+            thread_parent_id,
+            member_name,
+        )?;
+        let latest_seq = thread_state
+            .as_ref()
+            .map(|state| state.latest_seq)
+            .unwrap_or(0);
         let unread_count = thread_state
             .as_ref()
             .map(|state| state.unread_count)

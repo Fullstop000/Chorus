@@ -1,26 +1,13 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
 import {
   applyRealtimeEvent,
   historyFetchAfterForNotification,
   nextRealtimeCursor,
-  parseHistoryTarget,
-  resolveRealtimeTarget,
 } from './realtime'
 import type { HistoryMessage, RealtimeEvent, RealtimeMessage } from '../types'
 
 describe('realtime transport helpers', () => {
-  it('parses thread targets without corrupting dm targets', () => {
-    expect(parseHistoryTarget('#general:msg-1')).toEqual({
-      conversationTarget: '#general',
-      threadParentId: 'msg-1',
-    })
-    expect(parseHistoryTarget('dm:@bot-a')).toEqual({
-      conversationTarget: 'dm:@bot-a',
-      threadParentId: null,
-    })
-  })
-
   it('treats message.created bus frames as notification-only', () => {
     const messages: HistoryMessage[] = []
     const event: RealtimeEvent = {
@@ -149,19 +136,5 @@ describe('realtime transport helpers', () => {
     expect(frame.targets).toEqual(['conversation:abc'])
     expect(frame.streamId).toBe('conversation:abc')
     expect(frame.resumeFromStreamPos).toBe(7)
-  })
-
-  it('resolves thread history targets to thread subscription targets', async () => {
-    const api = await import('../api')
-    const spy = vi.spyOn(api, 'resolveChannel').mockResolvedValue({
-      channelId: 'conv-1',
-    })
-
-    await expect(resolveRealtimeTarget('alice', '#general:msg-1')).resolves.toBe('thread:msg-1')
-    await expect(resolveRealtimeTarget('alice', 'dm:@bot-a')).resolves.toBe(
-      'conversation:conv-1'
-    )
-
-    spy.mockRestore()
   })
 })

@@ -200,6 +200,64 @@ pub struct ThreadSummaryView {
     pub participant_count: i64,
 }
 
+/// Member-specific thread inbox row for one conversation, combining parent
+/// preview, thread summary metadata, and unread/read cursor state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelThreadInboxEntry {
+    /// Owning conversation UUID.
+    #[serde(rename = "conversationId")]
+    pub conversation_id: String,
+    /// Top-level message id that anchors the thread.
+    #[serde(rename = "threadParentId")]
+    pub thread_parent_id: String,
+    /// Parent message sequence in the conversation stream.
+    #[serde(rename = "parentSeq")]
+    pub parent_seq: i64,
+    /// Parent author handle.
+    #[serde(rename = "parentSenderName")]
+    pub parent_sender_name: String,
+    /// Parent author kind.
+    #[serde(rename = "parentSenderType")]
+    pub parent_sender_type: String,
+    /// Parent message preview/source text.
+    #[serde(rename = "parentContent")]
+    pub parent_content: String,
+    /// Parent message timestamp.
+    #[serde(rename = "parentCreatedAt")]
+    pub parent_created_at: String,
+    /// Current number of replies in the thread.
+    #[serde(rename = "replyCount")]
+    pub reply_count: i64,
+    /// Number of unique participants including the parent author.
+    #[serde(rename = "participantCount")]
+    pub participant_count: i64,
+    /// Latest reply sequence in the conversation stream.
+    #[serde(rename = "latestSeq")]
+    pub latest_seq: i64,
+    /// Highest read reply sequence for this member in this thread.
+    #[serde(rename = "lastReadSeq")]
+    pub last_read_seq: i64,
+    /// Replies newer than `last_read_seq`.
+    #[serde(rename = "unreadCount")]
+    pub unread_count: i64,
+    /// Most recent reply id when present.
+    #[serde(rename = "lastReplyMessageId")]
+    pub last_reply_message_id: Option<String>,
+    /// Most recent reply timestamp when present.
+    #[serde(rename = "lastReplyAt")]
+    pub last_reply_at: Option<String>,
+}
+
+/// Channel-scoped thread inbox payload for one member.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChannelThreadInbox {
+    /// Total unread replies across all listed threads.
+    #[serde(rename = "unreadCount")]
+    pub unread_count: i64,
+    /// Threads sorted unread-first, then newest activity first.
+    pub threads: Vec<ChannelThreadInboxEntry>,
+}
+
 impl ThreadSummaryView {
     fn from_projection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
@@ -891,7 +949,8 @@ impl Store {
 
             let mut max_conversation_seq = *last_read_seq;
             let mut last_conversation_message_id = None::<String>;
-            let mut thread_read_updates = std::collections::BTreeMap::<String, (i64, String)>::new();
+            let mut thread_read_updates =
+                std::collections::BTreeMap::<String, (i64, String)>::new();
             for (
                 msg_id,
                 sender_name,
@@ -1245,13 +1304,9 @@ impl Store {
             .map(|state| state.last_read_seq)
             .unwrap_or(0)
         } else {
-            Self::get_inbox_conversation_state_by_channel_id_inner(
-                &conn,
-                &channel.id,
-                member_name,
-            )?
-            .map(|state| state.last_read_seq)
-            .unwrap_or(0)
+            Self::get_inbox_conversation_state_by_channel_id_inner(&conn, &channel.id, member_name)?
+                .map(|state| state.last_read_seq)
+                .unwrap_or(0)
         };
         let latest_event_id: i64 =
             conn.query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
@@ -1275,6 +1330,65 @@ impl Store {
             latest_event_id,
             stream_id,
             stream_pos,
+        })
+    }
+
+    /// Load the thread inbox for one member scoped to a single conversation.
+    pub fn get_channel_thread_inbox(
+        &self,
+        channel_name: &str,
+        member_name: &str,
+    ) -> Result<ChannelThreadInbox> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        let mut threads = Vec::new();
+
+        for summary in Self::list_thread_summary_views_by_channel_id_inner(&conn, &channel.id)? {
+            let Some(parent_message) =
+                Self::get_conversation_message_view_inner(&conn, &summary.parent_message_id)?
+            else {
+                continue;
+            };
+            let Some(thread_state) = Self::get_thread_notification_state_by_channel_id_inner(
+                &conn,
+                &channel.id,
+                &summary.parent_message_id,
+                member_name,
+            )?
+            else {
+                continue;
+            };
+
+            threads.push(ChannelThreadInboxEntry {
+                conversation_id: channel.id.clone(),
+                thread_parent_id: summary.parent_message_id.clone(),
+                parent_seq: parent_message.seq,
+                parent_sender_name: parent_message.sender_name,
+                parent_sender_type: parent_message.sender_type,
+                parent_content: parent_message.content,
+                parent_created_at: parent_message.created_at,
+                reply_count: summary.reply_count,
+                participant_count: summary.participant_count,
+                latest_seq: thread_state.latest_seq,
+                last_read_seq: thread_state.last_read_seq,
+                unread_count: thread_state.unread_count,
+                last_reply_message_id: thread_state.last_reply_message_id,
+                last_reply_at: thread_state.last_reply_at,
+            });
+        }
+
+        threads.sort_by(|left, right| {
+            right
+                .latest_seq
+                .cmp(&left.latest_seq)
+                .then_with(|| right.parent_seq.cmp(&left.parent_seq))
+        });
+
+        let unread_count = threads.iter().map(|thread| thread.unread_count).sum();
+        Ok(ChannelThreadInbox {
+            unread_count,
+            threads,
         })
     }
 
@@ -1445,6 +1559,23 @@ impl Store {
                 ThreadSummaryView::from_projection_row,
             )
             .ok())
+    }
+
+    fn list_thread_summary_views_by_channel_id_inner(
+        conn: &Connection,
+        conversation_id: &str,
+    ) -> Result<Vec<ThreadSummaryView>> {
+        let mut stmt = conn.prepare(
+            "SELECT conversation_id, parent_message_id, reply_count,
+                    last_reply_message_id, last_reply_at, participant_count
+             FROM thread_summaries_view
+             WHERE conversation_id = ?1",
+        )?;
+        let rows = stmt.query_map(
+            params![conversation_id],
+            ThreadSummaryView::from_projection_row,
+        )?;
+        Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
     fn hydrate_conversation_message_view(

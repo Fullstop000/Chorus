@@ -1,4 +1,3 @@
-import { resolveChannel } from '../api'
 import type { HistoryMessage, RealtimeEvent, RealtimeMessage } from '../types'
 
 const BASE = ''
@@ -8,44 +7,6 @@ export function createRealtimeSocket(viewer: string): WebSocket {
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
   url.searchParams.set('viewer', viewer)
   return new WebSocket(url)
-}
-
-export function parseHistoryTarget(target: string): {
-  conversationTarget: string
-  threadParentId: string | null
-} {
-  if (target.startsWith('dm:@')) {
-    const firstColon = target.indexOf(':')
-    const lastColon = target.lastIndexOf(':')
-    if (lastColon > firstColon) {
-      return {
-        conversationTarget: target.slice(0, lastColon),
-        threadParentId: target.slice(lastColon + 1),
-      }
-    }
-  }
-  if (target.startsWith('#')) {
-    const separator = target.lastIndexOf(':')
-    if (separator > 0) {
-      return {
-        conversationTarget: target.slice(0, separator),
-        threadParentId: target.slice(separator + 1),
-      }
-    }
-  }
-  return { conversationTarget: target, threadParentId: null }
-}
-
-export async function resolveRealtimeTarget(
-  username: string,
-  target: string
-): Promise<string> {
-  const { conversationTarget, threadParentId } = parseHistoryTarget(target)
-  const { channelId } = await resolveChannel(username, conversationTarget)
-  if (threadParentId) {
-    return `thread:${threadParentId}`
-  }
-  return `conversation:${channelId}`
 }
 
 export function applyRealtimeEvent(

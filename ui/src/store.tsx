@@ -1,12 +1,21 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
-import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team } from './types'
-import { getWhoami, getServerInfo, listAgents, listChannels, listTeams, resolveChannel, getInboxState } from './api'
-import { applyInboxEvent, bootstrapInboxState, buildConversationRegistry, createInboxState, dmConversationNameForParticipants } from './inbox'
+import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team, ThreadInboxEntry, HumanInfo } from './types'
+import {
+  ensureDirectMessageConversation,
+  getChannelThreads,
+  getInboxState,
+  getWhoami,
+  listAgents,
+  listChannels,
+  listHumans,
+  listTeams,
+} from './api'
+import { applyInboxEvent, bootstrapInboxState, buildConversationRegistry, conversationThreadUnreadCount, createInboxState, dmConversationNameForParticipants, mergeChannelThreadInboxEntries } from './inbox'
 import { isVisibleSidebarChannel } from './sidebarChannels'
 import { nextRealtimeCursor } from './transport/realtime'
 import { getRealtimeSession } from './transport/realtimeSession'
 
-export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
+export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
 export interface AppState {
   currentUser: string                  // OS username from /api/whoami
@@ -21,13 +30,17 @@ export interface AppState {
   activeTab: ActiveTab
   openThreadMsg: HistoryMessage | null // non-null when thread panel is open
   getConversationUnread: (conversationId?: string | null) => number
+  getConversationThreads: (conversationId?: string | null) => ThreadInboxEntry[]
+  getConversationThreadUnread: (conversationId?: string | null) => number
   getAgentUnread: (agentName: string) => number
+  getAgentConversationId: (agentName: string) => string | null
   setSelectedChannel: (ch: string | null, channelId?: string | null) => void
   setSelectedAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
   setOpenThreadMsg: (msg: HistoryMessage | null) => void
   refreshServerInfo: () => Promise<void>
   refreshChannels: () => Promise<void>
+  refreshConversationThreads: (conversationId: string) => Promise<void>
   refreshAgents: () => Promise<void>
   refreshTeams: () => Promise<void>
 }
@@ -36,9 +49,9 @@ const AppContext = createContext<AppState | null>(null)
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const [currentUser, setCurrentUser] = useState('')
-  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null)
   const [channels, setChannels] = useState<ChannelInfo[]>([])
   const [systemConversationChannels, setSystemConversationChannels] = useState<ChannelInfo[]>([])
+  const [humans, setHumans] = useState<HumanInfo[]>([])
   const [dmChannels, setDmChannels] = useState<ChannelInfo[]>([])
   const [agents, setAgents] = useState<AgentInfo[]>([])
   const [teams, setTeams] = useState<Team[]>([])
@@ -49,6 +62,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
   const [openThreadMsg, setOpenThreadMsg] = useState<HistoryMessage | null>(null)
   const [inboxState, setInboxState] = useState(createInboxState)
+  const [conversationThreads, setConversationThreads] = useState<Record<string, ThreadInboxEntry[]>>({})
   const [shellBootstrapped, setShellBootstrapped] = useState(false)
   // Ref so refreshServerInfo can check selectedAgent without re-creating the callback
   const selectedAgentRef = useRef<AgentInfo | null>(null)
@@ -75,10 +89,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [])
 
-  const applyConversationLists = useCallback((
-    info: ServerInfo,
-    allConversationChannels: ChannelInfo[]
-  ) => {
+  const applyConversationLists = useCallback((allConversationChannels: ChannelInfo[]) => {
     const loadedChannels = allConversationChannels.filter(
       (channel) => channel.channel_type !== 'dm' && channel.channel_type !== 'system'
     )
@@ -89,7 +100,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       (channel) => channel.channel_type === 'dm'
     )
 
-    setServerInfo(info)
     setChannels(loadedChannels)
     setSystemConversationChannels(loadedSystemConversationChannels)
     setDmChannels(loadedDmChannels)
@@ -133,11 +143,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const refreshChannels = useCallback(async () => {
     if (!currentUser) return
     try {
-      const [info, allConversationChannels] = await Promise.all([
-        getServerInfo(currentUser),
-        listChannels({ member: currentUser, includeDm: true, includeSystem: true }),
-      ])
-      applyConversationLists(info, allConversationChannels)
+      const allConversationChannels = await listChannels({
+        member: currentUser,
+        includeDm: true,
+        includeSystem: true,
+      })
+      applyConversationLists(allConversationChannels)
     } catch (error) {
       console.error('Failed to load channels', error)
     }
@@ -147,14 +158,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!currentUser) return
     try {
       const loadedAgents = await listAgents()
-      await Promise.all(
-        loadedAgents.map((agent) =>
-          resolveChannel(currentUser, `dm:@${agent.name}`).catch((error) => {
-            console.error('Failed to pre-resolve agent DM', error)
-            return null
-          })
-        )
-      )
       setAgents(loadedAgents)
       setSelectedAgent((prev) => {
         if (!prev) return prev
@@ -169,26 +172,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!currentUser) return
     setServerInfoLoading(true)
     try {
-      const [info, loadedAgents, loadedTeams] = await Promise.all([
-        getServerInfo(currentUser),
+      const [loadedAgents, loadedTeams, loadedHumans] = await Promise.all([
         listAgents(),
         listTeams(),
+        listHumans(),
       ])
-      await Promise.all(
-        loadedAgents.map((agent) =>
-          resolveChannel(currentUser, `dm:@${agent.name}`).catch((error) => {
-            console.error('Failed to pre-resolve agent DM', error)
-            return null
-          })
-        )
-      )
       const [allConversationChannels, inbox] = await Promise.all([
         listChannels({ member: currentUser, includeDm: true, includeSystem: true }),
         getInboxState(currentUser),
       ])
-      applyConversationLists(info, allConversationChannels)
+      applyConversationLists(allConversationChannels)
       setAgents(loadedAgents)
       setTeams(loadedTeams)
+      setHumans(loadedHumans)
       setInboxState(bootstrapInboxState(inbox.conversations))
       inboxCursorRef.current = inbox.latestEventId ?? 0
       setSelectedAgent((prev) => {
@@ -213,6 +209,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (!currentUser) {
       inboxCursorRef.current = 0
       setInboxState(createInboxState())
+      setConversationThreads({})
       setShellBootstrapped(false)
       return
     }
@@ -267,10 +264,50 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })
   }, [agents, channels, currentUser, dmChannels, refreshAgents, refreshChannels, refreshTeams, shellBootstrapped, systemConversationChannels])
 
+  useEffect(() => {
+    if (!currentUser || !selectedAgent) return
+    const dmChannelName = dmConversationNameForParticipants(currentUser, selectedAgent.name)
+    if (dmChannels.some((channel) => channel.name === dmChannelName)) return
+
+    let cancelled = false
+    ensureDirectMessageConversation(selectedAgent.name)
+      .then((channel) => {
+        if (cancelled) return
+        setDmChannels((current) => {
+          if (current.some((entry) => entry.id === channel.id || entry.name === channel.name)) {
+            return current
+          }
+          return [...current, channel]
+        })
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.error('Failed to ensure direct-message conversation', error)
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [currentUser, dmChannels, selectedAgent])
+
   // Keep ref in sync so refreshServerInfo can read it without stale closure
   useEffect(() => { selectedAgentRef.current = selectedAgent }, [selectedAgent])
   useEffect(() => { selectedChannelRef.current = selectedChannel }, [selectedChannel])
   useEffect(() => { selectedChannelIdRef.current = selectedChannelId }, [selectedChannelId])
+
+  const refreshConversationThreads = useCallback(async (conversationId: string) => {
+    if (!currentUser) return
+    try {
+      const response = await getChannelThreads(conversationId)
+      setConversationThreads((current) => ({
+        ...current,
+        [conversationId]: response.threads,
+      }))
+    } catch (error) {
+      console.error('Failed to load channel threads', error)
+    }
+  }, [currentUser])
 
   // When selecting an agent, switch to chat tab and close thread
   const handleSetSelectedAgent = useCallback((agent: AgentInfo | null) => {
@@ -289,25 +326,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setOpenThreadMsg(null)
     if (ch) {
       setSelectedAgent(null)
-      setActiveTab('chat')
-      if (!channelId && currentUser) {
-        void resolveChannel(currentUser, ch)
-          .then((response) => {
-            if (selectedChannelRef.current === ch) {
-              setSelectedChannelId(response.channelId)
-            }
-          })
-          .catch((error) => {
-            console.error('Failed to resolve channel', error)
-          })
+      if (activeTab === 'workspace' || activeTab === 'activity' || activeTab === 'profile') {
+        setActiveTab('chat')
       }
     }
-  }, [currentUser])
+  }, [activeTab])
 
   const getConversationUnread = useCallback((conversationId?: string | null) => {
     if (!conversationId) return 0
     return inboxState.conversations[conversationId]?.unreadCount ?? 0
   }, [inboxState.conversations])
+
+  const getConversationThreads = useCallback((conversationId?: string | null) => {
+    if (!conversationId) return []
+    return mergeChannelThreadInboxEntries(
+      conversationThreads[conversationId] ?? [],
+      inboxState,
+      conversationId
+    )
+  }, [conversationThreads, inboxState])
+
+  const getConversationThreadUnread = useCallback((conversationId?: string | null) => {
+    if (!conversationId) return 0
+    const cachedThreads = conversationThreads[conversationId]
+    if (cachedThreads && cachedThreads.length > 0) {
+      return mergeChannelThreadInboxEntries(cachedThreads, inboxState, conversationId)
+        .reduce((sum, entry) => sum + entry.unreadCount, 0)
+    }
+    return conversationThreadUnreadCount(inboxState, conversationId)
+  }, [conversationThreads, inboxState])
 
   const getAgentUnread = useCallback((agentName: string) => {
     const dmChannelName = dmConversationNameForParticipants(currentUser, agentName)
@@ -316,11 +363,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return getConversationUnread(conversationId)
   }, [currentUser, dmChannels, getConversationUnread])
 
+  const getAgentConversationId = useCallback((agentName: string) => {
+    const dmChannelName = dmConversationNameForParticipants(currentUser, agentName)
+    return dmChannels.find((channel) => channel.name === dmChannelName)?.id ?? null
+  }, [currentUser, dmChannels])
+
+  const serverInfoValue: ServerInfo | null =
+    humans.length > 0 || systemConversationChannels.length > 0
+      ? { system_channels: systemConversationChannels, humans }
+      : null
+
   return (
     <AppContext.Provider
       value={{
         currentUser,
-        serverInfo,
+        serverInfo: serverInfoValue,
         channels,
         agents,
         teams,
@@ -330,7 +387,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         selectedAgent,
         activeTab,
         getConversationUnread,
+        getConversationThreads,
+        getConversationThreadUnread,
         getAgentUnread,
+        getAgentConversationId,
         setSelectedChannel: handleSetSelectedChannel,
         setSelectedAgent: handleSetSelectedAgent,
         setActiveTab,
@@ -338,6 +398,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setOpenThreadMsg,
         refreshServerInfo,
         refreshChannels,
+        refreshConversationThreads,
         refreshAgents,
         refreshTeams,
       }}

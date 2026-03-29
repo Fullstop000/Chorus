@@ -383,14 +383,14 @@
 - Steps:
   1. Open the app root.
   2. Wait for the shell to render and then remain idle for at least 6 seconds.
-  3. Count requests to `/api/server-info`, `/api/channels`, `/api/agents`, and `/api/teams`.
+  3. Count requests to `/api/humans`, `/api/channels`, `/api/agents`, and `/api/teams`.
   4. Verify each endpoint is fetched exactly once during bootstrap.
 - Expected:
   - shell bootstraps correctly
   - sidebar data is fetched once
   - no background polling resumes while the shell is idle
 - Common failure signals:
-  - repeated `server-info` polling
+  - repeated humans-list polling
   - channels, agents, or teams lists refetch without user action
   - idle shell continuously wakes the network panel
 

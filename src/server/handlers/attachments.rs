@@ -7,9 +7,8 @@ use uuid::Uuid;
 
 use super::{api_err, internal_err, ApiResult, AppState, ErrorResponse};
 
-pub async fn handle_upload(
-    State(state): State<AppState>,
-    Path(_agent_id): Path<String>,
+async fn store_upload(
+    state: AppState,
     mut multipart: Multipart,
 ) -> ApiResult<serde_json::Value> {
     let field = multipart
@@ -53,6 +52,21 @@ pub async fn handle_upload(
     Ok(Json(
         serde_json::json!({ "id": att_id, "filename": filename, "sizeBytes": size }),
     ))
+}
+
+pub async fn handle_upload(
+    State(state): State<AppState>,
+    Path(_agent_id): Path<String>,
+    multipart: Multipart,
+) -> ApiResult<serde_json::Value> {
+    store_upload(state, multipart).await
+}
+
+pub async fn handle_public_upload(
+    State(state): State<AppState>,
+    multipart: Multipart,
+) -> ApiResult<serde_json::Value> {
+    store_upload(state, multipart).await
 }
 
 pub async fn handle_get_attachment(

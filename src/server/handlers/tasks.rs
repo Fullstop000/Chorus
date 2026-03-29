@@ -3,6 +3,7 @@ use axum::Json;
 use serde::Deserialize;
 
 use super::{api_err, ApiResult, AppState};
+use crate::store::channels::Channel;
 use crate::store::tasks::TaskStatus;
 
 // ── Inline query structs ──
@@ -17,6 +18,7 @@ pub struct ListTasksParams {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CreateTasksRequest {
+    #[serde(default)]
     pub channel: String,
     pub tasks: Vec<CreateTaskItem>,
 }
@@ -28,18 +30,21 @@ pub struct CreateTaskItem {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClaimTasksRequest {
+    #[serde(default)]
     pub channel: String,
     pub task_numbers: Vec<i64>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct UnclaimTaskRequest {
+    #[serde(default)]
     pub channel: String,
     pub task_number: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct UpdateTaskStatusRequest {
+    #[serde(default)]
     pub channel: String,
     pub task_number: i64,
     pub status: String,
@@ -48,6 +53,17 @@ pub struct UpdateTaskStatusRequest {
 // Duplicate the trivial helper locally to avoid a cross-module dependency.
 fn strip_channel_prefix(s: &str) -> &str {
     s.strip_prefix('#').unwrap_or(s)
+}
+
+fn load_channel_by_id(
+    state: &AppState,
+    conversation_id: &str,
+) -> Result<Channel, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    state
+        .store
+        .find_channel_by_id(conversation_id)
+        .map_err(|e| api_err(e.to_string()))?
+        .ok_or_else(|| api_err("channel not found"))
 }
 
 // ── Public handlers ──
@@ -123,6 +139,82 @@ pub async fn handle_update_task_status(
     state
         .store
         .update_task_status(channel_name, req.task_number, &agent_id, new_status)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn handle_public_list_tasks(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Query(params): Query<ListTasksParams>,
+) -> ApiResult<serde_json::Value> {
+    let channel = load_channel_by_id(&state, &conversation_id)?;
+    let status_filter = params
+        .status
+        .as_deref()
+        .and_then(TaskStatus::from_status_str);
+    let tasks = state
+        .store
+        .list_tasks(&channel.name, status_filter)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "tasks": tasks })))
+}
+
+pub async fn handle_public_create_tasks(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<CreateTasksRequest>,
+) -> ApiResult<serde_json::Value> {
+    let actor_id = whoami::username();
+    let channel = load_channel_by_id(&state, &conversation_id)?;
+    let titles: Vec<&str> = req.tasks.iter().map(|t| t.title.as_str()).collect();
+    let tasks = state
+        .store
+        .create_tasks(&channel.name, &actor_id, &titles)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "tasks": tasks })))
+}
+
+pub async fn handle_public_claim_tasks(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<ClaimTasksRequest>,
+) -> ApiResult<serde_json::Value> {
+    let actor_id = whoami::username();
+    let channel = load_channel_by_id(&state, &conversation_id)?;
+    let results = state
+        .store
+        .claim_tasks(&channel.name, &actor_id, &req.task_numbers)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "results": results })))
+}
+
+pub async fn handle_public_unclaim_task(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<UnclaimTaskRequest>,
+) -> ApiResult<serde_json::Value> {
+    let actor_id = whoami::username();
+    let channel = load_channel_by_id(&state, &conversation_id)?;
+    state
+        .store
+        .unclaim_task(&channel.name, &actor_id, req.task_number)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+pub async fn handle_public_update_task_status(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Json(req): Json<UpdateTaskStatusRequest>,
+) -> ApiResult<serde_json::Value> {
+    let actor_id = whoami::username();
+    let channel = load_channel_by_id(&state, &conversation_id)?;
+    let new_status = TaskStatus::from_status_str(&req.status)
+        .ok_or_else(|| api_err(format!("invalid status: {}", req.status)))?;
+    state
+        .store
+        .update_task_status(&channel.name, req.task_number, &actor_id, new_status)
         .map_err(|e| api_err(e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

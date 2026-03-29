@@ -498,12 +498,18 @@ fn conversation_state_payload(
 
     let mut payload = event.payload.as_object().cloned().unwrap_or_default();
     payload.insert("conversationId".into(), json!(message_view.conversation_id));
-    payload.insert("conversationType".into(), json!(message_view.conversation_type));
+    payload.insert(
+        "conversationType".into(),
+        json!(message_view.conversation_type),
+    );
     payload.insert("messageId".into(), json!(message_view.message_id));
     payload.insert("latestSeq".into(), json!(message_view.seq));
     payload.insert("lastReadSeq".into(), json!(last_read_seq));
     payload.insert("unreadCount".into(), json!(unread_count));
-    payload.insert("threadParentId".into(), json!(message_view.thread_parent_id));
+    payload.insert(
+        "threadParentId".into(),
+        json!(message_view.thread_parent_id),
+    );
     payload.insert("createdAt".into(), json!(message_view.created_at));
     Value::Object(payload)
 }
@@ -529,7 +535,10 @@ fn thread_state_payload(store: Option<&Store>, viewer: Option<&str>, event: &Sto
             store.get_thread_notification_state(channel_name, parent_message_id, viewer_name)
         {
             payload.insert("conversationId".into(), json!(thread_state.conversation_id));
-            payload.insert("threadParentId".into(), json!(thread_state.thread_parent_id));
+            payload.insert(
+                "threadParentId".into(),
+                json!(thread_state.thread_parent_id),
+            );
             payload.insert("latestSeq".into(), json!(thread_state.latest_seq));
             payload.insert("lastReadSeq".into(), json!(thread_state.last_read_seq));
             payload.insert("unreadCount".into(), json!(thread_state.unread_count));

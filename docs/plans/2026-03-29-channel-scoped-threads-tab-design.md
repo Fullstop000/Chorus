@@ -12,7 +12,7 @@ The target behavior is:
 - keep the `Chat` tab focused on top-level channel messages
 - add a `Threads` tab beside `Chat` and `Tasks`
 - scope the `Threads` tab to the currently selected channel only
-- default the `Threads` tab to an unread-first triage view
+- default the `Threads` tab to showing all channel threads ordered by latest reply
 - preserve the current unread model where channel unread includes thread replies
 - make it obvious how a user can clear thread-driven unread counts
 
@@ -99,17 +99,17 @@ Out of scope for now:
 - cross-channel thread search
 - global thread mentions or assignments
 
-### Unread-first default
+### Latest-activity default
 
-The default `Threads` view is `Unread first`.
+The default `Threads` view shows all channel threads ordered by latest reply.
 
 This means:
 
-- threads with unread replies are shown first
-- within unread threads, newest reply sorts first
-- read threads can appear in a lower-priority recent section
+- read and unread threads share the same list
+- the newest active thread appears first regardless of read state
+- unread is indicated by the thread unread pill and the `Threads (N)` badge
 
-This makes the tab a triage surface first, not just an archive of all thread activity.
+This makes the tab behave like a room-level thread index, not an inbox queue.
 
 ### Preserve channel unread semantics
 
@@ -133,7 +133,7 @@ For a selected channel, the primary content navigation becomes:
 Where:
 
 - `Chat` shows only top-level messages
-- `Threads (N)` shows unread thread replies for the selected channel
+- `Threads (N)` shows the unread thread-reply subtotal for the selected channel
 - `Tasks` is unchanged
 
 The `Threads` badge reflects thread unread only, while the sidebar channel badge still reflects total channel unread.
@@ -156,7 +156,7 @@ The `Threads` tab becomes the primary management surface for thread activity in 
 
 Desktop layout:
 
-- left: unread-first thread list
+- left: all channel threads ordered by latest reply
 - right: selected thread reader
 
 Narrow layout:
@@ -175,7 +175,7 @@ A thread row should include:
 - last reply timestamp
 - optional participant summary
 
-Unread rows should be visually prominent. Read-recent rows should be quieter.
+Unread and read rows use the same base layout. Unread is indicated only by the unread pill on the row and the tab badge.
 
 ### Thread reader behavior
 
@@ -257,8 +257,8 @@ Suggested backend/API shape:
 
 ## Edge Cases
 
-- No unread threads: show a calm empty state and optionally a read-recent section.
-- Many unread threads: preserve scanability; unread-first sort remains stable.
+- No active threads: show a calm empty state.
+- Many active threads: preserve scanability; ordering follows latest reply desc.
 - Deleted or missing parent message: keep the thread row, but degrade the preview safely.
 - Channel switch: the `Threads` tab scope resets to the newly selected channel.
 - Narrow screens: never force a cramped split-pane layout.
@@ -290,6 +290,6 @@ The approved design is:
 
 - add a `Threads` tab beside `Chat` and `Tasks`
 - scope it to the selected channel only
-- default it to `Unread first`
+- default it to latest-reply ordering for all channel threads
 - keep channel unread semantics that include thread replies
 - make the `Threads` tab the explicit place to resolve thread unread

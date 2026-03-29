@@ -587,20 +587,38 @@ async fn test_thread_reply_increments_parent_conversation_and_thread_unread_coun
         .unwrap();
 
     let conversation_event = read_json_frame(&mut socket).await;
-    assert_eq!(conversation_event["event"]["eventType"], "conversation.state");
+    assert_eq!(
+        conversation_event["event"]["eventType"],
+        "conversation.state"
+    );
     assert_eq!(conversation_event["event"]["payload"]["latestSeq"], 2);
     assert_eq!(conversation_event["event"]["payload"]["lastReadSeq"], 0);
     assert_eq!(conversation_event["event"]["payload"]["unreadCount"], 2);
 
     let thread_conversation_event = read_json_frame(&mut thread_socket).await;
-    assert_eq!(thread_conversation_event["event"]["eventType"], "conversation.state");
-    assert_eq!(thread_conversation_event["event"]["payload"]["latestSeq"], 2);
-    assert_eq!(thread_conversation_event["event"]["payload"]["lastReadSeq"], 0);
-    assert_eq!(thread_conversation_event["event"]["payload"]["unreadCount"], 2);
+    assert_eq!(
+        thread_conversation_event["event"]["eventType"],
+        "conversation.state"
+    );
+    assert_eq!(
+        thread_conversation_event["event"]["payload"]["latestSeq"],
+        2
+    );
+    assert_eq!(
+        thread_conversation_event["event"]["payload"]["lastReadSeq"],
+        0
+    );
+    assert_eq!(
+        thread_conversation_event["event"]["payload"]["unreadCount"],
+        2
+    );
 
     let thread_event = read_json_frame(&mut thread_socket).await;
     assert_eq!(thread_event["event"]["eventType"], "thread.state");
-    assert_eq!(thread_event["event"]["payload"]["threadParentId"], parent_id);
+    assert_eq!(
+        thread_event["event"]["payload"]["threadParentId"],
+        parent_id
+    );
     assert_eq!(thread_event["event"]["payload"]["latestSeq"], 2);
     assert_eq!(thread_event["event"]["payload"]["lastReadSeq"], 0);
     assert_eq!(thread_event["event"]["payload"]["unreadCount"], 1);

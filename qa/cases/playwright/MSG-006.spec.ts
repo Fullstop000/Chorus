@@ -13,10 +13,15 @@ async function postMessage(
   request: APIRequestContext,
   actor: string,
   target: string,
-  content: string
+  content: string,
+  options?: { suppressAgentDelivery?: boolean }
 ): Promise<{ messageId: string }> {
   const response = await request.post(`/internal/agent/${encodeURIComponent(actor)}/send`, {
-    data: { target, content },
+    data: {
+      target,
+      content,
+      suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
+    },
   })
   expect(response.ok(), await response.text()).toBeTruthy()
   return response.json()
@@ -46,16 +51,18 @@ test.describe('MSG-006', () => {
     const parentToken = `thread-parent-${Date.now()}`
     const replyToken = `thread-reply-${Date.now()}`
     const parent = await postMessage(request, username, `#${channelName}`, parentToken)
-    await postMessage(request, agentName, `#${channelName}:${parent.messageId}`, replyToken)
+    await postMessage(request, agentName, `#${channelName}:${parent.messageId}`, replyToken, {
+      suppressAgentDelivery: true,
+    })
 
-    const readCursorPosts: Array<{ target?: string; lastReadSeq?: number }> = []
+    const readCursorPosts: Array<{ threadParentId?: string; lastReadSeq?: number }> = []
     page.on('request', (req) => {
       const url = new URL(req.url())
       if (
         req.method() === 'POST' &&
-        /^\/internal\/agent\/[^/]+\/read-cursor$/.test(url.pathname)
+        url.pathname === `/api/conversations/${channel.id}/read-cursor`
       ) {
-        const payload = req.postDataJSON() as { target?: string; lastReadSeq?: number }
+        const payload = req.postDataJSON() as { threadParentId?: string; lastReadSeq?: number }
         readCursorPosts.push(payload)
       }
     })
@@ -71,9 +78,7 @@ test.describe('MSG-006', () => {
     await expect(parentMessage).toBeVisible()
     await page.waitForTimeout(1_000)
 
-    expect(
-      readCursorPosts.some((post) => post.target === `#${channelName}:${parent.messageId}`)
-    ).toBeFalsy()
+    expect(readCursorPosts.some((post) => post.threadParentId === parent.messageId)).toBeFalsy()
 
     await parentMessage.locator('.message-reply-count').click()
     await expect(page.locator('.thread-panel')).toBeVisible()
@@ -82,8 +87,8 @@ test.describe('MSG-006', () => {
     await expect
       .poll(
         () =>
-          readCursorPosts.find((post) => post.target === `#${channelName}:${parent.messageId}`)?.lastReadSeq ??
-          null,
+          readCursorPosts.find((post) => post.threadParentId === parent.messageId)?.lastReadSeq ??
+            null,
         { timeout: 10_000 }
       )
       .not.toBeNull()

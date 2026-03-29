@@ -4,6 +4,7 @@ import type {
   ConversationStatePayload,
   InboxConversationState,
   RealtimeEvent,
+  ThreadInboxEntry,
   ThreadStatePayload,
 } from './types'
 
@@ -130,6 +131,47 @@ export function createInboxState(): InboxState {
 
 export function threadNotificationKey(conversationId: string, threadParentId: string): string {
   return `${conversationId}:${threadParentId}`
+}
+
+export function conversationThreadUnreadCount(
+  state: InboxState,
+  conversationId?: string | null
+): number {
+  if (!conversationId) return 0
+  let unreadCount = 0
+  for (const threadState of Object.values(state.threads)) {
+    if (threadState.conversationId !== conversationId) continue
+    unreadCount += threadState.unreadCount
+  }
+  return unreadCount
+}
+
+export function mergeChannelThreadInboxEntries(
+  entries: ThreadInboxEntry[],
+  state: InboxState,
+  conversationId?: string | null
+): ThreadInboxEntry[] {
+  const merged = entries
+    .filter((entry) => !conversationId || entry.conversationId === conversationId)
+    .map((entry) => {
+      const liveState = state.threads[threadNotificationKey(entry.conversationId, entry.threadParentId)]
+      if (!liveState) return entry
+      return {
+        ...entry,
+        latestSeq: liveState.latestSeq,
+        lastReadSeq: liveState.lastReadSeq,
+        unreadCount: liveState.unreadCount,
+        lastReplyMessageId: liveState.lastReplyMessageId ?? entry.lastReplyMessageId ?? null,
+        lastReplyAt: liveState.lastReplyAt ?? entry.lastReplyAt ?? null,
+      }
+    })
+
+  merged.sort((left, right) =>
+    (right.latestSeq - left.latestSeq) ||
+    (right.parentSeq - left.parentSeq)
+  )
+
+  return merged
 }
 
 export function dmConversationNameForParticipants(left: string, right: string): string {

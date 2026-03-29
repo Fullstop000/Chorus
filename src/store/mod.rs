@@ -25,8 +25,9 @@ pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
 };
 pub use messages::{
-    ActivityMessage, AttachmentRef, ConversationMessageView, ForwardedFrom, HistoryMessage,
-    HistorySnapshot, Message, ReceivedMessage, SenderType, ThreadSummaryView,
+    ActivityMessage, AttachmentRef, ChannelThreadInbox, ChannelThreadInboxEntry,
+    ConversationMessageView, ForwardedFrom, HistoryMessage, HistorySnapshot, Message,
+    ReceivedMessage, SenderType, ThreadSummaryView,
 };
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};

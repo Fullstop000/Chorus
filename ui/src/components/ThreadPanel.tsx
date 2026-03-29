@@ -9,8 +9,22 @@ import type { MentionMember } from './MentionTextarea'
 import { sendMessage } from '../api'
 import './ThreadPanel.css'
 
-export function ThreadPanel() {
-  const { currentUser, openThreadMsg, setOpenThreadMsg, serverInfo, agents, teams } = useApp()
+interface ThreadPanelProps {
+  variant?: 'drawer' | 'content'
+}
+
+export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
+  const {
+    currentUser,
+    openThreadMsg,
+    setOpenThreadMsg,
+    serverInfo,
+    agents,
+    teams,
+    selectedAgent,
+    selectedChannelId,
+    getAgentConversationId,
+  } = useApp()
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
     ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
@@ -20,6 +34,8 @@ export function ThreadPanel() {
   const threadTarget = mainTarget && openThreadMsg
     ? `${mainTarget}:${openThreadMsg.id}`
     : null
+  const threadConversationId =
+    selectedChannelId ?? (selectedAgent ? getAgentConversationId(selectedAgent.name) : null)
 
   const {
     messages,
@@ -31,7 +47,9 @@ export function ThreadPanel() {
     ackOptimisticMessage,
     failOptimisticMessage,
     retryOptimisticMessage,
-  } = useHistory(currentUser, threadTarget)
+  } = useHistory(currentUser, threadTarget, threadConversationId, {
+    threadParentId: openThreadMsg?.id ?? null,
+  })
   const [content, setContent] = useState('')
   const [sending, setSending] = useState(false)
   const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
@@ -164,8 +182,10 @@ export function ThreadPanel() {
         content: content.trim(),
       })
       optimisticHandle = handle
-      const sendAck = await sendMessage(currentUser, threadTarget, content.trim(), [], {
+      if (!threadConversationId || !openThreadMsg) throw new Error('thread unavailable')
+      const sendAck = await sendMessage(threadConversationId, content.trim(), [], {
         clientNonce: handle.clientNonce,
+        threadParentId: openThreadMsg.id,
       })
       ackOptimisticMessage(handle, {
         messageId: sendAck.messageId,
@@ -194,12 +214,12 @@ export function ThreadPanel() {
     const retryHandle = retryOptimisticMessage(message.id)
     if (!retryHandle) return
     try {
+      if (!threadConversationId || !openThreadMsg) throw new Error('thread unavailable')
       const sendAck = await sendMessage(
-        currentUser,
-        threadTarget,
+        threadConversationId,
         message.content,
         message.attachments?.map((attachment) => attachment.id) ?? [],
-        { clientNonce: retryHandle.clientNonce }
+        { clientNonce: retryHandle.clientNonce, threadParentId: openThreadMsg.id }
       )
       ackOptimisticMessage(retryHandle, {
         messageId: sendAck.messageId,
@@ -220,7 +240,7 @@ export function ThreadPanel() {
   if (!openThreadMsg) return null
 
   return (
-    <div className="thread-panel">
+    <div className={`thread-panel${variant === 'content' ? ' thread-panel--content' : ''}`}>
       {/* Header */}
       <div className="thread-header">
         <div className="thread-header-copy">
