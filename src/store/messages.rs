@@ -413,6 +413,40 @@ impl Store {
         )
     }
 
+    fn append_conversation_state_event_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        thread_parent_id: Option<&str>,
+        sender_name: &str,
+        sender_type: SenderType,
+        inserted: &InsertedMessage,
+        caused_by_kind: &'static str,
+    ) -> Result<i64> {
+        let (scope_kind, scope_id) = Self::conversation_scope_for(channel);
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type: "conversation.state",
+                scope_kind,
+                scope_id,
+                channel_id: Some(&channel.id),
+                channel_name: Some(&channel.name),
+                thread_parent_id,
+                actor_name: Some(sender_name),
+                actor_type: Some(sender_type.as_str()),
+                caused_by_kind: Some(caused_by_kind),
+                payload: json!({
+                    "conversationId": channel.id.as_str(),
+                    "conversationName": channel.name.as_str(),
+                    "conversationType": channel.channel_type.as_api_str(),
+                    "messageId": inserted.id.as_str(),
+                    "latestSeq": inserted.seq,
+                    "threadParentId": thread_parent_id,
+                }),
+            },
+        )
+    }
+
     fn append_system_notice_event_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
@@ -552,6 +586,48 @@ impl Store {
         Ok(last_event_id)
     }
 
+    fn append_thread_state_event_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        parent_id: &str,
+        sender_name: &str,
+        sender_type: SenderType,
+        inserted: &InsertedMessage,
+    ) -> Result<i64> {
+        let summary = tx.query_row(
+            "SELECT conversation_id, parent_message_id, reply_count,
+                    last_reply_message_id, last_reply_at, participant_count
+             FROM thread_summaries_view
+             WHERE conversation_id = ?1 AND parent_message_id = ?2",
+            params![channel.id, parent_id],
+            ThreadSummaryView::from_projection_row,
+        )?;
+        Self::append_event_tx(
+            tx,
+            NewEvent {
+                event_type: "thread.state",
+                scope_kind: "thread",
+                scope_id: format!("thread:{parent_id}"),
+                channel_id: Some(&channel.id),
+                channel_name: Some(&channel.name),
+                thread_parent_id: Some(parent_id),
+                actor_name: Some(sender_name),
+                actor_type: Some(sender_type.as_str()),
+                caused_by_kind: Some("send_message"),
+                payload: json!({
+                    "conversationId": channel.id.as_str(),
+                    "conversationType": channel.channel_type.as_api_str(),
+                    "threadParentId": parent_id,
+                    "messageId": inserted.id.as_str(),
+                    "latestSeq": inserted.seq,
+                    "replyCount": summary.reply_count,
+                    "lastReplyMessageId": summary.last_reply_message_id.as_deref(),
+                    "lastReplyAt": summary.last_reply_at.as_deref(),
+                }),
+            },
+        )
+    }
+
     fn append_tombstone_changed_event_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
@@ -689,7 +765,7 @@ impl Store {
             attachment_ids,
             None,
         )?;
-        let mut last_event_id = Self::append_message_created_event_tx(
+        let mut last_event_id = Self::append_conversation_state_event_tx(
             &tx,
             &channel,
             thread_parent_id,
@@ -699,6 +775,14 @@ impl Store {
             "send_message",
         )?;
         if let Some(parent_id) = thread_parent_id {
+            let _ = Self::append_thread_state_event_tx(
+                &tx,
+                &channel,
+                parent_id,
+                sender_name,
+                sender_type,
+                &inserted,
+            )?;
             last_event_id = Self::append_thread_events_tx(
                 &tx,
                 &channel,

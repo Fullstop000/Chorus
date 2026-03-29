@@ -316,8 +316,8 @@ async fn test_realtime_event_serializes_as_notification_state() {
         .list_events(None, 10)
         .unwrap()
         .into_iter()
-        .find(|event| event.event_type == "message.created")
-        .expect("message.created event");
+        .find(|event| event.event_type == "conversation.state")
+        .expect("conversation.state event");
     let frame = event_to_json_value(&store, &event);
 
     assert_eq!(frame["eventType"], "conversation.state");

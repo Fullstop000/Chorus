@@ -441,10 +441,20 @@ fn transport_payload_for_event(
     viewer: Option<&str>,
     event: &StoredEvent,
 ) -> Value {
-    if !event.is_message_created() {
-        return event.payload.clone();
+    if event.is_message_created() || event.is_conversation_state() {
+        return conversation_state_payload(store, viewer, event);
     }
+    if event.is_thread_state() {
+        return thread_state_payload(store, viewer, event);
+    }
+    event.payload.clone()
+}
 
+fn conversation_state_payload(
+    store: Option<&Store>,
+    viewer: Option<&str>,
+    event: &StoredEvent,
+) -> Value {
     let message_id = event
         .payload
         .get("messageId")
@@ -479,16 +489,51 @@ fn transport_payload_for_event(
         .map(|state| (state.last_read_seq, state.unread_count))
         .unwrap_or((0, 0));
 
-    json!({
-        "conversationId": message_view.conversation_id,
-        "conversationType": message_view.conversation_type,
-        "messageId": message_view.message_id,
-        "latestSeq": message_view.seq,
-        "lastReadSeq": last_read_seq,
-        "unreadCount": unread_count,
-        "threadParentId": message_view.thread_parent_id,
-        "createdAt": message_view.created_at,
-    })
+    let mut payload = event.payload.as_object().cloned().unwrap_or_default();
+    payload.insert("conversationId".into(), json!(message_view.conversation_id));
+    payload.insert("conversationType".into(), json!(message_view.conversation_type));
+    payload.insert("messageId".into(), json!(message_view.message_id));
+    payload.insert("latestSeq".into(), json!(message_view.seq));
+    payload.insert("lastReadSeq".into(), json!(last_read_seq));
+    payload.insert("unreadCount".into(), json!(unread_count));
+    payload.insert("threadParentId".into(), json!(message_view.thread_parent_id));
+    payload.insert("createdAt".into(), json!(message_view.created_at));
+    Value::Object(payload)
+}
+
+fn thread_state_payload(store: Option<&Store>, viewer: Option<&str>, event: &StoredEvent) -> Value {
+    let Some(store) = store else {
+        return event.payload.clone();
+    };
+    let Some(channel_name) = event.channel_name.as_deref() else {
+        return event.payload.clone();
+    };
+    let Some(parent_message_id) = event
+        .thread_parent_id
+        .as_deref()
+        .or_else(|| event.payload.get("threadParentId").and_then(Value::as_str))
+    else {
+        return event.payload.clone();
+    };
+
+    let mut payload = event.payload.as_object().cloned().unwrap_or_default();
+    if let Some(viewer_name) = viewer {
+        if let Ok(Some(thread_state)) =
+            store.get_thread_notification_state(channel_name, parent_message_id, viewer_name)
+        {
+            payload.insert("conversationId".into(), json!(thread_state.conversation_id));
+            payload.insert("threadParentId".into(), json!(thread_state.thread_parent_id));
+            payload.insert("latestSeq".into(), json!(thread_state.latest_seq));
+            payload.insert("lastReadSeq".into(), json!(thread_state.last_read_seq));
+            payload.insert("unreadCount".into(), json!(thread_state.unread_count));
+            payload.insert(
+                "lastReplyMessageId".into(),
+                json!(thread_state.last_reply_message_id),
+            );
+            payload.insert("lastReplyAt".into(), json!(thread_state.last_reply_at));
+        }
+    }
+    Value::Object(payload)
 }
 
 async fn send_json(socket: &mut WebSocket, value: Value) -> anyhow::Result<()> {

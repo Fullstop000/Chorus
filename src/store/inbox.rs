@@ -30,6 +30,26 @@ pub struct InboxConversationStateView {
     pub unread_count: i64,
 }
 
+/// Derived per-member notification state for one thread, based on the current
+/// conversation read cursor until dedicated thread cursors are introduced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ThreadNotificationStateView {
+    /// Owning conversation UUID.
+    pub conversation_id: String,
+    /// Parent message id that anchors the thread.
+    pub thread_parent_id: String,
+    /// Latest reply sequence in the conversation stream.
+    pub latest_seq: i64,
+    /// Highest reply sequence at or before the member's conversation read cursor.
+    pub last_read_seq: i64,
+    /// Replies newer than `last_read_seq`.
+    pub unread_count: i64,
+    /// Most recent reply id when present.
+    pub last_reply_message_id: Option<String>,
+    /// Most recent reply timestamp when present.
+    pub last_reply_at: Option<String>,
+}
+
 impl InboxConversationStateView {
     fn from_projection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
@@ -239,5 +259,80 @@ impl Store {
             map.insert(conversation_name, unread_count);
         }
         Ok(map)
+    }
+
+    /// Load derived thread notification state for one member.
+    pub fn get_thread_notification_state(
+        &self,
+        channel_name: &str,
+        thread_parent_id: &str,
+        member_name: &str,
+    ) -> Result<Option<ThreadNotificationStateView>> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        Self::get_thread_notification_state_by_channel_id_inner(
+            &conn,
+            &channel.id,
+            thread_parent_id,
+            member_name,
+        )
+    }
+
+    pub(crate) fn get_thread_notification_state_by_channel_id_inner(
+        conn: &Connection,
+        channel_id: &str,
+        thread_parent_id: &str,
+        member_name: &str,
+    ) -> Result<Option<ThreadNotificationStateView>> {
+        let latest_reply = conn
+            .query_row(
+                "SELECT seq, id, created_at
+                 FROM messages
+                 WHERE channel_id = ?1 AND thread_parent_id = ?2
+                 ORDER BY seq DESC
+                 LIMIT 1",
+                params![channel_id, thread_parent_id],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((latest_seq, last_reply_message_id, last_reply_at)) = latest_reply else {
+            return Ok(None);
+        };
+
+        let conversation_last_read_seq =
+            Self::get_inbox_conversation_state_by_channel_id_inner(conn, channel_id, member_name)?
+                .map(|state| state.last_read_seq)
+                .unwrap_or(0);
+        let last_read_seq = conn.query_row(
+            "SELECT COALESCE(MAX(seq), 0)
+             FROM messages
+             WHERE channel_id = ?1 AND thread_parent_id = ?2 AND seq <= ?3",
+            params![channel_id, thread_parent_id, conversation_last_read_seq],
+            |row| row.get::<_, i64>(0),
+        )?;
+        let unread_count = conn.query_row(
+            "SELECT COUNT(*)
+             FROM messages
+             WHERE channel_id = ?1 AND thread_parent_id = ?2 AND seq > ?3",
+            params![channel_id, thread_parent_id, conversation_last_read_seq],
+            |row| row.get::<_, i64>(0),
+        )?;
+
+        Ok(Some(ThreadNotificationStateView {
+            conversation_id: channel_id.to_string(),
+            thread_parent_id: thread_parent_id.to_string(),
+            latest_seq,
+            last_read_seq,
+            unread_count,
+            last_reply_message_id: Some(last_reply_message_id),
+            last_reply_at: Some(last_reply_at),
+        }))
     }
 }

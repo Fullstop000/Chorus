@@ -99,6 +99,16 @@ impl StoredEvent {
     pub fn is_message_created(&self) -> bool {
         self.event_type == "message.created"
     }
+
+    /// Conversation notification events carry absolute room state.
+    pub fn is_conversation_state(&self) -> bool {
+        self.event_type == "conversation.state"
+    }
+
+    /// Thread notification events carry absolute thread state.
+    pub fn is_thread_state(&self) -> bool {
+        self.event_type == "thread.state"
+    }
 }
 
 impl Store {

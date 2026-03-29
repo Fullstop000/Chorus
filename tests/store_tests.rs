@@ -735,7 +735,7 @@ fn payload_field<'a>(event: &'a StoredEvent, key: &str) -> &'a Value {
 }
 
 #[test]
-fn test_send_message_emits_message_created_event() {
+fn test_send_message_emits_conversation_state_event() {
     let (store, _dir) = make_store();
     store
         .create_channel("general", None, ChannelType::Channel)
@@ -752,7 +752,7 @@ fn test_send_message_emits_message_created_event() {
 
     let events = store.list_events(None, 20).unwrap();
     assert_eq!(events.len(), 1);
-    assert_eq!(events[0].event_type, "message.created");
+    assert_eq!(events[0].event_type, "conversation.state");
     assert_eq!(events[0].scope_kind, "channel");
     assert_eq!(events[0].stream_kind, "conversation");
     assert_eq!(events[0].stream_id, format!("conversation:{channel_id}"));
@@ -767,14 +767,15 @@ fn test_send_message_emits_message_created_event() {
         payload_field(&events[0], "conversationType").as_str(),
         Some("channel")
     );
+    assert_eq!(payload_field(&events[0], "latestSeq").as_i64(), Some(1));
     assert!(events[0].payload.get("content").is_none());
     assert!(events[0].payload.get("attachments").is_none());
     assert!(events[0].payload.get("attachmentIds").is_none());
-    assert!(events[0].payload.get("createdAt").is_none());
+    assert!(events[0].payload.get("unreadDelta").is_none());
 }
 
 #[test]
-fn test_thread_reply_emits_thread_derived_events() {
+fn test_thread_reply_emits_conversation_and_thread_state_events() {
     let (store, _dir) = make_store();
     store
         .create_channel("general", None, ChannelType::Channel)
@@ -812,21 +813,22 @@ fn test_thread_reply_emits_thread_derived_events() {
     assert_eq!(
         event_types,
         vec![
-            "message.created",
-            "message.created",
+            "conversation.state",
+            "conversation.state",
+            "thread.state",
             "thread.reply_count_changed",
             "thread.activity_bumped",
             "thread.participant_added",
         ]
     );
     let stream_positions: Vec<_> = events.iter().map(|event| event.stream_pos).collect();
-    assert_eq!(stream_positions, vec![1, 2, 3, 4, 5]);
+    assert_eq!(stream_positions, vec![1, 2, 3, 4, 5, 6]);
     assert!(events
         .iter()
         .all(|event| event.stream_kind == "conversation"));
 
     let reply_event = &events[1];
-    assert_eq!(reply_event.scope_kind, "thread");
+    assert_eq!(reply_event.scope_kind, "channel");
     assert_eq!(
         payload_field(reply_event, "messageId").as_str(),
         Some(reply_id.as_str())
@@ -835,9 +837,23 @@ fn test_thread_reply_emits_thread_derived_events() {
         payload_field(reply_event, "threadParentId").as_str(),
         Some(parent_id.as_str())
     );
+    assert_eq!(payload_field(reply_event, "latestSeq").as_i64(), Some(2));
     assert!(reply_event.payload.get("content").is_none());
 
-    let reply_count_event = &events[2];
+    let thread_state_event = &events[2];
+    assert_eq!(thread_state_event.scope_kind, "thread");
+    assert_eq!(
+        payload_field(thread_state_event, "threadParentId").as_str(),
+        Some(parent_id.as_str())
+    );
+    assert_eq!(
+        payload_field(thread_state_event, "lastReplyMessageId").as_str(),
+        Some(reply_id.as_str())
+    );
+    assert_eq!(payload_field(thread_state_event, "latestSeq").as_i64(), Some(2));
+    assert!(thread_state_event.payload.get("replyCountDelta").is_none());
+
+    let reply_count_event = &events[3];
     assert_eq!(reply_count_event.scope_kind, "channel");
     assert_eq!(
         payload_field(reply_count_event, "replyCount").as_i64(),

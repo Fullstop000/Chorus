@@ -388,7 +388,7 @@ async fn test_thread_target_replays_only_thread_events() {
     );
 
     let mut frames = Vec::new();
-    for _ in 0..4 {
+    for _ in 0..5 {
         frames.push(read_json_frame(&mut socket).await);
     }
 
@@ -400,6 +400,7 @@ async fn test_thread_target_replays_only_thread_events() {
         event_types,
         vec![
             "conversation.state",
+            "thread.state",
             "thread.reply_count_changed",
             "thread.activity_bumped",
             "thread.participant_added",
@@ -410,4 +411,7 @@ async fn test_thread_target_replays_only_thread_events() {
     assert_eq!(frames[0]["event"]["payload"]["lastReadSeq"], 3);
     assert_eq!(frames[0]["event"]["payload"]["unreadCount"], 0);
     assert_eq!(frames[0]["event"]["payload"]["messageId"], reply_id);
+    assert_eq!(frames[1]["event"]["payload"]["threadParentId"], parent_id);
+    assert_eq!(frames[1]["event"]["payload"]["latestSeq"], 2);
+    assert!(frames[1]["event"]["payload"].get("content").is_none());
 }
