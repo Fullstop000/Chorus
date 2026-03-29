@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   applyRealtimeEvent,
+  historyFetchAfterForNotification,
   nextRealtimeCursor,
   parseHistoryTarget,
   resolveRealtimeTarget,
@@ -68,6 +69,62 @@ describe('realtime transport helpers', () => {
       lastReadSeq: 9,
       unreadCount: 3,
     })
+  })
+
+  it('requests incremental history when the active conversation notification advances', () => {
+    const event: RealtimeEvent = {
+      eventId: 9,
+      eventType: 'conversation.state',
+      streamId: 'conversation:abc',
+      scopeKind: 'channel',
+      scopeId: 'channel:abc',
+      payload: {
+        conversationId: 'channel:abc',
+        latestSeq: 12,
+        lastReadSeq: 9,
+        unreadCount: 3,
+      },
+      createdAt: '2026-03-28T00:00:00Z',
+    }
+
+    expect(historyFetchAfterForNotification('conversation:abc', event, 9)).toBe(9)
+  })
+
+  it('ignores stale or inactive notification frames for incremental fetches', () => {
+    const conversationEvent: RealtimeEvent = {
+      eventId: 10,
+      eventType: 'conversation.state',
+      streamId: 'conversation:def',
+      scopeKind: 'channel',
+      scopeId: 'channel:def',
+      payload: {
+        conversationId: 'channel:def',
+        latestSeq: 4,
+        lastReadSeq: 1,
+        unreadCount: 3,
+      },
+      createdAt: '2026-03-28T00:00:00Z',
+    }
+    const threadEvent: RealtimeEvent = {
+      eventId: 11,
+      eventType: 'thread.state',
+      streamId: 'conversation:abc',
+      scopeKind: 'thread',
+      scopeId: 'thread:msg-2',
+      threadParentId: 'msg-2',
+      payload: {
+        conversationId: 'channel:abc',
+        threadParentId: 'msg-2',
+        latestSeq: 8,
+        lastReadSeq: 2,
+        unreadCount: 6,
+      },
+      createdAt: '2026-03-28T00:00:00Z',
+    }
+
+    expect(historyFetchAfterForNotification('conversation:abc', conversationEvent, 4)).toBeNull()
+    expect(historyFetchAfterForNotification('conversation:def', conversationEvent, 4)).toBeNull()
+    expect(historyFetchAfterForNotification('thread:msg-1', threadEvent, 2)).toBeNull()
   })
 
   it('trusts subscribed resumeFrom as the authoritative cursor', () => {

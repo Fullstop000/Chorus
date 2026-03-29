@@ -160,6 +160,15 @@ export async function getHistory(
   )
 }
 
+export async function getHistoryAfter(
+  username: string,
+  channel: string,
+  after: number,
+  limit = 50
+): Promise<HistoryResponse> {
+  return getHistory(username, channel, limit, undefined, after)
+}
+
 export async function getTasks(
   username: string,
   channel: string,

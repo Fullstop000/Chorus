@@ -131,6 +131,15 @@ export interface ConversationStatePayload {
   threadParentId?: string | null
 }
 
+export interface ThreadStatePayload {
+  conversationId: string
+  threadParentId: string
+  latestSeq: number
+  lastReadSeq: number
+  unreadCount: number
+  lastReplyMessageId?: string
+}
+
 export type RealtimeMessage =
   | {
       type: 'subscribed'

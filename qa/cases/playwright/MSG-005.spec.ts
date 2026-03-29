@@ -9,12 +9,15 @@ test.describe('MSG-005', () => {
   }) => {
     const { username } = await getWhoami(request)
     let historyRequests = 0
+    const historyAfterParams: Array<number | null> = []
     const realtimeConsoleLogs: string[] = []
 
     page.on('request', (req) => {
       const url = new URL(req.url())
       if (/^\/internal\/agent\/[^/]+\/history$/.test(url.pathname)) {
         historyRequests += 1
+        const after = url.searchParams.get('after')
+        historyAfterParams.push(after == null ? null : Number(after))
       }
     })
     page.on('console', (msg) => {
@@ -30,17 +33,19 @@ test.describe('MSG-005', () => {
     await page.waitForTimeout(1_000)
 
     const baselineHistoryRequests = historyRequests
+    expect(historyAfterParams.every((value) => value == null)).toBeTruthy()
 
     const localToken = `msg-local-${Date.now()}`
     await sendChatMessage(page, localToken)
     await expect(page.locator('.message-item').filter({ hasText: localToken }).first()).toBeVisible()
-    expect(historyRequests).toBeGreaterThan(baselineHistoryRequests)
+    expect(historyRequests).toBe(baselineHistoryRequests + 1)
     const historyAfterLocalSend = historyRequests
 
     const remoteToken = `msg-remote-${Date.now()}`
     await sendAsUser(request, username, '#all', remoteToken)
     await expect(page.locator('.message-item').filter({ hasText: remoteToken }).first()).toBeVisible()
-    expect(historyRequests).toBeGreaterThan(historyAfterLocalSend)
+    expect(historyRequests).toBe(historyAfterLocalSend + 1)
+    const historyAfterRemoteSend = historyRequests
     expect(realtimeConsoleLogs.length).toBeGreaterThan(0)
     const consoleDump = realtimeConsoleLogs.join('\n')
     expect(consoleDump).toContain('conversation.state')
@@ -49,6 +54,6 @@ test.describe('MSG-005', () => {
     expect(consoleDump).not.toContain(remoteToken)
 
     await page.waitForTimeout(4_000)
-    expect(historyRequests).toBeGreaterThan(historyAfterLocalSend)
+    expect(historyRequests).toBe(historyAfterRemoteSend)
   })
 })

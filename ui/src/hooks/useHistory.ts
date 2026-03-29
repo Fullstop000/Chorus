@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getHistory } from '../api'
+import { getHistory, getHistoryAfter } from '../api'
 import {
   applyRealtimeEvent,
   createRealtimeSocket,
+  historyFetchAfterForNotification,
+  maxHistorySeq,
+  mergeHistoryMessages,
   nextRealtimeCursor,
   resolveRealtimeTarget,
 } from '../transport/realtime'
@@ -31,24 +34,49 @@ export function useHistory(username: string, target: string | null) {
   const lastEventIdRef = useRef(0)
   const streamIdRef = useRef<string | null>(null)
   const lastStreamPosRef = useRef(0)
+  const maxLoadedSeqRef = useRef(0)
+  const incrementalFetchAfterRef = useRef<number | null>(null)
 
-  const fetchHistory = useCallback(async (): Promise<HistoryResponse | null> => {
+  const fetchHistory = useCallback(async (after?: number): Promise<HistoryResponse | null> => {
     if (!username || !target) return null
+    if (after != null && incrementalFetchAfterRef.current === after) {
+      return null
+    }
+    if (after != null) {
+      incrementalFetchAfterRef.current = after
+    }
     try {
-      const res = await getHistory(username, target, 50)
-      setMessages(res.messages)
+      const res =
+        after != null
+          ? await getHistoryAfter(username, target, after, 50)
+          : await getHistory(username, target, 50)
+      if (after != null) {
+        setMessages((current) => {
+          const merged = mergeHistoryMessages(current, res.messages)
+          maxLoadedSeqRef.current = maxHistorySeq(merged)
+          return merged
+        })
+      } else {
+        setMessages(res.messages)
+        maxLoadedSeqRef.current = maxHistorySeq(res.messages)
+      }
       setLastReadSeq(res.last_read_seq ?? 0)
       setLoadedTarget(target)
-      lastEventIdRef.current = res.latestEventId ?? 0
-      streamIdRef.current = res.streamId ?? null
-      lastStreamPosRef.current = res.streamPos ?? 0
+      lastEventIdRef.current = Math.max(lastEventIdRef.current, res.latestEventId ?? 0)
+      streamIdRef.current = res.streamId ?? streamIdRef.current
+      lastStreamPosRef.current = Math.max(lastStreamPosRef.current, res.streamPos ?? 0)
       setError(null)
       return res
     } catch (e) {
       setError(String(e))
       return null
     } finally {
-      setLoading(false)
+      if (after == null) {
+        setLoading(false)
+      }
+      if (incrementalFetchAfterRef.current === after) {
+        incrementalFetchAfterRef.current = null
+      }
     }
   }, [username, target])
 
@@ -61,6 +89,8 @@ export function useHistory(username: string, target: string | null) {
       lastEventIdRef.current = 0
       streamIdRef.current = null
       lastStreamPosRef.current = 0
+      maxLoadedSeqRef.current = 0
+      incrementalFetchAfterRef.current = null
       return
     }
 
@@ -119,8 +149,16 @@ export function useHistory(username: string, target: string | null) {
               frame.event.streamPos ?? 0
             )
           }
-          if (frame.event.eventType === 'conversation.state') {
-            void fetchHistory()
+          const incrementalAfter = historyFetchAfterForNotification(
+            activeRealtimeTarget,
+            frame.event,
+            maxLoadedSeqRef.current
+          )
+          if (incrementalAfter != null) {
+            void fetchHistory(incrementalAfter)
+            return
+          }
+          if (frame.event.eventType === 'conversation.state' || frame.event.eventType === 'thread.state') {
             return
           }
           setMessages((current) => applyRealtimeEvent(current, frame.event))
@@ -152,6 +190,8 @@ export function useHistory(username: string, target: string | null) {
       lastEventIdRef.current = 0
       streamIdRef.current = null
       lastStreamPosRef.current = 0
+      maxLoadedSeqRef.current = 0
+      incrementalFetchAfterRef.current = null
 
       const history = await fetchHistory()
       if (cancelled || !history) return
