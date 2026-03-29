@@ -196,6 +196,7 @@ impl Store {
             .optional()?)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn set_inbox_read_cursor_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
@@ -280,6 +281,7 @@ impl Store {
         Ok(Some(event_id))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn set_thread_read_cursor_tx(
         tx: &Transaction<'_>,
         channel: &Channel,

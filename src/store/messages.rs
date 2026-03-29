@@ -397,6 +397,7 @@ impl Store {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn insert_message_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
@@ -1400,7 +1401,7 @@ impl Store {
         before: Option<i64>,
         after: Option<i64>,
     ) -> Result<(Vec<ConversationMessageView>, bool)> {
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::find_channel_by_name_inner(conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let fetch_limit = limit + 1;

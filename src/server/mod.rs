@@ -71,14 +71,8 @@ pub fn build_router_with_services(
             "/agent/{agent_id}/tasks",
             get(handle_list_tasks).post(handle_create_tasks),
         )
-        .route(
-            "/agent/{agent_id}/tasks/claim",
-            post(handle_claim_tasks),
-        )
-        .route(
-            "/agent/{agent_id}/tasks/unclaim",
-            post(handle_unclaim_task),
-        )
+        .route("/agent/{agent_id}/tasks/claim", post(handle_claim_tasks))
+        .route("/agent/{agent_id}/tasks/unclaim", post(handle_unclaim_task))
         .route(
             "/agent/{agent_id}/tasks/update-status",
             post(handle_update_task_status),
@@ -88,10 +82,7 @@ pub fn build_router_with_services(
         .route("/agent/{agent_id}/recall", get(handle_recall));
 
     let api_router = Router::new()
-        .route(
-            "/attachments/{attachment_id}",
-            get(handle_get_attachment),
-        )
+        .route("/attachments/{attachment_id}", get(handle_get_attachment))
         .route("/attachments", post(handle_public_upload))
         .route("/whoami", get(handle_whoami))
         .route("/humans", get(handle_list_humans))
@@ -129,15 +120,9 @@ pub fn build_router_with_services(
             "/channels",
             get(handle_list_channels).post(handle_create_channel),
         )
-        .route(
-            "/agents",
-            get(handle_list_agents).post(handle_create_agent),
-        )
+        .route("/agents", get(handle_list_agents).post(handle_create_agent))
         .route("/runtimes", get(handle_list_runtime_statuses))
-        .route(
-            "/teams",
-            get(handle_list_teams).post(handle_create_team),
-        )
+        .route("/teams", get(handle_list_teams).post(handle_create_team))
         .route(
             "/teams/{name}",
             get(handle_get_team)

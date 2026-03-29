@@ -1879,7 +1879,8 @@ async fn test_send_persists_message_even_if_agent_delivery_fails() {
         .unwrap();
     let app = build_router_with_lifecycle(store.clone(), Arc::new(FailStartLifecycle));
 
-    let send_req = serde_json::json!({ "target": "#general", "content": "persist despite delivery failure" });
+    let send_req =
+        serde_json::json!({ "target": "#general", "content": "persist despite delivery failure" });
     let resp = app
         .oneshot(
             Request::builder()

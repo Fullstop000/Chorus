@@ -214,7 +214,10 @@ fn public_viewer_name() -> String {
     whoami::username()
 }
 
-fn sender_type_for_actor(store: &Store, actor_id: &str) -> Result<SenderType, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+fn sender_type_for_actor(
+    store: &Store,
+    actor_id: &str,
+) -> Result<SenderType, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
     Ok(store
         .lookup_sender_type(actor_id)
         .map_err(|e| api_err(e.to_string()))?
@@ -231,6 +234,7 @@ fn load_channel_by_id(
         .ok_or_else(|| api_err("channel not found"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn history_for_channel(
     state: &AppState,
     actor_id: &str,
@@ -335,6 +339,7 @@ fn update_read_cursor_for_channel(
     Ok(Json(ReadCursorResponse { ok: true }))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn send_message_to_channel(
     state: &AppState,
     actor_id: &str,

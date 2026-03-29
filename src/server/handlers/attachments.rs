@@ -7,10 +7,7 @@ use uuid::Uuid;
 
 use super::{api_err, internal_err, ApiResult, AppState, ErrorResponse};
 
-async fn store_upload(
-    state: AppState,
-    mut multipart: Multipart,
-) -> ApiResult<serde_json::Value> {
+async fn store_upload(state: AppState, mut multipart: Multipart) -> ApiResult<serde_json::Value> {
     let field = multipart
         .next_field()
         .await
