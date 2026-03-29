@@ -1493,6 +1493,30 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
 }
 
 #[test]
+fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
+    let (store, _dir) = make_store();
+    store.create_human("alice").unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+
+    store.ensure_builtin_channels("alice").unwrap();
+
+    assert!(
+        store.get_channel_by_name("shared-memory").unwrap().is_none(),
+        "shared-memory should no longer be created as a built-in system channel"
+    );
+
+    let server_info = chorus::server::build_server_info(&store, "bot1").unwrap();
+    let system_names: Vec<_> = server_info
+        .system_channels
+        .iter()
+        .map(|channel| channel.name.as_str())
+        .collect();
+    assert_eq!(system_names, vec!["all"]);
+}
+
+#[test]
 fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
     let (store, _dir) = make_store();
     store.create_human("alice").unwrap();

@@ -64,7 +64,7 @@ Organize code by subsystem, not by request or one-off feature patches.
   - Axum router assembly in `mod.rs`
   - HTTP handlers grouped by domain under `src/server/handlers/`
 - `src/store/`
-  - SQLite persistence and domain store modules (`agents`, `channels`, `messages`, `tasks`, `teams`, `knowledge`)
+  - SQLite persistence and domain store modules (`agents`, `channels`, `messages`, `tasks`, `teams`)
 
 ### Frontend Layout
 

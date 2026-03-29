@@ -95,9 +95,7 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
          9. **{unclaim_task}** — Release your claim on a task.\n\
          10. **{update_task_status}** — Change a task's status (e.g. to in_review or done).\n\
          11. **{upload_file}** — Upload an image file to attach to a message. Returns an attachment ID to pass to send_message.\n\
-         12. **{view_file}** — Download an attached image by its attachment ID so you can inspect it when a message includes relevant attachments.\n\
-         13. **remember** — Store a fact in the shared knowledge store with a key, value, and optional tags.\n\
-         14. **recall** — Search the shared knowledge store by keyword and/or tags.",
+         12. **{view_file}** — Download an attached image by its attachment ID so you can inspect it when a message includes relevant attachments.",
     ));
 
     prompt.push_str("\n\nCRITICAL RULES:\n");
@@ -250,39 +248,7 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         "- NEVER let context compression cause you to forget: which channel is about what, what tasks are in progress, what the user has asked for, or what other agents are doing.\n\n",
         "## Capabilities\n\n",
         "You can work with any files or tools on this computer — you are not confined to any directory.\n",
-        "You may develop a specialized role over time through your interactions. Embrace it.\n\n",
-        "## Collaboration — Multi-Agent Knowledge Sharing\n\n",
-        "Chorus has a **shared knowledge store** — a server-side memory layer visible to all agents.\n\n",
-        "### Tools\n\n",
-        "- **`remember(key, value, tags?, channelContext?)`** — Store a fact so other agents can find it later. ",
-        "A breadcrumb is automatically posted to `#shared-memory` so humans can see what was shared. ",
-        "Tags are space-separated tokens: `\"research task-42\"`.\n",
-        "- **`recall(query?, tags?)`** — Search the shared store by keyword and/or tags. ",
-        "Returns the most recent matching entries.\n\n",
-        "### When to call `recall` (mandatory triggers)\n\n",
-        "Call `recall` **before starting work** in any of these situations:\n",
-        "- You are assigned a task via the task board or a message tagging you\n",
-        "- A human asks you to implement, continue, or build on something another agent researched\n",
-        "- You are asked to work on a topic you have not seen in this session\n",
-        "Pass the task subject or key terms as `query`, and the task tag if one exists (e.g. `tags=\"task-42\"`).\n",
-        "If `recall` returns relevant entries, use them — do not re-research what is already stored.\n\n",
-        "### When to call `remember` (mandatory triggers)\n\n",
-        "Call `remember` **before replying or handing off** in any of these situations:\n",
-        "- You completed research, an investigation, or a decision that another agent will need\n",
-        "- You discovered a fact (API shape, failure mode, constraint, design choice) that took effort to find\n",
-        "- You are assigning work to another agent and you have context they will need\n",
-        "Store the finding first, then assign the task, then reply. Do not only describe findings in chat.\n\n",
-        "### Handoff pattern\n\n",
-        "When handing work to another agent:\n",
-        "1. Call `remember(key=\"...\", value=\"...\", tags=\"task-N\")` for each key finding.\n",
-        "2. Assign the task via `create_tasks` and tag the receiving agent in your reply.\n",
-        "3. The receiving agent **must** call `recall(tags=\"task-N\")` before starting — not after.\n\n",
-        "### Rules\n\n",
-        "- Do NOT `send_message` to `#shared-memory` directly — always use `remember`. The channel is write-protected.\n",
-        "- Keep `key` short and specific (e.g. `\"api-endpoint-shape\"`). Keep `value` factual, not conversational.\n",
-        "- Use consistent tags within a task family so `recall` can find related entries. ",
-        "Example: tag all entries for task #42 with `task-42`.\n",
-        "- Prefer `remember` over re-explaining context in long messages. One `remember` call beats a wall of text.\n",
+        "You may develop a specialized role over time through your interactions. Embrace it.\n",
     ));
 
     // Optional stdin notification section
@@ -322,4 +288,43 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
     }
 
     prompt
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::config::AgentConfig;
+
+    fn sample_config() -> AgentConfig {
+        AgentConfig {
+            name: "bot1".to_string(),
+            display_name: "Bot 1".to_string(),
+            description: Some("Test agent".to_string()),
+            runtime: "codex".to_string(),
+            model: "gpt-5.4-mini".to_string(),
+            session_id: None,
+            reasoning_effort: None,
+            env_vars: Vec::new(),
+            teams: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn base_system_prompt_omits_shared_memory_tools_and_rules() {
+        let prompt = build_base_system_prompt(
+            &sample_config(),
+            &PromptOptions {
+                tool_prefix: "mcp__chat__".to_string(),
+                extra_critical_rules: Vec::new(),
+                post_startup_notes: Vec::new(),
+                include_stdin_notification_section: false,
+                teams: Vec::new(),
+            },
+        );
+
+        assert!(!prompt.contains("remember"));
+        assert!(!prompt.contains("recall"));
+        assert!(!prompt.contains("#shared-memory"));
+        assert!(!prompt.contains("shared knowledge store"));
+    }
 }
