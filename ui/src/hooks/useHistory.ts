@@ -8,10 +8,16 @@ import {
 } from '../transport/realtime'
 import type { HistoryMessage, HistoryResponse, RealtimeMessage } from '../types'
 
+function logRealtime(event: string, detail: unknown) {
+  console.debug(`[chorus:realtime] ${event}`, detail)
+}
+
 export function useHistory(username: string, target: string | null) {
   const [messages, setMessages] = useState<HistoryMessage[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [lastReadSeq, setLastReadSeq] = useState(0)
+  const [loadedTarget, setLoadedTarget] = useState<string | null>(null)
   const lastEventIdRef = useRef(0)
   const streamIdRef = useRef<string | null>(null)
   const lastStreamPosRef = useRef(0)
@@ -21,6 +27,8 @@ export function useHistory(username: string, target: string | null) {
     try {
       const res = await getHistory(username, target, 50)
       setMessages(res.messages)
+      setLastReadSeq(res.last_read_seq ?? 0)
+      setLoadedTarget(target)
       lastEventIdRef.current = res.latestEventId ?? 0
       streamIdRef.current = res.streamId ?? null
       lastStreamPosRef.current = res.streamPos ?? 0
@@ -38,6 +46,8 @@ export function useHistory(username: string, target: string | null) {
     if (!username || !target) {
       setMessages([])
       setError(null)
+      setLastReadSeq(0)
+      setLoadedTarget(null)
       lastEventIdRef.current = 0
       streamIdRef.current = null
       lastStreamPosRef.current = 0
@@ -64,6 +74,14 @@ export function useHistory(username: string, target: string | null) {
           subscribeFrame.streamId = streamIdRef.current
           subscribeFrame.resumeFromStreamPos = lastStreamPosRef.current
         }
+        logRealtime('open', {
+          viewer: username,
+          target: activeRealtimeTarget,
+          streamId: streamIdRef.current,
+          resumeFrom: lastEventIdRef.current,
+          resumeFromStreamPos: lastStreamPosRef.current,
+        })
+        logRealtime('send', subscribeFrame)
         socket?.send(
           JSON.stringify(subscribeFrame)
         )
@@ -71,6 +89,7 @@ export function useHistory(username: string, target: string | null) {
       socket.onmessage = (messageEvent) => {
         try {
           const frame = JSON.parse(String(messageEvent.data)) as RealtimeMessage
+          logRealtime('recv', frame)
           if (frame.type === 'subscribed') {
             lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
             if (frame.streamId) {
@@ -96,10 +115,15 @@ export function useHistory(username: string, target: string | null) {
           console.error('Failed to parse realtime frame', eventError)
         }
       }
-      socket.onerror = () => {
+      socket.onerror = (event) => {
+        logRealtime('error', event)
         socket?.close()
       }
       socket.onclose = () => {
+        logRealtime('close', {
+          viewer: username,
+          target: activeRealtimeTarget,
+        })
         if (cancelled) return
         reconnectTimer = window.setTimeout(connect, 1_000)
       }
@@ -109,6 +133,8 @@ export function useHistory(username: string, target: string | null) {
       setLoading(true)
       setMessages([])
       setError(null)
+      setLastReadSeq(0)
+      setLoadedTarget(null)
       lastEventIdRef.current = 0
       streamIdRef.current = null
       lastStreamPosRef.current = 0
@@ -137,5 +163,5 @@ export function useHistory(username: string, target: string | null) {
     }
   }, [fetchHistory, target, username])
 
-  return { messages, loading, error, refresh: fetchHistory }
+  return { messages, loading, error, lastReadSeq, loadedTarget, refresh: fetchHistory }
 }

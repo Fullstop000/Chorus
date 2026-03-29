@@ -118,12 +118,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }
   }, [currentUser])
 
-  // Poll server info every 10s
+  // Bootstrap the shell once; follow-up refreshes happen on explicit mutations.
   useEffect(() => {
     if (!currentUser) return
-    refreshServerInfo()
-    const id = setInterval(refreshServerInfo, 5_000)
-    return () => clearInterval(id)
+    void refreshServerInfo()
   }, [currentUser, refreshServerInfo])
 
   // Keep ref in sync so refreshServerInfo can read it without stale closure

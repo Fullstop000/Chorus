@@ -20,14 +20,46 @@ export function ThreadPanel() {
     ? `${mainTarget}:${openThreadMsg.id}`
     : null
 
-  const { messages, refresh } = useHistory(currentUser, threadTarget)
+  const { messages, loading, lastReadSeq, loadedTarget } = useHistory(currentUser, threadTarget)
   const [content, setContent] = useState('')
   const [sending, setSending] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const repliesContainerRef = useRef<HTMLDivElement>(null)
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    pendingInitialScrollTargetRef.current = threadTarget
+  }, [threadTarget])
+
+  useEffect(() => {
+    const container = repliesContainerRef.current
+    if (!container) return
+
+    const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
+
+    if (
+      pendingInitialScrollTargetRef.current === threadTarget &&
+      loadedTarget === threadTarget &&
+      !loading
+    ) {
+      const unreadAnchor = firstUnreadMessage
+        ? messageRefs.current[firstUnreadMessage.id]
+        : null
+      if (unreadAnchor) {
+        container.scrollTop = Math.max(unreadAnchor.offsetTop - 96, 0)
+      } else {
+        bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+      }
+      pendingInitialScrollTargetRef.current = null
+      return
+    }
+
+    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    if (distFromBottom < 100) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [lastReadSeq, loadedTarget, loading, messages, threadTarget])
 
   // Reset input when switching thread
   useEffect(() => {
@@ -40,7 +72,6 @@ export function ThreadPanel() {
     try {
       await sendMessage(currentUser, threadTarget, content.trim())
       setContent('')
-      refresh()
     } catch (e) {
       console.error('Thread send failed:', e)
     } finally {
@@ -73,17 +104,24 @@ export function ThreadPanel() {
         </div>
 
         {/* Replies */}
-        <div className="thread-replies">
+        <div className="thread-replies" ref={repliesContainerRef}>
           {messages.length === 0 ? (
             <div className="thread-empty">No replies yet</div>
           ) : (
             messages.map((msg, i) => (
-              <MessageItem
+              <div
                 key={msg.id}
-                message={msg}
-                currentUser={currentUser}
-                prevMessage={messages[i - 1]}
-              />
+                ref={(node) => {
+                  messageRefs.current[msg.id] = node
+                }}
+                style={{ scrollMarginTop: 96 }}
+              >
+                <MessageItem
+                  message={msg}
+                  currentUser={currentUser}
+                  prevMessage={messages[i - 1]}
+                />
+              </div>
             ))
           )}
           <div ref={bottomRef} />

@@ -76,20 +76,36 @@ export function ChatHeader({
 export function ChatPanel() {
   const { currentUser, setOpenThreadMsg } = useApp()
   const target = useTarget()
-  const { messages, loading } = useHistory(currentUser, target)
+  const { messages, loading, lastReadSeq, loadedTarget } = useHistory(currentUser, target)
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const prevTargetRef = useRef<string | null>(null)
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
+  const pendingInitialScrollTargetRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    pendingInitialScrollTargetRef.current = target
+  }, [target])
 
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
 
-    const targetChanged = prevTargetRef.current !== target
-    prevTargetRef.current = target
+    const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
 
-    if (targetChanged) {
-      bottomRef.current?.scrollIntoView({ behavior: 'instant' })
+    if (
+      pendingInitialScrollTargetRef.current === target &&
+      loadedTarget === target &&
+      !loading
+    ) {
+      const unreadAnchor = firstUnreadMessage
+        ? messageRefs.current[firstUnreadMessage.id]
+        : null
+      if (unreadAnchor) {
+        container.scrollTop = Math.max(unreadAnchor.offsetTop - 96, 0)
+      } else {
+        bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+      }
+      pendingInitialScrollTargetRef.current = null
       return
     }
 
@@ -97,11 +113,10 @@ export function ChatPanel() {
     if (distFromBottom < 100) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [messages, target])
+  }, [lastReadSeq, loadedTarget, loading, messages, target])
 
   return (
     <div className="chat-panel">
-
       <div className="chat-messages" ref={scrollContainerRef}>
         {loading && messages.length === 0 && (
           <div className="chat-messages-empty">Loading messages...</div>
@@ -115,13 +130,20 @@ export function ChatPanel() {
           <div className="chat-messages-empty">Select a channel or agent to start chatting.</div>
         )}
         {messages.map((msg, i) => (
-          <MessageItem
+          <div
             key={msg.id}
-            message={msg}
-            currentUser={currentUser}
-            prevMessage={messages[i - 1]}
-            onReply={setOpenThreadMsg}
-          />
+            ref={(node) => {
+              messageRefs.current[msg.id] = node
+            }}
+            style={{ scrollMarginTop: 96 }}
+          >
+            <MessageItem
+              message={msg}
+              currentUser={currentUser}
+              prevMessage={messages[i - 1]}
+              onReply={setOpenThreadMsg}
+            />
+          </div>
         ))}
         <div ref={bottomRef} />
       </div>
