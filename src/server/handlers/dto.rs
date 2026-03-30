@@ -4,8 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::agent::runtime_status::RuntimeAuthStatus;
 use crate::store::agents::{Agent, Human};
-use crate::store::channels::{Channel, ChannelType};
-use crate::store::Store;
+use crate::store::channels::Channel;
 
 /// Full agent-scoped workspace snapshot for bridge/CLI discovery.
 ///
@@ -15,7 +14,7 @@ use crate::store::Store;
 pub struct ServerInfo {
     /// User/team channels the subject has joined (excludes system rooms in this list).
     pub channels: Vec<ChannelInfo>,
-    /// Built-in system channels (e.g. `#all`, `#shared-memory`).
+    /// Built-in system channels (e.g. `#all`).
     pub system_channels: Vec<ChannelInfo>,
     /// All agent records with persisted status (activity may be merged in handlers).
     pub agents: Vec<AgentInfo>,
@@ -47,7 +46,7 @@ pub struct ChannelInfo {
     /// API string for kind: `channel`, `dm`, `system`, `team`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel_type: Option<String>,
-    /// When true, normal users/agents cannot post (e.g. `#shared-memory`).
+    /// When true, normal users/agents cannot post.
     #[serde(default)]
     pub read_only: bool,
 }
@@ -107,15 +106,13 @@ pub struct HumanInfo {
 impl From<(&Channel, bool)> for ChannelInfo {
     /// `bool` is whether the current viewer is a member (`joined`).
     fn from((channel, joined): (&Channel, bool)) -> Self {
-        let read_only = matches!(channel.channel_type, ChannelType::System)
-            && Store::is_system_channel_read_only(&channel.name);
         Self {
             id: Some(channel.id.clone()),
             name: channel.name.clone(),
             description: channel.description.clone(),
             joined,
             channel_type: Some(channel.channel_type.as_api_str().to_string()),
-            read_only,
+            read_only: false,
         }
     }
 }

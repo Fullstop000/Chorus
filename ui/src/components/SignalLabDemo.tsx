@@ -236,7 +236,7 @@ export function SignalLabDemo() {
           <div>
             <p className="signal-kicker">Experimental FUI preview</p>
             <h1>Chorus Signal Lab</h1>
-            <p className="signal-bootline">boot seq 07 :: shared memory online</p>
+            <p className="signal-bootline">boot seq 07 :: signal mesh online</p>
           </div>
         </div>
 

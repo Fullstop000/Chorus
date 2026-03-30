@@ -32,7 +32,7 @@ pub enum ChannelType {
     Channel,
     /// Two-party direct message channel.
     Dm,
-    /// System-managed channels (e.g. #all, #shared-memory). Surfaced separately
+    /// System-managed channels (e.g. #all). Surfaced separately
     /// from user-created channels in the UI.
     System,
     /// Channel owned by a team. Managed through team lifecycle, not directly
@@ -217,10 +217,7 @@ impl Store {
              ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at",
         )?;
         let rows = stmt.query_map([], Channel::from_row)?;
-        Ok(rows
-            .filter_map(|row| row.ok())
-            .filter(|channel| !Store::is_system_channel_read_only(&channel.name))
-            .collect())
+        Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
     /// Update a user channel in place so message/task/thread data continues to
@@ -528,11 +525,6 @@ impl Store {
             params![all_id],
         )?;
 
-        Self::ensure_system_channel_inner(
-            &conn,
-            Self::SHARED_MEMORY_CHANNEL,
-            Self::SHARED_MEMORY_DESCRIPTION,
-        )?;
         Ok(())
     }
 
