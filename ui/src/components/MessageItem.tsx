@@ -57,7 +57,7 @@ function MentionPill({ mention, agents, onSelectAgent }: MentionPillProps) {
 }
 
 function injectMentions(text: string, agents: AgentInfo[], onSelectAgent: (agent: AgentInfo) => void): React.ReactNode {
-  const parts = text.split(/(@\w+)/g)
+  const parts = text.split(/(@[\w-]+)/g)
   if (parts.length === 1) return text
   return parts.map((part, i) =>
     part.startsWith('@') ? (
