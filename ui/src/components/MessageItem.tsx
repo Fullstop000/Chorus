@@ -1,24 +1,25 @@
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import { MessageSquare, Copy, Paperclip, LoaderCircle, CircleAlert, RotateCcw } from 'lucide-react'
-import type { HistoryMessage } from '../types'
+import type { HistoryMessage, AgentInfo } from '../types'
 import { attachmentUrl } from '../api'
+import { useApp } from '../store'
 
 function replyLabel(n: number) {
   return n === 1 ? '1 reply' : `${n} replies`
 }
 
 // Render message content with markdown + @mention pills
-function renderContent(content: string) {
+function renderContent(content: string, agents: AgentInfo[], onSelectAgent: (agent: AgentInfo) => void) {
   return (
     <ReactMarkdown
       components={{
         // Intercept text nodes to highlight @mentions
         p({ children }) {
-          return <p>{processChildren(children)}</p>
+          return <p>{processChildren(children, agents, onSelectAgent)}</p>
         },
         li({ children }) {
-          return <li>{processChildren(children)}</li>
+          return <li>{processChildren(children, agents, onSelectAgent)}</li>
         },
       }}
     >
@@ -27,21 +28,40 @@ function renderContent(content: string) {
   )
 }
 
-function processChildren(children: React.ReactNode): React.ReactNode {
-  if (typeof children === 'string') return injectMentions(children)
+function processChildren(children: React.ReactNode, agents: AgentInfo[], onSelectAgent: (agent: AgentInfo) => void): React.ReactNode {
+  if (typeof children === 'string') return injectMentions(children, agents, onSelectAgent)
   if (Array.isArray(children)) return children.map((c, i) => {
-    if (typeof c === 'string') return <span key={i}>{injectMentions(c)}</span>
+    if (typeof c === 'string') return <span key={i}>{injectMentions(c, agents, onSelectAgent)}</span>
     return c
   })
   return children
 }
 
-function injectMentions(text: string): React.ReactNode {
+function MentionPill({ mention, agents, onSelectAgent }: MentionPillProps) {
+  const name = mention.slice(1) // remove @
+  const agent = agents.find((a) => a.name === name)
+  
+  if (!agent) {
+    return <span className="mention-pill">{mention}</span>
+  }
+  
+  return (
+    <span 
+      className="mention-pill mention-pill-clickable" 
+      onClick={() => onSelectAgent(agent)}
+      title={`View @${name} profile`}
+    >
+      {mention}
+    </span>
+  )
+}
+
+function injectMentions(text: string, agents: AgentInfo[], onSelectAgent: (agent: AgentInfo) => void): React.ReactNode {
   const parts = text.split(/(@\w+)/g)
   if (parts.length === 1) return text
   return parts.map((part, i) =>
     part.startsWith('@') ? (
-      <span key={i} className="mention-pill">{part}</span>
+      <MentionPill key={i} mention={part} agents={agents} onSelectAgent={onSelectAgent} />
     ) : part
   )
 }
@@ -75,6 +95,12 @@ function senderColor(name: string): string {
   return colors[Math.abs(h) % colors.length]
 }
 
+interface MentionPillProps {
+  mention: string
+  agents: AgentInfo[]
+  onSelectAgent: (agent: AgentInfo) => void
+}
+
 interface MessageItemProps {
   message: HistoryMessage
   currentUser: string
@@ -84,6 +110,13 @@ interface MessageItemProps {
 }
 
 export function MessageItem({ message, currentUser, prevMessage, onReply, onRetry }: MessageItemProps) {
+  const { agents, setSelectedAgent, setActiveTab } = useApp()
+  
+  const handleSelectAgent = (agent: AgentInfo) => {
+    setSelectedAgent(agent)
+    setActiveTab('profile')
+  }
+  
   const isMe = message.senderName === currentUser
   const initial = message.senderName[0]?.toUpperCase() ?? '?'
   const color = senderColor(message.senderName)
@@ -162,7 +195,7 @@ export function MessageItem({ message, currentUser, prevMessage, onReply, onRetr
             )}
           </div>
         )}
-        <div className="message-content">{renderContent(message.content)}</div>
+        <div className="message-content">{renderContent(message.content, agents, handleSelectAgent)}</div>
         <div className="message-actions">
           {onReply && (
             <button className="message-action-btn" title="Reply in thread" onClick={() => onReply(message)}>
