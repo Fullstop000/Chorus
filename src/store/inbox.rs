@@ -5,7 +5,6 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use super::channels::Channel;
-use super::events::NewEvent;
 use super::Store;
 
 /// Explicit read-model row for per-member conversation state while inbox
@@ -90,30 +89,111 @@ impl InboxConversationStateView {
 }
 
 impl Store {
-    fn latest_conversation_message_inner(
-        conn: &Connection,
-        channel_id: &str,
-    ) -> Result<Option<(i64, String, String)>> {
-        Ok(conn
-            .query_row(
-                "SELECT seq, id, created_at
-                 FROM messages
-                 WHERE channel_id = ?1
-                 ORDER BY seq DESC
-                 LIMIT 1",
-                params![channel_id],
-                |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?)
+    /// Persists `last_read_seq` (and optional `last_read_message_id`) for inbox or thread scope.
+    ///
+    /// Usually only advances: if `last_read_seq <=` stored value, the write is skipped.
+    /// Exception: when the stored cursor is **above** `MAX(messages.seq)` in the same scope
+    /// (orphan row), we still apply the write so `set_history_read_cursor` can correct it.
+    ///
+    /// `thread_parent_id`: `None` → `inbox_read_state`; `Some` → `inbox_thread_read_state`.
+    pub(crate) fn set_read_cursor_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        thread_parent_id: Option<&str>,
+        member_name: &str,
+        member_type: &str,
+        last_read_seq: i64,
+        last_read_message_id: Option<&str>,
+    ) -> Result<()> {
+        let current_last_read_seq = match thread_parent_id {
+            None => tx
+                .query_row(
+                    "SELECT last_read_seq
+                     FROM inbox_read_state
+                     WHERE conversation_id = ?1 AND member_name = ?2",
+                    params![channel.id, member_name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0),
+            Some(parent_id) => tx
+                .query_row(
+                    "SELECT last_read_seq
+                     FROM inbox_thread_read_state
+                     WHERE conversation_id = ?1 AND thread_parent_id = ?2 AND member_name = ?3",
+                    params![channel.id, parent_id, member_name],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0),
+        };
+        // Monotonic default: do not move `last_read_seq` backward.
+        if last_read_seq <= current_last_read_seq {
+            // Unless the stored value is impossible vs current messages — then allow overwrite.
+            let max_seq: i64 = match thread_parent_id {
+                None => tx.query_row(
+                    "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE channel_id = ?1",
+                    params![channel.id],
+                    |row| row.get(0),
+                )?,
+                Some(parent_id) => tx.query_row(
+                    "SELECT COALESCE(MAX(seq), 0)
+                     FROM messages
+                     WHERE channel_id = ?1 AND thread_parent_id = ?2",
+                    params![channel.id, parent_id],
+                    |row| row.get(0),
+                )?,
+            };
+            if current_last_read_seq <= max_seq {
+                return Ok(());
+            }
+        }
+
+        match thread_parent_id {
+            None => {
+                tx.execute(
+                    "INSERT INTO inbox_read_state (
+                        conversation_id, member_name, member_type, last_read_seq, last_read_message_id
+                     ) VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(conversation_id, member_name) DO UPDATE SET
+                        member_type = excluded.member_type,
+                        last_read_seq = excluded.last_read_seq,
+                        last_read_message_id = excluded.last_read_message_id,
+                        updated_at = datetime('now')",
+                    params![
+                        channel.id,
+                        member_name,
+                        member_type,
+                        last_read_seq,
+                        last_read_message_id,
+                    ],
+                )?;
+            }
+            Some(thread_parent_id) => {
+                tx.execute(
+                    "INSERT INTO inbox_thread_read_state (
+                        conversation_id, thread_parent_id, member_name, member_type, last_read_seq, last_read_message_id
+                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT(conversation_id, thread_parent_id, member_name) DO UPDATE SET
+                        member_type = excluded.member_type,
+                        last_read_seq = excluded.last_read_seq,
+                        last_read_message_id = excluded.last_read_message_id,
+                        updated_at = datetime('now')",
+                    params![
+                        channel.id,
+                        thread_parent_id,
+                        member_name,
+                        member_type,
+                        last_read_seq,
+                        last_read_message_id,
+                    ],
+                )?;
+            }
+        }
+        Ok(())
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Conversation-level `last_read_seq` (see [`Self::set_read_cursor_tx`]).
     pub(crate) fn set_inbox_read_cursor_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
@@ -121,84 +201,19 @@ impl Store {
         member_type: &str,
         last_read_seq: i64,
         last_read_message_id: Option<&str>,
-        emit_event: bool,
-        caused_by_kind: &'static str,
-    ) -> Result<Option<i64>> {
-        let current_last_read_seq = tx
-            .query_row(
-                "SELECT last_read_seq
-                 FROM inbox_read_state
-                 WHERE conversation_id = ?1 AND member_name = ?2",
-                params![channel.id, member_name],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if last_read_seq <= current_last_read_seq {
-            return Ok(None);
-        }
-
-        tx.execute(
-            "INSERT INTO inbox_read_state (
-                conversation_id, member_name, member_type, last_read_seq, last_read_message_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(conversation_id, member_name) DO UPDATE SET
-                member_type = excluded.member_type,
-                last_read_seq = excluded.last_read_seq,
-                last_read_message_id = excluded.last_read_message_id,
-                updated_at = datetime('now')",
-            params![
-                channel.id,
-                member_name,
-                member_type,
-                last_read_seq,
-                last_read_message_id,
-            ],
-        )?;
-
-        if !emit_event {
-            return Ok(None);
-        }
-
-        let conversation_state =
-            Self::get_inbox_conversation_state_by_channel_id_inner(tx, &channel.id, member_name)?;
-        let latest_message = Self::latest_conversation_message_inner(tx, &channel.id)?;
-        let latest_seq = latest_message.as_ref().map(|(seq, _, _)| *seq).unwrap_or(0);
-        let last_message_id = latest_message.as_ref().map(|(_, message_id, _)| message_id);
-        let last_message_at = latest_message.as_ref().map(|(_, _, created_at)| created_at);
-        let unread_count = conversation_state
-            .as_ref()
-            .map(|state| state.unread_count)
-            .unwrap_or(0);
-
-        let event_id = Self::append_event_tx(
+    ) -> Result<()> {
+        Self::set_read_cursor_tx(
             tx,
-            NewEvent {
-                event_type: "conversation.read_cursor_set",
-                scope_kind: "user",
-                scope_id: format!("user:{member_name}"),
-                channel_id: Some(channel.id.as_str()),
-                channel_name: Some(channel.name.as_str()),
-                thread_parent_id: None,
-                actor_name: Some(member_name),
-                actor_type: Some(member_type),
-                caused_by_kind: Some(caused_by_kind),
-                payload: serde_json::json!({
-                    "conversationId": channel.id,
-                    "conversationName": channel.name,
-                    "latestSeq": latest_seq,
-                    "lastReadSeq": last_read_seq,
-                    "unreadCount": unread_count,
-                    "lastReadMessageId": last_read_message_id,
-                    "lastMessageId": last_message_id,
-                    "lastMessageAt": last_message_at,
-                }),
-            },
-        )?;
-        Ok(Some(event_id))
+            channel,
+            None,
+            member_name,
+            member_type,
+            last_read_seq,
+            last_read_message_id,
+        )
     }
 
-    #[allow(clippy::too_many_arguments)]
+    /// Per-thread `last_read_seq` for replies under `thread_parent_id`.
     pub(crate) fn set_thread_read_cursor_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
@@ -207,93 +222,16 @@ impl Store {
         member_type: &str,
         last_read_seq: i64,
         last_read_message_id: Option<&str>,
-        emit_event: bool,
-        caused_by_kind: &'static str,
-    ) -> Result<Option<i64>> {
-        let current_last_read_seq = tx
-            .query_row(
-                "SELECT last_read_seq
-                 FROM inbox_thread_read_state
-                 WHERE conversation_id = ?1 AND thread_parent_id = ?2 AND member_name = ?3",
-                params![channel.id, thread_parent_id, member_name],
-                |row| row.get::<_, i64>(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if last_read_seq <= current_last_read_seq {
-            return Ok(None);
-        }
-
-        tx.execute(
-            "INSERT INTO inbox_thread_read_state (
-                conversation_id, thread_parent_id, member_name, member_type, last_read_seq, last_read_message_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-             ON CONFLICT(conversation_id, thread_parent_id, member_name) DO UPDATE SET
-                member_type = excluded.member_type,
-                last_read_seq = excluded.last_read_seq,
-                last_read_message_id = excluded.last_read_message_id,
-                updated_at = datetime('now')",
-            params![
-                channel.id,
-                thread_parent_id,
-                member_name,
-                member_type,
-                last_read_seq,
-                last_read_message_id,
-            ],
-        )?;
-
-        if !emit_event {
-            return Ok(None);
-        }
-
-        let thread_state = Self::get_thread_notification_state_by_channel_id_inner(
+    ) -> Result<()> {
+        Self::set_read_cursor_tx(
             tx,
-            &channel.id,
-            thread_parent_id,
+            channel,
+            Some(thread_parent_id),
             member_name,
-        )?;
-        let latest_seq = thread_state
-            .as_ref()
-            .map(|state| state.latest_seq)
-            .unwrap_or(0);
-        let unread_count = thread_state
-            .as_ref()
-            .map(|state| state.unread_count)
-            .unwrap_or(0);
-        let last_reply_message_id = thread_state
-            .as_ref()
-            .and_then(|state| state.last_reply_message_id.as_deref());
-        let last_reply_at = thread_state
-            .as_ref()
-            .and_then(|state| state.last_reply_at.as_deref());
-
-        let event_id = Self::append_event_tx(
-            tx,
-            NewEvent {
-                event_type: "thread.read_cursor_set",
-                scope_kind: "user",
-                scope_id: format!("user:{member_name}"),
-                channel_id: Some(channel.id.as_str()),
-                channel_name: Some(channel.name.as_str()),
-                thread_parent_id: Some(thread_parent_id),
-                actor_name: Some(member_name),
-                actor_type: Some(member_type),
-                caused_by_kind: Some(caused_by_kind),
-                payload: serde_json::json!({
-                    "conversationId": channel.id,
-                    "conversationName": channel.name,
-                    "threadParentId": thread_parent_id,
-                    "latestSeq": latest_seq,
-                    "lastReadSeq": last_read_seq,
-                    "unreadCount": unread_count,
-                    "lastReadMessageId": last_read_message_id,
-                    "lastReplyMessageId": last_reply_message_id,
-                    "lastReplyAt": last_reply_at,
-                }),
-            },
-        )?;
-        Ok(Some(event_id))
+            member_type,
+            last_read_seq,
+            last_read_message_id,
+        )
     }
 
     /// Load one projected inbox/read-state row for a specific member in a

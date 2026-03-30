@@ -97,9 +97,6 @@ export interface HistoryResponse {
   messages: HistoryMessage[]
   has_more: boolean
   last_read_seq: number
-  latestEventId: number
-  streamId: string
-  streamPos: number
 }
 
 export interface StreamEvent {
@@ -108,31 +105,6 @@ export interface StreamEvent {
   latestSeq: number
   payload: Record<string, unknown>
   schemaVersion: number
-}
-
-export interface ConversationStatePayload {
-  conversationId: string
-  target?: string
-  latestSeq: number
-  lastReadSeq: number
-  unreadCount: number
-  lastMessageId?: string
-  lastMessageAt?: string
-  lastReadMessageId?: string
-  messageId?: string
-  conversationType?: string
-  threadParentId?: string | null
-}
-
-export interface ThreadStatePayload {
-  conversationId: string
-  threadParentId: string
-  latestSeq: number
-  lastReadSeq: number
-  unreadCount: number
-  lastReadMessageId?: string
-  lastReplyMessageId?: string
-  lastReplyAt?: string
 }
 
 export interface InboxConversationState {
@@ -149,7 +121,6 @@ export interface InboxConversationState {
 
 export interface InboxResponse {
   conversations: InboxConversationState[]
-  latestEventId: number
 }
 
 export interface ThreadInboxEntry {
@@ -175,10 +146,6 @@ export interface ThreadInboxResponse {
 }
 
 export type RealtimeMessage =
-  | {
-      type: 'subscribed'
-      targets: string[]
-    }
   | {
       type: 'event'
       event: StreamEvent

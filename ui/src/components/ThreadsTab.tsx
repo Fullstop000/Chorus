@@ -97,7 +97,10 @@ export function ThreadsTab() {
                   onClick={() => setOpenThreadMsg(threadRowToParentMessage(thread))}
                 >
                   <div className="threads-tab__row-top">
-                    <span className="threads-tab__parent-sender">{thread.parentSenderName}</span>
+                    <div className="threads-tab__row-heading">
+                      <span className="threads-tab__parent-sender">{thread.parentSenderName}</span>
+                      <span className="threads-tab__conversation-id">{thread.conversationId}</span>
+                    </div>
                     <span className="threads-tab__last-at">
                       {thread.lastReplyAt
                         ? new Date(thread.lastReplyAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })

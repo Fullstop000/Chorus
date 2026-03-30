@@ -67,15 +67,15 @@ export function useHistory(
       const res =
         after != null
           ? await getHistoryAfter(
-              conversationId,
-              after,
-              50,
-              options?.threadParentId ?? undefined
-            )
+            conversationId,
+            after,
+            50,
+            options?.threadParentId ?? undefined
+          )
           : await loadSharedRequest(
-              `history:${conversationId}:${options?.threadParentId ?? 'root'}:bootstrap`,
-              () => getHistory(conversationId, 50, options?.threadParentId ?? undefined)
-            )
+            `history:${conversationId}:${options?.threadParentId ?? 'root'}:bootstrap`,
+            () => getHistory(conversationId, 50, options?.threadParentId ?? undefined)
+          )
       if (after != null) {
         commitMessages((current) => {
           const merged = mergeHistoryMessages(current, res.messages)
@@ -134,9 +134,7 @@ export function useHistory(
       if (cancelled || !history) return
 
       try {
-        activeRealtimeTarget = options?.threadParentId
-          ? `thread:${options.threadParentId}`
-          : `conversation:${conversationId}`
+        activeRealtimeTarget = `conversation:${conversationId}`
       } catch (targetError) {
         if (!cancelled) {
           setError(targetError instanceof Error ? targetError.message : String(targetError))
@@ -148,9 +146,6 @@ export function useHistory(
         targets: [activeRealtimeTarget],
         onFrame: (frame) => {
           if (cancelled) return
-          if (frame.type === 'subscribed') {
-            return
-          }
           if (frame.type === 'error') {
             setError(frame.message)
             return
@@ -158,7 +153,8 @@ export function useHistory(
           const incrementalAfter = historyFetchAfterForNotification(
             activeRealtimeTarget,
             frame.event,
-            maxLoadedSeqRef.current
+            maxLoadedSeqRef.current,
+            options?.threadParentId ?? null
           )
           if (incrementalAfter != null) {
             void fetchHistory(incrementalAfter)
@@ -243,14 +239,14 @@ export function useHistory(
       current.map((message) =>
         message.clientNonce === nonce || message.id === handle.tempId
           ? {
-              ...message,
-              id: ack.messageId,
-              seq: ack.seq,
-              createdAt: ack.createdAt,
-              clientNonce: nonce,
-              clientStatus: undefined,
-              clientError: undefined,
-            }
+            ...message,
+            id: ack.messageId,
+            seq: ack.seq,
+            createdAt: ack.createdAt,
+            clientNonce: nonce,
+            clientStatus: undefined,
+            clientError: undefined,
+          }
           : message
       )
     )
@@ -261,10 +257,10 @@ export function useHistory(
       current.map((message) =>
         message.clientNonce === handle.clientNonce || message.id === handle.tempId
           ? {
-              ...message,
-              clientStatus: 'failed',
-              clientError: errorMessage,
-            }
+            ...message,
+            clientStatus: 'failed',
+            clientError: errorMessage,
+          }
           : message
       )
     )

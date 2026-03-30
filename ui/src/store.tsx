@@ -10,7 +10,7 @@ import {
   listHumans,
   listTeams,
 } from './api'
-import { applyInboxEvent, bootstrapInboxState, buildConversationRegistry, conversationThreadUnreadCount, createInboxState, dmConversationNameForParticipants, mergeChannelThreadInboxEntries } from './inbox'
+import { applyConversationRead, applyInboxEvent, bootstrapInboxState, buildConversationRegistry, conversationThreadUnreadCount, createInboxState, dmConversationNameForParticipants, ensureInboxConversations, mergeChannelThreadInboxEntries } from './inbox'
 import { isVisibleSidebarChannel } from './sidebarChannels'
 import { getRealtimeSession } from './transport/realtimeSession'
 
@@ -33,6 +33,7 @@ export interface AppState {
   getConversationThreadUnread: (conversationId?: string | null) => number
   getAgentUnread: (agentName: string) => number
   getAgentConversationId: (agentName: string) => string | null
+  markConversationRead: (conversationId: string, lastReadSeq: number) => void
   setSelectedChannel: (ch: string | null, channelId?: string | null) => void
   setSelectedAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
@@ -147,6 +148,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         includeSystem: true,
       })
       applyConversationLists(allConversationChannels)
+      setInboxState((current) => ensureInboxConversations(current, allConversationChannels))
     } catch (error) {
       console.error('Failed to load channels', error)
     }
@@ -183,7 +185,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       setAgents(loadedAgents)
       setTeams(loadedTeams)
       setHumans(loadedHumans)
-      setInboxState(bootstrapInboxState(inbox.conversations))
+      setInboxState(bootstrapInboxState(inbox.conversations, allConversationChannels))
       setSelectedAgent((prev) => {
         if (!prev) return prev
         return loadedAgents.find((agent) => agent.name === prev.name) ?? null
@@ -224,14 +226,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return getRealtimeSession(currentUser).subscribe({
       targets,
       onFrame: (frame) => {
-        if (frame.type === 'subscribed') {
-          return
-        }
         if (frame.type === 'error') {
           console.error('Inbox realtime subscription failed', frame.message)
           return
         }
-        setInboxState((current) => applyInboxEvent(current, frame.event))
+        setInboxState((current) => {
+          if (frame.event.eventType === 'message.created') {
+            const conversation = current.conversations[frame.event.channelId]
+            if (conversation) {
+              console.log('[chorus:message-arrived]', {
+                conversationId: frame.event.channelId,
+                currentReadSeq: conversation.lastReadSeq,
+                lastSeq: frame.event.latestSeq,
+              })
+            }
+          }
+          return applyInboxEvent(current, frame.event)
+        })
       },
     })
   }, [agents, channels, currentUser, dmChannels, refreshAgents, refreshChannels, refreshTeams, shellBootstrapped, systemConversationChannels])
@@ -251,6 +262,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           }
           return [...current, channel]
         })
+        setInboxState((current) => ensureInboxConversations(current, [channel]))
       })
       .catch((error) => {
         if (!cancelled) {
@@ -340,6 +352,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return dmChannels.find((channel) => channel.name === dmChannelName)?.id ?? null
   }, [currentUser, dmChannels])
 
+  const markConversationRead = useCallback((conversationId: string, lastReadSeq: number) => {
+    setInboxState((current) => applyConversationRead(current, conversationId, lastReadSeq))
+  }, [])
+
   const serverInfoValue: ServerInfo | null =
     humans.length > 0 || systemConversationChannels.length > 0
       ? { system_channels: systemConversationChannels, humans }
@@ -363,6 +379,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         getConversationThreadUnread,
         getAgentUnread,
         getAgentConversationId,
+        markConversationRead,
         setSelectedChannel: handleSetSelectedChannel,
         setSelectedAgent: handleSetSelectedAgent,
         setActiveTab,

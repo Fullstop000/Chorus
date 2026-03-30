@@ -1,11 +1,9 @@
 use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
-use chorus::store::events::StoredEvent;
 use chorus::store::messages::SenderType;
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
 use rusqlite::{params, Connection};
-use serde_json::Value;
 use tempfile::tempdir;
 
 #[test]
@@ -315,34 +313,6 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     let unread = store.get_messages_for_agent("bot1", true).unwrap();
     assert_eq!(unread.len(), 2);
 
-    let events = store.get_events(None, 20).unwrap();
-    let read_cursor_event = events
-        .iter()
-        .find(|event| event.event_type == "conversation.read_cursor_set")
-        .expect("expected inbox read cursor event after advancing agent read position");
-    assert_eq!(read_cursor_event.stream_kind, "inbox");
-    assert_eq!(read_cursor_event.stream_id, "inbox:bot1");
-    assert_eq!(
-        payload_field(read_cursor_event, "conversationName").as_str(),
-        Some("general")
-    );
-    assert_eq!(
-        payload_field(read_cursor_event, "lastReadMessageId").as_str(),
-        Some(second_top_level.as_str())
-    );
-    assert_eq!(
-        payload_field(read_cursor_event, "lastReadSeq").as_i64(),
-        Some(3)
-    );
-    assert_eq!(
-        payload_field(read_cursor_event, "latestSeq").as_i64(),
-        Some(3)
-    );
-    assert_eq!(
-        payload_field(read_cursor_event, "unreadCount").as_i64(),
-        Some(0)
-    );
-
     let state_after = store
         .get_inbox_conversation_state("general", "bot1")
         .unwrap()
@@ -475,34 +445,90 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
         .get_history_snapshot("general", "alice", Some(&parent_id), 10, None, None)
         .unwrap();
     assert_eq!(thread_snapshot.last_read_seq, 2);
+}
 
-    let events = store.get_events(None, 20).unwrap();
-    let thread_read_event = events
-        .iter()
-        .find(|event| event.event_type == "thread.read_cursor_set")
-        .expect("expected thread read cursor event");
-    assert_eq!(thread_read_event.stream_kind, "inbox");
-    assert_eq!(thread_read_event.stream_id, "inbox:alice");
-    assert_eq!(
-        payload_field(thread_read_event, "threadParentId").as_str(),
-        Some(parent_id.as_str())
+#[test]
+fn test_history_read_cursor_rejects_seq_above_max() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_message("general", None, "alice", SenderType::Human, "a", &[])
+        .unwrap();
+    store
+        .create_message("general", None, "alice", SenderType::Human, "b", &[])
+        .unwrap();
+
+    let err = store
+        .set_history_read_cursor("general", "alice", SenderType::Human, None, 999)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("greater than latest message seq"),
+        "unexpected error: {err}"
     );
-    assert_eq!(
-        payload_field(thread_read_event, "lastReadMessageId").as_str(),
-        Some(reply_id.as_str())
+    // Sending advances the sender's read cursor to the latest seq (2).
+    assert_eq!(store.get_last_read_seq("general", "alice").unwrap(), 2);
+}
+
+#[test]
+fn test_history_read_cursor_rejects_negative_seq() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_message("general", None, "alice", SenderType::Human, "a", &[])
+        .unwrap();
+
+    let err = store
+        .set_history_read_cursor("general", "alice", SenderType::Human, None, -1)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("non-negative"),
+        "unexpected error: {err}"
     );
-    assert_eq!(
-        payload_field(thread_read_event, "lastReadSeq").as_i64(),
-        Some(2)
-    );
-    assert_eq!(
-        payload_field(thread_read_event, "latestSeq").as_i64(),
-        Some(2)
-    );
-    assert_eq!(
-        payload_field(thread_read_event, "unreadCount").as_i64(),
-        Some(0)
-    );
+}
+
+#[test]
+fn test_history_read_cursor_heals_orphan_above_max_seq() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_message("general", None, "alice", SenderType::Human, "a", &[])
+        .unwrap();
+
+    let channel = store.get_channel_by_name("general").unwrap().unwrap();
+    {
+        let conn = store.conn_for_test();
+        conn.execute(
+            "INSERT INTO inbox_read_state (
+                conversation_id, member_name, member_type, last_read_seq, last_read_message_id, updated_at
+             ) VALUES (?1, 'alice', 'human', 50, NULL, datetime('now'))
+             ON CONFLICT(conversation_id, member_name) DO UPDATE SET last_read_seq = excluded.last_read_seq",
+            params![channel.id],
+        )
+        .unwrap();
+    }
+
+    store
+        .set_history_read_cursor("general", "alice", SenderType::Human, None, 1)
+        .unwrap();
+    assert_eq!(store.get_last_read_seq("general", "alice").unwrap(), 1);
 }
 
 #[test]
@@ -685,7 +711,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
 }
 
 #[test]
-fn test_thread_summary_projection_matches_history_and_thread_events() {
+fn test_thread_summary_projection_matches_history() {
     let (store, _dir) = make_store();
     store
         .create_channel("general", None, ChannelType::Channel)
@@ -713,7 +739,6 @@ fn test_thread_summary_projection_matches_history_and_thread_events() {
     let snapshot = store
         .get_history_snapshot("general", "alice", None, 10, None, None)
         .unwrap();
-    let events = store.get_events(None, 20).unwrap();
 
     assert_eq!(summary.parent_message_id, parent_id);
     assert_eq!(summary.reply_count, 1);
@@ -724,28 +749,6 @@ fn test_thread_summary_projection_matches_history_and_thread_events() {
     assert!(summary.last_reply_at.is_some());
     assert_eq!(summary.participant_count, 1);
     assert_eq!(snapshot.messages[0].reply_count, Some(summary.reply_count));
-
-    let reply_count_event = events
-        .iter()
-        .find(|event| event.event_type == "thread.reply_count_changed")
-        .unwrap();
-    assert_eq!(
-        payload_field(reply_count_event, "replyCount").as_i64(),
-        Some(summary.reply_count)
-    );
-
-    let activity_event = events
-        .iter()
-        .find(|event| event.event_type == "thread.activity_bumped")
-        .unwrap();
-    assert_eq!(
-        payload_field(activity_event, "lastReplyMessageId").as_str(),
-        summary.last_reply_message_id.as_deref()
-    );
-    assert_eq!(
-        payload_field(activity_event, "lastReplyAt").as_str(),
-        summary.last_reply_at.as_deref()
-    );
 }
 
 #[test]
@@ -827,15 +830,8 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
     assert!(history[0].sender_deleted);
 }
 
-fn payload_field<'a>(event: &'a StoredEvent, key: &str) -> &'a Value {
-    event
-        .payload
-        .get(key)
-        .unwrap_or_else(|| panic!("missing payload field {key} in {:?}", event.payload))
-}
-
 #[test]
-fn test_send_message_emits_conversation_state_event() {
+fn test_create_message_persists_top_level() {
     let (store, _dir) = make_store();
     store
         .create_channel("general", None, ChannelType::Channel)
@@ -848,34 +844,15 @@ fn test_send_message_emits_conversation_state_event() {
     let message_id = store
         .create_message("general", None, "alice", SenderType::Human, "hello", &[])
         .unwrap();
-    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
-
-    let events = store.get_events(None, 20).unwrap();
-    assert_eq!(events.len(), 1);
-    assert_eq!(events[0].event_type, "conversation.state");
-    assert_eq!(events[0].scope_kind, "channel");
-    assert_eq!(events[0].stream_kind, "conversation");
-    assert_eq!(events[0].stream_id, format!("conversation:{channel_id}"));
-    assert_eq!(events[0].stream_pos, 1);
-    assert_eq!(events[0].actor_name.as_deref(), Some("alice"));
-    assert_eq!(events[0].actor_type.as_deref(), Some("human"));
-    assert_eq!(
-        payload_field(&events[0], "messageId").as_str(),
-        Some(message_id.as_str())
-    );
-    assert_eq!(
-        payload_field(&events[0], "conversationType").as_str(),
-        Some("channel")
-    );
-    assert_eq!(payload_field(&events[0], "latestSeq").as_i64(), Some(1));
-    assert!(events[0].payload.get("content").is_none());
-    assert!(events[0].payload.get("attachments").is_none());
-    assert!(events[0].payload.get("attachmentIds").is_none());
-    assert!(events[0].payload.get("unreadDelta").is_none());
+    let (history, _) = store.get_history("general", None, 10, None, None).unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].id, message_id);
+    assert_eq!(history[0].content, "hello");
+    assert_eq!(history[0].sender_name, "alice");
 }
 
 #[test]
-fn test_thread_reply_emits_conversation_and_thread_state_events() {
+fn test_thread_reply_updates_inbox_read_models() {
     let (store, _dir) = make_store();
     store
         .create_channel("general", None, ChannelType::Channel)
@@ -905,63 +882,11 @@ fn test_thread_reply_emits_conversation_and_thread_state_events() {
         )
         .unwrap();
 
-    let events = store.get_events(None, 20).unwrap();
-    let event_types: Vec<_> = events
-        .iter()
-        .map(|event| event.event_type.as_str())
-        .collect();
-    assert_eq!(
-        event_types,
-        vec![
-            "conversation.state",
-            "conversation.state",
-            "thread.state",
-            "thread.reply_count_changed",
-            "thread.activity_bumped",
-            "thread.participant_added",
-        ]
-    );
-    let stream_positions: Vec<_> = events.iter().map(|event| event.stream_pos).collect();
-    assert_eq!(stream_positions, vec![1, 2, 3, 4, 5, 6]);
-    assert!(events
-        .iter()
-        .all(|event| event.stream_kind == "conversation"));
-
-    let reply_event = &events[1];
-    assert_eq!(reply_event.scope_kind, "channel");
-    assert_eq!(
-        payload_field(reply_event, "messageId").as_str(),
-        Some(reply_id.as_str())
-    );
-    assert_eq!(
-        payload_field(reply_event, "threadParentId").as_str(),
-        Some(parent_id.as_str())
-    );
-    assert_eq!(payload_field(reply_event, "latestSeq").as_i64(), Some(2));
-    assert!(reply_event.payload.get("content").is_none());
-
-    let thread_state_event = &events[2];
-    assert_eq!(thread_state_event.scope_kind, "thread");
-    assert_eq!(
-        payload_field(thread_state_event, "threadParentId").as_str(),
-        Some(parent_id.as_str())
-    );
-    assert_eq!(
-        payload_field(thread_state_event, "lastReplyMessageId").as_str(),
-        Some(reply_id.as_str())
-    );
-    assert_eq!(
-        payload_field(thread_state_event, "latestSeq").as_i64(),
-        Some(2)
-    );
-    assert!(thread_state_event.payload.get("replyCountDelta").is_none());
-
-    let reply_count_event = &events[3];
-    assert_eq!(reply_count_event.scope_kind, "channel");
-    assert_eq!(
-        payload_field(reply_count_event, "replyCount").as_i64(),
-        Some(1)
-    );
+    let (thread_history, _) = store
+        .get_history("general", Some(&parent_id), 10, None, None)
+        .unwrap();
+    assert_eq!(thread_history.len(), 1);
+    assert_eq!(thread_history[0].id, reply_id);
 
     let alice_conversation_state = store
         .get_inbox_conversation_state("general", "alice")
@@ -1089,36 +1014,6 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
     assert_eq!(inbox.threads[2].thread_parent_id, oldest_unread_parent);
     assert_eq!(inbox.threads[2].unread_count, 1);
     assert_eq!(inbox.threads[2].parent_content, "oldest unread parent");
-}
-
-#[test]
-fn test_mark_agent_messages_deleted_emits_tombstone_events() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel("general", None, ChannelType::Channel)
-        .unwrap();
-    store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
-        .unwrap();
-    let message_id = store
-        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
-        .unwrap();
-
-    store.mark_agent_messages_deleted("bot1").unwrap();
-
-    let events = store.get_events(None, 20).unwrap();
-    let tombstone_event = events
-        .iter()
-        .find(|event| event.event_type == "message.tombstone_changed")
-        .expect("expected tombstone event after sender deletion");
-    assert_eq!(
-        payload_field(tombstone_event, "messageId").as_str(),
-        Some(message_id.as_str())
-    );
-    assert_eq!(
-        payload_field(tombstone_event, "senderDeleted").as_bool(),
-        Some(true)
-    );
 }
 
 #[test]

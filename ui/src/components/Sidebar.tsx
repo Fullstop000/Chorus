@@ -60,6 +60,7 @@ export function Sidebar() {
     setSelectedAgent,
     getConversationUnread,
     getAgentUnread,
+    getAgentConversationId,
     refreshChannels,
     refreshAgents,
     refreshTeams,
@@ -166,6 +167,7 @@ export function Sidebar() {
                   <span className="sidebar-item-hash">#</span>
                   <span className="sidebar-item-main">
                     <span className="sidebar-item-text">{ch.name}</span>
+                    {ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
                   </span>
                   {unreadCount > 0 && (
                     <span className="sidebar-unread-badge">{unreadCount}</span>
@@ -197,6 +199,7 @@ export function Sidebar() {
                     <span className="sidebar-item-main">
                       <span className="sidebar-item-text">{ch.name}</span>
                       {ch.description && <span className="sidebar-item-meta">{ch.description}</span>}
+                      {ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
                     </span>
                     {unreadCount > 0 && (
                       <span className="sidebar-unread-badge">{unreadCount}</span>
@@ -267,6 +270,7 @@ export function Sidebar() {
             </div>
             {agents.map((agent) => {
               const unreadCount = getAgentUnread(agent.name)
+              const conversationId = getAgentConversationId(agent.name)
               return (
                 <button
                   key={agent.name}
@@ -280,6 +284,9 @@ export function Sidebar() {
                   <span className="sidebar-item-main">
                     <span className="sidebar-item-text">{agent.display_name ?? agent.name}</span>
                     <span className="sidebar-item-meta">:: {agent.runtime ?? 'agent'}</span>
+                    {conversationId && (
+                      <span className="sidebar-item-meta sidebar-item-id">{conversationId}</span>
+                    )}
                   </span>
                   {unreadCount > 0 && (
                     <span className="sidebar-unread-badge">{unreadCount}</span>

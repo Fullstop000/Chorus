@@ -60,13 +60,20 @@ function eventMatchesActiveRealtimeTarget(
 export function historyFetchAfterForNotification(
   activeRealtimeTarget: string | null,
   event: StreamEvent,
-  loadedMaxSeq: number
+  loadedMaxSeq: number,
+  threadParentId?: string | null
 ): number | null {
   if (event.eventType !== 'message.created') {
     return null
   }
   if (!eventMatchesActiveRealtimeTarget(activeRealtimeTarget, event)) {
     return null
+  }
+  if (threadParentId) {
+    const eventThreadParentId = event.payload.threadParentId
+    if (eventThreadParentId !== threadParentId) {
+      return null
+    }
   }
   if (event.latestSeq <= loadedMaxSeq) {
     return null

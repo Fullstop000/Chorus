@@ -148,16 +148,111 @@ export function buildConversationRegistry(
   return entries
 }
 
-export function applyInboxEvent(state: InboxState, _event: StreamEvent): InboxState {
-  return state
+function messageIdFromEvent(event: StreamEvent): string | null {
+  const value = event.payload.messageId
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+export function applyInboxEvent(state: InboxState, event: StreamEvent): InboxState {
+  if (event.eventType !== 'message.created') {
+    return state
+  }
+
+  const current = state.conversations[event.channelId]
+  if (!current) {
+    return state
+  }
+
+  const latestSeq = Math.max(current.latestSeq, event.latestSeq)
+  const unreadCount = Math.max(latestSeq - current.lastReadSeq, 0)
+  const lastMessageId = messageIdFromEvent(event) ?? current.lastMessageId ?? null
+
+  if (
+    latestSeq === current.latestSeq &&
+    unreadCount === current.unreadCount &&
+    lastMessageId === (current.lastMessageId ?? null)
+  ) {
+    return state
+  }
+
+  return {
+    ...state,
+    conversations: {
+      ...state.conversations,
+      [event.channelId]: {
+        ...current,
+        latestSeq,
+        unreadCount,
+        lastMessageId,
+      },
+    },
+  }
+}
+
+export function applyConversationRead(
+  state: InboxState,
+  conversationId: string,
+  lastReadSeq: number
+): InboxState {
+  const current = state.conversations[conversationId]
+  if (!current || lastReadSeq <= current.lastReadSeq) {
+    return state
+  }
+
+  const nextLastReadSeq = Math.max(current.lastReadSeq, lastReadSeq)
+  const unreadCount = Math.max(current.latestSeq - nextLastReadSeq, 0)
+
+  return {
+    ...state,
+    conversations: {
+      ...state.conversations,
+      [conversationId]: {
+        ...current,
+        lastReadSeq: nextLastReadSeq,
+        unreadCount,
+      },
+    },
+  }
 }
 
 export function bootstrapInboxState(
-  conversations: InboxConversationState[]
+  conversations: InboxConversationState[],
+  channels: ChannelInfo[] = []
 ): InboxState {
   const nextState = createInboxState()
   for (const conversation of conversations) {
     nextState.conversations[conversation.conversationId] = conversation
+  }
+  return ensureInboxConversations(nextState, channels)
+}
+
+export function ensureInboxConversations(
+  state: InboxState,
+  channels: ChannelInfo[] = []
+): InboxState {
+  let nextState = state
+  for (const channel of channels) {
+    if (!channel.id || channel.joined === false) continue
+    if (nextState.conversations[channel.id]) continue
+    if (nextState === state) {
+      nextState = {
+        ...state,
+        conversations: {
+          ...state.conversations,
+        },
+      }
+    }
+    nextState.conversations[channel.id] = {
+      conversationId: channel.id,
+      conversationName: channel.name,
+      conversationType: channel.channel_type ?? 'channel',
+      latestSeq: 0,
+      lastReadSeq: 0,
+      unreadCount: 0,
+      lastReadMessageId: null,
+      lastMessageId: null,
+      lastMessageAt: null,
+    }
   }
   return nextState
 }

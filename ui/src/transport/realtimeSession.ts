@@ -37,10 +37,8 @@ class RealtimeSession {
     const id = `rt-sub-${this.nextSubscriptionId++}`
     this.subscriptions.set(id, { ...subscription, id })
     this.ensureSocket()
-    this.syncSubscriptions()
     return () => {
-      if (!this.subscriptions.delete(id)) return
-      this.syncSubscriptions()
+      this.subscriptions.delete(id)
     }
   }
 
@@ -65,7 +63,6 @@ class RealtimeSession {
         viewer: this.viewer,
         targets: this.currentTargets(),
       })
-      this.syncSubscriptions()
     }
 
     socket.onmessage = (messageEvent) => {
@@ -122,10 +119,6 @@ class RealtimeSession {
     if (frame.event.channelId) {
       targets.add(`conversation:${frame.event.channelId}`)
     }
-    const threadParentId = frame.event.payload.threadParentId
-    if (typeof threadParentId === 'string') {
-      targets.add(`thread:${threadParentId}`)
-    }
     return [...targets]
   }
 
@@ -134,20 +127,6 @@ class RealtimeSession {
     const eventTargets = this.eventTargets(frame)
     if (eventTargets.length === 0) return true
     return subscription.targets.some((target) => eventTargets.includes(target))
-  }
-
-  private syncSubscriptions() {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return
-
-    const targets = this.currentTargets()
-    const frame: Record<string, unknown> = {
-      type: 'subscribe',
-      replace: true,
-      targets,
-    }
-
-    logRealtime('send', frame)
-    this.socket.send(JSON.stringify(frame))
   }
 }
 

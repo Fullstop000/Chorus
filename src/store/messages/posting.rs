@@ -230,8 +230,6 @@ impl Store {
                 sender_type.as_str(),
                 inserted.seq,
                 Some(&inserted.id),
-                false,
-                "send_message",
             )?;
         } else {
             Self::set_inbox_read_cursor_tx(
@@ -241,8 +239,6 @@ impl Store {
                 sender_type.as_str(),
                 inserted.seq,
                 Some(&inserted.id),
-                false,
-                "send_message",
             )?;
         }
         tx.commit()?;

@@ -20,6 +20,7 @@ export function MainPanel() {
     activeTab,
     currentUser,
     getAgentConversationId,
+    markConversationRead,
     refreshChannels,
     refreshAgents,
     refreshTeams,
@@ -95,6 +96,13 @@ export function MainPanel() {
       setShowMembersPanel(false)
     }
   }, [activeTab, selectedChannel])
+
+  useEffect(() => {
+    if (activeTab !== 'chat' || !activeConversationId || chatHistory.lastReadSeq <= 0) {
+      return
+    }
+    markConversationRead(activeConversationId, chatHistory.lastReadSeq)
+  }, [activeConversationId, activeTab, chatHistory.lastReadSeq, markConversationRead])
 
   useEffect(() => {
     setShowTeamSettings(false)

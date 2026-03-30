@@ -255,6 +255,14 @@
   white-space: nowrap;
 }
 
+.sidebar-item-id {
+  text-transform: none;
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-channel-badge {
   margin-left: auto;
   flex-shrink: 0;
