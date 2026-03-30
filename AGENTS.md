@@ -316,7 +316,7 @@ Data flow for a human viewing chat in the browser:
 
 1. Selecting a channel, DM, or thread bootstraps a history snapshot through `GET /internal/agent/{id}/history`
 2. After bootstrap, the UI opens one session-wide websocket at `/api/events/ws`
-3. The websocket carries notification events such as `conversation.state` and `thread.state`, with absolute unread and latest-seq state but no message bodies
+3. The websocket carries `message.created` frames (channel id, latest seq, small payload); the UI refreshes inbox/thread badges via HTTP (`/api/inbox`, `.../inbox-notification`) rather than a durable server event log
 4. Channel, DM, and thread switches replace active subscriptions on that same socket rather than opening per-target sockets
 5. When the active target receives a newer `latestSeq`, the UI fetches incremental history with `after=<last_loaded_seq>` and merges those rows into the visible timeline
 6. Inactive targets use the same notifications only to refresh badges and unread state; they do not eagerly fetch message bodies

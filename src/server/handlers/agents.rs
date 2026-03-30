@@ -4,7 +4,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
-use serde_json::json;
 use tracing::{info, warn};
 
 use super::{acquire_transition, api_err, format_anyhow_error, internal_err, ApiResult, AppState};
@@ -239,22 +238,6 @@ pub async fn handle_create_agent(
         created_status = "inactive";
         start_warning = Some(format!("failed to start agent: {err}"));
     }
-    let username = whoami::username();
-    let _ = state.store.record_workspace_event(
-        "agent.updated",
-        None,
-        Some(username.as_str()),
-        Some(SenderType::Human.as_str()),
-        Some("create_agent"),
-        json!({
-            "action": "created",
-            "agentName": name,
-            "status": created_status,
-            "runtime": req.runtime,
-            "model": req.model,
-            "startWarning": start_warning,
-        }),
-    );
     Ok(Json(serde_json::json!({
         "name": name,
         "status": created_status,
@@ -343,28 +326,6 @@ pub async fn handle_update_agent(
             )));
         }
     }
-    let username = whoami::username();
-    let updated_agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| internal_err(e.to_string()))?
-        .ok_or_else(|| internal_err("agent missing after update"))?;
-    let _ = state.store.record_workspace_event(
-        "agent.updated",
-        None,
-        Some(username.as_str()),
-        Some(SenderType::Human.as_str()),
-        Some("update_agent"),
-        json!({
-            "action": "updated",
-            "agentName": updated_agent.name,
-            "displayName": updated_agent.display_name,
-            "status": updated_agent.status.as_str(),
-            "runtime": updated_agent.runtime,
-            "model": updated_agent.model,
-        }),
-    );
-
     Ok(Json(serde_json::json!({
         "ok": true,
         "restarted": existing.status == AgentStatus::Active && requires_restart
@@ -416,25 +377,6 @@ pub async fn handle_restart_agent(
             .update_agent_status(&name, AgentStatus::Inactive);
         return Err(internal_err(format!("restart failed: {err}")));
     }
-    let username = whoami::username();
-    let updated_agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| internal_err(e.to_string()))?
-        .ok_or_else(|| internal_err("agent missing after restart"))?;
-    let _ = state.store.record_workspace_event(
-        "agent.updated",
-        None,
-        Some(username.as_str()),
-        Some(SenderType::Human.as_str()),
-        Some("restart_agent"),
-        json!({
-            "action": "restarted",
-            "agentName": updated_agent.name,
-            "status": updated_agent.status.as_str(),
-        }),
-    );
-
     Ok(Json(serde_json::json!({
         "ok": true,
         "mode": req.mode,
@@ -476,19 +418,6 @@ pub async fn handle_delete_agent(
             internal_err(format!("agent deleted but failed to delete workspace: {e}"))
         })?;
     }
-    let username = whoami::username();
-    let _ = state.store.record_workspace_event(
-        "agent.updated",
-        None,
-        Some(username.as_str()),
-        Some(SenderType::Human.as_str()),
-        Some("delete_agent"),
-        json!({
-            "action": "deleted",
-            "agentName": name,
-        }),
-    );
-
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -504,24 +433,6 @@ pub async fn handle_agent_start(
         .await
         .map_err(|e| internal_err(e.to_string()))?;
     info!(agent = %name, "agent started");
-    let username = whoami::username();
-    let updated_agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| internal_err(e.to_string()))?
-        .ok_or_else(|| internal_err("agent missing after start"))?;
-    let _ = state.store.record_workspace_event(
-        "agent.updated",
-        None,
-        Some(username.as_str()),
-        Some(SenderType::Human.as_str()),
-        Some("start_agent"),
-        json!({
-            "action": "started",
-            "agentName": updated_agent.name,
-            "status": updated_agent.status.as_str(),
-        }),
-    );
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -537,24 +448,6 @@ pub async fn handle_agent_stop(
         .await
         .map_err(|e| internal_err(e.to_string()))?;
     info!(agent = %name, "agent stopped");
-    let username = whoami::username();
-    let updated_agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| internal_err(e.to_string()))?
-        .ok_or_else(|| internal_err("agent missing after stop"))?;
-    let _ = state.store.record_workspace_event(
-        "agent.updated",
-        None,
-        Some(username.as_str()),
-        Some(SenderType::Human.as_str()),
-        Some("stop_agent"),
-        json!({
-            "action": "stopped",
-            "agentName": updated_agent.name,
-            "status": updated_agent.status.as_str(),
-        }),
-    );
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

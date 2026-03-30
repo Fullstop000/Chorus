@@ -59,8 +59,12 @@ impl Store {
 
         let mut out = Vec::new();
         for (channel_id, member_type, last_read_seq) in &memberships {
-            let ctx =
-                Self::load_agent_inbox_channel_context(&conn, channel_id, agent_name, *last_read_seq)?;
+            let ctx = Self::load_agent_inbox_channel_context(
+                &conn,
+                channel_id,
+                agent_name,
+                *last_read_seq,
+            )?;
             let scan = Self::scan_agent_inbox_channel(&conn, &ctx, agent_name, *last_read_seq)?;
             Self::persist_agent_inbox_read_cursors(
                 &mut conn,
@@ -257,12 +261,7 @@ impl Store {
                     Some(parent_label.to_string()),
                 )
             } else {
-                (
-                    effective_channel_name,
-                    parent_label.to_string(),
-                    None,
-                    None,
-                )
+                (effective_channel_name, parent_label.to_string(), None, None)
             };
 
         Ok(ReceivedMessage {

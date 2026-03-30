@@ -309,8 +309,8 @@ async fn test_send_and_receive() {
 }
 
 #[tokio::test]
-async fn test_history_includes_latest_event_id_cursor() {
-    let (store, app) = setup();
+async fn test_history_includes_last_read_seq() {
+    let (_store, app) = setup();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "hello" });
     let send_resp = app
@@ -341,10 +341,8 @@ async fn test_history_includes_latest_event_id_cursor() {
         .await
         .unwrap();
     let history: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
-    assert_eq!(history["latestEventId"], 1);
-    assert_eq!(history["streamId"], format!("conversation:{channel_id}"));
-    assert_eq!(history["streamPos"], 1);
+    assert_eq!(history["last_read_seq"], 1);
+    assert!(!history["messages"].as_array().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -557,7 +555,6 @@ async fn test_public_inbox_matches_current_human() {
         .unwrap();
     let inbox: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(inbox["conversations"].is_array());
-    assert!(inbox["latestEventId"].is_number());
 }
 
 #[tokio::test]
@@ -592,7 +589,10 @@ async fn test_public_conversation_inbox_notification_matches_human_viewer() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert!(v["conversation"].is_object());
-    assert_eq!(v["conversation"]["conversationId"].as_str().unwrap(), channel_id);
+    assert_eq!(
+        v["conversation"]["conversationId"].as_str().unwrap(),
+        channel_id
+    );
     assert!(v["conversation"]["unreadCount"].is_number());
     assert!(v["conversation"]["latestSeq"].is_number());
 }
@@ -2677,29 +2677,6 @@ async fn test_at_mention_forwards_to_team_channel() {
             .count(),
         1
     );
-
-    let events = store.get_events(None, 20).unwrap();
-    let delegation_event = events
-        .iter()
-        .find(|event| event.event_type == "team.delegation_requested")
-        .expect("team delegation event");
-    assert_eq!(delegation_event.stream_id, format!("team:{team_id}"));
-    assert_eq!(delegation_event.stream_kind, "team");
-    assert_eq!(delegation_event.scope_kind, "team");
-    assert_eq!(delegation_event.scope_id, format!("team:{team_id}"));
-    assert_eq!(
-        delegation_event.payload["sourceChannelName"].as_str(),
-        Some("general")
-    );
-
-    let forwarded_message_event = events
-        .iter()
-        .find(|event| {
-            event.event_type == "message.created"
-                && event.channel_name.as_deref() == Some("eng-team")
-        })
-        .expect("forwarded message event");
-    assert_eq!(forwarded_message_event.stream_kind, "conversation");
 }
 
 #[tokio::test]
@@ -2777,18 +2754,6 @@ async fn test_swarm_ready_signals_emit_consensus_system_message() {
             .any(|msg| msg.content.contains("All members ready")),
         "consensus system message should be posted"
     );
-
-    let events = store.get_events(None, 40).unwrap();
-    let coordination_events: Vec<_> = events
-        .iter()
-        .filter(|event| event.stream_id == format!("team:{team_id}"))
-        .map(|event| event.event_type.as_str())
-        .collect();
-    assert!(coordination_events.contains(&"team.delegation_requested"));
-    assert!(coordination_events.contains(&"team.deliberation_requested"));
-    assert!(coordination_events.contains(&"team.quorum_snapshot"));
-    assert!(coordination_events.contains(&"team.quorum_signaled"));
-    assert!(coordination_events.contains(&"team.quorum_reached"));
 }
 
 // 10. tags are stored as FTS5 tokens — partial tag name does not match
@@ -2814,122 +2779,4 @@ async fn knowledge_tags_fts_token_boundary() {
         no_match.is_empty(),
         "partial tag 'task-4' should not match 'task-42'"
     );
-}
-
-#[tokio::test]
-async fn test_shell_mutations_emit_workspace_structural_events() {
-    let (store, app, _lifecycle, _dir) = setup_with_lifecycle_and_data_dir();
-    let bot1 = store.get_agent("bot1").unwrap().unwrap();
-
-    let create_channel_req = serde_json::json!({
-        "name": "ops-room",
-        "description": "Shell structural event coverage"
-    });
-    let create_channel_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/channels")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&create_channel_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create_channel_resp.status(), StatusCode::OK);
-
-    let channel_id = store.get_channel_by_name("ops-room").unwrap().unwrap().id;
-    let archive_channel_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/channels/{channel_id}/archive"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(archive_channel_resp.status(), StatusCode::OK);
-
-    let create_team_req = serde_json::json!({
-        "name": "ops-team",
-        "display_name": "Ops Team",
-        "collaboration_model": "leader_operators",
-        "leader_agent_name": "bot1",
-        "members": [{
-            "member_name": "bot1",
-            "member_type": "agent",
-            "member_id": bot1.id,
-            "role": "operator"
-        }]
-    });
-    let create_team_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/teams")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&create_team_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(create_team_resp.status(), StatusCode::OK);
-
-    let update_agent_req = serde_json::json!({
-        "display_name": "Ops Bot",
-        "description": "Updated from workspace event test",
-        "runtime": "codex",
-        "model": "gpt-5.4",
-        "reasoningEffort": "low",
-        "envVars": []
-    });
-    let update_agent_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/agents/bot1")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&update_agent_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(update_agent_resp.status(), StatusCode::OK);
-
-    let workspace_events: Vec<_> = store
-        .get_events(None, 200)
-        .unwrap()
-        .into_iter()
-        .filter(|event| event.stream_id == "workspace:default")
-        .collect();
-
-    assert!(
-        workspace_events
-            .iter()
-            .all(|event| event.stream_kind == "workspace"),
-        "workspace structural events should use workspace stream kind"
-    );
-    assert!(workspace_events.iter().any(|event| event.event_type
-        == "conversation.membership_changed"
-        && event.payload["action"] == "created"
-        && event.payload["conversationName"] == "ops-room"));
-    assert!(workspace_events
-        .iter()
-        .any(|event| event.event_type == "conversation.archived"
-            && event.payload["conversationId"] == channel_id));
-    assert!(workspace_events
-        .iter()
-        .any(|event| event.event_type == "team.updated"
-            && event.payload["action"] == "created"
-            && event.payload["teamName"] == "ops-team"));
-    assert!(workspace_events
-        .iter()
-        .any(|event| event.event_type == "agent.updated"
-            && event.payload["action"] == "updated"
-            && event.payload["agentName"] == "bot1"));
 }

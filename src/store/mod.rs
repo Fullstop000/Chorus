@@ -1,7 +1,6 @@
 pub mod agents;
 pub mod attachments;
 pub mod channels;
-pub mod events;
 pub mod inbox;
 pub mod knowledge;
 pub mod messages;
@@ -23,7 +22,6 @@ pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentEnvVar, AgentStatus, Human};
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
-pub use events::{ResolvedSubscriptionTarget, StoredEvent, SubscriptionTargetKind};
 pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
 pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,

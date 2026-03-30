@@ -100,19 +100,11 @@ pub struct HistoryResponse {
     pub messages: Vec<crate::store::messages::HistoryMessage>,
     pub has_more: bool,
     pub last_read_seq: i64,
-    #[serde(rename = "latestEventId")]
-    pub latest_event_id: i64,
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
-    #[serde(rename = "streamPos")]
-    pub stream_pos: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct InboxResponse {
     pub conversations: Vec<crate::store::InboxConversationNotificationView>,
-    #[serde(rename = "latestEventId")]
-    pub latest_event_id: i64,
 }
 
 /// CamelCase inbox row for browser clients (matches `InboxConversationState` in the UI).
@@ -353,9 +345,6 @@ fn history_for_channel(
         messages: snapshot.messages,
         has_more: snapshot.has_more,
         last_read_seq: snapshot.last_read_seq,
-        latest_event_id: snapshot.latest_event_id,
-        stream_id: snapshot.stream_id,
-        stream_pos: snapshot.stream_pos,
     }))
 }
 
@@ -605,14 +594,6 @@ async fn forward_team_mentions(
                 sender_name: sender_name.to_string(),
             }),
         )?;
-        state.store.record_team_delegation_requested(
-            &team.id,
-            &forwarded_message_id,
-            channel_name,
-            sender_name,
-            sender_type.as_str(),
-        )?;
-
         let collaboration_model = make_collaboration_model(&team.collaboration_model);
         if let Some(prompt) = collaboration_model.deliberation_prompt() {
             state
@@ -621,9 +602,6 @@ async fn forward_team_mentions(
             state
                 .store
                 .create_system_message(&team_channel.id, &prompt)?;
-            state
-                .store
-                .record_team_deliberation_requested(&team.id, &forwarded_message_id)?;
         }
 
         deliver_message_to_agents(state, &team_channel.id, sender_name, &forwarded_message_id)
@@ -780,14 +758,7 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
         .store
         .get_inbox_conversation_notifications(&actor_id)
         .map_err(|e| internal_err(e.to_string()))?;
-    let latest_event_id = state
-        .store
-        .latest_event_id()
-        .map_err(|e| internal_err(e.to_string()))?;
-    Ok(Json(InboxResponse {
-        conversations,
-        latest_event_id,
-    }))
+    Ok(Json(InboxResponse { conversations }))
 }
 
 pub async fn handle_public_conversation_inbox_notification(
@@ -835,7 +806,10 @@ pub async fn handle_public_conversation_inbox_notification(
         None
     };
 
-    Ok(Json(ConversationInboxRefreshResponse { conversation, thread }))
+    Ok(Json(ConversationInboxRefreshResponse {
+        conversation,
+        thread,
+    }))
 }
 
 pub async fn handle_public_ensure_dm(

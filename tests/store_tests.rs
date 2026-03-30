@@ -91,6 +91,80 @@ fn make_store() -> (Store, tempfile::TempDir) {
     (store, dir)
 }
 
+/// Channel archive, team creation, and agent record update as performed by shell/API layers.
+/// Lives in store tests (not `server_tests`) so we do not build the HTTP router: constructing
+/// `ServeDir::new("ui/dist")` can block for a long time when that tree is huge or on a slow volume.
+#[test]
+fn test_shell_style_workspace_mutations_persist() {
+    let store = Store::open(":memory:").unwrap();
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+
+    store
+        .create_channel(
+            "ops-room",
+            Some("Shell API mutation coverage"),
+            ChannelType::Channel,
+        )
+        .unwrap();
+    store
+        .join_channel("ops-room", "alice", SenderType::Human)
+        .unwrap();
+    let channel_id = store.get_channel_by_name("ops-room").unwrap().unwrap().id;
+    store.archive_channel(&channel_id).unwrap();
+
+    let team_id = store
+        .create_team("ops-team", "Ops Team", "leader_operators", Some("bot1"))
+        .unwrap();
+    store
+        .create_channel("ops-team", None, ChannelType::Team)
+        .unwrap();
+    store
+        .create_team_member(&team_id, "bot1", "agent", &bot1.id, "operator")
+        .unwrap();
+    store
+        .join_channel("ops-team", "bot1", SenderType::Agent)
+        .unwrap();
+
+    store
+        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Ops Bot",
+            description: Some("Updated from shell mutation test"),
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let archived: i64 = {
+        let conn = store.conn_for_test();
+        conn.query_row(
+            "SELECT archived FROM channels WHERE name = ?1",
+            params!["ops-room"],
+            |row| row.get(0),
+        )
+        .unwrap()
+    };
+    assert_eq!(archived, 1);
+    assert!(store.get_team("ops-team").unwrap().is_some());
+    let updated = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(updated.display_name, "Ops Bot");
+}
+
 #[test]
 fn test_create_and_list_channels() {
     let (store, _dir) = make_store();
@@ -212,7 +286,7 @@ fn test_message_history_pagination() {
 }
 
 #[test]
-fn test_history_snapshot_returns_messages_and_event_cursor_together() {
+fn test_history_snapshot_returns_messages_and_read_cursor() {
     let (store, _dir) = make_store();
     store
         .create_channel("general", None, ChannelType::Channel)
@@ -236,7 +310,6 @@ fn test_history_snapshot_returns_messages_and_event_cursor_together() {
     assert_eq!(snapshot.messages.len(), 2);
     assert!(!snapshot.has_more);
     assert_eq!(snapshot.last_read_seq, 2);
-    assert_eq!(snapshot.latest_event_id, 2);
     assert_eq!(snapshot.messages[0].content, "one");
     assert_eq!(snapshot.messages[1].content, "two");
 }
@@ -1129,31 +1202,6 @@ fn test_tasks_crud() {
 
     let listed = store.get_tasks("eng", None).unwrap();
     assert_eq!(listed.len(), 2);
-}
-
-#[test]
-fn test_tasks_crud_does_not_append_durable_stream_events() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel("eng", None, ChannelType::Channel)
-        .unwrap();
-    store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
-        .unwrap();
-
-    store
-        .create_tasks("eng", "bot1", &["Freeze boundary"])
-        .unwrap();
-    store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
-    store
-        .update_task_status("eng", 1, "bot1", TaskStatus::Done)
-        .unwrap();
-
-    let events = store.get_events(None, 20).unwrap();
-    assert!(
-        events.is_empty(),
-        "tasks should remain outside the canonical messaging stream runtime"
-    );
 }
 
 #[test]
