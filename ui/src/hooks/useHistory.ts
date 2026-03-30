@@ -5,14 +5,15 @@ import {
   historyFetchAfterForNotification,
   maxHistorySeq,
   mergeHistoryMessages,
-  nextRealtimeCursor,
 } from '../transport/realtime'
 import { getRealtimeSession } from '../transport/realtimeSession'
-import type { HistoryMessage, HistoryResponse, RealtimeMessage } from '../types'
+import type { ReadCursorAckPayload } from '../inbox'
+import type { HistoryMessage, HistoryResponse } from '../types'
 import { loadSharedRequest } from './historyRequestCache'
 
 interface UseHistoryOptions {
   threadParentId?: string | null
+  onReadCursorAck?: (ack: ReadCursorAckPayload) => void
 }
 
 interface OptimisticMessageHandle {
@@ -38,9 +39,6 @@ export function useHistory(
   const [error, setError] = useState<string | null>(null)
   const [lastReadSeq, setLastReadSeq] = useState(0)
   const [loadedTarget, setLoadedTarget] = useState<string | null>(null)
-  const lastEventIdRef = useRef(0)
-  const streamIdRef = useRef<string | null>(null)
-  const lastStreamPosRef = useRef(0)
   const maxLoadedSeqRef = useRef(0)
   const incrementalFetchAfterRef = useRef<number | null>(null)
   const lastReadSeqRef = useRef(0)
@@ -71,15 +69,15 @@ export function useHistory(
       const res =
         after != null
           ? await getHistoryAfter(
-              conversationId,
-              after,
-              50,
-              options?.threadParentId ?? undefined
-            )
+            conversationId,
+            after,
+            50,
+            options?.threadParentId ?? undefined
+          )
           : await loadSharedRequest(
-              `history:${conversationId}:${options?.threadParentId ?? 'root'}:bootstrap`,
-              () => getHistory(conversationId, 50, options?.threadParentId ?? undefined)
-            )
+            `history:${conversationId}:${options?.threadParentId ?? 'root'}:bootstrap`,
+            () => getHistory(conversationId, 50, options?.threadParentId ?? undefined)
+          )
       if (after != null) {
         commitMessages((current) => {
           const merged = mergeHistoryMessages(current, res.messages)
@@ -91,9 +89,6 @@ export function useHistory(
       }
       setLastReadSeq(res.last_read_seq ?? 0)
       setLoadedTarget(targetKey)
-      lastEventIdRef.current = Math.max(lastEventIdRef.current, res.latestEventId ?? 0)
-      streamIdRef.current = res.streamId ?? streamIdRef.current
-      lastStreamPosRef.current = Math.max(lastStreamPosRef.current, res.streamPos ?? 0)
       setError(null)
       return res
     } catch (e) {
@@ -115,9 +110,6 @@ export function useHistory(
       setError(null)
       setLastReadSeq(0)
       setLoadedTarget(null)
-      lastEventIdRef.current = 0
-      streamIdRef.current = null
-      lastStreamPosRef.current = 0
       maxLoadedSeqRef.current = 0
       incrementalFetchAfterRef.current = null
       return
@@ -132,9 +124,6 @@ export function useHistory(
       setError(null)
       setLastReadSeq(0)
       setLoadedTarget(null)
-      lastEventIdRef.current = 0
-      streamIdRef.current = null
-      lastStreamPosRef.current = 0
       maxLoadedSeqRef.current = 0
       incrementalFetchAfterRef.current = null
       pendingReadSeqRef.current = null
@@ -147,9 +136,7 @@ export function useHistory(
       if (cancelled || !history) return
 
       try {
-        activeRealtimeTarget = options?.threadParentId
-          ? `thread:${options.threadParentId}`
-          : `conversation:${conversationId}`
+        activeRealtimeTarget = `conversation:${conversationId}`
       } catch (targetError) {
         if (!cancelled) {
           setError(targetError instanceof Error ? targetError.message : String(targetError))
@@ -159,53 +146,22 @@ export function useHistory(
 
       unsubscribeRealtime = getRealtimeSession(username).subscribe({
         targets: [activeRealtimeTarget],
-        resumeFrom: lastEventIdRef.current,
-        streamId: streamIdRef.current,
-        resumeFromStreamPos: lastStreamPosRef.current,
-        onFrame: (frame: RealtimeMessage) => {
+        onFrame: (frame) => {
           if (cancelled) return
-          if (frame.type === 'subscribed') {
-            lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
-            if (frame.streamId) {
-              streamIdRef.current = frame.streamId
-              lastStreamPosRef.current = frame.resumeFromStreamPos ?? lastStreamPosRef.current
-            }
-            return
-          }
           if (frame.type === 'error') {
             setError(frame.message)
             return
           }
-          lastEventIdRef.current = nextRealtimeCursor(lastEventIdRef.current, frame)
-          if (streamIdRef.current && frame.event.streamId === streamIdRef.current) {
-            lastStreamPosRef.current = Math.max(
-              lastStreamPosRef.current,
-              frame.event.streamPos ?? 0
-            )
-          }
+          commitMessages((current) => applyRealtimeEvent(current, frame.event))
           const incrementalAfter = historyFetchAfterForNotification(
             activeRealtimeTarget,
             frame.event,
-            maxLoadedSeqRef.current
+            maxLoadedSeqRef.current,
+            options?.threadParentId ?? null
           )
           if (incrementalAfter != null) {
             void fetchHistory(incrementalAfter)
-            return
           }
-          if (frame.event.eventType === 'conversation.state' || frame.event.eventType === 'thread.state') {
-            return
-          }
-          if (
-            frame.event.eventType === 'conversation.read_cursor_set' ||
-            frame.event.eventType === 'thread.read_cursor_set'
-          ) {
-            const nextReadSeq = frame.event.payload.lastReadSeq
-            if (typeof nextReadSeq === 'number') {
-              setLastReadSeq((current) => Math.max(current, nextReadSeq))
-            }
-            return
-          }
-          commitMessages((current) => applyRealtimeEvent(current, frame.event))
           setError(null)
         },
       })
@@ -239,17 +195,27 @@ export function useHistory(
       if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return
       if (document.visibilityState !== 'visible') return
       try {
-        await updateReadCursor(
+        const res = await updateReadCursor(
           conversationId,
           flushSeq,
           options?.threadParentId ?? undefined
         )
         setLastReadSeq((current) => Math.max(current, flushSeq))
+        options?.onReadCursorAck?.({
+          conversationId,
+          conversationUnreadCount: res.conversationUnreadCount,
+          conversationLastReadSeq: res.conversationLastReadSeq,
+          conversationLatestSeq: res.conversationLatestSeq,
+          threadParentId: res.threadParentId ?? null,
+          threadUnreadCount: res.threadUnreadCount,
+          threadLastReadSeq: res.threadLastReadSeq,
+          threadLatestSeq: res.threadLatestSeq,
+        })
       } catch (cursorError) {
         console.error('Failed to update read cursor', cursorError)
       }
     }, 150)
-  }, [conversationId, loadedTarget, options?.threadParentId, targetKey, username])
+  }, [conversationId, loadedTarget, options?.onReadCursorAck, options?.threadParentId, targetKey, username])
 
   const addOptimisticMessage = useCallback((draft: {
     content: string
@@ -284,14 +250,14 @@ export function useHistory(
       current.map((message) =>
         message.clientNonce === nonce || message.id === handle.tempId
           ? {
-              ...message,
-              id: ack.messageId,
-              seq: ack.seq,
-              createdAt: ack.createdAt,
-              clientNonce: nonce,
-              clientStatus: undefined,
-              clientError: undefined,
-            }
+            ...message,
+            id: ack.messageId,
+            seq: ack.seq,
+            createdAt: ack.createdAt,
+            clientNonce: nonce,
+            clientStatus: undefined,
+            clientError: undefined,
+          }
           : message
       )
     )
@@ -302,10 +268,10 @@ export function useHistory(
       current.map((message) =>
         message.clientNonce === handle.clientNonce || message.id === handle.tempId
           ? {
-              ...message,
-              clientStatus: 'failed',
-              clientError: errorMessage,
-            }
+            ...message,
+            clientStatus: 'failed',
+            clientError: errorMessage,
+          }
           : message
       )
     )

@@ -26,8 +26,7 @@ describe('history request cache', () => {
     expect(second).toEqual({ calls: 1 })
   })
 
-  it('reuses a just-finished result briefly to absorb strict-mode remounts', async () => {
-    vi.useFakeTimers()
+  it('does not reuse a completed result for a later bootstrap', async () => {
     let calls = 0
     const loader = vi.fn(async () => {
       calls += 1
@@ -37,13 +36,8 @@ describe('history request cache', () => {
     const first = await loadSharedRequest('history:alice:#all', loader)
     const second = await loadSharedRequest('history:alice:#all', loader)
 
-    expect(loader).toHaveBeenCalledTimes(1)
-    expect(first).toEqual({ calls: 1 })
-    expect(second).toEqual({ calls: 1 })
-
-    vi.advanceTimersByTime(251)
-
-    await expect(loadSharedRequest('history:alice:#all', loader)).resolves.toEqual({ calls: 2 })
     expect(loader).toHaveBeenCalledTimes(2)
+    expect(first).toEqual({ calls: 1 })
+    expect(second).toEqual({ calls: 2 })
   })
 })

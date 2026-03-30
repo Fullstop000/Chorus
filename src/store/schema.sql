@@ -64,39 +64,6 @@ CREATE TABLE IF NOT EXISTS message_attachments (
     PRIMARY KEY (message_id, attachment_id)
 );
 
--- Event sourcing log for the system.
-CREATE TABLE IF NOT EXISTS events (
-    event_id INTEGER PRIMARY KEY AUTOINCREMENT, -- Global event sequence number
-    stream_id TEXT, -- Derived stream identifier
-    stream_kind TEXT, -- Kind of stream (e.g., 'Channel', 'Task')
-    stream_pos INTEGER, -- Sequence number within the stream
-    event_type TEXT NOT NULL, -- Type of event (e.g., 'MessageSent')
-    scope_kind TEXT NOT NULL, -- Scope kind (e.g., 'channel')
-    scope_id TEXT NOT NULL, -- ID of the scope (e.g., channel ID)
-    channel_id TEXT, -- Optional channel ID related to the event
-    channel_name TEXT, -- Optional channel name related to the event
-    thread_parent_id TEXT, -- Optional thread parent ID related to the event
-    actor_name TEXT, -- Name of the actor who caused the event
-    actor_type TEXT, -- Type of the actor
-    caused_by_kind TEXT, -- Kind of cause (e.g., 'api', 'agent')
-    payload TEXT NOT NULL, -- JSON serialized event payload
-    created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the event occurred
-);
-
-CREATE INDEX IF NOT EXISTS events_scope_event_id
-    ON events(scope_kind, scope_id, event_id);
-CREATE INDEX IF NOT EXISTS events_stream_event_id
-    ON events(stream_id, stream_pos);
-
--- Metadata for event streams.
-CREATE TABLE IF NOT EXISTS streams (
-    stream_id TEXT PRIMARY KEY, -- Unique stream identifier
-    stream_kind TEXT NOT NULL, -- Kind of stream
-    aggregate_id TEXT NOT NULL, -- ID of the aggregate this stream belongs to
-    current_pos INTEGER NOT NULL DEFAULT 0, -- Highest sequence number in the stream
-    created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the stream was created
-);
-
 -- AI Agents configuration and status.
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY, -- Unique UUID for the agent
@@ -305,6 +272,10 @@ SELECT
         WHERE top_level.channel_id = cm.channel_id
           AND top_level.thread_parent_id IS NULL
           AND top_level.seq > COALESCE(irs.last_read_seq, 0)
+          AND NOT (
+            top_level.sender_name = cm.member_name
+            AND top_level.sender_type = cm.member_type
+          )
     ) + (
         SELECT COUNT(*)
         FROM messages reply
@@ -315,6 +286,10 @@ SELECT
         WHERE reply.channel_id = cm.channel_id
           AND reply.thread_parent_id IS NOT NULL
           AND reply.seq > COALESCE(itrs.last_read_seq, 0)
+          AND NOT (
+            reply.sender_name = cm.member_name
+            AND reply.sender_type = cm.member_type
+          )
           AND (
             cm.member_type != 'agent'
             OR EXISTS (

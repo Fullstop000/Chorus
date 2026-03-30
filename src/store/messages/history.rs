@@ -32,8 +32,7 @@ impl Store {
         ))
     }
 
-    /// Read a history page and durable event cursor together so reconnecting
-    /// clients can resume from a cursor that matches the returned snapshot.
+    /// Read a history page with read cursor for the requesting member.
     pub fn get_history_snapshot(
         &self,
         channel_name: &str,
@@ -68,18 +67,6 @@ impl Store {
                 .map(|state| state.last_read_seq)
                 .unwrap_or(0)
         };
-        let latest_event_id: i64 =
-            conn.query_row("SELECT COALESCE(MAX(event_id), 0) FROM events", [], |row| {
-                row.get(0)
-            })?;
-        let stream_id = format!("conversation:{}", channel.id);
-        let stream_pos: i64 = conn
-            .query_row(
-                "SELECT current_pos FROM streams WHERE stream_id = ?1",
-                params![stream_id.as_str()],
-                |row| row.get(0),
-            )
-            .unwrap_or(0);
         Ok(HistorySnapshot {
             messages: message_views
                 .iter()
@@ -87,9 +74,6 @@ impl Store {
                 .collect(),
             has_more,
             last_read_seq,
-            latest_event_id,
-            stream_id,
-            stream_pos,
         })
     }
 

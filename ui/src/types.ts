@@ -97,56 +97,14 @@ export interface HistoryResponse {
   messages: HistoryMessage[]
   has_more: boolean
   last_read_seq: number
-  latestEventId: number
-  streamId: string
-  streamPos: number
 }
 
-export interface RealtimeEvent {
-  eventId: number
-  streamId?: string
-  streamKind?: string
-  streamPos?: number
+export interface StreamEvent {
   eventType: string
-  scopeKind: string
-  scopeId: string
-  channelId?: string | null
-  channelName?: string | null
-  threadParentId?: string | null
-  actor?: {
-    name: string
-    type?: 'human' | 'agent' | null
-  } | null
-  causedBy?: {
-    kind: string
-  } | null
+  channelId: string
+  latestSeq: number
   payload: Record<string, unknown>
-  createdAt: string
-}
-
-export interface ConversationStatePayload {
-  conversationId: string
-  target?: string
-  latestSeq: number
-  lastReadSeq: number
-  unreadCount: number
-  lastMessageId?: string
-  lastMessageAt?: string
-  lastReadMessageId?: string
-  messageId?: string
-  conversationType?: string
-  threadParentId?: string | null
-}
-
-export interface ThreadStatePayload {
-  conversationId: string
-  threadParentId: string
-  latestSeq: number
-  lastReadSeq: number
-  unreadCount: number
-  lastReadMessageId?: string
-  lastReplyMessageId?: string
-  lastReplyAt?: string
+  schemaVersion: number
 }
 
 export interface InboxConversationState {
@@ -163,7 +121,20 @@ export interface InboxConversationState {
 
 export interface InboxResponse {
   conversations: InboxConversationState[]
-  latestEventId: number
+}
+
+/** GET /api/conversations/{id}/inbox-notification */
+export interface ConversationInboxRefreshResponse {
+  conversation: InboxConversationState
+  thread?: {
+    conversationId: string
+    threadParentId: string
+    latestSeq: number
+    lastReadSeq: number
+    unreadCount: number
+    lastReplyMessageId?: string | null
+    lastReplyAt?: string | null
+  }
 }
 
 export interface ThreadInboxEntry {
@@ -190,15 +161,8 @@ export interface ThreadInboxResponse {
 
 export type RealtimeMessage =
   | {
-      type: 'subscribed'
-      resumeFrom: number
-      streamId?: string
-      resumeFromStreamPos?: number
-      targets: string[]
-    }
-  | {
       type: 'event'
-      event: RealtimeEvent
+      event: StreamEvent
     }
   | {
       type: 'error'

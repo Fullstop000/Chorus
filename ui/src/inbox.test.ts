@@ -1,282 +1,223 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  applyInboxEvent,
-  buildConversationRegistry,
-  conversationThreadUnreadCount,
-  createInboxState,
-  mergeChannelThreadInboxEntries,
-  threadNotificationKey,
+  applyConversationRead,
+  bootstrapInboxState,
+  ensureInboxConversations,
+  mergeInboxNotificationRefresh,
+  mergeReadCursorAckIntoInboxState,
 } from './inbox'
-import type { AgentInfo, RealtimeEvent } from './types'
+import type { ChannelInfo, InboxConversationState } from './types'
 
-describe('inbox notification state', () => {
-  it('builds a conversation registry for visible channels and existing agent dms', () => {
-    const registry = buildConversationRegistry({
-      currentUser: 'alice',
-      systemChannels: [
-        {
-          id: 'sys-1',
-          name: 'all',
-          joined: true,
-          channel_type: 'system',
-        },
-      ],
-      channels: [
-        {
-          id: 'ch-1',
-          name: 'eng',
-          joined: true,
-          channel_type: 'channel',
-        },
-      ],
-      dmChannels: [
-        {
-          id: 'dm-1',
-          name: 'dm-alice-bot1',
-          joined: true,
-          channel_type: 'dm',
-        },
-      ],
-      agents: [
-        {
-          name: 'bot1',
-          status: 'sleeping',
-        } satisfies AgentInfo,
-      ],
-    })
+function makeConversation(
+  overrides: Partial<InboxConversationState> = {}
+): InboxConversationState {
+  return {
+    conversationId: 'conversation-1',
+    conversationName: 'general',
+    conversationType: 'channel',
+    latestSeq: 2,
+    lastReadSeq: 2,
+    unreadCount: 0,
+    lastReadMessageId: 'message-2',
+    lastMessageId: 'message-2',
+    lastMessageAt: '2026-03-30T00:00:00Z',
+    ...overrides,
+  }
+}
 
-    expect(registry).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          conversationId: 'sys-1',
-          target: '#all',
-        }),
-        expect.objectContaining({
-          conversationId: 'ch-1',
-          target: '#eng',
-        }),
-        expect.objectContaining({
-          conversationId: 'dm-1',
-          target: 'dm:@bot1',
-        }),
-      ])
-    )
-  })
+function makeChannel(overrides: Partial<ChannelInfo> = {}): ChannelInfo {
+  return {
+    id: 'conversation-1',
+    name: 'general',
+    description: 'General',
+    joined: true,
+    channel_type: 'channel',
+    ...overrides,
+  }
+}
 
-  it('stores absolute conversation notification state and applies read cursor updates', () => {
-    const createdAt = '2026-03-29T10:00:00Z'
-    const conversationEvent: RealtimeEvent = {
-      eventId: 11,
-      eventType: 'conversation.state',
-      scopeKind: 'channel',
-      scopeId: 'channel:ch-1',
-      payload: {
-        conversationId: 'ch-1',
-        latestSeq: 12,
-        lastReadSeq: 9,
-        unreadCount: 3,
-        lastMessageId: 'msg-12',
-        lastMessageAt: createdAt,
-      },
-      createdAt,
-    }
-    const readCursorEvent: RealtimeEvent = {
-      eventId: 12,
-      eventType: 'conversation.read_cursor_set',
-      scopeKind: 'user',
-      scopeId: 'user:alice',
-      payload: {
-        conversationId: 'ch-1',
-        latestSeq: 12,
-        lastReadSeq: 12,
-        unreadCount: 0,
-        lastReadMessageId: 'msg-12',
-      },
-      createdAt,
-    }
+describe('mergeInboxNotificationRefresh', () => {
+  it('applies server conversation + thread rows from inbox-notification', () => {
+    const state = bootstrapInboxState([makeConversation({ latestSeq: 2, unreadCount: 0 })])
 
-    let state = applyInboxEvent(createInboxState(), conversationEvent)
-    expect(state.conversations['ch-1']).toMatchObject({
-      conversationId: 'ch-1',
-      latestSeq: 12,
-      lastReadSeq: 9,
-      unreadCount: 3,
-      lastMessageId: 'msg-12',
-      lastMessageAt: createdAt,
-    })
-
-    state = applyInboxEvent(state, readCursorEvent)
-    expect(state.conversations['ch-1']).toMatchObject({
-      conversationId: 'ch-1',
-      latestSeq: 12,
-      lastReadSeq: 12,
-      unreadCount: 0,
-      lastReadMessageId: 'msg-12',
-    })
-  })
-
-  it('tracks thread state separately from parent conversation state', () => {
-    const createdAt = '2026-03-29T10:05:00Z'
-    const threadEvent: RealtimeEvent = {
-      eventId: 21,
-      eventType: 'thread.state',
-      scopeKind: 'thread',
-      scopeId: 'thread:msg-1',
-      threadParentId: 'msg-1',
-      payload: {
-        conversationId: 'ch-1',
-        threadParentId: 'msg-1',
-        latestSeq: 7,
-        lastReadSeq: 4,
-        unreadCount: 3,
-        lastReplyMessageId: 'msg-7',
-        lastReplyAt: createdAt,
-      },
-      createdAt,
-    }
-    const threadReadEvent: RealtimeEvent = {
-      eventId: 22,
-      eventType: 'thread.read_cursor_set',
-      scopeKind: 'user',
-      scopeId: 'user:alice',
-      threadParentId: 'msg-1',
-      payload: {
-        conversationId: 'ch-1',
-        threadParentId: 'msg-1',
-        latestSeq: 7,
-        lastReadSeq: 7,
-        unreadCount: 0,
-        lastReadMessageId: 'msg-7',
-      },
-      createdAt,
-    }
-
-    let state = applyInboxEvent(createInboxState(), threadEvent)
-    expect(state.threads[threadNotificationKey('ch-1', 'msg-1')]).toMatchObject({
-      conversationId: 'ch-1',
-      threadParentId: 'msg-1',
-      latestSeq: 7,
-      lastReadSeq: 4,
-      unreadCount: 3,
-      lastReplyMessageId: 'msg-7',
-      lastReplyAt: createdAt,
-    })
-
-    state = applyInboxEvent(state, threadReadEvent)
-    expect(state.threads[threadNotificationKey('ch-1', 'msg-1')]).toMatchObject({
-      latestSeq: 7,
-      lastReadSeq: 7,
-      unreadCount: 0,
-      lastReadMessageId: 'msg-7',
-    })
-  })
-
-  it('computes per-conversation thread unread totals from tracked thread state', () => {
-    let state = createInboxState()
-    state = applyInboxEvent(state, {
-      eventId: 1,
-      eventType: 'thread.state',
-      scopeKind: 'thread',
-      scopeId: 'thread:msg-1',
-      threadParentId: 'msg-1',
-      payload: {
-        conversationId: 'ch-1',
-        threadParentId: 'msg-1',
+    const next = mergeInboxNotificationRefresh(state, {
+      conversation: {
+        conversationId: 'conversation-1',
+        conversationName: 'general',
+        conversationType: 'channel',
         latestSeq: 5,
-        lastReadSeq: 3,
+        lastReadSeq: 2,
         unreadCount: 2,
+        lastMessageId: 'm-new',
+        lastMessageAt: '2026-03-30T01:00:00Z',
       },
-      createdAt: '2026-03-29T10:00:00Z',
-    })
-    state = applyInboxEvent(state, {
-      eventId: 2,
-      eventType: 'thread.state',
-      scopeKind: 'thread',
-      scopeId: 'thread:msg-2',
-      threadParentId: 'msg-2',
-      payload: {
-        conversationId: 'ch-1',
-        threadParentId: 'msg-2',
-        latestSeq: 8,
-        lastReadSeq: 7,
+      thread: {
+        conversationId: 'conversation-1',
+        threadParentId: 'parent-1',
+        latestSeq: 4,
+        lastReadSeq: 1,
         unreadCount: 1,
+        lastReplyMessageId: 'reply-1',
+        lastReplyAt: '2026-03-30T00:30:00Z',
       },
-      createdAt: '2026-03-29T10:01:00Z',
     })
 
-    expect(conversationThreadUnreadCount(state, 'ch-1')).toBe(3)
-    expect(conversationThreadUnreadCount(state, 'ch-2')).toBe(0)
+    expect(next.conversations['conversation-1']).toEqual(
+      expect.objectContaining({
+        latestSeq: 5,
+        lastReadSeq: 2,
+        unreadCount: 2,
+        lastMessageId: 'm-new',
+      })
+    )
+    expect(next.threads['conversation-1:parent-1']).toEqual(
+      expect.objectContaining({
+        unreadCount: 1,
+        latestSeq: 4,
+        lastReadSeq: 1,
+      })
+    )
   })
 
-  it('merges fetched channel thread rows with live thread state and keeps latest-reply ordering', () => {
-    let state = createInboxState()
-    state = applyInboxEvent(state, {
-      eventId: 3,
-      eventType: 'thread.state',
-      scopeKind: 'thread',
-      scopeId: 'thread:msg-old',
-      threadParentId: 'msg-old',
-      payload: {
-        conversationId: 'ch-1',
-        threadParentId: 'msg-old',
-        latestSeq: 11,
-        lastReadSeq: 10,
-        unreadCount: 1,
-        lastReplyMessageId: 'reply-old',
-        lastReplyAt: '2026-03-29T10:10:00Z',
+  it('ignores stale payloads when latestSeq regressed', () => {
+    const state = bootstrapInboxState([
+      makeConversation({ latestSeq: 10, unreadCount: 1 }),
+    ])
+
+    const next = mergeInboxNotificationRefresh(state, {
+      conversation: {
+        conversationId: 'conversation-1',
+        conversationName: 'general',
+        conversationType: 'channel',
+        latestSeq: 9,
+        lastReadSeq: 2,
+        unreadCount: 99,
+        lastMessageId: 'old',
+        lastMessageAt: null,
       },
-      createdAt: '2026-03-29T10:10:00Z',
     })
 
-    const merged = mergeChannelThreadInboxEntries(
-      [
-        {
-          conversationId: 'ch-1',
-          threadParentId: 'msg-old',
-          parentSeq: 1,
-          parentSenderName: 'alice',
-          parentSenderType: 'human',
-          parentContent: 'older unread thread',
-          parentCreatedAt: '2026-03-29T08:00:00Z',
-          replyCount: 1,
-          participantCount: 2,
-          latestSeq: 9,
-          lastReadSeq: 9,
-          unreadCount: 0,
-          lastReplyMessageId: 'reply-old-initial',
-          lastReplyAt: '2026-03-29T09:30:00Z',
-        },
-        {
-          conversationId: 'ch-1',
-          threadParentId: 'msg-read',
-          parentSeq: 3,
-          parentSenderName: 'alice',
-          parentSenderType: 'human',
-          parentContent: 'already read thread',
-          parentCreatedAt: '2026-03-29T09:00:00Z',
-          replyCount: 1,
-          participantCount: 2,
-          latestSeq: 12,
-          lastReadSeq: 12,
-          unreadCount: 0,
-          lastReplyMessageId: 'reply-read',
-          lastReplyAt: '2026-03-29T10:12:00Z',
-        },
-      ],
-      state,
-      'ch-1'
+    expect(next.conversations['conversation-1']?.latestSeq).toBe(10)
+    expect(next.conversations['conversation-1']?.unreadCount).toBe(1)
+  })
+})
+
+describe('bootstrapInboxState', () => {
+  it('seeds zeroed entries for joined conversations missing from the inbox snapshot', () => {
+    const state = bootstrapInboxState([], [
+      makeChannel({
+        id: 'conversation-2',
+        name: 'qa-unread',
+      }),
+    ])
+
+    expect(state.conversations['conversation-2']).toEqual(
+      expect.objectContaining({
+        conversationId: 'conversation-2',
+        conversationName: 'qa-unread',
+        conversationType: 'channel',
+        latestSeq: 0,
+        lastReadSeq: 0,
+        unreadCount: 0,
+      })
     )
+  })
+})
 
-    expect(merged[0]).toMatchObject({
-      threadParentId: 'msg-read',
-      unreadCount: 0,
+describe('ensureInboxConversations', () => {
+  it('adds joined channels discovered after bootstrap without resetting existing unread state', () => {
+    const state = bootstrapInboxState([
+      makeConversation({
+        conversationId: 'conversation-1',
+        latestSeq: 5,
+        lastReadSeq: 2,
+        unreadCount: 3,
+      }),
+    ])
+
+    const next = ensureInboxConversations(state, [
+      makeChannel({
+        id: 'conversation-2',
+        name: 'late-join',
+      }),
+    ])
+
+    expect(next.conversations['conversation-1']).toEqual(
+      expect.objectContaining({
+        latestSeq: 5,
+        lastReadSeq: 2,
+        unreadCount: 3,
+      })
+    )
+    expect(next.conversations['conversation-2']).toEqual(
+      expect.objectContaining({
+        conversationId: 'conversation-2',
+        conversationName: 'late-join',
+        latestSeq: 0,
+        lastReadSeq: 0,
+        unreadCount: 0,
+      })
+    )
+  })
+})
+
+describe('mergeReadCursorAckIntoInboxState', () => {
+  it('applies server conversation unread after a thread read (channel badge drops thread replies)', () => {
+    const state = bootstrapInboxState([
+      makeConversation({
+        latestSeq: 10,
+        lastReadSeq: 5,
+        unreadCount: 4,
+      }),
+    ])
+
+    const next = mergeReadCursorAckIntoInboxState(state, {
+      conversationId: 'conversation-1',
+      conversationUnreadCount: 2,
+      conversationLastReadSeq: 5,
+      conversationLatestSeq: 10,
+      threadParentId: 'parent-1',
+      threadUnreadCount: 0,
+      threadLastReadSeq: 8,
+      threadLatestSeq: 8,
     })
-    expect(merged[1]).toMatchObject({
-      threadParentId: 'msg-old',
-      unreadCount: 1,
-      latestSeq: 11,
-      lastReplyMessageId: 'reply-old',
-    })
+
+    expect(next.conversations['conversation-1']).toEqual(
+      expect.objectContaining({
+        unreadCount: 2,
+        lastReadSeq: 5,
+        latestSeq: 10,
+      })
+    )
+    expect(next.threads['conversation-1:parent-1']).toEqual(
+      expect.objectContaining({
+        unreadCount: 0,
+        lastReadSeq: 8,
+        latestSeq: 8,
+      })
+    )
+  })
+})
+
+describe('applyConversationRead', () => {
+  it('reduces unreadCount when the local conversation read cursor advances', () => {
+    const state = bootstrapInboxState([
+      makeConversation({
+        latestSeq: 5,
+        lastReadSeq: 2,
+        unreadCount: 3,
+      }),
+    ])
+
+    const next = applyConversationRead(state, 'conversation-1', 5)
+
+    expect(next.conversations['conversation-1']).toEqual(
+      expect.objectContaining({
+        latestSeq: 5,
+        lastReadSeq: 5,
+        unreadCount: 0,
+      })
+    )
   })
 })

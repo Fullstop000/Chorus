@@ -166,7 +166,7 @@
 - Steps:
   1. Seed a parent message and a thread reply under it.
   2. Open the app with the parent conversation selected.
-  3. Verify no `POST /internal/agent/{id}/read-cursor` has yet been sent for the thread target.
+  3. Verify no `POST /api/conversations/{conversation_id}/read-cursor` has yet been sent for the thread target.
   4. Open the thread panel from the parent message.
   5. Wait until the reply is visibly rendered in the thread panel.
   6. Verify a thread-targeted `read-cursor` POST is then sent with a concrete `lastReadSeq`.
@@ -220,7 +220,7 @@
   - the default conversation target can be opened in the browser
 - Steps:
   1. Seed one unread top-level message into the active conversation before opening the UI.
-  2. Start capturing `POST /internal/agent/{id}/read-cursor` requests.
+  2. Start capturing `POST /api/conversations/{conversation_id}/read-cursor` requests.
   3. Open the app with that conversation selected.
   4. Wait until the seeded message is visibly rendered in the main chat viewport.
   5. Verify a conversation-targeted `read-cursor` POST is sent with a `lastReadSeq` at or beyond the seeded message sequence.
@@ -260,6 +260,84 @@
   - one new websocket per clicked target
   - DM open creates an additional websocket next to the channel websocket
   - target switching only works by tearing down and rebuilding the realtime transport
+
+### MSG-010 Inactive Room Unread Badge Lifecycle
+
+- Tier: 1
+- Release-sensitive: yes when touching unread state, inbox reconciliation, or realtime notification handling
+- Goal:
+  - verify an inactive room shows an unread badge for a new message without eagerly fetching history
+  - verify opening the room auto-locates the first unread message instead of dropping the user at the top or bottom blindly
+  - verify unread count decreases as visible unread messages are consumed and reaches zero after the user reads through the rest
+- Script:
+  - [`playwright/MSG-010.spec.ts`](./playwright/MSG-010.spec.ts) (inactive-room unread badge assertion with history-fetch guard)
+- Preconditions:
+  - at least one agent exists, or the test can create a disposable one
+  - the app can create one disposable user channel after the shell has already loaded
+  - the app can be switched away from the Chat tab before the unread message arrives
+- Steps:
+  1. Open the app and create a disposable channel through the UI after the shell has already bootstrapped.
+  2. Invite one agent to that channel and seed enough baseline messages to establish a non-zero read cursor.
+  3. Switch to a non-chat tab such as Tasks.
+  4. Start counting `GET /api/conversations/{conversation_id}/messages` requests for the disposable channel.
+  5. Inject enough new top-level messages into that inactive room to exceed one chat viewport.
+  6. Verify the sidebar shows the expected unread badge for the room while remaining on the non-chat tab.
+  7. Verify no history fetch for that room occurs while it is still inactive.
+  8. Return to the Chat tab for that room and verify the panel auto-scrolls to the first unread message.
+  9. Verify the unread badge drops but remains above zero while unread messages still extend below the viewport.
+  10. Continue reading to the end of the unread block.
+  11. Verify the unread badge reaches zero after the rest of the unread messages become visible.
+- Expected:
+  - inactive-room messages update sidebar unread state immediately
+  - inactive-room unread updates do not eagerly fetch full message history
+  - rooms created after bootstrap still participate in unread tracking
+  - opening the room positions the viewport at the first unread message
+  - partial reading reduces unread count without clearing it prematurely
+  - reading through the remaining unread messages clears unread count to zero
+- Common failure signals:
+  - inactive-room messages never show an unread badge
+  - the app fetches room history immediately even though the room is inactive
+  - rooms created after page load never receive unread updates
+  - opening the room lands at the wrong part of history instead of the first unread boundary
+  - unread state clears before the room is actually opened and read
+  - unread state never decreases while the user is reading
+
+### MSG-011 Thread Unread Lifecycle And Reply Count
+
+- Tier: 1
+- Release-sensitive: yes when touching thread inbox projections, thread read state, or reply-count derivation
+- Goal:
+  - verify a thread preserves the correct total `replyCount` while new unread replies arrive
+  - verify opening the thread locates the first unread reply
+  - verify thread unread count decreases after partial reading and reaches zero after the remaining replies are read
+- Script:
+  - [`playwright/MSG-011.spec.ts`](./playwright/MSG-011.spec.ts) (thread unread lifecycle + reply-count assertion)
+- Preconditions:
+  - at least one agent exists, or the test can create a disposable one
+  - one disposable channel and one thread parent can be seeded before loading the UI
+  - the thread has enough baseline replies and enough later unread replies to exceed one thread viewport
+- Steps:
+  1. Create a disposable channel, seed one parent message, and seed enough baseline replies for that thread to establish read state.
+  2. Open the thread once and verify the initial replies are read.
+  3. Close the thread and inject additional unread replies into the same thread.
+  4. Open the Threads tab for the channel.
+  5. Verify the thread row shows the correct total `replyCount` and the expected unread reply count.
+  6. Open the thread from the thread row and verify the panel auto-scrolls to the first unread reply.
+  7. Verify thread read state advances after unread replies become visible.
+  8. Refresh the thread list view and verify unread count dropped but is still above zero while unread replies remain below the fold.
+  9. Continue reading through the rest of the replies.
+  10. Refresh the thread list view again and verify unread count reaches zero while `replyCount` remains unchanged.
+- Expected:
+  - thread row `replyCount` matches the total replies in the thread
+  - thread row unread count reflects only unread replies, not total replies
+  - opening the thread positions the viewport at the first unread reply
+  - partial reading reduces thread unread count without changing total `replyCount`
+  - reading through the remaining unread replies clears thread unread count to zero
+- Common failure signals:
+  - `replyCount` changes when only read state changes
+  - thread opens at the top or bottom instead of the first unread reply
+  - thread unread count never decreases after replies are read
+  - thread unread count drops to zero before the unread replies are actually visible
 
 ### HIS-001 History Reload And Selection Stability
 

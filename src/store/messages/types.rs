@@ -339,12 +339,6 @@ pub struct HistorySnapshot {
     pub has_more: bool,
     /// Last read sequence for the requesting member in the parent conversation.
     pub last_read_seq: i64,
-    /// Latest committed durable event cursor observed alongside this snapshot.
-    pub latest_event_id: i64,
-    /// Owning conversation stream for this history snapshot.
-    pub stream_id: String,
-    /// Latest committed position in the owning conversation stream.
-    pub stream_pos: i64,
 }
 
 /// Compact message row for activity / cross-channel feeds.

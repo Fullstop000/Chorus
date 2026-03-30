@@ -3,9 +3,6 @@ import type { RealtimeMessage } from '../types'
 
 interface RealtimeSubscription {
   targets: string[]
-  resumeFrom: number
-  streamId?: string | null
-  resumeFromStreamPos?: number
   onFrame: (frame: RealtimeMessage) => void
 }
 
@@ -40,10 +37,8 @@ class RealtimeSession {
     const id = `rt-sub-${this.nextSubscriptionId++}`
     this.subscriptions.set(id, { ...subscription, id })
     this.ensureSocket()
-    this.syncSubscriptions()
     return () => {
-      if (!this.subscriptions.delete(id)) return
-      this.syncSubscriptions()
+      this.subscriptions.delete(id)
     }
   }
 
@@ -68,7 +63,6 @@ class RealtimeSession {
         viewer: this.viewer,
         targets: this.currentTargets(),
       })
-      this.syncSubscriptions()
     }
 
     socket.onmessage = (messageEvent) => {
@@ -122,26 +116,8 @@ class RealtimeSession {
   private eventTargets(frame: RealtimeMessage): string[] {
     if (frame.type !== 'event') return []
     const targets = new Set<string>()
-    if (frame.event.streamId) {
-      targets.add(frame.event.streamId)
-    }
-    const conversationId =
-      typeof frame.event.payload.conversationId === 'string'
-        ? frame.event.payload.conversationId
-        : typeof frame.event.channelId === 'string'
-          ? frame.event.channelId
-          : null
-    if (conversationId) {
-      targets.add(`conversation:${conversationId}`)
-    }
-    const threadParentId =
-      typeof frame.event.threadParentId === 'string'
-        ? frame.event.threadParentId
-        : typeof frame.event.payload.threadParentId === 'string'
-          ? frame.event.payload.threadParentId
-          : null
-    if (threadParentId) {
-      targets.add(`thread:${threadParentId}`)
+    if (frame.event.channelId) {
+      targets.add(`conversation:${frame.event.channelId}`)
     }
     return [...targets]
   }
@@ -151,46 +127,6 @@ class RealtimeSession {
     const eventTargets = this.eventTargets(frame)
     if (eventTargets.length === 0) return true
     return subscription.targets.some((target) => eventTargets.includes(target))
-  }
-
-  private syncSubscriptions() {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return
-
-    const subscriptions = [...this.subscriptions.values()]
-    const targets = this.currentTargets()
-    const resumeFrom =
-      subscriptions.length > 0
-        ? Math.min(...subscriptions.map((subscription) => subscription.resumeFrom))
-        : 0
-
-    const streamIds = [...new Set(
-      subscriptions
-        .map((subscription) => subscription.streamId ?? null)
-        .filter((streamId): streamId is string => Boolean(streamId))
-    )]
-    const sharedStreamId = streamIds.length === 1 ? streamIds[0] : null
-    const streamResumeFrom =
-      sharedStreamId != null
-        ? Math.min(
-            ...subscriptions
-              .filter((subscription) => subscription.streamId === sharedStreamId)
-              .map((subscription) => subscription.resumeFromStreamPos ?? 0)
-          )
-        : null
-
-    const frame: Record<string, unknown> = {
-      type: 'subscribe',
-      replace: true,
-      resumeFrom,
-      targets,
-    }
-    if (sharedStreamId) {
-      frame.streamId = sharedStreamId
-      frame.resumeFromStreamPos = streamResumeFrom ?? 0
-    }
-
-    logRealtime('send', frame)
-    this.socket.send(JSON.stringify(frame))
   }
 }
 

@@ -1,11 +1,11 @@
 pub mod agents;
 pub mod attachments;
 pub mod channels;
-pub mod events;
 pub mod inbox;
 pub mod knowledge;
 pub mod messages;
 pub mod migrations;
+pub mod stream;
 pub mod tasks;
 pub mod teams;
 
@@ -22,7 +22,6 @@ pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentEnvVar, AgentStatus, Human};
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
-pub use events::{ResolvedSubscriptionTarget, StoredEvent, SubscriptionTargetKind};
 pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
 pub use knowledge::{
     KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
@@ -32,6 +31,7 @@ pub use messages::{
     ConversationMessageView, ForwardedFrom, HistoryMessage, HistorySnapshot, Message,
     ReceivedMessage, SenderType, ThreadSummaryView,
 };
+pub use stream::StreamEvent;
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
 
@@ -39,10 +39,8 @@ pub use teams::{Team, TeamMember, TeamMembership};
 pub struct Store {
     /// Serialized access to the rusqlite connection.
     conn: Mutex<Connection>,
-    /// Broadcast channel: `(channel_id, message_id)` for wake / notify.
-    msg_tx: broadcast::Sender<(String, String)>,
-    /// Broadcast channel: latest committed durable event id for realtime wake / replay.
-    event_tx: broadcast::Sender<i64>,
+    /// Broadcast channel for stream events (message.created only).
+    stream_tx: broadcast::Sender<StreamEvent>,
     /// Root data directory (db parent, attachments, agents, teams).
     data_dir: PathBuf,
 }
@@ -66,12 +64,10 @@ impl Store {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Self::init_schema(&conn)?;
         migrations::run_migrations(&conn)?;
-        let (msg_tx, _) = broadcast::channel(256);
-        let (event_tx, _) = broadcast::channel(256);
+        let (stream_tx, _) = broadcast::channel(256);
         Ok(Self {
             conn: Mutex::new(conn),
-            msg_tx,
-            event_tx,
+            stream_tx,
             data_dir: derive_data_dir(path),
         })
     }
@@ -108,12 +104,8 @@ impl Store {
         Ok(())
     }
 
-    pub fn subscribe(&self) -> broadcast::Receiver<(String, String)> {
-        self.msg_tx.subscribe()
-    }
-
-    pub fn subscribe_events(&self) -> broadcast::Receiver<i64> {
-        self.event_tx.subscribe()
+    pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
+        self.stream_tx.subscribe()
     }
 
     // ── Sender type lookup ──

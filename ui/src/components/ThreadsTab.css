@@ -87,10 +87,27 @@
   justify-content: space-between;
 }
 
+.threads-tab__row-heading {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .threads-tab__parent-sender {
   font-weight: 700;
   font-size: 13px;
   color: var(--text-primary);
+}
+
+.threads-tab__conversation-id {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .threads-tab__last-at,

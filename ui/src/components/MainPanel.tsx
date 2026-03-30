@@ -20,6 +20,7 @@ export function MainPanel() {
     activeTab,
     currentUser,
     getAgentConversationId,
+    applyReadCursorAck,
     refreshChannels,
     refreshAgents,
     refreshTeams,
@@ -37,7 +38,8 @@ export function MainPanel() {
   const chatHistory = useHistory(
     currentUser,
     activeTab === 'chat' ? chatTarget : null,
-    activeConversationId
+    activeConversationId,
+    { onReadCursorAck: applyReadCursorAck }
   )
   const [members, setMembers] = useState<ChannelMemberInfo[]>([])
   const [membersLoading, setMembersLoading] = useState(false)

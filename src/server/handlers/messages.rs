@@ -1,7 +1,7 @@
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use super::dto::ChannelInfo;
@@ -11,6 +11,7 @@ use crate::agent::collaboration::make_collaboration_model;
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
 use crate::store::channels::ChannelType;
+use crate::store::inbox::{InboxConversationNotificationView, ThreadNotificationStateView};
 use crate::store::messages::{ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
 
@@ -99,19 +100,87 @@ pub struct HistoryResponse {
     pub messages: Vec<crate::store::messages::HistoryMessage>,
     pub has_more: bool,
     pub last_read_seq: i64,
-    #[serde(rename = "latestEventId")]
-    pub latest_event_id: i64,
-    #[serde(rename = "streamId")]
-    pub stream_id: String,
-    #[serde(rename = "streamPos")]
-    pub stream_pos: i64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct InboxResponse {
     pub conversations: Vec<crate::store::InboxConversationNotificationView>,
-    #[serde(rename = "latestEventId")]
-    pub latest_event_id: i64,
+}
+
+/// CamelCase inbox row for browser clients (matches `InboxConversationState` in the UI).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicInboxConversationNotification {
+    pub conversation_id: String,
+    pub conversation_name: String,
+    pub conversation_type: String,
+    pub latest_seq: i64,
+    pub last_read_seq: i64,
+    pub unread_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_read_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_message_at: Option<String>,
+}
+
+impl From<&InboxConversationNotificationView> for PublicInboxConversationNotification {
+    fn from(v: &InboxConversationNotificationView) -> Self {
+        Self {
+            conversation_id: v.conversation_id.clone(),
+            conversation_name: v.conversation_name.clone(),
+            conversation_type: v.conversation_type.clone(),
+            latest_seq: v.latest_seq,
+            last_read_seq: v.last_read_seq,
+            unread_count: v.unread_count,
+            last_read_message_id: None,
+            last_message_id: v.last_message_id.clone(),
+            last_message_at: v.last_message_at.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PublicThreadNotificationRefresh {
+    pub conversation_id: String,
+    pub thread_parent_id: String,
+    pub latest_seq: i64,
+    pub last_read_seq: i64,
+    pub unread_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reply_message_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_reply_at: Option<String>,
+}
+
+impl From<ThreadNotificationStateView> for PublicThreadNotificationRefresh {
+    fn from(t: ThreadNotificationStateView) -> Self {
+        Self {
+            conversation_id: t.conversation_id,
+            thread_parent_id: t.thread_parent_id,
+            latest_seq: t.latest_seq,
+            last_read_seq: t.last_read_seq,
+            unread_count: t.unread_count,
+            last_reply_message_id: t.last_reply_message_id,
+            last_reply_at: t.last_reply_at,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationInboxRefreshResponse {
+    pub conversation: PublicInboxConversationNotification,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread: Option<PublicThreadNotificationRefresh>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct InboxNotificationQuery {
+    #[serde(default, rename = "threadParentId")]
+    pub thread_parent_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -121,9 +190,25 @@ pub struct ThreadsResponse {
     pub threads: Vec<crate::store::ChannelThreadInboxEntry>,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct ReadCursorResponse {
     pub ok: bool,
+    /// Matches [`crate::store::inbox::InboxConversationNotificationView::unread_count`]
+    /// (top-level + thread replies per inbox view).
+    #[serde(rename = "conversationUnreadCount")]
+    pub conversation_unread_count: i64,
+    #[serde(rename = "conversationLastReadSeq")]
+    pub conversation_last_read_seq: i64,
+    #[serde(rename = "conversationLatestSeq")]
+    pub conversation_latest_seq: i64,
+    #[serde(rename = "threadParentId", skip_serializing_if = "Option::is_none")]
+    pub thread_parent_id: Option<String>,
+    #[serde(rename = "threadUnreadCount", skip_serializing_if = "Option::is_none")]
+    pub thread_unread_count: Option<i64>,
+    #[serde(rename = "threadLastReadSeq", skip_serializing_if = "Option::is_none")]
+    pub thread_last_read_seq: Option<i64>,
+    #[serde(rename = "threadLatestSeq", skip_serializing_if = "Option::is_none")]
+    pub thread_latest_seq: Option<i64>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -260,9 +345,6 @@ fn history_for_channel(
         messages: snapshot.messages,
         has_more: snapshot.has_more,
         last_read_seq: snapshot.last_read_seq,
-        latest_event_id: snapshot.latest_event_id,
-        stream_id: snapshot.stream_id,
-        stream_pos: snapshot.stream_pos,
     }))
 }
 
@@ -324,7 +406,31 @@ fn update_read_cursor_for_channel(
         )
         .map_err(|e| api_err(e.to_string()))?;
 
-    Ok(Json(ReadCursorResponse { ok: true }))
+    let notification = state
+        .store
+        .get_inbox_conversation_notification_for_member(&channel.id, actor_id)
+        .map_err(|e| internal_err(e.to_string()))?
+        .ok_or_else(|| internal_err("inbox notification row missing after read cursor"))?;
+
+    let thread_snapshot = if let Some(parent_id) = thread_parent_id {
+        state
+            .store
+            .get_thread_notification_state(&channel.name, parent_id, actor_id)
+            .map_err(|e| internal_err(e.to_string()))?
+    } else {
+        None
+    };
+
+    Ok(Json(ReadCursorResponse {
+        ok: true,
+        conversation_unread_count: notification.unread_count,
+        conversation_last_read_seq: notification.last_read_seq,
+        conversation_latest_seq: notification.latest_seq,
+        thread_parent_id: thread_parent_id.map(str::to_string),
+        thread_unread_count: thread_snapshot.as_ref().map(|t| t.unread_count),
+        thread_last_read_seq: thread_snapshot.as_ref().map(|t| t.last_read_seq),
+        thread_latest_seq: thread_snapshot.as_ref().map(|t| t.latest_seq),
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -488,14 +594,6 @@ async fn forward_team_mentions(
                 sender_name: sender_name.to_string(),
             }),
         )?;
-        state.store.record_team_delegation_requested(
-            &team.id,
-            &forwarded_message_id,
-            channel_name,
-            sender_name,
-            sender_type.as_str(),
-        )?;
-
         let collaboration_model = make_collaboration_model(&team.collaboration_model);
         if let Some(prompt) = collaboration_model.deliberation_prompt() {
             state
@@ -504,9 +602,6 @@ async fn forward_team_mentions(
             state
                 .store
                 .create_system_message(&team_channel.id, &prompt)?;
-            state
-                .store
-                .record_team_deliberation_requested(&team.id, &forwarded_message_id)?;
         }
 
         deliver_message_to_agents(state, &team_channel.id, sender_name, &forwarded_message_id)
@@ -663,13 +758,57 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
         .store
         .get_inbox_conversation_notifications(&actor_id)
         .map_err(|e| internal_err(e.to_string()))?;
-    let latest_event_id = state
+    Ok(Json(InboxResponse { conversations }))
+}
+
+pub async fn handle_public_conversation_inbox_notification(
+    State(state): State<AppState>,
+    Path(conversation_id): Path<String>,
+    Query(query): Query<InboxNotificationQuery>,
+) -> ApiResult<ConversationInboxRefreshResponse> {
+    let actor_id = public_viewer_name();
+    if state
         .store
-        .latest_event_id()
-        .map_err(|e| internal_err(e.to_string()))?;
-    Ok(Json(InboxResponse {
-        conversations,
-        latest_event_id,
+        .lookup_sender_type(&actor_id)
+        .map_err(|e| api_err(e.to_string()))?
+        .is_none()
+    {
+        return Err(api_err(format!("viewer not found: {}", actor_id)));
+    }
+
+    let channel = load_channel_by_id(&state.store, &conversation_id)?;
+    if !state
+        .store
+        .is_member(&channel.name, &actor_id)
+        .map_err(|e| api_err(e.to_string()))?
+    {
+        return Err(api_err(format!(
+            "you are not a member of channel {}",
+            conversation_id
+        )));
+    }
+
+    let notification = state
+        .store
+        .get_inbox_conversation_notification_for_member(&channel.id, &actor_id)
+        .map_err(|e| internal_err(e.to_string()))?
+        .ok_or_else(|| api_err("inbox row not found for this member"))?;
+
+    let conversation = PublicInboxConversationNotification::from(&notification);
+
+    let thread = if let Some(ref parent_id) = query.thread_parent_id {
+        state
+            .store
+            .get_thread_notification_state(&channel.name, parent_id, &actor_id)
+            .map_err(|e| internal_err(e.to_string()))?
+            .map(PublicThreadNotificationRefresh::from)
+    } else {
+        None
+    };
+
+    Ok(Json(ConversationInboxRefreshResponse {
+        conversation,
+        thread,
     }))
 }
 

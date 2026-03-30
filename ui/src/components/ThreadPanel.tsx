@@ -24,6 +24,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     selectedAgent,
     selectedChannelId,
     getAgentConversationId,
+    applyReadCursorAck,
   } = useApp()
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
@@ -49,12 +50,13 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     retryOptimisticMessage,
   } = useHistory(currentUser, threadTarget, threadConversationId, {
     threadParentId: openThreadMsg?.id ?? null,
+    onReadCursorAck: applyReadCursorAck,
   })
   const [content, setContent] = useState('')
   const [sending, setSending] = useState(false)
   const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
   const bottomRef = useRef<HTMLDivElement>(null)
-  const repliesContainerRef = useRef<HTMLDivElement>(null)
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
@@ -63,20 +65,18 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   }, [threadTarget])
 
   useEffect(() => {
-    const container = repliesContainerRef.current
+    const container = scrollContainerRef.current
     if (!container) return
 
     const collectHighestVisibleSeq = () => {
       if (document.visibilityState !== 'visible') return 0
+      const containerRect = container.getBoundingClientRect()
       let highestVisibleSeq = 0
       for (const message of messages) {
         const node = messageRefs.current[message.id]
         if (!node) continue
-        const top = node.offsetTop
-        const bottom = top + node.offsetHeight
-        const visibleTop = container.scrollTop
-        const visibleBottom = visibleTop + container.clientHeight
-        if (bottom > visibleTop && top < visibleBottom) {
+        const nodeRect = node.getBoundingClientRect()
+        if (nodeRect.bottom > containerRect.top && nodeRect.top < containerRect.bottom) {
           highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
         }
       }
@@ -122,7 +122,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   }, [lastReadSeq, loadedTarget, loading, messages, reportVisibleSeq, threadTarget])
 
   useEffect(() => {
-    const container = repliesContainerRef.current
+    const container = scrollContainerRef.current
     if (!container || !threadTarget || loadedTarget !== threadTarget || loading) return
 
     let rafId = 0
@@ -130,15 +130,13 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       cancelAnimationFrame(rafId)
       rafId = requestAnimationFrame(() => {
         if (document.visibilityState !== 'visible') return
+        const containerRect = container.getBoundingClientRect()
         let highestVisibleSeq = 0
         for (const message of messages) {
           const node = messageRefs.current[message.id]
           if (!node) continue
-          const top = node.offsetTop
-          const bottom = top + node.offsetHeight
-          const visibleTop = container.scrollTop
-          const visibleBottom = visibleTop + container.clientHeight
-          if (bottom > visibleTop && top < visibleBottom) {
+          const nodeRect = node.getBoundingClientRect()
+          if (nodeRect.bottom > containerRect.top && nodeRect.top < containerRect.bottom) {
             highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
           }
         }
@@ -245,14 +243,13 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       <div className="thread-header">
         <div className="thread-header-copy">
           <span className="thread-kicker">[ctx::thread]</span>
-          <span className="thread-title">Thread</span>
         </div>
         <button className="thread-close-btn" type="button" onClick={() => setOpenThreadMsg(null)} title="Close thread">
           <X size={16} strokeWidth={2} />
         </button>
       </div>
 
-      <div className="thread-body">
+      <div className="thread-body" ref={scrollContainerRef}>
         {/* Parent message (copy only, no reply) */}
         <div className="thread-parent-wrapper">
           <MessageItem
@@ -262,7 +259,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
         </div>
 
         {/* Replies */}
-        <div className="thread-replies" ref={repliesContainerRef}>
+        <div className="thread-replies">
           {messages.length === 0 ? (
             <div className="thread-empty">No replies yet</div>
           ) : (

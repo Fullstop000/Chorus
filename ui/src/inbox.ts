@@ -1,11 +1,9 @@
 import type {
   AgentInfo,
   ChannelInfo,
-  ConversationStatePayload,
+  ConversationInboxRefreshResponse,
   InboxConversationState,
-  RealtimeEvent,
   ThreadInboxEntry,
-  ThreadStatePayload,
 } from './types'
 
 export interface ThreadInboxState {
@@ -24,6 +22,18 @@ export interface InboxState {
   threads: Record<string, ThreadInboxState>
 }
 
+/** Authoritative inbox fields returned from `POST .../read-cursor`. */
+export interface ReadCursorAckPayload {
+  conversationId: string
+  conversationUnreadCount: number
+  conversationLastReadSeq: number
+  conversationLatestSeq: number
+  threadParentId?: string | null
+  threadUnreadCount?: number
+  threadLastReadSeq?: number
+  threadLatestSeq?: number
+}
+
 export interface ConversationRegistryEntry {
   conversationId: string
   target: string
@@ -37,89 +47,6 @@ interface BuildConversationRegistryOptions {
   channels: ChannelInfo[]
   dmChannels: ChannelInfo[]
   agents: AgentInfo[]
-}
-
-function asNumber(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === 'string' && value.length > 0 ? value : null
-}
-
-function conversationIdFromEvent(event: RealtimeEvent): string | null {
-  if (typeof event.payload.conversationId === 'string') {
-    return event.payload.conversationId
-  }
-  if (typeof event.channelId === 'string') {
-    return event.channelId
-  }
-  if (typeof event.streamId === 'string' && event.streamId.startsWith('conversation:')) {
-    return event.streamId.slice('conversation:'.length)
-  }
-  return null
-}
-
-function threadParentIdFromEvent(event: RealtimeEvent): string | null {
-  return asString(event.threadParentId) ?? asString(event.payload.threadParentId)
-}
-
-function normalizeConversationState(
-  prior: InboxConversationState | undefined,
-  payload: Record<string, unknown>
-): InboxConversationState | null {
-  const conversationId = asString(payload.conversationId) ?? prior?.conversationId ?? null
-  if (!conversationId) return null
-
-  return {
-    conversationId,
-    conversationName: asString(payload.conversationName) ?? prior?.conversationName ?? conversationId,
-    conversationType: asString(payload.conversationType) ?? prior?.conversationType ?? 'channel',
-    latestSeq: asNumber(payload.latestSeq) ?? prior?.latestSeq ?? 0,
-    lastReadSeq: asNumber(payload.lastReadSeq) ?? prior?.lastReadSeq ?? 0,
-    unreadCount: asNumber(payload.unreadCount) ?? prior?.unreadCount ?? 0,
-    lastReadMessageId:
-      asString(payload.lastReadMessageId) ?? prior?.lastReadMessageId ?? null,
-    lastMessageId:
-      asString(payload.lastMessageId) ??
-      asString(payload.messageId) ??
-      prior?.lastMessageId ??
-      null,
-    lastMessageAt:
-      asString(payload.lastMessageAt) ??
-      asString(payload.createdAt) ??
-      prior?.lastMessageAt ??
-      null,
-  }
-}
-
-function normalizeThreadState(
-  prior: ThreadInboxState | undefined,
-  payload: Record<string, unknown>
-): ThreadInboxState | null {
-  const conversationId = asString(payload.conversationId) ?? prior?.conversationId ?? null
-  const threadParentId = asString(payload.threadParentId) ?? prior?.threadParentId ?? null
-  if (!conversationId || !threadParentId) return null
-
-  return {
-    conversationId,
-    threadParentId,
-    latestSeq: asNumber(payload.latestSeq) ?? prior?.latestSeq ?? 0,
-    lastReadSeq: asNumber(payload.lastReadSeq) ?? prior?.lastReadSeq ?? 0,
-    unreadCount: asNumber(payload.unreadCount) ?? prior?.unreadCount ?? 0,
-    lastReadMessageId:
-      asString(payload.lastReadMessageId) ?? prior?.lastReadMessageId ?? null,
-    lastReplyMessageId:
-      asString(payload.lastReplyMessageId) ??
-      asString(payload.messageId) ??
-      prior?.lastReplyMessageId ??
-      null,
-    lastReplyAt:
-      asString(payload.lastReplyAt) ??
-      asString(payload.createdAt) ??
-      prior?.lastReplyAt ??
-      null,
-  }
 }
 
 export function createInboxState(): InboxState {
@@ -233,104 +160,181 @@ export function buildConversationRegistry(
   return entries
 }
 
-export function applyInboxEvent(state: InboxState, event: RealtimeEvent): InboxState {
-  switch (event.eventType) {
-    case 'conversation.state':
-    case 'conversation.read_cursor_set': {
-      const conversationId = conversationIdFromEvent(event)
-      if (!conversationId) return state
-      const nextConversation = normalizeConversationState(state.conversations[conversationId], {
-        ...event.payload,
-        conversationId,
-      })
-      if (!nextConversation) return state
-      return {
-        ...state,
-        conversations: {
-          ...state.conversations,
-          [conversationId]: nextConversation,
-        },
+/** Merge GET /inbox-notification (after message.created or explicit refresh). */
+export function mergeInboxNotificationRefresh(
+  state: InboxState,
+  payload: ConversationInboxRefreshResponse
+): InboxState {
+  const id = payload.conversation.conversationId
+  const live = state.conversations[id]
+  if (live && payload.conversation.latestSeq < live.latestSeq) {
+    return state
+  }
+
+  const mergedConv: InboxConversationState = live
+    ? {
+        ...live,
+        ...payload.conversation,
+        lastReadMessageId:
+          payload.conversation.lastReadMessageId ?? live.lastReadMessageId ?? null,
       }
+    : payload.conversation
+
+  let threads = state.threads
+  if (payload.thread) {
+    const key = threadNotificationKey(
+      payload.thread.conversationId,
+      payload.thread.threadParentId
+    )
+    const prior = state.threads[key]
+    threads = {
+      ...state.threads,
+      [key]: {
+        conversationId: payload.thread.conversationId,
+        threadParentId: payload.thread.threadParentId,
+        latestSeq: payload.thread.latestSeq,
+        lastReadSeq: payload.thread.lastReadSeq,
+        unreadCount: payload.thread.unreadCount,
+        lastReadMessageId: prior?.lastReadMessageId,
+        lastReplyMessageId:
+          payload.thread.lastReplyMessageId ?? prior?.lastReplyMessageId ?? null,
+        lastReplyAt: payload.thread.lastReplyAt ?? prior?.lastReplyAt ?? null,
+      },
     }
-    case 'thread.state':
-    case 'thread.read_cursor_set': {
-      const conversationId = conversationIdFromEvent(event)
-      const threadParentId = threadParentIdFromEvent(event)
-      if (!conversationId || !threadParentId) return state
-      const key = threadNotificationKey(conversationId, threadParentId)
-      const nextThread = normalizeThreadState(state.threads[key], {
-        ...event.payload,
-        conversationId,
-        threadParentId,
-      })
-      if (!nextThread) return state
-      return {
-        ...state,
-        threads: {
-          ...state.threads,
-          [key]: nextThread,
-        },
-      }
+  }
+
+  return {
+    ...state,
+    conversations: {
+      ...state.conversations,
+      [id]: mergedConv,
+    },
+    threads,
+  }
+}
+
+export function applyConversationRead(
+  state: InboxState,
+  conversationId: string,
+  lastReadSeq: number
+): InboxState {
+  const current = state.conversations[conversationId]
+  if (!current || lastReadSeq <= current.lastReadSeq) {
+    return state
+  }
+
+  const nextLastReadSeq = Math.max(current.lastReadSeq, lastReadSeq)
+  const unreadCount = Math.max(current.latestSeq - nextLastReadSeq, 0)
+
+  return {
+    ...state,
+    conversations: {
+      ...state.conversations,
+      [conversationId]: {
+        ...current,
+        lastReadSeq: nextLastReadSeq,
+        unreadCount,
+      },
+    },
+  }
+}
+
+/** Apply server read-cursor response so sidebar/thread badges match SQLite inbox views. */
+export function mergeReadCursorAckIntoInboxState(
+  state: InboxState,
+  ack: ReadCursorAckPayload
+): InboxState {
+  const current = state.conversations[ack.conversationId]
+  if (!current) {
+    return state
+  }
+
+  const nextConversation: InboxConversationState = {
+    ...current,
+    unreadCount: ack.conversationUnreadCount,
+    lastReadSeq: ack.conversationLastReadSeq,
+    latestSeq: ack.conversationLatestSeq,
+  }
+
+  const hasThreadSnapshot =
+    ack.threadParentId &&
+    ack.threadUnreadCount != null &&
+    ack.threadLastReadSeq != null &&
+    ack.threadLatestSeq != null
+
+  if (!hasThreadSnapshot) {
+    return {
+      ...state,
+      conversations: {
+        ...state.conversations,
+        [ack.conversationId]: nextConversation,
+      },
     }
-    default:
-      return state
+  }
+
+  const key = threadNotificationKey(ack.conversationId, ack.threadParentId!)
+  const priorThread = state.threads[key]
+
+  return {
+    ...state,
+    conversations: {
+      ...state.conversations,
+      [ack.conversationId]: nextConversation,
+    },
+    threads: {
+      ...state.threads,
+      [key]: {
+        conversationId: ack.conversationId,
+        threadParentId: ack.threadParentId!,
+        latestSeq: ack.threadLatestSeq!,
+        lastReadSeq: ack.threadLastReadSeq!,
+        unreadCount: ack.threadUnreadCount!,
+        lastReadMessageId: priorThread?.lastReadMessageId,
+        lastReplyMessageId: priorThread?.lastReplyMessageId,
+        lastReplyAt: priorThread?.lastReplyAt,
+      },
+    },
   }
 }
 
 export function bootstrapInboxState(
-  conversations: InboxConversationState[]
+  conversations: InboxConversationState[],
+  channels: ChannelInfo[] = []
 ): InboxState {
   const nextState = createInboxState()
   for (const conversation of conversations) {
     nextState.conversations[conversation.conversationId] = conversation
   }
+  return ensureInboxConversations(nextState, channels)
+}
+
+export function ensureInboxConversations(
+  state: InboxState,
+  channels: ChannelInfo[] = []
+): InboxState {
+  let nextState = state
+  for (const channel of channels) {
+    if (!channel.id || channel.joined === false) continue
+    if (nextState.conversations[channel.id]) continue
+    if (nextState === state) {
+      nextState = {
+        ...state,
+        conversations: {
+          ...state.conversations,
+        },
+      }
+    }
+    nextState.conversations[channel.id] = {
+      conversationId: channel.id,
+      conversationName: channel.name,
+      conversationType: channel.channel_type ?? 'channel',
+      latestSeq: 0,
+      lastReadSeq: 0,
+      unreadCount: 0,
+      lastReadMessageId: null,
+      lastMessageId: null,
+      lastMessageAt: null,
+    }
+  }
   return nextState
-}
-
-export function conversationPayload(
-  event: RealtimeEvent
-): ConversationStatePayload | null {
-  const conversationId = conversationIdFromEvent(event)
-  if (!conversationId) return null
-  return {
-    conversationId,
-    target: asString(event.payload.target) ?? undefined,
-    latestSeq: asNumber(event.payload.latestSeq) ?? 0,
-    lastReadSeq: asNumber(event.payload.lastReadSeq) ?? 0,
-    unreadCount: asNumber(event.payload.unreadCount) ?? 0,
-    lastMessageId:
-      asString(event.payload.lastMessageId) ??
-      asString(event.payload.messageId) ??
-      undefined,
-    lastMessageAt:
-      asString(event.payload.lastMessageAt) ??
-      asString(event.payload.createdAt) ??
-      undefined,
-    lastReadMessageId: asString(event.payload.lastReadMessageId) ?? undefined,
-    conversationType: asString(event.payload.conversationType) ?? undefined,
-    threadParentId: asString(event.payload.threadParentId) ?? undefined,
-    messageId: asString(event.payload.messageId) ?? undefined,
-  }
-}
-
-export function threadPayload(event: RealtimeEvent): ThreadStatePayload | null {
-  const conversationId = conversationIdFromEvent(event)
-  const threadParentId = threadParentIdFromEvent(event)
-  if (!conversationId || !threadParentId) return null
-  return {
-    conversationId,
-    threadParentId,
-    latestSeq: asNumber(event.payload.latestSeq) ?? 0,
-    lastReadSeq: asNumber(event.payload.lastReadSeq) ?? 0,
-    unreadCount: asNumber(event.payload.unreadCount) ?? 0,
-    lastReadMessageId: asString(event.payload.lastReadMessageId) ?? undefined,
-    lastReplyMessageId:
-      asString(event.payload.lastReplyMessageId) ??
-      asString(event.payload.messageId) ??
-      undefined,
-    lastReplyAt:
-      asString(event.payload.lastReplyAt) ??
-      asString(event.payload.createdAt) ??
-      undefined,
-  }
 }

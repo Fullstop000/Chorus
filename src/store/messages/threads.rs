@@ -106,28 +106,28 @@ impl Store {
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
-    pub(crate) fn thread_participant_exists_before(
-        conn: &Connection,
-        channel_id: &str,
-        parent_id: &str,
-        member_name: &str,
-    ) -> Result<bool> {
-        let parent_author_matches: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM messages
-             WHERE id = ?1 AND channel_id = ?2 AND sender_name = ?3",
-            params![parent_id, channel_id, member_name],
-            |row| row.get(0),
-        )?;
-        if parent_author_matches > 0 {
-            return Ok(true);
-        }
+    // pub(crate) fn thread_participant_exists_before(
+    //     conn: &Connection,
+    //     channel_id: &str,
+    //     parent_id: &str,
+    //     member_name: &str,
+    // ) -> Result<bool> {
+    //     let parent_author_matches: i64 = conn.query_row(
+    //         "SELECT COUNT(*) FROM messages
+    //          WHERE id = ?1 AND channel_id = ?2 AND sender_name = ?3",
+    //         params![parent_id, channel_id, member_name],
+    //         |row| row.get(0),
+    //     )?;
+    //     if parent_author_matches > 0 {
+    //         return Ok(true);
+    //     }
 
-        let prior_reply_matches: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM messages
-             WHERE channel_id = ?1 AND thread_parent_id = ?2 AND sender_name = ?3",
-            params![channel_id, parent_id, member_name],
-            |row| row.get(0),
-        )?;
-        Ok(prior_reply_matches > 0)
-    }
+    //     let prior_reply_matches: i64 = conn.query_row(
+    //         "SELECT COUNT(*) FROM messages
+    //          WHERE channel_id = ?1 AND thread_parent_id = ?2 AND sender_name = ?3",
+    //         params![channel_id, parent_id, member_name],
+    //         |row| row.get(0),
+    //     )?;
+    //     Ok(prior_reply_matches > 0)
+    // }
 }
