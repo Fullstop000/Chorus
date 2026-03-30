@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
 interface VisibilityItem {
   seq: number
@@ -20,7 +20,7 @@ export function useVisibilityTracking(getItemKey: (seq: number) => string) {
       }
     })
 
-    let maxSeq = highestVisibleSeq
+    let maxSeq = 0
     for (const item of items) {
       const rect = item.element!.getBoundingClientRect()
       const isVisible = rect.top < window.innerHeight && rect.bottom > 0
@@ -29,12 +29,10 @@ export function useVisibilityTracking(getItemKey: (seq: number) => string) {
       }
     }
 
-    if (maxSeq > highestVisibleSeq) {
-      setHighestVisibleSeq(maxSeq)
-    }
+    setHighestVisibleSeq(prev => (maxSeq > prev ? maxSeq : prev))
 
     pendingReadsRef.current.clear()
-  }, [highestVisibleSeq])
+  }, [])
 
   const scheduleVisibilityCheck = useCallback(
     (seq: number, id: string) => {
@@ -55,6 +53,14 @@ export function useVisibilityTracking(getItemKey: (seq: number) => string) {
     },
     [getItemKey, scheduleVisibilityCheck]
   )
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+      }
+    }
+  }, [])
 
   return {
     highestVisibleSeq,

@@ -4,7 +4,7 @@ Chorus is an AI agent collaboration platform. Agents run as real OS processes an
 
 This file is the working contract for agents in this repository. Read it before making changes, and keep it aligned with shipped behavior.
 
-## Code Organization
+## Code Principles
 
 ### 1. Naming
 
@@ -188,7 +188,7 @@ Every decision — naming, structure, commenting, testing — should optimize fo
 
 ---
 
-##  Architecture Design
+##  Architecture Design Principles
 
 > Architecture is the set of decisions that are hard to reverse. Make them deliberately, document them explicitly, and revisit them regularly.
 
@@ -292,44 +292,99 @@ Never trust data crossing a boundary you don't control. Validate, sanitize, and 
 
 ## Architecture
 
-```text
-ui/ (React + Vite)  <->  src/ (Rust/Axum)  <->  ~/.chorus/
-                              |
-                    +---------+---------+
-                    |                   |
-                    agent processes      bridge processes
-                 (claude/codex/kimi CLI) (chorus bridge --agent-id)
+### Overview
+
+Chorus is a multi-agent collaboration platform with three layers: a React/Vite frontend, a Rust/Axum backend, and external agent processes that communicate via MCP (Model Context Protocol).
+
+```
+┌─────────────────┐      HTTP/WebSocket       ┌─────────────────┐
+│   React/Vite    │ ◄───────────────────────► │   Rust/Axum     │
+│    (ui/)        │                           │    (src/)       │
+└─────────────────┘                           └────────┬────────┘
+                                                       │
+                              ┌────────────────────────┼────────────────────────┐
+                              │                        │                        │
+                              ▼                        ▼                        ▼
+                       ┌─────────────┐        ┌─────────────┐          ┌─────────────┐
+                       │   SQLite    │        │   Agent     │          │   Bridge    │
+                       │  (store/)   │        │  Processes  │          │  (MCP)      │
+                       │             │        │             │          │             │
+                       │ • messages  │        │ • Claude    │◄────────►│ • mcp__     │
+                       │ • channels  │        │ • Codex     │          │   chat__    │
+                       │ • agents    │        │ • Kimi      │          │   send_msg  │
+                       │ • tasks     │        │             │          │ • mcp__     │
+                       │ • teams     │        │             │          │   chat__    │
+                       │             │        │             │          │   recv_msg  │
+                       └─────────────┘        └─────────────┘          └─────────────┘
 ```
 
-### Message Flow
+### Components
 
-Data flow for an agent receiving a message:
+| Component | Responsibility | Key Files |
+|-----------|---------------|-----------|
+| **Frontend** | Chat UI, real-time updates, state management | `ui/src/store.tsx`, `ui/src/components/ChatPanel.tsx` |
+| **Server** | HTTP API, WebSocket events, request routing | `src/server/handlers/`, `src/server/transport/` |
+| **Store** | SQLite persistence, queries, migrations | `src/store/` |
+| **Agent Manager** | Process lifecycle, spawn/kill, stdout parsing | `src/agent/manager.rs`, `src/agent/lifecycle.rs` |
+| **Drivers** | Runtime-specific spawn/prompt/parse logic | `src/agent/drivers/{claude,codex,kimi}.rs` |
+| **Bridge** | MCP server for agent tool calls | `src/bridge/mod.rs` |
 
-1. Human sends via UI -> `POST /api/channels/{name}/messages`
-2. Server writes to SQLite and notifies via broadcast channel
-3. `AgentManager` wakes the agent notification task and writes to the agent stdin
-4. Agent (Claude/Codex) calls `mcp__chat__receive_message` via the bridge MCP server
-5. Bridge POSTs to `GET /internal/agent/{id}/receive` (long-poll, 30s timeout)
-6. Agent replies via `mcp__chat__send_message`, and the bridge POSTs to `/internal/agent/{id}/send`
+### Data Flow
 
-Data flow for a human viewing chat in the browser:
+#### Human Sends Message → Agent Replies
 
-1. Selecting a channel, DM, or thread bootstraps a history snapshot through `GET /internal/agent/{id}/history`
-2. After bootstrap, the UI opens one session-wide websocket at `/api/events/ws`
-3. The websocket carries `message.created` frames (channel id, latest seq, small payload); the UI refreshes inbox/thread badges via HTTP (`/api/inbox`, `.../inbox-notification`) rather than a durable server event log
-4. Channel, DM, and thread switches replace active subscriptions on that same socket rather than opening per-target sockets
-5. When the active target receives a newer `latestSeq`, the UI fetches incremental history with `after=<last_loaded_seq>` and merges those rows into the visible timeline
-6. Inactive targets use the same notifications only to refresh badges and unread state; they do not eagerly fetch message bodies
-7. Human-composed messages render optimistically with a local sending state until `/internal/agent/{id}/send` returns the durable `message_id` and `seq`
-8. Read cursors advance only when messages become visible in the viewport, and the browser reports that through `POST /internal/agent/{id}/read-cursor`
+```
+Human (Browser)
+      │
+      ▼ POST /api/channels/{id}/messages
+┌─────────────┐
+│   Server    │ ──► SQLite (messages table)
+│  (Axum)     │ ──► Broadcast channel notify
+└──────┬──────┘
+       │
+       ▼ AgentManager::wake_agent()
+┌─────────────┐
+│Agent Process│ ◄── stdin: {"type":"notify"}
+│  (Driver)   │
+└──────┬──────┘
+       │ stdout: tool call mcp__chat__receive_message
+       ▼
+┌─────────────┐
+│    Bridge   │ ──► GET /internal/agent/{id}/receive (long-poll)
+│   (MCP)     │ ◄── Returns queued message
+└──────┬──────┘
+       │ Agent generates reply
+       ▼ stdout: tool call mcp__chat__send_message
+┌─────────────┐
+│    Bridge   │ ──► POST /internal/agent/{id}/send
+└─────────────┘
+```
+
+#### Browser Receives Real-time Updates
+
+1. UI opens **one** session-wide WebSocket at `/api/events/ws`
+2. Server emits `message.created` events with `(channel_id, latest_seq)`
+3. UI fetches incremental history via `GET /api/channels/{id}/history?after={seq}`
+4. Messages merge into local cache; optimistic UI shows sending state
+5. Read cursors update via `POST /internal/agent/{id}/read-cursor` when visible
 
 ### Agent Sessions
 
-Each agent runs as a single process across all channels and DMs. One session equals one process and retains full conversation history in the agent memory.
+Each agent runs as a **single OS process** across all channels and DMs:
 
-- Session ID is persisted to SQLite on `SessionInit` and `TurnEnd`
-- On server restart, active agents are auto-restarted with `--resume <session_id>` (Claude), `codex exec resume <thread_id>` (Codex), or `kimi --session <session_id>` (Kimi)
-- Context isolation between channels is provided through `MEMORY.md` in the agent workspace, not through separate processes
+- **Session ID**: Persisted to SQLite on `SessionInit` and `TurnEnd`
+- **Resume**: On server restart, agents auto-restart with `--resume <session_id>` (Claude), `codex exec resume <thread_id>` (Codex), or `kimi --session <session_id>` (Kimi)
+- **Context Isolation**: Provided via `MEMORY.md` in agent workspace, not separate processes
+
+### Key Design Decisions
+
+| Decision | Rationale |
+|----------|-----------|
+| One process per agent (not per channel) | Lower memory footprint; shared context across channels |
+| MCP bridge as separate binary | Isolates runtime tool calls from server; enables testing |
+| Long-poll for agent receive | Simpler than WebSocket for CLI-based runtimes |
+| Optimistic UI with server reconciliation | Responsive feel; eventual consistency with durable seq |
+| Single WebSocket for all channels | Reduces connection overhead; subscription-based routing |
 
 ## Code Organization
 
@@ -378,13 +433,6 @@ Organize code by subsystem, not by request or one-off feature patches.
 - Treat `qa/` as its own execution layer; specs, plans, reports, and evidence stay under `qa/`, not mixed into app code
 
 ## Core Conventions
-
-### Engineering Principles
-
-- Add comments for key structs and non-trivial functions so intent is clear on first read
-- Handle errors explicitly; do not ignore `Result`s or rely on hidden failure paths
-- Prefer clear, sufficient design over speculative architecture
-- Read this file before making changes, and keep it aligned with shipped behavior
 
 ### Store Conventions
 
@@ -462,11 +510,7 @@ The authoritative QA execution workflow lives in `qa/README.md`, with the case c
 
 ### Adding A New Driver
 
-1. Create `src/agent/drivers/myruntimename.rs`
-2. Implement the `Driver` trait with all required methods:
-3. Register the driver in `src/agent/drivers/mod.rs`
-4. Add it to the driver selection match in `src/agent/manager.rs`
-5. Follow [`docs/DRIVER_GUIDE.md`](./docs/DRIVER_GUIDE.md) for protocol discovery, live-runtime debugging, and required verification
+See [`docs/DRIVER_GUIDE.md`](./docs/DRIVER_GUIDE.md) for the complete guide on adding a new agent runtime driver, including protocol discovery, implementation phases, testing, and required verification.
 
 ## Completion Checklist
 
