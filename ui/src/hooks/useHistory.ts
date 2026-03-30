@@ -152,6 +152,7 @@ export function useHistory(
             setError(frame.message)
             return
           }
+          commitMessages((current) => applyRealtimeEvent(current, frame.event))
           const incrementalAfter = historyFetchAfterForNotification(
             activeRealtimeTarget,
             frame.event,
@@ -160,9 +161,7 @@ export function useHistory(
           )
           if (incrementalAfter != null) {
             void fetchHistory(incrementalAfter)
-            return
           }
-          commitMessages((current) => applyRealtimeEvent(current, frame.event))
           setError(null)
         },
       })

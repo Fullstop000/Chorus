@@ -80,6 +80,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const selectedAgentRef = useRef<AgentInfo | null>(null)
   const selectedChannelRef = useRef<string | null>(null)
   const selectedChannelIdRef = useRef<string | null>(null)
+  const conversationThreadsRefreshInFlight = useRef<Map<string, Promise<void>>>(new Map())
 
   // Fetch current user once on mount
   useEffect(() => {
@@ -295,15 +296,24 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const refreshConversationThreads = useCallback(async (conversationId: string) => {
     if (!currentUser) return
-    try {
-      const response = await getChannelThreads(conversationId)
-      setConversationThreads((current) => ({
-        ...current,
-        [conversationId]: response.threads,
-      }))
-    } catch (error) {
-      console.error('Failed to load channel threads', error)
-    }
+    const inFlight = conversationThreadsRefreshInFlight.current
+    const existing = inFlight.get(conversationId)
+    if (existing) return existing
+    const promise = (async () => {
+      try {
+        const response = await getChannelThreads(conversationId)
+        setConversationThreads((current) => ({
+          ...current,
+          [conversationId]: response.threads,
+        }))
+      } catch (error) {
+        console.error('Failed to load channel threads', error)
+      } finally {
+        inFlight.delete(conversationId)
+      }
+    })()
+    inFlight.set(conversationId, promise)
+    return promise
   }, [currentUser])
 
   // When selecting an agent, switch to chat tab and close thread

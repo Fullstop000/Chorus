@@ -14,6 +14,19 @@ export function applyRealtimeEvent(
   event: StreamEvent
 ): HistoryMessage[] {
   switch (event.eventType) {
+    case 'message.created': {
+      const parentIdRaw = event.payload.threadParentId
+      const threadParentId =
+        typeof parentIdRaw === 'string' && parentIdRaw.length > 0 ? parentIdRaw : null
+      if (!threadParentId) {
+        return messages
+      }
+      return messages.map((message) =>
+        message.id === threadParentId
+          ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
+          : message
+      )
+    }
     case 'message.tombstone_changed': {
       const payload = event.payload
       const messageId = typeof payload.messageId === 'string' ? payload.messageId : null
@@ -72,6 +85,11 @@ export function historyFetchAfterForNotification(
   if (threadParentId) {
     const eventThreadParentId = event.payload.threadParentId
     if (eventThreadParentId !== threadParentId) {
+      return null
+    }
+  } else {
+    const eventThreadParentId = event.payload.threadParentId
+    if (typeof eventThreadParentId === 'string' && eventThreadParentId.length > 0) {
       return null
     }
   }
