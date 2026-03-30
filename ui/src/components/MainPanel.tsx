@@ -20,7 +20,7 @@ export function MainPanel() {
     activeTab,
     currentUser,
     getAgentConversationId,
-    markConversationRead,
+    applyReadCursorAck,
     refreshChannels,
     refreshAgents,
     refreshTeams,
@@ -38,7 +38,8 @@ export function MainPanel() {
   const chatHistory = useHistory(
     currentUser,
     activeTab === 'chat' ? chatTarget : null,
-    activeConversationId
+    activeConversationId,
+    { onReadCursorAck: applyReadCursorAck }
   )
   const [members, setMembers] = useState<ChannelMemberInfo[]>([])
   const [membersLoading, setMembersLoading] = useState(false)
@@ -96,13 +97,6 @@ export function MainPanel() {
       setShowMembersPanel(false)
     }
   }, [activeTab, selectedChannel])
-
-  useEffect(() => {
-    if (activeTab !== 'chat' || !activeConversationId || chatHistory.lastReadSeq <= 0) {
-      return
-    }
-    markConversationRead(activeConversationId, chatHistory.lastReadSeq)
-  }, [activeConversationId, activeTab, chatHistory.lastReadSeq, markConversationRead])
 
   useEffect(() => {
     setShowTeamSettings(false)

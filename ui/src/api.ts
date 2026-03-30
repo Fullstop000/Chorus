@@ -20,6 +20,7 @@ import type {
   Team,
   TeamResponse,
   InboxResponse,
+  ConversationInboxRefreshResponse,
   ThreadInboxResponse,
 } from './types'
 
@@ -173,6 +174,19 @@ export async function getInboxState(username: string): Promise<InboxResponse> {
   return json(await fetch(`${BASE}/api/inbox`))
 }
 
+export async function getConversationInboxNotification(
+  conversationId: string,
+  threadParentId?: string
+): Promise<ConversationInboxRefreshResponse> {
+  const params = new URLSearchParams()
+  if (threadParentId) params.set('threadParentId', threadParentId)
+  const query = params.toString()
+  const suffix = query ? `?${query}` : ''
+  return json(
+    await fetch(conversationApiPath(conversationId, `/inbox-notification${suffix}`))
+  )
+}
+
 export async function getChannelThreads(
   conversationId: string
 ): Promise<ThreadInboxResponse> {
@@ -202,11 +216,22 @@ export async function getHistoryAfter(
   return getHistory(conversationId, limit, threadParentId, undefined, after)
 }
 
+export interface ReadCursorResponse {
+  ok: boolean
+  conversationUnreadCount: number
+  conversationLastReadSeq: number
+  conversationLatestSeq: number
+  threadParentId?: string
+  threadUnreadCount?: number
+  threadLastReadSeq?: number
+  threadLatestSeq?: number
+}
+
 export async function updateReadCursor(
   conversationId: string,
   lastReadSeq: number,
   threadParentId?: string
-): Promise<{ ok: boolean }> {
+): Promise<ReadCursorResponse> {
   return json(
     await fetch(conversationApiPath(conversationId, '/read-cursor'), {
       method: 'POST',

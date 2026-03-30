@@ -92,6 +92,10 @@ pub fn build_router_with_services(
             get(handle_public_history).post(handle_public_send),
         )
         .route(
+            "/conversations/{conversation_id}/inbox-notification",
+            get(handle_public_conversation_inbox_notification),
+        )
+        .route(
             "/conversations/{conversation_id}/threads",
             get(handle_public_threads),
         )

@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 use super::channels::Channel;
 use super::Store;
@@ -145,6 +146,17 @@ impl Store {
                 )?,
             };
             if current_last_read_seq <= max_seq {
+                info!(
+                    conversation_id = %channel.id,
+                    channel_name = %channel.name,
+                    member_name = %member_name,
+                    member_type = %member_type,
+                    thread_parent_id = ?thread_parent_id,
+                    requested_last_read_seq = last_read_seq,
+                    current_last_read_seq,
+                    max_seq,
+                    "read cursor update skipped (no advance)"
+                );
                 return Ok(());
             }
         }
@@ -190,6 +202,17 @@ impl Store {
                 )?;
             }
         }
+
+        info!(
+            conversation_id = %channel.id,
+            channel_name = %channel.name,
+            member_name = %member_name,
+            member_type = %member_type,
+            thread_parent_id = ?thread_parent_id,
+            last_read_seq,
+            last_read_message_id = ?last_read_message_id,
+            "read cursor persisted"
+        );
         Ok(())
     }
 
@@ -358,6 +381,67 @@ impl Store {
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
+    /// Sidebar notification snapshot for one member in one conversation (e.g. after read-cursor).
+    pub fn get_inbox_conversation_notification_for_member(
+        &self,
+        channel_id: &str,
+        member_name: &str,
+    ) -> Result<Option<InboxConversationNotificationView>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_inbox_conversation_notification_for_member_inner(&conn, channel_id, member_name)
+    }
+
+    pub(crate) fn get_inbox_conversation_notification_for_member_inner(
+        conn: &Connection,
+        channel_id: &str,
+        member_name: &str,
+    ) -> Result<Option<InboxConversationNotificationView>> {
+        Ok(conn
+            .query_row(
+                "SELECT
+                    view.conversation_id,
+                    view.conversation_name,
+                    view.conversation_type,
+                    view.last_read_seq,
+                    view.unread_count,
+                    (
+                        SELECT COALESCE(MAX(m.seq), 0)
+                        FROM messages m
+                        WHERE m.channel_id = view.conversation_id
+                    ) AS latest_seq,
+                    (
+                        SELECT m.id
+                        FROM messages m
+                        WHERE m.channel_id = view.conversation_id
+                        ORDER BY m.seq DESC
+                        LIMIT 1
+                    ) AS last_message_id,
+                    (
+                        SELECT m.created_at
+                        FROM messages m
+                        WHERE m.channel_id = view.conversation_id
+                        ORDER BY m.seq DESC
+                        LIMIT 1
+                    ) AS last_message_at
+                 FROM inbox_conversation_state_view view
+                 WHERE view.conversation_id = ?1 AND view.member_name = ?2",
+                params![channel_id, member_name],
+                |row| {
+                    Ok(InboxConversationNotificationView {
+                        conversation_id: row.get("conversation_id")?,
+                        conversation_name: row.get("conversation_name")?,
+                        conversation_type: row.get("conversation_type")?,
+                        latest_seq: row.get("latest_seq")?,
+                        last_read_seq: row.get("last_read_seq")?,
+                        unread_count: row.get("unread_count")?,
+                        last_message_id: row.get("last_message_id")?,
+                        last_message_at: row.get("last_message_at")?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
     /// Load derived thread notification state for one member.
     pub fn get_thread_notification_state(
         &self,
@@ -448,8 +532,17 @@ impl Store {
         let unread_count = conn.query_row(
             "SELECT COUNT(*)
              FROM messages
-             WHERE channel_id = ?1 AND thread_parent_id = ?2 AND seq > ?3",
-            params![channel_id, thread_parent_id, last_read_seq],
+             WHERE channel_id = ?1
+               AND thread_parent_id = ?2
+               AND seq > ?3
+               AND NOT (sender_name = ?4 AND sender_type = ?5)",
+            params![
+                channel_id,
+                thread_parent_id,
+                last_read_seq,
+                member_name,
+                member_type
+            ],
             |row| row.get::<_, i64>(0),
         )?;
 

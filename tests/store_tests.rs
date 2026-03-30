@@ -1017,6 +1017,100 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
 }
 
 #[test]
+fn test_unread_excludes_own_messages_for_sender() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    store
+        .create_message(
+            "general",
+            None,
+            "bot1",
+            SenderType::Agent,
+            "from bot a",
+            &[],
+        )
+        .unwrap();
+    store
+        .create_message(
+            "general",
+            None,
+            "bot1",
+            SenderType::Agent,
+            "from bot b",
+            &[],
+        )
+        .unwrap();
+
+    let channel_id = store
+        .get_channel_by_name("general")
+        .unwrap()
+        .expect("general exists")
+        .id;
+    let conn = store.conn_for_test();
+    conn.execute(
+        "UPDATE inbox_read_state SET last_read_seq = 0, last_read_message_id = NULL
+         WHERE conversation_id = ?1",
+        params![channel_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let bot_state = store
+        .get_inbox_conversation_state("general", "bot1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(bot_state.unread_count, 0);
+
+    let alice_state = store
+        .get_inbox_conversation_state("general", "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(alice_state.unread_count, 2);
+
+    let parent = store
+        .create_message("general", None, "alice", SenderType::Human, "parent", &[])
+        .unwrap();
+    store
+        .create_message(
+            "general",
+            Some(&parent),
+            "bot1",
+            SenderType::Agent,
+            "reply",
+            &[],
+        )
+        .unwrap();
+
+    let conn = store.conn_for_test();
+    conn.execute(
+        "UPDATE inbox_thread_read_state SET last_read_seq = 0, last_read_message_id = NULL
+         WHERE conversation_id = ?1 AND thread_parent_id = ?2 AND member_name = 'bot1'",
+        params![channel_id, parent],
+    )
+    .unwrap();
+    drop(conn);
+
+    let bot_thread = store
+        .get_thread_notification_state("general", &parent, "bot1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(bot_thread.unread_count, 0);
+}
+
+#[test]
 fn test_tasks_crud() {
     let (store, _dir) = make_store();
     store

@@ -305,6 +305,10 @@ SELECT
         WHERE top_level.channel_id = cm.channel_id
           AND top_level.thread_parent_id IS NULL
           AND top_level.seq > COALESCE(irs.last_read_seq, 0)
+          AND NOT (
+            top_level.sender_name = cm.member_name
+            AND top_level.sender_type = cm.member_type
+          )
     ) + (
         SELECT COUNT(*)
         FROM messages reply
@@ -315,6 +319,10 @@ SELECT
         WHERE reply.channel_id = cm.channel_id
           AND reply.thread_parent_id IS NOT NULL
           AND reply.seq > COALESCE(itrs.last_read_seq, 0)
+          AND NOT (
+            reply.sender_name = cm.member_name
+            AND reply.sender_type = cm.member_type
+          )
           AND (
             cm.member_type != 'agent'
             OR EXISTS (

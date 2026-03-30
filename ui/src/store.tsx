@@ -3,6 +3,7 @@ import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team, ThreadIn
 import {
   ensureDirectMessageConversation,
   getChannelThreads,
+  getConversationInboxNotification,
   getInboxState,
   getWhoami,
   listAgents,
@@ -10,7 +11,18 @@ import {
   listHumans,
   listTeams,
 } from './api'
-import { applyConversationRead, applyInboxEvent, bootstrapInboxState, buildConversationRegistry, conversationThreadUnreadCount, createInboxState, dmConversationNameForParticipants, ensureInboxConversations, mergeChannelThreadInboxEntries } from './inbox'
+import {
+  bootstrapInboxState,
+  buildConversationRegistry,
+  conversationThreadUnreadCount,
+  createInboxState,
+  dmConversationNameForParticipants,
+  ensureInboxConversations,
+  mergeChannelThreadInboxEntries,
+  mergeInboxNotificationRefresh,
+  mergeReadCursorAckIntoInboxState,
+  type ReadCursorAckPayload,
+} from './inbox'
 import { isVisibleSidebarChannel } from './sidebarChannels'
 import { getRealtimeSession } from './transport/realtimeSession'
 
@@ -33,7 +45,7 @@ export interface AppState {
   getConversationThreadUnread: (conversationId?: string | null) => number
   getAgentUnread: (agentName: string) => number
   getAgentConversationId: (agentName: string) => string | null
-  markConversationRead: (conversationId: string, lastReadSeq: number) => void
+  applyReadCursorAck: (ack: ReadCursorAckPayload) => void
   setSelectedChannel: (ch: string | null, channelId?: string | null) => void
   setSelectedAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
@@ -230,19 +242,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           console.error('Inbox realtime subscription failed', frame.message)
           return
         }
-        setInboxState((current) => {
-          if (frame.event.eventType === 'message.created') {
-            const conversation = current.conversations[frame.event.channelId]
-            if (conversation) {
-              console.log('[chorus:message-arrived]', {
-                conversationId: frame.event.channelId,
-                currentReadSeq: conversation.lastReadSeq,
-                lastSeq: frame.event.latestSeq,
-              })
-            }
-          }
-          return applyInboxEvent(current, frame.event)
-        })
+        if (frame.event.eventType === 'message.created') {
+          const channelId = frame.event.channelId
+          const threadRaw = frame.event.payload.threadParentId
+          const threadParentId =
+            typeof threadRaw === 'string' && threadRaw.length > 0 ? threadRaw : undefined
+          void getConversationInboxNotification(channelId, threadParentId)
+            .then((payload) => {
+              setInboxState((current) => mergeInboxNotificationRefresh(current, payload))
+            })
+            .catch((error) => {
+              console.error('Failed to refresh inbox after message', error)
+            })
+          return
+        }
       },
     })
   }, [agents, channels, currentUser, dmChannels, refreshAgents, refreshChannels, refreshTeams, shellBootstrapped, systemConversationChannels])
@@ -352,8 +365,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return dmChannels.find((channel) => channel.name === dmChannelName)?.id ?? null
   }, [currentUser, dmChannels])
 
-  const markConversationRead = useCallback((conversationId: string, lastReadSeq: number) => {
-    setInboxState((current) => applyConversationRead(current, conversationId, lastReadSeq))
+  const applyReadCursorAck = useCallback((ack: ReadCursorAckPayload) => {
+    setInboxState((current) => mergeReadCursorAckIntoInboxState(current, ack))
   }, [])
 
   const serverInfoValue: ServerInfo | null =
@@ -379,7 +392,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         getConversationThreadUnread,
         getAgentUnread,
         getAgentConversationId,
-        markConversationRead,
+        applyReadCursorAck,
         setSelectedChannel: handleSetSelectedChannel,
         setSelectedAgent: handleSetSelectedAgent,
         setActiveTab,

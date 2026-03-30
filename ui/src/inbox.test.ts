@@ -2,12 +2,12 @@ import { describe, expect, it } from 'vitest'
 
 import {
   applyConversationRead,
-  applyInboxEvent,
   bootstrapInboxState,
-  createInboxState,
   ensureInboxConversations,
+  mergeInboxNotificationRefresh,
+  mergeReadCursorAckIntoInboxState,
 } from './inbox'
-import type { ChannelInfo, InboxConversationState, StreamEvent } from './types'
+import type { ChannelInfo, InboxConversationState } from './types'
 
 function makeConversation(
   overrides: Partial<InboxConversationState> = {}
@@ -26,22 +26,6 @@ function makeConversation(
   }
 }
 
-function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
-  return {
-    eventType: 'message.created',
-    channelId: 'conversation-1',
-    latestSeq: 3,
-    payload: {
-      messageId: 'message-3',
-      conversationId: 'conversation-1',
-      conversationType: 'channel',
-      threadParentId: null,
-    },
-    schemaVersion: 1,
-    ...overrides,
-  }
-}
-
 function makeChannel(overrides: Partial<ChannelInfo> = {}): ChannelInfo {
   return {
     id: 'conversation-1',
@@ -53,40 +37,69 @@ function makeChannel(overrides: Partial<ChannelInfo> = {}): ChannelInfo {
   }
 }
 
-describe('applyInboxEvent', () => {
-  it('advances unread state for an existing inactive conversation on message.created', () => {
-    const state = bootstrapInboxState([makeConversation()])
+describe('mergeInboxNotificationRefresh', () => {
+  it('applies server conversation + thread rows from inbox-notification', () => {
+    const state = bootstrapInboxState([makeConversation({ latestSeq: 2, unreadCount: 0 })])
 
-    const next = applyInboxEvent(state, makeEvent())
+    const next = mergeInboxNotificationRefresh(state, {
+      conversation: {
+        conversationId: 'conversation-1',
+        conversationName: 'general',
+        conversationType: 'channel',
+        latestSeq: 5,
+        lastReadSeq: 2,
+        unreadCount: 2,
+        lastMessageId: 'm-new',
+        lastMessageAt: '2026-03-30T01:00:00Z',
+      },
+      thread: {
+        conversationId: 'conversation-1',
+        threadParentId: 'parent-1',
+        latestSeq: 4,
+        lastReadSeq: 1,
+        unreadCount: 1,
+        lastReplyMessageId: 'reply-1',
+        lastReplyAt: '2026-03-30T00:30:00Z',
+      },
+    })
 
     expect(next.conversations['conversation-1']).toEqual(
       expect.objectContaining({
-        conversationId: 'conversation-1',
-        latestSeq: 3,
+        latestSeq: 5,
         lastReadSeq: 2,
+        unreadCount: 2,
+        lastMessageId: 'm-new',
+      })
+    )
+    expect(next.threads['conversation-1:parent-1']).toEqual(
+      expect.objectContaining({
         unreadCount: 1,
-        lastMessageId: 'message-3',
+        latestSeq: 4,
+        lastReadSeq: 1,
       })
     )
   })
 
-  it('ignores events for conversations that are not already in the inbox registry', () => {
-    const state = createInboxState()
+  it('ignores stale payloads when latestSeq regressed', () => {
+    const state = bootstrapInboxState([
+      makeConversation({ latestSeq: 10, unreadCount: 1 }),
+    ])
 
-    const next = applyInboxEvent(
-      state,
-      makeEvent({
-        channelId: 'conversation-2',
-        payload: {
-          messageId: 'message-9',
-          conversationId: 'conversation-2',
-          conversationType: 'channel',
-          threadParentId: null,
-        },
-      })
-    )
+    const next = mergeInboxNotificationRefresh(state, {
+      conversation: {
+        conversationId: 'conversation-1',
+        conversationName: 'general',
+        conversationType: 'channel',
+        latestSeq: 9,
+        lastReadSeq: 2,
+        unreadCount: 99,
+        lastMessageId: 'old',
+        lastMessageAt: null,
+      },
+    })
 
-    expect(next).toEqual(state)
+    expect(next.conversations['conversation-1']?.latestSeq).toBe(10)
+    expect(next.conversations['conversation-1']?.unreadCount).toBe(1)
   })
 })
 
@@ -144,6 +157,44 @@ describe('ensureInboxConversations', () => {
         latestSeq: 0,
         lastReadSeq: 0,
         unreadCount: 0,
+      })
+    )
+  })
+})
+
+describe('mergeReadCursorAckIntoInboxState', () => {
+  it('applies server conversation unread after a thread read (channel badge drops thread replies)', () => {
+    const state = bootstrapInboxState([
+      makeConversation({
+        latestSeq: 10,
+        lastReadSeq: 5,
+        unreadCount: 4,
+      }),
+    ])
+
+    const next = mergeReadCursorAckIntoInboxState(state, {
+      conversationId: 'conversation-1',
+      conversationUnreadCount: 2,
+      conversationLastReadSeq: 5,
+      conversationLatestSeq: 10,
+      threadParentId: 'parent-1',
+      threadUnreadCount: 0,
+      threadLastReadSeq: 8,
+      threadLatestSeq: 8,
+    })
+
+    expect(next.conversations['conversation-1']).toEqual(
+      expect.objectContaining({
+        unreadCount: 2,
+        lastReadSeq: 5,
+        latestSeq: 10,
+      })
+    )
+    expect(next.threads['conversation-1:parent-1']).toEqual(
+      expect.objectContaining({
+        unreadCount: 0,
+        lastReadSeq: 8,
+        latestSeq: 8,
       })
     )
   })

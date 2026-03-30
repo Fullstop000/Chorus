@@ -156,9 +156,13 @@ impl Store {
         let mut rows = Vec::new();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id, m.forwarded_from
-             FROM messages m WHERE m.channel_id = ?1 AND m.seq > ?2 ORDER BY m.seq ASC",
+             FROM messages m
+             WHERE m.channel_id = ?1
+               AND m.seq > ?2
+               AND NOT (m.sender_name = ?3 AND m.sender_type = 'agent')
+             ORDER BY m.seq ASC",
         )?;
-        for row in stmt.query_map(params![channel_id, after_seq], |row| {
+        for row in stmt.query_map(params![channel_id, after_seq, agent_name], |row| {
             Ok(AgentUnreadMessageRow {
                 message_id: row.get(0)?,
                 sender_name: row.get(1)?,

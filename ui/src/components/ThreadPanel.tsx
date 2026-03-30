@@ -24,6 +24,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     selectedAgent,
     selectedChannelId,
     getAgentConversationId,
+    applyReadCursorAck,
   } = useApp()
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
@@ -49,6 +50,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     retryOptimisticMessage,
   } = useHistory(currentUser, threadTarget, threadConversationId, {
     threadParentId: openThreadMsg?.id ?? null,
+    onReadCursorAck: applyReadCursorAck,
   })
   const [content, setContent] = useState('')
   const [sending, setSending] = useState(false)
@@ -241,7 +243,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       <div className="thread-header">
         <div className="thread-header-copy">
           <span className="thread-kicker">[ctx::thread]</span>
-          <span className="thread-title">Thread</span>
         </div>
         <button className="thread-close-btn" type="button" onClick={() => setOpenThreadMsg(null)} title="Close thread">
           <X size={16} strokeWidth={2} />

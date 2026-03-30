@@ -1,8 +1,8 @@
 import type {
   AgentInfo,
   ChannelInfo,
+  ConversationInboxRefreshResponse,
   InboxConversationState,
-  StreamEvent,
   ThreadInboxEntry,
 } from './types'
 
@@ -20,6 +20,18 @@ export interface ThreadInboxState {
 export interface InboxState {
   conversations: Record<string, InboxConversationState>
   threads: Record<string, ThreadInboxState>
+}
+
+/** Authoritative inbox fields returned from `POST .../read-cursor`. */
+export interface ReadCursorAckPayload {
+  conversationId: string
+  conversationUnreadCount: number
+  conversationLastReadSeq: number
+  conversationLatestSeq: number
+  threadParentId?: string | null
+  threadUnreadCount?: number
+  threadLastReadSeq?: number
+  threadLatestSeq?: number
 }
 
 export interface ConversationRegistryEntry {
@@ -148,44 +160,56 @@ export function buildConversationRegistry(
   return entries
 }
 
-function messageIdFromEvent(event: StreamEvent): string | null {
-  const value = event.payload.messageId
-  return typeof value === 'string' && value.length > 0 ? value : null
-}
-
-export function applyInboxEvent(state: InboxState, event: StreamEvent): InboxState {
-  if (event.eventType !== 'message.created') {
+/** Merge GET /inbox-notification (after message.created or explicit refresh). */
+export function mergeInboxNotificationRefresh(
+  state: InboxState,
+  payload: ConversationInboxRefreshResponse
+): InboxState {
+  const id = payload.conversation.conversationId
+  const live = state.conversations[id]
+  if (live && payload.conversation.latestSeq < live.latestSeq) {
     return state
   }
 
-  const current = state.conversations[event.channelId]
-  if (!current) {
-    return state
-  }
+  const mergedConv: InboxConversationState = live
+    ? {
+        ...live,
+        ...payload.conversation,
+        lastReadMessageId:
+          payload.conversation.lastReadMessageId ?? live.lastReadMessageId ?? null,
+      }
+    : payload.conversation
 
-  const latestSeq = Math.max(current.latestSeq, event.latestSeq)
-  const unreadCount = Math.max(latestSeq - current.lastReadSeq, 0)
-  const lastMessageId = messageIdFromEvent(event) ?? current.lastMessageId ?? null
-
-  if (
-    latestSeq === current.latestSeq &&
-    unreadCount === current.unreadCount &&
-    lastMessageId === (current.lastMessageId ?? null)
-  ) {
-    return state
+  let threads = state.threads
+  if (payload.thread) {
+    const key = threadNotificationKey(
+      payload.thread.conversationId,
+      payload.thread.threadParentId
+    )
+    const prior = state.threads[key]
+    threads = {
+      ...state.threads,
+      [key]: {
+        conversationId: payload.thread.conversationId,
+        threadParentId: payload.thread.threadParentId,
+        latestSeq: payload.thread.latestSeq,
+        lastReadSeq: payload.thread.lastReadSeq,
+        unreadCount: payload.thread.unreadCount,
+        lastReadMessageId: prior?.lastReadMessageId,
+        lastReplyMessageId:
+          payload.thread.lastReplyMessageId ?? prior?.lastReplyMessageId ?? null,
+        lastReplyAt: payload.thread.lastReplyAt ?? prior?.lastReplyAt ?? null,
+      },
+    }
   }
 
   return {
     ...state,
     conversations: {
       ...state.conversations,
-      [event.channelId]: {
-        ...current,
-        latestSeq,
-        unreadCount,
-        lastMessageId,
-      },
+      [id]: mergedConv,
     },
+    threads,
   }
 }
 
@@ -210,6 +234,64 @@ export function applyConversationRead(
         ...current,
         lastReadSeq: nextLastReadSeq,
         unreadCount,
+      },
+    },
+  }
+}
+
+/** Apply server read-cursor response so sidebar/thread badges match SQLite inbox views. */
+export function mergeReadCursorAckIntoInboxState(
+  state: InboxState,
+  ack: ReadCursorAckPayload
+): InboxState {
+  const current = state.conversations[ack.conversationId]
+  if (!current) {
+    return state
+  }
+
+  const nextConversation: InboxConversationState = {
+    ...current,
+    unreadCount: ack.conversationUnreadCount,
+    lastReadSeq: ack.conversationLastReadSeq,
+    latestSeq: ack.conversationLatestSeq,
+  }
+
+  const hasThreadSnapshot =
+    ack.threadParentId &&
+    ack.threadUnreadCount != null &&
+    ack.threadLastReadSeq != null &&
+    ack.threadLatestSeq != null
+
+  if (!hasThreadSnapshot) {
+    return {
+      ...state,
+      conversations: {
+        ...state.conversations,
+        [ack.conversationId]: nextConversation,
+      },
+    }
+  }
+
+  const key = threadNotificationKey(ack.conversationId, ack.threadParentId!)
+  const priorThread = state.threads[key]
+
+  return {
+    ...state,
+    conversations: {
+      ...state.conversations,
+      [ack.conversationId]: nextConversation,
+    },
+    threads: {
+      ...state.threads,
+      [key]: {
+        conversationId: ack.conversationId,
+        threadParentId: ack.threadParentId!,
+        latestSeq: ack.threadLatestSeq!,
+        lastReadSeq: ack.threadLastReadSeq!,
+        unreadCount: ack.threadUnreadCount!,
+        lastReadMessageId: priorThread?.lastReadMessageId,
+        lastReplyMessageId: priorThread?.lastReplyMessageId,
+        lastReplyAt: priorThread?.lastReplyAt,
       },
     },
   }

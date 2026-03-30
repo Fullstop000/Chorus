@@ -7,11 +7,13 @@ import {
   mergeHistoryMessages,
 } from '../transport/realtime'
 import { getRealtimeSession } from '../transport/realtimeSession'
+import type { ReadCursorAckPayload } from '../inbox'
 import type { HistoryMessage, HistoryResponse } from '../types'
 import { loadSharedRequest } from './historyRequestCache'
 
 interface UseHistoryOptions {
   threadParentId?: string | null
+  onReadCursorAck?: (ack: ReadCursorAckPayload) => void
 }
 
 interface OptimisticMessageHandle {
@@ -194,17 +196,27 @@ export function useHistory(
       if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return
       if (document.visibilityState !== 'visible') return
       try {
-        await updateReadCursor(
+        const res = await updateReadCursor(
           conversationId,
           flushSeq,
           options?.threadParentId ?? undefined
         )
         setLastReadSeq((current) => Math.max(current, flushSeq))
+        options?.onReadCursorAck?.({
+          conversationId,
+          conversationUnreadCount: res.conversationUnreadCount,
+          conversationLastReadSeq: res.conversationLastReadSeq,
+          conversationLatestSeq: res.conversationLatestSeq,
+          threadParentId: res.threadParentId ?? null,
+          threadUnreadCount: res.threadUnreadCount,
+          threadLastReadSeq: res.threadLastReadSeq,
+          threadLatestSeq: res.threadLatestSeq,
+        })
       } catch (cursorError) {
         console.error('Failed to update read cursor', cursorError)
       }
     }, 150)
-  }, [conversationId, loadedTarget, options?.threadParentId, targetKey, username])
+  }, [conversationId, loadedTarget, options?.onReadCursorAck, options?.threadParentId, targetKey, username])
 
   const addOptimisticMessage = useCallback((draft: {
     content: string

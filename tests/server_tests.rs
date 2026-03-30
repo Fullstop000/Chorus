@@ -561,6 +561,43 @@ async fn test_public_inbox_matches_current_human() {
 }
 
 #[tokio::test]
+async fn test_public_conversation_inbox_notification_matches_human_viewer() {
+    let (store, app) = setup();
+    let viewer = whoami::username();
+    if viewer != "alice" {
+        store.create_human(&viewer).unwrap();
+        store
+            .join_channel("general", &viewer, SenderType::Human)
+            .unwrap();
+    }
+    let channel_id = store
+        .get_channel_by_name("general")
+        .unwrap()
+        .expect("general channel should exist")
+        .id;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/api/conversations/{channel_id}/inbox-notification"
+                ))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(v["conversation"].is_object());
+    assert_eq!(v["conversation"]["conversationId"].as_str().unwrap(), channel_id);
+    assert!(v["conversation"]["unreadCount"].is_number());
+    assert!(v["conversation"]["latestSeq"].is_number());
+}
+
+#[tokio::test]
 async fn test_public_conversation_messages_route_uses_conversation_id() {
     let (store, app) = setup();
     let viewer = whoami::username();
