@@ -43,6 +43,7 @@ export interface AppState {
   getConversationUnread: (conversationId?: string | null) => number
   getConversationThreads: (conversationId?: string | null) => ThreadInboxEntry[]
   getConversationThreadUnread: (conversationId?: string | null) => number
+  getConversationThreadUnreadCount: (conversationId?: string | null) => number
   getAgentUnread: (agentName: string) => number
   getAgentConversationId: (agentName: string) => string | null
   applyReadCursorAck: (ack: ReadCursorAckPayload) => void
@@ -344,6 +345,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     return inboxState.conversations[conversationId]?.unreadCount ?? 0
   }, [inboxState.conversations])
 
+  const getConversationThreadUnreadCount = useCallback((conversationId?: string | null) => {
+    if (!conversationId) return 0
+    return inboxState.conversations[conversationId]?.threadUnreadCount ?? 0
+  }, [inboxState.conversations])
+
   const getConversationThreads = useCallback((conversationId?: string | null) => {
     if (!conversationId) return []
     return mergeChannelThreadInboxEntries(
@@ -377,7 +383,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   const applyReadCursorAck = useCallback((ack: ReadCursorAckPayload) => {
     setInboxState((current) => mergeReadCursorAckIntoInboxState(current, ack))
-  }, [])
+    // If this is a thread read cursor update, refresh the threads list to update unread counts
+    if (ack.threadParentId) {
+      void refreshConversationThreads(ack.conversationId)
+    }
+  }, [refreshConversationThreads])
 
   const serverInfoValue: ServerInfo | null =
     humans.length > 0 || systemConversationChannels.length > 0
@@ -400,6 +410,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         getConversationUnread,
         getConversationThreads,
         getConversationThreadUnread,
+        getConversationThreadUnreadCount,
         getAgentUnread,
         getAgentConversationId,
         applyReadCursorAck,

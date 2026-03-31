@@ -59,7 +59,7 @@ export interface ChannelMembersResponse {
 }
 
 export interface ServerInfo {
-  /** System-managed channels (e.g. #all, #shared-memory). Shown separately. */
+  /** System-managed channels (e.g. #all). Shown separately. */
   system_channels: ChannelInfo[]
   humans: HumanInfo[]
 }
@@ -114,6 +114,7 @@ export interface InboxConversationState {
   latestSeq: number
   lastReadSeq: number
   unreadCount: number
+  threadUnreadCount: number
   lastReadMessageId?: string | null
   lastMessageId?: string | null
   lastMessageAt?: string | null

@@ -116,7 +116,10 @@ pub struct PublicInboxConversationNotification {
     pub conversation_type: String,
     pub latest_seq: i64,
     pub last_read_seq: i64,
+    /// Count of unread top-level messages (excludes thread replies).
     pub unread_count: i64,
+    /// Count of unread thread replies across all threads in this conversation.
+    pub thread_unread_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_read_message_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -134,6 +137,7 @@ impl From<&InboxConversationNotificationView> for PublicInboxConversationNotific
             latest_seq: v.latest_seq,
             last_read_seq: v.last_read_seq,
             unread_count: v.unread_count,
+            thread_unread_count: v.thread_unread_count,
             last_read_message_id: None,
             last_message_id: v.last_message_id.clone(),
             last_message_at: v.last_message_at.clone(),
@@ -193,14 +197,18 @@ pub struct ThreadsResponse {
 #[derive(Debug, serde::Serialize)]
 pub struct ReadCursorResponse {
     pub ok: bool,
-    /// Matches [`crate::store::inbox::InboxConversationNotificationView::unread_count`]
-    /// (top-level + thread replies per inbox view).
+    /// Count of unread top-level messages in the conversation (excludes thread replies).
+    /// Shown in the sidebar channel badge.
     #[serde(rename = "conversationUnreadCount")]
     pub conversation_unread_count: i64,
     #[serde(rename = "conversationLastReadSeq")]
     pub conversation_last_read_seq: i64,
     #[serde(rename = "conversationLatestSeq")]
     pub conversation_latest_seq: i64,
+    /// Count of unread thread replies across all threads in this conversation.
+    /// Shown in the thread tab badge, not in the sidebar.
+    #[serde(rename = "conversationThreadUnreadCount")]
+    pub conversation_thread_unread_count: i64,
     #[serde(rename = "threadParentId", skip_serializing_if = "Option::is_none")]
     pub thread_parent_id: Option<String>,
     #[serde(rename = "threadUnreadCount", skip_serializing_if = "Option::is_none")]
@@ -426,6 +434,7 @@ fn update_read_cursor_for_channel(
         conversation_unread_count: notification.unread_count,
         conversation_last_read_seq: notification.last_read_seq,
         conversation_latest_seq: notification.latest_seq,
+        conversation_thread_unread_count: notification.thread_unread_count,
         thread_parent_id: thread_parent_id.map(str::to_string),
         thread_unread_count: thread_snapshot.as_ref().map(|t| t.unread_count),
         thread_last_read_seq: thread_snapshot.as_ref().map(|t| t.last_read_seq),
@@ -446,14 +455,6 @@ async fn send_message_to_channel(
 ) -> ApiResult<SendResponse> {
     let store = &state.store;
     let sender_type = sender_type_for_actor(store, actor_id)?;
-
-    if channel.channel_type == ChannelType::System
-        && Store::is_system_channel_read_only(&channel.name)
-    {
-        return Err(api_err(
-            "Cannot post to system channels directly. Use mcp_chat_remember instead.",
-        ));
-    }
 
     let preview = content_preview(content);
     let target_label = match thread_parent_id {

@@ -37,7 +37,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
     ...teams.map((team) => ({ name: team.name, type: 'team' as const })),
   ]
 
-  // Only protected system channels (e.g. #shared-memory) are read-only.
+  // System channel metadata may mark individual channels as read-only.
   const isSystemChannel = !!(selectedChannel && serverInfo?.system_channels?.some(
     (c) => `#${c.name}` === selectedChannel && c.read_only
   ))

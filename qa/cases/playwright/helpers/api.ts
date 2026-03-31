@@ -37,16 +37,6 @@ export interface ChannelMembersResponse {
   }>
 }
 
-export interface KnowledgeEntry {
-  id: string
-  key: string
-  value: string
-  tags: string
-  author_agent_id: string
-  channel_context?: string | null
-  created_at: string
-}
-
 export async function getWhoami(request: APIRequestContext): Promise<{ username: string }> {
   const res = await request.get('/api/whoami')
   expect(res.ok()).toBeTruthy()
@@ -331,37 +321,6 @@ export async function inviteChannelMemberApi(
   const res = await request.post(`/api/channels/${encodeURIComponent(channelId)}/members`, {
     data: { memberName },
   })
-  expect(res.ok(), await res.text()).toBeTruthy()
-  return res.json()
-}
-
-export async function rememberApi(
-  request: APIRequestContext,
-  agentName: string,
-  payload: {
-    key: string
-    value: string
-    tags?: string[]
-    channelContext?: string
-  }
-): Promise<{ id: string }> {
-  const res = await request.post(`/internal/agent/${encodeURIComponent(agentName)}/remember`, {
-    data: payload,
-  })
-  expect(res.ok(), await res.text()).toBeTruthy()
-  return res.json()
-}
-
-export async function recallApi(
-  request: APIRequestContext,
-  agentName: string,
-  params?: { query?: string; tags?: string }
-): Promise<{ entries: KnowledgeEntry[] }> {
-  const search = new URLSearchParams()
-  if (params?.query) search.set('query', params.query)
-  if (params?.tags) search.set('tags', params.tags)
-  const suffix = search.size > 0 ? `?${search.toString()}` : ''
-  const res = await request.get(`/internal/agent/${encodeURIComponent(agentName)}/recall${suffix}`)
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }

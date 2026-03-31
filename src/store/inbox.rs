@@ -26,10 +26,12 @@ pub struct InboxConversationStateView {
     pub last_read_seq: i64,
     /// Message id at `last_read_seq` when it exists.
     pub last_read_message_id: Option<String>,
-    /// Count of unread conversation messages after `last_read_seq`.
-    /// Humans count all thread replies in the parent conversation badge.
-    /// Agents only count thread replies they can access.
+    /// Count of unread top-level conversation messages after `last_read_seq`.
+    /// Excludes thread replies; those are tracked separately in `thread_unread_count`.
     pub unread_count: i64,
+    /// Count of unread thread replies across all threads in this conversation.
+    /// Shown in the thread tab, not in the channel badge.
+    pub thread_unread_count: i64,
 }
 
 /// Absolute notification snapshot for one conversation, suitable for inbox
@@ -46,8 +48,12 @@ pub struct InboxConversationNotificationView {
     pub latest_seq: i64,
     /// Latest read per-conversation sequence.
     pub last_read_seq: i64,
-    /// Count of unread conversation messages after `last_read_seq`.
+    /// Count of unread top-level conversation messages after `last_read_seq`.
+    /// This is shown in the sidebar channel badge (excludes thread replies).
     pub unread_count: i64,
+    /// Count of unread thread replies across all threads in this conversation.
+    /// This is shown in the thread tab badge, not in the sidebar.
+    pub thread_unread_count: i64,
     /// Most recent message id when present.
     pub last_message_id: Option<String>,
     /// Most recent message timestamp when present.
@@ -85,6 +91,7 @@ impl InboxConversationStateView {
             last_read_seq: row.get("last_read_seq")?,
             last_read_message_id: row.get("last_read_message_id")?,
             unread_count: row.get("unread_count")?,
+            thread_unread_count: row.get("thread_unread_count")?,
         })
     }
 }
@@ -287,7 +294,7 @@ impl Store {
             .query_row(
                 "SELECT conversation_id, conversation_name, conversation_type,
                         member_name, member_type, last_read_seq,
-                        last_read_message_id, unread_count
+                        last_read_message_id, unread_count, thread_unread_count
                  FROM inbox_conversation_state_view
                  WHERE conversation_id = ?1 AND member_name = ?2",
                 params![channel_id, member_name],
@@ -343,6 +350,7 @@ impl Store {
                 view.conversation_type,
                 view.last_read_seq,
                 view.unread_count,
+                view.thread_unread_count,
                 (
                     SELECT COALESCE(MAX(m.seq), 0)
                     FROM messages m
@@ -374,6 +382,7 @@ impl Store {
                 latest_seq: row.get("latest_seq")?,
                 last_read_seq: row.get("last_read_seq")?,
                 unread_count: row.get("unread_count")?,
+                thread_unread_count: row.get("thread_unread_count")?,
                 last_message_id: row.get("last_message_id")?,
                 last_message_at: row.get("last_message_at")?,
             })
@@ -404,6 +413,7 @@ impl Store {
                     view.conversation_type,
                     view.last_read_seq,
                     view.unread_count,
+                    view.thread_unread_count,
                     (
                         SELECT COALESCE(MAX(m.seq), 0)
                         FROM messages m
@@ -434,6 +444,7 @@ impl Store {
                         latest_seq: row.get("latest_seq")?,
                         last_read_seq: row.get("last_read_seq")?,
                         unread_count: row.get("unread_count")?,
+                        thread_unread_count: row.get("thread_unread_count")?,
                         last_message_id: row.get("last_message_id")?,
                         last_message_at: row.get("last_message_at")?,
                     })

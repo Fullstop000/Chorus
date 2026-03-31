@@ -198,7 +198,7 @@ export function useHistory(
         const res = await updateReadCursor(
           conversationId,
           flushSeq,
-          options?.threadParentId ?? undefined
+          options?.threadParentId || undefined
         )
         setLastReadSeq((current) => Math.max(current, flushSeq))
         options?.onReadCursorAck?.({
@@ -206,6 +206,7 @@ export function useHistory(
           conversationUnreadCount: res.conversationUnreadCount,
           conversationLastReadSeq: res.conversationLastReadSeq,
           conversationLatestSeq: res.conversationLatestSeq,
+          conversationThreadUnreadCount: res.conversationThreadUnreadCount,
           threadParentId: res.threadParentId ?? null,
           threadUnreadCount: res.threadUnreadCount,
           threadLastReadSeq: res.threadLastReadSeq,

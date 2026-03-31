@@ -118,40 +118,6 @@ CREATE TABLE IF NOT EXISTS attachments (
     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the file was uploaded
 );
 
--- Shared memory/knowledge base for agents.
-CREATE TABLE IF NOT EXISTS shared_knowledge (
-    id TEXT PRIMARY KEY, -- Unique UUID for the knowledge entry
-    key TEXT NOT NULL, -- Topic or key for the knowledge
-    value TEXT NOT NULL, -- Detailed knowledge content
-    tags TEXT NOT NULL DEFAULT '', -- Comma-separated tags
-    author_agent_id TEXT NOT NULL, -- Agent who authored the entry
-    channel_context TEXT, -- Optional context about where this was learned
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When it was created
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')) -- When it was last updated
-);
-
-CREATE INDEX IF NOT EXISTS shared_knowledge_author ON shared_knowledge(author_agent_id);
-
--- Full-text search index for shared knowledge.
-CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
-    key,
-    value,
-    tags,
-    content='shared_knowledge',
-    content_rowid='rowid'
-);
-
--- Triggers to keep FTS index in sync.
-CREATE TRIGGER IF NOT EXISTS knowledge_fts_insert AFTER INSERT ON shared_knowledge BEGIN
-    INSERT INTO knowledge_fts(rowid, key, value, tags)
-    VALUES (new.rowid, new.key, new.value, new.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS knowledge_fts_delete BEFORE DELETE ON shared_knowledge BEGIN
-    INSERT INTO knowledge_fts(knowledge_fts, rowid, key, value, tags)
-    VALUES ('delete', old.rowid, old.key, old.value, old.tags);
-END;
-
 -- Teams of agents.
 CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY, -- Unique UUID for the team
@@ -266,6 +232,7 @@ SELECT
     cm.member_type AS member_type,
     COALESCE(irs.last_read_seq, 0) AS last_read_seq,
     irs.last_read_message_id AS last_read_message_id,
+    -- Channel-level unread count (top-level messages only, excludes thread replies)
     (
         SELECT COUNT(*)
         FROM messages top_level
@@ -276,7 +243,9 @@ SELECT
             top_level.sender_name = cm.member_name
             AND top_level.sender_type = cm.member_type
           )
-    ) + (
+    ) AS unread_count,
+    -- Thread-level unread count (all accessible thread replies, shown in thread tab)
+    (
         SELECT COUNT(*)
         FROM messages reply
         LEFT JOIN inbox_thread_read_state itrs
@@ -310,7 +279,7 @@ SELECT
                   AND prior.seq < reply.seq
             )
           )
-    ) AS unread_count
+    ) AS thread_unread_count
 FROM channel_members cm
 JOIN channels c ON c.id = cm.channel_id
 LEFT JOIN inbox_read_state irs
