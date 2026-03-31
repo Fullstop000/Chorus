@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use tracing::info;
 
 use super::channels::Channel;
+use super::messages::SenderType;
 use super::Store;
 
 /// Explicit read-model row for per-member conversation state while inbox
@@ -510,22 +511,8 @@ impl Store {
         let Some(member_type) = member_type else {
             return Ok(None);
         };
-        if member_type == "agent" {
-            let parent_author_matches: i64 = conn.query_row(
-                "SELECT COUNT(*)
-                 FROM messages
-                 WHERE id = ?1 AND channel_id = ?2 AND sender_type = 'agent' AND sender_name = ?3",
-                params![thread_parent_id, channel_id, member_name],
-                |row| row.get(0),
-            )?;
-            let prior_reply_matches: i64 = conn.query_row(
-                "SELECT COUNT(*)
-                 FROM messages
-                 WHERE channel_id = ?1 AND thread_parent_id = ?2 AND sender_type = 'agent' AND sender_name = ?3",
-                params![channel_id, thread_parent_id, member_name],
-                |row| row.get(0),
-            )?;
-            if parent_author_matches == 0 && prior_reply_matches == 0 {
+        if member_type == SenderType::Agent.as_str() {
+            if !Self::agent_can_access_thread_inner(conn, channel_id, thread_parent_id, member_name)? {
                 return Ok(None);
             }
         }
