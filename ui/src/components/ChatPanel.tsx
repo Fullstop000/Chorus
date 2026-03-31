@@ -6,8 +6,6 @@ import type { HistoryMessage } from '../types'
 import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
 import './ChatPanel.css'
 
-const getMessageKey = (seq: number) => `msg-${seq}`
-
 interface ChatHeaderProps {
   memberCount?: number | null
   membersOpen: boolean
@@ -101,7 +99,7 @@ export function ChatPanel({
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
-  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(getMessageKey, reportVisibleSeq)
+  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(reportVisibleSeq)
 
   useEffect(() => {
     pendingInitialScrollTargetRef.current = target
@@ -127,8 +125,11 @@ export function ChatPanel({
         bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       }
 
-      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
-      scheduleBatchVisibilityCheck(items)
+      const items = messages.map((message) => ({
+        seq: message.seq,
+        element: messageRefs.current[message.id],
+      }))
+      scheduleBatchVisibilityCheck(items, container)
 
       pendingInitialScrollTargetRef.current = null
       return
@@ -145,8 +146,11 @@ export function ChatPanel({
     if (!container || !target || loadedTarget !== target || loading) return
 
     const handleScroll = () => {
-      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
-      scheduleBatchVisibilityCheck(items)
+      const items = messages.map((message) => ({
+        seq: message.seq,
+        element: messageRefs.current[message.id],
+      }))
+      scheduleBatchVisibilityCheck(items, container)
     }
 
     handleScroll()
@@ -177,7 +181,6 @@ export function ChatPanel({
         {messages.map((msg, i) => (
           <div
             key={msg.id}
-            id={msg.id}
             ref={(node) => {
               messageRefs.current[msg.id] = node
             }}

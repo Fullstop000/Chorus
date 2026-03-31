@@ -213,6 +213,7 @@ export function Sidebar() {
                       <button
                         type="button"
                         className="sidebar-channel-action"
+                        aria-label={`Edit #${ch.name}`}
                         title={`Edit #${ch.name}`}
                         onClick={(event) => {
                           event.stopPropagation()
@@ -225,6 +226,7 @@ export function Sidebar() {
                       <button
                         type="button"
                         className="sidebar-channel-action"
+                        aria-label={`Open menu for #${ch.name}`}
                         title={`Open menu for #${ch.name}`}
                         onClick={(event) => {
                           event.stopPropagation()

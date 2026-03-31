@@ -10,8 +10,6 @@ import type { MentionMember } from './MentionTextarea'
 import { sendMessage } from '../api'
 import './ThreadPanel.css'
 
-const getMessageKey = (seq: number) => `msg-${seq}`
-
 interface ThreadPanelProps {
   variant?: 'drawer' | 'content'
 }
@@ -63,7 +61,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
-  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(getMessageKey, reportVisibleSeq)
+  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(reportVisibleSeq)
 
   useEffect(() => {
     pendingInitialScrollTargetRef.current = threadTarget
@@ -88,8 +86,11 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       } else {
         bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       }
-      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
-      scheduleBatchVisibilityCheck(items)
+      const items = messages.map((message) => ({
+        seq: message.seq,
+        element: messageRefs.current[message.id],
+      }))
+      scheduleBatchVisibilityCheck(items, container)
       pendingInitialScrollTargetRef.current = null
       return
     }
@@ -105,8 +106,11 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     if (!container || !threadTarget || loadedTarget !== threadTarget || loading) return
 
     const handleScroll = () => {
-      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
-      scheduleBatchVisibilityCheck(items)
+      const items = messages.map((message) => ({
+        seq: message.seq,
+        element: messageRefs.current[message.id],
+      }))
+      scheduleBatchVisibilityCheck(items, container)
     }
 
     handleScroll()
@@ -228,7 +232,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
             messages.map((msg, i) => (
               <div
                 key={msg.id}
-                id={msg.id}
                 ref={(node) => {
                   messageRefs.current[msg.id] = node
                 }}

@@ -1,103 +1,73 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from 'react'
+
+interface VisibilityBounds {
+  top: number
+  bottom: number
+}
 
 interface VisibilityItem {
   seq: number
-  id: string
   element: HTMLElement | null
 }
 
-export function useVisibilityTracking(
-  getItemKey: (seq: number) => string,
-  onHighestVisibleSeqChange?: (seq: number) => void
-) {
-  const [highestVisibleSeq, setHighestVisibleSeq] = useState<number>(0)
-  const pendingReadsRef = useRef<Map<string, number>>(new Map())
+function isRectVisibleWithinBounds(
+  rect: Pick<DOMRect, 'top' | 'bottom'>,
+  bounds: VisibilityBounds
+): boolean {
+  return rect.bottom > bounds.top && rect.top < bounds.bottom
+}
+
+export function getHighestVisibleSeq(items: VisibilityItem[], bounds: VisibilityBounds): number {
+  let maxSeq = 0
+  for (const item of items) {
+    if (!item.element) continue
+    const rect = item.element.getBoundingClientRect()
+    if (isRectVisibleWithinBounds(rect, bounds) && item.seq > maxSeq) {
+      maxSeq = item.seq
+    }
+  }
+  return maxSeq
+}
+
+export function useVisibilityTracking(onHighestVisibleSeqChange?: (seq: number) => void) {
+  const [highestVisibleSeq, setHighestVisibleSeq] = useState(0)
+  const pendingReadsRef = useRef<VisibilityItem[]>([])
+  const containerRef = useRef<HTMLElement | null>(null)
   const rafRef = useRef<number | null>(null)
   const onChangeRef = useRef(onHighestVisibleSeqChange)
   onChangeRef.current = onHighestVisibleSeqChange
 
-  const collectHighestVisibleSeq = useCallback(() => {
-    const items: VisibilityItem[] = []
-    pendingReadsRef.current.forEach((seq, id) => {
-      const element = document.getElementById(id)
-      if (element) {
-        items.push({ seq, id, element })
-      }
-    })
-
-    let maxSeq = 0
-    for (const item of items) {
-      const rect = item.element!.getBoundingClientRect()
-      const isVisible = rect.top < window.innerHeight && rect.bottom > 0
-      if (isVisible && item.seq > maxSeq) {
-        maxSeq = item.seq
-      }
-    }
-
-    setHighestVisibleSeq(prev => (maxSeq > prev ? maxSeq : prev))
-    if (maxSeq > 0 && onChangeRef.current) {
-      onChangeRef.current(maxSeq)
-    }
-
-    pendingReadsRef.current.clear()
-  }, [])
-
-  const scheduleVisibilityCheck = useCallback(
-    (seq: number, id: string) => {
-      pendingReadsRef.current.set(id, seq)
-
-      if (rafRef.current !== null) {
-        cancelAnimationFrame(rafRef.current)
-      }
-      rafRef.current = requestAnimationFrame(collectHighestVisibleSeq)
-    },
-    [collectHighestVisibleSeq]
-  )
-
-  const scheduleInitialVisibilityRead = useCallback(
-    (seq: number) => {
-      const id = getItemKey(seq)
-      scheduleVisibilityCheck(seq, id)
-    },
-    [getItemKey, scheduleVisibilityCheck]
-  )
-
-  const collectAllVisibility = useCallback(() => {
+  const flushVisibilityCheck = useCallback(() => {
     if (document.visibilityState !== 'visible') return
-    const items: VisibilityItem[] = []
-    pendingReadsRef.current.forEach((seq, id) => {
-      const element = document.getElementById(id)
-      if (element) {
-        items.push({ seq, id, element })
-      }
+
+    const container = containerRef.current
+    if (!container) return
+
+    const bounds = container.getBoundingClientRect()
+    const maxSeq = getHighestVisibleSeq(pendingReadsRef.current, {
+      top: bounds.top,
+      bottom: bounds.bottom,
     })
 
-    let maxSeq = 0
-    for (const item of items) {
-      const rect = item.element!.getBoundingClientRect()
-      const isVisible = rect.top < window.innerHeight && rect.bottom > 0
-      if (isVisible && item.seq > maxSeq) {
-        maxSeq = item.seq
-      }
+    if (maxSeq > 0) {
+      setHighestVisibleSeq((current) => Math.max(current, maxSeq))
+      onChangeRef.current?.(maxSeq)
     }
 
-    setHighestVisibleSeq(prev => (maxSeq > prev ? maxSeq : prev))
-    if (maxSeq > 0 && onChangeRef.current) {
-      onChangeRef.current(maxSeq)
-    }
-    pendingReadsRef.current.clear()
+    pendingReadsRef.current = []
   }, [])
 
   const scheduleBatchVisibilityCheck = useCallback(
-    (items: Array<{ seq: number; id: string }>) => {
-      items.forEach(({ seq, id }) => pendingReadsRef.current.set(id, seq))
+    (items: VisibilityItem[], container: HTMLElement | null) => {
+      pendingReadsRef.current = items
+      containerRef.current = container
 
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current)
       }
-      rafRef.current = requestAnimationFrame(collectAllVisibility)
+      rafRef.current = requestAnimationFrame(flushVisibilityCheck)
     },
-    [collectAllVisibility]
+    [flushVisibilityCheck]
   )
 
   useEffect(() => {
@@ -110,8 +80,6 @@ export function useVisibilityTracking(
 
   return {
     highestVisibleSeq,
-    scheduleInitialVisibilityRead,
-    scheduleVisibilityCheck,
     scheduleBatchVisibilityCheck,
   }
 }
