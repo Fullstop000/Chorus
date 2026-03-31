@@ -59,6 +59,7 @@ export function Sidebar() {
     setSelectedChannel,
     setSelectedAgent,
     getConversationUnread,
+    getConversationThreadUnreadCount,
     getAgentUnread,
     getAgentConversationId,
     refreshChannels,
@@ -156,6 +157,9 @@ export function Sidebar() {
             {systemChannels.map((ch) => {
               const target = `#${ch.name}`
               const unreadCount = getConversationUnread(ch.id ?? null)
+              const threadUnreadCount = getConversationThreadUnreadCount(ch.id ?? null)
+              const showUnreadBadge = unreadCount > 0
+              const showThreadDot = !showUnreadBadge && threadUnreadCount > 0
               return (
                 <button
                   key={ch.id ?? ch.name}
@@ -169,8 +173,11 @@ export function Sidebar() {
                     <span className="sidebar-item-text">{ch.name}</span>
                     {ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
                   </span>
-                  {unreadCount > 0 && (
+                  {showUnreadBadge && (
                     <span className="sidebar-unread-badge">{unreadCount}</span>
+                  )}
+                  {showThreadDot && (
+                    <span className="sidebar-thread-unread-dot" title={`${threadUnreadCount} unread in threads`} />
                   )}
                   <span className="sidebar-channel-badge">sys</span>
                 </button>
@@ -181,6 +188,9 @@ export function Sidebar() {
               const isActive = selectedChannel === target
               const isMenuOpen = openChannelMenuId === ch.id
               const unreadCount = getConversationUnread(ch.id ?? null)
+              const threadUnreadCount = getConversationThreadUnreadCount(ch.id ?? null)
+              const showUnreadBadge = unreadCount > 0
+              const showThreadDot = !showUnreadBadge && threadUnreadCount > 0
               return (
                 <div
                   key={ch.id ?? ch.name}
@@ -201,8 +211,11 @@ export function Sidebar() {
                       {ch.description && <span className="sidebar-item-meta">{ch.description}</span>}
                       {ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
                     </span>
-                    {unreadCount > 0 && (
+                    {showUnreadBadge && (
                       <span className="sidebar-unread-badge">{unreadCount}</span>
+                    )}
+                    {showThreadDot && (
+                      <span className="sidebar-thread-unread-dot" title={`${threadUnreadCount} unread in threads`} />
                     )}
                     {ch.channel_type === 'team' && (
                       <span className="sidebar-channel-badge team">team</span>

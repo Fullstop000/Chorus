@@ -114,6 +114,7 @@ export interface InboxConversationState {
   latestSeq: number
   lastReadSeq: number
   unreadCount: number
+  threadUnreadCount: number
   lastReadMessageId?: string | null
   lastMessageId?: string | null
   lastMessageAt?: string | null

@@ -28,6 +28,7 @@ export interface ReadCursorAckPayload {
   conversationUnreadCount: number
   conversationLastReadSeq: number
   conversationLatestSeq: number
+  conversationThreadUnreadCount?: number
   threadParentId?: string | null
   threadUnreadCount?: number
   threadLastReadSeq?: number
@@ -252,6 +253,7 @@ export function mergeReadCursorAckIntoInboxState(
   const nextConversation: InboxConversationState = {
     ...current,
     unreadCount: ack.conversationUnreadCount,
+    threadUnreadCount: ack.conversationThreadUnreadCount ?? current.threadUnreadCount,
     lastReadSeq: ack.conversationLastReadSeq,
     latestSeq: ack.conversationLatestSeq,
   }
@@ -331,6 +333,7 @@ export function ensureInboxConversations(
       latestSeq: 0,
       lastReadSeq: 0,
       unreadCount: 0,
+      threadUnreadCount: 0,
       lastReadMessageId: null,
       lastMessageId: null,
       lastMessageAt: null,

@@ -297,6 +297,17 @@
   text-align: center;
 }
 
+/* Weak indicator dot for thread-only unread (channel has no unread but threads do) */
+.sidebar-thread-unread-dot {
+  margin-left: auto;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(181, 75, 18, 0.35);
+  border: 1px solid rgba(181, 75, 18, 0.18);
+}
+
 .agent-avatar {
   width: 30px;
   height: 30px;
