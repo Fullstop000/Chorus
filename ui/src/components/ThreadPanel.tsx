@@ -100,26 +100,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     }
   }, [lastReadSeq, loadedTarget, loading, messages, scheduleBatchVisibilityCheck, threadTarget])
 
-  useEffect(() => {
-    const container = scrollContainerRef.current
-    if (!container || !threadTarget || loadedTarget !== threadTarget || loading) return
-
-    const handleScroll = () => {
-      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
-      scheduleBatchVisibilityCheck(items)
-    }
-
-    handleScroll()
-    container.addEventListener('scroll', handleScroll, { passive: true })
-    window.addEventListener('resize', handleScroll)
-    document.addEventListener('visibilitychange', handleScroll)
-    return () => {
-      container.removeEventListener('scroll', handleScroll)
-      window.removeEventListener('resize', handleScroll)
-      document.removeEventListener('visibilitychange', handleScroll)
-    }
-  }, [loadedTarget, loading, messages, scheduleBatchVisibilityCheck, threadTarget])
-
   // Reset input when switching thread
   useEffect(() => {
     setContent('')
