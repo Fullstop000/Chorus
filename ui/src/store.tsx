@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useCallback, useEffect, useRef } from 'react'
+import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useUIStore } from './uiStore'
 import type { ActiveTab } from './uiStore'
@@ -147,36 +147,52 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setCurrentUser(username)
   }, [whoamiQuery.data, currentUser, setCurrentUser, resetUserSession])
 
-  // ── Derive channel lists ───────────────────────────────────────────────────
+  // ── Derive channel lists (memoized to keep stable references for effects) ────
 
-  const allChannels = channelsQuery.data ?? []
-  const channels = allChannels.filter(
-    (ch) => ch.channel_type !== 'dm' && ch.channel_type !== 'system'
+  const allChannels = useMemo(() => channelsQuery.data ?? [], [channelsQuery.data])
+  const channels = useMemo(
+    () => allChannels.filter((ch) => ch.channel_type !== 'dm' && ch.channel_type !== 'system'),
+    [allChannels]
   )
-  const systemChannels = allChannels.filter((ch) => ch.channel_type === 'system')
-  const dmChannels = allChannels.filter((ch) => ch.channel_type === 'dm')
-  const agents = agentsQuery.data ?? []
-  const teams = teamsQuery.data ?? []
-  const humans = humansQuery.data ?? []
+  const systemChannels = useMemo(
+    () => allChannels.filter((ch) => ch.channel_type === 'system'),
+    [allChannels]
+  )
+  const dmChannels = useMemo(
+    () => allChannels.filter((ch) => ch.channel_type === 'dm'),
+    [allChannels]
+  )
+  const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
+  const teams = useMemo(() => teamsQuery.data ?? [], [teamsQuery.data])
+  const humans = useMemo(() => humansQuery.data ?? [], [humansQuery.data])
 
-  // ── Bootstrap inbox once all initial data is ready ─────────────────────────
+  // ── Bootstrap inbox once all initial queries have settled ─────────────────
+  // Mirror the original finally-block pattern: bootstrap even on partial errors
+  // so a single failed fetch can't keep the app in a permanent loading state.
+  // Note: empty arrays ([], {}) are valid settled values — do not use !!data.
 
-  const allInitialDataReady =
+  const settled = (q: { data: unknown; isError: boolean }) =>
+    q.data !== undefined || q.isError
+
+  const allQueriesSettled =
     !!currentUser &&
-    !!channelsQuery.data &&
-    !!agentsQuery.data &&
-    !!teamsQuery.data &&
-    !!humansQuery.data &&
-    !!inboxQuery.data
+    settled(channelsQuery) &&
+    settled(agentsQuery) &&
+    settled(teamsQuery) &&
+    settled(humansQuery) &&
+    settled(inboxQuery)
 
   useEffect(() => {
-    if (!allInitialDataReady || shellBootstrapped) return
+    if (!allQueriesSettled || shellBootstrapped) return
     updateInboxState(() =>
-      bootstrapInboxState(inboxQuery.data!.conversations, channelsQuery.data!)
+      bootstrapInboxState(
+        inboxQuery.data?.conversations ?? [],
+        channelsQuery.data ?? []
+      )
     )
     setShellBootstrapped(true)
   }, [
-    allInitialDataReady,
+    allQueriesSettled,
     shellBootstrapped,
     channelsQuery.data,
     inboxQuery.data,
@@ -192,34 +208,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [allChannels, updateInboxState])
 
   // ── Auto-select first channel on bootstrap / after channel list changes ────
+  // Read selection from Zustand getState() so this effect only re-runs when the
+  // *channel list* changes, not every time the user makes a selection. Without this,
+  // calling setSelectedChannel() for a newly-created channel (before it appears in the
+  // TanStack Query cache) would cause the effect to overwrite the selection with #all.
 
   useEffect(() => {
-    if (!shellBootstrapped || selectedAgentName) return
+    if (!shellBootstrapped) return
+    const { selectedAgentName: agentName, selectedChannelId: chId, selectedChannel: ch } =
+      useUIStore.getState()
+    if (agentName) return
 
     const joinedChannels = [
-      ...systemChannels.filter((ch) => ch.joined),
+      ...systemChannels.filter((c) => c.joined),
       ...channels.filter(isVisibleSidebarChannel),
     ]
 
     // Keep current selection if still valid
-    if (selectedChannelId) {
-      if (joinedChannels.some((ch) => ch.id === selectedChannelId)) return
-    }
-    if (selectedChannel) {
-      if (joinedChannels.some((ch) => `#${ch.name}` === selectedChannel)) return
-    }
+    if (chId && joinedChannels.some((c) => c.id === chId)) return
+    if (ch && joinedChannels.some((c) => `#${c.name}` === ch)) return
 
     const first = joinedChannels[0]
     setSelectedChannel(first ? `#${first.name}` : null, first?.id ?? null)
-  }, [
-    shellBootstrapped,
-    channels,
-    systemChannels,
-    selectedAgentName,
-    selectedChannel,
-    selectedChannelId,
-    setSelectedChannel,
-  ])
+  }, [shellBootstrapped, channels, systemChannels, setSelectedChannel])
 
   // ── Ensure DM conversation exists when an agent is selected ───────────────
 
