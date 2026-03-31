@@ -39,6 +39,27 @@
   --cyan: #ece7db;
   --lime: #e7f3e9;
   --yellow: #efede8;
+
+  /* shadcn/ui CSS variables */
+  --background: 40 20% 97%;
+  --foreground: 220 10% 10%;
+  --card: 40 20% 95%;
+  --card-foreground: 220 10% 10%;
+  --popover: 40 20% 97%;
+  --popover-foreground: 220 10% 10%;
+  --primary: 220 10% 15%;
+  --primary-foreground: 40 20% 97%;
+  --secondary: 40 10% 90%;
+  --secondary-foreground: 220 10% 10%;
+  --muted: 40 10% 90%;
+  --muted-foreground: 220 5% 45%;
+  --accent: 40 10% 90%;
+  --accent-foreground: 220 10% 10%;
+  --destructive: 0 70% 50%;
+  --destructive-foreground: 40 20% 97%;
+  --border: 220 10% 85%;
+  --input: 220 10% 85%;
+  --ring: 220 10% 15%;
 }
 
 *, *::before, *::after {
