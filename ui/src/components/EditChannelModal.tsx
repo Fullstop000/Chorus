@@ -4,7 +4,7 @@ import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
 import { archiveChannel, deleteChannel, updateChannel } from '../api'
 import type { ChannelInfo } from '../types'
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Form, FormControl, FormField, FormLabel, FormMessage } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -80,11 +80,7 @@ export function EditChannelModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <div className="modal-header">
-          <div className="modal-title-block">
-            <span className="modal-title">Edit Channel</span>
-          </div>
-        </div>
+        <DialogTitle className="modal-title">Edit Channel</DialogTitle>
 
         {error && <div className="error-banner">{error}</div>}
 
@@ -180,12 +176,8 @@ export function DeleteChannelModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <div className="modal-header">
-          <div className="modal-title-block">
-            <span className="modal-title">Delete Channel</span>
-            <span className="modal-subtitle">#{channel.name}</span>
-          </div>
-        </div>
+        <DialogTitle className="modal-title">Delete Channel</DialogTitle>
+        <DialogDescription className="modal-subtitle">#{channel.name}</DialogDescription>
 
         {error && <div className="error-banner">{error}</div>}
 

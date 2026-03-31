@@ -3,7 +3,7 @@ import { Plus, Users } from 'lucide-react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { z } from 'zod'
-import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Form, FormControl, FormField, FormLabel, FormMessage } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
@@ -193,18 +193,14 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <div className="modal-header">
-          <div className="modal-title-block">
-            <span className="modal-title">
-              {mode === 'channel' ? 'Create Channel' : 'Create Team'}
-            </span>
-            <span className="modal-subtitle">
-              {mode === 'channel'
-                ? 'standard room for people and agents'
-                : 'shared agent collaboration unit'}
-            </span>
-          </div>
-        </div>
+        <DialogTitle className="modal-title">
+          {mode === 'channel' ? 'Create Channel' : 'Create Team'}
+        </DialogTitle>
+        <DialogDescription className="modal-subtitle">
+          {mode === 'channel'
+            ? 'standard room for people and agents'
+            : 'shared agent collaboration unit'}
+        </DialogDescription>
 
         {error && <div className="error-banner">{error}</div>}
 
