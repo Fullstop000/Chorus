@@ -2,12 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 import { X, Paperclip } from 'lucide-react'
 import { useApp, useTarget } from '../store'
 import { useHistory } from '../hooks/useHistory'
+import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
 import { MessageItem } from './MessageItem'
 import { ToastRegion } from './ToastRegion'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
 import { sendMessage } from '../api'
 import './ThreadPanel.css'
+
+const getMessageKey = (seq: number) => `msg-${seq}`
 
 interface ThreadPanelProps {
   variant?: 'drawer' | 'content'
@@ -60,6 +63,8 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
+  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(getMessageKey, reportVisibleSeq)
+
   useEffect(() => {
     pendingInitialScrollTargetRef.current = threadTarget
   }, [threadTarget])
@@ -67,33 +72,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
-
-    const collectHighestVisibleSeq = () => {
-      if (document.visibilityState !== 'visible') return 0
-      const containerRect = container.getBoundingClientRect()
-      let highestVisibleSeq = 0
-      for (const message of messages) {
-        const node = messageRefs.current[message.id]
-        if (!node) continue
-        const nodeRect = node.getBoundingClientRect()
-        if (nodeRect.bottom > containerRect.top && nodeRect.top < containerRect.bottom) {
-          highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
-        }
-      }
-      return highestVisibleSeq
-    }
-
-    const scheduleInitialVisibilityRead = (attempt = 0) => {
-      requestAnimationFrame(() => {
-        const highestVisibleSeq = collectHighestVisibleSeq()
-        if (highestVisibleSeq > 0) {
-          reportVisibleSeq(highestVisibleSeq)
-          return
-        }
-        if (attempt >= 4) return
-        window.setTimeout(() => scheduleInitialVisibilityRead(attempt + 1), 50)
-      })
-    }
 
     const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
 
@@ -110,7 +88,8 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       } else {
         bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       }
-      scheduleInitialVisibilityRead()
+      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
+      scheduleBatchVisibilityCheck(items)
       pendingInitialScrollTargetRef.current = null
       return
     }
@@ -119,44 +98,27 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     if (distFromBottom < 100) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [lastReadSeq, loadedTarget, loading, messages, reportVisibleSeq, threadTarget])
+  }, [lastReadSeq, loadedTarget, loading, messages, scheduleBatchVisibilityCheck, threadTarget])
 
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container || !threadTarget || loadedTarget !== threadTarget || loading) return
 
-    let rafId = 0
-    const scheduleVisibilityRead = () => {
-      cancelAnimationFrame(rafId)
-      rafId = requestAnimationFrame(() => {
-        if (document.visibilityState !== 'visible') return
-        const containerRect = container.getBoundingClientRect()
-        let highestVisibleSeq = 0
-        for (const message of messages) {
-          const node = messageRefs.current[message.id]
-          if (!node) continue
-          const nodeRect = node.getBoundingClientRect()
-          if (nodeRect.bottom > containerRect.top && nodeRect.top < containerRect.bottom) {
-            highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
-          }
-        }
-        if (highestVisibleSeq > 0) {
-          reportVisibleSeq(highestVisibleSeq)
-        }
-      })
+    const handleScroll = () => {
+      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
+      scheduleBatchVisibilityCheck(items)
     }
 
-    scheduleVisibilityRead()
-    container.addEventListener('scroll', scheduleVisibilityRead, { passive: true })
-    window.addEventListener('resize', scheduleVisibilityRead)
-    document.addEventListener('visibilitychange', scheduleVisibilityRead)
+    handleScroll()
+    container.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('resize', handleScroll)
+    document.addEventListener('visibilitychange', handleScroll)
     return () => {
-      cancelAnimationFrame(rafId)
-      container.removeEventListener('scroll', scheduleVisibilityRead)
-      window.removeEventListener('resize', scheduleVisibilityRead)
-      document.removeEventListener('visibilitychange', scheduleVisibilityRead)
+      container.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('resize', handleScroll)
+      document.removeEventListener('visibilitychange', handleScroll)
     }
-  }, [loadedTarget, loading, messages, reportVisibleSeq, threadTarget])
+  }, [loadedTarget, loading, messages, scheduleBatchVisibilityCheck, threadTarget])
 
   // Reset input when switching thread
   useEffect(() => {
@@ -266,6 +228,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
             messages.map((msg, i) => (
               <div
                 key={msg.id}
+                id={msg.id}
                 ref={(node) => {
                   messageRefs.current[msg.id] = node
                 }}
