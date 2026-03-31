@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useRuntimeStatuses } from '../hooks/useRuntimeStatuses'
 import './ProfilePanel.css'  // reuses modal styles
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 
 interface Props {
   onClose: () => void
@@ -67,10 +68,15 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
         </div>
 
         <div className="modal-field">
-          <label>Machine</label>
-          <select disabled value="local">
-            <option value="local">local</option>
-          </select>
+          <label className="form-label">Machine</label>
+          <Select value="local" disabled>
+            <SelectTrigger className="form-select" aria-label="Machine">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="local">local</SelectItem>
+            </SelectContent>
+          </Select>
         </div>
 
         <AgentConfigForm
@@ -81,12 +87,12 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           onChange={setConfig}
         />
 
-        {error && <div className="modal-error">{error}</div>}
+        {error && <div className="error-banner">{error}</div>}
 
         <div className="modal-footer">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
+          <button className="btn-brutal" onClick={onClose}>Cancel</button>
           <button
-            className="btn-primary"
+            className="btn-brutal btn-cyan"
             onClick={handleCreate}
             disabled={creating || !config.name.trim()}
           >

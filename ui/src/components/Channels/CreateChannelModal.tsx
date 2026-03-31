@@ -1,12 +1,6 @@
 import React, { useEffect } from 'react'
 import { Plus, Users } from 'lucide-react'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { Form, FormControl, FormField, FormLabel, FormMessage } from '@/components/ui/form'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { createChannel, createTeam } from '../../api'
 import { useApp } from '../../store'
@@ -25,49 +19,21 @@ interface DraftTeamMember {
   role: string
 }
 
-const channelSchema = z.object({
-  mode: z.literal('channel'),
-  name: z.string().min(1, 'Channel name is required'),
-  description: z.string().optional(),
-})
-
-const teamSchema = z.object({
-  mode: z.literal('team'),
-  name: z.string().min(1, 'Team slug is required'),
-  displayName: z.string().min(1, 'Display name is required'),
-  collaborationModel: z.enum(['leader_operators', 'swarm']),
-  leaderAgentName: z.string().optional(),
-  pendingMemberName: z.string().optional(),
-  pendingMemberRole: z.string().optional(),
-})
-
-const formSchema = z.discriminatedUnion('mode', [channelSchema, teamSchema])
-
-type FormValues = z.infer<typeof formSchema>
-
 export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode = 'channel' }: Props) {
   const { serverInfo, agents } = useApp()
+  const [mode, setMode] = React.useState<'channel' | 'team'>(defaultMode)
+  const [name, setName] = React.useState('')
+  const [description, setDescription] = React.useState('')
+  const [displayName, setDisplayName] = React.useState('')
+  const [collaborationModel, setCollaborationModel] = React.useState<'leader_operators' | 'swarm'>(
+    'leader_operators'
+  )
+  const [leaderAgentName, setLeaderAgentName] = React.useState('')
   const [teamMembers, setTeamMembers] = React.useState<DraftTeamMember[]>([])
+  const [pendingMemberName, setPendingMemberName] = React.useState('')
+  const [pendingMemberRole, setPendingMemberRole] = React.useState('operator')
   const [creating, setCreating] = React.useState(false)
   const [error, setError] = React.useState<string | null>(null)
-
-  const form = useForm<FormValues>({
-    resolver: zodResolver(formSchema),
-    defaultValues: {
-      mode: defaultMode,
-      name: '',
-      description: '',
-      displayName: '',
-      collaborationModel: 'leader_operators',
-      leaderAgentName: '',
-      pendingMemberName: '',
-      pendingMemberRole: 'operator',
-    },
-  })
-
-  const mode = form.watch('mode')
-  const collaborationModel = form.watch('collaborationModel')
-  const leaderAgentName = form.watch('leaderAgentName')
 
   const directory = [
     ...agents.map((agent) => ({
@@ -90,41 +56,35 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
   const agentMembers = teamMembers.filter((member) => member.member_type === 'agent')
 
   useEffect(() => {
+    setMode(defaultMode)
+  }, [defaultMode])
+
+  useEffect(() => {
     if (collaborationModel === 'swarm') {
-      form.setValue('leaderAgentName', '')
+      setLeaderAgentName('')
       return
     }
     if (!leaderAgentName && agentMembers.length > 0) {
-      form.setValue('leaderAgentName', agentMembers[0].member_name)
+      setLeaderAgentName(agentMembers[0].member_name)
     }
-  }, [agentMembers, collaborationModel, leaderAgentName, form])
+  }, [agentMembers, collaborationModel, leaderAgentName])
 
   useEffect(() => {
     if (open) {
-      const resetValues: FormValues = defaultMode === 'channel'
-        ? {
-            mode: 'channel',
-            name: '',
-            description: '',
-          }
-        : {
-            mode: 'team',
-            name: '',
-            displayName: '',
-            collaborationModel: 'leader_operators',
-            leaderAgentName: '',
-            pendingMemberName: '',
-            pendingMemberRole: 'operator',
-          }
-      form.reset(resetValues)
+      setMode(defaultMode)
+      setName('')
+      setDescription('')
+      setDisplayName('')
+      setCollaborationModel('leader_operators')
+      setLeaderAgentName('')
+      setPendingMemberName('')
+      setPendingMemberRole('operator')
       setTeamMembers([])
       setError(null)
     }
-  }, [open, defaultMode, form])
+  }, [defaultMode, open])
 
   function addTeamMemberDraft() {
-    const pendingMemberName = form.getValues('pendingMemberName')
-    const pendingMemberRole = form.getValues('pendingMemberRole') ?? ''
     const selected = availableMembers.find((member) => member.name === pendingMemberName)
     if (!selected) return
     setTeamMembers((current) => [
@@ -137,10 +97,10 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
       },
     ])
     if (collaborationModel === 'leader_operators' && selected.member_type === 'agent' && !leaderAgentName) {
-      form.setValue('leaderAgentName', selected.name)
+      setLeaderAgentName(selected.name)
     }
-    form.setValue('pendingMemberName', '')
-    form.setValue('pendingMemberRole', 'operator')
+    setPendingMemberName('')
+    setPendingMemberRole('operator')
   }
 
   function removeTeamMemberDraft(memberName: string) {
@@ -149,36 +109,36 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
       const nextLeader = teamMembers.find(
         (member) => member.member_name !== memberName && member.member_type === 'agent'
       )
-      form.setValue('leaderAgentName', nextLeader?.member_name ?? '')
+      setLeaderAgentName(nextLeader?.member_name ?? '')
     }
   }
 
-  async function onSubmit(values: FormValues) {
-    const trimmed = values.name.trim().replace(/^#/, '')
+  async function handleCreate() {
+    const trimmed = name.trim().replace(/^#/, '')
     if (!trimmed) return
     setCreating(true)
     setError(null)
     try {
-      if (values.mode === 'channel') {
-        const created = await createChannel({ name: trimmed, description: values.description ?? '' })
+      if (mode === 'channel') {
+        const created = await createChannel({ name: trimmed, description })
         onCreated(created)
         onOpenChange(false)
         return
       }
 
-      const trimmedDisplayName = values.displayName.trim()
+      const trimmedDisplayName = displayName.trim()
       if (!trimmedDisplayName) {
         throw new Error('Display name is required for teams')
       }
-      if (values.collaborationModel === 'leader_operators' && !values.leaderAgentName) {
+      if (collaborationModel === 'leader_operators' && !leaderAgentName) {
         throw new Error('Leader+Operators teams require a leader agent')
       }
 
       const created = await createTeam({
         name: trimmed,
         display_name: trimmedDisplayName,
-        collaboration_model: values.collaborationModel,
-        leader_agent_name: values.collaborationModel === 'swarm' ? null : values.leaderAgentName || null,
+        collaboration_model: collaborationModel,
+        leader_agent_name: collaborationModel === 'swarm' ? null : leaderAgentName || null,
         members: teamMembers,
       })
       onCreated({ id: created.team.channel_id ?? undefined, name: created.team.name })
@@ -193,247 +153,214 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogTitle className="modal-title">
-          {mode === 'channel' ? 'Create Channel' : 'Create Team'}
-        </DialogTitle>
-        <DialogDescription className="modal-subtitle">
-          {mode === 'channel'
-            ? 'standard room for people and agents'
-            : 'shared agent collaboration unit'}
-        </DialogDescription>
+        <div className="modal-header">
+          <div className="modal-title-block">
+            <DialogTitle>{mode === 'channel' ? 'Create Channel' : 'Create Team'}</DialogTitle>
+            <DialogDescription>
+              {mode === 'channel'
+                ? 'standard room for people and agents'
+                : 'shared agent collaboration unit'}
+            </DialogDescription>
+          </div>
+          <DialogClose className="modal-close" aria-label="Close">×</DialogClose>
+        </div>
 
         {error && <div className="error-banner">{error}</div>}
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-              <Button
-                type="button"
-                variant={mode === 'channel' ? 'brutal' : 'outline'}
-                size="sm"
-                onClick={() => form.setValue('mode', 'channel')}
-              >
-                <Plus size={14} />
-                Channel
-              </Button>
-              <Button
-                type="button"
-                variant={mode === 'team' ? 'brutal' : 'outline'}
-                size="sm"
-                onClick={() => form.setValue('mode', 'team')}
-              >
-                <Users size={14} />
-                Team
-              </Button>
-            </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            void handleCreate()
+          }}
+        >
+          <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
+            <button
+              className={`btn-brutal${mode === 'channel' ? ' btn-cyan' : ''}`}
+              type="button"
+              onClick={() => setMode('channel')}
+            >
+              <Plus size={14} />
+              Channel
+            </button>
+            <button
+              className={`btn-brutal${mode === 'team' ? ' btn-cyan' : ''}`}
+              type="button"
+              onClick={() => setMode('team')}
+            >
+              <Users size={14} />
+              Team
+            </button>
+          </div>
 
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
+          <div className="form-group">
+            <label className="form-label" htmlFor="channel-modal-name">
+              {mode === 'channel' ? 'Channel Name' : 'Team Slug'}
+            </label>
+            <input
+              id="channel-modal-name"
+              className="form-input"
+              placeholder={mode === 'channel' ? 'e.g. engineering' : 'e.g. eng-team'}
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              autoFocus
+            />
+          </div>
+
+          {mode === 'channel' ? (
+            <div className="form-group">
+              <label className="form-label" htmlFor="channel-modal-description">Description (optional)</label>
+              <input
+                id="channel-modal-description"
+                className="form-input"
+                placeholder="What's this channel about?"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+              />
+            </div>
+          ) : (
+            <>
+              <div className="form-group">
+                <label className="form-label" htmlFor="team-modal-display-name">Display Name</label>
+                <input
+                  id="team-modal-display-name"
+                  className="form-input"
+                  placeholder="Engineering Team"
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label" htmlFor="team-modal-collaboration-model">Collaboration Model</label>
+                <Select
+                  value={collaborationModel}
+                  onValueChange={(value) => setCollaborationModel(value as 'leader_operators' | 'swarm')}
+                >
+                  <SelectTrigger
+                    id="team-modal-collaboration-model"
+                    className="form-select"
+                    aria-label="Collaboration Model"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="leader_operators">Leader+Operators</SelectItem>
+                    <SelectItem value="swarm">Swarm</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              {collaborationModel === 'leader_operators' && (
                 <div className="form-group">
-                  <FormLabel>{mode === 'channel' ? 'Channel Name' : 'Team Slug'}</FormLabel>
-                  <FormControl>
-                    <Input
-                      placeholder={mode === 'channel' ? 'e.g. engineering' : 'e.g. eng-team'}
-                      {...field}
-                      autoFocus
-                    />
-                  </FormControl>
-                  <FormMessage />
+                  <label className="form-label" htmlFor="team-modal-leader">Leader</label>
+                  <Select value={leaderAgentName} onValueChange={setLeaderAgentName}>
+                    <SelectTrigger
+                      id="team-modal-leader"
+                      className="form-select"
+                      aria-label="Leader"
+                    >
+                      <SelectValue placeholder="Select an agent leader" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {agentMembers.map((member) => (
+                        <SelectItem key={member.member_name} value={member.member_name}>
+                          {member.member_name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               )}
-            />
 
-            {mode === 'channel' && (
-              <FormField
-                control={form.control}
-                name="description"
-                render={({ field }) => (
-                  <div className="form-group">
-                    <FormLabel>Description (optional)</FormLabel>
-                    <FormControl>
-                      <Input
-                        placeholder="What's this channel about?"
-                        {...field}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </div>
-                )}
-              />
-            )}
-
-            {mode === 'team' && (
-              <>
-                <FormField
-                  control={form.control}
-                  name="displayName"
-                  render={({ field }) => (
-                    <div className="form-group">
-                      <FormLabel>Display Name</FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="Engineering Team"
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </div>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="collaborationModel"
-                  render={({ field }) => (
-                    <div className="form-group">
-                      <FormLabel>Collaboration Model</FormLabel>
-                      <FormControl>
-                        <Select
-                          value={field.value}
-                          onValueChange={field.onChange}
-                        >
-                          <SelectTrigger>
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="leader_operators">Leader+Operators</SelectItem>
-                            <SelectItem value="swarm">Swarm</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </FormControl>
-                      <FormMessage />
-                    </div>
-                  )}
-                />
-
-                {collaborationModel === 'leader_operators' && (
-                  <FormField
-                    control={form.control}
-                    name="leaderAgentName"
-                    render={({ field }) => (
-                      <div className="form-group">
-                        <FormLabel>Leader</FormLabel>
-                        <FormControl>
-                          <Select
-                            value={field.value}
-                            onValueChange={field.onChange}
-                          >
-                            <SelectTrigger>
-                              <SelectValue placeholder="Select an agent leader" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {agentMembers.map((member) => (
-                                <SelectItem key={member.member_name} value={member.member_name}>
-                                  {member.member_name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </FormControl>
-                        <FormMessage />
-                      </div>
-                    )}
-                  />
-                )}
-
-                <div className="form-group">
-                  <FormLabel>Initial Members</FormLabel>
-                  <div style={{ display: 'grid', gap: 8 }}>
-                    <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(0, 1fr) 140px auto' }}>
-                      <Select
-                        value={form.getValues('pendingMemberName')}
-                        onValueChange={(val) => form.setValue('pendingMemberName', val)}
+              <div className="form-group">
+                <label className="form-label" htmlFor="team-modal-member">Initial Members</label>
+                <div style={{ display: 'grid', gap: 8 }}>
+                  <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(0, 1fr) 140px auto' }}>
+                    <Select value={pendingMemberName} onValueChange={setPendingMemberName}>
+                      <SelectTrigger
+                        id="team-modal-member"
+                        className="form-select"
+                        aria-label="Initial Members"
                       >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Choose a person or agent" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {availableMembers.map((member) => (
-                            <SelectItem key={member.name} value={member.name}>
-                              {member.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <Input
-                        placeholder="role"
-                        value={form.getValues('pendingMemberRole')}
-                        onChange={(e) => form.setValue('pendingMemberRole', e.target.value)}
-                      />
-                      <Button
-                        type="button"
-                        variant="brutal"
-                        size="sm"
-                        onClick={addTeamMemberDraft}
-                        disabled={!form.getValues('pendingMemberName')}
-                      >
-                        Add
-                      </Button>
-                    </div>
-
-                    {teamMembers.length === 0 ? (
-                      <div className="modal-field-hint">No initial members yet.</div>
-                    ) : (
-                      <div style={{ display: 'grid', gap: 8 }}>
-                        {teamMembers.map((member) => (
-                          <div
-                            key={member.member_name}
-                            style={{
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: 8,
-                              padding: '10px 12px',
-                              border: 'var(--border)',
-                              background: 'var(--bg-panel-muted)',
-                            }}
-                          >
-                            <div style={{ minWidth: 0, flex: 1 }}>
-                              <div style={{ fontWeight: 600 }}>{member.member_name}</div>
-                              <div className="modal-field-hint">
-                                {member.member_type} · role: {member.role}
-                              </div>
-                            </div>
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              onClick={() => removeTeamMemberDraft(member.member_name)}
-                            >
-                              Remove
-                            </Button>
-                          </div>
+                        <SelectValue placeholder="Choose a person or agent" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableMembers.map((member) => (
+                          <SelectItem key={member.name} value={member.name}>
+                            {member.label}
+                          </SelectItem>
                         ))}
-                      </div>
-                    )}
+                      </SelectContent>
+                    </Select>
+                    <input
+                      className="form-input"
+                      placeholder="role"
+                      value={pendingMemberRole}
+                      onChange={(event) => setPendingMemberRole(event.target.value)}
+                    />
+                    <button
+                      className="btn-brutal btn-cyan"
+                      type="button"
+                      onClick={addTeamMemberDraft}
+                      disabled={!pendingMemberName}
+                    >
+                      Add
+                    </button>
                   </div>
-                </div>
-              </>
-            )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                variant="brutal"
-                disabled={
-                  creating ||
-                  !form.getValues('name').trim() ||
-                  (mode === 'team' && !form.getValues('displayName').trim())
-                }
-              >
-                {creating
-                  ? 'Creating…'
-                  : mode === 'channel'
-                  ? 'Create Channel'
-                  : 'Create Team'}
-              </Button>
-            </div>
-          </form>
-        </Form>
+                  {teamMembers.length === 0 ? (
+                    <div className="modal-field-hint">No initial members yet.</div>
+                  ) : (
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {teamMembers.map((member) => (
+                        <div
+                          key={member.member_name}
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 8,
+                            padding: '10px 12px',
+                            border: 'var(--border)',
+                            background: 'var(--bg-panel-muted)',
+                          }}
+                        >
+                          <div style={{ minWidth: 0, flex: 1 }}>
+                            <div style={{ fontWeight: 600 }}>{member.member_name}</div>
+                            <div className="modal-field-hint">
+                              {member.member_type} · role: {member.role}
+                            </div>
+                          </div>
+                          <button
+                            className="btn-brutal-sm"
+                            type="button"
+                            onClick={() => removeTeamMemberDraft(member.member_name)}
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+            <button className="btn-brutal" type="button" onClick={() => onOpenChange(false)}>Cancel</button>
+            <button
+              className="btn-brutal btn-cyan"
+              type="submit"
+              disabled={creating || !name.trim() || (mode === 'team' && !displayName.trim())}
+            >
+              {creating
+                ? 'Creating…'
+                : mode === 'channel'
+                ? 'Create Channel'
+                : 'Create Team'}
+            </button>
+          </div>
+        </form>
       </DialogContent>
     </Dialog>
   )

@@ -1,20 +1,7 @@
 import { useEffect, useState } from 'react'
-import { useForm } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
 import { archiveChannel, deleteChannel, updateChannel } from '../api'
 import type { ChannelInfo } from '../types'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
-import { Form, FormControl, FormField, FormLabel, FormMessage } from '@/components/ui/form'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-
-const editChannelSchema = z.object({
-  name: z.string().min(1, 'Channel name is required'),
-  description: z.string().optional(),
-})
-
-type EditChannelFormValues = z.infer<typeof editChannelSchema>
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 
 interface EditChannelModalProps {
   channel: ChannelInfo
@@ -31,42 +18,38 @@ interface DeleteChannelModalProps {
   onDeleted: () => void
 }
 
+function normalizeChannelInput(name: string): string {
+  return name.trim().replace(/^#/, '')
+}
+
 export function EditChannelModal({
   channel,
   open,
   onOpenChange,
   onSaved,
 }: EditChannelModalProps) {
+  const [name, setName] = useState(channel.name)
+  const [description, setDescription] = useState(channel.description ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const form = useForm<EditChannelFormValues>({
-    resolver: zodResolver(editChannelSchema),
-    defaultValues: {
-      name: channel.name,
-      description: channel.description ?? '',
-    },
-  })
-
   useEffect(() => {
     if (open) {
-      form.reset({
-        name: channel.name,
-        description: channel.description ?? '',
-      })
+      setName(channel.name)
+      setDescription(channel.description ?? '')
       setError(null)
     }
-  }, [open, channel.name, channel.description, form])
+  }, [channel.description, channel.name, open])
 
-  async function onSubmit(values: EditChannelFormValues) {
-    const trimmed = values.name.trim().replace(/^#/, '')
+  async function handleSave() {
+    const trimmed = normalizeChannelInput(name)
     if (!trimmed || !channel.id) return
     setSaving(true)
     setError(null)
     try {
       const updated = await updateChannel(channel.id, {
         name: trimmed,
-        description: values.description ?? '',
+        description,
       })
       onSaved(updated)
       onOpenChange(false)
@@ -80,54 +63,51 @@ export function EditChannelModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogTitle className="modal-title">Edit Channel</DialogTitle>
+        <div className="modal-header">
+          <DialogTitle>Edit Channel</DialogTitle>
+          <DialogClose className="modal-close" aria-label="Close">×</DialogClose>
+        </div>
 
         {error && <div className="error-banner">{error}</div>}
 
-        <Form {...form}>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-            <FormField
-              control={form.control}
-              name="name"
-              render={({ field }) => (
-                <div className="form-group">
-                  <FormLabel>Name</FormLabel>
-                  <FormControl>
-                    <Input {...field} autoFocus />
-                  </FormControl>
-                  <FormMessage />
-                </div>
-              )}
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            void handleSave()
+          }}
+        >
+          <div className="form-group">
+            <label className="form-label" htmlFor="edit-channel-name">Name</label>
+            <input
+              id="edit-channel-name"
+              className="form-input"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              autoFocus
             />
+          </div>
 
-            <FormField
-              control={form.control}
-              name="description"
-              render={({ field }) => (
-                <div className="form-group">
-                  <FormLabel>Description (optional)</FormLabel>
-                  <FormControl>
-                    <Input placeholder="What's this channel about?" {...field} />
-                  </FormControl>
-                  <FormMessage />
-                </div>
-              )}
+          <div className="form-group">
+            <label className="form-label" htmlFor="edit-channel-description">Description (optional)</label>
+            <textarea
+              id="edit-channel-description"
+              className="form-textarea"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
             />
+          </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button
-                type="submit"
-                variant="brutal"
-                disabled={saving || !form.getValues('name').trim()}
-              >
-                {saving ? 'Saving…' : 'Save Changes'}
-              </Button>
-            </div>
-          </form>
-        </Form>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+            <button className="btn-brutal" type="button" onClick={() => onOpenChange(false)}>Cancel</button>
+            <button
+              className="btn-brutal btn-cyan"
+              type="submit"
+              disabled={saving || !normalizeChannelInput(name)}
+            >
+              {saving ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
       </DialogContent>
     </Dialog>
   )
@@ -176,8 +156,13 @@ export function DeleteChannelModal({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
-        <DialogTitle className="modal-title">Delete Channel</DialogTitle>
-        <DialogDescription className="modal-subtitle">#{channel.name}</DialogDescription>
+        <div className="modal-header">
+          <div className="modal-title-block">
+            <DialogTitle>Delete Channel</DialogTitle>
+            <DialogDescription>#{channel.name}</DialogDescription>
+          </div>
+          <DialogClose className="modal-close" aria-label="Close">×</DialogClose>
+        </div>
 
         {error && <div className="error-banner">{error}</div>}
 
@@ -195,30 +180,15 @@ export function DeleteChannelModal({
             flexWrap: 'wrap',
           }}
         >
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => onOpenChange(false)}
-            disabled={busyAction !== null}
-          >
+          <button className="btn-brutal" type="button" onClick={() => onOpenChange(false)} disabled={busyAction !== null}>
             Cancel
-          </Button>
-          <Button
-            type="button"
-            variant="brutal"
-            onClick={handleArchive}
-            disabled={busyAction !== null}
-          >
+          </button>
+          <button className="btn-brutal btn-yellow" type="button" onClick={handleArchive} disabled={busyAction !== null}>
             {busyAction === 'archive' ? 'Archiving…' : 'Archive Channel'}
-          </Button>
-          <Button
-            type="button"
-            variant="brutal"
-            onClick={handleDelete}
-            disabled={busyAction !== null}
-          >
+          </button>
+          <button className="btn-brutal btn-orange" type="button" onClick={handleDelete} disabled={busyAction !== null}>
             {busyAction === 'delete' ? 'Deleting…' : 'Delete Permanently'}
-          </Button>
+          </button>
         </div>
       </DialogContent>
     </Dialog>
