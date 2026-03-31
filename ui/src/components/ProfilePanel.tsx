@@ -294,10 +294,10 @@ function EditAgentModal({
           <button className="modal-close" onClick={onClose}>×</button>
         </div>
         <AgentConfigForm state={state} runtimeStatuses={runtimeStatuses} runtimeStatusError={runtimeStatusError} onChange={setState} />
-        {error && <div className="modal-error">{error}</div>}
+        {error && <div className="error-banner">{error}</div>}
         <div className="modal-footer">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" onClick={handleSave} disabled={saving}>
+          <button className="btn-brutal" onClick={onClose}>Cancel</button>
+          <button className="btn-brutal btn-cyan" onClick={handleSave} disabled={saving}>
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>

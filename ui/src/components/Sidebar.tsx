@@ -4,7 +4,7 @@ import { useApp } from '../store'
 import type { AgentInfo, ChannelInfo } from '../types'
 import { isVisibleSidebarChannel } from '../sidebarChannels'
 import { CreateAgentModal } from './CreateAgentModal'
-import { CreateChannelModal } from './CreateChannelModal'
+import { CreateChannelModal } from './Channels/CreateChannelModal'
 import { DeleteChannelModal, EditChannelModal } from './EditChannelModal'
 import './Sidebar.css'
 
@@ -226,6 +226,7 @@ export function Sidebar() {
                       <button
                         type="button"
                         className="sidebar-channel-action"
+                        aria-label={`Edit #${ch.name}`}
                         title={`Edit #${ch.name}`}
                         onClick={(event) => {
                           event.stopPropagation()
@@ -238,6 +239,7 @@ export function Sidebar() {
                       <button
                         type="button"
                         className="sidebar-channel-action"
+                        aria-label={`Open menu for #${ch.name}`}
                         title={`Open menu for #${ch.name}`}
                         onClick={(event) => {
                           event.stopPropagation()
@@ -381,7 +383,8 @@ export function Sidebar() {
       {showCreateChannel && (
         <CreateChannelModal
           defaultMode={createModalMode}
-          onClose={() => setShowCreateChannel(false)}
+          open={showCreateChannel}
+          onOpenChange={(open) => setShowCreateChannel(open)}
           onCreated={(created) => {
             setShowCreateChannel(false)
             setSelectedChannel(`#${created.name}`, created.id ?? null)
@@ -393,7 +396,8 @@ export function Sidebar() {
       {editingChannel && (
         <EditChannelModal
           channel={editingChannel}
-          onClose={() => setEditingChannel(null)}
+          open={!!editingChannel}
+          onOpenChange={(open) => !open && setEditingChannel(null)}
           onSaved={(updated) => {
             if (selectedChannelId === updated.id) {
               setSelectedChannel(`#${updated.name}`, updated.id)
@@ -406,7 +410,8 @@ export function Sidebar() {
       {deleteTarget && (
         <DeleteChannelModal
           channel={deleteTarget}
-          onClose={() => setDeleteTarget(null)}
+          open={!!deleteTarget}
+          onOpenChange={(open) => !open && setDeleteTarget(null)}
           onArchived={() => {
             recoverSelectionAfterChannelRemoval(deleteTarget.id)
             setDeleteTarget(null)

@@ -1,16 +1,19 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { archiveChannel, deleteChannel, updateChannel } from '../api'
 import type { ChannelInfo } from '../types'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 
 interface EditChannelModalProps {
   channel: ChannelInfo
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onSaved: (channel: { id: string; name: string; description?: string | null }) => void
 }
 
 interface DeleteChannelModalProps {
   channel: ChannelInfo
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onArchived: () => void
   onDeleted: () => void
 }
@@ -19,11 +22,24 @@ function normalizeChannelInput(name: string): string {
   return name.trim().replace(/^#/, '')
 }
 
-export function EditChannelModal({ channel, onClose, onSaved }: EditChannelModalProps) {
+export function EditChannelModal({
+  channel,
+  open,
+  onOpenChange,
+  onSaved,
+}: EditChannelModalProps) {
   const [name, setName] = useState(channel.name)
   const [description, setDescription] = useState(channel.description ?? '')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (open) {
+      setName(channel.name)
+      setDescription(channel.description ?? '')
+      setError(null)
+    }
+  }, [channel.description, channel.name, open])
 
   async function handleSave() {
     const trimmed = normalizeChannelInput(name)
@@ -36,6 +52,7 @@ export function EditChannelModal({ channel, onClose, onSaved }: EditChannelModal
         description,
       })
       onSaved(updated)
+      onOpenChange(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -44,53 +61,62 @@ export function EditChannelModal({ channel, onClose, onSaved }: EditChannelModal
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-card">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
         <div className="modal-header">
-          <span className="modal-title">Edit Channel</span>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <DialogTitle>Edit Channel</DialogTitle>
+          <DialogClose className="modal-close" aria-label="Close">×</DialogClose>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
 
-        <div className="form-group">
-          <label className="form-label">Name</label>
-          <input
-            className="form-input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSave()}
-            autoFocus
-          />
-        </div>
+        <form
+          onSubmit={(event) => {
+            event.preventDefault()
+            void handleSave()
+          }}
+        >
+          <div className="form-group">
+            <label className="form-label" htmlFor="edit-channel-name">Name</label>
+            <input
+              id="edit-channel-name"
+              className="form-input"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              autoFocus
+            />
+          </div>
 
-        <div className="form-group">
-          <label className="form-label">Description (optional)</label>
-          <textarea
-            className="form-textarea"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </div>
+          <div className="form-group">
+            <label className="form-label" htmlFor="edit-channel-description">Description (optional)</label>
+            <textarea
+              id="edit-channel-description"
+              className="form-textarea"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+            />
+          </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-          <button className="btn-brutal" onClick={onClose}>Cancel</button>
-          <button
-            className="btn-brutal btn-cyan"
-            onClick={handleSave}
-            disabled={saving || !normalizeChannelInput(name)}
-          >
-            {saving ? 'Saving…' : 'Save Changes'}
-          </button>
-        </div>
-      </div>
-    </div>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+            <button className="btn-brutal" type="button" onClick={() => onOpenChange(false)}>Cancel</button>
+            <button
+              className="btn-brutal btn-cyan"
+              type="submit"
+              disabled={saving || !normalizeChannelInput(name)}
+            >
+              {saving ? 'Saving…' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
 export function DeleteChannelModal({
   channel,
-  onClose,
+  open,
+  onOpenChange,
   onArchived,
   onDeleted,
 }: DeleteChannelModalProps) {
@@ -104,6 +130,7 @@ export function DeleteChannelModal({
     try {
       await archiveChannel(channel.id)
       onArchived()
+      onOpenChange(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -118,6 +145,7 @@ export function DeleteChannelModal({
     try {
       await deleteChannel(channel.id)
       onDeleted()
+      onOpenChange(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -126,14 +154,14 @@ export function DeleteChannelModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-card">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
         <div className="modal-header">
           <div className="modal-title-block">
-            <span className="modal-title">Delete Channel</span>
-            <span className="modal-subtitle">#{channel.name}</span>
+            <DialogTitle>Delete Channel</DialogTitle>
+            <DialogDescription>#{channel.name}</DialogDescription>
           </div>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <DialogClose className="modal-close" aria-label="Close">×</DialogClose>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
@@ -143,24 +171,26 @@ export function DeleteChannelModal({
           delete removes the channel and its tasks, messages, and memberships.
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20, flexWrap: 'wrap' }}>
-          <button className="btn-brutal" onClick={onClose} disabled={busyAction !== null}>Cancel</button>
-          <button
-            className="btn-brutal btn-yellow"
-            onClick={handleArchive}
-            disabled={busyAction !== null}
-          >
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 8,
+            marginTop: 20,
+            flexWrap: 'wrap',
+          }}
+        >
+          <button className="btn-brutal" type="button" onClick={() => onOpenChange(false)} disabled={busyAction !== null}>
+            Cancel
+          </button>
+          <button className="btn-brutal btn-yellow" type="button" onClick={handleArchive} disabled={busyAction !== null}>
             {busyAction === 'archive' ? 'Archiving…' : 'Archive Channel'}
           </button>
-          <button
-            className="btn-brutal btn-orange"
-            onClick={handleDelete}
-            disabled={busyAction !== null}
-          >
+          <button className="btn-brutal btn-orange" type="button" onClick={handleDelete} disabled={busyAction !== null}>
             {busyAction === 'delete' ? 'Deleting…' : 'Delete Permanently'}
           </button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }

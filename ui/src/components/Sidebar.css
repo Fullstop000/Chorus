@@ -130,6 +130,9 @@
 
 .sidebar-channel-row {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 4px;
 }
 
@@ -138,20 +141,21 @@
 }
 
 .sidebar-channel-button {
+  flex: 1;
+  min-width: 0;
   margin-bottom: 0;
 }
 
 .sidebar-channel-button.has-actions {
-  padding-right: 108px;
+  padding-right: 10px;
 }
 
 .sidebar-channel-actions {
-  position: absolute;
-  top: 50%;
-  right: 8px;
-  transform: translateY(-50%);
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   gap: 4px;
+  flex-shrink: 0;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.15s ease;
