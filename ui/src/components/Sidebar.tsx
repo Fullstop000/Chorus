@@ -381,7 +381,8 @@ export function Sidebar() {
       {editingChannel && (
         <EditChannelModal
           channel={editingChannel}
-          onClose={() => setEditingChannel(null)}
+          open={!!editingChannel}
+          onOpenChange={(open) => !open && setEditingChannel(null)}
           onSaved={(updated) => {
             if (selectedChannelId === updated.id) {
               setSelectedChannel(`#${updated.name}`, updated.id)
@@ -394,7 +395,8 @@ export function Sidebar() {
       {deleteTarget && (
         <DeleteChannelModal
           channel={deleteTarget}
-          onClose={() => setDeleteTarget(null)}
+          open={!!deleteTarget}
+          onOpenChange={(open) => !open && setDeleteTarget(null)}
           onArchived={() => {
             recoverSelectionAfterChannelRemoval(deleteTarget.id)
             setDeleteTarget(null)
