@@ -82,6 +82,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const selectedChannelRef = useRef<string | null>(null)
   const selectedChannelIdRef = useRef<string | null>(null)
   const conversationThreadsRefreshInFlight = useRef<Map<string, Promise<void>>>(new Map())
+  const inboxRefreshInFlight = useRef<Set<string>>(new Set())
 
   // Fetch current user once on mount
   useEffect(() => {
@@ -249,13 +250,20 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const threadRaw = frame.event.payload.threadParentId
           const threadParentId =
             typeof threadRaw === 'string' && threadRaw.length > 0 ? threadRaw : undefined
-          void getConversationInboxNotification(channelId, threadParentId)
-            .then((payload) => {
-              setInboxState((current) => mergeInboxNotificationRefresh(current, payload))
-            })
-            .catch((error) => {
-              console.error('Failed to refresh inbox after message', error)
-            })
+          const key = `${channelId}:${threadParentId ?? ''}`
+          if (!inboxRefreshInFlight.current.has(key)) {
+            inboxRefreshInFlight.current.add(key)
+            void getConversationInboxNotification(channelId, threadParentId)
+              .then((payload) => {
+                setInboxState((current) => mergeInboxNotificationRefresh(current, payload))
+              })
+              .catch((error) => {
+                console.error('Failed to refresh inbox after message', error)
+              })
+              .finally(() => {
+                inboxRefreshInFlight.current.delete(key)
+              })
+          }
           return
         }
       },
