@@ -3,7 +3,10 @@ import { Search, Settings2, Users } from 'lucide-react'
 import { useApp } from '../store'
 import { MessageItem } from './MessageItem'
 import type { HistoryMessage } from '../types'
+import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
 import './ChatPanel.css'
+
+const getMessageKey = (seq: number) => `msg-${seq}`
 
 interface ChatHeaderProps {
   memberCount?: number | null
@@ -98,6 +101,8 @@ export function ChatPanel({
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
+  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(getMessageKey, reportVisibleSeq)
+
   useEffect(() => {
     pendingInitialScrollTargetRef.current = target
   }, [target])
@@ -105,35 +110,6 @@ export function ChatPanel({
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container) return
-
-    const collectHighestVisibleSeq = () => {
-      if (document.visibilityState !== 'visible') return 0
-      let highestVisibleSeq = 0
-      for (const message of messages) {
-        const node = messageRefs.current[message.id]
-        if (!node) continue
-        const top = node.offsetTop
-        const bottom = top + node.offsetHeight
-        const visibleTop = container.scrollTop
-        const visibleBottom = visibleTop + container.clientHeight
-        if (bottom > visibleTop && top < visibleBottom) {
-          highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
-        }
-      }
-      return highestVisibleSeq
-    }
-
-    const scheduleInitialVisibilityRead = (attempt = 0) => {
-      requestAnimationFrame(() => {
-        const highestVisibleSeq = collectHighestVisibleSeq()
-        if (highestVisibleSeq > 0) {
-          reportVisibleSeq(highestVisibleSeq)
-          return
-        }
-        if (attempt >= 4) return
-        window.setTimeout(() => scheduleInitialVisibilityRead(attempt + 1), 50)
-      })
-    }
 
     const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
 
@@ -150,7 +126,10 @@ export function ChatPanel({
       } else {
         bottomRef.current?.scrollIntoView({ behavior: 'auto' })
       }
-      scheduleInitialVisibilityRead()
+
+      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
+      scheduleBatchVisibilityCheck(items)
+
       pendingInitialScrollTargetRef.current = null
       return
     }
@@ -159,46 +138,27 @@ export function ChatPanel({
     if (distFromBottom < 100) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
-  }, [lastReadSeq, loadedTarget, loading, messages, reportVisibleSeq, target])
+  }, [lastReadSeq, loadedTarget, loading, messages, scheduleBatchVisibilityCheck, target])
 
   useEffect(() => {
     const container = scrollContainerRef.current
     if (!container || !target || loadedTarget !== target || loading) return
 
-    let rafId = 0
-    const scheduleVisibilityRead = () => {
-      cancelAnimationFrame(rafId)
-      rafId = requestAnimationFrame(() => {
-        if (document.visibilityState !== 'visible') return
-        let highestVisibleSeq = 0
-        for (const message of messages) {
-          const node = messageRefs.current[message.id]
-          if (!node) continue
-          const top = node.offsetTop
-          const bottom = top + node.offsetHeight
-          const visibleTop = container.scrollTop
-          const visibleBottom = visibleTop + container.clientHeight
-          if (bottom > visibleTop && top < visibleBottom) {
-            highestVisibleSeq = Math.max(highestVisibleSeq, message.seq)
-          }
-        }
-        if (highestVisibleSeq > 0) {
-          reportVisibleSeq(highestVisibleSeq)
-        }
-      })
+    const handleScroll = () => {
+      const items = messages.map(msg => ({ seq: msg.seq, id: msg.id }))
+      scheduleBatchVisibilityCheck(items)
     }
 
-    scheduleVisibilityRead()
-    container.addEventListener('scroll', scheduleVisibilityRead, { passive: true })
-    window.addEventListener('resize', scheduleVisibilityRead)
-    document.addEventListener('visibilitychange', scheduleVisibilityRead)
+    handleScroll()
+    container.addEventListener('scroll', handleScroll, { passive: true })
+    window.addEventListener('resize', handleScroll)
+    document.addEventListener('visibilitychange', handleScroll)
     return () => {
-      cancelAnimationFrame(rafId)
-      container.removeEventListener('scroll', scheduleVisibilityRead)
-      window.removeEventListener('resize', scheduleVisibilityRead)
-      document.removeEventListener('visibilitychange', scheduleVisibilityRead)
+      container.removeEventListener('scroll', handleScroll)
+      window.removeEventListener('resize', handleScroll)
+      document.removeEventListener('visibilitychange', handleScroll)
     }
-  }, [loadedTarget, loading, messages, reportVisibleSeq, target])
+  }, [loadedTarget, loading, messages, scheduleBatchVisibilityCheck, target])
 
   return (
     <div className="chat-panel">
@@ -217,6 +177,7 @@ export function ChatPanel({
         {messages.map((msg, i) => (
           <div
             key={msg.id}
+            id={msg.id}
             ref={(node) => {
               messageRefs.current[msg.id] = node
             }}
