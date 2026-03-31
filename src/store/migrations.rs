@@ -1,9 +1,10 @@
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_remove_spurious_dm_members(conn)?;
     migrate_drop_legacy_event_tables(conn)?;
+    migrate_remove_legacy_shared_memory_channel(conn)?;
     migrate_inbox_read_state(conn)?;
     Ok(())
 }
@@ -61,6 +62,50 @@ fn migrate_drop_legacy_event_tables(conn: &Connection) -> Result<()> {
         "DROP TABLE IF EXISTS events;
          DROP TABLE IF EXISTS streams;",
     )?;
+    Ok(())
+}
+
+/// Remove the retired `#shared-memory` system channel from upgraded stores.
+fn migrate_remove_legacy_shared_memory_channel(conn: &Connection) -> Result<()> {
+    let legacy_channel_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM channels WHERE name = 'shared-memory' AND channel_type = 'system'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let Some(channel_id) = legacy_channel_id else {
+        return Ok(());
+    };
+
+    conn.execute(
+        "DELETE FROM inbox_thread_read_state WHERE conversation_id = ?1",
+        rusqlite::params![channel_id],
+    )?;
+    conn.execute(
+        "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
+        rusqlite::params![channel_id],
+    )?;
+    conn.execute(
+        "DELETE FROM message_attachments
+         WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?1)",
+        rusqlite::params![channel_id],
+    )?;
+    conn.execute(
+        "DELETE FROM messages WHERE channel_id = ?1",
+        rusqlite::params![channel_id],
+    )?;
+    conn.execute(
+        "DELETE FROM tasks WHERE channel_id = ?1",
+        rusqlite::params![channel_id],
+    )?;
+    conn.execute(
+        "DELETE FROM channel_members WHERE channel_id = ?1",
+        rusqlite::params![channel_id],
+    )?;
+    conn.execute("DELETE FROM channels WHERE id = ?1", rusqlite::params![channel_id])?;
+    tracing::info!("removed legacy shared-memory system channel");
     Ok(())
 }
 

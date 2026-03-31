@@ -1554,6 +1554,33 @@ fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
 }
 
 #[test]
+fn test_store_open_removes_legacy_shared_memory_system_channel() {
+    let (store, dir) = make_store();
+    store.create_human("alice").unwrap();
+    store.ensure_builtin_channels("alice").unwrap();
+    store
+        .ensure_system_channel("shared-memory", "Agent group memory")
+        .unwrap();
+    drop(store);
+
+    let db_path = dir.path().join("test.db");
+    let reopened = Store::open(db_path.to_str().unwrap()).unwrap();
+
+    assert!(
+        reopened.get_channel_by_name("shared-memory").unwrap().is_none(),
+        "legacy shared-memory system channel should be removed during startup migration"
+    );
+
+    let server_info = chorus::server::build_server_info(&reopened, "alice").unwrap();
+    let system_names: Vec<_> = server_info
+        .system_channels
+        .iter()
+        .map(|channel| channel.name.as_str())
+        .collect();
+    assert_eq!(system_names, vec!["all"]);
+}
+
+#[test]
 fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
     let (store, _dir) = make_store();
     store.create_human("alice").unwrap();
