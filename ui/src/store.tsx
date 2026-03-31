@@ -83,6 +83,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const selectedChannelIdRef = useRef<string | null>(null)
   const conversationThreadsRefreshInFlight = useRef<Map<string, Promise<void>>>(new Map())
   const inboxRefreshInFlight = useRef<Set<string>>(new Set())
+  // Tracks one trailing re-fetch per key when a message.created event arrives while a fetch is in-flight.
+  // The snapshot endpoint returns current state at request time, so one re-fetch after the in-flight
+  // completes is sufficient to pick up all messages that arrived during the window.
+  const inboxRefreshPending = useRef<Map<string, [string, string | undefined]>>(new Map())
 
   // Fetch current user once on mount
   useEffect(() => {
@@ -238,6 +242,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const targets = conversationRegistry.map((entry) => `conversation:${entry.conversationId}`)
     if (targets.length === 0) return
 
+    const scheduleInboxRefresh = (key: string, channelId: string, threadParentId: string | undefined): void => {
+      inboxRefreshInFlight.current.add(key)
+      void getConversationInboxNotification(channelId, threadParentId)
+        .then((payload) => {
+          setInboxState((current) => mergeInboxNotificationRefresh(current, payload))
+        })
+        .catch((error) => {
+          console.error('Failed to refresh inbox after message', error)
+        })
+        .finally(() => {
+          inboxRefreshInFlight.current.delete(key)
+          const pending = inboxRefreshPending.current.get(key)
+          if (pending) {
+            inboxRefreshPending.current.delete(key)
+            scheduleInboxRefresh(key, ...pending)
+          }
+        })
+    }
+
     return getRealtimeSession(currentUser).subscribe({
       targets,
       onFrame: (frame) => {
@@ -251,18 +274,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           const threadParentId =
             typeof threadRaw === 'string' && threadRaw.length > 0 ? threadRaw : undefined
           const key = `${channelId}:${threadParentId ?? ''}`
-          if (!inboxRefreshInFlight.current.has(key)) {
-            inboxRefreshInFlight.current.add(key)
-            void getConversationInboxNotification(channelId, threadParentId)
-              .then((payload) => {
-                setInboxState((current) => mergeInboxNotificationRefresh(current, payload))
-              })
-              .catch((error) => {
-                console.error('Failed to refresh inbox after message', error)
-              })
-              .finally(() => {
-                inboxRefreshInFlight.current.delete(key)
-              })
+          if (inboxRefreshInFlight.current.has(key)) {
+            inboxRefreshPending.current.set(key, [channelId, threadParentId])
+          } else {
+            scheduleInboxRefresh(key, channelId, threadParentId)
           }
           return
         }

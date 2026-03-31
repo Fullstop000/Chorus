@@ -61,11 +61,12 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
-  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(reportVisibleSeq)
+  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } = useVisibilityTracking(reportVisibleSeq)
 
   useEffect(() => {
     pendingInitialScrollTargetRef.current = threadTarget
-  }, [threadTarget])
+    resetHighestVisibleSeq()
+  }, [threadTarget, resetHighestVisibleSeq])
 
   useEffect(() => {
     const container = scrollContainerRef.current

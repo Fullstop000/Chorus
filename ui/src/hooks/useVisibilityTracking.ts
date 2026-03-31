@@ -38,6 +38,11 @@ export function useVisibilityTracking(onHighestVisibleSeqChange?: (seq: number) 
   const lastFiredSeqRef = useRef(0)
   onChangeRef.current = onHighestVisibleSeqChange
 
+  const resetHighestVisibleSeq = useCallback(() => {
+    setHighestVisibleSeq(0)
+    lastFiredSeqRef.current = 0
+  }, [])
+
   const flushVisibilityCheck = useCallback(() => {
     if (document.visibilityState !== 'visible') return
 
@@ -85,5 +90,6 @@ export function useVisibilityTracking(onHighestVisibleSeqChange?: (seq: number) 
   return {
     highestVisibleSeq,
     scheduleBatchVisibilityCheck,
+    resetHighestVisibleSeq,
   }
 }
