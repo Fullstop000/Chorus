@@ -7,6 +7,7 @@ import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { Form, FormControl, FormField, FormLabel, FormMessage } from '@/components/ui/form'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { createChannel, createTeam } from '../../api'
 import { useApp } from '../../store'
 
@@ -293,14 +294,18 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                     <div className="form-group">
                       <FormLabel>Collaboration Model</FormLabel>
                       <FormControl>
-                        <select
-                          className="form-select"
-                          {...field}
-                          onChange={(e) => field.onChange(e.target.value as 'leader_operators' | 'swarm')}
+                        <Select
+                          value={field.value}
+                          onValueChange={field.onChange}
                         >
-                          <option value="leader_operators">Leader+Operators</option>
-                          <option value="swarm">Swarm</option>
-                        </select>
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="leader_operators">Leader+Operators</SelectItem>
+                            <SelectItem value="swarm">Swarm</SelectItem>
+                          </SelectContent>
+                        </Select>
                       </FormControl>
                       <FormMessage />
                     </div>
@@ -315,17 +320,21 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                       <div className="form-group">
                         <FormLabel>Leader</FormLabel>
                         <FormControl>
-                          <select
-                            className="form-select"
-                            {...field}
+                          <Select
+                            value={field.value}
+                            onValueChange={field.onChange}
                           >
-                            <option value="">Select an agent leader</option>
-                            {agentMembers.map((member) => (
-                              <option key={member.member_name} value={member.member_name}>
-                                {member.member_name}
-                              </option>
-                            ))}
-                          </select>
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select an agent leader" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {agentMembers.map((member) => (
+                                <SelectItem key={member.member_name} value={member.member_name}>
+                                  {member.member_name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
                         </FormControl>
                         <FormMessage />
                       </div>
@@ -337,18 +346,21 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                   <FormLabel>Initial Members</FormLabel>
                   <div style={{ display: 'grid', gap: 8 }}>
                     <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(0, 1fr) 140px auto' }}>
-                      <select
-                        className="form-select"
+                      <Select
                         value={form.getValues('pendingMemberName')}
-                        onChange={(e) => form.setValue('pendingMemberName', e.target.value)}
+                        onValueChange={(val) => form.setValue('pendingMemberName', val)}
                       >
-                        <option value="">Choose a person or agent</option>
-                        {availableMembers.map((member) => (
-                          <option key={member.name} value={member.name}>
-                            {member.label}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Choose a person or agent" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableMembers.map((member) => (
+                            <SelectItem key={member.name} value={member.name}>
+                              {member.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                       <Input
                         placeholder="role"
                         value={form.getValues('pendingMemberRole')}
