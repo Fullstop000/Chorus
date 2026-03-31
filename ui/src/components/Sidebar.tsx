@@ -4,7 +4,7 @@ import { useApp } from '../store'
 import type { AgentInfo, ChannelInfo } from '../types'
 import { isVisibleSidebarChannel } from '../sidebarChannels'
 import { CreateAgentModal } from './CreateAgentModal'
-import { CreateChannelModal } from './CreateChannelModal'
+import { CreateChannelModal } from './Channels/CreateChannelModal'
 import { DeleteChannelModal, EditChannelModal } from './EditChannelModal'
 import './Sidebar.css'
 
@@ -368,7 +368,8 @@ export function Sidebar() {
       {showCreateChannel && (
         <CreateChannelModal
           defaultMode={createModalMode}
-          onClose={() => setShowCreateChannel(false)}
+          open={showCreateChannel}
+          onOpenChange={(open) => setShowCreateChannel(open)}
           onCreated={(created) => {
             setShowCreateChannel(false)
             setSelectedChannel(`#${created.name}`, created.id ?? null)
