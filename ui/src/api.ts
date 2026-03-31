@@ -221,6 +221,7 @@ export interface ReadCursorResponse {
   conversationUnreadCount: number
   conversationLastReadSeq: number
   conversationLatestSeq: number
+  conversationThreadUnreadCount: number
   threadParentId?: string
   threadUnreadCount?: number
   threadLastReadSeq?: number

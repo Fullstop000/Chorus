@@ -966,7 +966,10 @@ fn test_thread_reply_updates_inbox_read_models() {
         .unwrap()
         .unwrap();
     assert_eq!(alice_conversation_state.last_read_seq, 1);
-    assert_eq!(alice_conversation_state.unread_count, 1);
+    // unread_count only counts top-level messages, not thread replies
+    assert_eq!(alice_conversation_state.unread_count, 0);
+    // thread_unread_count counts thread replies
+    assert_eq!(alice_conversation_state.thread_unread_count, 1);
 
     let alice_thread_state = store
         .get_thread_notification_state("general", &parent_id, "alice")
@@ -1720,5 +1723,110 @@ fn test_record_swarm_signal_ignores_non_quorum_agent() {
     assert_eq!(
         resolved_count, 0,
         "quorum should still be unresolved after non-quorum signal"
+    );
+}
+
+/// Verifies that thread_unread_count (yellow dot indicator) becomes zero after
+/// reading all messages in both channel and all threads.
+/// This ensures the yellow dot correctly disappears when user has no unread content.
+#[test]
+fn test_thread_unread_count_clears_after_reading_all_messages() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    // Setup: Create channel message + thread reply (simulating unread state)
+    let parent_id = store
+        .create_message(
+            "general",
+            None,
+            "bot1",
+            SenderType::Agent,
+            "channel message",
+            &[],
+        )
+        .unwrap();
+    let reply_id = store
+        .create_message(
+            "general",
+            Some(&parent_id),
+            "bot1",
+            SenderType::Agent,
+            "thread reply",
+            &[],
+        )
+        .unwrap();
+
+    // Verify initial state: unread exists
+    let state_before = store
+        .get_inbox_conversation_state("general", "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state_before.unread_count, 1,
+        "channel message should be unread"
+    );
+    assert_eq!(
+        state_before.thread_unread_count, 1,
+        "thread reply should be unread (yellow dot should show)"
+    );
+
+    // Step 1: Read the channel message (seq=1)
+    store
+        .set_history_read_cursor("general", "alice", SenderType::Human, None, 1)
+        .unwrap();
+
+    let state_after_channel_read = store
+        .get_inbox_conversation_state("general", "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state_after_channel_read.unread_count, 0,
+        "channel message should now be read"
+    );
+    assert_eq!(
+        state_after_channel_read.thread_unread_count, 1,
+        "thread unread should remain (yellow dot still shows)"
+    );
+
+    // Step 2: Read the thread reply (seq=2)
+    store
+        .set_history_read_cursor("general", "alice", SenderType::Human, Some(&parent_id), 2)
+        .unwrap();
+
+    let state_after_thread_read = store
+        .get_inbox_conversation_state("general", "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state_after_thread_read.unread_count, 0,
+        "channel message should still be read"
+    );
+    assert_eq!(
+        state_after_thread_read.thread_unread_count, 0,
+        "thread unread should be zero (yellow dot should disappear)"
+    );
+
+    // Verify thread-specific state also shows zero unread
+    let thread_state = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(thread_state.unread_count, 0);
+    assert_eq!(thread_state.last_read_seq, 2);
+    assert_eq!(
+        thread_state.last_reply_message_id.as_deref(),
+        Some(reply_id.as_str())
     );
 }

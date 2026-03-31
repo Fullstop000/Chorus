@@ -23,6 +23,7 @@ export function ThreadsTab() {
     currentUser,
     selectedChannel,
     selectedChannelId,
+    activeTab,
     openThreadMsg,
     getConversationThreads,
     getConversationThreadUnread,
@@ -31,8 +32,10 @@ export function ThreadsTab() {
   } = useApp()
   const [loading, setLoading] = useState(false)
 
+  // Refresh threads when tab becomes active or selected channel changes
   useEffect(() => {
     if (!currentUser || !selectedChannel || !selectedChannelId) return
+    if (activeTab !== 'threads') return
     let cancelled = false
     setLoading(true)
     refreshConversationThreads(selectedChannelId)
@@ -44,7 +47,7 @@ export function ThreadsTab() {
     return () => {
       cancelled = true
     }
-  }, [currentUser, refreshConversationThreads, selectedChannel, selectedChannelId])
+  }, [currentUser, activeTab, refreshConversationThreads, selectedChannel, selectedChannelId])
 
   const threadRows = getConversationThreads(selectedChannelId)
   const unreadCount = getConversationThreadUnread(selectedChannelId)

@@ -232,6 +232,7 @@ SELECT
     cm.member_type AS member_type,
     COALESCE(irs.last_read_seq, 0) AS last_read_seq,
     irs.last_read_message_id AS last_read_message_id,
+    -- Channel-level unread count (top-level messages only, excludes thread replies)
     (
         SELECT COUNT(*)
         FROM messages top_level
@@ -242,7 +243,9 @@ SELECT
             top_level.sender_name = cm.member_name
             AND top_level.sender_type = cm.member_type
           )
-    ) + (
+    ) AS unread_count,
+    -- Thread-level unread count (all accessible thread replies, shown in thread tab)
+    (
         SELECT COUNT(*)
         FROM messages reply
         LEFT JOIN inbox_thread_read_state itrs
@@ -276,7 +279,7 @@ SELECT
                   AND prior.seq < reply.seq
             )
           )
-    ) AS unread_count
+    ) AS thread_unread_count
 FROM channel_members cm
 JOIN channels c ON c.id = cm.channel_id
 LEFT JOIN inbox_read_state irs

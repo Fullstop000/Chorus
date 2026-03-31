@@ -124,7 +124,7 @@ test.describe('MSG-011', () => {
 
     const totalReplies = baselineReplyTokens.length + unreadReplyTokens.length
 
-    await page.getByRole('button', { name: 'Threads', exact: true }).click()
+    await page.getByRole('button', { name: /Threads/ }).click()
     const threadRow = page.locator('.threads-tab__row').filter({ hasText: parentToken }).first()
     await expect(threadRow).toContainText(`${totalReplies} repl`)
     await expect(threadRow).toContainText(`${unreadReplyTokens.length} unread`)
@@ -139,7 +139,7 @@ test.describe('MSG-011', () => {
       .toBeGreaterThan(0)
 
     await page.getByRole('button', { name: 'Chat', exact: true }).click()
-    await page.getByRole('button', { name: 'Threads', exact: true }).click()
+    await page.getByRole('button', { name: /Threads/ }).click()
     const refreshedThreadRow = page.locator('.threads-tab__row').filter({ hasText: parentToken }).first()
     await expect(refreshedThreadRow).toContainText(`${totalReplies} repl`)
     await expect
@@ -158,9 +158,11 @@ test.describe('MSG-011', () => {
     await expect(page.locator('.thread-panel .message-item').filter({ hasText: unreadReplyTokens.at(-1)! }).first()).toBeVisible()
 
     await page.getByRole('button', { name: 'Chat', exact: true }).click()
-    await page.getByRole('button', { name: 'Threads', exact: true }).click()
+    await page.getByRole('button', { name: /Threads/ }).click()
     const finalThreadRow = page.locator('.threads-tab__row').filter({ hasText: parentToken }).first()
     await expect(finalThreadRow).toContainText(`${totalReplies} repl`)
+    // Note: Thread unread count clears after the threads list refreshes.
+    // This happens automatically when switching back to the Threads tab.
     await expect(finalThreadRow.locator('.threads-tab__unread')).toHaveCount(0)
   })
 })
