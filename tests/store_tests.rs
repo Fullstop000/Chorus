@@ -1540,7 +1540,10 @@ fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
     store.ensure_builtin_channels("alice").unwrap();
 
     assert!(
-        store.get_channel_by_name("shared-memory").unwrap().is_none(),
+        store
+            .get_channel_by_name("shared-memory")
+            .unwrap()
+            .is_none(),
         "shared-memory should no longer be created as a built-in system channel"
     );
 
@@ -1567,7 +1570,10 @@ fn test_store_open_removes_legacy_shared_memory_system_channel() {
     let reopened = Store::open(db_path.to_str().unwrap()).unwrap();
 
     assert!(
-        reopened.get_channel_by_name("shared-memory").unwrap().is_none(),
+        reopened
+            .get_channel_by_name("shared-memory")
+            .unwrap()
+            .is_none(),
         "legacy shared-memory system channel should be removed during startup migration"
     );
 

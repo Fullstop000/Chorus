@@ -104,7 +104,10 @@ fn migrate_remove_legacy_shared_memory_channel(conn: &Connection) -> Result<()> 
         "DELETE FROM channel_members WHERE channel_id = ?1",
         rusqlite::params![channel_id],
     )?;
-    conn.execute("DELETE FROM channels WHERE id = ?1", rusqlite::params![channel_id])?;
+    conn.execute(
+        "DELETE FROM channels WHERE id = ?1",
+        rusqlite::params![channel_id],
+    )?;
     tracing::info!("removed legacy shared-memory system channel");
     Ok(())
 }
