@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { createAgentApi, getWhoami, sendAsUser } from './helpers/api'
-import { clickSidebarChannel } from './helpers/ui'
+import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/messaging.md` — MSG-012 Clickable Mention Opens Agent Profile
@@ -34,7 +34,7 @@ test.describe('MSG-012', () => {
     // Pre-step: send a message with @mention via API so it appears in history
     await sendAsUser(request, username, '#all', `MSG-012 ${mark} testing @bot-a mention`)
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Open channel and locate message with @mention', async () => {
       await clickSidebarChannel(page, 'all')
@@ -82,7 +82,7 @@ test.describe('MSG-012', () => {
     // Send message with non-existent agent mention
     await sendAsUser(request, username, '#all', `MSG-012 ${mark} mentioning @nonexistent-agent`)
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await clickSidebarChannel(page, 'all')
     // Wait for message to appear
     await expect(page.locator('.message-content', { hasText: mark })).toBeVisible()

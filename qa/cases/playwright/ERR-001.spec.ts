@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import path from 'node:path'
-import { clickSidebarChannel } from './helpers/ui'
+import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/messaging.md` — ERR-001 Error Surfacing And Recovery
@@ -8,7 +8,7 @@ import { clickSidebarChannel } from './helpers/ui'
 test.describe('ERR-001', () => {
   test('Error Surfacing And Recovery @case ERR-001', async ({ page }) => {
     const fixture = path.resolve(__dirname, '../../fixtures/qa-attachment.txt')
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await clickSidebarChannel(page, 'all')
 
     await test.step('Steps 1–3: Trigger upload failure and verify visible error', async () => {

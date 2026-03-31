@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
-import { clickSidebarChannel } from './helpers/ui'
+import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -34,7 +34,7 @@ test.describe('TMT-007', () => {
       members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' }],
     })
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await clickSidebarChannel(page, name)
 
     await test.step('Steps 1–3: Delete team + confirm dialog', async () => {
@@ -46,7 +46,7 @@ test.describe('TMT-007', () => {
     await test.step('Steps 4–6: Channel removed; refresh', async () => {
       await expect(page.locator('.modal-title:text("Team Settings")')).toBeHidden({ timeout: 25_000 })
       await expect(page.locator('.sidebar-item-text').filter({ hasText: name })).toHaveCount(0)
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await expect(page.locator('.sidebar-item-text').filter({ hasText: name })).toHaveCount(0)
       expect(await teamExists(request, name)).toBe(false)
     })

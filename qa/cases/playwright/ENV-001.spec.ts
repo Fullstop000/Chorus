@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { gotoApp } from './helpers/ui'
 import { getWhoami } from './helpers/api'
 
 /**
@@ -27,7 +28,7 @@ test.describe('ENV-001', () => {
     })
 
     await test.step('Step 1: Open the app root URL', async () => {
-      await page.goto('/', { waitUntil: 'networkidle' })
+      await gotoApp(page)
     })
 
     await test.step('Step 2: Main shell loads (no blank / crash state)', async () => {

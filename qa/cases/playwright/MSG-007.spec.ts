@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { createChannelApi, getWhoami } from './helpers/api'
 import { clickSidebarChannel, openThreadFromMessage, sendChatMessage, sendThreadMessage } from './helpers/ui'
 

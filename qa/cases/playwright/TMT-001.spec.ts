@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import type { Page } from '@playwright/test'
 import { ensureMixedRuntimeTrio, teamExists } from './helpers/api'
-import { createTeamQaEngViaUi, clickSidebarChannel } from './helpers/ui'
+import { createTeamQaEngViaUi, clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 async function expectSingleRightAlignedTeamRow(page: Page) {
   const row = page
@@ -54,7 +54,7 @@ test.describe('TMT-001', () => {
   test('Team Create, Channel Badge, Sidebar @case TMT-001', async ({ page, request }) => {
     const hasTeam = await teamExists(request, 'qa-eng')
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–2: New Channel modal — Channel / Team toggle', async () => {
       await page.click('button[title="Add channel"]')
@@ -93,7 +93,7 @@ test.describe('TMT-001', () => {
     })
 
     await test.step('Step 10: Refresh — team badge persists', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await expectSingleRightAlignedTeamRow(page)
     })
   })

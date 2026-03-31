@@ -1,11 +1,11 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createChannelApi,
   ensureMixedRuntimeTrio,
   getChannelMembersApi,
   getWhoami,
 } from './helpers/api'
-import { clickSidebarChannel, openMembersPanel } from './helpers/ui'
+import { clickSidebarChannel, openMembersPanel , gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/channels.md` — CHN-003 Channel Invite Operations And `#all` Guardrails
@@ -24,7 +24,7 @@ test.describe('CHN-003', () => {
       name: `qa-members-${Date.now()}`,
       description: 'playwright CHN-003',
     })
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–4: #all has no invite button and shows complete membership', async () => {
       await clickSidebarChannel(page, 'all')
@@ -52,7 +52,7 @@ test.describe('CHN-003', () => {
       await expect(page.locator('.members-panel-title')).toHaveText('2')
       const after = await getChannelMembersApi(request, channel.id)
       expect(after.members.map((m) => m.memberName)).toContain('bot-a')
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await clickSidebarChannel(page, channel.name)
       await openMembersPanel(page)
       await expect(page.locator('.members-panel-title')).toHaveText('2')

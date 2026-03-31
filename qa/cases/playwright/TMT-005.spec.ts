@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, createTeamApi, teamExists } from './helpers/api'
-import { clickSidebarChannel, openMembersPanel, sendChatMessage } from './helpers/ui'
+import { clickSidebarChannel, openMembersPanel, sendChatMessage , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -34,7 +34,7 @@ test.describe('TMT-005', () => {
   test('Team Member Add / Remove @case TMT-005', async ({ page }) => {
     test.setTimeout(300_000)
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await clickSidebarChannel(page, 'qa-eng')
 
     await test.step('Step 1: Open team settings', async () => {
@@ -48,7 +48,6 @@ test.describe('TMT-005', () => {
         await page.locator('.team-settings-add-row select').selectOption('bot-b')
         await page.locator('.team-settings-add-row button:has-text("Add")').click()
         await page.locator('.team-settings-card button:has-text("Save")').click()
-        await page.waitForTimeout(600)
       }
       await expect(page.locator('.team-settings-member').filter({ hasText: 'bot-b' })).toBeVisible()
     })
@@ -73,7 +72,6 @@ test.describe('TMT-005', () => {
       if (await row.isVisible().catch(() => false)) {
         await row.getByRole('button', { name: 'Remove' }).click()
         await page.locator('.team-settings-card button:has-text("Save")').click()
-        await page.waitForTimeout(600)
       }
       await expect(page.locator('.team-settings-member').filter({ hasText: 'bot-b' })).toHaveCount(0)
       await page.locator('.team-settings-card .modal-close').click()
@@ -82,7 +80,7 @@ test.describe('TMT-005', () => {
     await test.step('Steps 8–10: Members rail without bot-b; refresh', async () => {
       await openMembersPanel(page)
       await expect(page.locator('.members-panel-name').filter({ hasText: 'bot-b' })).toHaveCount(0)
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await clickSidebarChannel(page, 'qa-eng')
       await openMembersPanel(page)
       await expect(page.locator('.members-panel-name').filter({ hasText: 'bot-b' })).toHaveCount(0)

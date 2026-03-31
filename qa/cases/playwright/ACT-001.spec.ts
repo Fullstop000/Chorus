@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { gotoApp, reloadApp } from './helpers/ui'
 import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
 
 /**
@@ -30,7 +31,7 @@ test.describe('ACT-001', () => {
   })
 
   test('Activity Timeline Completeness And Readability @case ACT-001', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Open bot-a Activity tab', async () => {
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
@@ -54,7 +55,7 @@ test.describe('ACT-001', () => {
     })
 
     await test.step('Step 8: Refresh preserves panel', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
       await page.getByRole('button', { name: 'Activity' }).click()
       await expect(page.locator('.activity-panel')).toBeVisible()

@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { gotoApp } from './helpers/ui'
 import { ensureMixedRuntimeTrio, listAgents } from './helpers/api'
 
 /**
@@ -33,7 +34,7 @@ test.describe('LFC-001', () => {
     page,
     request,
   }) => {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Select test agent bot-a', async () => {
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()

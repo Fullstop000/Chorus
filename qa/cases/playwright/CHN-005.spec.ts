@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
-import { createUserChannelViaUi, clickSidebarChannel } from './helpers/ui'
+import { test, expect } from './helpers/fixtures'
+import { createUserChannelViaUi, clickSidebarChannel , gotoApp } from './helpers/ui'
 
 test.describe('CHN-005', () => {
   test('Channel rename updates sidebar immediately without full refresh @case CHN-005', async ({
@@ -8,7 +8,7 @@ test.describe('CHN-005', () => {
     const original = `qa-rename-${Date.now()}`
     const renamed = `qa-retitled-${Date.now()}`
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await createUserChannelViaUi(page, original, 'playwright CHN-005')
     await clickSidebarChannel(page, original)

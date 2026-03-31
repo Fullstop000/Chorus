@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, createChannelApi } from './helpers/api'
-import { clickSidebarChannel, openAgentChat } from './helpers/ui'
+import { clickSidebarChannel, openAgentChat , gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/agents.md` — NAV-001 Sidebar Navigation And Selection Persistence
@@ -15,7 +15,7 @@ test.describe('NAV-001', () => {
       name: `qa-nav-${Date.now()}`,
       description: 'playwright NAV-001',
     })
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–4: Move between channel, agent, and tabs', async () => {
       await clickSidebarChannel(page, channel.name)
@@ -30,7 +30,7 @@ test.describe('NAV-001', () => {
     })
 
     await test.step('Step 5: Refresh preserves sane selected state', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       const header = await page.locator('.chat-header-name').textContent()
       expect(header === `#${channel.name}` || header === '#all').toBe(true)
     })

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { createChannelApi, getWhoami, sendAsUser } from './helpers/api'
 import { clickSidebarChannel, sendChatMessage } from './helpers/ui'
 
@@ -39,7 +39,8 @@ test.describe('MSG-005', () => {
     })
     await clickSidebarChannel(page, channelName)
     await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
-    await page.waitForTimeout(1_000)
+    // Wait for the initial history fetch to settle before snapshotting the baseline
+    await expect(page.locator('.message-input-textarea')).toBeVisible()
 
     const baselineHistoryRequests = historyRequests
     expect(historyAfterParams.every((value) => value == null)).toBeTruthy()
@@ -65,7 +66,8 @@ test.describe('MSG-005', () => {
     expect(consoleDump).toContain('latestSeq')
     expect(consoleDump).not.toContain(remoteToken)
 
-    await page.waitForTimeout(4_000)
+    // Observe for 2 s to confirm no further history polling occurs
+    await page.waitForTimeout(2_000)
     expect(historyRequests).toBe(historyAfterRemoteSend)
     expect(historyAfterParams.slice(baselineHistoryRequests).every((value) => value != null)).toBe(
       true

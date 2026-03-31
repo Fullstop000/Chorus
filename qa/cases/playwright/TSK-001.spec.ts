@@ -1,4 +1,5 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from './helpers/fixtures'
+import { gotoApp } from './helpers/ui'
 import { ensureMixedRuntimeTrio } from "./helpers/api";
 import { createUserChannelViaUi, clickSidebarChannel } from "./helpers/ui";
 
@@ -34,7 +35,7 @@ test.describe("TSK-001", () => {
       }
     });
 
-    await page.goto("/", { waitUntil: "networkidle" });
+    await gotoApp(page)
 
     await test.step("Step 1: Open Tasks on a channel", async () => {
       await createUserChannelViaUi(page, slug, "playwright TSK-001");

@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -6,7 +6,7 @@ import {
   getWorkspaceApi,
   getWorkspaceFileApi,
 } from './helpers/api'
-import { openAgentTab } from './helpers/ui'
+import { openAgentTab , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/agents.md` — WRK-001 Workspace Tab Path And File Visibility
@@ -25,7 +25,7 @@ test.describe('WRK-001', () => {
     await fs.writeFile(noteAbs, '# Work Log\n\n- qa workspace note\n', 'utf8')
     const preview = await getWorkspaceFileApi(request, 'bot-a', noteRel)
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await openAgentTab(page, 'bot-a', 'Workspace')
 
     await test.step('Steps 1–6: Path, tree, and file metadata are visible', async () => {

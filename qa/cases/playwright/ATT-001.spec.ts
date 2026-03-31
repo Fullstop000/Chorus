@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import path from 'node:path'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { clickSidebarChannel } from './helpers/ui'
+import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/messaging.md` — ATT-001 Attachment Upload And Render
@@ -14,7 +14,7 @@ test.describe('ATT-001', () => {
   test('Attachment Upload And Render @case ATT-001', async ({ page, request }) => {
     const fixture = path.resolve(__dirname, '../../fixtures/qa-attachment.txt')
     const { username } = await getWhoami(request)
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await clickSidebarChannel(page, 'all')
 
     await test.step('Steps 1–4: Attach file and send message', async () => {

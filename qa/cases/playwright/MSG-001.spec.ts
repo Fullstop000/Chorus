@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { clickSidebarChannel, sendChatMessage } from './helpers/ui'
+import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -36,7 +36,7 @@ test.describe('MSG-001', () => {
     const { username } = await getWhoami(request)
     const mark = `msg1-${Date.now()}`
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Send prompt in #all asking all agents to reply', async () => {
       await clickSidebarChannel(page, 'all')
