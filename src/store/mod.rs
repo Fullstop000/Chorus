@@ -2,7 +2,6 @@ pub mod agents;
 pub mod attachments;
 pub mod channels;
 pub mod inbox;
-pub mod knowledge;
 pub mod messages;
 pub mod migrations;
 pub mod stream;
@@ -23,9 +22,6 @@ pub use agents::{Agent, AgentEnvVar, AgentStatus, Human};
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
 pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
-pub use knowledge::{
-    KnowledgeEntry, RecallQuery, RecallResponse, RememberRequest, RememberResponse,
-};
 pub use messages::{
     ActivityMessage, AttachmentRef, ChannelThreadInbox, ChannelThreadInboxEntry,
     ConversationMessageView, ForwardedFrom, HistoryMessage, HistorySnapshot, Message,
@@ -48,16 +44,6 @@ pub struct Store {
 impl Store {
     pub const DEFAULT_SYSTEM_CHANNEL: &'static str = "all";
     pub const DEFAULT_SYSTEM_CHANNEL_DESCRIPTION: &'static str = "All members";
-    pub const SHARED_MEMORY_CHANNEL: &'static str = "shared-memory";
-    pub const SHARED_MEMORY_DESCRIPTION: &'static str =
-        "Agent group memory — breadcrumbs posted here by mcp_chat_remember";
-
-    /// Built-in system channels can be surfaced separately in the UI without
-    /// necessarily being write-protected. Only protected channels should block
-    /// direct human or agent posts.
-    pub fn is_system_channel_read_only(name: &str) -> bool {
-        name == Self::SHARED_MEMORY_CHANNEL
-    }
 
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;

@@ -38,8 +38,7 @@ pub fn build_ui_shell_info(store: &Store) -> Result<UiShellInfo> {
     }
     system_channels.sort_by_key(|ch| match ch.name.as_str() {
         name if name == Store::DEFAULT_SYSTEM_CHANNEL => 0,
-        name if name == Store::SHARED_MEMORY_CHANNEL => 1,
-        _ => 2,
+        _ => 1,
     });
 
     let humans: Vec<HumanInfo> = store

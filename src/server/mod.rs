@@ -76,9 +76,7 @@ pub fn build_router_with_services(
             "/agent/{agent_id}/tasks/update-status",
             post(handle_update_task_status),
         )
-        .route("/agent/{agent_id}/upload", post(handle_upload))
-        .route("/agent/{agent_id}/remember", post(handle_remember))
-        .route("/agent/{agent_id}/recall", get(handle_recall));
+        .route("/agent/{agent_id}/upload", post(handle_upload));
 
     let api_router = Router::new()
         .route("/attachments/{attachment_id}", get(handle_get_attachment))

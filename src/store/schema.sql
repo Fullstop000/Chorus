@@ -118,40 +118,6 @@ CREATE TABLE IF NOT EXISTS attachments (
     uploaded_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the file was uploaded
 );
 
--- Shared memory/knowledge base for agents.
-CREATE TABLE IF NOT EXISTS shared_knowledge (
-    id TEXT PRIMARY KEY, -- Unique UUID for the knowledge entry
-    key TEXT NOT NULL, -- Topic or key for the knowledge
-    value TEXT NOT NULL, -- Detailed knowledge content
-    tags TEXT NOT NULL DEFAULT '', -- Comma-separated tags
-    author_agent_id TEXT NOT NULL, -- Agent who authored the entry
-    channel_context TEXT, -- Optional context about where this was learned
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When it was created
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')) -- When it was last updated
-);
-
-CREATE INDEX IF NOT EXISTS shared_knowledge_author ON shared_knowledge(author_agent_id);
-
--- Full-text search index for shared knowledge.
-CREATE VIRTUAL TABLE IF NOT EXISTS knowledge_fts USING fts5(
-    key,
-    value,
-    tags,
-    content='shared_knowledge',
-    content_rowid='rowid'
-);
-
--- Triggers to keep FTS index in sync.
-CREATE TRIGGER IF NOT EXISTS knowledge_fts_insert AFTER INSERT ON shared_knowledge BEGIN
-    INSERT INTO knowledge_fts(rowid, key, value, tags)
-    VALUES (new.rowid, new.key, new.value, new.tags);
-END;
-
-CREATE TRIGGER IF NOT EXISTS knowledge_fts_delete BEFORE DELETE ON shared_knowledge BEGIN
-    INSERT INTO knowledge_fts(knowledge_fts, rowid, key, value, tags)
-    VALUES ('delete', old.rowid, old.key, old.value, old.tags);
-END;
-
 -- Teams of agents.
 CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY, -- Unique UUID for the team

@@ -447,14 +447,6 @@ async fn send_message_to_channel(
     let store = &state.store;
     let sender_type = sender_type_for_actor(store, actor_id)?;
 
-    if channel.channel_type == ChannelType::System
-        && Store::is_system_channel_read_only(&channel.name)
-    {
-        return Err(api_err(
-            "Cannot post to system channels directly. Use mcp_chat_remember instead.",
-        ));
-    }
-
     let preview = content_preview(content);
     let target_label = match thread_parent_id {
         Some(parent_id) => format!("#{}:{parent_id}", channel.name),
