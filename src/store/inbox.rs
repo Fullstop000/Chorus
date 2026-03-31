@@ -512,7 +512,12 @@ impl Store {
             return Ok(None);
         };
         if member_type == SenderType::Agent.as_str() {
-            if !Self::agent_can_access_thread_inner(conn, channel_id, thread_parent_id, member_name)? {
+            if !Self::agent_can_access_thread_inner(
+                conn,
+                channel_id,
+                thread_parent_id,
+                member_name,
+            )? {
                 return Ok(None);
             }
         }
