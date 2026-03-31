@@ -1,41 +1,75 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
 import { archiveChannel, deleteChannel, updateChannel } from '../api'
 import type { ChannelInfo } from '../types'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
+import { Form, FormControl, FormField, FormLabel, FormMessage } from '@/components/ui/form'
+import { Input } from '@/components/ui/input'
+import { Button } from '@/components/ui/button'
+
+const editChannelSchema = z.object({
+  name: z.string().min(1, 'Channel name is required'),
+  description: z.string().optional(),
+})
+
+type EditChannelFormValues = z.infer<typeof editChannelSchema>
 
 interface EditChannelModalProps {
   channel: ChannelInfo
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onSaved: (channel: { id: string; name: string; description?: string | null }) => void
 }
 
 interface DeleteChannelModalProps {
   channel: ChannelInfo
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onArchived: () => void
   onDeleted: () => void
 }
 
-function normalizeChannelInput(name: string): string {
-  return name.trim().replace(/^#/, '')
-}
-
-export function EditChannelModal({ channel, onClose, onSaved }: EditChannelModalProps) {
-  const [name, setName] = useState(channel.name)
-  const [description, setDescription] = useState(channel.description ?? '')
+export function EditChannelModal({
+  channel,
+  open,
+  onOpenChange,
+  onSaved,
+}: EditChannelModalProps) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  async function handleSave() {
-    const trimmed = normalizeChannelInput(name)
+  const form = useForm<EditChannelFormValues>({
+    resolver: zodResolver(editChannelSchema),
+    defaultValues: {
+      name: channel.name,
+      description: channel.description ?? '',
+    },
+  })
+
+  useEffect(() => {
+    if (open) {
+      form.reset({
+        name: channel.name,
+        description: channel.description ?? '',
+      })
+      setError(null)
+    }
+  }, [open, channel.name, channel.description, form])
+
+  async function onSubmit(values: EditChannelFormValues) {
+    const trimmed = values.name.trim().replace(/^#/, '')
     if (!trimmed || !channel.id) return
     setSaving(true)
     setError(null)
     try {
       const updated = await updateChannel(channel.id, {
         name: trimmed,
-        description,
+        description: values.description ?? '',
       })
       onSaved(updated)
+      onOpenChange(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -44,53 +78,69 @@ export function EditChannelModal({ channel, onClose, onSaved }: EditChannelModal
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-card">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
         <div className="modal-header">
-          <span className="modal-title">Edit Channel</span>
-          <button className="modal-close" onClick={onClose}>×</button>
+          <div className="modal-title-block">
+            <span className="modal-title">Edit Channel</span>
+          </div>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
 
-        <div className="form-group">
-          <label className="form-label">Name</label>
-          <input
-            className="form-input"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSave()}
-            autoFocus
-          />
-        </div>
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+            <FormField
+              control={form.control}
+              name="name"
+              render={({ field }) => (
+                <div className="form-group">
+                  <FormLabel>Name</FormLabel>
+                  <FormControl>
+                    <Input {...field} autoFocus />
+                  </FormControl>
+                  <FormMessage />
+                </div>
+              )}
+            />
 
-        <div className="form-group">
-          <label className="form-label">Description (optional)</label>
-          <textarea
-            className="form-textarea"
-            value={description}
-            onChange={(e) => setDescription(e.target.value)}
-          />
-        </div>
+            <FormField
+              control={form.control}
+              name="description"
+              render={({ field }) => (
+                <div className="form-group">
+                  <FormLabel>Description (optional)</FormLabel>
+                  <FormControl>
+                    <Input placeholder="What's this channel about?" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </div>
+              )}
+            />
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-          <button className="btn-brutal" onClick={onClose}>Cancel</button>
-          <button
-            className="btn-brutal btn-cyan"
-            onClick={handleSave}
-            disabled={saving || !normalizeChannelInput(name)}
-          >
-            {saving ? 'Saving…' : 'Save Changes'}
-          </button>
-        </div>
-      </div>
-    </div>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button
+                type="submit"
+                variant="brutal"
+                disabled={saving || !form.getValues('name').trim()}
+              >
+                {saving ? 'Saving…' : 'Save Changes'}
+              </Button>
+            </div>
+          </form>
+        </Form>
+      </DialogContent>
+    </Dialog>
   )
 }
 
 export function DeleteChannelModal({
   channel,
-  onClose,
+  open,
+  onOpenChange,
   onArchived,
   onDeleted,
 }: DeleteChannelModalProps) {
@@ -104,6 +154,7 @@ export function DeleteChannelModal({
     try {
       await archiveChannel(channel.id)
       onArchived()
+      onOpenChange(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -118,6 +169,7 @@ export function DeleteChannelModal({
     try {
       await deleteChannel(channel.id)
       onDeleted()
+      onOpenChange(false)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -126,14 +178,13 @@ export function DeleteChannelModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-card">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
         <div className="modal-header">
           <div className="modal-title-block">
             <span className="modal-title">Delete Channel</span>
             <span className="modal-subtitle">#{channel.name}</span>
           </div>
-          <button className="modal-close" onClick={onClose}>×</button>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
@@ -143,24 +194,41 @@ export function DeleteChannelModal({
           delete removes the channel and its tasks, messages, and memberships.
         </div>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20, flexWrap: 'wrap' }}>
-          <button className="btn-brutal" onClick={onClose} disabled={busyAction !== null}>Cancel</button>
-          <button
-            className="btn-brutal btn-yellow"
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'flex-end',
+            gap: 8,
+            marginTop: 20,
+            flexWrap: 'wrap',
+          }}
+        >
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={busyAction !== null}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="brutal"
             onClick={handleArchive}
             disabled={busyAction !== null}
           >
             {busyAction === 'archive' ? 'Archiving…' : 'Archive Channel'}
-          </button>
-          <button
-            className="btn-brutal btn-orange"
+          </Button>
+          <Button
+            type="button"
+            variant="brutal"
             onClick={handleDelete}
             disabled={busyAction !== null}
           >
             {busyAction === 'delete' ? 'Deleting…' : 'Delete Permanently'}
-          </button>
+          </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
