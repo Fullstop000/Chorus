@@ -311,6 +311,10 @@ impl Driver for KimiDriver {
     fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus> {
         detect_kimi_runtime_status(self.id(), &home_dir())
     }
+
+    fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec!["kimi-code/kimi-for-coding".to_string()])
+    }
 }
 
 fn detect_kimi_runtime_status(runtime_id: &str, home: &Path) -> anyhow::Result<RuntimeStatus> {

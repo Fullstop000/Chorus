@@ -85,6 +85,10 @@ export async function listRuntimeStatuses(): Promise<RuntimeStatusInfo[]> {
   return json(await fetch(`${BASE}/api/runtimes`))
 }
 
+export async function listRuntimeModels(runtime: string): Promise<string[]> {
+  return json(await fetch(`${BASE}/api/runtimes/${encodeURIComponent(runtime)}/models`))
+}
+
 export async function createChannel(payload: {
   name: string
   description: string

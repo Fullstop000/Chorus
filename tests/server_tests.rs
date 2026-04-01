@@ -78,6 +78,7 @@ struct MockLifecycle {
 
 struct MockRuntimeStatusProvider {
     statuses: Vec<RuntimeStatus>,
+    models_by_runtime: Vec<(String, Vec<String>)>,
 }
 
 struct FailStartLifecycle;
@@ -85,6 +86,15 @@ struct FailStartLifecycle;
 impl RuntimeStatusProvider for MockRuntimeStatusProvider {
     fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatus>> {
         Ok(self.statuses.clone())
+    }
+
+    fn list_models(&self, runtime: &str) -> anyhow::Result<Vec<String>> {
+        Ok(self
+            .models_by_runtime
+            .iter()
+            .find(|(name, _)| name == runtime)
+            .map(|(_, models)| models.clone())
+            .unwrap_or_default())
     }
 }
 
@@ -227,6 +237,7 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
 
 fn setup_with_runtime_statuses(
     statuses: Vec<RuntimeStatus>,
+    models_by_runtime: Vec<(String, Vec<String>)>,
 ) -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
@@ -243,7 +254,10 @@ fn setup_with_runtime_statuses(
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
     let lifecycle = Arc::new(MockLifecycle::default());
-    let runtime_status_provider = Arc::new(MockRuntimeStatusProvider { statuses });
+    let runtime_status_provider = Arc::new(MockRuntimeStatusProvider {
+        statuses,
+        models_by_runtime,
+    });
     let router =
         build_router_with_services(store.clone(), lifecycle.clone(), runtime_status_provider);
     (store, router, lifecycle)
@@ -1217,7 +1231,7 @@ async fn test_list_runtime_statuses() {
             installed: false,
             auth_status: None,
         },
-    ]);
+    ], vec![]);
 
     let resp = app
         .oneshot(
@@ -1246,6 +1260,40 @@ async fn test_list_runtime_statuses() {
     assert_eq!(runtimes[2]["runtime"], "kimi");
     assert_eq!(runtimes[2]["installed"], false);
     assert!(runtimes[2].get("authStatus").is_none());
+}
+
+#[tokio::test]
+async fn test_list_runtime_models() {
+    let (_store, app, _lifecycle) = setup_with_runtime_statuses(
+        vec![],
+        vec![
+            (
+                "codex".to_string(),
+                vec!["gpt-5.4".to_string(), "gpt-5.4-mini".to_string()],
+            ),
+            (
+                "opencode".to_string(),
+                vec!["openai/gpt-5.4".to_string()],
+            ),
+        ],
+    );
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/runtimes/opencode/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let payload: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(payload, serde_json::json!(["openai/gpt-5.4"]));
 }
 
 #[tokio::test]

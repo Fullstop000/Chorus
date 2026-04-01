@@ -77,6 +77,8 @@ pub trait Driver: Send + Sync {
     fn summarize_tool_input(&self, name: &str, input: &serde_json::Value) -> String;
     /// Detect whether the runtime is installed and authenticated on this machine.
     fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus>;
+    /// Return the runtime's currently supported model ids.
+    fn list_models(&self) -> anyhow::Result<Vec<String>>;
 }
 
 pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {

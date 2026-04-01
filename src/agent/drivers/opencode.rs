@@ -8,6 +8,15 @@ use crate::store::agents::AgentRuntime;
 
 pub struct OpencodeDriver;
 
+fn parse_opencode_models(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
 impl Driver for OpencodeDriver {
     fn runtime(&self) -> AgentRuntime {
         AgentRuntime::Opencode
@@ -335,11 +344,32 @@ impl Driver for OpencodeDriver {
             auth_status: Some(auth_status),
         })
     }
+
+    fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        if !command_exists("opencode") {
+            return Ok(Vec::new());
+        }
+
+        let result = run_command("opencode", &["models"])?;
+        if !result.success {
+            anyhow::bail!("failed to list opencode models: {}", result.stderr.trim());
+        }
+
+        Ok(parse_opencode_models(&result.stdout))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_opencode_models_skips_blank_lines() {
+        assert_eq!(
+            parse_opencode_models("\nopenai/gpt-5.4\n\nopenai/gpt-5.4-mini\n"),
+            vec!["openai/gpt-5.4".to_string(), "openai/gpt-5.4-mini".to_string()]
+        );
+    }
 
     #[test]
     fn opencode_parse_line_maps_text_event() {

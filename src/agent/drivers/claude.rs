@@ -366,4 +366,12 @@ impl Driver for ClaudeDriver {
             auth_status: Some(auth_status),
         })
     }
+
+    fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![
+            "sonnet".to_string(),
+            "opus".to_string(),
+            "haiku".to_string(),
+        ])
+    }
 }

@@ -187,6 +187,17 @@ pub async fn handle_list_runtime_statuses(
     Ok(Json(statuses))
 }
 
+pub async fn handle_list_runtime_models(
+    State(state): State<AppState>,
+    Path(runtime): Path<String>,
+) -> ApiResult<Vec<String>> {
+    let models = state
+        .runtime_status_provider
+        .list_models(&runtime)
+        .map_err(|e| api_err(e.to_string()))?;
+    Ok(Json(models))
+}
+
 #[cfg(test)]
 mod tests {
     use anyhow::anyhow;

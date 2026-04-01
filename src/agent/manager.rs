@@ -756,6 +756,10 @@ mod tests {
                 auth_status: Some(crate::agent::runtime_status::RuntimeAuthStatus::Authed),
             })
         }
+
+        fn list_models(&self) -> anyhow::Result<Vec<String>> {
+            Ok(vec!["gpt-5.4-mini".to_string()])
+        }
     }
 
     fn sample_config(session_id: Option<&str>) -> AgentConfig {

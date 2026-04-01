@@ -1,32 +1,7 @@
+import { useEffect } from 'react'
 import type { AgentEnvVar, RuntimeStatusInfo } from '../types'
+import { useRuntimeModels } from '../hooks/useRuntimeModels'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-
-export const MODELS: Record<string, { value: string; label: string }[]> = {
-  claude: [
-    { value: 'sonnet', label: 'claude-sonnet-4-6' },
-    { value: 'opus', label: 'claude-opus-4-6' },
-    { value: 'haiku', label: 'claude-haiku-4-5' },
-  ],
-  codex: [
-    { value: 'gpt-5.4', label: 'gpt-5.4' },
-    { value: 'gpt-5.4-mini', label: 'gpt-5.4-mini' },
-    { value: 'gpt-5.3-codex', label: 'gpt-5.3-codex' },
-    { value: 'gpt-5.2-codex', label: 'gpt-5.2-codex' },
-    { value: 'gpt-5.2', label: 'gpt-5.2' },
-    { value: 'gpt-5.1-codex-max', label: 'gpt-5.1-codex-max' },
-    { value: 'gpt-5.1-codex-mini', label: 'gpt-5.1-codex-mini' },
-  ],
-  kimi: [
-    { value: 'kimi-code/kimi-for-coding', label: 'kimi-for-coding' },
-  ],
-  opencode: [
-    { value: 'anthropic/claude-sonnet-4-20250514', label: 'claude-sonnet-4 (Anthropic)' },
-    { value: 'anthropic/claude-opus-4-20250514', label: 'claude-opus-4 (Anthropic)' },
-    { value: 'openai/gpt-4.1', label: 'gpt-4.1 (OpenAI)' },
-    { value: 'openai/o3', label: 'o3 (OpenAI)' },
-    { value: 'google/gemini-2.5-pro', label: 'gemini-2.5-pro (Google)' },
-  ],
-}
 
 export const REASONING_EFFORTS = [
   { value: 'default', label: 'Default' },
@@ -109,6 +84,19 @@ export function AgentConfigForm({
   editableName = false,
   onChange,
 }: Props) {
+  const { runtimeModels, runtimeModelsError } = useRuntimeModels(state.runtime)
+
+  useEffect(() => {
+    if (runtimeModels.length === 0 || runtimeModels.includes(state.model)) {
+      return
+    }
+
+    onChange({
+      ...state,
+      model: runtimeModels[0],
+    })
+  }, [onChange, runtimeModels, state])
+
   function updateEnvVar(index: number, key: keyof AgentEnvVar, value: string) {
     const envVars = state.envVars.map((envVar, envIndex) =>
       envIndex === index ? { ...envVar, [key]: value } : envVar
@@ -188,11 +176,10 @@ export function AgentConfigForm({
             <Select
               value={state.runtime}
               onValueChange={(runtime) => {
-                const model = MODELS[runtime]?.[0]?.value ?? ''
                 onChange({
                   ...state,
                   runtime,
-                  model,
+                  model: '',
                   reasoningEffort: runtime === 'codex' || runtime === 'opencode' ? state.reasoningEffort ?? 'default' : null,
                 })
               }}
@@ -226,13 +213,16 @@ export function AgentConfigForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {(MODELS[state.runtime] ?? []).map((model) => (
-                  <SelectItem key={model.value} value={model.value}>
-                    {model.label}
+                {runtimeModels.map((model) => (
+                  <SelectItem key={model} value={model}>
+                    {model}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
+            {runtimeModelsError && (
+              <div className="modal-field-hint">{runtimeModelsError}</div>
+            )}
           </div>
 
           {(state.runtime === 'codex' || state.runtime === 'opencode') && (
