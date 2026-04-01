@@ -1,15 +1,19 @@
 import { useState } from 'react'
 import { useRuntimeStatuses } from '../hooks/useRuntimeStatuses'
-import './ProfilePanel.css'  // reuses modal styles
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
+import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { FormField, FormError } from '@/components/ui/form'
+import { Label } from '@/components/ui/label'
 
 interface Props {
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onCreated: () => void
 }
 
-export function CreateAgentModal({ onClose, onCreated }: Props) {
+export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   const [config, setConfig] = useState<AgentConfigState>({
     name: '',
     display_name: '',
@@ -60,27 +64,27 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box modal-box-agent">
-        <div className="modal-header">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(720px,96vw)]">
+        <DialogHeader>
           <div className="modal-title-block">
-            <span className="modal-title">Create Agent</span>
-            <span className="modal-subtitle">[agent::new]</span>
+            <DialogTitle>Create Agent</DialogTitle>
+            <DialogDescription>[agent::new]</DialogDescription>
           </div>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+        </DialogHeader>
 
-        <div className="modal-field">
-          <label className="form-label">Machine</label>
+        <FormField>
+          <Label>Machine</Label>
           <Select value="local" disabled>
-            <SelectTrigger className="form-select" aria-label="Machine">
+            <SelectTrigger aria-label="Machine">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="local">local</SelectItem>
             </SelectContent>
           </Select>
-        </div>
+        </FormField>
 
         <AgentConfigForm
           state={config}
@@ -90,19 +94,18 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           onChange={setConfig}
         />
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <FormError>{error}</FormError>}
 
-        <div className="modal-footer">
-          <button className="btn-brutal" onClick={onClose}>Cancel</button>
-          <button
-            className="btn-brutal btn-cyan"
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button
             onClick={handleCreate}
             disabled={creating || !config.name.trim() || !config.model.trim()}
           >
             {creating ? 'Creating...' : 'Create Agent'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
