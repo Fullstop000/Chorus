@@ -511,15 +511,15 @@ impl Store {
         let Some(member_type) = member_type else {
             return Ok(None);
         };
-        if member_type == SenderType::Agent.as_str() {
-            if !Self::agent_can_access_thread_inner(
+        if member_type == SenderType::Agent.as_str()
+            && !Self::agent_can_access_thread_inner(
                 conn,
                 channel_id,
                 thread_parent_id,
                 member_name,
-            )? {
-                return Ok(None);
-            }
+            )?
+        {
+            return Ok(None);
         }
 
         let last_read_seq = conn
