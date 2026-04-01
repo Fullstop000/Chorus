@@ -44,7 +44,7 @@ test.describe('TMT-007', () => {
     })
 
     await test.step('Steps 4–6: Channel removed; refresh', async () => {
-      await expect(page.locator('.modal-title:text("Team Settings")')).toBeHidden({ timeout: 25_000 })
+      await expect(page.locator('[role="dialog"]')).toBeHidden({ timeout: 25_000 })
       await expect(page.locator('.sidebar-item-text').filter({ hasText: name })).toHaveCount(0)
       await reloadApp(page)
       await expect(page.locator('.sidebar-item-text').filter({ hasText: name })).toHaveCount(0)

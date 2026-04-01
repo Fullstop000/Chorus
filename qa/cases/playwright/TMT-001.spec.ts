@@ -58,17 +58,19 @@ test.describe('TMT-001', () => {
 
     await test.step('Steps 1–2: New Channel modal — Channel / Team toggle', async () => {
       await page.click('button[title="Add channel"]')
-      await expect(page.locator('.modal-title:text("Create Channel")')).toBeVisible()
-      await expect(page.locator('.btn-brutal:has-text("Team")')).toBeVisible()
-      await page.locator('.btn-brutal:has-text("Team")').click()
-      await expect(page.locator('.modal-title:text("Create Team")')).toBeVisible()
-      await page.locator('.modal-close').click()
+      const dialog = page.locator('[role="dialog"]')
+      await expect(dialog.getByText('Create Channel')).toBeVisible()
+      await expect(dialog.locator('button:has-text("Team")')).toBeVisible()
+      await dialog.locator('button:has-text("Team")').click()
+      await expect(dialog.getByText('Create Team')).toBeVisible()
+      await dialog.locator('button:has-text("Cancel")').click()
     })
 
     await test.step('Step 7 (+ New Team shortcut): Team tab pre-selected', async () => {
       await page.click('button[title="Add team"]')
-      await expect(page.locator('.modal-title:text("Create Team")')).toBeVisible()
-      await page.locator('.modal-close').click()
+      const dialog = page.locator('[role="dialog"]')
+      await expect(dialog.getByText('Create Team')).toBeVisible()
+      await dialog.locator('button:has-text("Cancel")').click()
     })
 
     if (!hasTeam) {

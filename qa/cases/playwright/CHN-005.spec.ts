@@ -18,11 +18,12 @@ test.describe('CHN-005', () => {
     await row.hover()
     await row.locator('button[title^="Edit #"]').click()
 
-    await expect(page.locator('.modal-title').filter({ hasText: 'Edit Channel' })).toBeVisible()
-    await page.locator('.modal-card .form-input').fill(renamed)
-    await page.locator('.modal-card button:has-text("Save Changes")').click()
+    const dialog = page.locator('[role="dialog"]')
+    await expect(dialog.getByText('Edit Channel')).toBeVisible()
+    await dialog.locator('input').first().fill(renamed)
+    await dialog.locator('button:has-text("Save Changes")').click()
 
-    await expect(page.locator('.modal-title').filter({ hasText: 'Edit Channel' })).toBeHidden()
+    await expect(dialog).toBeHidden()
     await expect(
       page.locator('.sidebar-item-text').filter({ hasText: new RegExp(`^${renamed}$`) }).first()
     ).toBeVisible()

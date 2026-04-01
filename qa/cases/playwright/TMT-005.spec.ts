@@ -39,21 +39,22 @@ test.describe('TMT-005', () => {
 
     await test.step('Step 1: Open team settings', async () => {
       await page.getByRole('button', { name: 'Open team settings' }).click()
-      await expect(page.locator('.modal-title:text("Team Settings")')).toBeVisible()
+      await expect(page.locator('[role="dialog"]').getByText('Team Settings')).toBeVisible()
     })
 
     await test.step('Steps 2–3: Add bot-b if missing', async () => {
       const row = page.locator('.team-settings-member').filter({ hasText: 'bot-b' })
       if (!(await row.isVisible().catch(() => false))) {
-        await page.locator('.team-settings-add-row select').selectOption('bot-b')
+        await page.locator('[role="dialog"] [role="combobox"][aria-label="Add Member"]').click()
+        await page.locator('[role="option"]').filter({ hasText: 'bot-b' }).first().click()
         await page.locator('.team-settings-add-row button:has-text("Add")').click()
-        await page.locator('.team-settings-card button:has-text("Save")').click()
+        await page.locator('[role="dialog"] button:has-text("Save")').click()
       }
       await expect(page.locator('.team-settings-member').filter({ hasText: 'bot-b' })).toBeVisible()
     })
 
     await test.step('Step 4: Members rail lists bot-b', async () => {
-      await page.locator('.team-settings-card .modal-close').click()
+      await page.locator('[role="dialog"] button:has-text("Close")').click()
       await openMembersPanel(page)
       await expect(page.locator('.members-panel-name').filter({ hasText: 'bot-b' })).toBeVisible()
       await page.locator('.members-panel-close').click()
@@ -74,7 +75,7 @@ test.describe('TMT-005', () => {
         await page.locator('.team-settings-card button:has-text("Save")').click()
       }
       await expect(page.locator('.team-settings-member').filter({ hasText: 'bot-b' })).toHaveCount(0)
-      await page.locator('.team-settings-card .modal-close').click()
+      await page.locator('[role="dialog"] button:has-text("Close")').click()
     })
 
     await test.step('Steps 8–10: Members rail without bot-b; refresh', async () => {
