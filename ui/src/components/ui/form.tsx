@@ -1,29 +1,13 @@
-/**
- * Form Components
- * 
- * Consistent form layout helpers that work with shadcn/ui
- * Replaces custom: form-group, form-label, modal-field, modal-field-hint
- */
-
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { Label } from "./label"
+import { Label } from "@/components/ui/label"
 
-interface FormFieldProps extends React.HTMLAttributes<HTMLDivElement> {
-  children: React.ReactNode
-}
-
-const FormField = React.forwardRef<HTMLDivElement, FormFieldProps>(
-  ({ className, children, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn("space-y-2", className)}
-      {...props}
-    >
-      {children}
-    </div>
-  )
-)
+const FormField = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div ref={ref} className={cn("mb-2.5", className)} {...props} />
+))
 FormField.displayName = "FormField"
 
 interface FormLabelProps extends React.ComponentPropsWithoutRef<typeof Label> {
@@ -33,55 +17,35 @@ interface FormLabelProps extends React.ComponentPropsWithoutRef<typeof Label> {
 const FormLabel = React.forwardRef<
   React.ElementRef<typeof Label>,
   FormLabelProps
->(({ className, children, required, ...props }, ref) => (
-  <Label
-    ref={ref}
-    className={cn(
-      "font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--color-muted-foreground)]",
-      className
-    )}
-    {...props}
-  >
+>(({ className, required, children, ...props }, ref) => (
+  <Label ref={ref} className={className} {...props}>
     {children}
-    {required && <span className="text-[#c67a18] ml-1">*</span>}
+    {required && <span className="text-destructive ml-1">*</span>}
   </Label>
 ))
 FormLabel.displayName = "FormLabel"
 
-interface FormDescriptionProps extends React.HTMLAttributes<HTMLParagraphElement> {
-  children: React.ReactNode
-}
-
 const FormDescription = React.forwardRef<
   HTMLParagraphElement,
-  FormDescriptionProps
->(({ className, children, ...props }, ref) => (
+  React.HTMLAttributes<HTMLParagraphElement>
+>(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-[12px] text-[var(--color-muted-foreground)] leading-relaxed", className)}
+    className={cn("text-xs text-muted-foreground leading-relaxed mt-1", className)}
     {...props}
-  >
-    {children}
-  </p>
+  />
 ))
 FormDescription.displayName = "FormDescription"
 
-interface FormMessageProps extends React.HTMLAttributes<HTMLParagraphElement> {
-  children?: React.ReactNode
-}
-
 const FormMessage = React.forwardRef<
   HTMLParagraphElement,
-  FormMessageProps
+  React.HTMLAttributes<HTMLParagraphElement>
 >(({ className, children, ...props }, ref) => {
   if (!children) return null
   return (
     <p
       ref={ref}
-      className={cn(
-        "text-[12px] font-medium text-[#c67a18]",
-        className
-      )}
+      className={cn("text-xs font-mono text-destructive mt-1", className)}
       {...props}
     >
       {children}
@@ -90,33 +54,19 @@ const FormMessage = React.forwardRef<
 })
 FormMessage.displayName = "FormMessage"
 
-interface FormErrorProps extends React.HTMLAttributes<HTMLDivElement> {
-  children: React.ReactNode
-}
-
-const FormError = React.forwardRef<HTMLDivElement, FormErrorProps>(
-  ({ className, children, ...props }, ref) => (
-    <div
-      ref={ref}
-      className={cn(
-        "border border-[rgba(198,122,24,0.18)]",
-        "bg-[rgba(198,122,24,0.08)]",
-        "text-[#9a5e12]",
-        "px-3 py-2 text-[13px]",
-        className
-      )}
-      {...props}
-    >
-      {children}
-    </div>
-  )
-)
+const FormError = React.forwardRef<
+  HTMLDivElement,
+  React.HTMLAttributes<HTMLDivElement>
+>(({ className, ...props }, ref) => (
+  <div
+    ref={ref}
+    className={cn(
+      "border border-destructive/20 rounded-none bg-destructive/10 text-[#9a5e12] px-2.5 py-2 text-[13px] mb-3",
+      className
+    )}
+    {...props}
+  />
+))
 FormError.displayName = "FormError"
 
-export {
-  FormField,
-  FormLabel,
-  FormDescription,
-  FormMessage,
-  FormError,
-}
+export { FormField, FormLabel, FormDescription, FormMessage, FormError }
