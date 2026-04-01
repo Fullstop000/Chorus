@@ -25,7 +25,7 @@ test.describe('ERR-001', () => {
       ])
       await chooser.setFiles(fixture)
       await page.locator('.message-input-send').click()
-      await expect(page.locator('.error-banner')).toContainText('forced upload failure')
+      await expect(page.locator('.message-input-area')).toContainText('forced upload failure')
       await expect(page.locator('.file-chip')).toContainText('qa-attachment.txt')
     })
 

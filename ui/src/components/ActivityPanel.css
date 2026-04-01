@@ -14,9 +14,9 @@
   gap: 10px;
   margin-bottom: 14px;
   padding: 12px 14px;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-strong);
+  background: var(--color-popover);
   box-shadow: none;
   flex-shrink: 0;
 }
@@ -28,7 +28,7 @@
   flex: 1;
   text-transform: lowercase;
   letter-spacing: 0.07em;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .activity-status {
@@ -49,7 +49,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-size: 13px;
   font-family: var(--font-mono);
 }
@@ -71,7 +71,7 @@
   font-size: 12px;
   line-height: 1.5;
   border-radius: 0;
-  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 72%, transparent);
   background: rgba(255, 255, 255, 0.74);
   box-shadow: none;
 }
@@ -87,9 +87,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   border-radius: 0;
-  background: color-mix(in srgb, var(--bg-panel-strong) 80%, var(--text-muted) 8%);
+  background: color-mix(in srgb, var(--color-popover) 80%, var(--color-muted-foreground) 8%);
 }
 
 .activity-item-main {
@@ -113,11 +113,11 @@
   font-weight: 700;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
 }
 
 .activity-item-meta {
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
   font-family: var(--font-mono);
 }
 
@@ -128,22 +128,22 @@
   border-radius: 0;
   font-size: 10px;
   font-family: var(--font-mono);
-  color: var(--text-muted);
-  background: var(--bg-panel-muted);
+  color: var(--color-muted-foreground);
+  background: var(--color-muted);
 }
 
 .activity-item-body {
-  color: var(--text-primary);
+  color: var(--color-foreground);
   word-break: break-word;
 }
 
 .activity-item-muted {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .activity-item-time {
   flex-shrink: 0;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-size: 10px;
   margin-top: 3px;
   font-family: var(--font-mono);
@@ -205,12 +205,12 @@
 }
 
 .activity-icon-tool {
-  color: var(--text-secondary);
-  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  color: var(--color-accent-foreground);
+  background: color-mix(in srgb, var(--color-accent-foreground) 10%, transparent);
 }
 
 .activity-tool-input {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .activity-item-text-entry {
@@ -262,7 +262,7 @@
   align-items: center;
   gap: 4px;
   margin-left: 6px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-family: var(--font-mono);
   font-size: 10px;
   text-transform: lowercase;

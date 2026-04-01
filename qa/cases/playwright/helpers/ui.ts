@@ -27,15 +27,19 @@ export async function createAgentViaUi(
   opts: { name: string; runtime: string; model: string; reasoningEffort?: string | null }
 ): Promise<void> {
   await page.click('button[title="Create agent"]')
-  await expect(page.locator('.modal-title:text("Create Agent")')).toBeVisible()
-  await page.locator('.modal-box-agent input[placeholder="e.g. my-agent"]').fill(opts.name)
-  await page.locator('.modal-box-agent .modal-field:has-text("Runtime") select').selectOption(opts.runtime)
-  await page.locator('.modal-box-agent .modal-field:has-text("Model") select').first().selectOption(opts.model)
+  const dialog = page.locator('[role="dialog"]')
+  await expect(dialog.getByRole('heading', { name: 'Create Agent' })).toBeVisible()
+  await dialog.locator('input[placeholder="e.g. my-agent"]').fill(opts.name)
+  await dialog.locator('[role="combobox"][aria-label="Runtime"]').click()
+  await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.runtime, 'i') }).first().click()
+  await dialog.locator('[role="combobox"][aria-label="Model"]').click()
+  await page.locator('[role="option"]').filter({ hasText: opts.model }).first().click()
   if (opts.runtime === 'codex' && opts.reasoningEffort) {
-    await page.locator('.modal-box-agent .modal-field:has-text("Reasoning") select').selectOption(opts.reasoningEffort)
+    await dialog.locator('[role="combobox"][aria-label="Reasoning"]').click()
+    await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.reasoningEffort, 'i') }).first().click()
   }
-  await page.locator('.modal-box-agent button:has-text("Create Agent")').click()
-  await expect(page.locator('.modal-title:text("Create Agent")')).toBeHidden({ timeout: 120_000 })
+  await dialog.locator('button:has-text("Create Agent")').click()
+  await expect(dialog).toBeHidden({ timeout: 120_000 })
 }
 
 export async function createUserChannelViaUi(
@@ -44,30 +48,33 @@ export async function createUserChannelViaUi(
   description: string
 ): Promise<void> {
   await page.click('button[title="Add channel"]')
-  await expect(page.locator('.modal-title:text("Create Channel")')).toBeVisible()
+  const dialog = page.locator('[role="dialog"]')
+  await expect(dialog.getByRole('heading', { name: 'Create Channel' })).toBeVisible()
   await page.locator('input[placeholder="e.g. engineering"]').fill(name)
   await page.locator('input[placeholder="What\'s this channel about?"]').fill(description)
-  await page.locator('.modal-card button:has-text("Create Channel")').click()
-  await expect(page.locator('.modal-title:text("Create Channel")')).toBeHidden({ timeout: 30_000 })
+  await dialog.locator('button:has-text("Create Channel")').click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
 }
 
 /** Catalog TMT-001 steps 3–4: Leader+Operators `qa-eng`, bot-a leader, bot-b operator. */
 export async function createTeamQaEngViaUi(page: Page): Promise<void> {
   await page.click('button[title="Add channel"]')
-  await page.locator('.btn-brutal:has-text("Team")').click()
-  await expect(page.locator('.modal-title:text("Create Team")')).toBeVisible()
+  const dialog = page.locator('[role="dialog"]')
+  await dialog.locator('button:has-text("Team")').click()
+  await expect(dialog.getByRole('heading', { name: 'Create Team' })).toBeVisible()
   await page.locator('input[placeholder="e.g. eng-team"]').fill('qa-eng')
   await page.locator('input[placeholder="Engineering Team"]').fill('QA Engineering')
-  const memberSelect = page.locator('.form-group:has-text("Initial Members") select.form-select').first()
-  await memberSelect.selectOption('bot-a')
-  await page.locator('.form-group:has-text("Initial Members") button:has-text("Add")').click()
-  await memberSelect.selectOption('bot-b')
-  await page.locator('.form-group:has-text("Initial Members") button:has-text("Add")').click()
-  await page
-    .locator('.form-group:has(> .form-label:text("Leader")) > select.form-select')
-    .selectOption('bot-a')
-  await page.locator('.modal-card button:has-text("Create Team")').click()
-  await expect(page.locator('.modal-title:text("Create Team")')).toBeHidden({ timeout: 60_000 })
+  const memberSelect = dialog.locator('[role="combobox"][aria-label="Initial Members"]')
+  await memberSelect.click()
+  await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+  await dialog.locator('button:has-text("Add")').click()
+  await memberSelect.click()
+  await page.locator('[role="option"]').filter({ hasText: 'bot-b' }).first().click()
+  await dialog.locator('button:has-text("Add")').click()
+  await dialog.locator('[role="combobox"][aria-label="Leader"]').click()
+  await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+  await dialog.locator('button:has-text("Create Team")').click()
+  await expect(dialog).toBeHidden({ timeout: 60_000 })
 }
 
 export async function clickSidebarChannel(page: Page, channelName: string): Promise<void> {

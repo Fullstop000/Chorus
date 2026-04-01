@@ -2,17 +2,24 @@ import { useEffect, useState } from 'react'
 import { addTeamMember, deleteTeam, removeTeamMember, updateTeam } from '../api'
 import { useApp } from '../store'
 import type { Team, TeamMember } from '../types'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { FormField, FormError } from '@/components/ui/form'
+import { Label } from '@/components/ui/label'
 import './TeamSettings.css'
 
 interface Props {
   team: Team
   members: TeamMember[]
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onRefresh: () => Promise<void>
   onDeleted: () => Promise<void>
 }
 
-export function TeamSettings({ team, members, onClose, onRefresh, onDeleted }: Props) {
+export function TeamSettings({ team, members, open, onOpenChange, onRefresh, onDeleted }: Props) {
   const { serverInfo, agents, setSelectedChannel } = useApp()
   const [displayName, setDisplayName] = useState(team.display_name)
   const [collaborationModel, setCollaborationModel] = useState(team.collaboration_model)
@@ -109,7 +116,7 @@ export function TeamSettings({ team, members, onClose, onRefresh, onDeleted }: P
       await deleteTeam(team.name)
       setSelectedChannel(null)
       await onDeleted()
-      onClose()
+      onOpenChange(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
       setSaving(false)
@@ -117,64 +124,70 @@ export function TeamSettings({ team, members, onClose, onRefresh, onDeleted }: P
   }
 
   return (
-    <div className="modal-overlay" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="modal-card team-settings-card">
-        <div className="modal-header">
-          <div className="modal-title-block">
-            <span className="modal-title">Team Settings</span>
-            <span className="modal-subtitle">#{team.name}</span>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="team-settings-card">
+        <DialogHeader>
+          <div className="flex flex-col gap-1">
+            <DialogTitle>Team Settings</DialogTitle>
+            <DialogDescription>#{team.name}</DialogDescription>
           </div>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+        </DialogHeader>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <FormError>{error}</FormError>}
 
-        <div className="form-group">
-          <label className="form-label">Display Name</label>
-          <input
-            className="form-input"
+        <FormField>
+          <Label>Display Name</Label>
+          <Input
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
             disabled={saving}
           />
-        </div>
+        </FormField>
 
-        <div className="form-group">
-          <label className="form-label">Collaboration Model</label>
-          <select
-            className="form-select"
+        <FormField>
+          <Label>Collaboration Model</Label>
+          <Select
             value={collaborationModel}
-            onChange={(event) =>
-              setCollaborationModel(event.target.value as 'leader_operators' | 'swarm')
+            onValueChange={(value) =>
+              setCollaborationModel(value as 'leader_operators' | 'swarm')
             }
             disabled={saving}
           >
-            <option value="leader_operators">Leader+Operators</option>
-            <option value="swarm">Swarm</option>
-          </select>
-        </div>
+            <SelectTrigger aria-label="Collaboration Model">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="leader_operators">Leader+Operators</SelectItem>
+              <SelectItem value="swarm">Swarm</SelectItem>
+            </SelectContent>
+          </Select>
+        </FormField>
 
         {collaborationModel === 'leader_operators' && (
-          <div className="form-group">
-            <label className="form-label">Leader</label>
-            <select
-              className="form-select"
+          <FormField>
+            <Label>Leader</Label>
+            <Select
               value={leaderAgentName}
-              onChange={(event) => setLeaderAgentName(event.target.value)}
+              onValueChange={setLeaderAgentName}
               disabled={saving}
             >
-              <option value="">Select an agent leader</option>
-              {agentMembers.map((member) => (
-                <option key={member.member_name} value={member.member_name}>
-                  {member.member_name}
-                </option>
-              ))}
-            </select>
-          </div>
+              <SelectTrigger aria-label="Leader">
+                <SelectValue placeholder="Select an agent leader" />
+              </SelectTrigger>
+              <SelectContent>
+                {agentMembers.map((member) => (
+                  <SelectItem key={member.member_name} value={member.member_name}>
+                    {member.member_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </FormField>
         )}
 
-        <div className="form-group">
-          <label className="form-label">Members</label>
+        <FormField>
+          <Label>Members</Label>
           <div className="team-settings-list">
             {members.map((member) => (
               <div key={member.member_name} className="team-settings-member">
@@ -184,66 +197,68 @@ export function TeamSettings({ team, members, onClose, onRefresh, onDeleted }: P
                     {member.member_type} · role: {member.role}
                   </div>
                 </div>
-                <button
-                  className="btn-brutal-sm"
+                <Button
+                  size="sm"
+                  variant="ghost"
                   type="button"
                   onClick={() => handleRemoveMember(member)}
                   disabled={saving}
                 >
                   Remove
-                </button>
+                </Button>
               </div>
             ))}
           </div>
-        </div>
+        </FormField>
 
-        <div className="form-group">
-          <label className="form-label">Add Member</label>
+        <FormField>
+          <Label>Add Member</Label>
           <div className="team-settings-add-row">
-            <select
-              className="form-select"
+            <Select
               value={pendingMemberName}
-              onChange={(event) => setPendingMemberName(event.target.value)}
+              onValueChange={setPendingMemberName}
               disabled={saving}
             >
-              <option value="">Choose a person or agent</option>
-              {availableMembers.map((member) => (
-                <option key={member.member_name} value={member.member_name}>
-                  {member.label}
-                </option>
-              ))}
-            </select>
-            <input
-              className="form-input"
+              <SelectTrigger aria-label="Add Member">
+                <SelectValue placeholder="Choose a person or agent" />
+              </SelectTrigger>
+              <SelectContent>
+                {availableMembers.map((member) => (
+                  <SelectItem key={member.member_name} value={member.member_name}>
+                    {member.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Input
               value={pendingMemberRole}
               onChange={(event) => setPendingMemberRole(event.target.value)}
               placeholder="role"
               disabled={saving}
             />
-            <button
-              className="btn-brutal btn-cyan"
+            <Button
               type="button"
               onClick={handleAddMember}
               disabled={saving || !pendingMemberName}
             >
               Add
-            </button>
+            </Button>
           </div>
-        </div>
+        </FormField>
 
         <div className="team-settings-actions">
-          <button className="btn-brutal btn-orange" type="button" onClick={handleDelete} disabled={saving}>
+          <Button variant="destructive" type="button" onClick={handleDelete} disabled={saving}>
             Delete Team
-          </button>
+          </Button>
           <div style={{ flex: 1 }} />
-          <button className="btn-brutal" type="button" onClick={onClose} disabled={saving}>
+          <Button variant="outline" type="button" onClick={() => onOpenChange(false)} disabled={saving}>
             Close
-          </button>
-          <button className="btn-brutal btn-cyan" type="button" onClick={handleSave} disabled={saving}>
+          </Button>
+          <Button type="button" onClick={handleSave} disabled={saving}>
             Save
-          </button>
+          </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }

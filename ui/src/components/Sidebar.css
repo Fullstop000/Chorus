@@ -8,7 +8,7 @@
   flex-direction: column;
   overflow: hidden;
   flex-shrink: 0;
-  border-right: 1px solid var(--line);
+  border-right: 1px solid var(--color-border);
 }
 
 .sidebar-header {
@@ -17,7 +17,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 16px 14px 12px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .sidebar-server-block {
@@ -34,13 +34,13 @@
   font-size: 11px;
   text-transform: lowercase;
   letter-spacing: 0.07em;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .sidebar-server-name {
   font-size: 18px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--color-foreground);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -50,7 +50,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .sidebar-header-actions {
@@ -67,8 +67,8 @@
   place-items: center;
   border-radius: 0;
   background: rgba(255, 255, 255, 0.62);
-  border: 1px solid var(--line);
-  color: var(--text-secondary);
+  border: 1px solid var(--color-border);
+  color: var(--color-accent-foreground);
   box-shadow: none;
   position: relative;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
@@ -87,8 +87,8 @@
 .sidebar-icon-btn:hover,
 .sidebar-add-btn:hover,
 .sidebar-footer-cog:hover {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #f8f6f1;
 }
 
@@ -172,14 +172,14 @@
   height: 24px;
   display: grid;
   place-items: center;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   background: rgba(255, 255, 255, 0.8);
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
 }
 
 .sidebar-channel-action:hover {
-  background: var(--accent-soft);
-  color: var(--text-primary);
+  background: var(--color-secondary);
+  color: var(--color-foreground);
 }
 
 .sidebar-channel-menu {
@@ -188,8 +188,8 @@
   right: 0;
   min-width: 156px;
   padding: 6px;
-  border: var(--border);
-  background: var(--bg-panel-strong);
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
   z-index: 40;
   display: flex;
   flex-direction: column;
@@ -214,7 +214,7 @@
 
 .sidebar-channel-menu-item:hover {
   background: rgba(255, 255, 255, 0.72);
-  border-color: var(--line);
+  border-color: var(--color-border);
 }
 
 .sidebar-channel-menu-item.danger:hover {
@@ -224,13 +224,13 @@
 
 .sidebar-item:hover {
   background: rgba(255, 255, 255, 0.72);
-  border-color: var(--line);
+  border-color: var(--color-border);
 }
 
 .sidebar-item.active {
-  background: var(--bg-active);
-  border-color: var(--line-strong);
-  color: var(--sidebar-active-text);
+  background: #ffffff;
+  border-color: var(--color-input);
+  color: var(--color-foreground);
   box-shadow: none;
 }
 
@@ -239,7 +239,7 @@
   flex-shrink: 0;
   font-family: var(--font-mono);
   font-size: 14px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .sidebar-item-main {
@@ -271,20 +271,20 @@
   margin-left: auto;
   flex-shrink: 0;
   padding: 1px 6px 2px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   background: rgba(255, 255, 255, 0.68);
   font-family: var(--font-mono);
   font-size: 9px;
   font-weight: 600;
   letter-spacing: 0.07em;
   text-transform: uppercase;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .sidebar-channel-badge.team {
   background: rgba(31, 31, 28, 0.08);
   border-color: rgba(31, 31, 28, 0.16);
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 
 .sidebar-unread-badge {
@@ -330,14 +330,14 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  border: 2px solid var(--bg-active);
+  border: 2px solid #ffffff;
   position: absolute;
   bottom: -1px;
   right: -1px;
 }
 
 .sidebar-item.active .status-dot {
-  border-color: var(--bg-active);
+  border-color: #ffffff;
 }
 
 .you-badge {
@@ -345,16 +345,16 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  background: var(--accent-soft);
+  background: var(--color-secondary);
   border-radius: 0;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   padding: 2px 6px;
   margin-left: auto;
   flex-shrink: 0;
 }
 
 .sidebar-footer {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--color-border);
   padding: 10px 12px 12px;
   display: flex;
   align-items: center;

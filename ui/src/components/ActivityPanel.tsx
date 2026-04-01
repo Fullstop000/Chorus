@@ -89,11 +89,11 @@ function toolMeta(rawName: string): ToolMeta {
 
 function statusColor(activity: string): string {
   switch (activity) {
-    case 'online':   return 'var(--lime, #84cc16)'
-    case 'thinking': return 'var(--orange, #f97316)'
-    case 'working':  return 'var(--orange, #f97316)'
-    case 'error':    return 'var(--pink, #ec4899)'
-    default:         return 'var(--gray-400, #9ca3af)'
+    case 'online':   return 'var(--status-online)'
+    case 'thinking': return 'var(--status-sleeping)'
+    case 'working':  return 'var(--status-sleeping)'
+    case 'error':    return 'var(--color-destructive)'
+    default:         return 'var(--status-inactive)'
   }
 }
 
@@ -386,7 +386,7 @@ export function ActivityPanel({ agentName }: Props) {
     return (
       <div className="activity-panel">
         <ActivityHeader agentName={agentName} dotColor={dotColor} activity={agentActivity} detail={agentDetail} />
-        <div className="activity-empty" style={{ color: 'var(--accent)' }}>{error}</div>
+        <div className="activity-empty" style={{ color: 'var(--color-primary)' }}>{error}</div>
       </div>
     )
   }

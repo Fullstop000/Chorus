@@ -371,15 +371,14 @@ export function Sidebar() {
         </div>
       </nav>
 
-      {showCreateAgent && (
-        <CreateAgentModal
-          onClose={() => setShowCreateAgent(false)}
-          onCreated={() => {
-            setShowCreateAgent(false)
-            void refreshAgents()
-          }}
-        />
-      )}
+      <CreateAgentModal
+        open={showCreateAgent}
+        onOpenChange={setShowCreateAgent}
+        onCreated={() => {
+          setShowCreateAgent(false)
+          void refreshAgents()
+        }}
+      />
       {showCreateChannel && (
         <CreateChannelModal
           defaultMode={createModalMode}

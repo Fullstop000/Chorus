@@ -3,6 +3,7 @@ import { useApp } from '../store'
 import { useTasks } from '../hooks/useTasks'
 import { createTasks, updateTaskStatus, claimTasks } from '../api'
 import type { TaskInfo, TaskStatus } from '../types'
+import { FormError } from '@/components/ui/form'
 import './TasksPanel.css'
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
@@ -127,7 +128,7 @@ export function TasksPanel() {
         </div>
         <span className="tasks-panel-channel">#{selectedChannel}</span>
       </div>
-      {error && <div className="error-banner">{error}</div>}
+      {error && <FormError>{error}</FormError>}
 
       {loading && tasks.length === 0 ? (
         <div className="tasks-empty">Loading tasks...</div>

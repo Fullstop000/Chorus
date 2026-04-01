@@ -52,20 +52,23 @@ test.describe('TMT-006', () => {
       await page.getByRole('button', { name: 'Open team settings' }).click()
     })
 
+    const dialog = page.locator('[role="dialog"]')
+
     await test.step('Steps 2–3: Display name QA Engineering v2 + Save', async () => {
-      await page.locator('.team-settings-card .form-input').first().fill('QA Engineering v2')
-      await page.locator('.team-settings-card button:has-text("Save")').click()
-      await expect(page.locator('.team-settings-card .form-input').first()).toHaveValue(/QA Engineering v2/)
+      await dialog.locator('input').first().fill('QA Engineering v2')
+      await dialog.locator('button:has-text("Save")').click()
+      await expect(dialog.locator('input').first()).toHaveValue(/QA Engineering v2/)
     })
 
-    const collabSelect = page.locator('.form-group:has-text("Collaboration Model") select.form-select')
+    const collabTrigger = dialog.locator('[role="combobox"][aria-label="Collaboration Model"]')
 
     await test.step('Steps 4–5: Collaboration model Swarm + save + reopen', async () => {
-      await collabSelect.selectOption('swarm')
-      await page.locator('.team-settings-card button:has-text("Save")').click()
-      await page.locator('.team-settings-card .modal-close').click()
+      await collabTrigger.click()
+      await page.locator('[role="option"]').filter({ hasText: 'Swarm' }).click()
+      await dialog.locator('button:has-text("Save")').click()
+      await dialog.locator('button:has-text("Close")').click()
       await page.getByRole('button', { name: 'Open team settings' }).click()
-      await expect(collabSelect).toHaveValue('swarm')
+      await expect(collabTrigger).toContainText('Swarm')
     })
 
     if (!skipLLM) {
@@ -85,20 +88,22 @@ test.describe('TMT-006', () => {
     }
 
     await test.step('Steps 7–8 (partial): Restore Leader+Operators, leader bot-b', async () => {
-      await collabSelect.selectOption('leader_operators')
+      await collabTrigger.click()
+      await page.locator('[role="option"]').filter({ hasText: 'Leader+Operators' }).click()
       // Wait for React to re-render the conditionally-shown leader select
-      const leaderSelect = page.locator('.form-group').filter({ has: page.locator('label.form-label', { hasText: 'Leader' }) }).locator('select')
-      await expect(leaderSelect).toBeVisible()
-      await leaderSelect.selectOption('bot-b')
-      await page.locator('.team-settings-card button:has-text("Save")').click()
+      const leaderTrigger = dialog.locator('[role="combobox"][aria-label="Leader"]')
+      await expect(leaderTrigger).toBeVisible()
+      await leaderTrigger.click()
+      await page.locator('[role="option"]').filter({ hasText: 'bot-b' }).click()
+      await dialog.locator('button:has-text("Save")').click()
     })
 
     await test.step('Step 9: Refresh — reopen settings', async () => {
-      await page.locator('.team-settings-card .modal-close').click()
+      await dialog.locator('button:has-text("Close")').click()
       await reloadApp(page)
       await clickSidebarChannel(page, 'qa-eng')
       await page.getByRole('button', { name: 'Open team settings' }).click()
-      await expect(collabSelect).toHaveValue('leader_operators')
+      await expect(collabTrigger).toContainText('Leader+Operators')
     })
   })
 })

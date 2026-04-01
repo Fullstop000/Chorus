@@ -15,6 +15,9 @@ import {
   runtimeStatusSummary,
   type AgentConfigState,
 } from './AgentConfigForm'
+import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { FormError } from '@/components/ui/form'
 import './ProfilePanel.css'
 
 function agentColor(name: string): string {
@@ -33,12 +36,12 @@ function activityLabel(activity?: string, detail?: string): string {
 function activityDotColor(activity?: string): string {
   switch (activity) {
     case 'online':
-      return 'var(--lime)'
+      return 'var(--status-online)'
     case 'thinking':
     case 'working':
-      return 'var(--orange)'
+      return 'var(--status-sleeping)'
     default:
-      return 'var(--gray-400)'
+      return 'var(--status-inactive)'
   }
 }
 
@@ -124,25 +127,25 @@ export function ProfilePanel() {
             </div>
           </div>
           <div className="profile-toolbar">
-            <button className="profile-action-btn" type="button" onClick={() => setShowEdit(true)}>
+            <Button size="sm" type="button" onClick={() => setShowEdit(true)}>
               Edit
-            </button>
-            <button className="profile-action-btn" type="button" onClick={() => setShowRestart(true)}>
+            </Button>
+            <Button size="sm" type="button" onClick={() => setShowRestart(true)}>
               Restart
-            </button>
-            <button className="profile-action-btn profile-action-btn-danger" type="button" onClick={() => setShowDelete(true)}>
+            </Button>
+            <Button size="sm" variant="destructive" type="button" onClick={() => setShowDelete(true)}>
               Delete
-            </button>
+            </Button>
           </div>
         </div>
       </div>
 
-      {error && <div className="error-banner">{error}</div>}
+      {error && <FormError>{error}</FormError>}
 
       <div className="profile-controls">
-        <button className="btn-brutal" type="button" onClick={handleStartStop} disabled={busy}>
+        <Button variant="outline" type="button" onClick={handleStartStop} disabled={busy}>
           {busy ? '…' : isActive ? '[stop::agent]' : '[start::agent]'}
-        </button>
+        </Button>
       </div>
 
       <div className="profile-section">
@@ -164,7 +167,7 @@ export function ProfilePanel() {
             </>
           )}
           <span className="profile-config-key">Status</span>
-          <span className="badge" style={{ background: isActive ? 'var(--lime)' : agent.status === 'sleeping' ? 'var(--orange)' : 'var(--gray-400)' }}>
+          <span className="badge" style={{ background: isActive ? 'var(--status-online)' : agent.status === 'sleeping' ? 'var(--status-sleeping)' : 'var(--status-inactive)' }}>
             {agent.status}
           </span>
         </div>
@@ -193,8 +196,9 @@ export function ProfilePanel() {
         )}
       </div>
 
-      {showEdit && detail && (
+      {detail && (
         <EditAgentModal
+          open={showEdit}
           agentName={agent.name}
           initialState={{
             name: agent.name,
@@ -210,7 +214,7 @@ export function ProfilePanel() {
           }}
           runtimeStatuses={runtimeStatuses}
           runtimeStatusError={runtimeStatusError}
-          onClose={() => setShowEdit(false)}
+          onOpenChange={setShowEdit}
           onSaved={async () => {
             setShowEdit(false)
             await reloadDetail()
@@ -218,45 +222,45 @@ export function ProfilePanel() {
         />
       )}
 
-      {showRestart && (
-        <RestartAgentModal
-          agentName={agent.name}
-          onClose={() => setShowRestart(false)}
-          onRestarted={async () => {
-            setShowRestart(false)
-            await reloadDetail()
-          }}
-        />
-      )}
+      <RestartAgentModal
+        open={showRestart}
+        agentName={agent.name}
+        onOpenChange={setShowRestart}
+        onRestarted={async () => {
+          setShowRestart(false)
+          await reloadDetail()
+        }}
+      />
 
-      {showDelete && (
-        <DeleteAgentModal
-          agentName={agent.name}
-          onClose={() => setShowDelete(false)}
-          onDeleted={async () => {
-            setShowDelete(false)
-            setSelectedAgent(null)
-            await refreshAgents()
-          }}
-        />
-      )}
+      <DeleteAgentModal
+        open={showDelete}
+        agentName={agent.name}
+        onOpenChange={setShowDelete}
+        onDeleted={async () => {
+          setShowDelete(false)
+          setSelectedAgent(null)
+          await refreshAgents()
+        }}
+      />
     </div>
   )
 }
 
 function EditAgentModal({
+  open,
   agentName,
   initialState,
   runtimeStatuses,
   runtimeStatusError,
-  onClose,
+  onOpenChange,
   onSaved,
 }: {
+  open: boolean
   agentName: string
   initialState: AgentConfigState
   runtimeStatuses: RuntimeStatusInfo[]
   runtimeStatusError: string | null
-  onClose: () => void
+  onOpenChange: (open: boolean) => void
   onSaved: () => Promise<void>
 }) {
   const [state, setState] = useState<AgentConfigState>(initialState)
@@ -287,35 +291,37 @@ function EditAgentModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box modal-box-agent">
-        <div className="modal-header">
-          <div className="modal-title-block">
-            <span className="modal-title">Edit Agent</span>
-            <span className="modal-subtitle">@{agentName}</span>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="w-[min(720px,96vw)]">
+        <DialogHeader>
+          <div className="flex flex-col gap-1">
+            <DialogTitle>Edit Agent</DialogTitle>
+            <DialogDescription>@{agentName}</DialogDescription>
           </div>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+        </DialogHeader>
         <AgentConfigForm state={state} runtimeStatuses={runtimeStatuses} runtimeStatusError={runtimeStatusError} onChange={setState} />
-        {error && <div className="error-banner">{error}</div>}
-        <div className="modal-footer">
-          <button className="btn-brutal" onClick={onClose}>Cancel</button>
-          <button className="btn-brutal btn-cyan" onClick={handleSave} disabled={saving || !state.model.trim()}>
+        {error && <FormError>{error}</FormError>}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={handleSave} disabled={saving || !state.model.trim()}>
             {saving ? 'Saving...' : 'Save'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
 function RestartAgentModal({
+  open,
   agentName,
-  onClose,
+  onOpenChange,
   onRestarted,
 }: {
+  open: boolean
   agentName: string
-  onClose: () => void
+  onOpenChange: (open: boolean) => void
   onRestarted: () => Promise<void>
 }) {
   const [mode, setMode] = useState<RestartMode>('restart')
@@ -357,12 +363,12 @@ function RestartAgentModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box">
-        <div className="modal-header">
-          <span className="modal-title">Restart {agentName}</span>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Restart {agentName}</DialogTitle>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+        </DialogHeader>
         <div className="modal-choice-list">
           {options.map((option) => (
             <button
@@ -376,25 +382,27 @@ function RestartAgentModal({
             </button>
           ))}
         </div>
-        {error && <div className="modal-error">{error}</div>}
-        <div className="modal-footer">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary" onClick={handleSubmit} disabled={submitting}>
+        {error && <FormError>{error}</FormError>}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button onClick={handleSubmit} disabled={submitting}>
             {submitting ? 'Restarting...' : 'Restart'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
 function DeleteAgentModal({
+  open,
   agentName,
-  onClose,
+  onOpenChange,
   onDeleted,
 }: {
+  open: boolean
   agentName: string
-  onClose: () => void
+  onOpenChange: (open: boolean) => void
   onDeleted: () => Promise<void>
 }) {
   const [mode, setMode] = useState<DeleteMode>('preserve_workspace')
@@ -415,12 +423,12 @@ function DeleteAgentModal({
   }
 
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal-box">
-        <div className="modal-header">
-          <span className="modal-title">Delete {agentName}</span>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete {agentName}</DialogTitle>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+        </DialogHeader>
         <div className="modal-choice-list">
           <button
             type="button"
@@ -439,14 +447,14 @@ function DeleteAgentModal({
             <span className="modal-choice-body">Remove the Chorus record and delete the workspace directory.</span>
           </button>
         </div>
-        {error && <div className="modal-error">{error}</div>}
-        <div className="modal-footer">
-          <button className="btn-secondary" onClick={onClose}>Cancel</button>
-          <button className="btn-primary btn-danger" onClick={handleSubmit} disabled={submitting}>
+        {error && <FormError>{error}</FormError>}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button variant="destructive" onClick={handleSubmit} disabled={submitting}>
             {submitting ? 'Deleting...' : 'Delete'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
