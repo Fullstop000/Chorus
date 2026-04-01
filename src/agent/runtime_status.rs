@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::drivers::all_runtime_drivers;
@@ -24,6 +25,7 @@ pub struct RuntimeStatus {
 /// Backend service used by HTTP handlers to query local runtime availability.
 pub trait RuntimeStatusProvider: Send + Sync {
     fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatus>>;
+    fn list_models(&self, runtime: &str) -> anyhow::Result<Vec<String>>;
 }
 
 /// Shared trait alias used by the server state.
@@ -38,5 +40,13 @@ impl RuntimeStatusProvider for SystemRuntimeStatusProvider {
             .into_iter()
             .map(|driver| driver.detect_runtime_status())
             .collect()
+    }
+
+    fn list_models(&self, runtime: &str) -> anyhow::Result<Vec<String>> {
+        let driver = all_runtime_drivers()
+            .into_iter()
+            .find(|driver| driver.id() == runtime)
+            .with_context(|| format!("unknown runtime: {runtime}"))?;
+        driver.list_models()
     }
 }

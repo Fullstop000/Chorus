@@ -267,12 +267,15 @@ function EditAgentModal({
     setSaving(true)
     setError(null)
     try {
+      if (!state.model.trim()) {
+        throw new Error('Model is required')
+      }
       await updateAgent(agentName, {
         display_name: state.display_name,
         description: state.description,
         runtime: state.runtime,
         model: state.model,
-        reasoningEffort: state.runtime === 'codex' ? state.reasoningEffort : null,
+        reasoningEffort: state.runtime === 'codex' || state.runtime === 'opencode' ? state.reasoningEffort : null,
         envVars: state.envVars.filter((envVar) => envVar.key.trim() || envVar.value),
       })
       await onSaved()
@@ -297,7 +300,7 @@ function EditAgentModal({
         {error && <div className="error-banner">{error}</div>}
         <div className="modal-footer">
           <button className="btn-brutal" onClick={onClose}>Cancel</button>
-          <button className="btn-brutal btn-cyan" onClick={handleSave} disabled={saving}>
+          <button className="btn-brutal btn-cyan" onClick={handleSave} disabled={saving || !state.model.trim()}>
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>

@@ -15,7 +15,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
     display_name: '',
     description: '',
     runtime: 'claude',
-    model: 'sonnet',
+    model: '',
     reasoningEffort: null,
     envVars: [],
   })
@@ -31,6 +31,9 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
     setCreating(true)
     setError(null)
     try {
+      if (!config.model.trim()) {
+        throw new Error('Model is required')
+      }
       const res = await fetch('/api/agents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -40,7 +43,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           description: config.description,
           runtime: config.runtime,
           model: config.model,
-          reasoningEffort: config.runtime === 'codex' ? config.reasoningEffort : null,
+          reasoningEffort: config.runtime === 'codex' || config.runtime === 'opencode' ? config.reasoningEffort : null,
           envVars: config.envVars,
         }),
       })
@@ -94,7 +97,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           <button
             className="btn-brutal btn-cyan"
             onClick={handleCreate}
-            disabled={creating || !config.name.trim()}
+            disabled={creating || !config.name.trim() || !config.model.trim()}
           >
             {creating ? 'Creating...' : 'Create Agent'}
           </button>

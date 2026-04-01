@@ -466,6 +466,18 @@ impl Driver for CodexDriver {
             auth_status: Some(auth_status),
         })
     }
+
+    fn list_models(&self) -> anyhow::Result<Vec<String>> {
+        Ok(vec![
+            "gpt-5.4".to_string(),
+            "gpt-5.4-mini".to_string(),
+            "gpt-5.3-codex".to_string(),
+            "gpt-5.2-codex".to_string(),
+            "gpt-5.2".to_string(),
+            "gpt-5.1-codex-max".to_string(),
+            "gpt-5.1-codex-mini".to_string(),
+        ])
+    }
 }
 
 fn codex_auth_status_from_probe(result: &super::CommandProbeResult) -> RuntimeAuthStatus {

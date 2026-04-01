@@ -85,6 +85,7 @@ pub enum AgentRuntime {
     Claude,
     Codex,
     Kimi,
+    Opencode,
 }
 
 impl AgentRuntime {
@@ -93,6 +94,7 @@ impl AgentRuntime {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Kimi => "kimi",
+            Self::Opencode => "opencode",
         }
     }
 
@@ -101,6 +103,7 @@ impl AgentRuntime {
             "claude" => Some(Self::Claude),
             "codex" => Some(Self::Codex),
             "kimi" => Some(Self::Kimi),
+            "opencode" => Some(Self::Opencode),
             _ => None,
         }
     }

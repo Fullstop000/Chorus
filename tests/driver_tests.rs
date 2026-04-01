@@ -2,6 +2,7 @@ use chorus::agent::config::AgentConfig;
 use chorus::agent::drivers::claude::ClaudeDriver;
 use chorus::agent::drivers::codex::CodexDriver;
 use chorus::agent::drivers::kimi::KimiDriver;
+use chorus::agent::drivers::opencode::OpencodeDriver;
 use chorus::agent::drivers::Driver;
 
 #[test]
@@ -122,5 +123,48 @@ fn test_kimi_prompt_uses_split_message_tools() {
     assert!(
         prompt.contains("Any reply meant for humans must be delivered with `send_message()`"),
         "Kimi prompts should explicitly forbid treating raw stdout text as a valid human reply"
+    );
+}
+
+#[test]
+fn test_opencode_prompt_uses_split_message_tools() {
+    let driver = OpencodeDriver;
+    let config = AgentConfig {
+        name: "opencode-bot".to_string(),
+        display_name: "OpenCode Bot".to_string(),
+        description: Some("Replies in Chorus".to_string()),
+        runtime: "opencode".to_string(),
+        model: "anthropic/claude-sonnet-4-20250514".to_string(),
+        session_id: None,
+        reasoning_effort: None,
+        env_vars: Vec::new(),
+        teams: vec![],
+    };
+
+    let prompt = driver.build_system_prompt(&config, "agent-id");
+
+    assert!(
+        prompt.contains("chat_wait_for_message"),
+        "OpenCode prompts must reference the blocking idle tool"
+    );
+    assert!(
+        prompt.contains("chat_check_messages"),
+        "OpenCode prompts must reference the non-blocking check tool"
+    );
+    assert!(
+        prompt.contains("chat_send_message"),
+        "OpenCode prompts must reference the actual MCP send tool"
+    );
+    assert!(
+        !prompt.contains("chat_receive_message"),
+        "OpenCode prompts should not rely on the legacy combined receive tool"
+    );
+    assert!(
+        prompt.contains("chat_view_file"),
+        "OpenCode prompts should teach attachment inspection explicitly"
+    );
+    assert!(
+        prompt.contains("Chorus"),
+        "OpenCode prompts should use the current product name"
     );
 }

@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod codex;
 pub mod kimi;
+pub mod opencode;
 pub mod prompt;
 
 use std::fs;
@@ -76,6 +77,8 @@ pub trait Driver: Send + Sync {
     fn summarize_tool_input(&self, name: &str, input: &serde_json::Value) -> String;
     /// Detect whether the runtime is installed and authenticated on this machine.
     fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus>;
+    /// Return the runtime's currently supported model ids.
+    fn list_models(&self) -> anyhow::Result<Vec<String>>;
 }
 
 pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {
@@ -83,6 +86,7 @@ pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {
         Arc::new(claude::ClaudeDriver),
         Arc::new(codex::CodexDriver),
         Arc::new(kimi::KimiDriver),
+        Arc::new(opencode::OpencodeDriver),
     ]
 }
 
