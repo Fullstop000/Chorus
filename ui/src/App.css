@@ -1,65 +1,18 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 :root {
-  --bg-canvas: #f4f2ed;
-  --bg-panel: rgba(255, 255, 255, 0.82);
-  --bg-panel-strong: rgba(255, 255, 255, 0.94);
-  --bg-panel-muted: #f0eee9;
-  --bg-hover: #f1efe9;
-  --bg-active: #ffffff;
-  --text-primary: #23201a;
-  --text-secondary: #5d574d;
-  --text-muted: #817b6f;
-  --accent: #1f1f1c;
-  --accent-soft: #efede8;
-  --line: rgba(35, 32, 26, 0.14);
-  --line-strong: rgba(35, 32, 26, 0.28);
+  /* Status colors (no shadcn equivalent) */
   --status-online: #1f9d4d;
   --status-sleeping: #c67a18;
   --status-inactive: #b8b1a6;
+
+  /* Typography (supplements @theme) */
   --font: 'Inter', sans-serif;
   --font-mono: 'IBM Plex Mono', monospace;
   --font-display: 'Inter', sans-serif;
-  --sidebar-width: 312px;
-  --border: 1px solid var(--line);
-  --shadow-sm: none;
-  --shadow: none;
-  --shadow-lg: none;
-  --header-bg: var(--bg-panel-strong);
-  --header-text: var(--text-primary);
-  --sidebar-bg: transparent;
-  --sidebar-hover: var(--bg-hover);
-  --sidebar-active: var(--bg-active);
-  --sidebar-active-text: var(--text-primary);
-  --content-bg: transparent;
-  --border-color: var(--line-strong);
-  --cream: #faf9f6;
-  --white: #ffffff;
-  --black: #1f1f1c;
-  --cyan: #ece7db;
-  --lime: #e7f3e9;
-  --yellow: #efede8;
 
-  /* shadcn/ui CSS variables */
-  --background: 40 20% 97%;
-  --foreground: 220 10% 10%;
-  --card: 40 20% 95%;
-  --card-foreground: 220 10% 10%;
-  --popover: 40 20% 97%;
-  --popover-foreground: 220 10% 10%;
-  --primary: 220 10% 15%;
-  --primary-foreground: 40 20% 97%;
-  --secondary: 40 10% 90%;
-  --secondary-foreground: 220 10% 10%;
-  --muted: 40 10% 90%;
-  --muted-foreground: 220 5% 45%;
-  --color-accent: #1f1f1c;
-  --accent-foreground: 40 20% 97%;
-  --destructive: 0 70% 50%;
-  --destructive-foreground: 40 20% 97%;
-  --border: 220 10% 85%;
-  --input: 220 10% 85%;
-  --ring: 220 10% 15%;
+  /* Layout */
+  --sidebar-width: 312px;
 }
 
 *, *::before, *::after {
@@ -72,8 +25,8 @@ html, body, #root {
   height: 100%;
   font-family: var(--font);
   font-size: 14px;
-  color: var(--text-primary);
-  background: var(--bg-canvas);
+  color: var(--color-foreground);
+  background: var(--color-background);
 }
 
 body {
@@ -88,7 +41,7 @@ body {
   height: calc(100vh - 12px);
   margin: 6px;
   overflow: hidden;
-  border: 1px solid var(--line-strong);
+  border: 1px solid var(--color-input);
   border-radius: 0;
   background: rgba(250, 249, 246, 0.9);
   box-shadow: none;
@@ -112,7 +65,7 @@ button:focus-visible,
 input:focus-visible,
 textarea:focus-visible,
 select:focus-visible {
-  outline: 2px solid rgba(35, 32, 26, 0.22);
+  outline: 2px solid var(--color-ring);
   outline-offset: 2px;
 }
 
