@@ -2,6 +2,11 @@ import { useEffect } from 'react'
 import type { AgentEnvVar, RuntimeStatusInfo } from '../types'
 import { useRuntimeModels } from '../hooks/useRuntimeModels'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Label } from '@/components/ui/label'
+import { FormField } from '@/components/ui/form'
+import { Button } from '@/components/ui/button'
 
 export const REASONING_EFFORTS = [
   { value: 'default', label: 'Default' },
@@ -128,42 +133,39 @@ export function AgentConfigForm({
         </div>
         <div className="agent-config-grid">
           {editableName && (
-            <div className="modal-field">
-              <label className="form-label">Name</label>
-              <input
-                className="form-input"
+            <FormField>
+              <Label>Name</Label>
+              <Input
                 value={state.name}
                 onChange={(e) => onChange({ ...state, name: e.target.value })}
                 placeholder="e.g. my-agent"
                 autoFocus
               />
-              <div className="modal-field-hint">Stable machine name used in channels and internal references.</div>
-            </div>
+              <p className="text-xs text-muted-foreground leading-relaxed mt-1">Stable machine name used in channels and internal references.</p>
+            </FormField>
           )}
 
-          <div className="modal-field">
-            <label className="form-label">Display Name</label>
-            <input
-              className="form-input"
+          <FormField>
+            <Label>Display Name</Label>
+            <Input
               value={state.display_name}
               onChange={(e) => onChange({ ...state, display_name: e.target.value })}
               placeholder={state.name || 'Agent name'}
               autoFocus={!editableName}
             />
-            <div className="modal-field-hint">Human-facing label shown across the workspace.</div>
-          </div>
+            <p className="text-xs text-muted-foreground leading-relaxed mt-1">Human-facing label shown across the workspace.</p>
+          </FormField>
         </div>
 
-        <div className="modal-field">
-          <label className="form-label">Role</label>
-          <textarea
-            className="form-textarea"
+        <FormField>
+          <Label>Role</Label>
+          <Textarea
             value={state.description}
             onChange={(e) => onChange({ ...state, description: e.target.value })}
             placeholder="What does this agent do?"
           />
-          <div className="modal-field-hint">Keep it brief and operational. This description guides how teammates interpret the agent.</div>
-        </div>
+          <p className="text-xs text-muted-foreground leading-relaxed mt-1">Keep it brief and operational. This description guides how teammates interpret the agent.</p>
+        </FormField>
       </section>
 
       <section className="agent-config-section">
@@ -171,8 +173,8 @@ export function AgentConfigForm({
           <span className="agent-config-section-kicker">[runtime::selection]</span>
         </div>
         <div className="agent-config-grid">
-          <div className="modal-field">
-            <label className="form-label">Runtime</label>
+          <FormField>
+            <Label>Runtime</Label>
             <Select
               value={state.runtime}
               onValueChange={(runtime) => {
@@ -184,7 +186,7 @@ export function AgentConfigForm({
                 })
               }}
             >
-              <SelectTrigger className="form-select" aria-label="Runtime">
+              <SelectTrigger aria-label="Runtime">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -199,17 +201,17 @@ export function AgentConfigForm({
               <span>{runtimeSummary.detail}</span>
             </div>
             {runtimeStatusError && (
-              <div className="modal-field-hint">{runtimeStatusError}</div>
+              <p className="text-xs text-muted-foreground leading-relaxed mt-1">{runtimeStatusError}</p>
             )}
-          </div>
+          </FormField>
 
-          <div className="modal-field">
-            <label className="form-label">Model</label>
+          <FormField>
+            <Label>Model</Label>
             <Select
               value={state.model}
               onValueChange={(model) => onChange({ ...state, model })}
             >
-              <SelectTrigger className="form-select" aria-label="Model">
+              <SelectTrigger aria-label="Model">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -221,13 +223,13 @@ export function AgentConfigForm({
               </SelectContent>
             </Select>
             {runtimeModelsError && (
-              <div className="modal-field-hint">{runtimeModelsError}</div>
+              <p className="text-xs text-muted-foreground leading-relaxed mt-1">{runtimeModelsError}</p>
             )}
-          </div>
+          </FormField>
 
           {(state.runtime === 'codex' || state.runtime === 'opencode') && (
-            <div className="modal-field">
-              <label className="form-label">Reasoning</label>
+            <FormField>
+              <Label>Reasoning</Label>
               <Select
                 value={state.reasoningEffort ?? 'default'}
                 onValueChange={(reasoningEffort) =>
@@ -237,7 +239,7 @@ export function AgentConfigForm({
                   })
                 }
               >
-                <SelectTrigger className="form-select" aria-label="Reasoning">
+                <SelectTrigger aria-label="Reasoning">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -248,7 +250,7 @@ export function AgentConfigForm({
                   ))}
                 </SelectContent>
               </Select>
-            </div>
+            </FormField>
           )}
         </div>
       </section>
@@ -256,38 +258,36 @@ export function AgentConfigForm({
       <section className="agent-config-section">
         <div className="agent-config-section-header">
           <span className="agent-config-section-kicker">[env::bindings]</span>
-          <button className="env-add-btn" type="button" onClick={addEnvVar}>
+          <Button size="sm" variant="ghost" type="button" onClick={addEnvVar}>
             + Add variable
-          </button>
+          </Button>
         </div>
-        <div className="modal-field">
-          <label className="form-label">Environment Variables</label>
-          <div className="modal-field-hint">Pass runtime secrets and flags into the agent process without hardcoding them into prompts.</div>
+        <FormField>
+          <Label>Environment Variables</Label>
+          <p className="text-xs text-muted-foreground leading-relaxed mt-1">Pass runtime secrets and flags into the agent process without hardcoding them into prompts.</p>
           <div className="env-var-editor">
             {state.envVars.length === 0 && (
               <div className="env-var-editor-empty">No environment variables configured.</div>
             )}
             {state.envVars.map((envVar, index) => (
               <div key={index} className="env-var-editor-row">
-                <input
-                  className="form-input"
+                <Input
                   value={envVar.key}
                   onChange={(e) => updateEnvVar(index, 'key', e.target.value)}
                   placeholder="KEY"
                 />
-                <input
-                  className="form-input"
+                <Input
                   value={envVar.value}
                   onChange={(e) => updateEnvVar(index, 'value', e.target.value)}
                   placeholder="value"
                 />
-                <button className="env-remove-btn" type="button" onClick={() => removeEnvVar(index)}>
+                <Button size="sm" variant="ghost" type="button" onClick={() => removeEnvVar(index)}>
                   ×
-                </button>
+                </Button>
               </div>
             ))}
           </div>
-        </div>
+        </FormField>
       </section>
     </div>
   )
