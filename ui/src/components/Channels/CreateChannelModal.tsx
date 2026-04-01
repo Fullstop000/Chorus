@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo } from 'react'
 import { Plus, Users } from 'lucide-react'
-import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { createChannel, createTeam } from '../../api'
 import { useApp } from '../../store'
@@ -153,19 +152,21 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
     }
   }
 
+  if (!open) return null
+
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onOpenChange(false)}>
+      <div className="modal-box">
         <div className="modal-header">
           <div className="modal-title-block">
-            <DialogTitle>{mode === 'channel' ? 'Create Channel' : 'Create Team'}</DialogTitle>
-            <DialogDescription>
+            <span className="modal-title">{mode === 'channel' ? 'Create Channel' : 'Create Team'}</span>
+            <span className="modal-subtitle">
               {mode === 'channel'
                 ? 'standard room for people and agents'
                 : 'shared agent collaboration unit'}
-            </DialogDescription>
+            </span>
           </div>
-          <DialogClose className="modal-close" aria-label="Close">×</DialogClose>
+          <button className="modal-close" onClick={() => onOpenChange(false)}>×</button>
         </div>
 
         {error && <div className="error-banner">{error}</div>}
@@ -364,7 +365,7 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
             </button>
           </div>
         </form>
-      </DialogContent>
-    </Dialog>
+      </div>
+    </div>
   )
 }
