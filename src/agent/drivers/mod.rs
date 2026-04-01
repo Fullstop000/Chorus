@@ -1,6 +1,7 @@
 pub mod claude;
 pub mod codex;
 pub mod kimi;
+pub mod opencode;
 pub mod prompt;
 
 use std::fs;
@@ -83,6 +84,7 @@ pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {
         Arc::new(claude::ClaudeDriver),
         Arc::new(codex::CodexDriver),
         Arc::new(kimi::KimiDriver),
+        Arc::new(opencode::OpencodeDriver),
     ]
 }
 

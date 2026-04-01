@@ -40,7 +40,7 @@ export function CreateAgentModal({ onClose, onCreated }: Props) {
           description: config.description,
           runtime: config.runtime,
           model: config.model,
-          reasoningEffort: config.runtime === 'codex' ? config.reasoningEffort : null,
+          reasoningEffort: config.runtime === 'codex' || config.runtime === 'opencode' ? config.reasoningEffort : null,
           envVars: config.envVars,
         }),
       })

@@ -32,7 +32,7 @@ export interface AgentEnvVar {
 export type RuntimeAuthStatus = 'authed' | 'unauthed'
 
 export interface RuntimeStatusInfo {
-  runtime: 'claude' | 'codex' | 'kimi' | string
+  runtime: 'claude' | 'codex' | 'kimi' | 'opencode' | string
   installed: boolean
   authStatus?: RuntimeAuthStatus
 }

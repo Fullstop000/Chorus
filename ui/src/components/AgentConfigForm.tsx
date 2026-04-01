@@ -19,6 +19,13 @@ export const MODELS: Record<string, { value: string; label: string }[]> = {
   kimi: [
     { value: 'kimi-code/kimi-for-coding', label: 'kimi-for-coding' },
   ],
+  opencode: [
+    { value: 'anthropic/claude-sonnet-4-20250514', label: 'claude-sonnet-4 (Anthropic)' },
+    { value: 'anthropic/claude-opus-4-20250514', label: 'claude-opus-4 (Anthropic)' },
+    { value: 'openai/gpt-4.1', label: 'gpt-4.1 (OpenAI)' },
+    { value: 'openai/o3', label: 'o3 (OpenAI)' },
+    { value: 'google/gemini-2.5-pro', label: 'gemini-2.5-pro (Google)' },
+  ],
 }
 
 export const REASONING_EFFORTS = [
@@ -54,7 +61,7 @@ export function runtimeOptionLabel(
   runtimeStatuses: RuntimeStatusInfo[] = [],
 ): string {
   const baseLabel =
-    runtime === 'claude' ? 'Claude Code' : runtime === 'codex' ? 'Codex CLI' : 'Kimi CLI'
+    runtime === 'claude' ? 'Claude Code' : runtime === 'codex' ? 'Codex CLI' : runtime === 'opencode' ? 'OpenCode' : 'Kimi CLI'
   const status = runtimeStatuses.find((entry) => entry.runtime === runtime)
   if (!status) return `${baseLabel} · status unavailable`
   if (!status.installed) return `${baseLabel} · not installed`
@@ -186,7 +193,7 @@ export function AgentConfigForm({
                   ...state,
                   runtime,
                   model,
-                  reasoningEffort: runtime === 'codex' ? state.reasoningEffort ?? 'default' : null,
+                  reasoningEffort: runtime === 'codex' || runtime === 'opencode' ? state.reasoningEffort ?? 'default' : null,
                 })
               }}
             >
@@ -197,6 +204,7 @@ export function AgentConfigForm({
                 <SelectItem value="claude">{runtimeOptionLabel('claude', runtimeStatuses)}</SelectItem>
                 <SelectItem value="codex">{runtimeOptionLabel('codex', runtimeStatuses)}</SelectItem>
                 <SelectItem value="kimi">{runtimeOptionLabel('kimi', runtimeStatuses)}</SelectItem>
+                <SelectItem value="opencode">{runtimeOptionLabel('opencode', runtimeStatuses)}</SelectItem>
               </SelectContent>
             </Select>
             <div className={`runtime-status-banner runtime-status-banner-${runtimeSummary.tone}`}>
@@ -227,7 +235,7 @@ export function AgentConfigForm({
             </Select>
           </div>
 
-          {state.runtime === 'codex' && (
+          {(state.runtime === 'codex' || state.runtime === 'opencode') && (
             <div className="modal-field">
               <label className="form-label">Reasoning</label>
               <Select

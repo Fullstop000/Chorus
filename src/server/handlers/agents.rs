@@ -144,7 +144,8 @@ pub(super) fn normalize_reasoning_effort(
     runtime: &str,
     reasoning_effort: Option<&str>,
 ) -> Result<Option<String>, (StatusCode, Json<super::ErrorResponse>)> {
-    if AgentRuntime::parse(runtime) != Some(AgentRuntime::Codex) {
+    let parsed = AgentRuntime::parse(runtime);
+    if parsed != Some(AgentRuntime::Codex) && parsed != Some(AgentRuntime::Opencode) {
         return Ok(None);
     }
 
@@ -156,11 +157,11 @@ pub(super) fn normalize_reasoning_effort(
     }
 
     match reasoning_effort {
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => {
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => {
             Ok(Some(reasoning_effort.to_string()))
         }
         _ => Err(api_err(format!(
-            "unsupported Codex reasoning effort: {reasoning_effort}"
+            "unsupported reasoning effort: {reasoning_effort}"
         ))),
     }
 }

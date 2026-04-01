@@ -40,6 +40,9 @@ fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
         Some(AgentRuntime::Claude) => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
         Some(AgentRuntime::Codex) => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
         Some(AgentRuntime::Kimi) => Ok(Arc::new(crate::agent::drivers::kimi::KimiDriver)),
+        Some(AgentRuntime::Opencode) => {
+            Ok(Arc::new(crate::agent::drivers::opencode::OpencodeDriver))
+        }
         None => anyhow::bail!("Unknown runtime: {runtime}"),
     }
 }
@@ -83,7 +86,7 @@ impl AgentManager {
 
         let driver = get_driver(&agent.runtime)?;
         let resumable_session_id = match driver.runtime() {
-            AgentRuntime::Codex => agent.session_id.clone(),
+            AgentRuntime::Codex | AgentRuntime::Opencode => agent.session_id.clone(),
             AgentRuntime::Kimi => Some(
                 agent
                     .session_id
