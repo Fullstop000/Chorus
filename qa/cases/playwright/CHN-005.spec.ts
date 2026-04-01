@@ -19,7 +19,7 @@ test.describe('CHN-005', () => {
     await row.locator('button[title^="Edit #"]').click()
 
     const dialog = page.locator('[role="dialog"]')
-    await expect(dialog.getByText('Edit Channel')).toBeVisible()
+    await expect(dialog.getByRole('heading', { name: 'Edit Channel' })).toBeVisible()
     await dialog.locator('input').first().fill(renamed)
     await dialog.locator('button:has-text("Save Changes")').click()
 

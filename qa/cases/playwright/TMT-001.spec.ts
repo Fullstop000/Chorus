@@ -59,17 +59,17 @@ test.describe('TMT-001', () => {
     await test.step('Steps 1–2: New Channel modal — Channel / Team toggle', async () => {
       await page.click('button[title="Add channel"]')
       const dialog = page.locator('[role="dialog"]')
-      await expect(dialog.getByText('Create Channel')).toBeVisible()
+      await expect(dialog.getByRole('heading', { name: 'Create Channel' })).toBeVisible()
       await expect(dialog.locator('button:has-text("Team")')).toBeVisible()
       await dialog.locator('button:has-text("Team")').click()
-      await expect(dialog.getByText('Create Team')).toBeVisible()
+      await expect(dialog.getByRole('heading', { name: 'Create Team' })).toBeVisible()
       await dialog.locator('button:has-text("Cancel")').click()
     })
 
     await test.step('Step 7 (+ New Team shortcut): Team tab pre-selected', async () => {
       await page.click('button[title="Add team"]')
       const dialog = page.locator('[role="dialog"]')
-      await expect(dialog.getByText('Create Team')).toBeVisible()
+      await expect(dialog.getByRole('heading', { name: 'Create Team' })).toBeVisible()
       await dialog.locator('button:has-text("Cancel")').click()
     })
 

@@ -39,7 +39,7 @@ test.describe('TMT-005', () => {
 
     await test.step('Step 1: Open team settings', async () => {
       await page.getByRole('button', { name: 'Open team settings' }).click()
-      await expect(page.locator('[role="dialog"]').getByText('Team Settings')).toBeVisible()
+      await expect(page.locator('[role="dialog"]').getByRole('heading', { name: 'Team Settings' })).toBeVisible()
     })
 
     await test.step('Steps 2–3: Add bot-b if missing', async () => {

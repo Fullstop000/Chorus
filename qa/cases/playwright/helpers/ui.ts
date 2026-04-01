@@ -28,7 +28,7 @@ export async function createAgentViaUi(
 ): Promise<void> {
   await page.click('button[title="Create agent"]')
   const dialog = page.locator('[role="dialog"]')
-  await expect(dialog.getByText('Create Agent')).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Create Agent' })).toBeVisible()
   await dialog.locator('input[placeholder="e.g. my-agent"]').fill(opts.name)
   await dialog.locator('[role="combobox"][aria-label="Runtime"]').click()
   await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.runtime, 'i') }).first().click()
@@ -49,7 +49,7 @@ export async function createUserChannelViaUi(
 ): Promise<void> {
   await page.click('button[title="Add channel"]')
   const dialog = page.locator('[role="dialog"]')
-  await expect(dialog.getByText('Create Channel')).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Create Channel' })).toBeVisible()
   await page.locator('input[placeholder="e.g. engineering"]').fill(name)
   await page.locator('input[placeholder="What\'s this channel about?"]').fill(description)
   await dialog.locator('button:has-text("Create Channel")').click()
@@ -61,7 +61,7 @@ export async function createTeamQaEngViaUi(page: Page): Promise<void> {
   await page.click('button[title="Add channel"]')
   const dialog = page.locator('[role="dialog"]')
   await dialog.locator('button:has-text("Team")').click()
-  await expect(dialog.getByText('Create Team')).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'Create Team' })).toBeVisible()
   await page.locator('input[placeholder="e.g. eng-team"]').fill('qa-eng')
   await page.locator('input[placeholder="Engineering Team"]').fill('QA Engineering')
   const memberSelect = dialog.locator('[role="combobox"][aria-label="Initial Members"]')
