@@ -127,7 +127,7 @@ export function TeamSettings({ team, members, open, onOpenChange, onRefresh, onD
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="team-settings-card">
         <DialogHeader>
-          <div className="modal-title-block">
+          <div className="flex flex-col gap-1">
             <DialogTitle>Team Settings</DialogTitle>
             <DialogDescription>#{team.name}</DialogDescription>
           </div>

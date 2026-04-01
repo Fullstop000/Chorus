@@ -294,7 +294,7 @@ function EditAgentModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(720px,96vw)]">
         <DialogHeader>
-          <div className="modal-title-block">
+          <div className="flex flex-col gap-1">
             <DialogTitle>Edit Agent</DialogTitle>
             <DialogDescription>@{agentName}</DialogDescription>
           </div>

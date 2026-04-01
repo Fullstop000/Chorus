@@ -62,7 +62,7 @@ function InviteMemberModal({ options, channelName, open, onOpenChange, onInvited
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <div className="modal-title-block">
+          <div className="flex flex-col gap-1">
             <DialogTitle>Invite Member</DialogTitle>
             <DialogDescription>#{channelName}</DialogDescription>
           </div>

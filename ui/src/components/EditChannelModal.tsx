@@ -159,7 +159,7 @@ export function DeleteChannelModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <div className="modal-title-block">
+          <div className="flex flex-col gap-1">
             <DialogTitle>Delete Channel</DialogTitle>
             <DialogDescription>#{channel.name}</DialogDescription>
           </div>

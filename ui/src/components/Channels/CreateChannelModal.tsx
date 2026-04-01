@@ -161,7 +161,7 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <div className="modal-title-block">
+          <div className="flex flex-col gap-1">
             <DialogTitle>{mode === 'channel' ? 'Create Channel' : 'Create Team'}</DialogTitle>
             <DialogDescription>
               {mode === 'channel'
