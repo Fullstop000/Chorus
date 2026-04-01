@@ -6,6 +6,7 @@ import { sendMessage, createTasks, uploadFile } from '../api'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
 import { ToastRegion } from './ToastRegion'
+import { FormError } from '@/components/ui/form'
 
 interface Props {
   target: string | null
@@ -124,7 +125,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
 
   return (
     <div className="message-input-area">
-      {error && <div className="error-banner">{error}</div>}
+      {error && <FormError>{error}</FormError>}
       {pendingFiles.length > 0 && (
         <div className="message-input-files">
           {pendingFiles.map((f, i) => (

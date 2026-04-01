@@ -14,6 +14,7 @@ import { ThreadsTab } from './ThreadsTab'
 import { ChannelMembersPanel } from './ChannelMembersPanel'
 import type { ChannelMemberInfo, TeamResponse } from '../types'
 import { TeamSettings } from './TeamSettings'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 export function MainPanel() {
   const {
@@ -246,11 +247,12 @@ export function MainPanel() {
         </div>
         {activeTab === 'chat' && openThreadMsg && <ThreadPanel />}
       </div>
-      {showTeamSettings && teamDetails && (
+      {teamDetails && (
         <TeamSettings
           team={teamDetails.team}
           members={teamDetails.members}
-          onClose={() => setShowTeamSettings(false)}
+          open={showTeamSettings}
+          onOpenChange={setShowTeamSettings}
           onRefresh={async () => {
             await Promise.all([refreshChannels(), refreshTeams(), refreshAgents()])
             await refreshSelectedTeam()
@@ -261,14 +263,14 @@ export function MainPanel() {
           }}
         />
       )}
-      {showTeamSettings && teamSettingsLoading && (
-        <div className="modal-overlay">
-          <div className="modal-card">
-            <div className="modal-header">
-              <span className="modal-title">Loading Team</span>
-            </div>
-          </div>
-        </div>
+      {teamSettingsLoading && (
+        <Dialog open={true}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Loading Team</DialogTitle>
+            </DialogHeader>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )

@@ -2,6 +2,11 @@ import { useMemo, useState } from 'react'
 import { UserPlus, X } from 'lucide-react'
 import { inviteChannelMember } from '../api'
 import type { AgentInfo, ChannelMemberInfo, HumanInfo } from '../types'
+import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { FormField, FormError } from '@/components/ui/form'
+import { Label } from '@/components/ui/label'
 import './ChannelMembersPanel.css'
 
 interface ChannelMembersPanelProps {
@@ -19,7 +24,8 @@ interface ChannelMembersPanelProps {
 interface InviteMemberModalProps {
   options: InviteOption[]
   channelName: string
-  onClose: () => void
+  open: boolean
+  onOpenChange: (open: boolean) => void
   onInvited: (memberName: string) => Promise<void>
 }
 
@@ -33,7 +39,7 @@ function memberLabel(member: ChannelMemberInfo): string {
   return member.displayName?.trim() || member.memberName
 }
 
-function InviteMemberModal({ options, channelName, onClose, onInvited }: InviteMemberModalProps) {
+function InviteMemberModal({ options, channelName, open, onOpenChange, onInvited }: InviteMemberModalProps) {
   const [selectedMember, setSelectedMember] = useState(options[0]?.memberName ?? '')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -44,7 +50,7 @@ function InviteMemberModal({ options, channelName, onClose, onInvited }: InviteM
     setError(null)
     try {
       await onInvited(selectedMember)
-      onClose()
+      onOpenChange(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -53,51 +59,49 @@ function InviteMemberModal({ options, channelName, onClose, onInvited }: InviteM
   }
 
   return (
-    <div className="modal-overlay" onClick={(event) => event.target === event.currentTarget && onClose()}>
-      <div className="modal-card">
-        <div className="modal-header">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
           <div className="modal-title-block">
-            <span className="modal-title">Invite Member</span>
-            <span className="modal-subtitle">#{channelName}</span>
+            <DialogTitle>Invite Member</DialogTitle>
+            <DialogDescription>#{channelName}</DialogDescription>
           </div>
-          <button className="modal-close" onClick={onClose}>×</button>
-        </div>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+        </DialogHeader>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <FormError>{error}</FormError>}
 
-        <div className="form-group">
-          <label className="form-label">Member</label>
-          <select
-            className="form-select"
-            value={selectedMember}
-            onChange={(event) => setSelectedMember(event.target.value)}
-            disabled={submitting}
-            autoFocus
-          >
-            {options.map((option) => (
-              <option key={option.memberName} value={option.memberName}>
-                {option.label} · {option.detail}
-              </option>
-            ))}
-          </select>
-        </div>
+        <FormField>
+          <Label>Member</Label>
+          <Select value={selectedMember} onValueChange={setSelectedMember} disabled={submitting}>
+            <SelectTrigger aria-label="Member">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {options.map((option) => (
+                <SelectItem key={option.memberName} value={option.memberName}>
+                  {option.label} · {option.detail}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </FormField>
 
-        <div className="modal-field-hint">
+        <p className="text-xs text-muted-foreground leading-relaxed">
           Only people and agents that are not already in this channel are shown here.
-        </div>
+        </p>
 
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-          <button className="btn-brutal" onClick={onClose} disabled={submitting}>Cancel</button>
-          <button
-            className="btn-brutal btn-cyan"
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>Cancel</Button>
+          <Button
             onClick={handleInvite}
             disabled={submitting || !selectedMember}
           >
             {submitting ? 'Inviting…' : 'Invite Member'}
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -147,15 +151,15 @@ export function ChannelMembersPanel({
           </div>
           <div className="members-panel-actions">
             {invitable && (
-              <button
+              <Button
+                size="sm"
                 type="button"
-                className="btn-brutal-sm"
                 onClick={() => setShowInviteModal(true)}
                 disabled={inviteOptions.length === 0}
               >
                 <UserPlus size={13} />
                 Invite
-              </button>
+              </Button>
             )}
             <button type="button" className="members-panel-close" onClick={onClose} aria-label="Close members panel">
               <X size={15} />
@@ -184,11 +188,12 @@ export function ChannelMembersPanel({
         </div>
       </aside>
 
-      {showInviteModal && inviteOptions.length > 0 && (
+      {inviteOptions.length > 0 && (
         <InviteMemberModal
           options={inviteOptions}
           channelName={channelName}
-          onClose={() => setShowInviteModal(false)}
+          open={showInviteModal}
+          onOpenChange={setShowInviteModal}
           onInvited={handleInvite}
         />
       )}
