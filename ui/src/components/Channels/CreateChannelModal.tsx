@@ -1,6 +1,11 @@
 import React, { useEffect, useMemo } from 'react'
 import { Plus, Users } from 'lucide-react'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { FormField, FormError } from '@/components/ui/form'
+import { Label } from '@/components/ui/label'
 import { createChannel, createTeam } from '../../api'
 import { useApp } from '../../store'
 
@@ -152,24 +157,22 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
     }
   }
 
-  if (!open) return null
-
   return (
-    <div className="modal-overlay" onClick={(e) => e.target === e.currentTarget && onOpenChange(false)}>
-      <div className="modal-box">
-        <div className="modal-header">
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
           <div className="modal-title-block">
-            <span className="modal-title">{mode === 'channel' ? 'Create Channel' : 'Create Team'}</span>
-            <span className="modal-subtitle">
+            <DialogTitle>{mode === 'channel' ? 'Create Channel' : 'Create Team'}</DialogTitle>
+            <DialogDescription>
               {mode === 'channel'
                 ? 'standard room for people and agents'
                 : 'shared agent collaboration unit'}
-            </span>
+            </DialogDescription>
           </div>
-          <button className="modal-close" onClick={() => onOpenChange(false)}>×</button>
-        </div>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+        </DialogHeader>
 
-        {error && <div className="error-banner">{error}</div>}
+        {error && <FormError>{error}</FormError>}
 
         <form
           onSubmit={(event) => {
@@ -178,71 +181,67 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
           }}
         >
           <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
-            <button
-              className={`btn-brutal${mode === 'channel' ? ' btn-cyan' : ''}`}
+            <Button
+              variant={mode === 'channel' ? 'default' : 'outline'}
               type="button"
               onClick={() => setMode('channel')}
             >
               <Plus size={14} />
               Channel
-            </button>
-            <button
-              className={`btn-brutal${mode === 'team' ? ' btn-cyan' : ''}`}
+            </Button>
+            <Button
+              variant={mode === 'team' ? 'default' : 'outline'}
               type="button"
               onClick={() => setMode('team')}
             >
               <Users size={14} />
               Team
-            </button>
+            </Button>
           </div>
 
-          <div className="form-group">
-            <label className="form-label" htmlFor="channel-modal-name">
+          <FormField>
+            <Label htmlFor="channel-modal-name">
               {mode === 'channel' ? 'Channel Name' : 'Team Slug'}
-            </label>
-            <input
+            </Label>
+            <Input
               id="channel-modal-name"
-              className="form-input"
               placeholder={mode === 'channel' ? 'e.g. engineering' : 'e.g. eng-team'}
               value={name}
               onChange={(event) => setName(event.target.value)}
               autoFocus
             />
-          </div>
+          </FormField>
 
           {mode === 'channel' ? (
-            <div className="form-group">
-              <label className="form-label" htmlFor="channel-modal-description">Description (optional)</label>
-              <input
+            <FormField>
+              <Label htmlFor="channel-modal-description">Description (optional)</Label>
+              <Input
                 id="channel-modal-description"
-                className="form-input"
                 placeholder="What's this channel about?"
                 value={description}
                 onChange={(event) => setDescription(event.target.value)}
               />
-            </div>
+            </FormField>
           ) : (
             <>
-              <div className="form-group">
-                <label className="form-label" htmlFor="team-modal-display-name">Display Name</label>
-                <input
+              <FormField>
+                <Label htmlFor="team-modal-display-name">Display Name</Label>
+                <Input
                   id="team-modal-display-name"
-                  className="form-input"
                   placeholder="Engineering Team"
                   value={displayName}
                   onChange={(event) => setDisplayName(event.target.value)}
                 />
-              </div>
+              </FormField>
 
-              <div className="form-group">
-                <label className="form-label" htmlFor="team-modal-collaboration-model">Collaboration Model</label>
+              <FormField>
+                <Label htmlFor="team-modal-collaboration-model">Collaboration Model</Label>
                 <Select
                   value={collaborationModel}
                   onValueChange={(value) => setCollaborationModel(value as 'leader_operators' | 'swarm')}
                 >
                   <SelectTrigger
                     id="team-modal-collaboration-model"
-                    className="form-select"
                     aria-label="Collaboration Model"
                   >
                     <SelectValue />
@@ -252,15 +251,14 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                     <SelectItem value="swarm">Swarm</SelectItem>
                   </SelectContent>
                 </Select>
-              </div>
+              </FormField>
 
               {collaborationModel === 'leader_operators' && (
-                <div className="form-group">
-                  <label className="form-label" htmlFor="team-modal-leader">Leader</label>
+                <FormField>
+                  <Label htmlFor="team-modal-leader">Leader</Label>
                   <Select value={leaderAgentName} onValueChange={setLeaderAgentName}>
                     <SelectTrigger
                       id="team-modal-leader"
-                      className="form-select"
                       aria-label="Leader"
                     >
                       <SelectValue placeholder="Select an agent leader" />
@@ -273,17 +271,16 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                       ))}
                     </SelectContent>
                   </Select>
-                </div>
+                </FormField>
               )}
 
-              <div className="form-group">
-                <label className="form-label" htmlFor="team-modal-member">Initial Members</label>
+              <FormField>
+                <Label htmlFor="team-modal-member">Initial Members</Label>
                 <div style={{ display: 'grid', gap: 8 }}>
                   <div style={{ display: 'grid', gap: 8, gridTemplateColumns: 'minmax(0, 1fr) 140px auto' }}>
                     <Select value={pendingMemberName} onValueChange={setPendingMemberName}>
                       <SelectTrigger
                         id="team-modal-member"
-                        className="form-select"
                         aria-label="Initial Members"
                       >
                         <SelectValue placeholder="Choose a person or agent" />
@@ -296,24 +293,22 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                         ))}
                       </SelectContent>
                     </Select>
-                    <input
-                      className="form-input"
+                    <Input
                       placeholder="role"
                       value={pendingMemberRole}
                       onChange={(event) => setPendingMemberRole(event.target.value)}
                     />
-                    <button
-                      className="btn-brutal btn-cyan"
+                    <Button
                       type="button"
                       onClick={addTeamMemberDraft}
                       disabled={!pendingMemberName}
                     >
                       Add
-                    </button>
+                    </Button>
                   </div>
 
                   {teamMembers.length === 0 ? (
-                    <div className="modal-field-hint">No initial members yet.</div>
+                    <p className="text-xs text-muted-foreground leading-relaxed">No initial members yet.</p>
                   ) : (
                     <div style={{ display: 'grid', gap: 8 }}>
                       {teamMembers.map((member) => (
@@ -330,30 +325,30 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                         >
                           <div style={{ minWidth: 0, flex: 1 }}>
                             <div style={{ fontWeight: 600 }}>{member.member_name}</div>
-                            <div className="modal-field-hint">
+                            <p className="text-xs text-muted-foreground leading-relaxed">
                               {member.member_type} · role: {member.role}
-                            </div>
+                            </p>
                           </div>
-                          <button
-                            className="btn-brutal-sm"
+                          <Button
+                            size="sm"
+                            variant="ghost"
                             type="button"
                             onClick={() => removeTeamMemberDraft(member.member_name)}
                           >
                             Remove
-                          </button>
+                          </Button>
                         </div>
                       ))}
                     </div>
                   )}
                 </div>
-              </div>
+              </FormField>
             </>
           )}
 
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 20 }}>
-            <button className="btn-brutal" type="button" onClick={() => onOpenChange(false)}>Cancel</button>
-            <button
-              className="btn-brutal btn-cyan"
+            <Button variant="outline" type="button" onClick={() => onOpenChange(false)}>Cancel</Button>
+            <Button
               type="submit"
               disabled={creating || !name.trim() || (mode === 'team' && !displayName.trim())}
             >
@@ -362,10 +357,10 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                 : mode === 'channel'
                 ? 'Create Channel'
                 : 'Create Team'}
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   )
 }
