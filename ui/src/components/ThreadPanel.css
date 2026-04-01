@@ -4,9 +4,9 @@
   display: flex;
   flex-direction: column;
   margin: 0 18px 18px 0;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-strong);
+  background: var(--color-popover);
   overflow: hidden;
   box-shadow: none;
 }
@@ -25,7 +25,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 12px 12px 10px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--color-border);
   background: rgba(255, 255, 255, 0.62);
   flex-shrink: 0;
 }
@@ -40,7 +40,7 @@
   font-family: var(--font-mono);
   font-size: 11px;
   letter-spacing: 0.07em;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .thread-close-btn {
@@ -49,15 +49,15 @@
   width: 32px;
   height: 32px;
   border-radius: 0;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   border: 1px solid transparent;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .thread-close-btn:hover {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .thread-body {
@@ -69,14 +69,14 @@
 
 .thread-parent-wrapper {
   background: transparent;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--color-border);
   padding: 8px 10px;
 }
 
 .thread-parent-wrapper .message-item {
   margin-bottom: 0;
   background: rgba(255, 255, 255, 0.68);
-  border-color: var(--line);
+  border-color: var(--color-border);
 }
 
 .thread-replies {
@@ -86,23 +86,23 @@
 
 .thread-empty {
   text-align: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-size: 13px;
   font-family: var(--font-mono);
   padding: 40px 20px;
 }
 
 .thread-input-area {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--color-border);
   padding: 10px;
   background: rgba(255, 255, 255, 0.62);
   flex-shrink: 0;
 }
 
 .thread-input-row {
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-muted);
+  background: var(--color-muted);
   overflow: hidden;
 }
 
@@ -125,7 +125,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 6px 6px 6px 8px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--color-border);
 }
 
 .thread-attach-btn {
@@ -133,16 +133,16 @@
   place-items: center;
   width: 24px;
   height: 24px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   border-radius: 0;
   border: 1px solid transparent;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .thread-attach-btn:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .thread-send-btn {
@@ -157,7 +157,7 @@
   letter-spacing: 0.05em;
   text-transform: uppercase;
   border-radius: 0;
-  background: var(--accent);
+  background: var(--color-primary);
   color: #fff;
   position: relative;
   transition: background 0.15s ease;

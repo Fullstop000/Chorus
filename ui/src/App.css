@@ -78,8 +78,8 @@ select:focus-visible {
   min-height: 36px;
   padding: 0 12px;
   border-radius: 0;
-  border: var(--border);
-  background: var(--bg-panel-strong);
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
   box-shadow: none;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -107,9 +107,9 @@ select:focus-visible {
 
 .btn-brutal:hover,
 .btn-brutal-sm:hover {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
   box-shadow: none;
 }
 
@@ -123,7 +123,7 @@ select:focus-visible {
 .btn-yellow,
 .btn-lime,
 .btn-orange {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -141,8 +141,8 @@ select:focus-visible {
   min-height: 20px;
   padding: 0 7px;
   border-radius: 0;
-  border: 1px solid var(--line);
-  background: var(--bg-panel-muted);
+  border: 1px solid var(--color-border);
+  background: var(--color-muted);
   font-family: var(--font-mono);
   font-size: 10px;
   letter-spacing: 0.05em;
@@ -154,7 +154,7 @@ select:focus-visible {
 .badge-codex,
 .badge-kimi,
 .badge-you {
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 
 .status-dot {
@@ -164,7 +164,7 @@ select:focus-visible {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  border: 2px solid var(--bg-panel-strong);
+  border: 2px solid var(--color-popover);
 }
 
 .status-dot.online { background: var(--status-online); }
@@ -187,7 +187,7 @@ select:focus-visible {
   min-height: 22px;
   padding: 0 6px;
   border-radius: 0;
-  background: var(--accent-soft);
+  background: var(--color-secondary);
   font-family: var(--font-mono);
   font-size: 12px;
 }
@@ -205,8 +205,8 @@ select:focus-visible {
 
 .modal-card,
 .modal-box {
-  background: var(--bg-panel-strong);
-  border: var(--border);
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   box-shadow: none;
   width: min(460px, 95vw);
@@ -225,7 +225,7 @@ select:focus-visible {
   justify-content: space-between;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .modal-title {
@@ -246,7 +246,7 @@ select:focus-visible {
   font-size: 11px;
   letter-spacing: 0.07em;
   text-transform: lowercase;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .modal-subtitle,
@@ -295,12 +295,12 @@ select:focus-visible {
   display: grid;
   place-items: center;
   border-radius: 0;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .modal-close:hover {
-  background: var(--accent-soft);
-  color: var(--text-primary);
+  background: var(--color-secondary);
+  color: var(--color-foreground);
 }
 
 .form-group,
@@ -316,7 +316,7 @@ select:focus-visible {
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .form-input,
@@ -324,9 +324,9 @@ select:focus-visible {
 .form-textarea {
   width: 100%;
   min-height: 46px;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-muted);
+  background: var(--color-muted);
   padding: 9px 12px;
 }
 
@@ -339,7 +339,7 @@ select:focus-visible {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.5;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .error-banner {
@@ -358,7 +358,7 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-family: var(--font-mono);
   font-size: 13px;
   padding: 40px;
@@ -372,7 +372,7 @@ select:focus-visible {
   min-height: 28px;
   padding: 0 8px;
   border-radius: 0;
-  background: var(--accent-soft);
+  background: var(--color-secondary);
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }

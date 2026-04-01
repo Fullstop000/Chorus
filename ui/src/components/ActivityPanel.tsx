@@ -386,7 +386,7 @@ export function ActivityPanel({ agentName }: Props) {
     return (
       <div className="activity-panel">
         <ActivityHeader agentName={agentName} dotColor={dotColor} activity={agentActivity} detail={agentDetail} />
-        <div className="activity-empty" style={{ color: 'var(--accent)' }}>{error}</div>
+        <div className="activity-empty" style={{ color: 'var(--color-primary)' }}>{error}</div>
       </div>
     )
   }

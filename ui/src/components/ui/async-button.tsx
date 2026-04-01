@@ -45,8 +45,8 @@ export const AsyncButton = React.forwardRef<
         "font-mono text-[12px] uppercase tracking-[0.05em]",
         "relative overflow-hidden",
         variant === 'default' && [
-          "border border-[var(--line-strong)] bg-[var(--bg-panel-strong)]",
-          "hover:bg-[var(--accent)] hover:text-[#f8f6f1] hover:border-[var(--accent)]",
+          "border border-[var(--color-input)] bg-[var(--color-popover)]",
+          "hover:bg-[var(--color-primary)] hover:text-[#f8f6f1] hover:border-[var(--color-primary)]",
           "active:translate-y-[1px]",
         ],
         className

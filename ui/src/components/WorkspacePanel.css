@@ -14,9 +14,9 @@
   gap: 10px;
   margin-bottom: 14px;
   padding: 12px 14px;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-strong);
+  background: var(--color-popover);
   box-shadow: none;
   flex-shrink: 0;
 }
@@ -47,7 +47,7 @@
 .workspace-toolbar-kicker,
 .workspace-sidebar-kicker,
 .workspace-preview-kicker {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .workspace-location {
@@ -55,7 +55,7 @@
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
 }
 
 .workspace-toolbar-btn,
@@ -64,10 +64,10 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   box-shadow: none;
-  background: var(--bg-panel-muted);
-  color: var(--text-primary);
+  background: var(--color-muted);
+  color: var(--color-foreground);
   transition: background 0.15s ease;
 }
 
@@ -81,7 +81,7 @@
 .workspace-toolbar-btn:hover,
 .workspace-icon-btn:hover,
 .workspace-mode-btn:hover {
-  background: var(--bg-hover);
+  background: var(--color-accent);
   box-shadow: none;
 }
 
@@ -97,7 +97,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   background: rgba(255, 255, 255, 0.72);
   box-shadow: none;
@@ -109,7 +109,7 @@
   justify-content: space-between;
   gap: 8px;
   padding: 12px 12px 10px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .workspace-sidebar-copy {
@@ -121,7 +121,7 @@
 .workspace-sidebar-title {
   font-size: 20px;
   font-weight: 700;
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 
 .workspace-tree {
@@ -136,7 +136,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-size: 13px;
   font-family: var(--font-mono);
 }
@@ -163,18 +163,18 @@
   padding-bottom: 0;
   border: 0;
   background: transparent;
-  color: var(--text-primary);
+  color: var(--color-foreground);
   text-align: left;
   border-radius: 0;
 }
 
 .workspace-row:hover {
-  background: var(--bg-hover);
+  background: var(--color-accent);
 }
 
 .workspace-row-selected {
-  background: var(--bg-active);
-  border: 1px solid var(--line);
+  background: #ffffff;
+  border: 1px solid var(--color-border);
   box-shadow: none;
   font-weight: 600;
 }
@@ -193,7 +193,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   flex-shrink: 0;
 }
 
@@ -209,7 +209,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   background: rgba(255, 255, 255, 0.72);
   box-shadow: none;
@@ -221,7 +221,7 @@
   justify-content: space-between;
   gap: 10px;
   padding: 12px 12px 10px;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--color-border);
   background: rgba(255, 255, 255, 0.64);
 }
 
@@ -247,11 +247,11 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 14px;
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 
 .workspace-preview-detail {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .workspace-preview-actions {
@@ -273,7 +273,7 @@
 }
 
 .workspace-mode-btn-active {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #fff;
 }
 
@@ -291,12 +291,12 @@
 .workspace-preview-banner {
   margin: 18px 24px 0;
   padding: 8px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   background: rgba(255, 255, 255, 0.72);
   font-size: 12px;
   font-family: var(--font-mono);
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .workspace-preview-content,
@@ -355,9 +355,9 @@
 
 .workspace-markdown code {
   padding: 2px 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-muted);
+  background: var(--color-muted);
   font-family: var(--font-mono);
   font-size: 0.92em;
 }
@@ -365,7 +365,7 @@
 .workspace-markdown pre {
   overflow: auto;
   padding: 16px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   background: rgba(255, 255, 255, 0.86);
   box-shadow: none;

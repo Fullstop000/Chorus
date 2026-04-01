@@ -165,7 +165,7 @@ export function MainPanel() {
         display: 'flex',
         flexDirection: 'column',
         overflow: 'hidden',
-        background: 'var(--content-bg)',
+        background: 'transparent',
         paddingTop: 10,
       }}
     >
@@ -220,7 +220,7 @@ export function MainPanel() {
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
-                color: 'var(--text-muted)',
+                color: 'var(--color-muted-foreground)',
                 flexDirection: 'column',
                 gap: 8,
               }}

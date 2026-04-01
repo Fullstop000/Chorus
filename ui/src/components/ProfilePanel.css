@@ -9,7 +9,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-family: var(--font-mono);
 }
 
@@ -19,9 +19,9 @@
   gap: 12px;
   padding: 14px;
   margin-bottom: 16px;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-strong);
+  background: var(--color-popover);
   box-shadow: none;
 }
 
@@ -50,9 +50,9 @@
 .profile-action-btn {
   min-height: 28px;
   padding: 0 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-muted);
+  background: var(--color-muted);
   font-size: 12px;
   font-weight: 600;
   box-shadow: none;
@@ -73,9 +73,9 @@
 }
 
 .profile-action-btn:hover {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .profile-action-btn-danger {
@@ -108,7 +108,7 @@
 }
 
 .profile-kicker {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .profile-name {
@@ -118,14 +118,14 @@
 }
 
 .profile-handle {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .profile-activity-status {
   display: flex;
   align-items: center;
   gap: 6px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .profile-activity-dot {
@@ -144,14 +144,14 @@
 .profile-section {
   margin-bottom: 16px;
   padding: 12px 14px;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   background: rgba(255, 255, 255, 0.72);
   box-shadow: none;
 }
 
 .profile-section-label {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   margin-bottom: 12px;
   display: flex;
   align-items: center;
@@ -160,17 +160,17 @@
 
 .profile-section-label button {
   font-size: 14px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .profile-section-label button:hover {
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 
 .profile-role-text {
   font-size: 14px;
   line-height: 1.6;
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
 }
 
 .profile-config-grid {
@@ -182,7 +182,7 @@
 }
 
 .profile-config-key {
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-weight: 500;
 }
 
@@ -191,7 +191,7 @@
   align-items: center;
   gap: 8px;
   padding: 8px 0;
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .env-var-key {
@@ -200,7 +200,7 @@
 }
 
 .env-var-val {
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -213,7 +213,7 @@
 }
 
 .agent-config-section {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--color-border);
   padding-top: 12px;
 }
 
@@ -235,7 +235,7 @@
   font-size: 11px;
   letter-spacing: 0.07em;
   text-transform: lowercase;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .agent-config-grid {
@@ -250,7 +250,7 @@
   flex-direction: column;
   gap: 4px;
   padding: 8px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -277,25 +277,25 @@
 .runtime-status-banner-muted {
   background: rgba(80, 87, 99, 0.08);
   border-color: rgba(80, 87, 99, 0.2);
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
 }
 
 .modal-accordion-trigger {
   font-size: 13px;
   font-weight: 600;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 8px 0;
   width: 100%;
   text-align: left;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--color-border);
   margin-top: 4px;
 }
 
 .modal-accordion-trigger:hover {
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 
 .env-var-editor {
@@ -307,7 +307,7 @@
 
 .env-var-editor-empty {
   font-size: 13px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   padding: 8px 0;
 }
 
@@ -318,7 +318,7 @@
 }
 
 .env-var-editor-row input {
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   padding: 7px 8px;
   font-size: 13px;
@@ -329,12 +329,12 @@
 
 .env-add-btn {
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--color-foreground);
   font-weight: 600;
   min-height: 28px;
   padding: 0 10px;
-  border: 1px solid var(--line);
-  background: var(--bg-panel-muted);
+  border: 1px solid var(--color-border);
+  background: var(--color-muted);
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -351,27 +351,27 @@
 }
 
 .env-add-btn:hover {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .env-remove-btn {
   width: 32px;
   height: 32px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   font-size: 18px;
   line-height: 1;
-  color: var(--text-muted);
-  background: var(--bg-panel-muted);
+  color: var(--color-muted-foreground);
+  background: var(--color-muted);
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .env-remove-btn:hover {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .modal-footer {
@@ -380,7 +380,7 @@
   gap: 8px;
   margin-top: 16px;
   padding-top: 12px;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--color-border);
 }
 
 .btn-secondary {
@@ -389,9 +389,9 @@
   border-radius: 0;
   font-size: 12px;
   font-weight: 600;
-  border: 1px solid var(--line);
-  color: var(--text-primary);
-  background: var(--bg-panel-muted);
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+  background: var(--color-muted);
   position: relative;
   overflow: hidden;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
@@ -407,9 +407,9 @@
 }
 
 .btn-secondary:hover {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .btn-primary {
@@ -418,7 +418,7 @@
   border-radius: 0;
   font-size: 12px;
   font-weight: 700;
-  background: var(--accent);
+  background: var(--color-primary);
   color: #fff;
   position: relative;
   overflow: hidden;
@@ -445,7 +445,7 @@
 
 .modal-choice-card {
   width: 100%;
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   background: rgba(255, 255, 255, 0.85);
   padding: 16px;
@@ -458,13 +458,13 @@
 }
 
 .modal-choice-card-active {
-  border-color: var(--line-strong);
+  border-color: var(--color-input);
   background: #fff;
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 
 .modal-choice-card:hover {
-  border-color: var(--line-strong);
+  border-color: var(--color-input);
   background: rgba(255, 255, 255, 0.96);
 }
 
@@ -478,7 +478,7 @@
 .modal-choice-body {
   font-size: 14px;
   line-height: 1.5;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .modal-error {

@@ -324,8 +324,8 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
                             alignItems: 'center',
                             gap: 8,
                             padding: '10px 12px',
-                            border: 'var(--border)',
-                            background: 'var(--bg-panel-muted)',
+                            border: '1px solid var(--color-border)',
+                            background: 'var(--color-muted)',
                           }}
                         >
                           <div style={{ minWidth: 0, flex: 1 }}>

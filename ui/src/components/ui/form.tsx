@@ -37,7 +37,7 @@ const FormLabel = React.forwardRef<
   <Label
     ref={ref}
     className={cn(
-      "font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--text-muted)]",
+      "font-mono text-[11px] uppercase tracking-[0.08em] text-[var(--color-muted-foreground)]",
       className
     )}
     {...props}
@@ -58,7 +58,7 @@ const FormDescription = React.forwardRef<
 >(({ className, children, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-[12px] text-[var(--text-muted)] leading-relaxed", className)}
+    className={cn("text-[12px] text-[var(--color-muted-foreground)] leading-relaxed", className)}
     {...props}
   >
     {children}

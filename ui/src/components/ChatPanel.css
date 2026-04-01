@@ -13,9 +13,9 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
-  background: var(--header-bg);
-  color: var(--header-text);
-  border: var(--border);
+  background: var(--color-popover);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   box-shadow: none;
   flex-shrink: 0;
@@ -38,7 +38,7 @@
 .chat-header-icon {
   font-family: var(--font-mono);
   font-size: 15px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .chat-header-name {
@@ -53,7 +53,7 @@
   font-size: 11px;
   letter-spacing: 0.07em;
   text-transform: lowercase;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   margin-left: 8px;
   display: inline-flex;
   align-items: center;
@@ -84,9 +84,9 @@
   display: grid;
   place-items: center;
   border-radius: 0;
-  background: var(--bg-panel-muted);
-  border: 1px solid var(--line);
-  color: var(--text-secondary);
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  color: var(--color-accent-foreground);
   position: relative;
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
@@ -100,8 +100,8 @@
 }
 
 .chat-header-btn:hover {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #f8f6f1;
 }
 
@@ -111,9 +111,9 @@
   align-items: center;
   gap: 6px;
   padding: 0 10px;
-  border: 1px solid var(--line);
-  background: var(--bg-panel-muted);
-  color: var(--text-secondary);
+  border: 1px solid var(--color-border);
+  background: var(--color-muted);
+  color: var(--color-accent-foreground);
   font-family: var(--font-mono);
   font-size: 11px;
   text-transform: uppercase;
@@ -131,8 +131,8 @@
 
 .chat-header-member-btn:hover,
 .chat-header-member-btn.active {
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
   color: #f8f6f1;
 }
 
@@ -156,7 +156,7 @@
 .chat-messages-empty {
   padding: 56px 20px;
   text-align: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   font-size: 13px;
   font-family: var(--font-mono);
 }
@@ -173,7 +173,7 @@
 
 .message-item:hover {
   background: rgba(255, 255, 255, 0.66);
-  border-color: var(--line);
+  border-color: var(--color-border);
   box-shadow: none;
 }
 
@@ -232,7 +232,7 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .message-status-failed {
@@ -269,20 +269,20 @@
 }
 
 .agent-badge {
-  background: var(--accent-soft);
-  color: var(--text-primary);
+  background: var(--color-secondary);
+  color: var(--color-foreground);
 }
 
 .you-inline-badge,
 .deleted-inline-badge {
-  background: var(--bg-panel-muted);
-  color: var(--text-muted);
+  background: var(--color-muted);
+  color: var(--color-muted-foreground);
 }
 
 .message-time {
   font-family: var(--font-mono);
   font-size: 11px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 
 .message-deleted .message-content,
@@ -296,7 +296,7 @@
   font-size: 14px;
   line-height: 1.55;
   word-break: break-word;
-  color: var(--text-secondary);
+  color: var(--color-accent-foreground);
 }
 
 .message-content p { margin: 0 0 6px; }
@@ -307,11 +307,11 @@
   font-size: 14px;
   font-weight: 700;
   margin: 8px 0 4px;
-  color: var(--text-primary);
+  color: var(--color-foreground);
 }
 .message-content pre {
-  background: var(--bg-panel-muted);
-  border: 1px solid var(--line);
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   padding: 8px 10px;
   overflow-x: auto;
@@ -323,7 +323,7 @@
 .message-content code {
   font-family: var(--font-mono);
   font-size: 12px;
-  background: var(--accent-soft);
+  background: var(--color-secondary);
   padding: 1px 5px;
   border-radius: 0;
 }
@@ -338,13 +338,13 @@
 }
 .message-content li { margin: 2px 0; }
 .message-content blockquote {
-  border-left: 2px solid var(--line-strong);
+  border-left: 2px solid var(--color-input);
   margin: 4px 0;
   padding-left: 10px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
 }
 .message-content a {
-  color: var(--text-primary);
+  color: var(--color-foreground);
   text-decoration: underline;
 }
 
@@ -371,22 +371,22 @@
   place-items: center;
   width: 24px;
   height: 24px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   border-radius: 0;
   background: rgba(255, 255, 255, 0.85);
-  border: 1px solid var(--line);
+  border: 1px solid var(--color-border);
   transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
 }
 
 .message-action-btn:hover {
   color: #f8f6f1;
-  background: var(--accent);
-  border-color: var(--accent);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .mention-pill {
-  background: var(--accent-soft);
-  color: var(--text-primary);
+  background: var(--color-secondary);
+  color: var(--color-foreground);
 }
 
 .mention-pill-clickable {
@@ -396,7 +396,7 @@
 }
 
 .mention-pill-clickable:hover {
-  background: var(--accent);
+  background: var(--color-primary);
   border-color: var(--border-strong);
 }
 
@@ -409,17 +409,17 @@
 
 .attachment-link {
   font-size: 12px;
-  color: var(--text-primary);
+  color: var(--color-foreground);
   text-decoration: none;
-  border: var(--border);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   padding: 4px 8px;
-  background: var(--bg-panel-muted);
+  background: var(--color-muted);
   font-family: var(--font-mono);
 }
 
 .attachment-link:hover {
-  background: var(--bg-hover);
+  background: var(--color-accent);
 }
 
 .message-reply-count {
@@ -433,14 +433,14 @@
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  color: var(--text-primary);
-  border: var(--border);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  background: var(--bg-panel-muted);
+  background: var(--color-muted);
 }
 
 .message-reply-count:hover {
-  background: var(--bg-hover);
+  background: var(--color-accent);
 }
 
 .message-input-area {
@@ -458,8 +458,8 @@
 
 .file-chip {
   font-size: 12px;
-  background: var(--bg-panel-muted);
-  border: var(--border);
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   padding: 4px 6px;
   display: flex;
@@ -470,7 +470,7 @@
 
 .file-chip button {
   font-size: 14px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   line-height: 1;
 }
 
@@ -478,8 +478,8 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  background: var(--bg-panel-strong);
-  border: var(--border);
+  background: var(--color-popover);
+  border: 1px solid var(--color-border);
   border-radius: 0;
   padding: 6px 8px;
   box-shadow: none;
@@ -490,7 +490,7 @@
   height: 30px;
   display: grid;
   place-items: center;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   flex-shrink: 0;
   border-radius: 0;
   border: 1px solid transparent;
@@ -498,9 +498,9 @@
 }
 
 .message-input-btn:hover:not(:disabled) {
-  background: var(--accent);
+  background: var(--color-primary);
   color: #f8f6f1;
-  border-color: var(--accent);
+  border-color: var(--color-primary);
 }
 
 .message-input-textarea {
@@ -520,7 +520,7 @@
 .message-input-send {
   min-width: 64px;
   height: 30px;
-  background: var(--accent);
+  background: var(--color-primary);
   color: #fff;
   font-family: var(--font-mono);
   font-size: 12px;
@@ -560,7 +560,7 @@
   align-items: center;
   gap: 4px;
   font-size: 12px;
-  color: var(--text-muted);
+  color: var(--color-muted-foreground);
   cursor: pointer;
   user-select: none;
   font-family: var(--font-mono);

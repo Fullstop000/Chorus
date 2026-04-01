@@ -47,12 +47,12 @@ function SelectSkeleton({ className }: { className?: string }) {
     <div
       className={cn(
         "flex h-10 w-full items-center justify-between gap-2",
-        "border border-[var(--line-strong)] bg-[var(--bg-panel-muted)]",
+        "border border-[var(--color-input)] bg-[var(--color-muted)]",
         "px-3 py-2",
         className
       )}
     >
-      <span className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+      <span className="flex items-center gap-2 text-sm text-[var(--color-muted-foreground)]">
         <Loader2 className="h-4 w-4 animate-spin" />
         Loading...
       </span>
@@ -122,7 +122,7 @@ export function AsyncSelect({
         )}
       >
         {isLoading ? (
-          <span className="flex items-center gap-2 text-[var(--text-muted)]">
+          <span className="flex items-center gap-2 text-[var(--color-muted-foreground)]">
             <Loader2 className="h-4 w-4 animate-spin" />
             Loading...
           </span>
@@ -132,7 +132,7 @@ export function AsyncSelect({
       </SelectTrigger>
       <SelectContent className={className}>
         {options.length === 0 ? (
-          <div className="px-3 py-2 text-sm text-[var(--text-muted)]">
+          <div className="px-3 py-2 text-sm text-[var(--color-muted-foreground)]">
             {emptyText}
           </div>
         ) : (
@@ -205,7 +205,7 @@ export function RuntimeSelect({
         label: (
           <span className="flex items-center gap-2">
             <span>{getRuntimeLabel(rt.runtime)}</span>
-            <span className="text-[var(--text-muted)]">
+            <span className="text-[var(--color-muted-foreground)]">
               · {getRuntimeStatusLabel(rt)}
             </span>
           </span>
