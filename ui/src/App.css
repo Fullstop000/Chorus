@@ -377,6 +377,31 @@ select:focus-visible {
   padding: 9px 12px;
 }
 
+.select-trigger-text,
+.select-trigger-loading {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.select-trigger-loading {
+  gap: 8px;
+  color: var(--text-muted);
+}
+
+.select-trigger-spinner {
+  flex: 0 0 auto;
+  animation: form-control-spin 0.9s linear infinite;
+}
+
+@keyframes form-control-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .form-textarea {
   min-height: 88px;
   resize: vertical;
