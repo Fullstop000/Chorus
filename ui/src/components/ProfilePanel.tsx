@@ -36,12 +36,12 @@ function activityLabel(activity?: string, detail?: string): string {
 function activityDotColor(activity?: string): string {
   switch (activity) {
     case 'online':
-      return 'var(--lime)'
+      return 'var(--status-online)'
     case 'thinking':
     case 'working':
-      return 'var(--orange)'
+      return 'var(--status-sleeping)'
     default:
-      return 'var(--gray-400)'
+      return 'var(--status-inactive)'
   }
 }
 
@@ -167,7 +167,7 @@ export function ProfilePanel() {
             </>
           )}
           <span className="profile-config-key">Status</span>
-          <span className="badge" style={{ background: isActive ? 'var(--lime)' : agent.status === 'sleeping' ? 'var(--orange)' : 'var(--gray-400)' }}>
+          <span className="badge" style={{ background: isActive ? 'var(--status-online)' : agent.status === 'sleeping' ? 'var(--status-sleeping)' : 'var(--status-inactive)' }}>
             {agent.status}
           </span>
         </div>

@@ -230,7 +230,7 @@
 .sidebar-item.active {
   background: #ffffff;
   border-color: var(--color-input);
-  color: var(--sidebar-active-text);
+  color: var(--color-foreground);
   box-shadow: none;
 }
 
