@@ -58,3 +58,4 @@ docs/handoffs
 .playwright-cli/
 node_modules
 .worktrees/
+.superpowers/
