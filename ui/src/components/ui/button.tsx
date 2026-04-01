@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
   [
-    "inline-flex items-center justify-center gap-2",
+    "inline-flex items-center justify-center gap-[8px]",
     "font-mono text-xs uppercase tracking-[0.05em]",
     "border border-transparent rounded-none",
     "transition-[background,color,border-color] duration-150 ease-in-out",
@@ -38,10 +38,10 @@ const buttonVariants = cva(
         ],
       },
       size: {
-        default: "min-h-9 px-3",
-        sm: "min-h-[30px] px-2.5 text-[11px]",
-        lg: "min-h-[42px] px-4",
-        icon: "h-9 w-9 shrink-0",
+        default: "min-h-[36px] px-[12px]",
+        sm: "min-h-[30px] px-[10px] text-[11px]",
+        lg: "min-h-[42px] px-[16px]",
+        icon: "h-[36px] w-[36px] shrink-0",
       },
     },
     defaultVariants: {

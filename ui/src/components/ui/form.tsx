@@ -6,7 +6,7 @@ const FormField = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement>
 >(({ className, ...props }, ref) => (
-  <div ref={ref} className={cn("mb-2.5", className)} {...props} />
+  <div ref={ref} className={cn("mb-[10px]", className)} {...props} />
 ))
 FormField.displayName = "FormField"
 
@@ -31,7 +31,7 @@ const FormDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-xs text-muted-foreground leading-relaxed mt-1", className)}
+    className={cn("text-xs text-muted-foreground leading-relaxed mt-[4px]", className)}
     {...props}
   />
 ))
@@ -61,7 +61,7 @@ const FormError = React.forwardRef<
   <div
     ref={ref}
     className={cn(
-      "border border-destructive/20 rounded-none bg-destructive/10 text-[#9a5e12] px-2.5 py-2 text-[13px] mb-3",
+      "border border-destructive/20 rounded-none bg-destructive/10 text-[#9a5e12] px-[10px] py-[8px] text-[13px] mb-[12px]",
       className
     )}
     {...props}

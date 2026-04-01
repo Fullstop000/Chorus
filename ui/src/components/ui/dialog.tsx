@@ -35,7 +35,7 @@ const DialogContent = React.forwardRef<
       className={cn(
         "fixed left-1/2 top-1/2 z-[101] -translate-x-1/2 -translate-y-1/2",
         "w-[min(460px,95vw)] max-h-[90vh] overflow-y-auto",
-        "bg-popover border border-input rounded-none shadow-none p-6",
+        "bg-popover border border-input rounded-none shadow-none p-[24px]",
         "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
         className
@@ -54,7 +54,7 @@ const DialogHeader = ({
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
     className={cn(
-      "flex items-start justify-between mb-4 pb-3 border-b border-border",
+      "flex items-start justify-between mb-[16px] pb-[12px] border-b border-border",
       className
     )}
     {...props}
@@ -67,7 +67,7 @@ const DialogFooter = ({
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) => (
   <div
-    className={cn("flex justify-end gap-2 mt-4 pt-3", className)}
+    className={cn("flex justify-end gap-[8px] mt-[16px] pt-[12px]", className)}
     {...props}
   />
 )
