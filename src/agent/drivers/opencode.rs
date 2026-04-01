@@ -41,8 +41,7 @@ impl Driver for OpencodeDriver {
             }
         });
         // OpenCode reads opencode.json from the working directory automatically.
-        let config_path =
-            std::path::Path::new(&ctx.working_directory).join("opencode.json");
+        let config_path = std::path::Path::new(&ctx.working_directory).join("opencode.json");
         std::fs::write(&config_path, serde_json::to_string_pretty(&mcp_config)?)?;
 
         let mut args = vec![
@@ -367,7 +366,10 @@ mod tests {
     fn parse_opencode_models_skips_blank_lines() {
         assert_eq!(
             parse_opencode_models("\nopenai/gpt-5.4\n\nopenai/gpt-5.4-mini\n"),
-            vec!["openai/gpt-5.4".to_string(), "openai/gpt-5.4-mini".to_string()]
+            vec![
+                "openai/gpt-5.4".to_string(),
+                "openai/gpt-5.4-mini".to_string()
+            ]
         );
     }
 
@@ -450,9 +452,8 @@ mod tests {
     #[test]
     fn opencode_parse_line_step_start_emits_session_init() {
         let driver = OpencodeDriver;
-        let events = driver.parse_line(
-            r#"{"type":"step_start","timestamp":1711929600000,"sessionID":"sess-99"}"#,
-        );
+        let events = driver
+            .parse_line(r#"{"type":"step_start","timestamp":1711929600000,"sessionID":"sess-99"}"#);
 
         assert!(matches!(
             &events[0],

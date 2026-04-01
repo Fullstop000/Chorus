@@ -123,7 +123,10 @@ pub fn build_router_with_services(
         )
         .route("/agents", get(handle_list_agents).post(handle_create_agent))
         .route("/runtimes", get(handle_list_runtime_statuses))
-        .route("/runtimes/{runtime}/models", get(handle_list_runtime_models))
+        .route(
+            "/runtimes/{runtime}/models",
+            get(handle_list_runtime_models),
+        )
         .route("/teams", get(handle_list_teams).post(handle_create_team))
         .route(
             "/teams/{name}",

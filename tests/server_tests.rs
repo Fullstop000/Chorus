@@ -1215,23 +1215,26 @@ async fn test_whoami() {
 
 #[tokio::test]
 async fn test_list_runtime_statuses() {
-    let (_store, app, _lifecycle) = setup_with_runtime_statuses(vec![
-        RuntimeStatus {
-            runtime: "claude".to_string(),
-            installed: true,
-            auth_status: Some(RuntimeAuthStatus::Authed),
-        },
-        RuntimeStatus {
-            runtime: "codex".to_string(),
-            installed: true,
-            auth_status: Some(RuntimeAuthStatus::Unauthed),
-        },
-        RuntimeStatus {
-            runtime: "kimi".to_string(),
-            installed: false,
-            auth_status: None,
-        },
-    ], vec![]);
+    let (_store, app, _lifecycle) = setup_with_runtime_statuses(
+        vec![
+            RuntimeStatus {
+                runtime: "claude".to_string(),
+                installed: true,
+                auth_status: Some(RuntimeAuthStatus::Authed),
+            },
+            RuntimeStatus {
+                runtime: "codex".to_string(),
+                installed: true,
+                auth_status: Some(RuntimeAuthStatus::Unauthed),
+            },
+            RuntimeStatus {
+                runtime: "kimi".to_string(),
+                installed: false,
+                auth_status: None,
+            },
+        ],
+        vec![],
+    );
 
     let resp = app
         .oneshot(
@@ -1271,10 +1274,7 @@ async fn test_list_runtime_models() {
                 "codex".to_string(),
                 vec!["gpt-5.4".to_string(), "gpt-5.4-mini".to_string()],
             ),
-            (
-                "opencode".to_string(),
-                vec!["openai/gpt-5.4".to_string()],
-            ),
+            ("opencode".to_string(), vec!["openai/gpt-5.4".to_string()]),
         ],
     );
 
