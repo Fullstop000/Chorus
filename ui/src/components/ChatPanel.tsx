@@ -99,11 +99,12 @@ export function ChatPanel({
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
-  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(reportVisibleSeq)
+  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } = useVisibilityTracking(reportVisibleSeq)
 
   useEffect(() => {
     pendingInitialScrollTargetRef.current = target
-  }, [target])
+    resetHighestVisibleSeq()
+  }, [target, resetHighestVisibleSeq])
 
   useEffect(() => {
     const container = scrollContainerRef.current

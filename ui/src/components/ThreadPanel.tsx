@@ -61,11 +61,12 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
   const pendingInitialScrollTargetRef = useRef<string | null>(null)
 
-  const { scheduleBatchVisibilityCheck } = useVisibilityTracking(reportVisibleSeq)
+  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } = useVisibilityTracking(reportVisibleSeq)
 
   useEffect(() => {
     pendingInitialScrollTargetRef.current = threadTarget
-  }, [threadTarget])
+    resetHighestVisibleSeq()
+  }, [threadTarget, resetHighestVisibleSeq])
 
   useEffect(() => {
     const container = scrollContainerRef.current
@@ -205,7 +206,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
 
   return (
     <div className={`thread-panel${variant === 'content' ? ' thread-panel--content' : ''}`}>
-      {/* Header */}
       <div className="thread-header">
         <div className="thread-header-copy">
           <span className="thread-kicker">[ctx::thread]</span>
@@ -216,7 +216,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       </div>
 
       <div className="thread-body" ref={scrollContainerRef}>
-        {/* Parent message (copy only, no reply) */}
+        {/* no onReply — replies aren't nested */}
         <div className="thread-parent-wrapper">
           <MessageItem
             message={openThreadMsg}
@@ -224,7 +224,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
           />
         </div>
 
-        {/* Replies */}
         <div className="thread-replies">
           {messages.length === 0 ? (
             <div className="thread-empty">No replies yet</div>
@@ -250,7 +249,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
         </div>
       </div>
 
-      {/* Input */}
       <div className="thread-input-area">
         <div className="thread-input-row">
           <MentionTextarea

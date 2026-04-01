@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use axum::extract::{Path, Query, State};
 use axum::Json;
 use regex::Regex;
@@ -305,6 +307,25 @@ fn sender_type_for_actor(
         .unwrap_or(SenderType::Human))
 }
 
+fn require_channel_membership(
+    state: &AppState,
+    actor_id: &str,
+    channel: &Channel,
+    denied_label: &str,
+) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    if !state
+        .store
+        .is_member(&channel.name, actor_id)
+        .map_err(|e| api_err(e.to_string()))?
+    {
+        return Err(api_err(format!(
+            "you are not a member of channel {}",
+            denied_label
+        )));
+    }
+    Ok(())
+}
+
 fn load_channel_by_id(
     store: &Store,
     channel_id: &str,
@@ -326,16 +347,7 @@ fn history_for_channel(
     before: Option<i64>,
     after: Option<i64>,
 ) -> ApiResult<HistoryResponse> {
-    if !state
-        .store
-        .is_member(&channel.name, actor_id)
-        .map_err(|e| api_err(e.to_string()))?
-    {
-        return Err(api_err(format!(
-            "you are not a member of channel {}",
-            denied_label
-        )));
-    }
+    require_channel_membership(state, actor_id, channel, denied_label)?;
 
     let snapshot = state
         .store
@@ -362,16 +374,7 @@ fn threads_for_channel(
     channel: &Channel,
     denied_label: &str,
 ) -> ApiResult<ThreadsResponse> {
-    if !state
-        .store
-        .is_member(&channel.name, actor_id)
-        .map_err(|e| api_err(e.to_string()))?
-    {
-        return Err(api_err(format!(
-            "you are not a member of channel {}",
-            denied_label
-        )));
-    }
+    require_channel_membership(state, actor_id, channel, denied_label)?;
 
     let inbox = state
         .store
@@ -391,16 +394,7 @@ fn update_read_cursor_for_channel(
     thread_parent_id: Option<&str>,
     last_read_seq: i64,
 ) -> ApiResult<ReadCursorResponse> {
-    if !state
-        .store
-        .is_member(&channel.name, actor_id)
-        .map_err(|e| api_err(e.to_string()))?
-    {
-        return Err(api_err(format!(
-            "you are not a member of channel {}",
-            denied_label
-        )));
-    }
+    require_channel_membership(state, actor_id, channel, denied_label)?;
 
     let sender_type = sender_type_for_actor(&state.store, actor_id)?;
     state
@@ -562,6 +556,9 @@ async fn send_message_to_channel(
     }))
 }
 
+static MENTION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"@([A-Za-z0-9_-]+)").expect("team mention regex is valid"));
+
 /// Mirror `@team-name` mentions into the corresponding team channel.
 async fn forward_team_mentions(
     state: &AppState,
@@ -570,8 +567,7 @@ async fn forward_team_mentions(
     sender_type: SenderType,
     content: &str,
 ) -> anyhow::Result<()> {
-    let mention_re = Regex::new(r"@([A-Za-z0-9_-]+)").expect("team mention regex is valid");
-    let mentions = mention_re
+    let mentions = MENTION_RE
         .captures_iter(content)
         .filter_map(|capture| capture.get(1).map(|m| m.as_str().to_string()))
         .collect::<std::collections::BTreeSet<_>>();
