@@ -1,10 +1,11 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, historyForUser } from './helpers/api'
 import {
   createUserChannelViaUi,
   clickSidebarChannel,
   openMembersPanel,
   sendChatMessage,
+  gotoApp,
 } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
@@ -39,7 +40,7 @@ test.describe('CHN-001', () => {
     test.setTimeout(300_000)
 
     const slug = `qa-ops-${Date.now()}`
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Create disposable channel', async () => {
       await createUserChannelViaUi(page, slug, 'playwright CHN-001')

@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
-import { clickSidebarChannel, openThreadFromMessage } from './helpers/ui'
+import { clickSidebarChannel, openThreadFromMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -37,7 +37,7 @@ test.describe('MSG-003', () => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
     test.setTimeout(300_000)
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await clickSidebarChannel(page, 'all')
 
     await test.step('Step 1: Open thread from an agent reply', async () => {

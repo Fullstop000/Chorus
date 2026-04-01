@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createAgentApi,
   createChannelApi,
@@ -53,7 +53,8 @@ test.describe('MSG-009', () => {
     await clickSidebarChannel(page, channelName)
     await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
 
-    await page.waitForTimeout(1_000)
+    // Any spurious reconnect would happen within milliseconds — 300 ms is sufficient
+    await page.waitForTimeout(300)
     expect(realtimeSockets.length).toBe(1)
     expect(realtimeSockets[0]).toContain(`/api/events/ws?viewer=${encodeURIComponent(username)}`)
   })

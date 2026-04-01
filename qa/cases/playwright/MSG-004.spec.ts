@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { openAgentChat, openAgentTab, sendChatMessage } from './helpers/ui'
+import { openAgentChat, openAgentTab, sendChatMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -17,7 +17,7 @@ test.describe('MSG-004', () => {
     const { username } = await getWhoami(request)
     const token = `dm-wake-${Date.now()}`
     await request.post('/api/agents/bot-a/stop')
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–5: Send DM to inactive bot-a and wait for wake + reply', async () => {
       await openAgentChat(page, 'bot-a')

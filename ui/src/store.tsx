@@ -1,5 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
-import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team, ThreadInboxEntry, HumanInfo } from './types'
+import React, { createContext, useContext, useCallback, useEffect, useMemo, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useUIStore } from './uiStore'
+import type { ActiveTab } from './uiStore'
+import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team, ThreadInboxEntry } from './types'
 import {
   ensureDirectMessageConversation,
   getChannelThreads,
@@ -15,31 +18,30 @@ import {
   bootstrapInboxState,
   buildConversationRegistry,
   conversationThreadUnreadCount,
-  createInboxState,
   dmConversationNameForParticipants,
   ensureInboxConversations,
   mergeChannelThreadInboxEntries,
   mergeInboxNotificationRefresh,
-  mergeReadCursorAckIntoInboxState,
+  type InboxState,
   type ReadCursorAckPayload,
 } from './inbox'
 import { isVisibleSidebarChannel } from './sidebarChannels'
 import { getRealtimeSession } from './transport/realtimeSession'
 
-export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
+export type { ActiveTab }
 
 export interface AppState {
-  currentUser: string                  // OS username from /api/whoami
+  currentUser: string
   serverInfo: ServerInfo | null
   channels: ChannelInfo[]
   agents: AgentInfo[]
   teams: Team[]
   serverInfoLoading: boolean
-  selectedChannel: string | null       // e.g. "#all"
+  selectedChannel: string | null
   selectedChannelId: string | null
-  selectedAgent: AgentInfo | null      // non-null when viewing a DM with an agent
+  selectedAgent: AgentInfo | null
   activeTab: ActiveTab
-  openThreadMsg: HistoryMessage | null // non-null when thread panel is open
+  openThreadMsg: HistoryMessage | null
   getConversationUnread: (conversationId?: string | null) => number
   getConversationThreads: (conversationId?: string | null) => ThreadInboxEntry[]
   getConversationThreadUnread: (conversationId?: string | null) => number
@@ -60,181 +62,218 @@ export interface AppState {
 
 const AppContext = createContext<AppState | null>(null)
 
+// Stable query key factory
+const qk = {
+  whoami: ['whoami'] as const,
+  agents: ['agents'] as const,
+  channels: (user: string) => ['channels', user] as const,
+  teams: ['teams'] as const,
+  humans: ['humans'] as const,
+  inbox: (user: string) => ['inbox', user] as const,
+}
+
 export function AppProvider({ children }: { children: React.ReactNode }) {
-  const [currentUser, setCurrentUser] = useState('')
-  const [channels, setChannels] = useState<ChannelInfo[]>([])
-  const [systemConversationChannels, setSystemConversationChannels] = useState<ChannelInfo[]>([])
-  const [humans, setHumans] = useState<HumanInfo[]>([])
-  const [dmChannels, setDmChannels] = useState<ChannelInfo[]>([])
-  const [agents, setAgents] = useState<AgentInfo[]>([])
-  const [teams, setTeams] = useState<Team[]>([])
-  const [serverInfoLoading, setServerInfoLoading] = useState(true)
-  const [selectedChannel, setSelectedChannel] = useState<string | null>(null)
-  const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
-  const [selectedAgent, setSelectedAgent] = useState<AgentInfo | null>(null)
-  const [activeTab, setActiveTab] = useState<ActiveTab>('chat')
-  const [openThreadMsg, setOpenThreadMsg] = useState<HistoryMessage | null>(null)
-  const [inboxState, setInboxState] = useState(createInboxState)
-  const [conversationThreads, setConversationThreads] = useState<Record<string, ThreadInboxEntry[]>>({})
-  const [shellBootstrapped, setShellBootstrapped] = useState(false)
-  // Ref so refreshServerInfo can check selectedAgent without re-creating the callback
-  const selectedAgentRef = useRef<AgentInfo | null>(null)
-  const selectedChannelRef = useRef<string | null>(null)
-  const selectedChannelIdRef = useRef<string | null>(null)
-  const conversationThreadsRefreshInFlight = useRef<Map<string, Promise<void>>>(new Map())
+  const queryClient = useQueryClient()
 
-  // Fetch current user once on mount
+  const {
+    currentUser,
+    selectedAgentName,
+    selectedChannel,
+    selectedChannelId,
+    activeTab,
+    openThreadMsg,
+    inboxState,
+    conversationThreads,
+    shellBootstrapped,
+    setCurrentUser,
+    setSelectedAgentName,
+    setSelectedChannel,
+    setActiveTab,
+    setOpenThreadMsg,
+    applyReadCursorAck: storeApplyReadCursorAck,
+    updateInboxState,
+    setConversationThreads,
+    setShellBootstrapped,
+    resetUserSession,
+  } = useUIStore()
+
+  // ── Server queries ─────────────────────────────────────────────────────────
+
+  const whoamiQuery = useQuery({
+    queryKey: qk.whoami,
+    queryFn: () => getWhoami().then((r) => r.username),
+    staleTime: Infinity,
+  })
+
+  const agentsQuery = useQuery({
+    queryKey: qk.agents,
+    queryFn: listAgents,
+    enabled: !!currentUser,
+  })
+
+  const channelsQuery = useQuery({
+    queryKey: qk.channels(currentUser),
+    queryFn: () =>
+      listChannels({ member: currentUser, includeDm: true, includeSystem: true }),
+    enabled: !!currentUser,
+  })
+
+  const teamsQuery = useQuery({
+    queryKey: qk.teams,
+    queryFn: listTeams,
+    enabled: !!currentUser,
+  })
+
+  const humansQuery = useQuery({
+    queryKey: qk.humans,
+    queryFn: listHumans,
+    enabled: !!currentUser,
+  })
+
+  // Inbox fetched once; after that, WebSocket events drive updates.
+  const inboxQuery = useQuery({
+    queryKey: qk.inbox(currentUser),
+    queryFn: () => getInboxState(currentUser),
+    enabled: !!currentUser && !shellBootstrapped,
+    staleTime: Infinity,
+  })
+
+  // ── Sync whoami into Zustand ───────────────────────────────────────────────
+
   useEffect(() => {
-    getWhoami()
-      .then((r) => setCurrentUser(r.username))
-      .catch(() => setCurrentUser('user'))
-  }, [])
+    const username = whoamiQuery.data
+    if (!username) return
+    if (username === currentUser) return
+    if (currentUser) resetUserSession()
+    setCurrentUser(username)
+  }, [whoamiQuery.data, currentUser, setCurrentUser, resetUserSession])
+
+  // ── Derive channel lists (memoized to keep stable references for effects) ────
+
+  const allChannels = useMemo(() => channelsQuery.data ?? [], [channelsQuery.data])
+  const channels = useMemo(
+    () => allChannels.filter((ch) => ch.channel_type !== 'dm' && ch.channel_type !== 'system'),
+    [allChannels]
+  )
+  const systemChannels = useMemo(
+    () => allChannels.filter((ch) => ch.channel_type === 'system'),
+    [allChannels]
+  )
+  const dmChannels = useMemo(
+    () => allChannels.filter((ch) => ch.channel_type === 'dm'),
+    [allChannels]
+  )
+  const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data])
+  const teams = useMemo(() => teamsQuery.data ?? [], [teamsQuery.data])
+  const humans = useMemo(() => humansQuery.data ?? [], [humansQuery.data])
+
+  // ── Bootstrap inbox once all initial queries have settled ─────────────────
+  // Mirror the original finally-block pattern: bootstrap even on partial errors
+  // so a single failed fetch can't keep the app in a permanent loading state.
+  // Note: empty arrays ([], {}) are valid settled values — do not use !!data.
+
+  const settled = (q: { data: unknown; isError: boolean }) =>
+    q.data !== undefined || q.isError
+
+  const allQueriesSettled =
+    !!currentUser &&
+    settled(channelsQuery) &&
+    settled(agentsQuery) &&
+    settled(teamsQuery) &&
+    settled(humansQuery) &&
+    settled(inboxQuery)
 
   useEffect(() => {
-    setShellBootstrapped(false)
-  }, [currentUser])
-
-  const refreshTeams = useCallback(async () => {
-    try {
-      setTeams(await listTeams())
-    } catch (error) {
-      console.error('Failed to load teams', error)
-    }
-  }, [])
-
-  const applyConversationLists = useCallback((allConversationChannels: ChannelInfo[]) => {
-    const loadedChannels = allConversationChannels.filter(
-      (channel) => channel.channel_type !== 'dm' && channel.channel_type !== 'system'
+    if (!allQueriesSettled || shellBootstrapped) return
+    updateInboxState(() =>
+      bootstrapInboxState(
+        inboxQuery.data?.conversations ?? [],
+        channelsQuery.data ?? []
+      )
     )
-    const loadedSystemConversationChannels = allConversationChannels.filter(
-      (channel) => channel.channel_type === 'system'
-    )
-    const loadedDmChannels = allConversationChannels.filter(
-      (channel) => channel.channel_type === 'dm'
-    )
+    setShellBootstrapped(true)
+  }, [
+    allQueriesSettled,
+    shellBootstrapped,
+    channelsQuery.data,
+    inboxQuery.data,
+    updateInboxState,
+    setShellBootstrapped,
+  ])
 
-    setChannels(loadedChannels)
-    setSystemConversationChannels(loadedSystemConversationChannels)
-    setDmChannels(loadedDmChannels)
+  // ── Keep inbox conversations in sync when channel list changes ─────────────
 
-    if (selectedAgentRef.current) return
+  useEffect(() => {
+    if (!allChannels.length) return
+    updateInboxState((current) => ensureInboxConversations(current, allChannels))
+  }, [allChannels, updateInboxState])
+
+  // ── Auto-select first channel on bootstrap / after channel list changes ────
+  // Read selection from Zustand getState() so this effect only re-runs when the
+  // *channel list* changes, not every time the user makes a selection. Without this,
+  // calling setSelectedChannel() for a newly-created channel (before it appears in the
+  // TanStack Query cache) would cause the effect to overwrite the selection with #all.
+
+  useEffect(() => {
+    if (!shellBootstrapped) return
+    const { selectedAgentName: agentName, selectedChannelId: chId, selectedChannel: ch } =
+      useUIStore.getState()
+    if (agentName) return
 
     const joinedChannels = [
-      ...loadedSystemConversationChannels.filter((channel) => channel.joined),
-      ...loadedChannels.filter(isVisibleSidebarChannel),
+      ...systemChannels.filter((c) => c.joined),
+      ...channels.filter(isVisibleSidebarChannel),
     ]
-    let nextSelected = null as string | null
-    let nextSelectedId = null as string | null
 
-    if (selectedChannelIdRef.current) {
-      const match = joinedChannels.find((channel) => channel.id === selectedChannelIdRef.current)
-      if (match) {
-        nextSelected = `#${match.name}`
-        nextSelectedId = match.id ?? null
-      }
-    }
-    if (!nextSelected && selectedChannelRef.current) {
-      const match = joinedChannels.find(
-        (channel) => `#${channel.name}` === selectedChannelRef.current
-      )
-      if (match) {
-        nextSelected = `#${match.name}`
-        nextSelectedId = match.id ?? null
-      }
-    }
+    // Keep current selection if still valid
+    if (chId && joinedChannels.some((c) => c.id === chId)) return
+    if (ch && joinedChannels.some((c) => `#${c.name}` === ch)) return
 
-    if (!nextSelected) {
-      const first = joinedChannels[0]
-      nextSelected = first ? `#${first.name}` : null
-      nextSelectedId = first?.id ?? null
-    }
+    const first = joinedChannels[0]
+    setSelectedChannel(first ? `#${first.name}` : null, first?.id ?? null)
+  }, [shellBootstrapped, channels, systemChannels, setSelectedChannel])
 
-    setSelectedChannel(nextSelected)
-    setSelectedChannelId(nextSelectedId)
-  }, [])
-
-  const refreshChannels = useCallback(async () => {
-    if (!currentUser) return
-    try {
-      const allConversationChannels = await listChannels({
-        member: currentUser,
-        includeDm: true,
-        includeSystem: true,
-      })
-      applyConversationLists(allConversationChannels)
-      setInboxState((current) => ensureInboxConversations(current, allConversationChannels))
-    } catch (error) {
-      console.error('Failed to load channels', error)
-    }
-  }, [applyConversationLists, currentUser])
-
-  const refreshAgents = useCallback(async () => {
-    if (!currentUser) return
-    try {
-      const loadedAgents = await listAgents()
-      setAgents(loadedAgents)
-      setSelectedAgent((prev) => {
-        if (!prev) return prev
-        return loadedAgents.find((agent) => agent.name === prev.name) ?? null
-      })
-    } catch (error) {
-      console.error('Failed to load agents', error)
-    }
-  }, [currentUser])
-
-  const refreshServerInfo = useCallback(async () => {
-    if (!currentUser) return
-    setServerInfoLoading(true)
-    try {
-      const [loadedAgents, loadedTeams, loadedHumans] = await Promise.all([
-        listAgents(),
-        listTeams(),
-        listHumans(),
-      ])
-      const [allConversationChannels, inbox] = await Promise.all([
-        listChannels({ member: currentUser, includeDm: true, includeSystem: true }),
-        getInboxState(currentUser),
-      ])
-      applyConversationLists(allConversationChannels)
-      setAgents(loadedAgents)
-      setTeams(loadedTeams)
-      setHumans(loadedHumans)
-      setInboxState(bootstrapInboxState(inbox.conversations, allConversationChannels))
-      setSelectedAgent((prev) => {
-        if (!prev) return prev
-        return loadedAgents.find((agent) => agent.name === prev.name) ?? null
-      })
-    } catch (error) {
-      console.error(error)
-    } finally {
-      setServerInfoLoading(false)
-      setShellBootstrapped(true)
-    }
-  }, [applyConversationLists, currentUser])
-
-  // Bootstrap the shell once; follow-up refreshes happen on explicit mutations.
-  useEffect(() => {
-    if (!currentUser) return
-    void refreshServerInfo()
-  }, [currentUser, refreshServerInfo])
+  // ── Ensure DM conversation exists when an agent is selected ───────────────
 
   useEffect(() => {
-    if (!currentUser) {
-      setInboxState(createInboxState())
-      setConversationThreads({})
-      setShellBootstrapped(false)
-      return
+    if (!currentUser || !selectedAgentName) return
+    const dmName = dmConversationNameForParticipants(currentUser, selectedAgentName)
+    if (dmChannels.some((ch: ChannelInfo) => ch.name === dmName)) return
+
+    let cancelled = false
+    ensureDirectMessageConversation(selectedAgentName)
+      .then((channel) => {
+        if (cancelled) return
+        queryClient.setQueryData<ChannelInfo[]>(qk.channels(currentUser), (current = []) => {
+          if (current.some((ch: ChannelInfo) => ch.id === channel.id || ch.name === channel.name)) {
+            return current
+          }
+          return [...current, channel]
+        })
+        updateInboxState((current: InboxState) => ensureInboxConversations(current, [channel]))
+      })
+      .catch((error) => {
+        if (!cancelled) console.error('Failed to ensure DM conversation', error)
+      })
+
+    return () => {
+      cancelled = true
     }
-    if (!shellBootstrapped) return
+  }, [currentUser, dmChannels, selectedAgentName, queryClient, updateInboxState])
+
+  // ── WebSocket: inbox unread tracking ──────────────────────────────────────
+
+  useEffect(() => {
+    if (!currentUser || !shellBootstrapped) return
 
     const conversationRegistry = buildConversationRegistry({
       currentUser,
-      systemChannels: systemConversationChannels,
+      systemChannels,
       channels,
       dmChannels,
       agents,
     })
-    const targets = conversationRegistry.map((entry) => `conversation:${entry.conversationId}`)
+    const targets = conversationRegistry.map((e) => `conversation:${e.conversationId}`)
     if (targets.length === 0) return
 
     return getRealtimeSession(currentUser).subscribe({
@@ -244,161 +283,167 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           console.error('Inbox realtime subscription failed', frame.message)
           return
         }
-        if (frame.event.eventType === 'message.created') {
-          const channelId = frame.event.channelId
-          const threadRaw = frame.event.payload.threadParentId
-          const threadParentId =
-            typeof threadRaw === 'string' && threadRaw.length > 0 ? threadRaw : undefined
-          void getConversationInboxNotification(channelId, threadParentId)
-            .then((payload) => {
-              setInboxState((current) => mergeInboxNotificationRefresh(current, payload))
-            })
-            .catch((error) => {
-              console.error('Failed to refresh inbox after message', error)
-            })
-          return
-        }
+        if (frame.event.eventType !== 'message.created') return
+        const channelId = frame.event.channelId
+        const threadRaw = frame.event.payload.threadParentId
+        const threadParentId =
+          typeof threadRaw === 'string' && threadRaw.length > 0 ? threadRaw : undefined
+        void getConversationInboxNotification(channelId, threadParentId)
+          .then((payload) => {
+            updateInboxState((current: InboxState) => mergeInboxNotificationRefresh(current, payload))
+          })
+          .catch((error) => {
+            console.error('Failed to refresh inbox after message', error)
+          })
       },
     })
-  }, [agents, channels, currentUser, dmChannels, refreshAgents, refreshChannels, refreshTeams, shellBootstrapped, systemConversationChannels])
+  }, [agents, channels, currentUser, dmChannels, shellBootstrapped, systemChannels, updateInboxState])
 
-  useEffect(() => {
-    if (!currentUser || !selectedAgent) return
-    const dmChannelName = dmConversationNameForParticipants(currentUser, selectedAgent.name)
-    if (dmChannels.some((channel) => channel.name === dmChannelName)) return
+  // ── Refresh helpers (invalidate TanStack Query caches) ────────────────────
 
-    let cancelled = false
-    ensureDirectMessageConversation(selectedAgent.name)
-      .then((channel) => {
-        if (cancelled) return
-        setDmChannels((current) => {
-          if (current.some((entry) => entry.id === channel.id || entry.name === channel.name)) {
-            return current
-          }
-          return [...current, channel]
-        })
-        setInboxState((current) => ensureInboxConversations(current, [channel]))
-      })
-      .catch((error) => {
-        if (!cancelled) {
-          console.error('Failed to ensure direct-message conversation', error)
+  const conversationThreadsInFlight = useRef<Map<string, Promise<void>>>(new Map())
+
+  const refreshConversationThreads = useCallback(
+    async (conversationId: string) => {
+      if (!currentUser) return
+      const inFlight = conversationThreadsInFlight.current
+      const existing = inFlight.get(conversationId)
+      if (existing) return existing
+      const promise = (async () => {
+        try {
+          const response = await getChannelThreads(conversationId)
+          setConversationThreads(conversationId, response.threads)
+        } catch (error) {
+          console.error('Failed to load channel threads', error)
+        } finally {
+          inFlight.delete(conversationId)
         }
-      })
+      })()
+      inFlight.set(conversationId, promise)
+      return promise
+    },
+    [currentUser, setConversationThreads]
+  )
 
-    return () => {
-      cancelled = true
-    }
-  }, [currentUser, dmChannels, selectedAgent])
+  const refreshChannels = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: qk.channels(currentUser) })
+  }, [currentUser, queryClient])
 
-  // Keep ref in sync so refreshServerInfo can read it without stale closure
-  useEffect(() => { selectedAgentRef.current = selectedAgent }, [selectedAgent])
-  useEffect(() => { selectedChannelRef.current = selectedChannel }, [selectedChannel])
-  useEffect(() => { selectedChannelIdRef.current = selectedChannelId }, [selectedChannelId])
+  const refreshAgents = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: qk.agents })
+  }, [queryClient])
 
-  const refreshConversationThreads = useCallback(async (conversationId: string) => {
-    if (!currentUser) return
-    const inFlight = conversationThreadsRefreshInFlight.current
-    const existing = inFlight.get(conversationId)
-    if (existing) return existing
-    const promise = (async () => {
-      try {
-        const response = await getChannelThreads(conversationId)
-        setConversationThreads((current) => ({
-          ...current,
-          [conversationId]: response.threads,
-        }))
-      } catch (error) {
-        console.error('Failed to load channel threads', error)
-      } finally {
-        inFlight.delete(conversationId)
+  const refreshTeams = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: qk.teams })
+  }, [queryClient])
+
+  const refreshServerInfo = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.agents }),
+      queryClient.invalidateQueries({ queryKey: qk.channels(currentUser) }),
+      queryClient.invalidateQueries({ queryKey: qk.teams }),
+      queryClient.invalidateQueries({ queryKey: qk.humans }),
+    ])
+  }, [currentUser, queryClient])
+
+  // ── Derived inbox helpers ─────────────────────────────────────────────────
+
+  const getConversationUnread = useCallback(
+    (conversationId?: string | null) => {
+      if (!conversationId) return 0
+      return inboxState.conversations[conversationId]?.unreadCount ?? 0
+    },
+    [inboxState.conversations]
+  )
+
+  const getConversationThreadUnreadCount = useCallback(
+    (conversationId?: string | null) => {
+      if (!conversationId) return 0
+      return inboxState.conversations[conversationId]?.threadUnreadCount ?? 0
+    },
+    [inboxState.conversations]
+  )
+
+  const getConversationThreads = useCallback(
+    (conversationId?: string | null) => {
+      if (!conversationId) return []
+      return mergeChannelThreadInboxEntries(
+        conversationThreads[conversationId] ?? [],
+        inboxState,
+        conversationId
+      )
+    },
+    [conversationThreads, inboxState]
+  )
+
+  const getConversationThreadUnread = useCallback(
+    (conversationId?: string | null) => {
+      if (!conversationId) return 0
+      const cached = conversationThreads[conversationId]
+      if (cached && cached.length > 0) {
+        return mergeChannelThreadInboxEntries(cached, inboxState, conversationId).reduce(
+          (sum, entry) => sum + entry.unreadCount,
+          0
+        )
       }
-    })()
-    inFlight.set(conversationId, promise)
-    return promise
-  }, [currentUser])
+      return conversationThreadUnreadCount(inboxState, conversationId)
+    },
+    [conversationThreads, inboxState]
+  )
 
-  // When selecting an agent, switch to chat tab and close thread
-  const handleSetSelectedAgent = useCallback((agent: AgentInfo | null) => {
-    setSelectedAgent(agent)
-    setOpenThreadMsg(null)
-    if (agent) {
-      setSelectedChannel(null)
-      setSelectedChannelId(null)
-      setActiveTab('chat')
-    }
-  }, [])
+  const getAgentUnread = useCallback(
+    (agentName: string) => {
+      const dmName = dmConversationNameForParticipants(currentUser, agentName)
+      const conversationId = dmChannels.find((ch: ChannelInfo) => ch.name === dmName)?.id ?? null
+      return getConversationUnread(conversationId)
+    },
+    [currentUser, dmChannels, getConversationUnread]
+  )
 
-  const handleSetSelectedChannel = useCallback((ch: string | null, channelId?: string | null) => {
-    setSelectedChannel(ch)
-    setSelectedChannelId(ch ? channelId ?? null : null)
-    setOpenThreadMsg(null)
-    if (ch) {
-      setSelectedAgent(null)
-      if (activeTab === 'workspace' || activeTab === 'activity' || activeTab === 'profile') {
-        setActiveTab('chat')
+  const getAgentConversationId = useCallback(
+    (agentName: string) => {
+      const dmName = dmConversationNameForParticipants(currentUser, agentName)
+      return dmChannels.find((ch: ChannelInfo) => ch.name === dmName)?.id ?? null
+    },
+    [currentUser, dmChannels]
+  )
+
+  // ── applyReadCursorAck: update inbox state + refresh threads ──────────────
+
+  const applyReadCursorAck = useCallback(
+    (ack: ReadCursorAckPayload) => {
+      storeApplyReadCursorAck(ack)
+      if (ack.threadParentId) {
+        void refreshConversationThreads(ack.conversationId)
       }
-    }
-  }, [activeTab])
+    },
+    [storeApplyReadCursorAck, refreshConversationThreads]
+  )
 
-  const getConversationUnread = useCallback((conversationId?: string | null) => {
-    if (!conversationId) return 0
-    return inboxState.conversations[conversationId]?.unreadCount ?? 0
-  }, [inboxState.conversations])
+  // ── Derive selectedAgent from agents list + stored name ───────────────────
 
-  const getConversationThreadUnreadCount = useCallback((conversationId?: string | null) => {
-    if (!conversationId) return 0
-    return inboxState.conversations[conversationId]?.threadUnreadCount ?? 0
-  }, [inboxState.conversations])
+  const selectedAgent = selectedAgentName
+    ? (agents.find((a: AgentInfo) => a.name === selectedAgentName) ?? null)
+    : null
 
-  const getConversationThreads = useCallback((conversationId?: string | null) => {
-    if (!conversationId) return []
-    return mergeChannelThreadInboxEntries(
-      conversationThreads[conversationId] ?? [],
-      inboxState,
-      conversationId
-    )
-  }, [conversationThreads, inboxState])
+  // Expose setSelectedAgent accepting AgentInfo | null (same public API as before)
+  const setSelectedAgent = useCallback(
+    (agent: AgentInfo | null) => setSelectedAgentName(agent?.name ?? null),
+    [setSelectedAgentName]
+  )
 
-  const getConversationThreadUnread = useCallback((conversationId?: string | null) => {
-    if (!conversationId) return 0
-    const cachedThreads = conversationThreads[conversationId]
-    if (cachedThreads && cachedThreads.length > 0) {
-      return mergeChannelThreadInboxEntries(cachedThreads, inboxState, conversationId)
-        .reduce((sum, entry) => sum + entry.unreadCount, 0)
-    }
-    return conversationThreadUnreadCount(inboxState, conversationId)
-  }, [conversationThreads, inboxState])
-
-  const getAgentUnread = useCallback((agentName: string) => {
-    const dmChannelName = dmConversationNameForParticipants(currentUser, agentName)
-    const conversationId =
-      dmChannels.find((channel) => channel.name === dmChannelName)?.id ?? null
-    return getConversationUnread(conversationId)
-  }, [currentUser, dmChannels, getConversationUnread])
-
-  const getAgentConversationId = useCallback((agentName: string) => {
-    const dmChannelName = dmConversationNameForParticipants(currentUser, agentName)
-    return dmChannels.find((channel) => channel.name === dmChannelName)?.id ?? null
-  }, [currentUser, dmChannels])
-
-  const applyReadCursorAck = useCallback((ack: ReadCursorAckPayload) => {
-    setInboxState((current) => mergeReadCursorAckIntoInboxState(current, ack))
-    // If this is a thread read cursor update, refresh the threads list to update unread counts
-    if (ack.threadParentId) {
-      void refreshConversationThreads(ack.conversationId)
-    }
-  }, [refreshConversationThreads])
-
-  const serverInfoValue: ServerInfo | null =
-    humans.length > 0 || systemConversationChannels.length > 0
-      ? { system_channels: systemConversationChannels, humans }
+  const serverInfo: ServerInfo | null =
+    humans.length > 0 || systemChannels.length > 0
+      ? { system_channels: systemChannels, humans }
       : null
+
+  const serverInfoLoading = !shellBootstrapped
 
   return (
     <AppContext.Provider
       value={{
         currentUser,
-        serverInfo: serverInfoValue,
+        serverInfo,
         channels,
         agents,
         teams,
@@ -414,8 +459,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         getAgentUnread,
         getAgentConversationId,
         applyReadCursorAck,
-        setSelectedChannel: handleSetSelectedChannel,
-        setSelectedAgent: handleSetSelectedAgent,
+        setSelectedChannel,
+        setSelectedAgent,
         setActiveTab,
         openThreadMsg,
         setOpenThreadMsg,
@@ -437,7 +482,6 @@ export function useApp(): AppState {
   return ctx
 }
 
-// Derive the active "target" string for API calls
 export function useTarget(): string | null {
   const { selectedChannel, selectedAgent } = useApp()
   if (selectedChannel) return selectedChannel

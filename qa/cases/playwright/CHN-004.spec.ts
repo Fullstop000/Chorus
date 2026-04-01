@@ -1,11 +1,11 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createChannelApi,
   deleteChannelApi,
   getWhoami,
   sendAsUser,
 } from './helpers/api'
-import { clickSidebarChannel } from './helpers/ui'
+import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/channels.md` — CHN-004 Channel Delete And Selection Recovery
@@ -18,7 +18,7 @@ test.describe('CHN-004', () => {
       description: 'playwright CHN-004',
     })
     await sendAsUser(request, username, `#${channel.name}`, 'seed delete case')
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–3: Open disposable channel and delete it through API', async () => {
       await clickSidebarChannel(page, channel.name)
@@ -27,7 +27,7 @@ test.describe('CHN-004', () => {
     })
 
     await test.step('Steps 4–6: Sidebar and selection recover after refresh', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await expect(page.locator('.sidebar-item-text').filter({ hasText: channel.name })).toHaveCount(0)
       await expect(page.locator('.chat-header-name')).not.toContainText(`#${channel.name}`)
     })

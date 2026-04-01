@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { listAgents } from './helpers/api'
-import { createAgentViaUi } from './helpers/ui'
+import { createAgentViaUi , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/agents.md` — AGT-001 Create Three Agents And Verify Sidebar Presence
@@ -38,7 +38,7 @@ test.describe('AGT-001', () => {
     const before = await listAgents(request)
     const already = ['bot-a', 'bot-b', 'bot-c'].every((n) => before.some((a) => a.name === n))
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     if (!already) {
       await test.step('Step 1: Create bot-a', async () => {

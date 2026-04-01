@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createTeamApi,
   ensureMixedRuntimeTrio,
@@ -8,7 +8,7 @@ import {
   teamExists,
   waitForAgentStatus,
 } from './helpers/api'
-import { clickSidebarChannel, openThreadFromMessage, sendChatMessage, sendThreadMessage } from './helpers/ui'
+import { clickSidebarChannel, openThreadFromMessage, sendChatMessage, sendThreadMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 const runtimeMatrix = [
@@ -63,7 +63,7 @@ test.describe('TMT-009', () => {
     test.setTimeout(420_000)
 
     const { username } = await getWhoami(request)
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     for (const scenario of runtimeMatrix) {
       const parentToken = `tmt9-parent-${scenario.runtimeLabel}-${Date.now()}`

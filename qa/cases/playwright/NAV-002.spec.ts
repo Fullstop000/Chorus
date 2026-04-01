@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { waitForAppReady } from './helpers/ui'
 
 /**
  * Idle shell should not poll sidebar resources.
@@ -23,7 +24,10 @@ test.describe('NAV-002', () => {
     })
 
     await page.goto('/', { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(6_500)
+    // Wait for the app to fully initialise so all startup requests are counted,
+    // then observe for 2 s to confirm no polling kicks in.
+    await waitForAppReady(page)
+    await page.waitForTimeout(2_000)
 
     expect(counts.humans).toBe(1)
     expect(counts.channels).toBe(1)

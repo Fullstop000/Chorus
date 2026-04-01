@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   ensureMixedRuntimeTrio,
   createTeamApi,
@@ -6,7 +6,7 @@ import {
   historyForUser,
   teamExists,
 } from './helpers/api'
-import { clickSidebarChannel, sendChatMessage } from './helpers/ui'
+import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-002 @mention Routing Forwards Message to Team Channel
@@ -62,7 +62,7 @@ test.describe('TMT-002', () => {
     test.setTimeout(240_000)
     const { username } = await getWhoami(request)
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–3: Post in #all', async () => {
       await clickSidebarChannel(page, 'all')

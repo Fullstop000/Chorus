@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
-import { createAgentViaUi, openAgentTab } from './helpers/ui'
+import { test, expect } from './helpers/fixtures'
+import { createAgentViaUi, openAgentTab , gotoApp } from './helpers/ui'
 import { getAgentDetail, listAgents } from './helpers/api'
 
 const MODELS: Record<string, string[]> = {
@@ -22,7 +22,7 @@ const MODELS: Record<string, string[]> = {
 test.describe('AGT-002', () => {
   test('Agent Create Matrix Across Every Driver And Model @case AGT-002', async ({ page, request }) => {
     const created: string[] = []
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–9: Create one agent for every runtime/model pair and verify stored config', async () => {
       for (const runtime of Object.keys(MODELS)) {

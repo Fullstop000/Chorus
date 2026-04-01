@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
-import { clickSidebarChannel } from './helpers/ui'
+import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -45,7 +45,7 @@ test.describe('TMT-006', () => {
   test('Team settings display name + model toggle @case TMT-006', async ({ page, request }) => {
     test.setTimeout(300_000)
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
     await clickSidebarChannel(page, 'qa-eng')
 
     await test.step('Step 1: Open settings', async () => {
@@ -55,7 +55,6 @@ test.describe('TMT-006', () => {
     await test.step('Steps 2–3: Display name QA Engineering v2 + Save', async () => {
       await page.locator('.team-settings-card .form-input').first().fill('QA Engineering v2')
       await page.locator('.team-settings-card button:has-text("Save")').click()
-      await page.waitForTimeout(600)
       await expect(page.locator('.team-settings-card .form-input').first()).toHaveValue(/QA Engineering v2/)
     })
 
@@ -64,7 +63,6 @@ test.describe('TMT-006', () => {
     await test.step('Steps 4–5: Collaboration model Swarm + save + reopen', async () => {
       await collabSelect.selectOption('swarm')
       await page.locator('.team-settings-card button:has-text("Save")').click()
-      await page.waitForTimeout(600)
       await page.locator('.team-settings-card .modal-close').click()
       await page.getByRole('button', { name: 'Open team settings' }).click()
       await expect(collabSelect).toHaveValue('swarm')
@@ -93,12 +91,11 @@ test.describe('TMT-006', () => {
       await expect(leaderSelect).toBeVisible()
       await leaderSelect.selectOption('bot-b')
       await page.locator('.team-settings-card button:has-text("Save")').click()
-      await page.waitForTimeout(600)
     })
 
     await test.step('Step 9: Refresh — reopen settings', async () => {
       await page.locator('.team-settings-card .modal-close').click()
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await clickSidebarChannel(page, 'qa-eng')
       await page.getByRole('button', { name: 'Open team settings' }).click()
       await expect(collabSelect).toHaveValue('leader_operators')

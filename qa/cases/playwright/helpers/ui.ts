@@ -1,6 +1,27 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 
+/**
+ * Wait for the app shell to finish loading: sidebar must have at least one
+ * visible item.  Always cheaper than waitUntil:'networkidle' and explicitly
+ * tests a real UI signal instead of network heuristics.
+ */
+export async function waitForAppReady(page: Page): Promise<void> {
+  await expect(page.locator('.sidebar-item-text').first()).toBeVisible({ timeout: 30_000 })
+}
+
+/** Navigate to the app root and wait for the shell to be ready. */
+export async function gotoApp(page: Page): Promise<void> {
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await waitForAppReady(page)
+}
+
+/** Reload the page and wait for the shell to be ready. */
+export async function reloadApp(page: Page): Promise<void> {
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await waitForAppReady(page)
+}
+
 export async function createAgentViaUi(
   page: Page,
   opts: { name: string; runtime: string; model: string; reasoningEffort?: string | null }

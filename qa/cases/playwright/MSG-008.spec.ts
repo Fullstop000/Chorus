@@ -1,5 +1,5 @@
 import type { APIRequestContext } from '@playwright/test'
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createAgentApi,
   createChannelApi,

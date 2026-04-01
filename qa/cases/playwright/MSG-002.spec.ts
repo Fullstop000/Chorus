@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { openAgentChat, openThreadFromMessage, sendChatMessage } from './helpers/ui'
+import { openAgentChat, openThreadFromMessage, sendChatMessage , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -39,7 +39,7 @@ test.describe('MSG-002', () => {
     const prompt = `Reply in this DM, not in a thread. Return exact token: ${token}`
     let replyMode: 'top-level' | 'thread' = 'top-level'
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Open DM with bot-a', async () => {
       await openAgentChat(page, 'bot-a')
@@ -82,7 +82,7 @@ test.describe('MSG-002', () => {
     })
 
     await test.step('Step 7–8: Refresh and re-open DM — history persists', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await openAgentChat(page, 'bot-a')
       if (replyMode === 'top-level') {
         await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })

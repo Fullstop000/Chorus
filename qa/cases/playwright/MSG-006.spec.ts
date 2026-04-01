@@ -1,5 +1,5 @@
 import type { APIRequestContext } from '@playwright/test'
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createAgentApi,
   createChannelApi,
@@ -76,7 +76,8 @@ test.describe('MSG-006', () => {
     await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
     const parentMessage = page.locator('.message-item').filter({ hasText: parentToken }).first()
     await expect(parentMessage).toBeVisible()
-    await page.waitForTimeout(1_000)
+    // 300 ms is well beyond the 150 ms read-cursor debounce — enough to catch a premature send
+    await page.waitForTimeout(300)
 
     expect(readCursorPosts.some((post) => post.threadParentId === parent.messageId)).toBeFalsy()
 

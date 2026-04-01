@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { gotoApp } from './helpers/ui'
 import { ensureMixedRuntimeTrio, listAgents } from './helpers/api'
 
 /**
@@ -26,7 +27,7 @@ test.describe('PRF-001', () => {
   })
 
   test('Agent Profile Accuracy During Lifecycle Changes @case PRF-001', async ({ page, request }) => {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Open bot-a profile', async () => {
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()

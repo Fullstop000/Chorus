@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { clickSidebarChannel, openAgentChat, openThreadFromMessage, sendChatMessage, sendThreadMessage } from './helpers/ui'
+import { clickSidebarChannel, openAgentChat, openThreadFromMessage, sendChatMessage, sendThreadMessage , gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/messaging.md` — HIS-001 History Reload And Selection Stability
@@ -13,7 +13,7 @@ test.describe('HIS-001', () => {
   test('History Reload And Selection Stability @case HIS-001', async ({ page, request }) => {
     const { username } = await getWhoami(request)
     const mark = `his-${Date.now()}`
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Precondition: create channel, DM, and thread history', async () => {
       await clickSidebarChannel(page, 'all')
@@ -27,7 +27,7 @@ test.describe('HIS-001', () => {
     })
 
     await test.step('Steps 1–5: Refresh and verify channel, DM, and thread history remain stable', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await expect(page.locator('.chat-header-name')).toContainText('#all')
       await expect(page.locator('.message-item').filter({ hasText: `Channel history ${mark}` }).first()).toBeVisible()
       await openAgentChat(page, 'bot-a')

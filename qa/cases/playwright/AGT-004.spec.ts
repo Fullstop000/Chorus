@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -12,7 +12,7 @@ import {
   sendAsUser,
   historyForUser,
 } from './helpers/api'
-import { openAgentTab, clickSidebarChannel } from './helpers/ui'
+import { openAgentTab, clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/agents.md` — AGT-004 Agent Control Center Edit, Restart, Delete, And Deleted History
@@ -35,7 +35,7 @@ test.describe('AGT-004', () => {
       reasoningEffort: 'medium',
       description: 'initial role',
     })
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–5: Edit config and verify role/env/reasoning persist', async () => {
       await openAgentTab(page, name, 'Profile')
@@ -68,7 +68,7 @@ test.describe('AGT-004', () => {
     await test.step('Steps 8–12: Delete with keep-workspace preserves deleted history styling', async () => {
       await clickSidebarChannel(page, 'all')
       await sendAsUser(request, username, '#all', `@${name} reply once before delete`)
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await deleteAgentApi(request, name, 'preserve_workspace')
       const oldHistory = await historyForUser(request, username, '#all', 50)
       expect(oldHistory.some((entry) => entry.senderName === name && entry.senderDeleted)).toBe(true)
