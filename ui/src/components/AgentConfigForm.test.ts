@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runtimeOptionLabel, runtimeStatusSummary } from './AgentConfigForm'
+import { modelSelectDisplayLabel, runtimeOptionLabel, runtimeStatusSummary } from './AgentConfigForm'
 
 describe('runtimeOptionLabel', () => {
   it('shows not installed copy when the runtime is missing', () => {
@@ -31,5 +31,23 @@ describe('runtimeStatusSummary', () => {
       detail:
         'The CLI is installed, but local authentication needs to be completed before agent startup will work reliably.',
     })
+  })
+})
+
+describe('modelSelectDisplayLabel', () => {
+  it('shows loading copy while models are being fetched', () => {
+    expect(modelSelectDisplayLabel({
+      selectedModel: 'openai/gpt-5.4',
+      runtimeModels: [],
+      isLoading: true,
+    })).toBe('Loading models...')
+  })
+
+  it('falls back to the first available model when the selection is empty', () => {
+    expect(modelSelectDisplayLabel({
+      selectedModel: '',
+      runtimeModels: ['openai/codex-mini-latest'],
+      isLoading: false,
+    })).toBe('openai/codex-mini-latest')
   })
 })
