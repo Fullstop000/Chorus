@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useMemo } from 'react'
 import { Plus, Users } from 'lucide-react'
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -53,7 +53,10 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
   const availableMembers = directory.filter(
     (member) => !teamMembers.some((entry) => entry.member_name === member.name)
   )
-  const agentMembers = teamMembers.filter((member) => member.member_type === 'agent')
+  const agentMembers = useMemo(
+    () => teamMembers.filter((member) => member.member_type === 'agent'),
+    [teamMembers]
+  )
 
   useEffect(() => {
     setMode(defaultMode)

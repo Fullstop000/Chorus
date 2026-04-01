@@ -35,7 +35,13 @@ export function useVisibilityTracking(onHighestVisibleSeqChange?: (seq: number) 
   const containerRef = useRef<HTMLElement | null>(null)
   const rafRef = useRef<number | null>(null)
   const onChangeRef = useRef(onHighestVisibleSeqChange)
+  const lastFiredSeqRef = useRef(0)
   onChangeRef.current = onHighestVisibleSeqChange
+
+  const resetHighestVisibleSeq = useCallback(() => {
+    setHighestVisibleSeq(0)
+    lastFiredSeqRef.current = 0
+  }, [])
 
   const flushVisibilityCheck = useCallback(() => {
     if (document.visibilityState !== 'visible') return
@@ -51,7 +57,10 @@ export function useVisibilityTracking(onHighestVisibleSeqChange?: (seq: number) 
 
     if (maxSeq > 0) {
       setHighestVisibleSeq((current) => Math.max(current, maxSeq))
-      onChangeRef.current?.(maxSeq)
+      if (maxSeq > lastFiredSeqRef.current) {
+        lastFiredSeqRef.current = maxSeq
+        onChangeRef.current?.(maxSeq)
+      }
     }
 
     pendingReadsRef.current = []
@@ -81,5 +90,6 @@ export function useVisibilityTracking(onHighestVisibleSeqChange?: (seq: number) 
   return {
     highestVisibleSeq,
     scheduleBatchVisibilityCheck,
+    resetHighestVisibleSeq,
   }
 }

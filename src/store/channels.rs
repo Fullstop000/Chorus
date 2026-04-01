@@ -293,6 +293,14 @@ impl Store {
             .collect();
 
         conn.execute(
+            "DELETE FROM inbox_thread_read_state WHERE conversation_id = ?1",
+            params![channel_id],
+        )?;
+        conn.execute(
+            "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
+            params![channel_id],
+        )?;
+        conn.execute(
             "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?1)",
             params![channel_id],
         )?;

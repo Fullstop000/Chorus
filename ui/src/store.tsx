@@ -74,6 +74,9 @@ const qk = {
 
 export function AppProvider({ children }: { children: React.ReactNode }) {
   const queryClient = useQueryClient()
+  // Refs for inbox refresh coordination (deduplication and trailing re-fetch)
+  const inboxRefreshInFlight = useRef<Set<string>>(new Set())
+  const inboxRefreshPending = useRef<Map<string, [string, string | undefined]>>(new Map())
 
   const {
     currentUser,
@@ -276,6 +279,25 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const targets = conversationRegistry.map((e) => `conversation:${e.conversationId}`)
     if (targets.length === 0) return
 
+    const scheduleInboxRefresh = (key: string, channelId: string, threadParentId: string | undefined): void => {
+      inboxRefreshInFlight.current.add(key)
+      void getConversationInboxNotification(channelId, threadParentId)
+        .then((payload) => {
+          updateInboxState((current: InboxState) => mergeInboxNotificationRefresh(current, payload))
+        })
+        .catch((error) => {
+          console.error('Failed to refresh inbox after message', error)
+        })
+        .finally(() => {
+          inboxRefreshInFlight.current.delete(key)
+          const pending = inboxRefreshPending.current.get(key)
+          if (pending) {
+            inboxRefreshPending.current.delete(key)
+            scheduleInboxRefresh(key, pending[0], pending[1])
+          }
+        })
+    }
+
     return getRealtimeSession(currentUser).subscribe({
       targets,
       onFrame: (frame) => {
@@ -283,18 +305,34 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           console.error('Inbox realtime subscription failed', frame.message)
           return
         }
-        if (frame.event.eventType !== 'message.created') return
-        const channelId = frame.event.channelId
-        const threadRaw = frame.event.payload.threadParentId
-        const threadParentId =
-          typeof threadRaw === 'string' && threadRaw.length > 0 ? threadRaw : undefined
-        void getConversationInboxNotification(channelId, threadParentId)
-          .then((payload) => {
-            updateInboxState((current: InboxState) => mergeInboxNotificationRefresh(current, payload))
-          })
-          .catch((error) => {
-            console.error('Failed to refresh inbox after message', error)
-          })
+        if (frame.event.eventType === 'message.created') {
+          const channelId = frame.event.channelId
+          const threadRaw = frame.event.payload.threadParentId
+          const threadParentId =
+            typeof threadRaw === 'string' && threadRaw.length > 0 ? threadRaw : undefined
+          const key = `${channelId}:${threadParentId ?? ''}`
+          if (inboxRefreshInFlight.current.has(key)) {
+            inboxRefreshPending.current.set(key, [channelId, threadParentId])
+          } else {
+            void getConversationInboxNotification(channelId, threadParentId)
+              .then((payload) => {
+                updateInboxState((current: InboxState) => mergeInboxNotificationRefresh(current, payload))
+                inboxRefreshInFlight.current.delete(key)
+                const pending = inboxRefreshPending.current.get(key)
+                if (pending) {
+                  inboxRefreshPending.current.delete(key)
+                  void getConversationInboxNotification(pending[0], pending[1] || undefined)
+                    .then((p) => updateInboxState((c: InboxState) => mergeInboxNotificationRefresh(c, p)))
+                }
+              })
+              .catch((error) => {
+                inboxRefreshInFlight.current.delete(key)
+                console.error('Failed to refresh inbox after message', error)
+              })
+            inboxRefreshInFlight.current.add(key)
+          }
+          return
+        }
       },
     })
   }, [agents, channels, currentUser, dmChannels, shellBootstrapped, systemChannels, updateInboxState])
