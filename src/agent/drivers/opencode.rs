@@ -18,7 +18,7 @@ impl Driver for OpencodeDriver {
     }
 
     fn mcp_tool_prefix(&self) -> &str {
-        "mcp_chat_"
+        "chat_"
     }
 
     fn spawn(&self, ctx: &SpawnContext) -> anyhow::Result<Child> {
@@ -134,8 +134,8 @@ impl Driver for OpencodeDriver {
                             .cloned()
                             .unwrap_or(serde_json::Value::Null);
 
-                        // OpenCode names MCP tools as mcp_{server}_{tool}.
-                        // Tools from the "chat" server are already prefixed mcp_chat_.
+                        // OpenCode names MCP tools as {server}_{tool}.
+                        // Tools from the "chat" server are prefixed chat_.
                         events.push(ParsedEvent::ToolCall {
                             name: tool.to_string(),
                             input,
@@ -175,10 +175,10 @@ impl Driver for OpencodeDriver {
         build_base_system_prompt(
             config,
             &PromptOptions {
-                tool_prefix: "mcp_chat_".to_string(),
+                tool_prefix: "chat_".to_string(),
                 extra_critical_rules: vec![
                     "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- ALWAYS call `mcp_chat_wait_for_message()` after completing any task so you return to the idle loop.".to_string(),
+                    "- ALWAYS call `chat_wait_for_message()` after completing any task so you return to the idle loop.".to_string(),
                 ],
                 post_startup_notes: vec![
                     "**IMPORTANT**: Your process may exit after an idle wait completes. The server will resume you when new work arrives.".to_string(),
@@ -191,21 +191,21 @@ impl Driver for OpencodeDriver {
 
     fn tool_display_name(&self, name: &str) -> String {
         match name {
-            "mcp_chat_send_message" => "Sending message\u{2026}".to_string(),
-            "mcp_chat_check_messages" => "Checking messages\u{2026}".to_string(),
-            "mcp_chat_wait_for_message" => "Waiting for messages\u{2026}".to_string(),
-            "mcp_chat_receive_message" => "Receiving messages\u{2026}".to_string(),
-            "mcp_chat_upload_file" => "Uploading file\u{2026}".to_string(),
-            "mcp_chat_view_file" => "Viewing file\u{2026}".to_string(),
-            "mcp_chat_list_tasks" => "Listing tasks\u{2026}".to_string(),
-            "mcp_chat_create_tasks" => "Creating tasks\u{2026}".to_string(),
-            "mcp_chat_claim_tasks" => "Claiming tasks\u{2026}".to_string(),
-            "mcp_chat_unclaim_task" => "Unclaiming task\u{2026}".to_string(),
-            "mcp_chat_update_task_status" => "Updating task status\u{2026}".to_string(),
-            "mcp_chat_list_server" => "Listing server\u{2026}".to_string(),
-            "mcp_chat_read_history" => "Reading history\u{2026}".to_string(),
-            n if n.starts_with("mcp_chat_") => {
-                let op = n.trim_start_matches("mcp_chat_").replace('_', " ");
+            "chat_send_message" => "Sending message\u{2026}".to_string(),
+            "chat_check_messages" => "Checking messages\u{2026}".to_string(),
+            "chat_wait_for_message" => "Waiting for messages\u{2026}".to_string(),
+            "chat_receive_message" => "Receiving messages\u{2026}".to_string(),
+            "chat_upload_file" => "Uploading file\u{2026}".to_string(),
+            "chat_view_file" => "Viewing file\u{2026}".to_string(),
+            "chat_list_tasks" => "Listing tasks\u{2026}".to_string(),
+            "chat_create_tasks" => "Creating tasks\u{2026}".to_string(),
+            "chat_claim_tasks" => "Claiming tasks\u{2026}".to_string(),
+            "chat_unclaim_task" => "Unclaiming task\u{2026}".to_string(),
+            "chat_update_task_status" => "Updating task status\u{2026}".to_string(),
+            "chat_list_server" => "Listing server\u{2026}".to_string(),
+            "chat_read_history" => "Reading history\u{2026}".to_string(),
+            n if n.starts_with("chat_") => {
+                let op = n.trim_start_matches("chat_").replace('_', " ");
                 format!("Using {op}\u{2026}")
             }
             other => {
@@ -247,8 +247,8 @@ impl Driver for OpencodeDriver {
                 }
             }
             "web_search" => str_field("query"),
-            "mcp_chat_check_messages" | "mcp_chat_wait_for_message" => String::new(),
-            "mcp_chat_send_message" => {
+            "chat_check_messages" | "chat_wait_for_message" => String::new(),
+            "chat_send_message" => {
                 let t = str_field("target");
                 if t.is_empty() {
                     str_field("channel")
@@ -256,7 +256,7 @@ impl Driver for OpencodeDriver {
                     t
                 }
             }
-            "mcp_chat_read_history" => {
+            "chat_read_history" => {
                 let t = str_field("target");
                 if t.is_empty() {
                     str_field("channel")
@@ -264,8 +264,8 @@ impl Driver for OpencodeDriver {
                     t
                 }
             }
-            "mcp_chat_list_tasks" | "mcp_chat_create_tasks" => str_field("channel"),
-            "mcp_chat_claim_tasks" => {
+            "chat_list_tasks" | "chat_create_tasks" => str_field("channel"),
+            "chat_claim_tasks" => {
                 let channel = str_field("channel");
                 if channel.is_empty() {
                     return String::new();
@@ -289,7 +289,7 @@ impl Driver for OpencodeDriver {
                 };
                 format!("{channel} {nums_str}")
             }
-            "mcp_chat_unclaim_task" | "mcp_chat_update_task_status" => {
+            "chat_unclaim_task" | "chat_update_task_status" => {
                 let channel = str_field("channel");
                 if channel.is_empty() {
                     return String::new();
@@ -301,7 +301,7 @@ impl Driver for OpencodeDriver {
                     .unwrap_or_default();
                 format!("{channel} {tn}")
             }
-            "mcp_chat_upload_file" => str_field("file_path"),
+            "chat_upload_file" => str_field("file_path"),
             _ => String::new(),
         }
     }
@@ -358,13 +358,13 @@ mod tests {
     fn opencode_parse_line_maps_tool_use_event() {
         let driver = OpencodeDriver;
         let events = driver.parse_line(
-            r##"{"type":"tool_use","timestamp":1711929600000,"sessionID":"sess-1","part":{"tool":"mcp_chat_send_message","state":"running","input":{"target":"#all","content":"hi"}}}"##,
+            r##"{"type":"tool_use","timestamp":1711929600000,"sessionID":"sess-1","part":{"tool":"chat_send_message","state":"running","input":{"target":"#all","content":"hi"}}}"##,
         );
 
         assert!(matches!(
             &events[0],
             ParsedEvent::ToolCall { name, input }
-                if name == "mcp_chat_send_message" && input["target"] == "#all"
+                if name == "chat_send_message" && input["target"] == "#all"
         ));
     }
 

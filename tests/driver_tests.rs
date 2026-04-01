@@ -144,23 +144,23 @@ fn test_opencode_prompt_uses_split_message_tools() {
     let prompt = driver.build_system_prompt(&config, "agent-id");
 
     assert!(
-        prompt.contains("mcp_chat_wait_for_message"),
+        prompt.contains("chat_wait_for_message"),
         "OpenCode prompts must reference the blocking idle tool"
     );
     assert!(
-        prompt.contains("mcp_chat_check_messages"),
+        prompt.contains("chat_check_messages"),
         "OpenCode prompts must reference the non-blocking check tool"
     );
     assert!(
-        prompt.contains("mcp_chat_send_message"),
+        prompt.contains("chat_send_message"),
         "OpenCode prompts must reference the actual MCP send tool"
     );
     assert!(
-        !prompt.contains("mcp_chat_receive_message"),
+        !prompt.contains("chat_receive_message"),
         "OpenCode prompts should not rely on the legacy combined receive tool"
     );
     assert!(
-        prompt.contains("mcp_chat_view_file"),
+        prompt.contains("chat_view_file"),
         "OpenCode prompts should teach attachment inspection explicitly"
     );
     assert!(
