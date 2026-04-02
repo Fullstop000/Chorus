@@ -1,8 +1,9 @@
 import { useEffect, useState, useRef } from 'react'
 import { Paperclip, Plus } from 'lucide-react'
-import { useApp } from '../../store'
+import { useStore } from '../../store'
+import { useAgents, useTeams, useHumans, useChannels } from '../../hooks/data'
 import { useHistory } from '../../hooks/useHistory'
-import { sendMessage, createTasks, uploadFile } from '../../api'
+import { sendMessage, createTasks, uploadFile } from '../../data'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
 import { ToastRegion } from './ToastRegion'
@@ -15,7 +16,11 @@ interface Props {
 }
 
 export function MessageInput({ target, conversationId, history }: Props) {
-  const { currentUser, selectedChannel, selectedChannelId, serverInfo, agents, teams } = useApp()
+  const { currentUser, currentChannel } = useStore()
+  const agents = useAgents()
+  const teams = useTeams()
+  const humans = useHumans()
+  const { systemChannels } = useChannels()
   const [content, setContent] = useState('')
   const [alsoTask, setAlsoTask] = useState(false)
   const [sending, setSending] = useState(false)
@@ -34,16 +39,16 @@ export function MessageInput({ target, conversationId, history }: Props) {
 
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
-    ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
+    ...humans.map((h) => ({ name: h.name, type: 'human' as const })),
     ...teams.map((team) => ({ name: team.name, type: 'team' as const })),
   ]
 
-  // System channel metadata may mark individual channels as read-only.
-  const isSystemChannel = !!(selectedChannel && serverInfo?.system_channels?.some(
-    (c) => `#${c.name}` === selectedChannel && c.read_only
-  ))
+  const isReadOnlySystem = !!(
+    currentChannel &&
+    systemChannels.some((c) => c.name === currentChannel.name && c.read_only)
+  )
 
-  const placeholder = isSystemChannel
+  const placeholder = isReadOnlySystem
     ? `${target} is read-only — agent breadcrumbs only`
     : target
     ? `Message ${target}`
@@ -56,7 +61,6 @@ export function MessageInput({ target, conversationId, history }: Props) {
     let optimisticHandle: ReturnType<typeof history.addOptimisticMessage> | null = null
     const trimmedContent = content.trim()
     try {
-      // Upload files first
       const attachmentIds: string[] = []
       for (const file of pendingFiles) {
         const res = await uploadFile(file)
@@ -75,7 +79,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
       if (!conversationId) throw new Error('conversation unavailable')
       const sendAck = await sendMessage(conversationId, trimmedContent, attachmentIds, {
         clientNonce: handle.clientNonce,
-        suppressAgentDelivery: alsoTask && !!selectedChannel,
+        suppressAgentDelivery: alsoTask && !!currentChannel,
       })
       history.ackOptimisticMessage(handle, {
         messageId: sendAck.messageId,
@@ -101,10 +105,10 @@ export function MessageInput({ target, conversationId, history }: Props) {
       setSending(false)
     }
 
-    if (alsoTask && selectedChannel && trimmedContent) {
+    if (alsoTask && currentChannel && trimmedContent) {
       try {
-        if (!selectedChannelId) throw new Error('channel unavailable')
-        await createTasks(selectedChannelId, [trimmedContent])
+        if (!currentChannel.id) throw new Error('channel unavailable')
+        await createTasks(currentChannel.id, [trimmedContent])
       } catch (taskError) {
         const message = taskError instanceof Error ? taskError.message : String(taskError)
         setError(message)
@@ -148,7 +152,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
         <button
           className="message-input-btn attach-btn"
           onClick={() => fileInputRef.current?.click()}
-          disabled={!target || isSystemChannel}
+          disabled={!target || isReadOnlySystem}
           title="Attach file"
         >
           <Plus size={16} />
@@ -169,19 +173,19 @@ export function MessageInput({ target, conversationId, history }: Props) {
             setContent(value)
           }}
           onEnter={handleSend}
-          disabled={!target || sending || isSystemChannel}
+          disabled={!target || sending || isReadOnlySystem}
           rows={1}
           members={members}
         />
         <button
           className="message-input-send"
           onClick={handleSend}
-          disabled={!target || sending || isSystemChannel || (!content.trim() && pendingFiles.length === 0)}
+          disabled={!target || sending || isReadOnlySystem || (!content.trim() && pendingFiles.length === 0)}
         >
           {sending ? '...' : 'Send'}
         </button>
       </div>
-      {selectedChannel && !isSystemChannel && (
+      {currentChannel && !isReadOnlySystem && (
         <div className="message-input-footer">
           <label className="task-checkbox-label">
             <input

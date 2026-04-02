@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { getTasks } from '../api'
-import type { TaskInfo } from '../components/tasks/types'
+import { getTasks } from '../data'
+import type { TaskInfo } from '../data'
 
 export function useTasks(username: string, conversationId: string | null) {
   const [tasks, setTasks] = useState<TaskInfo[]>([])

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
-import { addTeamMember, deleteTeam, removeTeamMember, updateTeam } from '../../api'
-import { useApp } from '../../store'
+import { addTeamMember, deleteTeam, removeTeamMember, updateTeam } from '../../data'
+import { useStore } from '../../store'
+import { useAgents, useHumans } from '../../hooks/data'
 import type { Team, TeamMember } from './types'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
@@ -20,7 +21,9 @@ interface Props {
 }
 
 export function TeamSettings({ team, members, open, onOpenChange, onRefresh, onDeleted }: Props) {
-  const { serverInfo, agents, setSelectedChannel } = useApp()
+  const { setCurrentChannel } = useStore()
+  const agents = useAgents()
+  const humans = useHumans()
   const [displayName, setDisplayName] = useState(team.display_name)
   const [collaborationModel, setCollaborationModel] = useState(team.collaboration_model)
   const [leaderAgentName, setLeaderAgentName] = useState(team.leader_agent_name ?? '')
@@ -42,7 +45,7 @@ export function TeamSettings({ team, members, open, onOpenChange, onRefresh, onD
       member_id: agent.id ?? agent.name,
       label: `${agent.display_name ?? agent.name} · agent`,
     })),
-    ...(serverInfo?.humans ?? []).map((human) => ({
+    ...humans.map((human) => ({
       member_name: human.name,
       member_type: 'human' as const,
       member_id: human.name,
@@ -114,7 +117,7 @@ export function TeamSettings({ team, members, open, onOpenChange, onRefresh, onD
     setError(null)
     try {
       await deleteTeam(team.name)
-      setSelectedChannel(null)
+      setCurrentChannel(null)
       await onDeleted()
       onOpenChange(false)
     } catch (err) {

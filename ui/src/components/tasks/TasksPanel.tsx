@@ -1,17 +1,17 @@
-import { useState } from 'react'
-import { useApp } from '../../store'
-import { useTasks } from '../../hooks/useTasks'
-import { createTasks, updateTaskStatus, claimTasks } from '../../api'
-import type { TaskInfo, TaskStatus } from './types'
-import { FormError } from '@/components/ui/form'
-import './TasksPanel.css'
+import { useState } from "react";
+import { useStore } from "../../store";
+import { useTasks } from "../../hooks/useTasks";
+import { createTasks, updateTaskStatus, claimTasks } from "../../data";
+import type { TaskInfo, TaskStatus } from "./types";
+import { FormError } from "@/components/ui/form";
+import "./TasksPanel.css";
 
 const COLUMNS: { status: TaskStatus; label: string }[] = [
-  { status: 'todo', label: 'To Do' },
-  { status: 'in_progress', label: 'In Progress' },
-  { status: 'in_review', label: 'In Review' },
-  { status: 'done', label: 'Done' },
-]
+  { status: "todo", label: "To Do" },
+  { status: "in_progress", label: "In Progress" },
+  { status: "in_review", label: "In Review" },
+  { status: "done", label: "Done" },
+];
 
 function TaskCard({
   task,
@@ -20,42 +20,40 @@ function TaskCard({
   onRefresh,
   onError,
 }: {
-  task: TaskInfo
-  currentUser: string
-  channel: string
-  onRefresh: () => void
-  onError: (message: string | null) => void
+  task: TaskInfo;
+  currentUser: string;
+  channel: string;
+  onRefresh: () => void;
+  onError: (message: string | null) => void;
 }) {
   const nextStatus: Record<TaskStatus, TaskStatus | null> = {
-    todo: 'in_progress',
-    in_progress: 'in_review',
-    in_review: 'done',
+    todo: "in_progress",
+    in_progress: "in_review",
+    in_review: "done",
     done: null,
-  }
-  const next = nextStatus[task.status]
+  };
+  const next = nextStatus[task.status];
   const canAdvance =
     !!next &&
-    (
-      (!task.claimedByName && task.status === 'todo') ||
-      task.claimedByName === currentUser
-    )
+    ((!task.claimedByName && task.status === "todo") ||
+      task.claimedByName === currentUser);
 
   async function advance() {
-    if (!next || !canAdvance) return
+    if (!next || !canAdvance) return;
     try {
       // Auto-claim when starting a task (backend requires claim before status update)
-      if (task.status === 'todo') {
-        await claimTasks(channel, [task.taskNumber])
-        onError(null)
-        onRefresh()
-        return
+      if (task.status === "todo") {
+        await claimTasks(channel, [task.taskNumber]);
+        onError(null);
+        onRefresh();
+        return;
       }
-      await updateTaskStatus(channel, task.taskNumber, next)
-      onError(null)
-      onRefresh()
+      await updateTaskStatus(channel, task.taskNumber, next);
+      onError(null);
+      onRefresh();
     } catch (e) {
-      console.error(e)
-      onError(e instanceof Error ? e.message : String(e))
+      console.error(e);
+      onError(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -65,14 +63,17 @@ function TaskCard({
       onClick={advance}
       title={
         !next
-          ? 'Done'
+          ? "Done"
           : canAdvance
-          ? `Advance to ${next}`
-          : task.claimedByName
-          ? `Claimed by ${task.claimedByName}`
-          : 'Unavailable'
+            ? `Advance to ${next}`
+            : task.claimedByName
+              ? `Claimed by ${task.claimedByName}`
+              : "Unavailable"
       }
-      style={{ cursor: canAdvance ? 'pointer' : 'not-allowed', opacity: canAdvance ? 1 : 0.7 }}
+      style={{
+        cursor: canAdvance ? "pointer" : "not-allowed",
+        opacity: canAdvance ? 1 : 0.7,
+      }}
     >
       <div className="task-card-number">#{task.taskNumber}</div>
       <div className="task-card-title">{task.title}</div>
@@ -85,38 +86,39 @@ function TaskCard({
         )}
       </div>
     </div>
-  )
+  );
 }
 
 export function TasksPanel() {
-  const { currentUser, selectedChannel, selectedChannelId } = useApp()
-  const { tasks, loading, refresh } = useTasks(currentUser, selectedChannelId)
-  const [newTaskTitle, setNewTaskTitle] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const { currentUser, currentChannel } = useStore();
+  const channelId = currentChannel?.id ?? null;
+  const { tasks, loading, refresh } = useTasks(currentUser, channelId);
+  const [newTaskTitle, setNewTaskTitle] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleCreate() {
-    if (!selectedChannel || !selectedChannelId || !newTaskTitle.trim()) return
-    setCreating(true)
+    if (!currentChannel || !channelId || !newTaskTitle.trim()) return;
+    setCreating(true);
     try {
-      await createTasks(selectedChannelId, [newTaskTitle.trim()])
-      setNewTaskTitle('')
-      setError(null)
-      refresh()
+      await createTasks(channelId, [newTaskTitle.trim()]);
+      setNewTaskTitle("");
+      setError(null);
+      refresh();
     } catch (e) {
-      console.error(e)
-      setError(e instanceof Error ? e.message : String(e))
+      console.error(e);
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setCreating(false)
+      setCreating(false);
     }
   }
 
-  if (!selectedChannel) {
+  if (!currentChannel) {
     return (
       <div className="tasks-panel">
         <div className="tasks-empty">Select a channel to view tasks.</div>
       </div>
-    )
+    );
   }
 
   return (
@@ -126,7 +128,7 @@ export function TasksPanel() {
           <span className="tasks-panel-kicker">[board::channel]</span>
           <span className="tasks-panel-title">Tasks</span>
         </div>
-        <span className="tasks-panel-channel">#{selectedChannel}</span>
+        <span className="tasks-panel-channel">#{currentChannel.name}</span>
       </div>
       {error && <FormError>{error}</FormError>}
 
@@ -135,7 +137,7 @@ export function TasksPanel() {
       ) : (
         <div className="tasks-board">
           {COLUMNS.map(({ status, label }) => {
-            const col = tasks.filter((t) => t.status === status)
+            const col = tasks.filter((t) => t.status === status);
             return (
               <div key={status} className="task-column" data-status={status}>
                 <div className="task-column-header">
@@ -147,19 +149,19 @@ export function TasksPanel() {
                     key={task.taskNumber}
                     task={task}
                     currentUser={currentUser}
-                    channel={selectedChannelId ?? ''}
+                    channel={channelId ?? ""}
                     onRefresh={refresh}
                     onError={setError}
                   />
                 ))}
-                {status === 'todo' && (
+                {status === "todo" && (
                   <div className="new-task-row">
                     <input
                       className="new-task-input"
                       placeholder="New task title..."
                       value={newTaskTitle}
                       onChange={(e) => setNewTaskTitle(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+                      onKeyDown={(e) => e.key === "Enter" && handleCreate()}
                     />
                     <button
                       className="new-task-submit"
@@ -171,10 +173,10 @@ export function TasksPanel() {
                   </div>
                 )}
               </div>
-            )
+            );
           })}
         </div>
       )}
     </div>
-  )
+  );
 }

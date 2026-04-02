@@ -1,6 +1,5 @@
 import { create } from 'zustand'
-import type { HistoryMessage } from '../components/chat/types'
-import type { ThreadInboxEntry } from '../inbox/types'
+import type { AgentInfo, ChannelInfo, HistoryMessage, ThreadInboxEntry } from '../data'
 import type { InboxState, ReadCursorAckPayload } from '../inbox'
 import { createInboxState, mergeReadCursorAckIntoInboxState } from '../inbox'
 
@@ -8,10 +7,8 @@ export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' 
 
 interface UIState {
   currentUser: string
-  // Store agent name only; derive AgentInfo from the agents query in AppProvider
-  selectedAgentName: string | null
-  selectedChannel: string | null
-  selectedChannelId: string | null
+  currentChannel: ChannelInfo | null
+  currentAgent: AgentInfo | null
   activeTab: ActiveTab
   openThreadMsg: HistoryMessage | null
   inboxState: InboxState
@@ -21,8 +18,8 @@ interface UIState {
 
 interface UIActions {
   setCurrentUser: (user: string) => void
-  setSelectedAgentName: (name: string | null) => void
-  setSelectedChannel: (ch: string | null, channelId?: string | null) => void
+  setCurrentChannel: (channel: ChannelInfo | null) => void
+  setCurrentAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
   setOpenThreadMsg: (msg: HistoryMessage | null) => void
   applyReadCursorAck: (ack: ReadCursorAckPayload) => void
@@ -36,9 +33,8 @@ export type UIStore = UIState & UIActions
 
 const initialState: UIState = {
   currentUser: '',
-  selectedAgentName: null,
-  selectedChannel: null,
-  selectedChannelId: null,
+  currentChannel: null,
+  currentAgent: null,
   activeTab: 'chat',
   openThreadMsg: null,
   inboxState: createInboxState(),
@@ -46,26 +42,25 @@ const initialState: UIState = {
   shellBootstrapped: false,
 }
 
-export const useUIStore = create<UIStore>((set) => ({
+export const useStore = create<UIStore>((set) => ({
   ...initialState,
 
   setCurrentUser: (currentUser: string) => set({ currentUser }),
 
-  setSelectedAgentName: (name: string | null) =>
+  setCurrentAgent: (agent: AgentInfo | null) =>
     set({
-      selectedAgentName: name,
+      currentAgent: agent,
       openThreadMsg: null,
-      ...(name ? { selectedChannel: null, selectedChannelId: null, activeTab: 'chat' } : {}),
+      ...(agent ? { currentChannel: null, activeTab: 'chat' as const } : {}),
     }),
 
-  setSelectedChannel: (ch: string | null, channelId?: string | null) =>
-    set((state: UIState) => ({
-      selectedChannel: ch,
-      selectedChannelId: ch ? (channelId ?? null) : null,
+  setCurrentChannel: (channel: ChannelInfo | null) =>
+    set((state) => ({
+      currentChannel: channel,
       openThreadMsg: null,
-      selectedAgentName: ch ? null : state.selectedAgentName,
+      currentAgent: channel ? null : state.currentAgent,
       activeTab:
-        ch &&
+        channel &&
         (state.activeTab === 'workspace' ||
           state.activeTab === 'activity' ||
           state.activeTab === 'profile')
@@ -78,15 +73,15 @@ export const useUIStore = create<UIStore>((set) => ({
   setOpenThreadMsg: (openThreadMsg: HistoryMessage | null) => set({ openThreadMsg }),
 
   applyReadCursorAck: (ack: ReadCursorAckPayload) =>
-    set((state: UIState) => ({
+    set((state) => ({
       inboxState: mergeReadCursorAckIntoInboxState(state.inboxState, ack),
     })),
 
   updateInboxState: (updater: (current: InboxState) => InboxState) =>
-    set((state: UIState) => ({ inboxState: updater(state.inboxState) })),
+    set((state) => ({ inboxState: updater(state.inboxState) })),
 
   setConversationThreads: (conversationId: string, threads: ThreadInboxEntry[]) =>
-    set((state: UIState) => ({
+    set((state) => ({
       conversationThreads: { ...state.conversationThreads, [conversationId]: threads },
     })),
 
@@ -94,9 +89,8 @@ export const useUIStore = create<UIStore>((set) => ({
 
   resetUserSession: () =>
     set({
-      selectedAgentName: null,
-      selectedChannel: null,
-      selectedChannelId: null,
+      currentAgent: null,
+      currentChannel: null,
       activeTab: 'chat',
       openThreadMsg: null,
       inboxState: createInboxState(),

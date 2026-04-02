@@ -1,13 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, Paperclip } from 'lucide-react'
-import { useApp, useTarget } from '../../store'
+import { useStore } from '../../store'
+import { useAgents, useTeams, useHumans, useInbox, useTarget } from '../../hooks/data'
 import { useHistory } from '../../hooks/useHistory'
 import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
 import { MessageItem } from './MessageItem'
 import { ToastRegion } from './ToastRegion'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
-import { sendMessage } from '../../api'
+import { sendMessage } from '../../data'
 import './ThreadPanel.css'
 
 interface ThreadPanelProps {
@@ -15,21 +16,14 @@ interface ThreadPanelProps {
 }
 
 export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
-  const {
-    currentUser,
-    openThreadMsg,
-    setOpenThreadMsg,
-    serverInfo,
-    agents,
-    teams,
-    selectedAgent,
-    selectedChannelId,
-    getAgentConversationId,
-    applyReadCursorAck,
-  } = useApp()
+  const { currentUser, currentChannel, currentAgent, openThreadMsg, setOpenThreadMsg } = useStore()
+  const agents = useAgents()
+  const teams = useTeams()
+  const humans = useHumans()
+  const { getAgentConversationId, applyReadCursorAck } = useInbox()
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
-    ...(serverInfo?.humans ?? []).map((h) => ({ name: h.name, type: 'human' as const })),
+    ...humans.map((h) => ({ name: h.name, type: 'human' as const })),
     ...teams.map((team) => ({ name: team.name, type: 'team' as const })),
   ]
   const mainTarget = useTarget()
@@ -37,7 +31,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     ? `${mainTarget}:${openThreadMsg.id}`
     : null
   const threadConversationId =
-    selectedChannelId ?? (selectedAgent ? getAgentConversationId(selectedAgent.name) : null)
+    currentChannel?.id ?? (currentAgent ? getAgentConversationId(currentAgent.name) : null)
 
   const {
     messages,
@@ -125,7 +119,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     }
   }, [loadedTarget, loading, messages, scheduleBatchVisibilityCheck, threadTarget])
 
-  // Reset input when switching thread
   useEffect(() => {
     setContent('')
   }, [openThreadMsg?.id])
@@ -216,7 +209,6 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       </div>
 
       <div className="thread-body" ref={scrollContainerRef}>
-        {/* no onReply — replies aren't nested */}
         <div className="thread-parent-wrapper">
           <MessageItem
             message={openThreadMsg}

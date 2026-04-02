@@ -6,8 +6,8 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { FormField, FormError } from '@/components/ui/form'
 import { Label } from '@/components/ui/label'
-import { createChannel, createTeam } from '../../api'
-import { useApp } from '../../store'
+import { createChannel, createTeam } from '../../data'
+import { useAgents, useHumans } from '../../hooks/data'
 
 interface Props {
   open: boolean
@@ -24,7 +24,8 @@ interface DraftTeamMember {
 }
 
 export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode = 'channel' }: Props) {
-  const { serverInfo, agents } = useApp()
+  const agents = useAgents()
+  const humans = useHumans()
   const [mode, setMode] = React.useState<'channel' | 'team'>(defaultMode)
   const [name, setName] = React.useState('')
   const [description, setDescription] = React.useState('')
@@ -46,7 +47,7 @@ export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode 
       member_id: agent.id ?? agent.name,
       label: `${agent.display_name ?? agent.name} · agent`,
     })),
-    ...(serverInfo?.humans ?? []).map((human) => ({
+    ...humans.map((human) => ({
       name: human.name,
       member_type: 'human' as const,
       member_id: human.name,

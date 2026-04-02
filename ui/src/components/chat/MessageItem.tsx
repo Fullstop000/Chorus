@@ -1,10 +1,10 @@
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import { MessageSquare, Copy, Paperclip, LoaderCircle, CircleAlert, RotateCcw } from 'lucide-react'
-import type { AgentInfo } from '../agents/types'
-import type { HistoryMessage } from './types'
-import { attachmentUrl } from '../../api'
-import { useApp } from '../../store'
+import type { AgentInfo, HistoryMessage } from '../../data'
+import { attachmentUrl } from '../../data'
+import { useStore } from '../../store'
+import { useAgents } from '../../hooks/data'
 
 function replyLabel(n: number) {
   return n === 1 ? '1 reply' : `${n} replies`
@@ -111,10 +111,11 @@ interface MessageItemProps {
 }
 
 export function MessageItem({ message, currentUser, prevMessage, onReply, onRetry }: MessageItemProps) {
-  const { agents, setSelectedAgent, setActiveTab } = useApp()
+  const { setActiveTab, setCurrentAgent } = useStore()
+  const agents = useAgents()
   
   const handleSelectAgent = (agent: AgentInfo) => {
-    setSelectedAgent(agent)
+    setCurrentAgent(agent)
     setActiveTab('profile')
   }
   

@@ -22,8 +22,8 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react'
-import { getAgentActivityLog } from '../../../api'
-import type { ActivityLogEntry } from '../types'
+import { getAgentActivityLog } from '../../../data'
+import type { ActivityLogEntry } from '../../../data'
 import './ActivityPanel.css'
 
 interface Props {

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { Search, Settings2, Users } from 'lucide-react'
-import { useApp } from '../../store'
+import { useStore } from '../../store'
+import { useChannels } from '../../hooks/data'
 import { MessageItem } from './MessageItem'
 import type { HistoryMessage } from './types'
 import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
@@ -21,19 +22,20 @@ export function ChatHeader({
   onToggleMembers,
   onOpenTeamSettings,
 }: ChatHeaderProps) {
-  const { selectedChannel, selectedAgent, channels } = useApp()
-  const channelInfo = selectedChannel
-    ? channels.find((channel) => `#${channel.name}` === selectedChannel)
+  const { currentChannel, currentAgent } = useStore()
+  const { channels } = useChannels()
+  const channelInfo = currentChannel
+    ? channels.find((channel) => channel.name === currentChannel.name)
     : null
 
-  const headerName = selectedChannel
-    ? selectedChannel
-    : selectedAgent
-    ? `@${selectedAgent.display_name ?? selectedAgent.name}`
+  const headerName = currentChannel
+    ? `#${currentChannel.name}`
+    : currentAgent
+    ? `@${currentAgent.display_name ?? currentAgent.name}`
     : 'Select a channel'
 
-  const headerDesc = channelInfo?.description ?? selectedAgent?.description ?? ''
-  const headerIcon = selectedChannel ? '#' : selectedAgent ? '@' : '?'
+  const headerDesc = channelInfo?.description ?? currentAgent?.description ?? ''
+  const headerIcon = currentChannel ? '#' : currentAgent ? '@' : '?'
 
   return (
     <div className="chat-header">
@@ -45,7 +47,7 @@ export function ChatHeader({
         </div>
       </div>
       <div className="chat-header-actions">
-        {selectedChannel && (
+        {currentChannel && (
           <button
             className={`chat-header-member-btn${membersOpen ? ' active' : ''}`}
             type="button"
@@ -93,7 +95,7 @@ export function ChatPanel({
   reportVisibleSeq,
   onRetryMessage,
 }: ChatPanelProps) {
-  const { currentUser, setOpenThreadMsg } = useApp()
+  const { currentUser, setOpenThreadMsg } = useStore()
   const bottomRef = useRef<HTMLDivElement>(null)
   const scrollContainerRef = useRef<HTMLDivElement>(null)
   const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})

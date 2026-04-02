@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { MessageSquare, ArrowRight } from 'lucide-react'
-import { useApp } from '../../store'
-import type { ThreadInboxEntry } from '../../inbox/types'
+import { useStore } from '../../store'
+import { useInbox, useRefresh } from '../../hooks/data'
+import type { ThreadInboxEntry } from '../../data'
 import type { HistoryMessage } from './types'
 import { ThreadPanel } from './ThreadPanel'
 import './ThreadsTab.css'
@@ -20,26 +21,18 @@ function threadRowToParentMessage(entry: ThreadInboxEntry): HistoryMessage {
 }
 
 export function ThreadsTab() {
-  const {
-    currentUser,
-    selectedChannel,
-    selectedChannelId,
-    activeTab,
-    openThreadMsg,
-    getConversationThreads,
-    getConversationThreadUnread,
-    refreshConversationThreads,
-    setOpenThreadMsg,
-  } = useApp()
+  const { currentUser, currentChannel, activeTab, openThreadMsg, setOpenThreadMsg } = useStore()
+  const { getConversationThreads, getConversationThreadUnread } = useInbox()
+  const { refreshConversationThreads } = useRefresh()
   const [loading, setLoading] = useState(false)
+  const channelId = currentChannel?.id ?? null
 
-  // Refresh threads when tab becomes active or selected channel changes
   useEffect(() => {
-    if (!currentUser || !selectedChannel || !selectedChannelId) return
+    if (!currentUser || !currentChannel || !channelId) return
     if (activeTab !== 'threads') return
     let cancelled = false
     setLoading(true)
-    refreshConversationThreads(selectedChannelId)
+    refreshConversationThreads(channelId)
       .finally(() => {
         if (!cancelled) {
           setLoading(false)
@@ -48,12 +41,12 @@ export function ThreadsTab() {
     return () => {
       cancelled = true
     }
-  }, [currentUser, activeTab, refreshConversationThreads, selectedChannel, selectedChannelId])
+  }, [currentUser, activeTab, refreshConversationThreads, currentChannel, channelId])
 
-  const threadRows = getConversationThreads(selectedChannelId)
-  const unreadCount = getConversationThreadUnread(selectedChannelId)
+  const threadRows = getConversationThreads(channelId)
+  const unreadCount = getConversationThreadUnread(channelId)
 
-  if (!selectedChannel || !selectedChannelId) {
+  if (!currentChannel || !channelId) {
     return (
       <div className="threads-tab threads-tab--empty">
         <div className="threads-tab__empty-copy">Select a channel to browse threads.</div>
