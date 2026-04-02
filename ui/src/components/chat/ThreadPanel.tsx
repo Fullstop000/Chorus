@@ -1,13 +1,13 @@
 import { useState, useEffect, useRef } from 'react'
 import { X, Paperclip } from 'lucide-react'
-import { useApp, useTarget } from '../store'
-import { useHistory } from '../hooks/useHistory'
+import { useApp, useTarget } from '../../store'
+import { useHistory } from '../../hooks/useHistory'
 import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
 import { MessageItem } from './MessageItem'
 import { ToastRegion } from './ToastRegion'
 import { MentionTextarea } from './MentionTextarea'
 import type { MentionMember } from './MentionTextarea'
-import { sendMessage } from '../api'
+import { sendMessage } from '../../api'
 import './ThreadPanel.css'
 
 interface ThreadPanelProps {

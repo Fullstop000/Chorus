@@ -13,7 +13,7 @@ import {
   ScrollText,
   Settings2,
 } from 'lucide-react'
-import { getAgentWorkspace, getAgentWorkspaceFile } from '../api'
+import { getAgentWorkspace, getAgentWorkspaceFile } from '../../api'
 import './WorkspacePanel.css'
 
 interface Props {

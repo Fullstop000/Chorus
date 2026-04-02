@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useApp } from '../store'
-import { useTasks } from '../hooks/useTasks'
-import { createTasks, updateTaskStatus, claimTasks } from '../api'
-import type { TaskInfo, TaskStatus } from '../types'
+import { useApp } from '../../store'
+import { useTasks } from '../../hooks/useTasks'
+import { createTasks, updateTaskStatus, claimTasks } from '../../api'
+import type { TaskInfo, TaskStatus } from '../../types'
 import { FormError } from '@/components/ui/form'
 import './TasksPanel.css'
 

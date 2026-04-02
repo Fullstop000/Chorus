@@ -6,15 +6,15 @@ import {
   startAgent,
   stopAgent,
   updateAgent,
-} from '../api'
-import type { AgentDetailResponse, RuntimeStatusInfo } from '../types'
-import { useRuntimeStatuses } from '../hooks/useRuntimeStatuses'
-import { useApp } from '../store'
+} from '../../../api'
+import type { AgentDetailResponse, RuntimeStatusInfo } from '../../../types'
+import { useRuntimeStatuses } from '../../../hooks/useRuntimeStatuses'
+import { useApp } from '../../../store'
 import {
   AgentConfigForm,
   runtimeStatusSummary,
   type AgentConfigState,
-} from './AgentConfigForm'
+} from '../AgentConfigForm'
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { FormError } from '@/components/ui/form'

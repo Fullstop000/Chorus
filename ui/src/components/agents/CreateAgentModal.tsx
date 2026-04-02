@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useRuntimeStatuses } from '../hooks/useRuntimeStatuses'
+import { useRuntimeStatuses } from '../../hooks/useRuntimeStatuses'
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'

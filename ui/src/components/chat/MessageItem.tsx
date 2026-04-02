@@ -1,9 +1,9 @@
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import { MessageSquare, Copy, Paperclip, LoaderCircle, CircleAlert, RotateCcw } from 'lucide-react'
-import type { HistoryMessage, AgentInfo } from '../types'
-import { attachmentUrl } from '../api'
-import { useApp } from '../store'
+import type { HistoryMessage, AgentInfo } from '../../types'
+import { attachmentUrl } from '../../api'
+import { useApp } from '../../store'
 
 function replyLabel(n: number) {
   return n === 1 ? '1 reply' : `${n} replies`

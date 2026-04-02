@@ -89,7 +89,8 @@ This file is the working contract for agents. Read it before making changes.
 | `ui/src/api.ts` | Browser-to-server API calls |
 | `ui/src/store.tsx` | Client app state and selection logic |
 | `ui/src/hooks/` | Reusable data-loading and interaction hooks |
-| `ui/src/components/` | UI grouped by panel, modal, component responsibility |
+| `ui/src/pages/` | Top-level workspace shell (`Sidebar`, `MainPanel`, `TabBar`) |
+| `ui/src/components/` | Feature modules: `chat/`, `channels/`, `agents/` (includes `agents/profile/`, `agents/activity/`), `tasks/`, plus `ui/` (shadcn primitives) |
 | `ui/src/channelList.ts`, `types.ts` | Shared UI-side derivation and types |
 
 ## Project Conventions

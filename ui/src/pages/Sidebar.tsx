@@ -3,9 +3,9 @@ import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2, Users
 import { useApp } from '../store'
 import type { AgentInfo, ChannelInfo } from '../types'
 import { isVisibleSidebarChannel } from '../sidebarChannels'
-import { CreateAgentModal } from './CreateAgentModal'
-import { CreateChannelModal } from './Channels/CreateChannelModal'
-import { DeleteChannelModal, EditChannelModal } from './EditChannelModal'
+import { CreateAgentModal } from '../components/agents/CreateAgentModal'
+import { CreateChannelModal } from '../components/channels/CreateChannelModal'
+import { DeleteChannelModal, EditChannelModal } from '../components/channels/EditChannelModal'
 import './Sidebar.css'
 
 function agentColor(name: string): string {
