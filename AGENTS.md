@@ -16,6 +16,7 @@ This file is the working contract for agents. Read it before making changes.
 | Rule                       | Example                                                              |
 | -------------------------- | -------------------------------------------------------------------- |
 | Names are documentation    | `isLoading` not `loading`; `hasPermission()` not `checkPermission()` |
+| Name for the reason, not the control | `isRuntimeAvailable` not `canSelectRuntime`              |
 | One word per concept       | Don't alternate fetch/get/retrieve/load                              |
 | Booleans read as questions | `isLoading`, `hasError`, `canSubmit`                                 |
 | No cryptic shortcuts       | `id`, `url`, `err` ok in narrow scopes only                          |

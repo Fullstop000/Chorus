@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { runtimeOptionLabel, runtimeStatusSummary } from './AgentConfigForm'
+import { isRuntimeAvailable, runtimeOptionLabel, runtimeStatusSummary } from './AgentConfigForm'
 
 describe('runtimeOptionLabel', () => {
   it('shows not installed copy when the runtime is missing', () => {
@@ -16,6 +16,24 @@ describe('runtimeOptionLabel', () => {
         { runtime: 'claude', installed: true, authStatus: 'authed' },
       ])
     ).toContain('signed in')
+  })
+})
+
+describe('isRuntimeAvailable', () => {
+  it('returns false for runtimes that are not installed', () => {
+    expect(
+      isRuntimeAvailable('kimi', [
+        { runtime: 'kimi', installed: false },
+      ])
+    ).toBe(false)
+  })
+
+  it('returns true for installed runtimes', () => {
+    expect(
+      isRuntimeAvailable('codex', [
+        { runtime: 'codex', installed: true, authStatus: 'unauthed' },
+      ])
+    ).toBe(true)
   })
 })
 
