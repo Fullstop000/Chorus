@@ -94,3 +94,21 @@ Current UI matrix:
 Notes:
 - Use stable names such as `matrix-claude-sonnet` and `matrix-codex-gpt-5-4-mini`.
 - Verify the runtime and model badges after creation for every pair.
+
+### `stub-trio`
+
+Use for:
+- fast QA runs that test the full UI + message pipeline without LLM latency
+- CI smoke tests
+- core regression runs where real LLM reasoning is not required
+
+Agents:
+- `stub-a` — runtime `stub`, model `echo`
+- `stub-b` — runtime `stub`, model `echo`
+- `stub-c` — runtime `stub`, model `echo`
+
+Notes:
+- Select with `CHORUS_E2E_LLM=stub`.
+- Use `agentNames()` from the test helpers to get mode-aware agent names.
+- Cases requiring real LLM reasoning (TMT-003, TMT-004, TMT-006, TMT-008, TMT-009) are automatically skipped in stub mode.
+- The stub runtime is not visible in the create-agent modal — agents are created via API only.

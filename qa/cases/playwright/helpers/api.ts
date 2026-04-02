@@ -96,6 +96,30 @@ export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promis
   }
 }
 
+/** Create stub-a, stub-b, stub-c with runtime=stub for fast QA runs. */
+export async function ensureStubTrio(request: APIRequestContext): Promise<void> {
+  const agents = await listAgents(request)
+  const names = new Set(agents.map((a) => a.name))
+  if (!names.has('stub-a')) {
+    await createAgentApi(request, { name: 'stub-a', runtime: 'stub', model: 'echo' })
+  }
+  if (!names.has('stub-b')) {
+    await createAgentApi(request, { name: 'stub-b', runtime: 'stub', model: 'echo' })
+  }
+  if (!names.has('stub-c')) {
+    await createAgentApi(request, { name: 'stub-c', runtime: 'stub', model: 'echo' })
+  }
+}
+
+/** Return agent names based on CHORUS_E2E_LLM mode. */
+export function agentNames(): { a: string; b: string; c: string } {
+  const mode = process.env.CHORUS_E2E_LLM ?? '1'
+  if (mode === 'stub') {
+    return { a: 'stub-a', b: 'stub-b', c: 'stub-c' }
+  }
+  return { a: 'bot-a', b: 'bot-b', c: 'bot-c' }
+}
+
 export async function waitForAgentActive(
   request: APIRequestContext,
   name: string,
