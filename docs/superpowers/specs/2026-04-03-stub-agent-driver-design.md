@@ -25,6 +25,8 @@ A lightweight stub agent binary that implements the MCP bridge protocol with det
 
 #### 1. `crates/stub-agent/` — Standalone Rust binary
 
+This introduces a Cargo workspace for the first time. The existing `Cargo.toml` at the repo root must be converted to a workspace with two members: the main `chorus` crate (`.`) and the stub crate (`crates/stub-agent`). `cargo build` and `cargo test` from the repo root must build and test both crates.
+
 A small MCP client process that:
 
 - Reads the MCP tool list from the bridge on startup
@@ -59,9 +61,13 @@ Added to `src/store/agents.rs`. Wired into:
 
 - `AgentRuntime::parse()` and `AgentRuntime::as_str()`
 - `get_driver()` in `src/agent/manager.rs`
-- `all_runtime_drivers()` in `src/agent/drivers/mod.rs`
+- `resumable_session_id` match in `start_agent` (`manager.rs:L88-97`) — the stub has no sessions to resume, so add `AgentRuntime::Stub => None`
+- `all_runtime_drivers()` in `src/agent/drivers/mod.rs` — **include** `StubDriver` here so `list_models("stub")` works
+- `handle_list_runtime_statuses` in `src/server/handlers/mod.rs` — **filter out** `stub` from the response so the UI never shows it. The `/runtimes` endpoint currently returns everything from `all_runtime_drivers()`. Add a `.filter(|s| s.runtime != "stub")` before returning.
 
-The frontend create-agent modal does not show `Stub`. The server's `/api/runtimes` (or equivalent) endpoint excludes `stub` from the list returned to the UI, so no frontend filtering logic is needed. Playwright tests create stub agents via `createAgentApi({ runtime: 'stub', model: 'echo' })`.
+**Server-side access control:** The `POST /api/agents` handler accepts any runtime string that passes `AgentRuntime::parse()`. Adding `Stub` to the enum means any API client can create stub agents — not just Playwright. This is acceptable: the stub runtime is harmless (it's a local echo process), and gating it behind an env var adds complexity for no security benefit. If this changes, add `CHORUS_STUB_ENABLED=1` gating in the create handler.
+
+Playwright tests create stub agents via `createAgentApi({ runtime: 'stub', model: 'echo' })`.
 
 #### 4. Frontend: no changes
 
@@ -105,7 +111,13 @@ The stub binary and MCP bridge share the repo. When the bridge protocol changes:
 
 ### Playwright Helpers
 
-New helper: `ensureStubTrio(request)` — creates `bot-a`, `bot-b`, `bot-c` with `runtime: 'stub', model: 'echo'`.
+New helper: `ensureStubTrio(request)` — creates `stub-a`, `stub-b`, `stub-c` with `runtime: 'stub', model: 'echo'`.
+
+Stub agents use distinct names (`stub-a/b/c`) rather than `bot-a/b/c` to avoid collisions with `ensureMixedRuntimeTrio`. This means specs that reference `bot-a` by name must parameterize the agent name based on the mode:
+
+```ts
+const agentA = useStub ? 'stub-a' : 'bot-a'
+```
 
 Spec-level wiring:
 
@@ -128,9 +140,9 @@ Use for:
   - CI smoke tests
 
 Agents:
-  bot-a — runtime stub, model echo
-  bot-b — runtime stub, model echo
-  bot-c — runtime stub, model echo
+  stub-a — runtime stub, model echo
+  stub-b — runtime stub, model echo
+  stub-c — runtime stub, model echo
 ```
 
 ## Case Coverage Matrix
