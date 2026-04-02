@@ -54,7 +54,7 @@ export function isRuntimeAvailable(
   runtimeStatuses: RuntimeStatusInfo[] = [],
 ): boolean {
   const status = runtimeStatuses.find((entry) => entry.runtime === runtime)
-  return status?.installed !== false
+  return status?.installed === true
 }
 
 export function runtimeStatusSummary(

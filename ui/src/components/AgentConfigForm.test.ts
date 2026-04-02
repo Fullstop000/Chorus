@@ -20,6 +20,10 @@ describe('runtimeOptionLabel', () => {
 })
 
 describe('isRuntimeAvailable', () => {
+  it('returns false when the runtime status is unavailable', () => {
+    expect(isRuntimeAvailable('claude', [])).toBe(false)
+  })
+
   it('returns false for runtimes that are not installed', () => {
     expect(
       isRuntimeAvailable('kimi', [
