@@ -249,6 +249,11 @@ async fn run() -> Result<()> {
     let session_id = uuid::Uuid::new_v4().to_string();
     emit_session_init(&session_id);
 
+    let delay_ms: u64 = std::env::var("STUB_DELAY_MS")
+        .unwrap_or_else(|_| "200".to_string())
+        .parse()
+        .unwrap_or(200);
+
     // Process initial prompt
     emit_text(&format!("Processing prompt: {}", args.prompt));
 
@@ -278,6 +283,7 @@ async fn run() -> Result<()> {
             let content = parse_content(line).unwrap_or_default();
             let token = extract_token(&content).unwrap_or_else(next_fallback_token);
 
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
             emit_text(&format!("Replying with: {token}"));
 
             if let Err(e) = send_message(&peer, &target, &token).await {
