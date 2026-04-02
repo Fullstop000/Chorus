@@ -43,9 +43,7 @@ fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
         Some(AgentRuntime::Opencode) => {
             Ok(Arc::new(crate::agent::drivers::opencode::OpencodeDriver))
         }
-        Some(AgentRuntime::Stub) => {
-            anyhow::bail!("Stub driver not yet implemented")
-        }
+        Some(AgentRuntime::Stub) => Ok(Arc::new(crate::agent::drivers::stub::StubDriver)),
         None => anyhow::bail!("Unknown runtime: {runtime}"),
     }
 }

@@ -3,6 +3,7 @@ pub mod codex;
 pub mod kimi;
 pub mod opencode;
 pub mod prompt;
+pub mod stub;
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -87,6 +88,7 @@ pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {
         Arc::new(codex::CodexDriver),
         Arc::new(kimi::KimiDriver),
         Arc::new(opencode::OpencodeDriver),
+        Arc::new(stub::StubDriver),
     ]
 }
 
