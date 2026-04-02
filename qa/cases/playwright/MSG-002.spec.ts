@@ -1,18 +1,21 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, getWhoami, historyForUser } from './helpers/api'
 import { openAgentChat, openThreadFromMessage, sendChatMessage , gotoApp , reloadApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/messaging.md` — MSG-002 Direct Message Round-Trip
  *
  * Preconditions:
- * - at least one test agent exists (`bot-a`)
+ * - at least one test agent exists (`agents.a`)
  * - agent reachable, not mid-turn
  *
  * Steps:
- * 1. Open a DM with `bot-a`.
+ * 1. Open a DM with `agents.a`.
  * 2. Send a human DM that asks for an exact short token.
  * 3. Verify the human DM appears once in the DM timeline immediately after send.
  * 4. Wait for the agent reply.
@@ -27,7 +30,11 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('MSG-002', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Direct Message Round-Trip @case MSG-002', async ({ page, request }) => {
@@ -41,8 +48,8 @@ test.describe('MSG-002', () => {
 
     await gotoApp(page)
 
-    await test.step('Step 1: Open DM with bot-a', async () => {
-      await openAgentChat(page, 'bot-a')
+    await test.step(`Step 1: Open DM with ${agents.a}`, async () => {
+      await openAgentChat(page, agents.a)
       await expect(page.locator('.message-input-textarea')).toBeVisible()
     })
 
@@ -55,7 +62,7 @@ test.describe('MSG-002', () => {
       const deadline = Date.now() + 120_000
       let ok = false
       while (Date.now() < deadline) {
-        const msgs = await historyForUser(request, username, 'dm:@bot-a', 40)
+        const msgs = await historyForUser(request, username, `dm:@${agents.a}`, 40)
         if (msgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))) {
           replyMode = 'top-level'
           ok = true
@@ -68,7 +75,7 @@ test.describe('MSG-002', () => {
             (m.replyCount ?? 0) > 0
         )
         if (parent) {
-          const threadMsgs = await historyForUser(request, username, `dm:@bot-a:${parent.id}`, 40)
+          const threadMsgs = await historyForUser(request, username, `dm:@${agents.a}:${parent.id}`, 40)
           if (threadMsgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))) {
             replyMode = 'thread'
             ok = true
@@ -83,7 +90,7 @@ test.describe('MSG-002', () => {
 
     await test.step('Step 7–8: Refresh and re-open DM — history persists', async () => {
       await reloadApp(page)
-      await openAgentChat(page, 'bot-a')
+      await openAgentChat(page, agents.a)
       if (replyMode === 'top-level') {
         await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
       } else {
@@ -94,7 +101,7 @@ test.describe('MSG-002', () => {
 
     await test.step('Step 9: Switch target and return to DM', async () => {
       await page.locator('.sidebar-item-text:text("all")').first().click()
-      await openAgentChat(page, 'bot-a')
+      await openAgentChat(page, agents.a)
       if (replyMode === 'top-level') {
         await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
       } else {
