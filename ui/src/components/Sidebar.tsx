@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2, Users } from 'lucide-react'
+import { Ellipsis, Pencil, Plus, Settings2, Trash2, Users } from 'lucide-react'
 import { useApp } from '../store'
 import type { AgentInfo, ChannelInfo } from '../types'
 import { isVisibleSidebarChannel } from '../sidebarChannels'
@@ -73,6 +73,9 @@ export function Sidebar() {
   const [deleteTarget, setDeleteTarget] = useState<ChannelInfo | null>(null)
   const [openChannelMenuId, setOpenChannelMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const [channelsCollapsed, setChannelsCollapsed] = useState(false)
+  const [agentsCollapsed, setAgentsCollapsed] = useState(false)
+  const [humansCollapsed, setHumansCollapsed] = useState(false)
 
   const channels = loadedChannels.filter(isVisibleSidebarChannel)
   const systemChannels = serverInfo?.system_channels ?? []
@@ -108,33 +111,21 @@ export function Sidebar() {
         <div className="sidebar-header">
           <div className="sidebar-server-block">
             <span className="sidebar-server-label">[chorus::workspace]</span>
-            <span className="sidebar-server-name">
-              Chorus
-              <button type="button" aria-label="Open workspace menu">
-                <ChevronDown size={14} />
-              </button>
-            </span>
-          </div>
-          <div className="sidebar-header-actions">
-            <button className="sidebar-icon-btn" type="button" aria-label="Open suggestions">
-              <Sparkles size={15} />
-            </button>
-            <button className="sidebar-icon-btn" type="button" aria-label="Create">
-              <Plus size={15} />
-            </button>
+            <span className="sidebar-server-name">Chorus</span>
           </div>
         </div>
 
         <div className="sidebar-body">
           <div className="sidebar-section">
-            <div className="sidebar-section-header">
+            <div className="sidebar-section-header" onClick={() => setChannelsCollapsed(!channelsCollapsed)}>
               <span className="sidebar-section-label">Channels</span>
               <div style={{ display: 'flex', gap: 4 }}>
                 <button
-                  className="sidebar-add-btn"
                   type="button"
+                  className="sidebar-add-btn"
                   title="Add channel"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation()
                     setCreateModalMode('channel')
                     setShowCreateChannel(true)
                   }}
@@ -142,10 +133,11 @@ export function Sidebar() {
                   <Plus size={14} />
                 </button>
                 <button
-                  className="sidebar-add-btn"
                   type="button"
+                  className="sidebar-add-btn"
                   title="Add team"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation()
                     setCreateModalMode('team')
                     setShowCreateChannel(true)
                   }}
@@ -154,7 +146,7 @@ export function Sidebar() {
                 </button>
               </div>
             </div>
-            {systemChannels.map((ch) => {
+            {!channelsCollapsed && systemChannels.map((ch) => {
               const target = `#${ch.name}`
               const unreadCount = getConversationUnread(ch.id ?? null)
               const threadUnreadCount = getConversationThreadUnreadCount(ch.id ?? null)
@@ -183,7 +175,7 @@ export function Sidebar() {
                 </button>
               )
             })}
-            {channels.map((ch) => {
+            {!channelsCollapsed && channels.map((ch) => {
               const target = `#${ch.name}`
               const isActive = selectedChannel === target
               const isMenuOpen = openChannelMenuId === ch.id
@@ -272,18 +264,21 @@ export function Sidebar() {
           </div>
 
           <div className="sidebar-section">
-            <div className="sidebar-section-header">
+            <div className="sidebar-section-header" onClick={() => setAgentsCollapsed(!agentsCollapsed)}>
               <span className="sidebar-section-label">Agents</span>
               <button
-                className="sidebar-add-btn"
                 type="button"
+                className="sidebar-add-btn"
                 title="Create agent"
-                onClick={() => setShowCreateAgent(true)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setShowCreateAgent(true)
+                }}
               >
                 <Plus size={14} />
               </button>
             </div>
-            {agents.map((agent) => {
+            {!agentsCollapsed && agents.map((agent) => {
               const unreadCount = getAgentUnread(agent.name)
               const conversationId = getAgentConversationId(agent.name)
               return (
@@ -312,10 +307,10 @@ export function Sidebar() {
           </div>
 
           <div className="sidebar-section">
-            <div className="sidebar-section-header">
+            <div className="sidebar-section-header" onClick={() => setHumansCollapsed(!humansCollapsed)}>
               <span className="sidebar-section-label">Humans</span>
             </div>
-            {humans.map((h) => (
+            {!humansCollapsed && humans.map((h) => (
               <div key={h.name} className="sidebar-item">
                 <div
                   className="agent-avatar"

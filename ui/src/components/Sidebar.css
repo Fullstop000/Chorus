@@ -107,6 +107,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 0 4px 6px;
+  cursor: pointer;
 }
 
 .sidebar-section-label {
