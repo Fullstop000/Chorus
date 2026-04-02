@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { MessageSquare, ArrowRight } from 'lucide-react'
 import { useApp } from '../../store'
-import type { HistoryMessage, ThreadInboxEntry } from '../../types'
+import type { ThreadInboxEntry } from '../../inbox/types'
+import type { HistoryMessage } from './types'
 import { ThreadPanel } from './ThreadPanel'
 import './ThreadsTab.css'
 

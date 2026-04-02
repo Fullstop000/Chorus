@@ -12,7 +12,7 @@ import { MessageInput } from '../components/chat/MessageInput'
 import { ThreadPanel } from '../components/chat/ThreadPanel'
 import { ThreadsTab } from '../components/chat/ThreadsTab'
 import { ChannelMembersPanel } from '../components/channels/ChannelMembersPanel'
-import type { ChannelMemberInfo, TeamResponse } from '../types'
+import type { ChannelMemberInfo, TeamResponse } from '../components/channels/types'
 import { TeamSettings } from '../components/channels/TeamSettings'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 

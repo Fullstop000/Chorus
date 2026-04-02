@@ -8,7 +8,7 @@ import {
 } from '../transport/realtime'
 import { getRealtimeSession } from '../transport/realtimeSession'
 import type { ReadCursorAckPayload } from '../inbox'
-import type { HistoryMessage, HistoryResponse } from '../types'
+import type { HistoryMessage, HistoryResponse } from '../components/chat/types'
 import { loadSharedRequest } from './historyRequestCache'
 
 interface UseHistoryOptions {

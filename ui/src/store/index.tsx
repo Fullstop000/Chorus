@@ -2,7 +2,7 @@ import React, { createContext, useContext, useCallback, useEffect, useMemo, useR
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useUIStore } from './uiStore'
 import type { ActiveTab } from './uiStore'
-import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team, ThreadInboxEntry } from './types'
+import type { ServerInfo, AgentInfo, ChannelInfo, HistoryMessage, Team, ThreadInboxEntry } from '../types'
 import {
   ensureDirectMessageConversation,
   getChannelThreads,
@@ -13,7 +13,7 @@ import {
   listChannels,
   listHumans,
   listTeams,
-} from './api'
+} from '../api'
 import {
   bootstrapInboxState,
   buildConversationRegistry,
@@ -24,9 +24,9 @@ import {
   mergeInboxNotificationRefresh,
   type InboxState,
   type ReadCursorAckPayload,
-} from './inbox'
-import { isVisibleSidebarChannel } from './sidebarChannels'
-import { getRealtimeSession } from './transport/realtimeSession'
+} from '../inbox'
+import { isVisibleSidebarChannel } from '../pages/Sidebar/sidebarChannels'
+import { getRealtimeSession } from '../transport/realtimeSession'
 
 export type { ActiveTab }
 

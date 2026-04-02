@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import type { AgentEnvVar, RuntimeStatusInfo } from '../../types'
+import type { AgentEnvVar, RuntimeStatusInfo } from './types'
 import { useRuntimeModels } from '../../hooks/useRuntimeModels'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Input } from '@/components/ui/input'

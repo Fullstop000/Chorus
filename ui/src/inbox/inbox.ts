@@ -1,6 +1,6 @@
+import type { AgentInfo } from '../components/agents/types'
+import type { ChannelInfo } from '../components/channels/types'
 import type {
-  AgentInfo,
-  ChannelInfo,
   ConversationInboxRefreshResponse,
   InboxConversationState,
   ThreadInboxEntry,

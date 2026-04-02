@@ -1,5 +1,5 @@
 import { QueryClientProvider } from '@tanstack/react-query'
-import { queryClient } from './queryClient'
+import { queryClient } from './lib/utils'
 import { AppProvider } from './store'
 import { Sidebar } from './pages/Sidebar'
 import { MainPanel } from './pages/MainPanel'

@@ -1,4 +1,4 @@
-import type { HistoryMessage, StreamEvent } from '../types'
+import type { HistoryMessage, StreamEvent } from '../components/chat/types'
 
 const BASE = ''
 

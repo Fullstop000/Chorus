@@ -7,7 +7,7 @@ import {
   stopAgent,
   updateAgent,
 } from '../../../api'
-import type { AgentDetailResponse, RuntimeStatusInfo } from '../../../types'
+import type { AgentDetailResponse, RuntimeStatusInfo } from '../types'
 import { useRuntimeStatuses } from '../../../hooks/useRuntimeStatuses'
 import { useApp } from '../../../store'
 import {

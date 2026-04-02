@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { addTeamMember, deleteTeam, removeTeamMember, updateTeam } from '../../api'
 import { useApp } from '../../store'
-import type { Team, TeamMember } from '../../types'
+import type { Team, TeamMember } from './types'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

@@ -1,7 +1,8 @@
 import React from 'react'
 import ReactMarkdown from 'react-markdown'
 import { MessageSquare, Copy, Paperclip, LoaderCircle, CircleAlert, RotateCcw } from 'lucide-react'
-import type { HistoryMessage, AgentInfo } from '../../types'
+import type { AgentInfo } from '../agents/types'
+import type { HistoryMessage } from './types'
 import { attachmentUrl } from '../../api'
 import { useApp } from '../../store'
 

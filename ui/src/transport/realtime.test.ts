@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { applyRealtimeEvent, historyFetchAfterForNotification } from './realtime'
-import type { HistoryMessage, StreamEvent } from '../types'
+import type { HistoryMessage, StreamEvent } from '../components/chat/types'
 
 function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
   return {

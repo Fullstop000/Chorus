@@ -22,7 +22,7 @@ import type {
   InboxResponse,
   ConversationInboxRefreshResponse,
   ThreadInboxResponse,
-} from './types'
+} from '../types'
 
 const BASE = ''  // same origin in prod; Vite proxy in dev
 

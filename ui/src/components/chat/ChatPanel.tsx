@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Search, Settings2, Users } from 'lucide-react'
 import { useApp } from '../../store'
 import { MessageItem } from './MessageItem'
-import type { HistoryMessage } from '../../types'
+import type { HistoryMessage } from './types'
 import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
 import './ChatPanel.css'
 

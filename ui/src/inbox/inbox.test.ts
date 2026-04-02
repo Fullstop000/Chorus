@@ -7,7 +7,8 @@ import {
   mergeInboxNotificationRefresh,
   mergeReadCursorAckIntoInboxState,
 } from './inbox'
-import type { ChannelInfo, InboxConversationState } from './types'
+import type { ChannelInfo } from '../components/channels/types'
+import type { InboxConversationState } from './types'
 
 function makeConversation(
   overrides: Partial<InboxConversationState> = {}

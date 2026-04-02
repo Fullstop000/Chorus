@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isVisibleSidebarChannel } from './sidebarChannels'
-import type { ChannelInfo } from './types'
+import type { ChannelInfo } from '../../components/channels/types'
 
 function makeChannel(overrides: Partial<ChannelInfo>): ChannelInfo {
   return {

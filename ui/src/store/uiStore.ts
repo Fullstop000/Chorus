@@ -1,7 +1,8 @@
 import { create } from 'zustand'
-import type { HistoryMessage, ThreadInboxEntry } from './types'
-import type { InboxState, ReadCursorAckPayload } from './inbox'
-import { createInboxState, mergeReadCursorAckIntoInboxState } from './inbox'
+import type { HistoryMessage } from '../components/chat/types'
+import type { ThreadInboxEntry } from '../inbox/types'
+import type { InboxState, ReadCursorAckPayload } from '../inbox'
+import { createInboxState, mergeReadCursorAckIntoInboxState } from '../inbox'
 
 export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { listRuntimeStatuses } from '../api'
-import type { RuntimeStatusInfo } from '../types'
+import type { RuntimeStatusInfo } from '../components/agents/types'
 
 export function useRuntimeStatuses(pollMs = 10000): {
   runtimeStatuses: RuntimeStatusInfo[]
