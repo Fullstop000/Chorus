@@ -1,7 +1,11 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const skipRealLLM = skipLLM || useStub
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-003 Leader+Operators Collaboration Model
@@ -22,23 +26,27 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('TMT-003', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
     if (!(await teamExists(request, 'qa-eng'))) {
       await createTeamApi(request, {
         name: 'qa-eng',
         display_name: 'QA Engineering',
         collaboration_model: 'leader_operators',
-        leader_agent_name: 'bot-a',
+        leader_agent_name: agents.a,
         members: [
-          { member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' },
-          { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
+          { member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'operator' },
+          { member_name: agents.b, member_type: 'agent', member_id: agents.b, role: 'operator' },
         ],
       })
     }
   })
 
   test('Leader+Operators — no swarm deliberation line @case TMT-003', async ({ request }) => {
-    test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.skip(skipRealLLM, 'requires real LLM')
     test.setTimeout(300_000)
 
     const { username } = await getWhoami(request)
@@ -52,7 +60,7 @@ test.describe('TMT-003', () => {
     })
 
     await test.step('Step 7 / Expected: No swarm deliberation system message in #qa-eng', async () => {
-      const msgs = await historyForUser(request, 'bot-a', '#qa-eng', 80)
+      const msgs = await historyForUser(request, agents.a, '#qa-eng', 80)
       const bad = msgs.some(
         (m) =>
           (m.senderType === 'system' || m.senderName === 'system') &&

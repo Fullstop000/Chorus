@@ -1,15 +1,22 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, getWhoami, historyForUser } from './helpers/api'
 import { clickSidebarChannel, openAgentTab, openThreadFromMessage, sendChatMessage , gotoApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/agents.md` — REC-002 Concurrent Agent Activity Under One Channel
  */
 test.describe('REC-002', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Concurrent Agent Activity Under One Channel @case REC-002', async ({ page, request }) => {
@@ -20,8 +27,8 @@ test.describe('REC-002', () => {
 
     await test.step('Steps 1–4: Trigger multi-agent replies, switch activity, and open a thread', async () => {
       await clickSidebarChannel(page, 'all')
-      await sendChatMessage(page, `MSG ${mark}: bot-a say a-${mark}, bot-b say b-${mark}, bot-c say c-${mark}`)
-      await openAgentTab(page, 'bot-a', 'Activity')
+      await sendChatMessage(page, `MSG ${mark}: ${agents.a} say a-${mark}, ${agents.b} say b-${mark}, ${agents.c} say c-${mark}`)
+      await openAgentTab(page, agents.a, 'Activity')
       await page.getByRole('button', { name: 'Chat', exact: true }).click()
       const deadline = Date.now() + 180_000
       let sawAll = false

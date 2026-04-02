@@ -1,8 +1,12 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
 import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const skipRealLLM = skipLLM || useStub
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-006 Team Settings Update (Display Name, Collaboration Model, Leader)
@@ -22,22 +26,26 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('TMT-006', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
     if (!(await teamExists(request, 'qa-eng'))) {
       await createTeamApi(request, {
         name: 'qa-eng',
         display_name: 'QA Engineering',
         collaboration_model: 'leader_operators',
-        leader_agent_name: 'bot-a',
+        leader_agent_name: agents.a,
         members: [
-          { member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' },
-          { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
+          { member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'operator' },
+          { member_name: agents.b, member_type: 'agent', member_id: agents.b, role: 'operator' },
         ],
       })
     } else {
-      // Ensure bot-b is a member for this test
+      // Ensure agents.b is a member for this test
       await request.post('/api/teams/qa-eng/members', {
-        data: { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
+        data: { member_name: agents.b, member_type: 'agent', member_id: agents.b, role: 'operator' },
       }).catch(() => {})
     }
   })
@@ -71,13 +79,13 @@ test.describe('TMT-006', () => {
       await expect(collabTrigger).toContainText('Swarm')
     })
 
-    if (!skipLLM) {
+    if (!skipRealLLM) {
       await test.step('Step 6: Forward task — expect swarm deliberation line', async () => {
         const { username } = await getWhoami(request)
         const mark = `tmt6-${Date.now()}`
         await sendAsUser(request, username, '#all', `@qa-eng do something ${mark}`)
         await new Promise((r) => setTimeout(r, 35_000))
-        const msgs = await historyForUser(request, 'bot-a', '#qa-eng', 40)
+        const msgs = await historyForUser(request, agents.a, '#qa-eng', 40)
         const deliberation = msgs.some(
           (m) =>
             (m.senderType === 'system' || m.senderName === 'system') &&
@@ -94,7 +102,7 @@ test.describe('TMT-006', () => {
       const leaderTrigger = dialog.locator('[role="combobox"][aria-label="Leader"]')
       await expect(leaderTrigger).toBeVisible()
       await leaderTrigger.click()
-      await page.locator('[role="option"]').filter({ hasText: 'bot-b' }).click()
+      await page.locator('[role="option"]').filter({ hasText: agents.b }).click()
       await dialog.locator('button:has-text("Save")').click()
     })
 

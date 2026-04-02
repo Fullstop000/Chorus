@@ -1,6 +1,8 @@
 import { test, expect } from './helpers/fixtures'
 import {
+  agentNames,
   ensureMixedRuntimeTrio,
+  ensureStubTrio,
   createTeamApi,
   getWhoami,
   historyForUser,
@@ -8,7 +10,11 @@ import {
   teamExists,
 } from './helpers/api'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const skipRealLLM = skipLLM || useStub
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-004 Swarm Collaboration Model with Deliberation Phase
@@ -30,7 +36,11 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('TMT-004', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
     if (!(await teamExists(request, 'qa-swarm'))) {
       await createTeamApi(request, {
         name: 'qa-swarm',
@@ -38,15 +48,15 @@ test.describe('TMT-004', () => {
         collaboration_model: 'swarm',
         leader_agent_name: null,
         members: [
-          { member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'member' },
-          { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'member' },
+          { member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'member' },
+          { member_name: agents.b, member_type: 'agent', member_id: agents.b, role: 'member' },
         ],
       })
     }
   })
 
   test('Swarm deliberation system line @case TMT-004', async ({ request }) => {
-    test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.skip(skipRealLLM, 'requires real LLM')
     test.setTimeout(300_000)
 
     const { username } = await getWhoami(request)
@@ -60,7 +70,7 @@ test.describe('TMT-004', () => {
       const deadline = Date.now() + 120_000
       let ok = false
       while (Date.now() < deadline) {
-        const msgs = await historyForUser(request, 'bot-a', '#qa-swarm', 50)
+        const msgs = await historyForUser(request, agents.a, '#qa-swarm', 50)
         ok = msgs.some(
           (m) =>
             (m.senderType === 'system' || m.senderName === 'system') &&

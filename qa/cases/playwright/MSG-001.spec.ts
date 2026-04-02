@@ -1,8 +1,11 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, getWhoami, historyForUser } from './helpers/api'
 import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/messaging.md` — MSG-001 Multi-Agent Channel Fan-Out
@@ -26,7 +29,11 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('MSG-001', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Multi-Agent Channel Fan-Out @case MSG-001', async ({ page, request }) => {
@@ -42,7 +49,7 @@ test.describe('MSG-001', () => {
       await clickSidebarChannel(page, 'all')
       await sendChatMessage(
         page,
-        `MSG-001 ${mark}: bot-a reply OK-a, bot-b OK-b, bot-c OK-c`
+        `MSG-001 ${mark}: ${agents.a} reply OK-a, ${agents.b} OK-b, ${agents.c} OK-c`
       )
     })
 
@@ -51,20 +58,20 @@ test.describe('MSG-001', () => {
       let msgs: Awaited<ReturnType<typeof historyForUser>> = []
       while (Date.now() < deadline) {
         msgs = await historyForUser(request, username, '#all', 120)
-        const agents = msgs.filter((m) => m.senderType === 'agent')
-        if (agents.length >= 3) break
+        const agentMsgs = msgs.filter((m) => m.senderType === 'agent')
+        if (agentMsgs.length >= 3) break
         await new Promise((r) => setTimeout(r, 5000))
       }
 
       const humanCount = msgs.filter((m) => (m.content ?? '').includes(mark) && m.senderType !== 'agent').length
       expect(humanCount).toBeLessThanOrEqual(1)
 
-      const agents = msgs.filter((m) => m.senderType === 'agent')
-      expect(agents.length).toBeGreaterThanOrEqual(3)
-      const agentNames = new Set(agents.map((agent) => agent.senderName))
-      expect(agentNames.has('bot-a')).toBe(true)
-      expect(agentNames.has('bot-b')).toBe(true)
-      expect(agentNames.has('bot-c')).toBe(true)
+      const agentMsgs = msgs.filter((m) => m.senderType === 'agent')
+      expect(agentMsgs.length).toBeGreaterThanOrEqual(3)
+      const senderNames = new Set(agentMsgs.map((m) => m.senderName))
+      expect(senderNames.has(agents.a)).toBe(true)
+      expect(senderNames.has(agents.b)).toBe(true)
+      expect(senderNames.has(agents.c)).toBe(true)
     })
   })
 })

@@ -1,8 +1,11 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, getWhoami, sendAsUser } from './helpers/api'
 import { clickSidebarChannel, openThreadFromMessage , gotoApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/messaging.md` — MSG-003 Thread Reply In Busy Channel
@@ -22,14 +25,18 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('MSG-003', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
-    if (process.env.CHORUS_E2E_LLM === '0') return
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
+    if (skipLLM) return
     const { username } = await getWhoami(request)
     await sendAsUser(
       request,
       username,
       '#all',
-      `MSG-003 precondition ${Date.now()} — bot-a reply "thread-seed-ok"`
+      `MSG-003 precondition ${Date.now()} — ${agents.a} reply "thread-seed-ok"`
     ).catch(() => {})
   })
 
