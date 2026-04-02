@@ -49,6 +49,14 @@ export function runtimeOptionLabel(
   return `${baseLabel} · not signed in`
 }
 
+export function isRuntimeAvailable(
+  runtime: string,
+  runtimeStatuses: RuntimeStatusInfo[] = [],
+): boolean {
+  const status = runtimeStatuses.find((entry) => entry.runtime === runtime)
+  return status?.installed === true
+}
+
 export function runtimeStatusSummary(
   runtime: string,
   runtimeStatuses: RuntimeStatusInfo[] = [],
@@ -190,10 +198,18 @@ export function AgentConfigForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="claude">{runtimeOptionLabel('claude', runtimeStatuses)}</SelectItem>
-                <SelectItem value="codex">{runtimeOptionLabel('codex', runtimeStatuses)}</SelectItem>
-                <SelectItem value="kimi">{runtimeOptionLabel('kimi', runtimeStatuses)}</SelectItem>
-                <SelectItem value="opencode">{runtimeOptionLabel('opencode', runtimeStatuses)}</SelectItem>
+                <SelectItem value="claude" disabled={!isRuntimeAvailable('claude', runtimeStatuses)}>
+                  {runtimeOptionLabel('claude', runtimeStatuses)}
+                </SelectItem>
+                <SelectItem value="codex" disabled={!isRuntimeAvailable('codex', runtimeStatuses)}>
+                  {runtimeOptionLabel('codex', runtimeStatuses)}
+                </SelectItem>
+                <SelectItem value="kimi" disabled={!isRuntimeAvailable('kimi', runtimeStatuses)}>
+                  {runtimeOptionLabel('kimi', runtimeStatuses)}
+                </SelectItem>
+                <SelectItem value="opencode" disabled={!isRuntimeAvailable('opencode', runtimeStatuses)}>
+                  {runtimeOptionLabel('opencode', runtimeStatuses)}
+                </SelectItem>
               </SelectContent>
             </Select>
             <div className={`runtime-status-banner runtime-status-banner-${runtimeSummary.tone}`}>
