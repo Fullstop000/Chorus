@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "crates/stub-agent"]
+
 [package]
 name = "chorus"
 version = "0.1.0"

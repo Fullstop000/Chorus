@@ -1,0 +1,16 @@
+[package]
+name = "chorus-stub-agent"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "chorus-stub-agent"
+path = "src/main.rs"
+
+[dependencies]
+rmcp = { version = "0.16", features = ["client", "transport-async-rw"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+regex = "1"
