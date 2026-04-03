@@ -28,8 +28,10 @@ export function applyRealtimeEvent(
       const p = event.payload
       const id = typeof p.messageId === 'string' ? p.messageId : null
       const content = typeof p.content === 'string' ? p.content : null
-      const senderName = typeof p.senderName === 'string' ? p.senderName : null
-      const senderType = (typeof p.senderType === 'string' ? p.senderType : 'human') as 'human' | 'agent'
+      const senderRaw = typeof p.sender === 'object' && p.sender !== null ? p.sender as Record<string, unknown> : null
+      const senderName = senderRaw && typeof senderRaw.name === 'string' ? senderRaw.name as string : (typeof p.senderName === 'string' ? p.senderName : null)
+      const senderTypeRaw = senderRaw && typeof senderRaw.type === 'string' ? senderRaw.type as string : (typeof p.senderType === 'string' ? p.senderType : 'human')
+      const senderType = senderTypeRaw as 'human' | 'agent'
       const createdAt = typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString()
       if (!id || !content || !senderName) return messages
       const newMessage: HistoryMessage = {
