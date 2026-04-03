@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useStore } from '../store/uiStore'
 import {
@@ -6,6 +6,10 @@ import {
   channelsQuery,
   teamsQuery,
   humansQuery,
+  getChannelThreads,
+  channelQueryKeys,
+  agentQueryKeys,
+  teamQueryKeys,
 } from '../data'
 import type { ChannelInfo, ThreadInboxEntry } from '../data'
 import {
@@ -14,7 +18,6 @@ import {
   mergeChannelThreadInboxEntries,
   type InboxState,
 } from '../inbox'
-import { useAppRefreshActions } from '../store/useAppRefreshActions'
 import { applyReadCursorAck } from '../App'
 import type { AgentInfo } from '../data'
 
@@ -128,14 +131,65 @@ export function useChannels() {
 }
 
 /**
- * Cache-invalidation actions: refreshConversationThreads, refreshChannels,
- * refreshAgents, refreshTeams, refreshServerInfo.
+ * Cache-invalidation actions: refreshConversationThreads (with in-flight
+ * dedup), refreshChannels, refreshAgents, refreshTeams, refreshServerInfo.
  */
 export function useRefresh() {
   const currentUser = useStore((s) => s.currentUser)
   const queryClient = useQueryClient()
   const setConversationThreads = useStore((s) => s.setConversationThreads)
-  return useAppRefreshActions({ currentUser, queryClient, setConversationThreads })
+  const conversationThreadsInFlight = useRef<Map<string, Promise<void>>>(new Map())
+
+  const refreshConversationThreads = useCallback(
+    async (conversationId: string) => {
+      if (!currentUser) return
+      const inFlight = conversationThreadsInFlight.current
+      const existing = inFlight.get(conversationId)
+      if (existing) return existing
+      const promise = (async () => {
+        try {
+          const response = await getChannelThreads(conversationId)
+          setConversationThreads(conversationId, response.threads)
+        } catch (error) {
+          console.error('Failed to load channel threads', error)
+        } finally {
+          inFlight.delete(conversationId)
+        }
+      })()
+      inFlight.set(conversationId, promise)
+      return promise
+    },
+    [currentUser, setConversationThreads]
+  )
+
+  const refreshChannels = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUser) })
+  }, [currentUser, queryClient])
+
+  const refreshAgents = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents })
+  }, [queryClient])
+
+  const refreshTeams = useCallback(async () => {
+    await queryClient.invalidateQueries({ queryKey: teamQueryKeys.teams })
+  }, [queryClient])
+
+  const refreshServerInfo = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents }),
+      queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUser) }),
+      queryClient.invalidateQueries({ queryKey: teamQueryKeys.teams }),
+      queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans }),
+    ])
+  }, [currentUser, queryClient])
+
+  return {
+    refreshConversationThreads,
+    refreshChannels,
+    refreshAgents,
+    refreshTeams,
+    refreshServerInfo,
+  }
 }
 
 /**
