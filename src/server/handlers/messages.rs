@@ -465,6 +465,7 @@ async fn send_message_to_channel(
             sender_type,
             content,
             attachment_ids,
+            client_nonce.as_deref(),
         )
         .map_err(|e| api_err(e.to_string()))?;
 

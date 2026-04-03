@@ -35,14 +35,11 @@ export function applyRealtimeEvent(
       }
 
       if (p.threadParentId) {
-        const withReplyCount = messages.map((message) =>
+        return messages.map((message) =>
           message.id === p.threadParentId
             ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
             : message
         )
-        const merged = new Map(withReplyCount.map((m) => [m.id, m]))
-        merged.set(p.messageId, newMessage)
-        return [...merged.values()].sort((a, b) => a.seq - b.seq)
       }
 
       const merged = new Map(messages.map((m) => [m.id, m]))

@@ -422,6 +422,7 @@ impl InsertedMessage {
         sender_name: &str,
         sender_type: &str,
         content: &str,
+        client_nonce: Option<&str>,
     ) -> MessageCreatedPayload {
         MessageCreatedPayload {
             message_id: self.id.clone(),
@@ -438,7 +439,7 @@ impl InsertedMessage {
             attachments: Vec::new(),
             seq: self.seq,
             created_at: chrono::Utc::now().to_rfc3339(),
-            client_nonce: None,
+            client_nonce: client_nonce.map(|s| s.to_string()),
         }
     }
 }
