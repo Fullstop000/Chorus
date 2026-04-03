@@ -365,6 +365,7 @@ pub(crate) struct InsertedMessage {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MessageCreatedPayload {
     pub message_id: String,
     pub conversation_id: String,
