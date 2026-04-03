@@ -1,18 +1,16 @@
-import { useEffect, useRef } from 'react'
-import { Search, Settings2, Users } from 'lucide-react'
-import { useStore } from '../../store'
-import { useChannels } from '../../hooks/data'
-import { MessageItem } from './MessageItem'
-import type { HistoryMessage } from './types'
-import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
-import './ChatPanel.css'
+import { Search, Settings2, Users } from "lucide-react";
+import { useStore } from "../../store";
+import { useChannels } from "../../hooks/data";
+import { MessageList } from "./MessageList";
+import type { HistoryMessage } from "./types";
+import "./ChatPanel.css";
 
 interface ChatHeaderProps {
-  memberCount?: number | null
-  membersOpen: boolean
-  isTeamChannel?: boolean
-  onToggleMembers: () => void
-  onOpenTeamSettings?: () => void
+  memberCount?: number | null;
+  membersOpen: boolean;
+  isTeamChannel?: boolean;
+  onToggleMembers: () => void;
+  onOpenTeamSettings?: () => void;
 }
 
 export function ChatHeader({
@@ -22,20 +20,21 @@ export function ChatHeader({
   onToggleMembers,
   onOpenTeamSettings,
 }: ChatHeaderProps) {
-  const { currentChannel, currentAgent } = useStore()
-  const { channels } = useChannels()
+  const { currentChannel, currentAgent } = useStore();
+  const { channels } = useChannels();
   const channelInfo = currentChannel
     ? channels.find((channel) => channel.name === currentChannel.name)
-    : null
+    : null;
 
   const headerName = currentChannel
     ? `#${currentChannel.name}`
     : currentAgent
-    ? `@${currentAgent.display_name ?? currentAgent.name}`
-    : 'Select a channel'
+      ? `@${currentAgent.display_name ?? currentAgent.name}`
+      : "Select a channel";
 
-  const headerDesc = channelInfo?.description ?? currentAgent?.description ?? ''
-  const headerIcon = currentChannel ? '#' : currentAgent ? '@' : '?'
+  const headerDesc =
+    channelInfo?.description ?? currentAgent?.description ?? "";
+  const headerIcon = currentChannel ? "#" : currentAgent ? "@" : "?";
 
   return (
     <div className="chat-header">
@@ -49,16 +48,20 @@ export function ChatHeader({
       <div className="chat-header-actions">
         {currentChannel && (
           <button
-            className={`chat-header-member-btn${membersOpen ? ' active' : ''}`}
+            className={`chat-header-member-btn${membersOpen ? " active" : ""}`}
             type="button"
-            aria-label={membersOpen ? 'Hide members list' : 'Show members list'}
+            aria-label={membersOpen ? "Hide members list" : "Show members list"}
             onClick={onToggleMembers}
           >
             <Users size={14} />
-            <span>{memberCount ?? '...'}</span>
+            <span>{memberCount ?? "..."}</span>
           </button>
         )}
-        <button className="chat-header-btn" type="button" aria-label="Search room">
+        <button
+          className="chat-header-btn"
+          type="button"
+          aria-label="Search room"
+        >
           <Search size={15} />
         </button>
         {isTeamChannel && onOpenTeamSettings && (
@@ -73,17 +76,16 @@ export function ChatHeader({
         )}
       </div>
     </div>
-  )
+  );
 }
 
 interface ChatPanelProps {
-  target: string | null
-  messages: HistoryMessage[]
-  loading: boolean
-  lastReadSeq: number
-  loadedTarget: string | null
-  reportVisibleSeq: (seq: number) => void
-  onRetryMessage?: (message: HistoryMessage) => void
+  target: string | null;
+  messages: HistoryMessage[];
+  loading: boolean;
+  lastReadSeq: number;
+  unreadIds: Set<string>;
+  onRetryMessage?: (message: HistoryMessage) => void;
 }
 
 export function ChatPanel({
@@ -91,115 +93,33 @@ export function ChatPanel({
   messages,
   loading,
   lastReadSeq,
-  loadedTarget,
-  reportVisibleSeq,
+  unreadIds,
   onRetryMessage,
 }: ChatPanelProps) {
-  const { currentUser, setOpenThreadMsg } = useStore()
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const pendingInitialScrollTargetRef = useRef<string | null>(null)
+  const { currentUser, setOpenThreadMsg } = useStore();
 
-  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } = useVisibilityTracking(reportVisibleSeq)
-
-  useEffect(() => {
-    pendingInitialScrollTargetRef.current = target
-    resetHighestVisibleSeq()
-  }, [target, resetHighestVisibleSeq])
-
-  useEffect(() => {
-    const container = scrollContainerRef.current
-    if (!container) return
-
-    const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
-
-    if (
-      pendingInitialScrollTargetRef.current === target &&
-      loadedTarget === target &&
-      !loading
-    ) {
-      const unreadAnchor = firstUnreadMessage
-        ? messageRefs.current[firstUnreadMessage.id]
-        : null
-      if (unreadAnchor) {
-        container.scrollTop = Math.max(unreadAnchor.offsetTop - 96, 0)
-      } else {
-        bottomRef.current?.scrollIntoView({ behavior: 'auto' })
-      }
-
-      const items = messages.map((message) => ({
-        seq: message.seq,
-        element: messageRefs.current[message.id],
-      }))
-      scheduleBatchVisibilityCheck(items, container)
-
-      pendingInitialScrollTargetRef.current = null
-      return
-    }
-
-    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
-    if (distFromBottom < 100) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [lastReadSeq, loadedTarget, loading, messages, scheduleBatchVisibilityCheck, target])
-
-  useEffect(() => {
-    const container = scrollContainerRef.current
-    if (!container || !target || loadedTarget !== target || loading) return
-
-    const handleScroll = () => {
-      const items = messages.map((message) => ({
-        seq: message.seq,
-        element: messageRefs.current[message.id],
-      }))
-      scheduleBatchVisibilityCheck(items, container)
-    }
-
-    handleScroll()
-    container.addEventListener('scroll', handleScroll, { passive: true })
-    window.addEventListener('resize', handleScroll)
-    document.addEventListener('visibilitychange', handleScroll)
-    return () => {
-      container.removeEventListener('scroll', handleScroll)
-      window.removeEventListener('resize', handleScroll)
-      document.removeEventListener('visibilitychange', handleScroll)
-    }
-  }, [loadedTarget, loading, messages, scheduleBatchVisibilityCheck, target])
+  if (!target) {
+    return (
+      <div className="chat-panel">
+        <div className="chat-messages-empty">
+          Select a channel or agent to start chatting.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="chat-panel">
-      <div className="chat-messages" ref={scrollContainerRef}>
-        {loading && messages.length === 0 && (
-          <div className="chat-messages-empty">Loading messages...</div>
-        )}
-        {!loading && messages.length === 0 && target && (
-          <div className="chat-messages-empty">
-            No messages yet. Be the first to say something!
-          </div>
-        )}
-        {!target && (
-          <div className="chat-messages-empty">Select a channel or agent to start chatting.</div>
-        )}
-        {messages.map((msg, i) => (
-          <div
-            key={msg.id}
-            ref={(node) => {
-              messageRefs.current[msg.id] = node
-            }}
-            style={{ scrollMarginTop: 96 }}
-          >
-            <MessageItem
-              message={msg}
-              currentUser={currentUser}
-              prevMessage={messages[i - 1]}
-              onReply={setOpenThreadMsg}
-              onRetry={onRetryMessage}
-            />
-          </div>
-        ))}
-        <div ref={bottomRef} />
-      </div>
+      <MessageList
+        targetKey={target}
+        messages={messages}
+        loading={loading}
+        lastReadSeq={lastReadSeq}
+        currentUser={currentUser}
+        unreadIds={unreadIds}
+        onReply={setOpenThreadMsg}
+        onRetry={onRetryMessage}
+      />
     </div>
-  )
+  );
 }

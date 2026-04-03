@@ -104,7 +104,7 @@ interface MentionPillProps {
 
 interface MessageItemProps {
   message: HistoryMessage
-  currentUser: string
+  currentUser: string | null
   prevMessage?: HistoryMessage
   onReply?: (msg: HistoryMessage) => void
   onRetry?: (msg: HistoryMessage) => void

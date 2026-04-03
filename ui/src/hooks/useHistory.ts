@@ -12,6 +12,7 @@ import {
 import { getRealtimeSession } from '../transport/realtimeSession'
 import type { HistoryMessage, HistoryResponse } from '../data'
 import type { ReadCursorAckPayload } from '../inbox'
+import { useStore } from '../store'
 
 interface UseHistoryOptions {
   threadParentId?: string | null
@@ -61,6 +62,7 @@ export function useHistory(
   const lastReadSeqRef = useRef(0)
   const pendingReadSeqRef = useRef<number | null>(null)
   const readCursorTimerRef = useRef<number | null>(null)
+  const { addUnreadMessageId, unreadMessageIds } = useStore()
 
   useEffect(() => {
     if (response) maxLoadedSeqRef.current = maxHistorySeq(response.messages)
@@ -124,6 +126,9 @@ export function useHistory(
             const updated = upsertMessage(current.messages, msg)
             if (updated.length > before) {
               maxLoadedSeqRef.current = maxHistorySeq(updated)
+              if (msg.senderName !== username) {
+                addUnreadMessageId(targetKey!, msg.id)
+              }
               return { ...current, messages: updated }
             }
             return current
@@ -282,6 +287,8 @@ export function useHistory(
     [commitMessages]
   )
 
+  const unreadIds: Set<string> = targetKey ? (unreadMessageIds[targetKey] ?? new Set()) : new Set()
+
   return {
     messages,
     loading: isLoading,
@@ -290,6 +297,7 @@ export function useHistory(
     loadedTarget,
     refresh: refetch,
     reportVisibleSeq,
+    unreadIds,
     addOptimisticMessage,
     ackOptimisticMessage,
     failOptimisticMessage,

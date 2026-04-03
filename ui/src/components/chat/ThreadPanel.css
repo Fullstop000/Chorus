@@ -79,19 +79,6 @@
   border-color: var(--color-border);
 }
 
-.thread-replies {
-  flex: 1;
-  padding: 8px 10px 10px;
-}
-
-.thread-empty {
-  text-align: center;
-  color: var(--color-muted-foreground);
-  font-size: 13px;
-  font-family: var(--font-mono);
-  padding: 40px 20px;
-}
-
 .thread-input-area {
   border-top: 1px solid var(--color-border);
   padding: 10px;

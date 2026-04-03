@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { X, Paperclip } from "lucide-react";
 import { useStore } from "../../store";
 import {
@@ -9,8 +9,8 @@ import {
   useTarget,
 } from "../../hooks/data";
 import { useHistory } from "../../hooks/useHistory";
-import { useVisibilityTracking } from "@/hooks/useVisibilityTracking";
 import { MessageItem } from "./MessageItem";
+import { MessageList } from "./MessageList";
 import { ToastRegion } from "./ToastRegion";
 import { MentionTextarea } from "./MentionTextarea";
 import type { MentionMember } from "./MentionTextarea";
@@ -49,8 +49,7 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
     messages,
     loading,
     lastReadSeq,
-    loadedTarget,
-    reportVisibleSeq,
+    unreadIds,
     addOptimisticMessage,
     ackOptimisticMessage,
     failOptimisticMessage,
@@ -64,92 +63,6 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
   const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>(
     [],
   );
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  const pendingInitialScrollTargetRef = useRef<string | null>(null);
-
-  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } =
-    useVisibilityTracking(reportVisibleSeq);
-
-  useEffect(() => {
-    pendingInitialScrollTargetRef.current = threadTarget;
-    resetHighestVisibleSeq();
-  }, [threadTarget, resetHighestVisibleSeq]);
-
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-
-    const firstUnreadMessage = messages.find(
-      (message) => message.seq > lastReadSeq,
-    );
-
-    if (
-      pendingInitialScrollTargetRef.current === threadTarget &&
-      loadedTarget === threadTarget &&
-      !loading
-    ) {
-      const unreadAnchor = firstUnreadMessage
-        ? messageRefs.current[firstUnreadMessage.id]
-        : null;
-      if (unreadAnchor) {
-        container.scrollTop = Math.max(unreadAnchor.offsetTop - 96, 0);
-      } else {
-        bottomRef.current?.scrollIntoView({ behavior: "auto" });
-      }
-      const items = messages.map((message) => ({
-        seq: message.seq,
-        element: messageRefs.current[message.id],
-      }));
-      scheduleBatchVisibilityCheck(items, container);
-      pendingInitialScrollTargetRef.current = null;
-      return;
-    }
-
-    const distFromBottom =
-      container.scrollHeight - container.scrollTop - container.clientHeight;
-    if (distFromBottom < 100) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-    }
-  }, [
-    lastReadSeq,
-    loadedTarget,
-    loading,
-    messages,
-    scheduleBatchVisibilityCheck,
-    threadTarget,
-  ]);
-
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container || !threadTarget || loadedTarget !== threadTarget || loading)
-      return;
-
-    const handleScroll = () => {
-      const items = messages.map((message) => ({
-        seq: message.seq,
-        element: messageRefs.current[message.id],
-      }));
-      scheduleBatchVisibilityCheck(items, container);
-    };
-
-    handleScroll();
-    container.addEventListener("scroll", handleScroll, { passive: true });
-    window.addEventListener("resize", handleScroll);
-    document.addEventListener("visibilitychange", handleScroll);
-    return () => {
-      container.removeEventListener("scroll", handleScroll);
-      window.removeEventListener("resize", handleScroll);
-      document.removeEventListener("visibilitychange", handleScroll);
-    };
-  }, [
-    loadedTarget,
-    loading,
-    messages,
-    scheduleBatchVisibilityCheck,
-    threadTarget,
-  ]);
 
   useEffect(() => {
     setContent("");
@@ -266,34 +179,21 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
         </button>
       </div>
 
-      <div className="thread-body" ref={scrollContainerRef}>
+      <div className="thread-body">
         <div className="thread-parent-wrapper">
           <MessageItem message={openThreadMsg} currentUser={currentUser} />
         </div>
 
-        <div className="thread-replies">
-          {messages.length === 0 ? (
-            <div className="thread-empty">No replies yet</div>
-          ) : (
-            messages.map((msg, i) => (
-              <div
-                key={msg.id}
-                ref={(node) => {
-                  messageRefs.current[msg.id] = node;
-                }}
-                style={{ scrollMarginTop: 96 }}
-              >
-                <MessageItem
-                  message={msg}
-                  currentUser={currentUser}
-                  prevMessage={messages[i - 1]}
-                  onRetry={handleRetryMessage}
-                />
-              </div>
-            ))
-          )}
-          <div ref={bottomRef} />
-        </div>
+        <MessageList
+          targetKey={threadTarget ?? ""}
+          messages={messages}
+          loading={loading}
+          lastReadSeq={lastReadSeq}
+          currentUser={currentUser}
+          unreadIds={unreadIds}
+          onRetry={handleRetryMessage}
+          emptyLabel="No replies yet"
+        />
       </div>
 
       <div className="thread-input-area">

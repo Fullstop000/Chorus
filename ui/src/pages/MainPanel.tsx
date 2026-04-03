@@ -220,8 +220,7 @@ export function MainPanel() {
                 messages={chatHistory.messages}
                 loading={chatHistory.loading}
                 lastReadSeq={chatHistory.lastReadSeq}
-                loadedTarget={chatHistory.loadedTarget}
-                reportVisibleSeq={chatHistory.reportVisibleSeq}
+                unreadIds={chatHistory.unreadIds}
                 onRetryMessage={handleRetryChatMessage}
               />
               <MessageInput
