@@ -23,7 +23,7 @@ import {
 } from "./inbox";
 import { isVisibleSidebarChannel } from "./pages/Sidebar/sidebarChannels";
 import { getRealtimeSession } from "./transport/realtimeSession";
-import { queryClient as appQueryClient } from "./lib/utils";
+import { queryClient as appQueryClient } from "./lib/queryClient";
 import type { ReadCursorAckPayload } from "./inbox";
 import { MainPanel } from "./pages/MainPanel";
 import { Sidebar } from "./pages/Sidebar";
