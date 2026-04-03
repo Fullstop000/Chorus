@@ -9,46 +9,40 @@ export function createRealtimeSocket(viewer: string): WebSocket {
   return new WebSocket(url)
 }
 
-export function applyRealtimeEvent(
-  messages: HistoryMessage[],
-  event: StreamEvent
-): HistoryMessage[] {
-  switch (event.eventType) {
-    case 'message.created': {
-      const p = event.payload
-      if (!p.messageId || !p.content || !p.sender?.name) return messages
-
-      const isDuplicate =
-        messages.some((m) => m.id === p.messageId) ||
-        (p.clientNonce && messages.some((m) => m.clientNonce === p.clientNonce))
-      if (isDuplicate) return messages
-
-      const newMessage: HistoryMessage = {
-        id: p.messageId,
-        seq: p.seq ?? event.latestSeq,
-        content: p.content,
-        senderName: p.sender.name,
-        senderType: p.sender.type ?? 'human',
-        senderDeleted: p.senderDeleted ?? false,
-        createdAt: p.createdAt ?? new Date().toISOString(),
-        clientNonce: p.clientNonce,
-      }
-
-      if (p.threadParentId) {
-        return messages.map((message) =>
-          message.id === p.threadParentId
-            ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
-            : message
-        )
-      }
-
-      const merged = new Map(messages.map((m) => [m.id, m]))
-      merged.set(p.messageId, newMessage)
-      return [...merged.values()].sort((a, b) => a.seq - b.seq)
-    }
-    default:
-      return messages
+export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
+  if (event.eventType !== 'message.created') return null
+  const p = event.payload
+  if (!p.messageId || !p.content || !p.sender?.name) return null
+  return {
+    id: p.messageId,
+    seq: p.seq ?? event.latestSeq,
+    content: p.content,
+    senderName: p.sender.name,
+    senderType: p.sender.type ?? 'human',
+    senderDeleted: p.senderDeleted ?? false,
+    createdAt: p.createdAt ?? new Date().toISOString(),
+    thread_parent_id: p.threadParentId ?? undefined,
+    clientNonce: p.clientNonce,
   }
+}
+
+export function upsertMessage(messages: HistoryMessage[], incoming: HistoryMessage): HistoryMessage[] {
+  const isDuplicate =
+    messages.some((m) => m.id === incoming.id) ||
+    (incoming.clientNonce && messages.some((m) => m.clientNonce === incoming.clientNonce))
+  if (isDuplicate) return messages
+
+  const merged = new Map(messages.map((m) => [m.id, m]))
+  merged.set(incoming.id, incoming)
+  return [...merged.values()].sort((a, b) => a.seq - b.seq)
+}
+
+export function bumpReplyCount(messages: HistoryMessage[], parentId: string): HistoryMessage[] {
+  return messages.map((message) =>
+    message.id === parentId
+      ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
+      : message
+  )
 }
 
 export function maxHistorySeq(messages: HistoryMessage[]): number {

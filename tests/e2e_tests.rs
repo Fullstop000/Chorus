@@ -44,6 +44,7 @@ async fn test_human_to_agent_message_flow() {
             SenderType::Human,
             "hello bot",
             &[],
+            None,
         )
         .unwrap();
 
@@ -142,6 +143,7 @@ async fn test_blocking_receive_wakes_on_message() {
             SenderType::Human,
             "wake up!",
             &[],
+            None,
         )
         .unwrap();
 

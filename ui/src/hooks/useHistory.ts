@@ -2,7 +2,9 @@ import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { getHistoryAfter, updateReadCursor, historyQueryKeys } from '../data'
 import {
-  applyRealtimeEvent,
+  normalizeEvent,
+  upsertMessage,
+  bumpReplyCount,
   historyFetchAfterForNotification,
   maxHistorySeq,
   mergeHistoryMessages,
@@ -106,12 +108,22 @@ export function useHistory(
             return
           }
 
+          const msg = normalizeEvent(frame.event)
+          if (!msg) return
+
+          const isThreadView = !!options?.threadParentId
+
+          if (msg.thread_parent_id && !isThreadView) {
+            commitMessages((current) => bumpReplyCount(current, msg.thread_parent_id!))
+            return
+          }
+
           let messageCountChanged = false
 
           queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
             if (!current) return current
             const before = current.messages.length
-            const updated = applyRealtimeEvent(current.messages, frame.event)
+            const updated = upsertMessage(current.messages, msg)
             if (updated.length > before) {
               messageCountChanged = true
               maxLoadedSeqRef.current = maxHistorySeq(updated)
