@@ -79,12 +79,15 @@ impl Store {
         )?;
         tx.commit()?;
 
-        let event_payload = json!({
-            "messageId": inserted.id.as_str(),
-            "conversationId": channel.id.as_str(),
-            "conversationType": channel.channel_type.as_api_str(),
-            "threadParentId": null,
-        });
+        let event_payload = inserted.to_transport_payload(
+            channel.id.as_str(),
+            channel.channel_type.as_api_str(),
+            None,
+            sender_name,
+            sender_type.as_str(),
+            content,
+            inserted.seq,
+        );
         let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)
@@ -108,12 +111,15 @@ impl Store {
         )?;
         tx.commit()?;
 
-        let event_payload = json!({
-            "messageId": inserted.id.as_str(),
-            "conversationId": channel.id.as_str(),
-            "conversationType": channel.channel_type.as_api_str(),
-            "threadParentId": null,
-        });
+        let event_payload = inserted.to_transport_payload(
+            channel.id.as_str(),
+            channel.channel_type.as_api_str(),
+            None,
+            "system",
+            "human",
+            content,
+            inserted.seq,
+        );
         let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)
@@ -164,12 +170,15 @@ impl Store {
         }
         tx.commit()?;
 
-        let event_payload = json!({
-            "messageId": inserted.id.as_str(),
-            "conversationId": channel.id.as_str(),
-            "conversationType": channel.channel_type.as_api_str(),
-            "threadParentId": thread_parent_id,
-        });
+        let event_payload = inserted.to_transport_payload(
+            channel.id.as_str(),
+            channel.channel_type.as_api_str(),
+            thread_parent_id.as_deref(),
+            sender_name,
+            sender_type.as_str(),
+            content,
+            inserted.seq,
+        );
         let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)

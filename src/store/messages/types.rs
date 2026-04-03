@@ -363,3 +363,33 @@ pub(crate) struct InsertedMessage {
     pub(crate) id: String,
     pub(crate) seq: i64,
 }
+
+impl InsertedMessage {
+    pub(crate) fn to_transport_payload(
+        &self,
+        conversation_id: &str,
+        conversation_type: &str,
+        thread_parent_id: Option<&str>,
+        sender_name: &str,
+        sender_type: &str,
+        content: &str,
+        seq: i64,
+    ) -> Value {
+        json!({
+            "messageId": self.id.as_str(),
+            "conversationId": conversation_id,
+            "conversationType": conversation_type,
+            "threadParentId": thread_parent_id,
+            "sender": {
+                "name": sender_name,
+                "type": sender_type,
+            },
+            "senderDeleted": false,
+            "content": content,
+            "attachmentIds": [],
+            "attachments": [],
+            "seq": seq,
+            "createdAt": chrono::Utc::now().to_rfc3339(),
+        })
+    }
+}

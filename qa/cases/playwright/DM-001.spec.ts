@@ -24,7 +24,7 @@ test.describe('DM-001', () => {
     })
 
     await test.step('Verify message appears inside .message-item container', async () => {
-      await expect(page.locator('.message-item').filter({ hasText: token })).toBeVisible({ timeout: 5_000 })
+      await expect(page.locator('.message-item').filter({ hasText: token }).first()).toBeVisible({ timeout: 5_000 })
     })
   })
 })

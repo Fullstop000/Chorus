@@ -25,7 +25,28 @@ export function applyRealtimeEvent(
             : message
         )
       }
-      return messages
+      const p = event.payload
+      const id = typeof p.messageId === 'string' ? p.messageId : null
+      const content = typeof p.content === 'string' ? p.content : null
+      const senderRaw = typeof p.sender === 'object' && p.sender !== null ? p.sender as Record<string, unknown> : null
+      const senderName = senderRaw && typeof senderRaw.name === 'string' ? senderRaw.name as string : (typeof p.senderName === 'string' ? p.senderName : null)
+      const senderTypeRaw = senderRaw && typeof senderRaw.type === 'string' ? senderRaw.type as string : (typeof p.senderType === 'string' ? p.senderType : 'human')
+      const createdAt = typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString()
+      const seq = typeof p.seq === 'number' ? p.seq : event.latestSeq
+
+      if (!id || !content || !senderName) return messages
+
+      const newMessage: HistoryMessage = {
+        id,
+        seq,
+        content,
+        senderName,
+        senderType: senderTypeRaw as 'human' | 'agent',
+        senderDeleted: typeof p.senderDeleted === 'boolean' ? p.senderDeleted : false,
+        createdAt,
+        clientNonce: typeof p.clientNonce === 'string' ? p.clientNonce : undefined,
+      }
+      return [...messages, newMessage]
     }
     case 'message.tombstone_changed': {
       const payload = event.payload
