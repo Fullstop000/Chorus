@@ -364,31 +364,51 @@ pub(crate) struct InsertedMessage {
     pub(crate) seq: i64,
 }
 
+/// Full payload sent over WebSocket for `message.created` events.
+/// Serialized as camelCase JSON so the TypeScript frontend can read it directly.
+/// The frontend constructs a HistoryMessage from this and appends it instantly,
+/// avoiding an extra API round-trip.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct MessageCreatedPayload {
+    /// Unique message UUID (matches the DB primary key).
     pub message_id: String,
+    /// UUID of the channel/DM conversation this message belongs to.
     pub conversation_id: String,
+    /// One of "channel", "dm", or "team".
     pub conversation_type: String,
+    /// Parent message ID if this is a thread reply; null for top-level messages.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thread_parent_id: Option<String>,
+    /// Author identity — name and type ("human" | "agent").
     pub sender: MessageSenderInfo,
+    /// True if the sender has been soft-deleted (hide content, show tombstone).
     #[serde(default)]
     pub sender_deleted: bool,
+    /// Plain-text body of the message.
     pub content: String,
+    /// Attachment UUIDs referenced by this message (empty at creation time).
     #[serde(default)]
     pub attachment_ids: Vec<String>,
+    /// Attachment metadata objects (empty at creation time).
     #[serde(default)]
     pub attachments: Vec<serde_json::Value>,
+    /// Monotonically increasing sequence number within the conversation.
     pub seq: i64,
+    /// ISO-8601 timestamp of when the message was persisted.
     pub created_at: String,
+    /// Client-generated nonce for optimistic-update dedup; omitted for
+    /// server-authored messages (agent replies, system messages).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_nonce: Option<String>,
 }
 
+/// Sender identity embedded inside the WebSocket event payload.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct MessageSenderInfo {
+    /// Display name of the sender (e.g. "bytedance", "Coder").
     pub name: String,
+    /// "human" for user messages; "agent" for bot/agent messages.
     #[serde(rename = "type")]
     pub sender_type: String,
 }
