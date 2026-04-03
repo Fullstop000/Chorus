@@ -16,13 +16,6 @@ export function applyRealtimeEvent(
   switch (event.eventType) {
     case 'message.created': {
       const p = event.payload
-      if (p.threadParentId) {
-        return messages.map((message) =>
-          message.id === p.threadParentId
-            ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
-            : message
-        )
-      }
       if (!p.messageId || !p.content || !p.sender?.name) return messages
 
       const isDuplicate =
@@ -40,6 +33,15 @@ export function applyRealtimeEvent(
         createdAt: p.createdAt ?? new Date().toISOString(),
         clientNonce: p.clientNonce,
       }
+
+      if (p.threadParentId) {
+        return messages.map((message) =>
+          message.id === p.threadParentId
+            ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
+            : message
+        ).concat(newMessage)
+      }
+
       return [...messages, newMessage]
     }
     default:
