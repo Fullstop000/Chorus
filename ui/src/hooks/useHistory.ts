@@ -118,21 +118,22 @@ export function useHistory(
             return
           }
 
-          let messageCountChanged = false
-
           queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
             if (!current) return current
+            if (
+              msg.clientNonce &&
+              current.messages.some((m) => m.clientNonce === msg.clientNonce)
+            ) {
+              return current
+            }
             const before = current.messages.length
             const updated = upsertMessage(current.messages, msg)
             if (updated.length > before) {
-              messageCountChanged = true
               maxLoadedSeqRef.current = maxHistorySeq(updated)
               return { ...current, messages: updated }
             }
             return current
           })
-
-          if (messageCountChanged) return
 
           const incrementalAfter = historyFetchAfterForNotification(
             activeRealtimeTarget,
