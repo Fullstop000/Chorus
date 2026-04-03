@@ -1047,6 +1047,8 @@ async fn test_history_rejects_non_member_agent() {
             SenderType::Human,
             "secret channel update",
             &[],
+            None,
+                false
         )
         .unwrap();
 
@@ -1112,7 +1114,7 @@ async fn test_delete_channel_via_api_removes_channel_owned_data() {
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     store.create_tasks("general", "bot1", &["Fix bug"]).unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "hello", &[])
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[], None, false)
         .unwrap();
 
     let resp = app
@@ -1515,7 +1517,7 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
     store
-        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[])
+        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[], None, false)
         .unwrap();
 
     let app = build_router_with_lifecycle(store.clone(), Arc::new(MockLifecycle::default()));
@@ -1645,6 +1647,8 @@ async fn test_thread_send_only_starts_parent_author_agent() {
             SenderType::Agent,
             "parent from bot1",
             &[],
+            None,
+                false
         )
         .unwrap();
     let thread_target = format!("#general:{}", &parent_message_id[..8]);
@@ -1698,6 +1702,8 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
             SenderType::Agent,
             "parent from bot1",
             &[],
+            None,
+                false
         )
         .unwrap();
     store
@@ -1708,6 +1714,8 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
             SenderType::Agent,
             "bot2 already joined the thread",
             &[],
+            None,
+                false
         )
         .unwrap();
 
@@ -1758,6 +1766,8 @@ async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents
             SenderType::Human,
             "human started the thread",
             &[],
+            None,
+                false
         )
         .unwrap();
 
@@ -1871,10 +1881,10 @@ async fn test_send_notifies_active_agents() {
 async fn test_history() {
     let (store, app) = setup();
     store
-        .create_message("general", None, "alice", SenderType::Human, "msg 1", &[])
+        .create_message("general", None, "alice", SenderType::Human, "msg 1", &[], None, false)
         .unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "msg 2", &[])
+        .create_message("general", None, "alice", SenderType::Human, "msg 2", &[], None, false)
         .unwrap();
 
     let resp = app
@@ -1947,6 +1957,8 @@ async fn test_activity_log_includes_message_send_and_receive_events() {
             SenderType::Human,
             "hello bot1",
             &[],
+            None,
+                false
         )
         .unwrap();
 

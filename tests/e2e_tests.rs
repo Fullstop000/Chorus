@@ -44,7 +44,9 @@ async fn test_human_to_agent_message_flow() {
             SenderType::Human,
             "hello bot",
             &[],
-        )
+            None,
+        false
+    )
         .unwrap();
 
     let resp: serde_json::Value = client
@@ -142,7 +144,9 @@ async fn test_blocking_receive_wakes_on_message() {
             SenderType::Human,
             "wake up!",
             &[],
-        )
+            None,
+        false
+    )
         .unwrap();
 
     let resp = tokio::time::timeout(std::time::Duration::from_secs(3), recv_handle)

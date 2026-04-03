@@ -1,5 +1,5 @@
 import { createRealtimeSocket } from './realtime'
-import type { RealtimeMessage } from '../types'
+import type { RealtimeMessage } from './types'
 
 interface RealtimeSubscription {
   targets: string[]

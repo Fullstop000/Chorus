@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { listRuntimeModels } from '../api'
+import { listRuntimeModels } from '../data'
 
 export function useRuntimeModels(runtime: string): {
   runtimeModels: string[]

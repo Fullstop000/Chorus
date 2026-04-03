@@ -5,7 +5,7 @@ import {
   getChannelMembersApi,
   getWhoami,
 } from './helpers/api'
-import { clickSidebarChannel, openMembersPanel , gotoApp , reloadApp } from './helpers/ui'
+import { clickSidebarChannel, openMembersPanel, closeMembersPanel, gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/channels.md` — CHN-003 Channel Invite Operations And `#all` Guardrails
@@ -41,6 +41,7 @@ test.describe('CHN-003', () => {
       expect(names).toContain('bot-a')
       expect(names).toContain('bot-b')
       expect(names).toContain('bot-c')
+      await closeMembersPanel(page)
     })
 
     await test.step('Steps 5–8: User channel invite updates and persists', async () => {
