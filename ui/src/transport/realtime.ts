@@ -18,14 +18,31 @@ export function applyRealtimeEvent(
       const parentIdRaw = event.payload.threadParentId
       const threadParentId =
         typeof parentIdRaw === 'string' && parentIdRaw.length > 0 ? parentIdRaw : null
-      if (!threadParentId) {
-        return messages
+      if (threadParentId) {
+        return messages.map((message) =>
+          message.id === threadParentId
+            ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
+            : message
+        )
       }
-      return messages.map((message) =>
-        message.id === threadParentId
-          ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
-          : message
-      )
+      const p = event.payload
+      const id = typeof p.messageId === 'string' ? p.messageId : null
+      const content = typeof p.content === 'string' ? p.content : null
+      const senderName = typeof p.senderName === 'string' ? p.senderName : null
+      const senderType = (typeof p.senderType === 'string' ? p.senderType : 'human') as 'human' | 'agent'
+      const createdAt = typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString()
+      if (!id || !content || !senderName) return messages
+      const newMessage: HistoryMessage = {
+        id,
+        seq: event.latestSeq,
+        content,
+        senderName,
+        senderType,
+        senderDeleted: false,
+        createdAt,
+        clientNonce: typeof p.clientNonce === 'string' ? p.clientNonce : undefined,
+      }
+      return [...messages, newMessage]
     }
     case 'message.tombstone_changed': {
       const payload = event.payload
