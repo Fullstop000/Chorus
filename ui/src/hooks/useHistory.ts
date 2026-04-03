@@ -106,11 +106,18 @@ export function useHistory(
             return
           }
 
-          queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
+          const didOptimisticAppend = queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
             if (!current) return current
+            const before = current.messages.length
             const updated = applyRealtimeEvent(current.messages, frame.event)
-            return { ...current, messages: updated }
+            if (updated.length > before) {
+              maxLoadedSeqRef.current = maxHistorySeq(updated)
+              return { ...current, messages: updated }
+            }
+            return current
           })
+
+          if (didOptimisticAppend) return
 
           const incrementalAfter = historyFetchAfterForNotification(
             activeRealtimeTarget,
@@ -130,6 +137,8 @@ export function useHistory(
                 })
               }
             )
+          } else if (frame.event.eventType === 'message.created' && conversationId) {
+            void refetch()
           }
         },
       })
@@ -145,7 +154,7 @@ export function useHistory(
       }
       unsubscribeRealtime?.()
     }
-  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey])
+  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey, refetch])
 
   const reportVisibleSeq = useCallback(
     (visibleSeq: number) => {
