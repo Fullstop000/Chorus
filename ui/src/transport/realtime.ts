@@ -25,6 +25,11 @@ export function applyRealtimeEvent(
       }
       if (!p.messageId || !p.content || !p.sender?.name) return messages
 
+      const isDuplicate =
+        messages.some((m) => m.id === p.messageId) ||
+        (p.clientNonce && messages.some((m) => m.clientNonce === p.clientNonce))
+      if (isDuplicate) return messages
+
       const newMessage: HistoryMessage = {
         id: p.messageId,
         seq: p.seq ?? event.latestSeq,
@@ -36,13 +41,6 @@ export function applyRealtimeEvent(
         clientNonce: p.clientNonce,
       }
       return [...messages, newMessage]
-    }
-    case 'message.tombstone_changed': {
-      const messageId = typeof event.payload.messageId === 'string' ? event.payload.messageId : null
-      if (!messageId) return messages
-      return messages.map((message) =>
-        message.id === messageId ? { ...message, senderDeleted: true } : message
-      )
     }
     default:
       return messages
