@@ -382,6 +382,8 @@ pub(crate) struct MessageCreatedPayload {
     pub attachments: Vec<serde_json::Value>,
     pub seq: i64,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_nonce: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -416,6 +418,7 @@ impl InsertedMessage {
             attachments: Vec::new(),
             seq: self.seq,
             created_at: chrono::Utc::now().to_rfc3339(),
+            client_nonce: None,
         }
     }
 }
