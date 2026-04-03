@@ -1,130 +1,149 @@
-import { useEffect, useState, useRef } from 'react'
-import { Paperclip, Plus } from 'lucide-react'
-import { useStore } from '../../store'
-import { useAgents, useTeams, useHumans, useChannels } from '../../hooks/data'
-import { useHistory } from '../../hooks/useHistory'
-import { sendMessage, createTasks, uploadFile } from '../../data'
-import { MentionTextarea } from './MentionTextarea'
-import type { MentionMember } from './MentionTextarea'
-import { ToastRegion } from './ToastRegion'
-import { FormError } from '@/components/ui/form'
+import { useEffect, useState, useRef } from "react";
+import { Paperclip, Plus } from "lucide-react";
+import { useStore } from "../../store";
+import { useAgents, useTeams, useHumans, useChannels } from "../../hooks/data";
+import { useHistory } from "../../hooks/useHistory";
+import { sendMessage, createTasks, uploadFile } from "../../data";
+import { MentionTextarea } from "./MentionTextarea";
+import type { MentionMember } from "./MentionTextarea";
+import { ToastRegion } from "./ToastRegion";
+import { FormError } from "@/components/ui/form";
 
 interface Props {
-  target: string | null
-  conversationId: string | null
-  history: ReturnType<typeof useHistory>
+  target: string | null;
+  conversationId: string | null;
+  history: ReturnType<typeof useHistory>;
 }
 
 export function MessageInput({ target, conversationId, history }: Props) {
-  const { currentUser, currentChannel } = useStore()
-  const agents = useAgents()
-  const teams = useTeams()
-  const humans = useHumans()
-  const { systemChannels } = useChannels()
-  const [content, setContent] = useState('')
-  const [alsoTask, setAlsoTask] = useState(false)
-  const [sending, setSending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [pendingFiles, setPendingFiles] = useState<File[]>([])
-  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
-  const fileInputRef = useRef<HTMLInputElement>(null)
+  const { currentUser, currentChannel } = useStore();
+  const agents = useAgents();
+  const teams = useTeams();
+  const humans = useHumans();
+  const { systemChannels } = useChannels();
+  const [content, setContent] = useState("");
+  const [alsoTask, setAlsoTask] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>(
+    [],
+  );
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (toasts.length === 0) return
+    if (toasts.length === 0) return;
     const timer = window.setTimeout(() => {
-      setToasts((current) => current.slice(1))
-    }, 4000)
-    return () => window.clearTimeout(timer)
-  }, [toasts])
+      setToasts((current) => current.slice(1));
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [toasts]);
 
   const members: MentionMember[] = [
-    ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
-    ...humans.map((h) => ({ name: h.name, type: 'human' as const })),
-    ...teams.map((team) => ({ name: team.name, type: 'team' as const })),
-  ]
+    ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
+    ...humans.map((h) => ({ name: h.name, type: "human" as const })),
+    ...teams.map((team) => ({ name: team.name, type: "team" as const })),
+  ];
 
   const isReadOnlySystem = !!(
     currentChannel &&
     systemChannels.some((c) => c.name === currentChannel.name && c.read_only)
-  )
+  );
 
   const placeholder = isReadOnlySystem
     ? `${target} is read-only — agent breadcrumbs only`
     : target
-    ? `Message ${target}`
-    : 'Select a channel to message'
+      ? `Message ${target}`
+      : "Select a channel to message";
 
   async function handleSend() {
-    if (!target || !currentUser || (!content.trim() && pendingFiles.length === 0)) return
-    setSending(true)
-    setError(null)
-    let optimisticHandle: ReturnType<typeof history.addOptimisticMessage> | null = null
-    const trimmedContent = content.trim()
+    if (
+      !target ||
+      !currentUser ||
+      (!content.trim() && pendingFiles.length === 0)
+    )
+      return;
+    setSending(true);
+    setError(null);
+    let optimisticHandle: ReturnType<
+      typeof history.addOptimisticMessage
+    > | null = null;
+    const trimmedContent = content.trim();
     try {
-      const attachmentIds: string[] = []
+      const attachmentIds: string[] = [];
       for (const file of pendingFiles) {
-        const res = await uploadFile(file)
-        attachmentIds.push(res.id)
+        const res = await uploadFile(file);
+        attachmentIds.push(res.id);
       }
 
       const handle = history.addOptimisticMessage({
         content: trimmedContent,
         attachments: attachmentIds.map((id, index) => ({
           id,
-          filename: pendingFiles[index]?.name ?? 'attachment',
+          filename: pendingFiles[index]?.name ?? "attachment",
         })),
-      })
-      optimisticHandle = handle
+      });
+      optimisticHandle = handle;
 
-      if (!conversationId) throw new Error('conversation unavailable')
-      const sendAck = await sendMessage(conversationId, trimmedContent, attachmentIds, {
-        clientNonce: handle.clientNonce,
-        suppressAgentDelivery: alsoTask && !!currentChannel,
-      })
+      if (!conversationId) throw new Error("conversation unavailable");
+      const sendAck = await sendMessage(
+        conversationId,
+        trimmedContent,
+        attachmentIds,
+        {
+          clientNonce: handle.clientNonce,
+          suppressAgentDelivery: alsoTask && !!currentChannel,
+          suppressEvent: true,
+        },
+      );
       history.ackOptimisticMessage(handle, {
         messageId: sendAck.messageId,
         seq: sendAck.seq,
         createdAt: sendAck.createdAt,
         clientNonce: sendAck.clientNonce,
-      })
-      setContent('')
-      setPendingFiles([])
-      setAlsoTask(false)
+      });
+      setContent("");
+      setPendingFiles([]);
+      setAlsoTask(false);
     } catch (e) {
-      console.error('Send failed:', e)
-      const message = e instanceof Error ? e.message : String(e)
+      console.error("Send failed:", e);
+      const message = e instanceof Error ? e.message : String(e);
       if (optimisticHandle) {
-        history.failOptimisticMessage(optimisticHandle, message)
+        history.failOptimisticMessage(optimisticHandle, message);
       }
-      setError(message)
+      setError(message);
       setToasts((current) => [
         ...current,
-        { id: `send-failed-${Date.now()}`, message: 'Message failed to send' },
-      ])
+        { id: `send-failed-${Date.now()}`, message: "Message failed to send" },
+      ]);
     } finally {
-      setSending(false)
+      setSending(false);
     }
 
     if (alsoTask && currentChannel && trimmedContent) {
       try {
-        if (!currentChannel.id) throw new Error('channel unavailable')
-        await createTasks(currentChannel.id, [trimmedContent])
+        if (!currentChannel.id) throw new Error("channel unavailable");
+        await createTasks(currentChannel.id, [trimmedContent]);
       } catch (taskError) {
-        const message = taskError instanceof Error ? taskError.message : String(taskError)
-        setError(message)
+        const message =
+          taskError instanceof Error ? taskError.message : String(taskError);
+        setError(message);
         setToasts((current) => [
           ...current,
-          { id: `task-create-failed-${Date.now()}`, message: 'Task creation failed' },
-        ])
+          {
+            id: `task-create-failed-${Date.now()}`,
+            message: "Task creation failed",
+          },
+        ]);
       }
     }
   }
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? [])
-    setError(null)
-    setPendingFiles((prev) => [...prev, ...files])
-    if (fileInputRef.current) fileInputRef.current.value = ''
+    const files = Array.from(e.target.files ?? []);
+    setError(null);
+    setPendingFiles((prev) => [...prev, ...files]);
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   return (
@@ -138,8 +157,8 @@ export function MessageInput({ target, conversationId, history }: Props) {
               {f.name}
               <button
                 onClick={() => {
-                  setError(null)
-                  setPendingFiles((prev) => prev.filter((_, j) => j !== i))
+                  setError(null);
+                  setPendingFiles((prev) => prev.filter((_, j) => j !== i));
                 }}
               >
                 ×
@@ -161,7 +180,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
           ref={fileInputRef}
           type="file"
           multiple
-          style={{ display: 'none' }}
+          style={{ display: "none" }}
           onChange={handleFileChange}
         />
         <MentionTextarea
@@ -169,8 +188,8 @@ export function MessageInput({ target, conversationId, history }: Props) {
           placeholder={placeholder}
           value={content}
           onChange={(value) => {
-            setError(null)
-            setContent(value)
+            setError(null);
+            setContent(value);
           }}
           onEnter={handleSend}
           disabled={!target || sending || isReadOnlySystem}
@@ -180,9 +199,14 @@ export function MessageInput({ target, conversationId, history }: Props) {
         <button
           className="message-input-send"
           onClick={handleSend}
-          disabled={!target || sending || isReadOnlySystem || (!content.trim() && pendingFiles.length === 0)}
+          disabled={
+            !target ||
+            sending ||
+            isReadOnlySystem ||
+            (!content.trim() && pendingFiles.length === 0)
+          }
         >
-          {sending ? '...' : 'Send'}
+          {sending ? "..." : "Send"}
         </button>
       </div>
       {currentChannel && !isReadOnlySystem && (
@@ -199,8 +223,10 @@ export function MessageInput({ target, conversationId, history }: Props) {
       )}
       <ToastRegion
         toasts={toasts}
-        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+        onDismiss={(id) =>
+          setToasts((current) => current.filter((toast) => toast.id !== id))
+        }
       />
     </div>
-  )
+  );
 }

@@ -52,6 +52,8 @@ pub struct PublicConversationSendRequest {
     pub client_nonce: Option<String>,
     #[serde(default, rename = "suppressAgentDelivery")]
     pub suppress_agent_delivery: bool,
+    #[serde(default, rename = "suppressEvent")]
+    pub suppress_event: bool,
     #[serde(default, rename = "threadParentId")]
     pub thread_parent_id: Option<String>,
 }
@@ -79,6 +81,10 @@ pub struct SendRequest {
     /// such as "send this message and create one task" without triggering agent replies.
     #[serde(default, rename = "suppressAgentDelivery")]
     pub suppress_agent_delivery: bool,
+    /// When true, skip broadcasting the message.created event via WebSocket.
+    /// The sender already has an optimistic copy and will promote it on HTTP ack.
+    #[serde(default, rename = "suppressEvent")]
+    pub suppress_event: bool,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -446,6 +452,7 @@ async fn send_message_to_channel(
     attachment_ids: &[String],
     client_nonce: Option<String>,
     suppress_agent_delivery: bool,
+    suppress_event: bool,
 ) -> ApiResult<SendResponse> {
     let store = &state.store;
     let sender_type = sender_type_for_actor(store, actor_id)?;
@@ -466,6 +473,7 @@ async fn send_message_to_channel(
             content,
             attachment_ids,
             client_nonce.as_deref(),
+            suppress_event,
         )
         .map_err(|e| api_err(e.to_string()))?;
 
@@ -631,6 +639,7 @@ pub async fn handle_send(
         &req.attachment_ids,
         req.client_nonce,
         req.suppress_agent_delivery,
+        req.suppress_event,
     )
     .await
 }
@@ -879,6 +888,7 @@ pub async fn handle_public_send(
         &req.attachment_ids,
         req.client_nonce,
         req.suppress_agent_delivery,
+        req.suppress_event,
     )
     .await
 }

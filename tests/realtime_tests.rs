@@ -57,7 +57,7 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
         .unwrap();
 
     store
-        .create_message("general", None, "alice", SenderType::Human, "hello", &[], None)
+        .create_message("general", None, "alice", SenderType::Human, "hello", &[], None, false)
         .unwrap();
 
     let frame = read_json_frame(&mut socket).await;
@@ -84,7 +84,7 @@ async fn test_realtime_skips_non_member_channel() {
         .unwrap();
 
     store
-        .create_message("private", None, "zoe", SenderType::Human, "secret", &[], None)
+        .create_message("private", None, "zoe", SenderType::Human, "secret", &[], None, false)
         .unwrap();
 
     let next = timeout(Duration::from_millis(250), socket.next()).await;
@@ -103,7 +103,7 @@ async fn test_realtime_member_receives_live_messages_without_subscribe_frame() {
         .unwrap();
 
     store
-        .create_message("general", None, "alice", SenderType::Human, "live", &[], None)
+        .create_message("general", None, "alice", SenderType::Human, "live", &[], None, false)
         .unwrap();
 
     let frame = read_json_frame(&mut socket).await;

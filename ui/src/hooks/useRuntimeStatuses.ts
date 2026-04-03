@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { listRuntimeStatuses } from '../data'
 import type { RuntimeStatusInfo } from '../data'
 
-export function useRuntimeStatuses(pollMs = 10000): {
+export function useRuntimeStatuses(enabled = true): {
   runtimeStatuses: RuntimeStatusInfo[]
   runtimeStatusError: string | null
 } {
@@ -10,9 +10,10 @@ export function useRuntimeStatuses(pollMs = 10000): {
   const [runtimeStatusError, setRuntimeStatusError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!enabled) return
     let cancelled = false
 
-    async function refreshRuntimeStatuses() {
+    async function fetchRuntimeStatuses() {
       try {
         const nextStatuses = await listRuntimeStatuses()
         if (!cancelled) {
@@ -26,16 +27,12 @@ export function useRuntimeStatuses(pollMs = 10000): {
       }
     }
 
-    void refreshRuntimeStatuses()
-    const intervalId = window.setInterval(() => {
-      void refreshRuntimeStatuses()
-    }, pollMs)
+    void fetchRuntimeStatuses()
 
     return () => {
       cancelled = true
-      window.clearInterval(intervalId)
     }
-  }, [pollMs])
+  }, [enabled])
 
   return { runtimeStatuses, runtimeStatusError }
 }

@@ -1,37 +1,49 @@
-import { useState, useEffect, useRef } from 'react'
-import { X, Paperclip } from 'lucide-react'
-import { useStore } from '../../store'
-import { useAgents, useTeams, useHumans, useInbox, useTarget } from '../../hooks/data'
-import { useHistory } from '../../hooks/useHistory'
-import { useVisibilityTracking } from '@/hooks/useVisibilityTracking'
-import { MessageItem } from './MessageItem'
-import { ToastRegion } from './ToastRegion'
-import { MentionTextarea } from './MentionTextarea'
-import type { MentionMember } from './MentionTextarea'
-import { sendMessage } from '../../data'
-import './ThreadPanel.css'
+import { useState, useEffect, useRef } from "react";
+import { X, Paperclip } from "lucide-react";
+import { useStore } from "../../store";
+import {
+  useAgents,
+  useTeams,
+  useHumans,
+  useInbox,
+  useTarget,
+} from "../../hooks/data";
+import { useHistory } from "../../hooks/useHistory";
+import { useVisibilityTracking } from "@/hooks/useVisibilityTracking";
+import { MessageItem } from "./MessageItem";
+import { ToastRegion } from "./ToastRegion";
+import { MentionTextarea } from "./MentionTextarea";
+import type { MentionMember } from "./MentionTextarea";
+import { sendMessage } from "../../data";
+import "./ThreadPanel.css";
 
 interface ThreadPanelProps {
-  variant?: 'drawer' | 'content'
+  variant?: "drawer" | "content";
 }
 
-export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
-  const { currentUser, currentChannel, currentAgent, openThreadMsg, setOpenThreadMsg } = useStore()
-  const agents = useAgents()
-  const teams = useTeams()
-  const humans = useHumans()
-  const { getAgentConversationId, applyReadCursorAck } = useInbox()
+export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
+  const {
+    currentUser,
+    currentChannel,
+    currentAgent,
+    openThreadMsg,
+    setOpenThreadMsg,
+  } = useStore();
+  const agents = useAgents();
+  const teams = useTeams();
+  const humans = useHumans();
+  const { getAgentConversationId, applyReadCursorAck } = useInbox();
   const members: MentionMember[] = [
-    ...agents.map((a) => ({ name: a.name, type: 'agent' as const })),
-    ...humans.map((h) => ({ name: h.name, type: 'human' as const })),
-    ...teams.map((team) => ({ name: team.name, type: 'team' as const })),
-  ]
-  const mainTarget = useTarget()
-  const threadTarget = mainTarget && openThreadMsg
-    ? `${mainTarget}:${openThreadMsg.id}`
-    : null
+    ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
+    ...humans.map((h) => ({ name: h.name, type: "human" as const })),
+    ...teams.map((team) => ({ name: team.name, type: "team" as const })),
+  ];
+  const mainTarget = useTarget();
+  const threadTarget =
+    mainTarget && openThreadMsg ? `${mainTarget}:${openThreadMsg.id}` : null;
   const threadConversationId =
-    currentChannel?.id ?? (currentAgent ? getAgentConversationId(currentAgent.name) : null)
+    currentChannel?.id ??
+    (currentAgent ? getAgentConversationId(currentAgent.name) : null);
 
   const {
     messages,
@@ -46,27 +58,32 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
   } = useHistory(currentUser, threadTarget, threadConversationId, {
     threadParentId: openThreadMsg?.id ?? null,
     onReadCursorAck: applyReadCursorAck,
-  })
-  const [content, setContent] = useState('')
-  const [sending, setSending] = useState(false)
-  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>([])
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const scrollContainerRef = useRef<HTMLDivElement>(null)
-  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({})
-  const pendingInitialScrollTargetRef = useRef<string | null>(null)
+  });
+  const [content, setContent] = useState("");
+  const [sending, setSending] = useState(false);
+  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>(
+    [],
+  );
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const messageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  const pendingInitialScrollTargetRef = useRef<string | null>(null);
 
-  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } = useVisibilityTracking(reportVisibleSeq)
-
-  useEffect(() => {
-    pendingInitialScrollTargetRef.current = threadTarget
-    resetHighestVisibleSeq()
-  }, [threadTarget, resetHighestVisibleSeq])
+  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } =
+    useVisibilityTracking(reportVisibleSeq);
 
   useEffect(() => {
-    const container = scrollContainerRef.current
-    if (!container) return
+    pendingInitialScrollTargetRef.current = threadTarget;
+    resetHighestVisibleSeq();
+  }, [threadTarget, resetHighestVisibleSeq]);
 
-    const firstUnreadMessage = messages.find((message) => message.seq > lastReadSeq)
+  useEffect(() => {
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    const firstUnreadMessage = messages.find(
+      (message) => message.seq > lastReadSeq,
+    );
 
     if (
       pendingInitialScrollTargetRef.current === threadTarget &&
@@ -75,145 +92,183 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
     ) {
       const unreadAnchor = firstUnreadMessage
         ? messageRefs.current[firstUnreadMessage.id]
-        : null
+        : null;
       if (unreadAnchor) {
-        container.scrollTop = Math.max(unreadAnchor.offsetTop - 96, 0)
+        container.scrollTop = Math.max(unreadAnchor.offsetTop - 96, 0);
       } else {
-        bottomRef.current?.scrollIntoView({ behavior: 'auto' })
+        bottomRef.current?.scrollIntoView({ behavior: "auto" });
       }
       const items = messages.map((message) => ({
         seq: message.seq,
         element: messageRefs.current[message.id],
-      }))
-      scheduleBatchVisibilityCheck(items, container)
-      pendingInitialScrollTargetRef.current = null
-      return
+      }));
+      scheduleBatchVisibilityCheck(items, container);
+      pendingInitialScrollTargetRef.current = null;
+      return;
     }
 
-    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight
+    const distFromBottom =
+      container.scrollHeight - container.scrollTop - container.clientHeight;
     if (distFromBottom < 100) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [lastReadSeq, loadedTarget, loading, messages, scheduleBatchVisibilityCheck, threadTarget])
+  }, [
+    lastReadSeq,
+    loadedTarget,
+    loading,
+    messages,
+    scheduleBatchVisibilityCheck,
+    threadTarget,
+  ]);
 
   useEffect(() => {
-    const container = scrollContainerRef.current
-    if (!container || !threadTarget || loadedTarget !== threadTarget || loading) return
+    const container = scrollContainerRef.current;
+    if (!container || !threadTarget || loadedTarget !== threadTarget || loading)
+      return;
 
     const handleScroll = () => {
       const items = messages.map((message) => ({
         seq: message.seq,
         element: messageRefs.current[message.id],
-      }))
-      scheduleBatchVisibilityCheck(items, container)
-    }
+      }));
+      scheduleBatchVisibilityCheck(items, container);
+    };
 
-    handleScroll()
-    container.addEventListener('scroll', handleScroll, { passive: true })
-    window.addEventListener('resize', handleScroll)
-    document.addEventListener('visibilitychange', handleScroll)
+    handleScroll();
+    container.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleScroll);
+    document.addEventListener("visibilitychange", handleScroll);
     return () => {
-      container.removeEventListener('scroll', handleScroll)
-      window.removeEventListener('resize', handleScroll)
-      document.removeEventListener('visibilitychange', handleScroll)
-    }
-  }, [loadedTarget, loading, messages, scheduleBatchVisibilityCheck, threadTarget])
+      container.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleScroll);
+      document.removeEventListener("visibilitychange", handleScroll);
+    };
+  }, [
+    loadedTarget,
+    loading,
+    messages,
+    scheduleBatchVisibilityCheck,
+    threadTarget,
+  ]);
 
   useEffect(() => {
-    setContent('')
-  }, [openThreadMsg?.id])
+    setContent("");
+  }, [openThreadMsg?.id]);
 
   useEffect(() => {
-    if (toasts.length === 0) return
+    if (toasts.length === 0) return;
     const timer = window.setTimeout(() => {
-      setToasts((current) => current.slice(1))
-    }, 4000)
-    return () => window.clearTimeout(timer)
-  }, [toasts])
+      setToasts((current) => current.slice(1));
+    }, 4000);
+    return () => window.clearTimeout(timer);
+  }, [toasts]);
 
   async function handleSend() {
-    if (!threadTarget || !currentUser || !content.trim()) return
-    setSending(true)
-    let optimisticHandle: ReturnType<typeof addOptimisticMessage> | null = null
+    if (!threadTarget || !currentUser || !content.trim()) return;
+    setSending(true);
+    let optimisticHandle: ReturnType<typeof addOptimisticMessage> | null = null;
     try {
       const handle = addOptimisticMessage({
         content: content.trim(),
-      })
-      optimisticHandle = handle
-      if (!threadConversationId || !openThreadMsg) throw new Error('thread unavailable')
-      const sendAck = await sendMessage(threadConversationId, content.trim(), [], {
-        clientNonce: handle.clientNonce,
-        threadParentId: openThreadMsg.id,
-      })
+      });
+      optimisticHandle = handle;
+      if (!threadConversationId || !openThreadMsg)
+        throw new Error("thread unavailable");
+      const sendAck = await sendMessage(
+        threadConversationId,
+        content.trim(),
+        [],
+        {
+          clientNonce: handle.clientNonce,
+          threadParentId: openThreadMsg.id,
+          suppressEvent: true,
+        },
+      );
       ackOptimisticMessage(handle, {
         messageId: sendAck.messageId,
         seq: sendAck.seq,
         createdAt: sendAck.createdAt,
         clientNonce: sendAck.clientNonce,
-      })
-      setContent('')
+      });
+      setContent("");
     } catch (e) {
-      console.error('Thread send failed:', e)
-      const message = e instanceof Error ? e.message : String(e)
+      console.error("Thread send failed:", e);
+      const message = e instanceof Error ? e.message : String(e);
       if (optimisticHandle) {
-        failOptimisticMessage(optimisticHandle, message)
+        failOptimisticMessage(optimisticHandle, message);
       }
       setToasts((current) => [
         ...current,
-        { id: `thread-send-failed-${Date.now()}`, message: 'Message failed to send' },
-      ])
+        {
+          id: `thread-send-failed-${Date.now()}`,
+          message: "Message failed to send",
+        },
+      ]);
     } finally {
-      setSending(false)
+      setSending(false);
     }
   }
 
-  async function handleRetryMessage(message: typeof messages[number]) {
-    if (!threadTarget || !currentUser) return
-    const retryHandle = retryOptimisticMessage(message.id)
-    if (!retryHandle) return
+  async function handleRetryMessage(message: (typeof messages)[number]) {
+    if (!threadTarget || !currentUser) return;
+    const retryHandle = retryOptimisticMessage(message.id);
+    if (!retryHandle) return;
     try {
-      if (!threadConversationId || !openThreadMsg) throw new Error('thread unavailable')
+      if (!threadConversationId || !openThreadMsg)
+        throw new Error("thread unavailable");
       const sendAck = await sendMessage(
         threadConversationId,
         message.content,
         message.attachments?.map((attachment) => attachment.id) ?? [],
-        { clientNonce: retryHandle.clientNonce, threadParentId: openThreadMsg.id }
-      )
+        {
+          clientNonce: retryHandle.clientNonce,
+          threadParentId: openThreadMsg.id,
+          suppressEvent: true,
+        },
+      );
       ackOptimisticMessage(retryHandle, {
         messageId: sendAck.messageId,
         seq: sendAck.seq,
         createdAt: sendAck.createdAt,
         clientNonce: sendAck.clientNonce,
-      })
+      });
     } catch (retryError) {
-      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
-      failOptimisticMessage(retryHandle, retryMessage)
+      const retryMessage =
+        retryError instanceof Error ? retryError.message : String(retryError);
+      failOptimisticMessage(retryHandle, retryMessage);
       setToasts((current) => [
         ...current,
-        { id: `thread-retry-failed-${Date.now()}`, message: 'Message failed to send' },
-      ])
+        {
+          id: `thread-retry-failed-${Date.now()}`,
+          message: "Message failed to send",
+        },
+      ]);
     }
   }
 
-  if (!openThreadMsg) return null
+  if (!openThreadMsg) return null;
 
   return (
-    <div className={`thread-panel${variant === 'content' ? ' thread-panel--content' : ''}`}>
+    <div
+      className={`thread-panel${variant === "content" ? " thread-panel--content" : ""}`}
+    >
       <div className="thread-header">
         <div className="thread-header-copy">
           <span className="thread-kicker">[ctx::thread]</span>
         </div>
-        <button className="thread-close-btn" type="button" onClick={() => setOpenThreadMsg(null)} title="Close thread">
+        <button
+          className="thread-close-btn"
+          type="button"
+          onClick={() => setOpenThreadMsg(null)}
+          title="Close thread"
+        >
           <X size={16} strokeWidth={2} />
         </button>
       </div>
 
       <div className="thread-body" ref={scrollContainerRef}>
         <div className="thread-parent-wrapper">
-          <MessageItem
-            message={openThreadMsg}
-            currentUser={currentUser}
-          />
+          <MessageItem message={openThreadMsg} currentUser={currentUser} />
         </div>
 
         <div className="thread-replies">
@@ -224,7 +279,7 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
               <div
                 key={msg.id}
                 ref={(node) => {
-                  messageRefs.current[msg.id] = node
+                  messageRefs.current[msg.id] = node;
                 }}
                 style={{ scrollMarginTop: 96 }}
               >
@@ -270,8 +325,10 @@ export function ThreadPanel({ variant = 'drawer' }: ThreadPanelProps) {
       </div>
       <ToastRegion
         toasts={toasts}
-        onDismiss={(id) => setToasts((current) => current.filter((toast) => toast.id !== id))}
+        onDismiss={(id) =>
+          setToasts((current) => current.filter((toast) => toast.id !== id))
+        }
       />
     </div>
-  )
+  );
 }

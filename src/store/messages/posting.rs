@@ -141,6 +141,7 @@ impl Store {
         content: &str,
         attachment_ids: &[String],
         client_nonce: Option<&str>,
+        suppress_event: bool,
     ) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -192,7 +193,9 @@ impl Store {
             inserted.seq,
             serde_json::to_value(payload)?,
         );
-        let _ = self.stream_tx.send(stream_event);
+        if !suppress_event {
+            let _ = self.stream_tx.send(stream_event);
+        }
         Ok(inserted.id)
     }
 }

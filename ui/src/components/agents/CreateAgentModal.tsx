@@ -25,7 +25,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   })
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses()
+  const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses(open)
 
   async function handleCreate() {
     if (!config.name.trim()) {

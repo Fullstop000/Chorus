@@ -120,12 +120,6 @@ export function useHistory(
 
           queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
             if (!current) return current
-            if (
-              msg.clientNonce &&
-              current.messages.some((m) => m.clientNonce === msg.clientNonce)
-            ) {
-              return current
-            }
             const before = current.messages.length
             const updated = upsertMessage(current.messages, msg)
             if (updated.length > before) {

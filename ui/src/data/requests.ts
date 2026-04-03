@@ -31,6 +31,7 @@ export interface SendMessageRequest {
   attachmentIds?: string[]
   clientNonce?: string
   suppressAgentDelivery?: boolean
+  suppressEvent?: boolean
   threadParentId?: string
 }
 
