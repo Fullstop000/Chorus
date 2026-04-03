@@ -1,5 +1,12 @@
 import { test, expect } from './helpers/fixtures'
-import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, getWhoami, historyForUser } from './helpers/api'
+import {
+  agentNames,
+  ensureMixedRuntimeTrio,
+  ensureStubTrio,
+  getWhoami,
+  historyForUser,
+  sendAsUser,
+} from './helpers/api'
 import { clickSidebarChannel, openAgentTab, openThreadFromMessage, sendChatMessage , gotoApp } from './helpers/ui'
 
 const mode = process.env.CHORUS_E2E_LLM ?? '1'
@@ -27,7 +34,13 @@ test.describe('REC-002', () => {
 
     await test.step('Steps 1–4: Trigger multi-agent replies, switch activity, and open a thread', async () => {
       await clickSidebarChannel(page, 'all')
-      await sendChatMessage(page, `MSG ${mark}: ${agents.a} say a-${mark}, ${agents.b} say b-${mark}, ${agents.c} say c-${mark}`)
+      if (useStub) {
+        await sendAsUser(request, username, '#all', `${agents.a} say "a-${mark}"`)
+        await sendAsUser(request, username, '#all', `${agents.b} say "b-${mark}"`)
+        await sendAsUser(request, username, '#all', `${agents.c} say "c-${mark}"`)
+      } else {
+        await sendChatMessage(page, `MSG ${mark}: ${agents.a} say a-${mark}, ${agents.b} say b-${mark}, ${agents.c} say c-${mark}`)
+      }
       await openAgentTab(page, agents.a, 'Activity')
       await page.getByRole('button', { name: 'Chat', exact: true }).click()
       const deadline = Date.now() + 180_000
@@ -35,12 +48,13 @@ test.describe('REC-002', () => {
       while (Date.now() < deadline) {
         const history = await historyForUser(request, username, '#all', 80)
         const text = history.map((m) => m.content ?? '').join(' ')
-        sawAll = /a-/.test(text) && /b-/.test(text) && /c-/.test(text)
+        sawAll =
+          text.includes(`a-${mark}`) && text.includes(`b-${mark}`) && text.includes(`c-${mark}`)
         if (sawAll) break
         await new Promise((r) => setTimeout(r, 5000))
       }
       expect(sawAll).toBe(true)
-      await openThreadFromMessage(page, mark)
+      await openThreadFromMessage(page, `a-${mark}`)
       await expect(page.locator('.thread-panel')).toBeVisible()
       await page.locator('.thread-close-btn').click()
       await expect(page.locator('.message-item').filter({ hasText: mark }).first()).toBeVisible()

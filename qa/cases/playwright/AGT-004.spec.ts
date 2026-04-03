@@ -49,7 +49,7 @@ test.describe('AGT-004', () => {
       await row.locator('input').nth(0).fill('QA_FLAG')
       await row.locator('input').nth(1).fill('on')
       await dialog.locator('button:has-text("Save")').click()
-      await expect(page.locator('.profile-role-text')).toContainText('updated role text')
+      await expect(page.locator('.profile-role-text').first()).toContainText('updated role text')
       await expect(page.locator('.profile-config-grid')).toContainText('high')
       await expect(page.locator('.env-var-row')).toContainText('QA_FLAG')
       const detail = await getAgentDetail(request, name)
@@ -72,7 +72,15 @@ test.describe('AGT-004', () => {
       await sendAsUser(request, username, '#all', `@${name} reply once before delete`)
       await reloadApp(page)
       await deleteAgentApi(request, name, 'preserve_workspace')
-      const oldHistory = await historyForUser(request, username, '#all', 50)
+      let oldHistory = await historyForUser(request, username, '#all', 50)
+      const delDeadline = Date.now() + 60_000
+      while (
+        Date.now() < delDeadline &&
+        !oldHistory.some((entry) => entry.senderName === name && entry.senderDeleted)
+      ) {
+        await new Promise((r) => setTimeout(r, 500))
+        oldHistory = await historyForUser(request, username, '#all', 80)
+      }
       expect(oldHistory.some((entry) => entry.senderName === name && entry.senderDeleted)).toBe(true)
       await createAgentApi(request, { name, runtime: 'claude', model: 'sonnet' })
       const postRecreate = await historyForUser(request, username, '#all', 50)

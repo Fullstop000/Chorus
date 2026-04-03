@@ -1,18 +1,28 @@
 import { test, expect } from './helpers/fixtures'
 import {
+  agentNames,
   createChannelApi,
   ensureMixedRuntimeTrio,
+  ensureStubTrio,
   getChannelMembersApi,
   getWhoami,
 } from './helpers/api'
-import { clickSidebarChannel, openMembersPanel , gotoApp , reloadApp } from './helpers/ui'
+import { clickComboboxOption, clickSidebarChannel, openMembersPanel , gotoApp , reloadApp } from './helpers/ui'
+
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/channels.md` — CHN-003 Channel Invite Operations And `#all` Guardrails
  */
 test.describe('CHN-003', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Channel Invite Operations And #all Guardrails @case CHN-003', async ({
@@ -38,9 +48,9 @@ test.describe('CHN-003', () => {
       const members = await getChannelMembersApi(request, allId)
       const names = members.members.map((m) => m.memberName)
       expect(names).toContain(username)
-      expect(names).toContain('bot-a')
-      expect(names).toContain('bot-b')
-      expect(names).toContain('bot-c')
+      expect(names).toContain(agents.a)
+      expect(names).toContain(agents.b)
+      expect(names).toContain(agents.c)
     })
 
     await test.step('Steps 5–8: User channel invite updates and persists', async () => {
@@ -49,11 +59,11 @@ test.describe('CHN-003', () => {
       await page.locator('.members-panel-actions button:has-text("Invite")').click()
       const dialog = page.locator('[role="dialog"]')
       await dialog.locator('[role="combobox"][aria-label="Member"]').click()
-      await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+      await clickComboboxOption(page, agents.a)
       await dialog.locator('button:has-text("Invite Member")').click()
       await expect(page.locator('.members-panel-title')).toHaveText('2')
       const after = await getChannelMembersApi(request, channel.id)
-      expect(after.members.map((m) => m.memberName)).toContain('bot-a')
+      expect(after.members.map((m) => m.memberName)).toContain(agents.a)
       await reloadApp(page)
       await clickSidebarChannel(page, channel.name)
       await openMembersPanel(page)

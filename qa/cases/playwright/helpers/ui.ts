@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 
+import { agentNames } from './api'
+
 /**
  * Wait for the app shell to finish loading: sidebar must have at least one
  * visible item.  Always cheaper than waitUntil:'networkidle' and explicitly
@@ -33,7 +35,8 @@ export async function createAgentViaUi(
   await dialog.locator('[role="combobox"][aria-label="Runtime"]').click()
   await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.runtime, 'i') }).first().click()
   await dialog.locator('[role="combobox"][aria-label="Model"]').click()
-  await page.locator('[role="option"]').filter({ hasText: opts.model }).first().click()
+  // Substring match would pick e.g. `gpt-5.2-codex` when asking for `gpt-5.2`.
+  await page.getByRole('option', { name: opts.model, exact: true }).click()
   if (opts.runtime === 'codex' && opts.reasoningEffort) {
     await dialog.locator('[role="combobox"][aria-label="Reasoning"]').click()
     await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.reasoningEffort, 'i') }).first().click()
@@ -58,6 +61,7 @@ export async function createUserChannelViaUi(
 
 /** Catalog TMT-001 steps 3–4: Leader+Operators `qa-eng`, bot-a leader, bot-b operator. */
 export async function createTeamQaEngViaUi(page: Page): Promise<void> {
+  const { a, b } = agentNames()
   await page.click('button[title="Add channel"]')
   const dialog = page.locator('[role="dialog"]')
   await dialog.locator('button:has-text("Team")').click()
@@ -66,13 +70,13 @@ export async function createTeamQaEngViaUi(page: Page): Promise<void> {
   await page.locator('input[placeholder="Engineering Team"]').fill('QA Engineering')
   const memberSelect = dialog.locator('[role="combobox"][aria-label="Initial Members"]')
   await memberSelect.click()
-  await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+  await page.locator('[role="option"]').filter({ hasText: a }).first().click()
   await dialog.locator('button:has-text("Add")').click()
   await memberSelect.click()
-  await page.locator('[role="option"]').filter({ hasText: 'bot-b' }).first().click()
+  await page.locator('[role="option"]').filter({ hasText: b }).first().click()
   await dialog.locator('button:has-text("Add")').click()
   await dialog.locator('[role="combobox"][aria-label="Leader"]').click()
-  await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+  await page.locator('[role="option"]').filter({ hasText: a }).first().click()
   await dialog.locator('button:has-text("Create Team")').click()
   await expect(dialog).toBeHidden({ timeout: 60_000 })
 }
@@ -120,6 +124,13 @@ export async function sendThreadMessage(page: Page, text: string): Promise<void>
 export async function openMembersPanel(page: Page): Promise<void> {
   await page.getByRole('button', { name: /Show members list/i }).click()
   await expect(page.locator('.members-panel-kicker:text("Members")')).toBeVisible()
+}
+
+/** Radix options in portaled popovers may still be "outside viewport" for Playwright hit-testing. */
+export async function clickComboboxOption(page: Page, optionText: string): Promise<void> {
+  const opt = page.locator('[role="option"]').filter({ hasText: optionText }).first()
+  await opt.waitFor({ state: 'attached', timeout: 15_000 })
+  await opt.evaluate((el) => (el as HTMLElement).click())
 }
 
 export async function closeMembersPanel(page: Page): Promise<void> {

@@ -12,7 +12,11 @@ test.describe('ERR-001', () => {
     await clickSidebarChannel(page, 'all')
 
     await test.step('Steps 1–3: Trigger upload failure and verify visible error', async () => {
-      await page.route('**/internal/agent/*/upload', async (route) => {
+      await page.route('**/api/attachments', async (route) => {
+        if (route.request().method() !== 'POST') {
+          await route.continue()
+          return
+        }
         await route.fulfill({
           status: 500,
           contentType: 'application/json',
@@ -25,12 +29,12 @@ test.describe('ERR-001', () => {
       ])
       await chooser.setFiles(fixture)
       await page.locator('.message-input-send').click()
-      await expect(page.locator('.message-input-area')).toContainText('forced upload failure')
+      await expect(page.getByText('Message failed to send')).toBeVisible({ timeout: 15_000 })
       await expect(page.locator('.file-chip')).toContainText('qa-attachment.txt')
     })
 
     await test.step('Steps 4–5: Clear failed state and verify normal send still works', async () => {
-      await page.unroute('**/internal/agent/*/upload')
+      await page.unroute('**/api/attachments')
       await page.locator('.file-chip button').click()
       await page.locator('.message-input-textarea').fill('ERR-001 recovery message')
       await page.locator('.message-input-send').click()

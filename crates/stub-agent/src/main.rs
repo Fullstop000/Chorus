@@ -15,6 +15,7 @@ static SEQ: AtomicU64 = AtomicU64::new(0);
 
 struct Args {
     mcp_config: String,
+    #[allow(dead_code)]
     prompt: String,
 }
 

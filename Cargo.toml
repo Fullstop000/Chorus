@@ -1,5 +1,7 @@
 [workspace]
 members = [".", "crates/stub-agent"]
+# Default `cargo build` only built the root package; stub QA needs `chorus-stub-agent` beside `chorus`.
+default-members = [".", "crates/stub-agent"]
 
 [package]
 name = "chorus"

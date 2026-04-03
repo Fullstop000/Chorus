@@ -1,5 +1,12 @@
 import { test, expect } from './helpers/fixtures'
-import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, getWhoami, historyForUser } from './helpers/api'
+import {
+  agentNames,
+  ensureMixedRuntimeTrio,
+  ensureStubTrio,
+  getWhoami,
+  historyForUser,
+  sendAsUser,
+} from './helpers/api'
 import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
 
 const mode = process.env.CHORUS_E2E_LLM ?? '1'
@@ -47,10 +54,18 @@ test.describe('MSG-001', () => {
 
     await test.step('Step 1: Send prompt in #all asking all agents to reply', async () => {
       await clickSidebarChannel(page, 'all')
-      await sendChatMessage(
-        page,
-        `MSG-001 ${mark}: ${agents.a} reply OK-a, ${agents.b} OK-b, ${agents.c} OK-c`
-      )
+      if (useStub) {
+        // Stub token extraction is reliable with `token:` (avoids #all composer / multi-line quirks).
+        await sendAsUser(request, username, '#all', `MSG-001 ${mark} anchor`)
+        await sendAsUser(request, username, '#all', `${agents.a} token:OK-a`)
+        await sendAsUser(request, username, '#all', `${agents.b} token:OK-b`)
+        await sendAsUser(request, username, '#all', `${agents.c} token:OK-c`)
+      } else {
+        await sendChatMessage(
+          page,
+          `MSG-001 ${mark}: ${agents.a} reply OK-a, ${agents.b} OK-b, ${agents.c} OK-c`
+        )
+      }
     })
 
     await test.step('Steps 2–6: Wait and verify history (human once; three agents; senders; order)', async () => {
@@ -69,6 +84,12 @@ test.describe('MSG-001', () => {
       const agentMsgs = msgs.filter((m) => m.senderType === 'agent')
       expect(agentMsgs.length).toBeGreaterThanOrEqual(3)
       const senderNames = new Set(agentMsgs.map((m) => m.senderName))
+      if (useStub) {
+        const text = agentMsgs.map((m) => m.content ?? '').join('\n')
+        expect(text).toContain('OK-a')
+        expect(text).toContain('OK-b')
+        expect(text).toContain('OK-c')
+      }
       expect(senderNames.has(agents.a)).toBe(true)
       expect(senderNames.has(agents.b)).toBe(true)
       expect(senderNames.has(agents.c)).toBe(true)

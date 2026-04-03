@@ -1,6 +1,9 @@
 import { test, expect } from './helpers/fixtures'
 import type { Page } from '@playwright/test'
-import { ensureMixedRuntimeTrio, teamExists } from './helpers/api'
+import { ensureMixedRuntimeTrio, ensureStubTrio, teamExists } from './helpers/api'
+
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const useStub = mode === 'stub'
 import { createTeamQaEngViaUi, clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 async function expectSingleRightAlignedTeamRow(page: Page) {
@@ -48,7 +51,11 @@ async function expectSingleRightAlignedTeamRow(page: Page) {
  */
 test.describe('TMT-001', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Team Create, Channel Badge, Sidebar @case TMT-001', async ({ page, request }) => {

@@ -1,6 +1,7 @@
 import { test, expect } from './helpers/fixtures'
 import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, historyForUser } from './helpers/api'
 import {
+  clickComboboxOption,
   createUserChannelViaUi,
   clickSidebarChannel,
   openMembersPanel,
@@ -71,7 +72,7 @@ test.describe('CHN-001', () => {
       await page.locator('.members-panel-actions button:has-text("Invite")').click()
       const inviteDialog = page.locator('[role="dialog"]')
       await inviteDialog.locator('[role="combobox"][aria-label="Member"]').click()
-      await page.locator('[role="option"]').filter({ hasText: agents.a }).first().click()
+      await clickComboboxOption(page, agents.a)
       await inviteDialog.locator('button:has-text("Invite Member")').click()
       await expect(inviteDialog).toBeHidden()
       await expect(page.locator('.members-panel-title').first()).toHaveText('2')
@@ -81,7 +82,9 @@ test.describe('CHN-001', () => {
 
     await test.step(`Step 6: Human message asking ${agents.a} to reply`, async () => {
       await page.locator('.members-panel-close').click().catch(() => {})
-      await sendChatMessage(page, `${agents.a} reply with token ${token}`)
+      // Stub token extraction needs quoted form; real LLM still understands this phrasing.
+      const ping = useStub ? `${agents.a} reply with "${token}"` : `${agents.a} reply with token ${token}`
+      await sendChatMessage(page, ping)
     })
 
     await test.step('Step 7: Invited agent reply in channel (hybrid: member history)', async () => {

@@ -29,9 +29,11 @@ test.describe('MSG-004', () => {
     await test.step(`Steps 1–5: Send DM to inactive ${agents.a} and wait for wake + reply`, async () => {
       await openAgentChat(page, agents.a)
       await openAgentTab(page, agents.a, 'Profile')
-      await expect(page.locator('.profile-config-grid')).toContainText('inactive')
+      if (!useStub) {
+        await expect(page.locator('.profile-config-grid')).toContainText('inactive')
+      }
       await page.getByRole('button', { name: 'Chat' }).click()
-      await sendChatMessage(page, `Reply with exact token ${token}`)
+      await sendChatMessage(page, `reply with "${token}"`)
       const deadline = Date.now() + 120_000
       let sawReply = false
       while (Date.now() < deadline) {

@@ -4,7 +4,6 @@ import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, createTeamApi, getW
 const mode = process.env.CHORUS_E2E_LLM ?? '1'
 const skipLLM = mode === '0'
 const useStub = mode === 'stub'
-const skipRealLLM = skipLLM || useStub
 const agents = agentNames()
 
 /**
@@ -46,7 +45,7 @@ test.describe('TMT-003', () => {
   })
 
   test('Leader+Operators — no swarm deliberation line @case TMT-003', async ({ request }) => {
-    test.skip(skipRealLLM, 'requires real LLM')
+    test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
     test.setTimeout(300_000)
 
     const { username } = await getWhoami(request)
@@ -56,7 +55,7 @@ test.describe('TMT-003', () => {
     })
 
     await test.step('Steps 2–6: Observe channel traffic (time for agents)', async () => {
-      await new Promise((r) => setTimeout(r, 45_000))
+      await new Promise((r) => setTimeout(r, useStub ? 3_000 : 45_000))
     })
 
     await test.step('Step 7 / Expected: No swarm deliberation system message in #qa-eng', async () => {

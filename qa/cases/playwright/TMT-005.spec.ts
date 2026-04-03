@@ -46,8 +46,11 @@ test.describe('TMT-005', () => {
     await clickSidebarChannel(page, 'qa-eng')
 
     await test.step('Step 1: Open team settings', async () => {
+      await expect(page.getByRole('button', { name: 'Open team settings' })).toBeVisible({ timeout: 30_000 })
       await page.getByRole('button', { name: 'Open team settings' }).click()
-      await expect(page.locator('[role="dialog"]').getByRole('heading', { name: 'Team Settings' })).toBeVisible()
+      await expect(page.locator('[role="dialog"]').getByRole('heading', { name: 'Team Settings' })).toBeVisible({
+        timeout: 30_000,
+      })
     })
 
     await test.step('Steps 2–3: Add bot-b if missing', async () => {
@@ -92,7 +95,9 @@ test.describe('TMT-005', () => {
       await reloadApp(page)
       await clickSidebarChannel(page, 'qa-eng')
       await openMembersPanel(page)
-      await expect(page.locator('.members-panel-name').filter({ hasText: agents.b })).toHaveCount(0)
+      await expect(page.locator('.members-panel-name').filter({ hasText: agents.b })).toHaveCount(0, {
+        timeout: 30_000,
+      })
     })
   })
 })

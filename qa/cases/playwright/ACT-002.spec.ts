@@ -35,7 +35,7 @@ test.describe('ACT-002', () => {
     await test.step(`Precondition: stop ${agents.a}, then wake it via DM`, async () => {
       await request.post(`/api/agents/${agents.a}/stop`)
       await openAgentChat(page, agents.a)
-      await sendChatMessage(page, `Reply with exact token ${token}`)
+      await sendChatMessage(page, `reply with "${token}"`)
       const deadline = Date.now() + 120_000
       let sawReply = false
       while (Date.now() < deadline) {
@@ -49,8 +49,8 @@ test.describe('ACT-002', () => {
 
     await test.step('Steps 1–7: Activity segment shows coherent wake-up ordering', async () => {
       await openAgentTab(page, agents.a, 'Activity')
-      await expect(page.locator('.activity-item-message-received')).toContainText(token)
-      await expect(page.locator('.activity-item-message-sent')).toContainText(token)
+      await expect(page.locator('.activity-item-message-received').filter({ hasText: token }).first()).toBeVisible()
+      await expect(page.locator('.activity-item-message-sent').filter({ hasText: token }).first()).toBeVisible()
       await expect(page.locator('.activity-item-status').first()).toBeVisible()
       const detail = await getAgentDetail(request, agents.a)
       expect(detail.agent.status).toBe('active')
