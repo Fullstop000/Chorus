@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { archiveChannel, deleteChannel, updateChannel } from '../../data'
-import type { ChannelInfo } from './types'
+import type { ChannelInfo } from '../../data'
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'

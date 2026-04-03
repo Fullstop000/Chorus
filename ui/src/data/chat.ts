@@ -2,21 +2,63 @@ import { get, post } from './client'
 import { queryString } from './common'
 import { queryOptions } from '@tanstack/react-query'
 import type {
-  HistoryMessage,
-  HistoryResponse,
-  UploadResponse,
-  AttachmentRef,
-} from '../types'
+  SendMessageRequest,
+  GetHistoryParams,
+  UpdateReadCursorRequest,
+} from './requests'
 
-export type {
-  AttachmentRef,
-  ForwardedFrom,
-  HistoryMessage,
-  HistoryResponse,
-  StreamEvent,
-  UploadResponse,
-  Target,
-} from '../types'
+// ── Types (source of truth) ──
+
+export interface AttachmentRef {
+  id: string
+  filename: string
+}
+
+export interface ForwardedFrom {
+  channelName: string
+  senderName: string
+}
+
+export interface HistoryMessage {
+  id: string
+  seq: number
+  content: string
+  senderName: string
+  senderType: 'human' | 'agent'
+  senderDeleted: boolean
+  createdAt: string
+  thread_parent_id?: string
+  attachments?: AttachmentRef[]
+  replyCount?: number
+  forwardedFrom?: ForwardedFrom
+  clientNonce?: string
+  clientStatus?: 'sending' | 'failed'
+  clientError?: string
+}
+
+export interface HistoryResponse {
+  messages: HistoryMessage[]
+  has_more: boolean
+  last_read_seq: number
+}
+
+export interface StreamEvent {
+  eventType: string
+  channelId: string
+  latestSeq: number
+  payload: Record<string, unknown>
+  schemaVersion: number
+}
+
+export interface UploadResponse {
+  id: string
+  filename: string
+  sizeBytes: number
+}
+
+export type Target = string
+
+// ── API functions ──
 
 function conversationPath(conversationId: string, suffix = ''): string {
   return `/api/conversations/${encodeURIComponent(conversationId)}${suffix}`
@@ -26,18 +68,12 @@ export function sendMessage(
   conversationId: string,
   content: string,
   attachmentIds?: string[],
-  options?: {
-    suppressAgentDelivery?: boolean
-    clientNonce?: string
-    threadParentId?: string
-  }
+  options?: Partial<SendMessageRequest>
 ): Promise<{ messageId: string; seq: number; createdAt: string; clientNonce?: string }> {
   return post(conversationPath(conversationId, '/messages'), {
     content,
     attachmentIds: attachmentIds ?? [],
-    clientNonce: options?.clientNonce,
-    suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
-    threadParentId: options?.threadParentId,
+    ...options,
   })
 }
 
@@ -48,13 +84,9 @@ export function getHistory(
   before?: number,
   after?: number
 ): Promise<HistoryResponse> {
+  const params: GetHistoryParams = { limit, threadParentId, before, after }
   return get(
-    `${conversationPath(conversationId, '/messages')}${queryString({
-      limit,
-      threadParentId,
-      before,
-      after,
-    })}`
+    `${conversationPath(conversationId, '/messages')}${queryString(params as Record<string, string | number | boolean | undefined>)}`
   )
 }
 
@@ -94,11 +126,11 @@ export function updateReadCursor(
   lastReadSeq: number,
   threadParentId?: string
 ): Promise<ReadCursorResponse> {
-  return post(conversationPath(conversationId, '/read-cursor'), {
-    lastReadSeq,
-    threadParentId,
-  })
+  const payload: UpdateReadCursorRequest = { lastReadSeq, threadParentId }
+  return post(conversationPath(conversationId, '/read-cursor'), payload)
 }
+
+// ── Transforms ──
 
 export function sortMessagesBySeq(messages: HistoryMessage[]): HistoryMessage[] {
   return [...messages].sort((a, b) => a.seq - b.seq)
@@ -107,6 +139,8 @@ export function sortMessagesBySeq(messages: HistoryMessage[]): HistoryMessage[] 
 export function findAttachmentById(message: HistoryMessage, id: string): AttachmentRef | undefined {
   return message.attachments?.find((a) => a.id === id)
 }
+
+// ── Query definitions ──
 
 export const historyQueryKeys = {
   history: (conversationId: string, threadParentId?: string | null) =>

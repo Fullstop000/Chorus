@@ -1,161 +1,175 @@
-import { useEffect, useState } from 'react'
-import { getChannelMembers, getTeam, sendMessage } from '../api'
-import { useApp, useTarget } from '../store'
-import { useHistory } from '../hooks/useHistory'
-import { TabBar } from './TabBar'
-import { ChatHeader, ChatPanel } from '../components/chat/ChatPanel'
-import { TasksPanel } from '../components/tasks/TasksPanel'
-import { ProfilePanel } from '../components/agents/profile/ProfilePanel'
-import { ActivityPanel } from '../components/agents/activity/ActivityPanel'
-import { WorkspacePanel } from '../components/agents/WorkspacePanel'
-import { MessageInput } from '../components/chat/MessageInput'
-import { ThreadPanel } from '../components/chat/ThreadPanel'
-import { ThreadsTab } from '../components/chat/ThreadsTab'
-import { ChannelMembersPanel } from '../components/channels/ChannelMembersPanel'
-import type { ChannelMemberInfo, TeamResponse } from '../components/channels/types'
-import { TeamSettings } from '../components/channels/TeamSettings'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { useEffect, useState } from "react";
+import { getChannelMembers, getTeam, sendMessage } from "../data";
+import { useStore } from "../store";
+import {
+  useAgents,
+  useHumans,
+  useInbox,
+  useRefresh,
+  useTarget,
+} from "../hooks/data";
+import { useHistory } from "../hooks/useHistory";
+import { TabBar } from "./TabBar";
+import { ChatHeader, ChatPanel } from "../components/chat/ChatPanel";
+import { TasksPanel } from "../components/tasks/TasksPanel";
+import { ProfilePanel } from "../components/agents/profile/ProfilePanel";
+import { ActivityPanel } from "../components/agents/activity/ActivityPanel";
+import { WorkspacePanel } from "../components/agents/WorkspacePanel";
+import { MessageInput } from "../components/chat/MessageInput";
+import { ThreadPanel } from "../components/chat/ThreadPanel";
+import { ThreadsTab } from "../components/chat/ThreadsTab";
+import { ChannelMembersPanel } from "../components/channels/ChannelMembersPanel";
+import type {
+  ChannelMemberInfo,
+  TeamResponse,
+} from "../components/channels/types";
+import { TeamSettings } from "../components/channels/TeamSettings";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 
 export function MainPanel() {
   const {
-    activeTab,
     currentUser,
-    getAgentConversationId,
-    applyReadCursorAck,
-    refreshChannels,
-    refreshAgents,
-    refreshTeams,
-    channels,
-    agents,
-    selectedChannel,
-    selectedChannelId,
-    selectedAgent,
+    activeTab,
+    currentChannel,
+    currentAgent,
     openThreadMsg,
-    serverInfo,
-  } = useApp()
-  const chatTarget = useTarget()
+  } = useStore();
+  const agents = useAgents();
+  const humans = useHumans();
+  const { getAgentConversationId, applyReadCursorAck } = useInbox();
+  const { refreshChannels, refreshAgents, refreshTeams } = useRefresh();
+  const chatTarget = useTarget();
   const activeConversationId =
-    selectedChannelId ?? (selectedAgent ? getAgentConversationId(selectedAgent.name) : null)
+    currentChannel?.id ??
+    (currentAgent ? getAgentConversationId(currentAgent.name) : null);
   const chatHistory = useHistory(
     currentUser,
-    activeTab === 'chat' ? chatTarget : null,
+    activeTab === "chat" ? chatTarget : null,
     activeConversationId,
-    { onReadCursorAck: applyReadCursorAck }
-  )
-  const [members, setMembers] = useState<ChannelMemberInfo[]>([])
-  const [membersLoading, setMembersLoading] = useState(false)
-  const [showMembersPanel, setShowMembersPanel] = useState(false)
-  const [showTeamSettings, setShowTeamSettings] = useState(false)
-  const [teamDetails, setTeamDetails] = useState<TeamResponse | null>(null)
-  const [teamSettingsLoading, setTeamSettingsLoading] = useState(false)
+    { onReadCursorAck: applyReadCursorAck },
+  );
+  const [members, setMembers] = useState<ChannelMemberInfo[]>([]);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [showMembersPanel, setShowMembersPanel] = useState(false);
+  const [showTeamSettings, setShowTeamSettings] = useState(false);
+  const [teamDetails, setTeamDetails] = useState<TeamResponse | null>(null);
+  const [teamSettingsLoading, setTeamSettingsLoading] = useState(false);
 
-  const userChannels = channels
-  const showHeader = selectedChannel || selectedAgent
-  const selectedUserChannel = selectedChannel
-    ? userChannels.find((channel) => `#${channel.name}` === selectedChannel) ?? null
-    : null
-  const selectedSystemChannel = selectedChannel
-    ? serverInfo?.system_channels.find((channel) => `#${channel.name}` === selectedChannel) ?? null
-    : null
-  const selectedTeamChannel = selectedUserChannel?.channel_type === 'team' ? selectedUserChannel : null
-  const canInviteMembers = Boolean(selectedUserChannel?.id && selectedUserChannel.channel_type !== 'team')
-  const optimisticMemberCount =
-    selectedChannel && !selectedUserChannel && !selectedSystemChannel ? 1 : null
+  const showHeader = currentChannel || currentAgent;
+  const isTeamChannel = currentChannel?.channel_type === "team";
+  const isSystemChannel = currentChannel?.channel_type === "system";
+  const canInviteMembers = Boolean(
+    currentChannel?.id && !isTeamChannel && !isSystemChannel,
+  );
+  const channelId = currentChannel?.id;
 
   useEffect(() => {
-    if (!selectedChannelId) {
-      setMembers([])
-      setShowMembersPanel(false)
-      return
+    setShowMembersPanel(false);
+    setShowTeamSettings(false);
+  }, [channelId]);
+
+  useEffect(() => {
+    if (!channelId) {
+      setMembers([]);
+      setShowMembersPanel(false);
+      return;
     }
 
-    let cancelled = false
-    setMembersLoading(true)
-    getChannelMembers(selectedChannelId)
+    let cancelled = false;
+    setMembersLoading(true);
+    getChannelMembers(channelId)
       .then((response) => {
         if (!cancelled) {
-          setMembers(response.members)
+          setMembers(response.members);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setMembers([])
+          setMembers([]);
         }
       })
       .finally(() => {
         if (!cancelled) {
-          setMembersLoading(false)
+          setMembersLoading(false);
         }
-      })
+      });
 
     return () => {
-      cancelled = true
-    }
-  }, [selectedChannelId])
+      cancelled = true;
+    };
+  }, [channelId]);
 
   useEffect(() => {
-    if (!selectedChannel || activeTab !== 'chat') {
-      setShowMembersPanel(false)
+    if (!currentChannel || activeTab !== "chat") {
+      setShowMembersPanel(false);
     }
-  }, [activeTab, selectedChannel])
+  }, [activeTab, currentChannel]);
 
   useEffect(() => {
-    setShowTeamSettings(false)
-    setTeamDetails(null)
-  }, [selectedChannel])
+    setShowTeamSettings(false);
+    setTeamDetails(null);
+  }, [currentChannel]);
 
   async function openTeamSettings() {
-    if (!selectedTeamChannel) return
-    setTeamSettingsLoading(true)
-    setShowTeamSettings(true)
+    if (!currentChannel || !isTeamChannel) return;
+    setTeamSettingsLoading(true);
+    setShowTeamSettings(true);
     try {
-      setTeamDetails(await getTeam(selectedTeamChannel.name))
+      setTeamDetails(await getTeam(currentChannel.name));
     } catch (error) {
-      console.error('Failed to load team settings', error)
-      setShowTeamSettings(false)
+      console.error("Failed to load team settings", error);
+      setShowTeamSettings(false);
     } finally {
-      setTeamSettingsLoading(false)
+      setTeamSettingsLoading(false);
     }
   }
 
   async function refreshSelectedTeam() {
-    if (!selectedTeamChannel) return
-    setTeamDetails(await getTeam(selectedTeamChannel.name))
+    if (!currentChannel || !isTeamChannel) return;
+    setTeamDetails(await getTeam(currentChannel.name));
   }
 
   async function refreshCurrentChannelMembers() {
-    if (!selectedChannelId) return
-    setMembersLoading(true)
+    if (!channelId) return;
+    setMembersLoading(true);
     try {
-      const response = await getChannelMembers(selectedChannelId)
-      setMembers(response.members)
+      const response = await getChannelMembers(channelId);
+      setMembers(response.members);
     } catch (err) {
-      console.error('Failed to refresh channel members', err)
+      console.error("Failed to refresh channel members", err);
     } finally {
-      setMembersLoading(false)
+      setMembersLoading(false);
     }
   }
 
-  async function handleRetryChatMessage(message: typeof chatHistory.messages[number]) {
-    if (!chatTarget || !currentUser || !activeConversationId) return
-    const retryHandle = chatHistory.retryOptimisticMessage(message.id)
-    if (!retryHandle) return
+  async function handleRetryChatMessage(
+    message: (typeof chatHistory.messages)[number],
+  ) {
+    if (!chatTarget || !currentUser || !activeConversationId) return;
+    const retryHandle = chatHistory.retryOptimisticMessage(message.id);
+    if (!retryHandle) return;
     try {
       const sendAck = await sendMessage(
         activeConversationId,
         message.content,
         message.attachments?.map((attachment) => attachment.id) ?? [],
-        { clientNonce: retryHandle.clientNonce }
-      )
+        { clientNonce: retryHandle.clientNonce },
+      );
       chatHistory.ackOptimisticMessage(retryHandle, {
         messageId: sendAck.messageId,
         seq: sendAck.seq,
         createdAt: sendAck.createdAt,
         clientNonce: sendAck.clientNonce,
-      })
+      });
     } catch (retryError) {
-      const retryMessage = retryError instanceof Error ? retryError.message : String(retryError)
-      chatHistory.failOptimisticMessage(retryHandle, retryMessage)
+      const retryMessage =
+        retryError instanceof Error ? retryError.message : String(retryError);
+      chatHistory.failOptimisticMessage(retryHandle, retryMessage);
     }
   }
 
@@ -163,10 +177,10 @@ export function MainPanel() {
     <div
       style={{
         flex: 1,
-        display: 'flex',
-        flexDirection: 'column',
-        overflow: 'hidden',
-        background: 'transparent',
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        background: "transparent",
         paddingTop: 10,
       }}
     >
@@ -174,24 +188,32 @@ export function MainPanel() {
         <>
           <ChatHeader
             memberCount={
-              selectedChannel
+              currentChannel
                 ? membersLoading
-                  ? optimisticMemberCount
+                  ? members.length || null
                   : members.length
                 : null
             }
-            isTeamChannel={Boolean(selectedTeamChannel)}
+            isTeamChannel={isTeamChannel}
             membersOpen={showMembersPanel}
-            onOpenTeamSettings={selectedTeamChannel ? openTeamSettings : undefined}
+            onOpenTeamSettings={isTeamChannel ? openTeamSettings : undefined}
             onToggleMembers={() => setShowMembersPanel((current) => !current)}
           />
           <TabBar />
         </>
       )}
 
-      <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-          {activeTab === 'chat' && (
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        <div
+          style={{
+            flex: 1,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            position: "relative",
+          }}
+        >
+          {activeTab === "chat" && (
             <>
               <ChatPanel
                 target={chatTarget}
@@ -209,20 +231,24 @@ export function MainPanel() {
               />
             </>
           )}
-          {activeTab === 'threads' && <ThreadsTab />}
-          {activeTab === 'tasks' && <TasksPanel />}
-          {activeTab === 'profile' && <ProfilePanel />}
-          {activeTab === 'activity' && selectedAgent && <ActivityPanel agentName={selectedAgent.name} />}
-          {activeTab === 'workspace' && selectedAgent && <WorkspacePanel agentName={selectedAgent.name} />}
+          {activeTab === "threads" && <ThreadsTab />}
+          {activeTab === "tasks" && <TasksPanel />}
+          {activeTab === "profile" && <ProfilePanel />}
+          {activeTab === "activity" && currentAgent && (
+            <ActivityPanel agentName={currentAgent.name} />
+          )}
+          {activeTab === "workspace" && currentAgent && (
+            <WorkspacePanel agentName={currentAgent.name} />
+          )}
           {!showHeader && (
             <div
               style={{
                 flex: 1,
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: 'var(--color-muted-foreground)',
-                flexDirection: 'column',
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                color: "var(--color-muted-foreground)",
+                flexDirection: "column",
                 gap: 8,
               }}
             >
@@ -231,21 +257,24 @@ export function MainPanel() {
             </div>
           )}
 
-          {activeTab === 'chat' && selectedChannel && selectedChannelId && showMembersPanel && (
-            <ChannelMembersPanel
-              channelId={selectedChannelId}
-              channelName={(selectedUserChannel ?? selectedSystemChannel)?.name ?? selectedChannel.replace(/^#/, '')}
-              currentUser={currentUser}
-              members={members}
-              agents={agents}
-              humans={serverInfo?.humans ?? []}
-              invitable={canInviteMembers}
-              onClose={() => setShowMembersPanel(false)}
-              onMembersChange={setMembers}
-            />
-          )}
+          {activeTab === "chat" &&
+            currentChannel &&
+            channelId &&
+            showMembersPanel && (
+              <ChannelMembersPanel
+                channelId={channelId}
+                channelName={currentChannel.name}
+                currentUser={currentUser}
+                members={members}
+                agents={agents}
+                humans={humans}
+                invitable={canInviteMembers}
+                onClose={() => setShowMembersPanel(false)}
+                onMembersChange={setMembers}
+              />
+            )}
         </div>
-        {activeTab === 'chat' && openThreadMsg && <ThreadPanel />}
+        {activeTab === "chat" && openThreadMsg && <ThreadPanel />}
       </div>
       {teamDetails && (
         <TeamSettings
@@ -254,12 +283,16 @@ export function MainPanel() {
           open={showTeamSettings}
           onOpenChange={setShowTeamSettings}
           onRefresh={async () => {
-            await Promise.all([refreshChannels(), refreshTeams(), refreshAgents()])
-            await refreshSelectedTeam()
-            await refreshCurrentChannelMembers()
+            await Promise.all([
+              refreshChannels(),
+              refreshTeams(),
+              refreshAgents(),
+            ]);
+            await refreshSelectedTeam();
+            await refreshCurrentChannelMembers();
           }}
           onDeleted={async () => {
-            await Promise.all([refreshChannels(), refreshTeams()])
+            await Promise.all([refreshChannels(), refreshTeams()]);
           }}
         />
       )}
@@ -273,5 +306,5 @@ export function MainPanel() {
         </Dialog>
       )}
     </div>
-  )
+  );
 }

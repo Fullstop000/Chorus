@@ -1,31 +1,109 @@
 import { get, post, patch } from './client'
 import { queryOptions } from '@tanstack/react-query'
 import type {
-  AgentInfo,
-  AgentEnvVar,
-  RuntimeStatusInfo,
-  AgentDetailResponse,
-  ActivityResponse,
-  ActivityLogResponse,
-  WorkspaceResponse,
-  WorkspaceFileResponse,
-} from '../types'
+  UpdateAgentRequest,
+  RestartAgentRequest,
+  DeleteAgentRequest,
+} from './requests'
 
-export type {
-  AgentInfo,
-  AgentEnvVar,
-  RuntimeAuthStatus,
-  RuntimeStatusInfo,
-  AgentDetailResponse,
-  ActivityMessage,
-  ActivityResponse,
-  ActivityEntryKind,
-  ActivityEntry,
-  ActivityLogEntry,
-  ActivityLogResponse,
-  WorkspaceResponse,
-  WorkspaceFileResponse,
-} from '../types'
+// ── Types (source of truth) ──
+
+export interface AgentInfo {
+  id?: string
+  name: string
+  display_name?: string
+  status: 'active' | 'sleeping' | 'inactive'
+  runtime?: string
+  model?: string
+  reasoningEffort?: string
+  description?: string
+  session_id?: string
+  activity?: string
+  activity_detail?: string
+}
+
+export interface AgentEnvVar {
+  key: string
+  value: string
+}
+
+export type RuntimeAuthStatus = 'authed' | 'unauthed'
+
+export interface RuntimeStatusInfo {
+  runtime: 'claude' | 'codex' | 'kimi' | 'opencode' | string
+  installed: boolean
+  authStatus?: RuntimeAuthStatus
+}
+
+export interface AgentDetailResponse {
+  agent: AgentInfo
+  envVars: AgentEnvVar[]
+}
+
+export interface ActivityMessage {
+  id: string
+  seq: number
+  content: string
+  channelName: string
+  createdAt: string
+}
+
+export interface ActivityResponse {
+  messages: ActivityMessage[]
+}
+
+export type ActivityEntryKind =
+  | 'thinking'
+  | 'tool_start'
+  | 'text'
+  | 'raw_output'
+  | 'message_received'
+  | 'message_sent'
+  | 'status'
+
+export interface ActivityEntry {
+  kind: ActivityEntryKind
+  text?: string
+  content?: string
+  tool_name?: string
+  tool_input?: string
+  channel_label?: string
+  sender_name?: string
+  target?: string
+  activity?: string
+  detail?: string
+}
+
+export interface ActivityLogEntry {
+  seq: number
+  timestamp_ms: number
+  entry: ActivityEntry
+}
+
+export interface ActivityLogResponse {
+  entries: ActivityLogEntry[]
+  agent_activity: string
+  agent_detail: string
+}
+
+export interface WorkspaceResponse {
+  path: string
+  files: string[]
+}
+
+export type RestartMode = 'restart' | 'reset_session' | 'full_reset'
+
+export type DeleteMode = 'preserve_workspace' | 'delete_workspace'
+
+export interface WorkspaceFileResponse {
+  path: string
+  content: string
+  truncated: boolean
+  sizeBytes: number
+  modifiedMs?: number
+}
+
+// ── API functions ──
 
 export function listAgents(): Promise<AgentInfo[]> {
   return get('/api/agents')
@@ -37,14 +115,7 @@ export function getAgentDetail(agentName: string): Promise<AgentDetailResponse> 
 
 export function updateAgent(
   agentName: string,
-  payload: {
-    display_name: string
-    description: string
-    runtime: string
-    model: string
-    reasoningEffort?: string | null
-    envVars: AgentEnvVar[]
-  }
+  payload: UpdateAgentRequest
 ): Promise<{ ok: boolean; restarted: boolean }> {
   return patch(`/api/agents/${encodeURIComponent(agentName)}`, payload)
 }
@@ -59,16 +130,16 @@ export function stopAgent(agentName: string): Promise<void> {
 
 export function restartAgent(
   agentName: string,
-  mode: 'restart' | 'reset_session' | 'full_reset'
+  mode: RestartMode
 ): Promise<void> {
-  return post(`/api/agents/${encodeURIComponent(agentName)}/restart`, { mode })
+  return post(`/api/agents/${encodeURIComponent(agentName)}/restart`, { mode } as RestartAgentRequest)
 }
 
 export function deleteAgent(
   agentName: string,
-  mode: 'preserve_workspace' | 'delete_workspace'
+  mode: DeleteMode
 ): Promise<void> {
-  return post(`/api/agents/${encodeURIComponent(agentName)}/delete`, { mode })
+  return post(`/api/agents/${encodeURIComponent(agentName)}/delete`, { mode } as DeleteAgentRequest)
 }
 
 export function listRuntimeStatuses(): Promise<RuntimeStatusInfo[]> {
@@ -96,6 +167,8 @@ export function getAgentWorkspaceFile(agentName: string, path: string): Promise<
   return get(`/api/agents/${encodeURIComponent(agentName)}/workspace/file?path=${encodeURIComponent(path)}`)
 }
 
+// ── Transforms ──
+
 export function toAgentLabel(agent: AgentInfo): string {
   return agent.display_name ?? agent.name
 }
@@ -103,6 +176,8 @@ export function toAgentLabel(agent: AgentInfo): string {
 export function isAgentActive(agent: AgentInfo): boolean {
   return agent.status === 'active' || agent.status === 'sleeping'
 }
+
+// ── Query definitions ──
 
 export const agentQueryKeys = {
   agents: ['agents'] as const,

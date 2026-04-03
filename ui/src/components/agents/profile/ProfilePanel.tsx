@@ -7,7 +7,12 @@ import {
   stopAgent,
   updateAgent,
 } from "../../../data";
-import type { AgentDetailResponse, RuntimeStatusInfo } from "../../../data";
+import type {
+  AgentDetailResponse,
+  DeleteMode,
+  RestartMode,
+  RuntimeStatusInfo,
+} from "../../../data";
 import { useRuntimeStatuses } from "../../../hooks/useRuntimeStatuses";
 import { useStore } from "../../../store";
 import { useRefresh } from "../../../hooks/data";
@@ -62,9 +67,6 @@ function activityDotColor(activity?: string): string {
       return "var(--status-inactive)";
   }
 }
-
-type RestartMode = "restart" | "reset_session" | "full_reset";
-type DeleteMode = "preserve_workspace" | "delete_workspace";
 
 export function ProfilePanel() {
   const { currentAgent: selectedAgent, setCurrentAgent: setSelectedAgent } =

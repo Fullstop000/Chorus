@@ -8,6 +8,7 @@ import { expect } from '@playwright/test'
  */
 export async function waitForAppReady(page: Page): Promise<void> {
   await expect(page.locator('.sidebar-item-text').first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('.chat-header-name, .empty-state, .message-input-area').first()).toBeVisible({ timeout: 15_000 })
 }
 
 /** Navigate to the app root and wait for the shell to be ready. */
@@ -118,6 +119,7 @@ export async function sendThreadMessage(page: Page, text: string): Promise<void>
 }
 
 export async function openMembersPanel(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /Show members list/i }).waitFor({ state: 'visible' })
   await page.getByRole('button', { name: /Show members list/i }).click()
   await expect(page.locator('.members-panel-kicker:text("Members")')).toBeVisible()
 }

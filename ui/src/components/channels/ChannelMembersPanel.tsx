@@ -139,6 +139,7 @@ export function ChannelMembersPanel({
   async function handleInvite(memberName: string) {
     const response = await inviteChannelMember(channelId, memberName)
     onMembersChange(response.members)
+    setShowInviteModal(false)
   }
 
   return (

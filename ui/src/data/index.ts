@@ -6,6 +6,26 @@ export {
   identity,
 } from './common'
 
+export type {
+  ListChannelsParams,
+  CreateChannelRequest,
+  UpdateChannelRequest,
+  InviteChannelMemberRequest,
+  SendMessageRequest,
+  GetHistoryParams,
+  UpdateReadCursorRequest,
+  CreateTasksRequest,
+  ClaimTasksRequest,
+  UnclaimTaskRequest,
+  UpdateTaskStatusRequest,
+  UpdateAgentRequest,
+  RestartAgentRequest,
+  DeleteAgentRequest,
+  CreateTeamRequest,
+  UpdateTeamRequest,
+  AddTeamMemberRequest,
+} from './requests'
+
 export {
   listChannels,
   createChannel,
@@ -68,6 +88,8 @@ export {
   type ActivityLogResponse,
   type WorkspaceResponse,
   type WorkspaceFileResponse,
+  type RestartMode,
+  type DeleteMode,
 } from './agents'
 
 export {

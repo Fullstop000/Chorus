@@ -7,21 +7,17 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { FormField, FormError } from '@/components/ui/form'
 import { Label } from '@/components/ui/label'
 import { createChannel, createTeam } from '../../data'
+import type { TeamMember } from '../../data'
 import { useAgents, useHumans } from '../../hooks/data'
 
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onCreated: (channel: { id?: string | null; name: string }) => void
+  onCreated: (channel: Pick<import('../../data').ChannelInfo, 'id' | 'name'>) => void
   defaultMode?: 'channel' | 'team'
 }
 
-interface DraftTeamMember {
-  member_name: string
-  member_type: 'agent' | 'human'
-  member_id: string
-  role: string
-}
+type DraftTeamMember = Omit<TeamMember, 'team_id' | 'joined_at'>
 
 export function CreateChannelModal({ open, onOpenChange, onCreated, defaultMode = 'channel' }: Props) {
   const agents = useAgents()

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2, Users } from 'lucide-react'
-import { useApp } from '../../store'
+import { useStore } from '../../store'
+import { useAgents, useChannels, useHumans, useInbox, useRefresh } from '../../hooks/data'
 import type { AgentInfo } from '../../components/agents/types'
 import type { ChannelInfo } from '../../components/channels/types'
 import { isVisibleSidebarChannel } from './sidebarChannels'
@@ -49,24 +50,12 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const {
-    currentUser,
-    serverInfo,
-    channels: loadedChannels,
-    agents,
-    selectedChannel,
-    selectedChannelId,
-    selectedAgent,
-    setSelectedChannel,
-    setSelectedAgent,
-    getConversationUnread,
-    getConversationThreadUnreadCount,
-    getAgentUnread,
-    getAgentConversationId,
-    refreshChannels,
-    refreshAgents,
-    refreshTeams,
-  } = useApp()
+  const { currentUser, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent } = useStore()
+  const agents = useAgents()
+  const { channels: loadedChannels, systemChannels } = useChannels()
+  const humans = useHumans()
+  const { getConversationUnread, getConversationThreadUnreadCount, getAgentUnread, getAgentConversationId } = useInbox()
+  const { refreshChannels, refreshAgents, refreshTeams } = useRefresh()
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showCreateChannel, setShowCreateChannel] = useState(false)
   const [createModalMode, setCreateModalMode] = useState<'channel' | 'team'>('channel')
@@ -76,8 +65,6 @@ export function Sidebar() {
   const menuRef = useRef<HTMLDivElement | null>(null)
 
   const channels = loadedChannels.filter(isVisibleSidebarChannel)
-  const systemChannels = serverInfo?.system_channels ?? []
-  const humans = serverInfo?.humans ?? []
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -89,18 +76,10 @@ export function Sidebar() {
     return () => document.removeEventListener('mousedown', handlePointerDown)
   }, [])
 
-  function selectChannel(channel: ChannelInfo | null) {
-    if (!channel) {
-      setSelectedChannel(null)
-      return
-    }
-    setSelectedChannel(`#${channel.name}`, channel.id ?? null)
-  }
-
   function recoverSelectionAfterChannelRemoval(channelId?: string) {
-    if (!channelId || selectedChannelId !== channelId) return
+    if (!channelId || currentChannel?.id !== channelId) return
     const fallback = channels.find((channel) => channel.id !== channelId) ?? null
-    selectChannel(fallback)
+    setCurrentChannel(fallback)
   }
 
   return (
@@ -156,7 +135,6 @@ export function Sidebar() {
               </div>
             </div>
             {systemChannels.map((ch) => {
-              const target = `#${ch.name}`
               const unreadCount = getConversationUnread(ch.id ?? null)
               const threadUnreadCount = getConversationThreadUnreadCount(ch.id ?? null)
               const showUnreadBadge = unreadCount > 0
@@ -165,8 +143,8 @@ export function Sidebar() {
                 <button
                   key={ch.id ?? ch.name}
                   type="button"
-                  className={`sidebar-item${selectedChannel === target ? ' active' : ''}`}
-                  onClick={() => setSelectedChannel(target, ch.id ?? null)}
+                  className={`sidebar-item${currentChannel?.name === ch.name ? ' active' : ''}`}
+                  onClick={() => setCurrentChannel(ch)}
                   title={ch.description ?? ch.name}
                 >
                   <span className="sidebar-item-hash">#</span>
@@ -185,8 +163,7 @@ export function Sidebar() {
               )
             })}
             {channels.map((ch) => {
-              const target = `#${ch.name}`
-              const isActive = selectedChannel === target
+              const isActive = currentChannel?.name === ch.name
               const isMenuOpen = openChannelMenuId === ch.id
               const unreadCount = getConversationUnread(ch.id ?? null)
               const threadUnreadCount = getConversationThreadUnreadCount(ch.id ?? null)
@@ -203,7 +180,7 @@ export function Sidebar() {
                     className={`sidebar-item sidebar-channel-button${
                       ch.channel_type !== 'team' ? ' has-actions' : ''
                     }${isActive ? ' active' : ''}`}
-                    onClick={() => selectChannel(ch)}
+                    onClick={() => setCurrentChannel(ch)}
                     title={ch.description ?? ch.name}
                   >
                     <span className="sidebar-item-hash">#</span>
@@ -292,9 +269,9 @@ export function Sidebar() {
                   key={agent.name}
                   type="button"
                   className={`sidebar-item${
-                    selectedAgent?.name === agent.name ? ' active' : ''
+                    currentAgent?.name === agent.name ? ' active' : ''
                   }`}
-                  onClick={() => setSelectedAgent(agent as AgentInfo)}
+                  onClick={() => setCurrentAgent(agent as AgentInfo)}
                 >
                   <AgentAvatar name={agent.name} status={agent.status} activity={agent.activity} />
                   <span className="sidebar-item-main">
@@ -387,7 +364,7 @@ export function Sidebar() {
           onOpenChange={(open) => setShowCreateChannel(open)}
           onCreated={(created) => {
             setShowCreateChannel(false)
-            setSelectedChannel(`#${created.name}`, created.id ?? null)
+            setCurrentChannel({ name: created.name, id: created.id ?? undefined, joined: true } as ChannelInfo)
             void refreshChannels()
             void refreshTeams()
           }}
@@ -399,8 +376,8 @@ export function Sidebar() {
           open={!!editingChannel}
           onOpenChange={(open) => !open && setEditingChannel(null)}
           onSaved={(updated) => {
-            if (selectedChannelId === updated.id) {
-              setSelectedChannel(`#${updated.name}`, updated.id)
+            if (currentChannel?.id === updated.id) {
+              setCurrentChannel({ ...currentChannel, name: updated.name } as ChannelInfo)
             }
             setEditingChannel(null)
             void refreshChannels()

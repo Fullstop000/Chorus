@@ -1,8 +1,32 @@
 import { get, post } from './client'
 import { queryString } from './common'
-import type { TaskStatus, TasksResponse, TaskInfo } from '../types'
+import type {
+  CreateTasksRequest,
+  ClaimTasksRequest,
+  UnclaimTaskRequest,
+  UpdateTaskStatusRequest,
+} from './requests'
 
-export type { TaskStatus, TaskInfo, TasksResponse } from '../types'
+// ── Types (source of truth) ──
+
+export type TaskStatus = 'todo' | 'in_progress' | 'in_review' | 'done'
+
+export interface TaskInfo {
+  id?: string
+  taskNumber: number
+  title: string
+  status: TaskStatus
+  channelId?: string
+  claimedByName?: string
+  createdByName?: string
+  createdAt?: string
+}
+
+export interface TasksResponse {
+  tasks: TaskInfo[]
+}
+
+// ── API functions ──
 
 function conversationPath(conversationId: string, suffix = ''): string {
   return `/api/conversations/${encodeURIComponent(conversationId)}${suffix}`
@@ -16,24 +40,21 @@ export function getTasks(
 }
 
 export function createTasks(conversationId: string, titles: string[]): Promise<TasksResponse> {
-  return post(conversationPath(conversationId, '/tasks'), {
-    tasks: titles.map((title) => ({ title })),
-  })
+  const payload: CreateTasksRequest = { tasks: titles.map((title) => ({ title })) }
+  return post(conversationPath(conversationId, '/tasks'), payload)
 }
 
 export function claimTasks(
   conversationId: string,
   taskNumbers: number[]
 ): Promise<{ results: Array<{ taskNumber: number; success: boolean; reason?: string }> }> {
-  return post(conversationPath(conversationId, '/tasks/claim'), {
-    task_numbers: taskNumbers,
-  })
+  const payload: ClaimTasksRequest = { task_numbers: taskNumbers }
+  return post(conversationPath(conversationId, '/tasks/claim'), payload)
 }
 
 export function unclaimTask(conversationId: string, taskNumber: number): Promise<void> {
-  return post(conversationPath(conversationId, '/tasks/unclaim'), {
-    task_number: taskNumber,
-  })
+  const payload: UnclaimTaskRequest = { task_number: taskNumber }
+  return post(conversationPath(conversationId, '/tasks/unclaim'), payload)
 }
 
 export function updateTaskStatus(
@@ -41,11 +62,11 @@ export function updateTaskStatus(
   taskNumber: number,
   status: TaskStatus
 ): Promise<void> {
-  return post(conversationPath(conversationId, '/tasks/update-status'), {
-    task_number: taskNumber,
-    status,
-  })
+  const payload: UpdateTaskStatusRequest = { task_number: taskNumber, status }
+  return post(conversationPath(conversationId, '/tasks/update-status'), payload)
 }
+
+// ── Transforms ──
 
 export function groupTasksByStatus(tasks: TaskInfo[]): Record<TaskStatus, TaskInfo[]> {
   const result: Record<string, TaskInfo[]> = { todo: [], in_progress: [], in_review: [], done: [] }

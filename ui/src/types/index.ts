@@ -1,5 +1,3 @@
-/** Re-exports: canonical definitions live in each feature `types.ts` beside that module. */
-
 export type {
   ChannelInfo,
   HumanInfo,
@@ -11,7 +9,7 @@ export type {
   TeamResponse,
   ServerInfo,
   WhoamiResponse,
-} from '../components/channels/types'
+} from '../data/channels'
 
 export type {
   AgentInfo,
@@ -27,7 +25,13 @@ export type {
   ActivityLogResponse,
   WorkspaceResponse,
   WorkspaceFileResponse,
-} from '../components/agents/types'
+} from '../data/agents'
+
+export type {
+  TaskStatus,
+  TaskInfo,
+  TasksResponse,
+} from '../data/tasks'
 
 export type {
   AttachmentRef,
@@ -37,9 +41,7 @@ export type {
   StreamEvent,
   UploadResponse,
   Target,
-} from '../components/chat/types'
-
-export type { TaskStatus, TaskInfo, TasksResponse } from '../components/tasks/types'
+} from '../data/chat'
 
 export type {
   InboxConversationState,
@@ -47,6 +49,4 @@ export type {
   ConversationInboxRefreshResponse,
   ThreadInboxEntry,
   ThreadInboxResponse,
-} from '../inbox/types'
-
-export type { RealtimeMessage } from '../transport/types'
+} from '../data/inbox'
