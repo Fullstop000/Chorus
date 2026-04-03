@@ -106,18 +106,21 @@ export function useHistory(
             return
           }
 
-          const didOptimisticAppend = queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
+          let messageCountChanged = false
+
+          queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
             if (!current) return current
             const before = current.messages.length
             const updated = applyRealtimeEvent(current.messages, frame.event)
             if (updated.length > before) {
+              messageCountChanged = true
               maxLoadedSeqRef.current = maxHistorySeq(updated)
               return { ...current, messages: updated }
             }
             return current
           })
 
-          if (didOptimisticAppend) return
+          if (messageCountChanged) return
 
           const incrementalAfter = historyFetchAfterForNotification(
             activeRealtimeTarget,
@@ -125,6 +128,7 @@ export function useHistory(
             maxLoadedSeqRef.current,
             options?.threadParentId ?? null
           )
+
           if (incrementalAfter != null && conversationId) {
             void getHistoryAfter(conversationId, incrementalAfter, 50, options?.threadParentId ?? undefined).then(
               (res) => {
