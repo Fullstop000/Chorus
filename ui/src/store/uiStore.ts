@@ -6,13 +6,21 @@ import { createInboxState, mergeReadCursorAckIntoInboxState } from '../inbox'
 export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
 interface UIState {
+  /** Logged-in username, set once after /api/whoami resolves */
   currentUser: string
+  /** Currently selected sidebar channel (team/dm/system); null when an agent is selected instead */
   currentChannel: ChannelInfo | null
+  /** Currently selected agent profile; null when a channel is selected */
   currentAgent: AgentInfo | null
+  /** Which top-level tab the MainPanel is showing */
   activeTab: ActiveTab
+  /** The message whose thread replies are shown in the ThreadPanel overlay; null = no thread open */
   openThreadMsg: HistoryMessage | null
+  /** Unread / read-cursor state for every inbox conversation (DMs + channels) */
   inboxState: InboxState
+  /** Thread preview entries keyed by conversationId, used by the ThreadsTab badge count */
   conversationThreads: Record<string, ThreadInboxEntry[]>
+  /** True once the initial whoami + channels + inbox bootstrap has completed; gates autoSelectChannel */
   shellBootstrapped: boolean
 }
 
@@ -22,10 +30,13 @@ interface UIActions {
   setCurrentAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
   setOpenThreadMsg: (msg: HistoryMessage | null) => void
+  /** Merge a server-side read-cursor ack into the local inbox state */
   applyReadCursorAck: (ack: ReadCursorAckPayload) => void
+  /** Bulk-replace inboxState (used by realtime subscription on reconnect) */
   updateInboxState: (updater: (current: InboxState) => InboxState) => void
   setConversationThreads: (conversationId: string, threads: ThreadInboxEntry[]) => void
   setShellBootstrapped: (value: boolean) => void
+  /** Clear all selection state back to defaults (used on logout / session reset) */
   resetUserSession: () => void
 }
 
