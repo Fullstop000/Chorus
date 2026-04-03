@@ -67,10 +67,9 @@ fn load_mcp_config(path: &str) -> Result<(String, Vec<String>)> {
         serde_json::from_str(&data).context("Failed to parse MCP config JSON")?;
     let entry = config
         .mcp_servers
-        .into_values()
-        .next()
-        .context("No MCP server entries in config")?;
-    Ok((entry.command, entry.args))
+        .get("chat")
+        .context("No MCP server entry named 'chat' in config")?;
+    Ok((entry.command.clone(), entry.args.clone()))
 }
 
 // ---------------------------------------------------------------------------
@@ -211,8 +210,11 @@ async fn main() {
 }
 
 async fn run() -> Result<()> {
-    let args = parse_args()?;
-    let (command, cmd_args) = load_mcp_config(&args.mcp_config)?;
+    let Args {
+        mcp_config,
+        prompt: _,
+    } = parse_args()?;
+    let (command, cmd_args) = load_mcp_config(&mcp_config)?;
 
     // Drain stdin in background to prevent buffer fill-up.
     // The manager writes stdin notifications but the bridge handles delivery via wait_for_message.
@@ -254,8 +256,8 @@ async fn run() -> Result<()> {
         .parse()
         .unwrap_or(200);
 
-    // Process initial prompt
-    emit_text(&format!("Processing prompt: {}", args.prompt));
+    // Short status only — full `--prompt` can be large and may contain sensitive context.
+    emit_text("Processing prompt");
 
     // Main loop: wait for messages, extract token or use fallback, send reply
     loop {
@@ -272,14 +274,21 @@ async fn run() -> Result<()> {
             continue;
         }
 
-        // Process each line (multiple messages may arrive)
+        // Process each line (multiple messages may arrive). Bridge output can include
+        // footers such as "Reply instructions:" — only handle real message header lines.
         for line in response.lines() {
             let line = line.trim();
             if line.is_empty() || line.contains("No new messages.") {
                 continue;
             }
+            if !line.starts_with("[target=") {
+                continue;
+            }
 
-            let target = parse_target(line).unwrap_or_else(|| "#general".to_string());
+            let Some(target) = parse_target(line) else {
+                emit_error(&format!("Could not parse target from line: {line}"));
+                continue;
+            };
             let content = parse_content(line).unwrap_or_default();
             let token = extract_token(&content).unwrap_or_else(next_fallback_token);
 
