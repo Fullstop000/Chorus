@@ -15,42 +15,30 @@ export function applyRealtimeEvent(
 ): HistoryMessage[] {
   switch (event.eventType) {
     case 'message.created': {
-      const parentIdRaw = event.payload.threadParentId
-      const threadParentId =
-        typeof parentIdRaw === 'string' && parentIdRaw.length > 0 ? parentIdRaw : null
-      if (threadParentId) {
+      const p = event.payload
+      if (p.threadParentId) {
         return messages.map((message) =>
-          message.id === threadParentId
+          message.id === p.threadParentId
             ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
             : message
         )
       }
-      const p = event.payload
-      const id = typeof p.messageId === 'string' ? p.messageId : null
-      const content = typeof p.content === 'string' ? p.content : null
-      const senderRaw = typeof p.sender === 'object' && p.sender !== null ? p.sender as Record<string, unknown> : null
-      const senderName = senderRaw && typeof senderRaw.name === 'string' ? senderRaw.name as string : (typeof p.senderName === 'string' ? p.senderName : null)
-      const senderTypeRaw = senderRaw && typeof senderRaw.type === 'string' ? senderRaw.type as string : (typeof p.senderType === 'string' ? p.senderType : 'human')
-      const createdAt = typeof p.createdAt === 'string' ? p.createdAt : new Date().toISOString()
-      const seq = typeof p.seq === 'number' ? p.seq : event.latestSeq
-
-      if (!id || !content || !senderName) return messages
+      if (!p.messageId || !p.content || !p.sender?.name) return messages
 
       const newMessage: HistoryMessage = {
-        id,
-        seq,
-        content,
-        senderName,
-        senderType: senderTypeRaw as 'human' | 'agent',
-        senderDeleted: typeof p.senderDeleted === 'boolean' ? p.senderDeleted : false,
-        createdAt,
-        clientNonce: typeof p.clientNonce === 'string' ? p.clientNonce : undefined,
+        id: p.messageId,
+        seq: p.seq ?? event.latestSeq,
+        content: p.content,
+        senderName: p.sender.name,
+        senderType: p.sender.type ?? 'human',
+        senderDeleted: p.senderDeleted ?? false,
+        createdAt: p.createdAt ?? new Date().toISOString(),
+        clientNonce: p.clientNonce,
       }
       return [...messages, newMessage]
     }
     case 'message.tombstone_changed': {
-      const payload = event.payload
-      const messageId = typeof payload.messageId === 'string' ? payload.messageId : null
+      const messageId = typeof event.payload.messageId === 'string' ? event.payload.messageId : null
       if (!messageId) return messages
       return messages.map((message) =>
         message.id === messageId ? { ...message, senderDeleted: true } : message

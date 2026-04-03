@@ -42,11 +42,31 @@ export interface HistoryResponse {
   last_read_seq: number
 }
 
+export interface MessageSenderInfo {
+  name: string
+  type: 'human' | 'agent'
+}
+
+export interface MessageCreatedPayload {
+  messageId: string
+  conversationId: string
+  conversationType: string
+  threadParentId: string | null
+  sender: MessageSenderInfo
+  senderDeleted: boolean
+  content: string
+  attachmentIds: string[]
+  attachments: unknown[]
+  seq: number
+  createdAt: string
+  clientNonce?: string
+}
+
 export interface StreamEvent {
   eventType: string
   channelId: string
   latestSeq: number
-  payload: Record<string, unknown>
+  payload: Record<string, unknown> & Partial<MessageCreatedPayload>
   schemaVersion: number
 }
 

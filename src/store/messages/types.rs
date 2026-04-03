@@ -364,8 +364,34 @@ pub(crate) struct InsertedMessage {
     pub(crate) seq: i64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MessageCreatedPayload {
+    pub message_id: String,
+    pub conversation_id: String,
+    pub conversation_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thread_parent_id: Option<String>,
+    pub sender: MessageSenderInfo,
+    #[serde(default)]
+    pub sender_deleted: bool,
+    pub content: String,
+    #[serde(default)]
+    pub attachment_ids: Vec<String>,
+    #[serde(default)]
+    pub attachments: Vec<serde_json::Value>,
+    pub seq: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MessageSenderInfo {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub sender_type: String,
+}
+
 impl InsertedMessage {
-    pub(crate) fn to_transport_payload(
+    pub(crate) fn to_event_payload(
         &self,
         conversation_id: &str,
         conversation_type: &str,
@@ -373,23 +399,22 @@ impl InsertedMessage {
         sender_name: &str,
         sender_type: &str,
         content: &str,
-        seq: i64,
-    ) -> Value {
-        json!({
-            "messageId": self.id.as_str(),
-            "conversationId": conversation_id,
-            "conversationType": conversation_type,
-            "threadParentId": thread_parent_id,
-            "sender": {
-                "name": sender_name,
-                "type": sender_type,
+    ) -> MessageCreatedPayload {
+        MessageCreatedPayload {
+            message_id: self.id.clone(),
+            conversation_id: conversation_id.to_string(),
+            conversation_type: conversation_type.to_string(),
+            thread_parent_id: thread_parent_id.map(|s| s.to_string()),
+            sender: MessageSenderInfo {
+                name: sender_name.to_string(),
+                sender_type: sender_type.to_string(),
             },
-            "senderDeleted": false,
-            "content": content,
-            "attachmentIds": [],
-            "attachments": [],
-            "seq": seq,
-            "createdAt": chrono::Utc::now().to_rfc3339(),
-        })
+            sender_deleted: false,
+            content: content.to_string(),
+            attachment_ids: Vec::new(),
+            attachments: Vec::new(),
+            seq: self.seq,
+            created_at: chrono::Utc::now().to_rfc3339(),
+        }
     }
 }

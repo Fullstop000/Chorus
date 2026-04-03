@@ -1,6 +1,5 @@
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Transaction};
-use serde_json::json;
 use uuid::Uuid;
 
 use crate::store::channels::Channel;
@@ -79,16 +78,19 @@ impl Store {
         )?;
         tx.commit()?;
 
-        let event_payload = inserted.to_transport_payload(
+        let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
             None,
             sender_name,
             sender_type.as_str(),
             content,
-            inserted.seq,
         );
-        let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
+        let stream_event = StreamEvent::new(
+            channel.id.clone(),
+            inserted.seq,
+            serde_json::to_value(payload)?,
+        );
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)
     }
@@ -111,16 +113,19 @@ impl Store {
         )?;
         tx.commit()?;
 
-        let event_payload = inserted.to_transport_payload(
+        let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
             None,
             "system",
             "human",
             content,
-            inserted.seq,
         );
-        let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
+        let stream_event = StreamEvent::new(
+            channel.id.clone(),
+            inserted.seq,
+            serde_json::to_value(payload)?,
+        );
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)
     }
@@ -170,16 +175,19 @@ impl Store {
         }
         tx.commit()?;
 
-        let event_payload = inserted.to_transport_payload(
+        let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
             thread_parent_id.as_deref(),
             sender_name,
             sender_type.as_str(),
             content,
-            inserted.seq,
         );
-        let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
+        let stream_event = StreamEvent::new(
+            channel.id.clone(),
+            inserted.seq,
+            serde_json::to_value(payload)?,
+        );
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)
     }
