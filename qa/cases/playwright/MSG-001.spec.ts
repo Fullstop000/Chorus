@@ -85,14 +85,21 @@ test.describe('MSG-001', () => {
       expect(agentMsgs.length).toBeGreaterThanOrEqual(3)
       const senderNames = new Set(agentMsgs.map((m) => m.senderName))
       if (useStub) {
-        const text = agentMsgs.map((m) => m.content ?? '').join('\n')
-        expect(text).toContain('OK-a')
-        expect(text).toContain('OK-b')
-        expect(text).toContain('OK-c')
+        // Human lines include `token:OK-*`; only agent bodies count for fan-out proof.
+        expect(
+          agentMsgs.some((m) => m.senderName === agents.a && (m.content ?? '').includes('OK-a'))
+        ).toBe(true)
+        expect(
+          agentMsgs.some((m) => m.senderName === agents.b && (m.content ?? '').includes('OK-b'))
+        ).toBe(true)
+        expect(
+          agentMsgs.some((m) => m.senderName === agents.c && (m.content ?? '').includes('OK-c'))
+        ).toBe(true)
+      } else {
+        expect(senderNames.has(agents.a)).toBe(true)
+        expect(senderNames.has(agents.b)).toBe(true)
+        expect(senderNames.has(agents.c)).toBe(true)
       }
-      expect(senderNames.has(agents.a)).toBe(true)
-      expect(senderNames.has(agents.b)).toBe(true)
-      expect(senderNames.has(agents.c)).toBe(true)
     })
   })
 })

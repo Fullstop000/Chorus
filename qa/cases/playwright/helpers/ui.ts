@@ -9,7 +9,10 @@ import { agentNames } from './api'
  * tests a real UI signal instead of network heuristics.
  */
 export async function waitForAppReady(page: Page): Promise<void> {
-  await expect(page.locator('.sidebar-item-text').first()).toBeVisible({ timeout: 30_000 })
+  const stub = process.env.CHORUS_E2E_LLM === 'stub'
+  await expect(page.locator('.sidebar-item-text').first()).toBeVisible({
+    timeout: stub ? 90_000 : 30_000,
+  })
 }
 
 /** Navigate to the app root and wait for the shell to be ready. */

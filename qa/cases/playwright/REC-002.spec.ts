@@ -48,13 +48,19 @@ test.describe('REC-002', () => {
       let sawAll = false
       while (Date.now() < deadline) {
         const history = await historyForUser(request, username, '#all', 80)
-        const text = history.map((m) => m.content ?? '').join(' ')
+        const rows = useStub
+          ? history.filter((m) => m.senderType === 'agent')
+          : history
+        const text = rows.map((m) => m.content ?? '').join(' ')
         sawAll =
           text.includes(`a-${mark}`) && text.includes(`b-${mark}`) && text.includes(`c-${mark}`)
         if (sawAll) break
-        await new Promise((r) => setTimeout(r, 5000))
+        await new Promise((r) => setTimeout(r, useStub ? 2_000 : 5_000))
       }
       expect(sawAll).toBe(true)
+      await expect(
+        page.locator('.message-item').filter({ hasText: `a-${mark}` }).first()
+      ).toBeVisible({ timeout: 60_000 })
       await openThreadFromMessage(page, `a-${mark}`)
       await expect(page.locator('.thread-panel')).toBeVisible()
       await page.locator('.thread-close-btn').click()
