@@ -1,11 +1,17 @@
 import { test, expect } from './helpers/fixtures'
 import {
+  agentNames,
   ensureMixedRuntimeTrio,
+  ensureStubTrio,
   createTeamApi,
   getWhoami,
   historyForUser,
   teamExists,
 } from './helpers/api'
+
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const useStub = mode === 'stub'
+const agents = agentNames()
 import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
 
 /**
@@ -34,16 +40,20 @@ import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
  */
 test.describe('TMT-002', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
     if (!(await teamExists(request, 'qa-eng'))) {
       await createTeamApi(request, {
         name: 'qa-eng',
         display_name: 'QA Engineering',
         collaboration_model: 'leader_operators',
-        leader_agent_name: 'bot-a',
+        leader_agent_name: agents.a,
         members: [
-          { member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' },
-          { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
+          { member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'operator' },
+          { member_name: agents.b, member_type: 'agent', member_id: agents.b, role: 'operator' },
         ],
       })
     }
@@ -53,7 +63,7 @@ test.describe('TMT-002', () => {
         display_name: 'QA Algo',
         collaboration_model: 'swarm',
         leader_agent_name: null,
-        members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'member' }],
+        members: [{ member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'member' }],
       })
     }
   })
@@ -72,7 +82,7 @@ test.describe('TMT-002', () => {
 
     await test.step('Steps 4–6: Open #qa-eng; copy + forwarded metadata (hybrid)', async () => {
       await clickSidebarChannel(page, 'qa-eng')
-      const msgs = await historyForUser(request, 'bot-a', '#qa-eng', 40)
+      const msgs = await historyForUser(request, agents.a, '#qa-eng', 40)
       expect(msgs.some((m) => (m.content ?? '').includes('landing page'))).toBe(true)
       let humanVisibleHistory = null as Awaited<ReturnType<typeof historyForUser>> | null
       try {
@@ -99,8 +109,8 @@ test.describe('TMT-002', () => {
       let eng = false
       let algo = false
       while (Date.now() < deadline) {
-        const he = await historyForUser(request, 'bot-a', '#qa-eng', 50)
-        const ha = await historyForUser(request, 'bot-a', '#qa-algo', 50)
+        const he = await historyForUser(request, agents.a, '#qa-eng', 50)
+        const ha = await historyForUser(request, agents.a, '#qa-algo', 50)
         eng = he.some((m) => (m.content ?? '').includes(mark))
         algo = ha.some((m) => (m.content ?? '').includes(mark))
         if (eng && algo) break

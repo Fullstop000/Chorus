@@ -96,6 +96,47 @@ export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promis
   }
 }
 
+/** Create stub-a, stub-b, stub-c with runtime=stub for fast QA runs. */
+export async function ensureStubTrio(request: APIRequestContext): Promise<void> {
+  const agents = await listAgents(request)
+  const names = new Set(agents.map((a) => a.name))
+  for (const name of ['stub-a', 'stub-b', 'stub-c'] as const) {
+    if (names.has(name)) continue
+    let ok = false
+    let lastText = ''
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const res = await request.post('/api/agents', {
+        data: {
+          name,
+          display_name: name,
+          description: 'qa playwright seed',
+          runtime: 'stub',
+          model: 'echo',
+          reasoningEffort: null,
+          envVars: [],
+        },
+      })
+      lastText = await res.text()
+      if (res.ok()) {
+        ok = true
+        break
+      }
+      await new Promise((r) => setTimeout(r, 250 * (attempt + 1)))
+    }
+    expect(ok, `create stub agent ${name}: ${lastText}`).toBe(true)
+    await new Promise((r) => setTimeout(r, 200))
+  }
+}
+
+/** Return agent names based on CHORUS_E2E_LLM mode. */
+export function agentNames(): { a: string; b: string; c: string } {
+  const mode = process.env.CHORUS_E2E_LLM ?? '1'
+  if (mode === 'stub') {
+    return { a: 'stub-a', b: 'stub-b', c: 'stub-c' }
+  }
+  return { a: 'bot-a', b: 'bot-b', c: 'bot-c' }
+}
+
 export async function waitForAgentActive(
   request: APIRequestContext,
   name: string,

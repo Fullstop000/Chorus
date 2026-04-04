@@ -1,39 +1,78 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { clickSidebarChannel, openAgentTab, openThreadFromMessage, sendChatMessage , gotoApp } from './helpers/ui'
+import {
+  agentNames,
+  ensureMixedRuntimeTrio,
+  ensureStubTrio,
+  getWhoami,
+  historyForUser,
+  sendAsUser,
+} from './helpers/api'
+import {
+  clickSidebarChannel,
+  openAgentTab,
+  openThreadFromMessage,
+  reloadApp,
+  sendChatMessage,
+  gotoApp,
+} from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/agents.md` — REC-002 Concurrent Agent Activity Under One Channel
  */
 test.describe('REC-002', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Concurrent Agent Activity Under One Channel @case REC-002', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.setTimeout(useStub ? 600_000 : 300_000)
     const { username } = await getWhoami(request)
     const mark = `rec-002-${Date.now()}`
     await gotoApp(page)
 
     await test.step('Steps 1–4: Trigger multi-agent replies, switch activity, and open a thread', async () => {
       await clickSidebarChannel(page, 'all')
-      await sendChatMessage(page, `MSG ${mark}: bot-a say a-${mark}, bot-b say b-${mark}, bot-c say c-${mark}`)
-      await openAgentTab(page, 'bot-a', 'Activity')
+      if (useStub) {
+        await sendAsUser(request, username, '#all', `${agents.a} say "a-${mark}"`)
+        await sendAsUser(request, username, '#all', `${agents.b} say "b-${mark}"`)
+        await sendAsUser(request, username, '#all', `${agents.c} say "c-${mark}"`)
+      } else {
+        await sendChatMessage(page, `MSG ${mark}: ${agents.a} say a-${mark}, ${agents.b} say b-${mark}, ${agents.c} say c-${mark}`)
+      }
+      await openAgentTab(page, agents.a, 'Activity')
       await page.getByRole('button', { name: 'Chat', exact: true }).click()
       const deadline = Date.now() + 180_000
       let sawAll = false
       while (Date.now() < deadline) {
         const history = await historyForUser(request, username, '#all', 80)
-        const text = history.map((m) => m.content ?? '').join(' ')
-        sawAll = /a-/.test(text) && /b-/.test(text) && /c-/.test(text)
+        const rows = useStub
+          ? history.filter((m) => m.senderType === 'agent')
+          : history
+        const text = rows.map((m) => m.content ?? '').join(' ')
+        sawAll =
+          text.includes(`a-${mark}`) && text.includes(`b-${mark}`) && text.includes(`c-${mark}`)
         if (sawAll) break
-        await new Promise((r) => setTimeout(r, 5000))
+        await new Promise((r) => setTimeout(r, useStub ? 2_000 : 5_000))
       }
       expect(sawAll).toBe(true)
-      await openThreadFromMessage(page, mark)
+      if (useStub) {
+        await reloadApp(page)
+        await clickSidebarChannel(page, 'all')
+      }
+      await expect(
+        page.locator('.message-item').filter({ hasText: `a-${mark}` }).first()
+      ).toBeVisible({ timeout: 60_000 })
+      await openThreadFromMessage(page, `a-${mark}`)
       await expect(page.locator('.thread-panel')).toBeVisible()
       await page.locator('.thread-close-btn').click()
       await expect(page.locator('.message-item').filter({ hasText: mark }).first()).toBeVisible()

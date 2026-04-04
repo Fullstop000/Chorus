@@ -1,7 +1,9 @@
 import { test, expect } from './helpers/fixtures'
 import {
+  agentNames,
   createTeamApi,
   ensureMixedRuntimeTrio,
+  ensureStubTrio,
   getWhoami,
   historyForUser,
   stopAgentApi,
@@ -10,10 +12,14 @@ import {
 } from './helpers/api'
 import { clickSidebarChannel, openThreadFromMessage, sendChatMessage, sendThreadMessage , gotoApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const skipRealLLM = skipLLM || useStub
+const agents = agentNames()
 const runtimeMatrix = [
-  { agentName: 'bot-a', runtimeLabel: 'claude', channelName: 'qa-thread-wake-claude' },
-  { agentName: 'bot-c', runtimeLabel: 'codex', channelName: 'qa-thread-wake-codex' },
+  { agentName: agents.a, runtimeLabel: 'claude', channelName: 'qa-thread-wake-claude' },
+  { agentName: agents.c, runtimeLabel: 'codex', channelName: 'qa-thread-wake-codex' },
 ]
 
 /**
@@ -36,7 +42,11 @@ const runtimeMatrix = [
  */
 test.describe('TMT-009', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
     const { username } = await getWhoami(request)
     for (const scenario of runtimeMatrix) {
       if (await teamExists(request, scenario.channelName)) continue
@@ -59,7 +69,7 @@ test.describe('TMT-009', () => {
   })
 
   test('Agent Team Thread Wake And In-Thread Reply @case TMT-009', async ({ page, request }) => {
-    test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.skip(skipRealLLM, 'requires real LLM')
     test.setTimeout(420_000)
 
     const { username } = await getWhoami(request)

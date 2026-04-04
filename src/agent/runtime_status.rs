@@ -38,6 +38,7 @@ impl RuntimeStatusProvider for SystemRuntimeStatusProvider {
     fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatus>> {
         all_runtime_drivers()
             .into_iter()
+            .filter(|driver| driver.id() != "stub")
             .map(|driver| driver.detect_runtime_status())
             .collect()
     }

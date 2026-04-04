@@ -1,6 +1,7 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, historyForUser } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, historyForUser } from './helpers/api'
 import {
+  clickComboboxOption,
   createUserChannelViaUi,
   clickSidebarChannel,
   openMembersPanel,
@@ -8,7 +9,10 @@ import {
   gotoApp,
 } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/channels.md` — CHN-001 Channel Create And Default Membership
@@ -33,7 +37,11 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('CHN-001', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Channel Create And Default Membership @case CHN-001', async ({ page, request }) => {
@@ -60,11 +68,11 @@ test.describe('CHN-001', () => {
       await expect(page.locator('.members-panel-title').first()).toHaveText('1')
     })
 
-    await test.step('Step 5: Invite bot-a', async () => {
+    await test.step(`Step 5: Invite ${agents.a}`, async () => {
       await page.locator('.members-panel-actions button:has-text("Invite")').click()
       const inviteDialog = page.locator('[role="dialog"]')
       await inviteDialog.locator('[role="combobox"][aria-label="Member"]').click()
-      await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+      await clickComboboxOption(page, agents.a)
       await inviteDialog.locator('button:has-text("Invite Member")').click()
       await expect(inviteDialog).toBeHidden()
       await expect(page.locator('.members-panel-title').first()).toHaveText('2')
@@ -72,9 +80,11 @@ test.describe('CHN-001', () => {
 
     const token = `CHN-OPS-${Date.now()}`
 
-    await test.step('Step 6: Human message asking bot-a to reply', async () => {
+    await test.step(`Step 6: Human message asking ${agents.a} to reply`, async () => {
       await page.locator('.members-panel-close').click().catch(() => {})
-      await sendChatMessage(page, `bot-a reply with token ${token}`)
+      // Stub token extraction needs quoted form; real LLM still understands this phrasing.
+      const ping = useStub ? `${agents.a} reply with "${token}"` : `${agents.a} reply with token ${token}`
+      await sendChatMessage(page, ping)
     })
 
     await test.step('Step 7: Invited agent reply in channel (hybrid: member history)', async () => {
@@ -85,12 +95,12 @@ test.describe('CHN-001', () => {
       const deadline = Date.now() + 120_000
       let ok = false
       while (Date.now() < deadline) {
-        const msgs = await historyForUser(request, 'bot-a', `#${slug}`, 30)
+        const msgs = await historyForUser(request, agents.a, `#${slug}`, 30)
         ok = msgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))
         if (ok) break
         await new Promise((r) => setTimeout(r, 4000))
       }
-      expect(ok, 'bot-a should reply in channel').toBe(true)
+      expect(ok, `${agents.a} should reply in channel`).toBe(true)
     })
 
     await test.step('Step 8: Navigate away and back — count + history persist', async () => {

@@ -12,6 +12,8 @@ import { defineConfig, devices } from '@playwright/test'
  *   CHORUS_E2E_LLM=0  — skip tests that wait on real agent replies
  *   CHORUS_WORKERS    — number of parallel workers (default 4)
  */
+const stubE2E = process.env.CHORUS_E2E_LLM === 'stub'
+
 export default defineConfig({
   testDir: '.',
   testMatch: '*.spec.ts',
@@ -19,7 +21,8 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CHORUS_WORKERS ? parseInt(process.env.CHORUS_WORKERS) : 4,
-  timeout: 180_000,
+  // Stub runs wait on agent polls + slow UI; 180s is too tight for fixtures + body.
+  timeout: stubE2E ? 600_000 : 180_000,
   expect: { timeout: 15_000 },
   use: {
     trace: 'on-first-retry',

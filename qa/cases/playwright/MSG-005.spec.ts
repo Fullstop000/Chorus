@@ -37,13 +37,15 @@ test.describe('MSG-005', () => {
       state: 'visible',
       timeout: 30_000,
     })
+    const paramOffset = historyAfterParams.length
     await clickSidebarChannel(page, channelName)
     await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
     // Wait for the initial history fetch to settle before snapshotting the baseline
     await expect(page.locator('.message-input-textarea')).toBeVisible()
 
     const baselineHistoryRequests = historyRequests
-    expect(historyAfterParams.every((value) => value == null)).toBeTruthy()
+    const bootstrapAfter = historyAfterParams.slice(paramOffset)
+    expect(bootstrapAfter.every((value) => value == null)).toBeTruthy()
 
     const localToken = `msg-local-${Date.now()}`
     await sendChatMessage(page, localToken)

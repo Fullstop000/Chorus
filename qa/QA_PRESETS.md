@@ -94,3 +94,24 @@ Current UI matrix:
 Notes:
 - Use stable names such as `matrix-claude-sonnet` and `matrix-codex-gpt-5-4-mini`.
 - Verify the runtime and model badges after creation for every pair.
+
+### `stub-trio`
+
+Use for:
+- fast QA runs that test the full UI + message pipeline without LLM latency
+- CI smoke tests
+- core regression runs where real LLM reasoning is not required
+
+Agents:
+- `stub-a` — runtime `stub`, model `echo`
+- `stub-b` — runtime `stub`, model `echo`
+- `stub-c` — runtime `stub`, model `echo`
+
+Notes:
+- Select with `CHORUS_E2E_LLM=stub`.
+- Use `agentNames()` from the test helpers to get mode-aware agent names.
+- From the repo root, `cargo build` also builds `chorus-stub-agent` beside `chorus` (workspace default members); the server needs that binary to spawn stub runtimes.
+- **Fully skipped** in stub mode (entire spec `test.skip` for real LLM): **TMT-004, TMT-008, TMT-009**.
+- **Still run** in stub mode but **omit or shorten** LLM-only steps (e.g. team chat wakeups, swarm narrative checks): **TMT-003, TMT-005, TMT-006, TMT-007** — see each spec’s `skipRealLLM` / `useStub` branches.
+- Playwright uses a **600s** default test timeout when `CHORUS_E2E_LLM=stub` (`playwright.config.ts`); use `CHORUS_WORKERS=1` for easier debugging.
+- The stub runtime is not visible in the create-agent modal — agents are created via API only.

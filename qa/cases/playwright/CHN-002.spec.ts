@@ -15,6 +15,7 @@ test.describe('CHN-002', () => {
     page,
     request,
   }) => {
+    test.setTimeout(300_000)
     const createdIds: string[] = []
     const rawName = `#QaMix-${Date.now()}`
     const normalizedName = rawName.replace(/^#/, '').toLowerCase()

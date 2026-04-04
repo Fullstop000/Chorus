@@ -1,6 +1,8 @@
 import { test, expect } from './helpers/fixtures'
 import {
+  agentNames,
   ensureMixedRuntimeTrio,
+  ensureStubTrio,
   createTeamApi,
   getWhoami,
   historyForUser,
@@ -8,7 +10,11 @@ import {
   teamExists,
 } from './helpers/api'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const skipRealLLM = skipLLM || useStub
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-008 Multi-Team Agent Context Isolation
@@ -28,16 +34,20 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('TMT-008', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
     if (!(await teamExists(request, 'qa-eng'))) {
       await createTeamApi(request, {
         name: 'qa-eng',
         display_name: 'QA Engineering',
         collaboration_model: 'leader_operators',
-        leader_agent_name: 'bot-a',
+        leader_agent_name: agents.a,
         members: [
-          { member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' },
-          { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
+          { member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'operator' },
+          { member_name: agents.b, member_type: 'agent', member_id: agents.b, role: 'operator' },
         ],
       })
     }
@@ -47,30 +57,30 @@ test.describe('TMT-008', () => {
         display_name: 'QA Algo',
         collaboration_model: 'swarm',
         leader_agent_name: null,
-        members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'member' }],
+        members: [{ member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'member' }],
       })
     }
   })
 
   test('Multi-team context @case TMT-008', async ({ request }) => {
-    test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.skip(skipRealLLM, 'requires real LLM')
     test.setTimeout(360_000)
 
     const { username } = await getWhoami(request)
 
-    await test.step('Steps 1–2: bot-a lists qa-eng and qa-algo', async () => {
+    await test.step(`Steps 1–2: ${agents.a} lists qa-eng and qa-algo`, async () => {
       const mark = `tmt8-${Date.now()}`
       await sendAsUser(
         request,
         username,
         '#all',
-        `bot-a ${mark}: what teams are you in and your role in each? mention qa-eng and qa-algo.`
+        `${agents.a} ${mark}: what teams are you in and your role in each? mention qa-eng and qa-algo.`
       )
       const deadline = Date.now() + 180_000
       let text = ''
       while (Date.now() < deadline) {
         const msgs = await historyForUser(request, username, '#all', 40)
-        const fromA = msgs.filter((m) => m.senderName === 'bot-a' && (m.content ?? '').includes(mark))
+        const fromA = msgs.filter((m) => m.senderName === agents.a && (m.content ?? '').includes(mark))
         if (fromA.length) {
           text = fromA[fromA.length - 1].content ?? ''
           break
@@ -84,7 +94,7 @@ test.describe('TMT-008', () => {
     await test.step('Steps 3–4 (hybrid): #qa-eng no swarm system line; #qa-algo may show deliberation', async () => {
       await sendAsUser(request, username, '#all', '@qa-eng design a minimal API ping')
       await new Promise((r) => setTimeout(r, 25_000))
-      const engMsgs = await historyForUser(request, 'bot-a', '#qa-eng', 30)
+      const engMsgs = await historyForUser(request, agents.a, '#qa-eng', 30)
       const engDelib = engMsgs.some(
         (m) =>
           (m.senderType === 'system' || m.senderName === 'system') &&
@@ -94,7 +104,7 @@ test.describe('TMT-008', () => {
 
       await sendAsUser(request, username, '#all', '@qa-algo analyze results briefly')
       await new Promise((r) => setTimeout(r, 40_000))
-      const algoMsgs = await historyForUser(request, 'bot-a', '#qa-algo', 40)
+      const algoMsgs = await historyForUser(request, agents.a, '#qa-algo', 40)
       const algoPrompt = algoMsgs.some(
         (m) =>
           (m.senderType === 'system' || m.senderName === 'system') &&

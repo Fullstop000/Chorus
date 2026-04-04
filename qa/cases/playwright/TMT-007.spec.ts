@@ -1,8 +1,12 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
 import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const skipRealLLM = skipLLM || useStub
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-007 Team Delete — Channel Archive and Workspace Cleanup
@@ -23,15 +27,19 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 test.describe('TMT-007', () => {
   test('Team delete (disposable team) @case TMT-007', async ({ page, request }) => {
     test.setTimeout(240_000)
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
 
     const name = `qa-del-${Date.now()}`
     await createTeamApi(request, {
       name,
       display_name: 'E2E Delete Target',
       collaboration_model: 'leader_operators',
-      leader_agent_name: 'bot-a',
-      members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' }],
+      leader_agent_name: agents.a,
+      members: [{ member_name: agents.a, member_type: 'agent', member_id: agents.a, role: 'operator' }],
     })
 
     await gotoApp(page)
@@ -51,20 +59,20 @@ test.describe('TMT-007', () => {
       expect(await teamExists(request, name)).toBe(false)
     })
 
-    if (!skipLLM) {
-      await test.step('Steps 7–8: bot-a still answers #all; team list omits deleted slug', async () => {
+    if (!skipRealLLM) {
+      await test.step(`Steps 7–8: ${agents.a} still answers #all; team list omits deleted slug`, async () => {
         const { username } = await getWhoami(request)
         const mark = `tmt7-${Date.now()}`
         await sendAsUser(
           request,
           username,
           '#all',
-          `bot-a ${mark}: list your team slugs; do not include ${name}.`
+          `${agents.a} ${mark}: list your team slugs; do not include ${name}.`
         )
         await new Promise((r) => setTimeout(r, 60_000))
         const msgs = await historyForUser(request, username, '#all', 25)
-        const fromA = msgs.filter((m) => m.senderName === 'bot-a').pop()
-        expect(fromA, 'expected bot-a reply in #all').toBeTruthy()
+        const fromA = msgs.filter((m) => m.senderName === agents.a).pop()
+        expect(fromA, `expected ${agents.a} reply in #all`).toBeTruthy()
         expect((fromA!.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
       })
     }

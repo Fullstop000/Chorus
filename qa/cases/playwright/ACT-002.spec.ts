@@ -1,20 +1,29 @@
 import { test, expect } from './helpers/fixtures'
 import {
+  agentNames,
   ensureMixedRuntimeTrio,
+  ensureStubTrio,
   getAgentDetail,
   getWhoami,
   historyForUser,
 } from './helpers/api'
 import { openAgentChat, openAgentTab, sendChatMessage , gotoApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/agents.md` — ACT-002 Activity Timeline Ordering During Wake And Recovery
  */
 test.describe('ACT-002', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
   })
 
   test('Activity Timeline Ordering During Wake And Recovery @case ACT-002', async ({ page, request }) => {
@@ -23,14 +32,14 @@ test.describe('ACT-002', () => {
     const token = `act-wake-${Date.now()}`
     await gotoApp(page)
 
-    await test.step('Precondition: stop bot-a, then wake it via DM', async () => {
-      await request.post('/api/agents/bot-a/stop')
-      await openAgentChat(page, 'bot-a')
-      await sendChatMessage(page, `Reply with exact token ${token}`)
+    await test.step(`Precondition: stop ${agents.a}, then wake it via DM`, async () => {
+      await request.post(`/api/agents/${agents.a}/stop`)
+      await openAgentChat(page, agents.a)
+      await sendChatMessage(page, `reply with "${token}"`)
       const deadline = Date.now() + 120_000
       let sawReply = false
       while (Date.now() < deadline) {
-        const history = await historyForUser(request, username, 'dm:@bot-a', 40)
+        const history = await historyForUser(request, username, `dm:@${agents.a}`, 40)
         sawReply = history.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))
         if (sawReply) break
         await new Promise((r) => setTimeout(r, 4000))
@@ -39,11 +48,11 @@ test.describe('ACT-002', () => {
     })
 
     await test.step('Steps 1–7: Activity segment shows coherent wake-up ordering', async () => {
-      await openAgentTab(page, 'bot-a', 'Activity')
-      await expect(page.locator('.activity-item-message-received')).toContainText(token)
-      await expect(page.locator('.activity-item-message-sent')).toContainText(token)
+      await openAgentTab(page, agents.a, 'Activity')
+      await expect(page.locator('.activity-item-message-received').filter({ hasText: token }).first()).toBeVisible()
+      await expect(page.locator('.activity-item-message-sent').filter({ hasText: token }).first()).toBeVisible()
       await expect(page.locator('.activity-item-status').first()).toBeVisible()
-      const detail = await getAgentDetail(request, 'bot-a')
+      const detail = await getAgentDetail(request, agents.a)
       expect(detail.agent.status).toBe('active')
     })
   })

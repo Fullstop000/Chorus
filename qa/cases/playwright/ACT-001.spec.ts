@@ -1,6 +1,11 @@
 import { test, expect } from './helpers/fixtures'
 import { gotoApp, reloadApp } from './helpers/ui'
-import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
+import { agentNames, ensureMixedRuntimeTrio, ensureStubTrio, getWhoami, sendAsUser } from './helpers/api'
+
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const agents = agentNames()
 
 /**
  * Catalog: `qa/cases/agents.md` — ACT-001 Activity Timeline Completeness And Readability
@@ -24,17 +29,21 @@ import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
  */
 test.describe('ACT-001', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
-    if (process.env.CHORUS_E2E_LLM === '0') return
+    if (useStub) {
+      await ensureStubTrio(request)
+    } else {
+      await ensureMixedRuntimeTrio(request)
+    }
+    if (skipLLM) return
     const { username } = await getWhoami(request)
-    await sendAsUser(request, username, 'dm:@bot-a', `ACT-001 seed ping ${Date.now()}`).catch(() => {})
+    await sendAsUser(request, username, `dm:@${agents.a}`, `ACT-001 seed ping ${Date.now()}`).catch(() => {})
   })
 
   test('Activity Timeline Completeness And Readability @case ACT-001', async ({ page }) => {
     await gotoApp(page)
 
-    await test.step('Step 1: Open bot-a Activity tab', async () => {
-      await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
+    await test.step(`Step 1: Open ${agents.a} Activity tab`, async () => {
+      await page.locator('.sidebar-item').filter({ hasText: agents.a }).first().click()
       await page.getByRole('button', { name: 'Activity' }).click()
     })
 
@@ -56,7 +65,7 @@ test.describe('ACT-001', () => {
 
     await test.step('Step 8: Refresh preserves panel', async () => {
       await reloadApp(page)
-      await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
+      await page.locator('.sidebar-item').filter({ hasText: agents.a }).first().click()
       await page.getByRole('button', { name: 'Activity' }).click()
       await expect(page.locator('.activity-panel')).toBeVisible()
     })

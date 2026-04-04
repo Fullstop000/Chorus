@@ -1,5 +1,5 @@
 import { test, expect } from './helpers/fixtures'
-import { createAgentApi, getWhoami, sendAsUser } from './helpers/api'
+import { createAgentApi, getWhoami, listAgents, sendAsUser } from './helpers/api'
 import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
 /**
@@ -24,7 +24,10 @@ import { clickSidebarChannel , gotoApp } from './helpers/ui'
  */
 test.describe('MSG-012', () => {
   test.beforeAll(async ({ request }) => {
-    await createAgentApi(request, { name: 'bot-a', runtime: 'claude', model: 'sonnet' })
+    const agents = await listAgents(request)
+    if (!agents.some((a) => a.name === 'bot-a')) {
+      await createAgentApi(request, { name: 'bot-a', runtime: 'claude', model: 'sonnet' })
+    }
   })
 
   test('Clickable Mention Opens Agent Profile @case MSG-012', async ({ page, request }) => {

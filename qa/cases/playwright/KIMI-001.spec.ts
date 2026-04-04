@@ -8,7 +8,10 @@ import {
 } from './helpers/api'
 import { openAgentChat, openAgentTab, sendChatMessage , gotoApp } from './helpers/ui'
 
-const skipLLM = process.env.CHORUS_E2E_LLM === '0'
+const mode = process.env.CHORUS_E2E_LLM ?? '1'
+const skipLLM = mode === '0'
+const useStub = mode === 'stub'
+const skipRealLLM = skipLLM || useStub
 
 /**
  * Runtime verification: direct DM to a Kimi-backed agent with an exact-token assertion.
@@ -23,7 +26,7 @@ test.describe('KIMI-001', () => {
   })
 
   test('Kimi Agent Direct Reply', async ({ page, request }) => {
-    test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.skip(skipRealLLM, 'requires real LLM')
     test.setTimeout(300_000)
 
     const { username } = await getWhoami(request)

@@ -43,6 +43,7 @@ fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
         Some(AgentRuntime::Opencode) => {
             Ok(Arc::new(crate::agent::drivers::opencode::OpencodeDriver))
         }
+        Some(AgentRuntime::Stub) => Ok(Arc::new(crate::agent::drivers::stub::StubDriver)),
         None => anyhow::bail!("Unknown runtime: {runtime}"),
     }
 }
@@ -93,7 +94,7 @@ impl AgentManager {
                     .clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             ),
-            AgentRuntime::Claude => None,
+            AgentRuntime::Claude | AgentRuntime::Stub => None,
         };
 
         let config = AgentConfig {

@@ -129,7 +129,8 @@ Run script-backed cases with this workflow:
 
 1. Build UI and server from the repo root:
    - `cd ui && npm run build && cd .. && cargo build`
-2. Start Chorus with a fresh temp data dir when possible:
+   - `cargo build` builds **`chorus`** and **`chorus-stub-agent`** (required for `CHORUS_E2E_LLM=stub`).
+2. **Server process:** By default, Playwright **does not** use a manually started server — each worker’s fixture spawns `chorus` on `http://localhost:3200` + worker index with an isolated temp data dir (`qa/cases/playwright/helpers/fixtures.ts`). To drive a server you started yourself, set **`CHORUS_BASE_URL`** (for example `http://localhost:3101`) and run:
    - `./target/debug/chorus serve --port 3101 --data-dir /tmp/chorus-qa-playwright`
 3. Install dependencies and browsers, then run tests:
 
@@ -143,9 +144,13 @@ npx playwright test
 Useful environment and runner options:
 
 - `CHORUS_BASE_URL`
-  - defaults to `http://localhost:3101`
+  - when unset, tests use the per-worker spawned server (see step 2); when set, all workers hit this URL instead
 - `CHORUS_E2E_LLM=0`
   - skips tests that wait on real agent replies
+- `CHORUS_E2E_LLM=stub`
+  - uses the **`stub-trio`** preset (`stub-a` / `stub-b` / `stub-c`) and the stub driver for fast, deterministic agent traffic; see [`QA_PRESETS.md`](./QA_PRESETS.md)
+- `CHORUS_WORKERS`
+  - parallel worker count (default `4` in `playwright.config.ts`); use `1` for serial runs or easier logs
 - recommended live reporter:
   - `npx playwright test --reporter=list`
 - recommended interactive repro modes:
