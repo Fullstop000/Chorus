@@ -122,8 +122,11 @@ export async function sendThreadMessage(page: Page, text: string): Promise<void>
 }
 
 export async function openMembersPanel(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /Show members list/i }).click()
-  await expect(page.locator('.members-panel-kicker:text("Members")')).toBeVisible()
+  const kicker = page.locator('.members-panel-kicker:text("Members")')
+  if (!(await kicker.isVisible().catch(() => false))) {
+    await page.getByRole('button', { name: 'Show members list' }).click()
+  }
+  await expect(kicker).toBeVisible()
 }
 
 /** Radix options in portaled popovers may still be "outside viewport" for Playwright hit-testing. */

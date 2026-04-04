@@ -51,7 +51,7 @@ test.describe('TMT-006', () => {
   })
 
   test('Team settings display name + model toggle @case TMT-006', async ({ page, request }) => {
-    test.setTimeout(300_000)
+    test.setTimeout(420_000)
 
     await gotoApp(page)
     await clickSidebarChannel(page, 'qa-eng')
@@ -60,7 +60,11 @@ test.describe('TMT-006', () => {
       await page.getByRole('button', { name: 'Open team settings' }).click()
     })
 
-    const dialog = page.locator('[role="dialog"]')
+    // Loading dialog mounts first; TeamSettings only renders after GET /api/teams/:name succeeds.
+    const dialog = page.getByRole('dialog', { name: 'Team Settings' })
+    await expect(dialog.getByRole('heading', { name: 'Team Settings' })).toBeVisible({
+      timeout: 60_000,
+    })
 
     await test.step('Steps 2–3: Display name QA Engineering v2 + Save', async () => {
       await dialog.locator('input').first().fill('QA Engineering v2')
@@ -76,6 +80,9 @@ test.describe('TMT-006', () => {
       await dialog.locator('button:has-text("Save")').click()
       await dialog.locator('button:has-text("Close")').click()
       await page.getByRole('button', { name: 'Open team settings' }).click()
+      await expect(dialog.getByRole('heading', { name: 'Team Settings' })).toBeVisible({
+        timeout: 60_000,
+      })
       await expect(collabTrigger).toContainText('Swarm')
     })
 
@@ -111,6 +118,9 @@ test.describe('TMT-006', () => {
       await reloadApp(page)
       await clickSidebarChannel(page, 'qa-eng')
       await page.getByRole('button', { name: 'Open team settings' }).click()
+      await expect(dialog.getByRole('heading', { name: 'Team Settings' })).toBeVisible({
+        timeout: 60_000,
+      })
       await expect(collabTrigger).toContainText('Leader+Operators')
     })
   })

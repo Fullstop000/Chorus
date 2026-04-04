@@ -21,6 +21,7 @@ test.describe('MSG-004', () => {
 
   test('Direct Message Wake And Reply Visibility @case MSG-004', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.setTimeout(300_000)
     const { username } = await getWhoami(request)
     const token = `dm-wake-${Date.now()}`
     await request.post(`/api/agents/${agents.a}/stop`)
@@ -34,13 +35,14 @@ test.describe('MSG-004', () => {
       }
       await page.getByRole('button', { name: 'Chat' }).click()
       await sendChatMessage(page, `reply with "${token}"`)
-      const deadline = Date.now() + 120_000
+      const deadline = Date.now() + (useStub ? 240_000 : 120_000)
+      const pollMs = useStub ? 2_000 : 4_000
       let sawReply = false
       while (Date.now() < deadline) {
         const history = await historyForUser(request, username, `dm:@${agents.a}`, 40)
         sawReply = history.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))
         if (sawReply) break
-        await new Promise((r) => setTimeout(r, 4000))
+        await new Promise((r) => setTimeout(r, pollMs))
       }
       expect(sawReply).toBe(true)
     })

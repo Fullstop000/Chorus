@@ -193,9 +193,10 @@ fn parse_target(line: &str) -> Option<String> {
 }
 
 fn parse_content(line: &str) -> Option<String> {
-    // After "] @sender: " comes the content
-    let re = Regex::new(r"\]\s+@\S+:\s+(.+)$").ok()?;
-    re.captures(line).and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+    // After "] @sender: " comes the content. Sender may contain spaces (OS usernames);
+    // do not use `\S+` here — that breaks token extraction and yields empty content.
+    let re = Regex::new(r"\]\s+@([^:]+):\s*(.+)$").ok()?;
+    re.captures(line).and_then(|c| c.get(2).map(|m| m.as_str().to_string()))
 }
 
 // ---------------------------------------------------------------------------

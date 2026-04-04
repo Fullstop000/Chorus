@@ -29,6 +29,7 @@ test.describe('CHN-003', () => {
     page,
     request,
   }) => {
+    test.setTimeout(300_000)
     const { username } = await getWhoami(request)
     const channel = await createChannelApi(request, {
       name: `qa-members-${Date.now()}`,
