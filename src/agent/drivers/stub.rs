@@ -30,8 +30,7 @@ impl Driver for StubDriver {
                 }
             }
         });
-        let mcp_config_path =
-            std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
+        let mcp_config_path = std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)?;
 
         let stub_binary = std::env::current_exe()?

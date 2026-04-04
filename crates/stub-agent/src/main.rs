@@ -134,9 +134,7 @@ async fn call_tool(
     Ok(text)
 }
 
-async fn wait_for_message(
-    peer: &rmcp::service::Peer<rmcp::RoleClient>,
-) -> Result<String> {
+async fn wait_for_message(peer: &rmcp::service::Peer<rmcp::RoleClient>) -> Result<String> {
     let args = serde_json::json!({});
     emit_tool_call("wait_for_message", &args);
     call_tool(peer, "wait_for_message", args).await
@@ -189,14 +187,16 @@ fn next_fallback_token() -> String {
 fn parse_target(line: &str) -> Option<String> {
     // Format: [target=#channel msg=... time=... type=...] @sender: content
     let re = Regex::new(r"\[target=(\S+)\s").ok()?;
-    re.captures(line).and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
+    re.captures(line)
+        .and_then(|c| c.get(1).map(|m| m.as_str().to_string()))
 }
 
 fn parse_content(line: &str) -> Option<String> {
     // After "] @sender: " comes the content. Sender may contain spaces (OS usernames);
     // do not use `\S+` here — that breaks token extraction and yields empty content.
     let re = Regex::new(r"\]\s+@([^:]+):\s*(.+)$").ok()?;
-    re.captures(line).and_then(|c| c.get(2).map(|m| m.as_str().to_string()))
+    re.captures(line)
+        .and_then(|c| c.get(2).map(|m| m.as_str().to_string()))
 }
 
 // ---------------------------------------------------------------------------
