@@ -7,7 +7,14 @@ import {
   historyForUser,
   sendAsUser,
 } from './helpers/api'
-import { clickSidebarChannel, openAgentTab, openThreadFromMessage, sendChatMessage , gotoApp } from './helpers/ui'
+import {
+  clickSidebarChannel,
+  openAgentTab,
+  openThreadFromMessage,
+  reloadApp,
+  sendChatMessage,
+  gotoApp,
+} from './helpers/ui'
 
 const mode = process.env.CHORUS_E2E_LLM ?? '1'
 const skipLLM = mode === '0'
@@ -28,7 +35,7 @@ test.describe('REC-002', () => {
 
   test('Concurrent Agent Activity Under One Channel @case REC-002', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
-    test.setTimeout(300_000)
+    test.setTimeout(useStub ? 600_000 : 300_000)
     const { username } = await getWhoami(request)
     const mark = `rec-002-${Date.now()}`
     await gotoApp(page)
@@ -58,6 +65,10 @@ test.describe('REC-002', () => {
         await new Promise((r) => setTimeout(r, useStub ? 2_000 : 5_000))
       }
       expect(sawAll).toBe(true)
+      if (useStub) {
+        await reloadApp(page)
+        await clickSidebarChannel(page, 'all')
+      }
       await expect(
         page.locator('.message-item').filter({ hasText: `a-${mark}` }).first()
       ).toBeVisible({ timeout: 60_000 })

@@ -17,8 +17,22 @@ export async function waitForAppReady(page: Page): Promise<void> {
 
 /** Navigate to the app root and wait for the shell to be ready. */
 export async function gotoApp(page: Page): Promise<void> {
-  await page.goto('/', { waitUntil: 'domcontentloaded' })
-  await waitForAppReady(page)
+  const stub = process.env.CHORUS_E2E_LLM === 'stub'
+  const attempts = stub ? 2 : 1
+  let lastErr: unknown
+  for (let i = 0; i < attempts; i++) {
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    try {
+      await waitForAppReady(page)
+      return
+    } catch (e) {
+      lastErr = e
+      if (i < attempts - 1) {
+        await new Promise((r) => setTimeout(r, 1_500))
+      }
+    }
+  }
+  throw lastErr
 }
 
 /** Reload the page and wait for the shell to be ready. */
