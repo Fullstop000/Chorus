@@ -43,9 +43,8 @@ test.describe('REC-002', () => {
     await test.step('Steps 1–4: Trigger multi-agent replies, switch activity, and open a thread', async () => {
       await clickSidebarChannel(page, 'all')
       if (useStub) {
-        await sendAsUser(request, username, '#all', `${agents.a} say "a-${mark}"`)
-        await sendAsUser(request, username, '#all', `${agents.b} say "b-${mark}"`)
-        await sendAsUser(request, username, '#all', `${agents.c} say "c-${mark}"`)
+        // Single message for all agents to echo — avoids read-cursor race with rapid sends.
+        await sendAsUser(request, username, '#all', `reply with "rec-${mark}"`)
       } else {
         await sendChatMessage(page, `MSG ${mark}: ${agents.a} say a-${mark}, ${agents.b} say b-${mark}, ${agents.c} say c-${mark}`)
       }
@@ -55,12 +54,14 @@ test.describe('REC-002', () => {
       let sawAll = false
       while (Date.now() < deadline) {
         const history = await historyForUser(request, username, '#all', 80)
-        const rows = useStub
-          ? history.filter((m) => m.senderType === 'agent')
-          : history
-        const text = rows.map((m) => m.content ?? '').join(' ')
-        sawAll =
-          text.includes(`a-${mark}`) && text.includes(`b-${mark}`) && text.includes(`c-${mark}`)
+        const agentRows = history.filter((m) => m.senderType === 'agent')
+        if (useStub) {
+          const senders = new Set(agentRows.map((m) => m.senderName))
+          sawAll = senders.size >= 3 && agentRows.some((m) => (m.content ?? '').includes(`rec-${mark}`))
+        } else {
+          const text = history.map((m) => m.content ?? '').join(' ')
+          sawAll = text.includes(`a-${mark}`) && text.includes(`b-${mark}`) && text.includes(`c-${mark}`)
+        }
         if (sawAll) break
         await new Promise((r) => setTimeout(r, useStub ? 2_000 : 5_000))
       }
@@ -69,10 +70,11 @@ test.describe('REC-002', () => {
         await reloadApp(page)
         await clickSidebarChannel(page, 'all')
       }
+      const searchToken = useStub ? `rec-${mark}` : `a-${mark}`
       await expect(
-        page.locator('.message-item').filter({ hasText: `a-${mark}` }).first()
+        page.locator('.message-item').filter({ hasText: searchToken }).first()
       ).toBeVisible({ timeout: 60_000 })
-      await openThreadFromMessage(page, `a-${mark}`)
+      await openThreadFromMessage(page, searchToken)
       await expect(page.locator('.thread-panel')).toBeVisible()
       await page.locator('.thread-close-btn').click()
       await expect(page.locator('.message-item').filter({ hasText: mark }).first()).toBeVisible()

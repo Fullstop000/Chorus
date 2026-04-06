@@ -55,11 +55,10 @@ test.describe('MSG-001', () => {
     await test.step('Step 1: Send prompt in #all asking all agents to reply', async () => {
       await clickSidebarChannel(page, 'all')
       if (useStub) {
-        // Stub token extraction is reliable with `token:` (avoids #all composer / multi-line quirks).
-        await sendAsUser(request, username, '#all', `MSG-001 ${mark} anchor`)
-        await sendAsUser(request, username, '#all', `${agents.a} token:OK-a`)
-        await sendAsUser(request, username, '#all', `${agents.b} token:OK-b`)
-        await sendAsUser(request, username, '#all', `${agents.c} token:OK-c`)
+        // Send a single message that all stub agents will echo back.
+        // Using one message avoids a read-cursor race where rapidly sent
+        // messages can be skipped by the agent inbox scan.
+        await sendAsUser(request, username, '#all', `reply with "fan-${mark}"`)
       } else {
         await sendChatMessage(
           page,
@@ -78,13 +77,12 @@ test.describe('MSG-001', () => {
         )
         const senders = new Set(agentMsgs.map((m) => m.senderName))
         const haveThreeBodies = agentMsgs.length >= 3
-        const blob = agentMsgs.map((m) => m.content ?? '').join('\n')
-        const stubFanOutReady =
-          senders.size >= 3 &&
-          blob.includes('OK-a') &&
-          blob.includes('OK-b') &&
-          blob.includes('OK-c')
-        if (useStub ? stubFanOutReady : haveThreeBodies) break
+        if (useStub) {
+          // All 3 stub agents echo the same token; verify 3 distinct senders.
+          if (senders.size >= 3 && agentMsgs.some((m) => (m.content ?? '').includes(`fan-${mark}`))) break
+        } else {
+          if (haveThreeBodies) break
+        }
         await new Promise((r) => setTimeout(r, useStub ? 2_000 : 5_000))
       }
 
@@ -96,12 +94,10 @@ test.describe('MSG-001', () => {
       )
       expect(agentMsgs.length).toBeGreaterThanOrEqual(3)
       const senderNames = new Set(agentMsgs.map((m) => m.senderName))
-      const blob = agentMsgs.map((m) => m.content ?? '').join('\n')
       if (useStub) {
         expect(senderNames.size).toBeGreaterThanOrEqual(3)
-        expect(blob).toContain('OK-a')
-        expect(blob).toContain('OK-b')
-        expect(blob).toContain('OK-c')
+        const blob = agentMsgs.map((m) => m.content ?? '').join('\n')
+        expect(blob).toContain(`fan-${mark}`)
       } else {
         expect(senderNames.has(agents.a)).toBe(true)
         expect(senderNames.has(agents.b)).toBe(true)

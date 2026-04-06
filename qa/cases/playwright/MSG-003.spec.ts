@@ -32,12 +32,10 @@ test.describe('MSG-003', () => {
     }
     if (skipLLM) return
     const { username } = await getWhoami(request)
-    await sendAsUser(
-      request,
-      username,
-      '#all',
-      `MSG-003 precondition ${Date.now()} — ${agents.a} reply "thread-seed-ok"`
-    ).catch(() => {})
+    const seed = useStub
+      ? `${agents.a} reply with "thread-seed-ok"`
+      : `MSG-003 precondition ${Date.now()} — ${agents.a} reply "thread-seed-ok"`
+    await sendAsUser(request, username, '#all', seed).catch(() => {})
   })
 
   test('Thread Reply In Busy Channel @case MSG-003', async ({ page }) => {

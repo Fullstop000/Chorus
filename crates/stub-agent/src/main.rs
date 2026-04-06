@@ -286,6 +286,11 @@ async fn run() -> Result<()> {
             if !line.starts_with("[target=") {
                 continue;
             }
+            // Skip agent-originated messages to prevent infinite echo loops
+            // in shared channels (e.g. #all). The bridge tags them with "type=agent".
+            if line.contains("type=agent") {
+                continue;
+            }
 
             let Some(target) = parse_target(line) else {
                 emit_error(&format!("Could not parse target from line: {line}"));

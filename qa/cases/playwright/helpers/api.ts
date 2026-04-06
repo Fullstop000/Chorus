@@ -126,6 +126,10 @@ export async function ensureStubTrio(request: APIRequestContext): Promise<void> 
     expect(ok, `create stub agent ${name}: ${lastText}`).toBe(true)
     await new Promise((r) => setTimeout(r, 200))
   }
+  // Wait for all stub agents to become active before tests send messages.
+  for (const name of ['stub-a', 'stub-b', 'stub-c'] as const) {
+    await waitForAgentActive(request, name, 30_000)
+  }
 }
 
 /** Return agent names based on CHORUS_E2E_LLM mode. */
