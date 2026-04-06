@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use chorus::server::build_router;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::SenderType;
+use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
 
 async fn start_test_server() -> (String, Arc<Store>) {
@@ -37,16 +37,15 @@ async fn test_human_to_agent_message_flow() {
         .unwrap();
 
     store
-        .create_message(
-            "general",
-            None,
-            "testuser",
-            SenderType::Human,
-            "hello bot",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "testuser",
+            sender_type: SenderType::Human,
+            content: "hello bot",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let resp: serde_json::Value = client
@@ -137,16 +136,15 @@ async fn test_blocking_receive_wakes_on_message() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     store
-        .create_message(
-            "general",
-            None,
-            "testuser",
-            SenderType::Human,
-            "wake up!",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "testuser",
+            sender_type: SenderType::Human,
+            content: "wake up!",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let resp = tokio::time::timeout(std::time::Duration::from_secs(3), recv_handle)

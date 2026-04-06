@@ -11,7 +11,7 @@ use chorus::server::{
 };
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use std::future::Future;
@@ -1009,16 +1009,15 @@ async fn test_history_rejects_non_member_agent() {
         .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
         .unwrap();
     store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "secret channel update",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "secret channel update",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let resp = app
@@ -1083,16 +1082,15 @@ async fn test_delete_channel_via_api_removes_channel_owned_data() {
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     store.create_tasks("general", "bot1", &["Fix bug"]).unwrap();
     store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "hello",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "hello",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let resp = app
@@ -1495,16 +1493,15 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
     store
-        .create_message(
-            "general",
-            None,
-            "bot1",
-            SenderType::Agent,
-            "hello",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "bot1",
+            sender_type: SenderType::Agent,
+            content: "hello",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let app = build_router_with_lifecycle(store.clone(), Arc::new(MockLifecycle::default()));
@@ -1627,16 +1624,15 @@ async fn test_thread_send_only_starts_parent_author_agent() {
         .unwrap();
 
     let parent_message_id = store
-        .create_message(
-            "general",
-            None,
-            "bot1",
-            SenderType::Agent,
-            "parent from bot1",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "bot1",
+            sender_type: SenderType::Agent,
+            content: "parent from bot1",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
     let thread_target = format!("#general:{}", &parent_message_id[..8]);
 
@@ -1682,28 +1678,26 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
         .unwrap();
 
     let parent_message_id = store
-        .create_message(
-            "general",
-            None,
-            "bot1",
-            SenderType::Agent,
-            "parent from bot1",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "bot1",
+            sender_type: SenderType::Agent,
+            content: "parent from bot1",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
     store
-        .create_message(
-            "general",
-            Some(&parent_message_id),
-            "bot2",
-            SenderType::Agent,
-            "bot2 already joined the thread",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: Some(&parent_message_id),
+            sender_name: "bot2",
+            sender_type: SenderType::Agent,
+            content: "bot2 already joined the thread",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let thread_target = format!("#general:{}", &parent_message_id[..8]);
@@ -1746,16 +1740,15 @@ async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents
         .unwrap();
 
     let parent_message_id = store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "human started the thread",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "human started the thread",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let thread_target = format!("#general:{}", &parent_message_id[..8]);
@@ -1868,28 +1861,26 @@ async fn test_send_notifies_active_agents() {
 async fn test_history() {
     let (store, app) = setup();
     store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "msg 1",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "msg 1",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
     store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "msg 2",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "msg 2",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let resp = app
@@ -1955,16 +1946,15 @@ async fn test_activity_log_includes_message_send_and_receive_events() {
         .unwrap();
 
     store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "hello bot1",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "hello bot1",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let recv_resp = app

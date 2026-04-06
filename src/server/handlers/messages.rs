@@ -14,7 +14,7 @@ use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
 use crate::store::channels::ChannelType;
 use crate::store::inbox::{InboxConversationNotificationView, ThreadNotificationStateView};
-use crate::store::messages::{ForwardedFrom, ReceivedMessage, SenderType};
+use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
 
 // ── Inline query structs ──
@@ -458,16 +458,15 @@ async fn send_message_to_channel(
     info!(agent = %actor_id, target = %target_label, content = %preview, "send_message");
 
     let message_id = store
-        .create_message(
-            &channel.name,
+        .create_message(CreateMessage {
+            channel_name: &channel.name,
             thread_parent_id,
-            actor_id,
+            sender_name: actor_id,
             sender_type,
             content,
             attachment_ids,
-            None,
             suppress_event,
-        )
+        })
         .map_err(|e| api_err(e.to_string()))?;
 
     let short_id = if message_id.len() >= 8 {

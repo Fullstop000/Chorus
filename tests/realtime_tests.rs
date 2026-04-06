@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use chorus::server::build_router;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::SenderType;
+use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
 use futures_util::StreamExt;
 use serde_json::Value;
@@ -57,16 +57,15 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
         .unwrap();
 
     store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "hello",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "hello",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let frame = read_json_frame(&mut socket).await;
@@ -93,16 +92,15 @@ async fn test_realtime_skips_non_member_channel() {
         .unwrap();
 
     store
-        .create_message(
-            "private",
-            None,
-            "zoe",
-            SenderType::Human,
-            "secret",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "private",
+            thread_parent_id: None,
+            sender_name: "zoe",
+            sender_type: SenderType::Human,
+            content: "secret",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let next = timeout(Duration::from_millis(250), socket.next()).await;
@@ -121,16 +119,15 @@ async fn test_realtime_member_receives_live_messages_without_subscribe_frame() {
         .unwrap();
 
     store
-        .create_message(
-            "general",
-            None,
-            "alice",
-            SenderType::Human,
-            "live",
-            &[],
-            None,
-            false,
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "live",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
         .unwrap();
 
     let frame = read_json_frame(&mut socket).await;
