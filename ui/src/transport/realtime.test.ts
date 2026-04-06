@@ -112,7 +112,6 @@ describe('normalizeEvent', () => {
       senderType: 'human',
       senderDeleted: false,
       createdAt: '2025-01-01T00:00:00Z',
-      clientNonce: undefined,
     })
   })
 })
@@ -128,19 +127,11 @@ describe('upsertMessage', () => {
     expect(result[1].id).toBe('m2')
   })
 
-  it('deduplicates by id', () => {
+  it('deduplicates by seq', () => {
     const messages: HistoryMessage[] = [
       { id: 'm1', seq: 1, content: 'hello', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T' },
     ]
-    const incoming: HistoryMessage = { id: 'm1', seq: 1, content: 'updated', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T' }
-    expect(upsertMessage(messages, incoming)).toEqual(messages)
-  })
-
-  it('deduplicates by clientNonce', () => {
-    const messages: HistoryMessage[] = [
-      { id: 'temp:1', seq: 2, content: 'optimistic', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T', clientNonce: 'nonce-abc' },
-    ]
-    const incoming: HistoryMessage = { id: 'real-uuid', seq: 2, content: 'confirmed', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T', clientNonce: 'nonce-abc' }
+    const incoming: HistoryMessage = { id: 'm1-dup', seq: 1, content: 'updated', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T' }
     expect(upsertMessage(messages, incoming)).toEqual(messages)
   })
 })

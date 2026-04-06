@@ -45,19 +45,11 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
     currentChannel?.id ??
     (currentAgent ? getAgentConversationId(currentAgent.name) : null);
 
-  const {
-    messages,
-    loading,
-    lastReadSeq,
-    unreadIds,
-    addOptimisticMessage,
-    ackOptimisticMessage,
-    failOptimisticMessage,
-    retryOptimisticMessage,
-  } = useHistory(currentUser, threadTarget, threadConversationId, {
-    threadParentId: openThreadMsg?.id ?? null,
-    onReadCursorAck: applyReadCursorAck,
-  });
+  const { messages, loading, lastReadSeq, unreadIds, appendMessage } =
+    useHistory(currentUser, threadTarget, threadConversationId, {
+      threadParentId: openThreadMsg?.id ?? null,
+      onReadCursorAck: applyReadCursorAck,
+    });
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
   const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>(
@@ -79,12 +71,7 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
   async function handleSend() {
     if (!threadTarget || !currentUser || !content.trim()) return;
     setSending(true);
-    let optimisticHandle: ReturnType<typeof addOptimisticMessage> | null = null;
     try {
-      const handle = addOptimisticMessage({
-        content: content.trim(),
-      });
-      optimisticHandle = handle;
       if (!threadConversationId || !openThreadMsg)
         throw new Error("thread unavailable");
       const sendAck = await sendMessage(
@@ -92,24 +79,22 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
         content.trim(),
         [],
         {
-          clientNonce: handle.clientNonce,
           threadParentId: openThreadMsg.id,
           suppressEvent: true,
         },
       );
-      ackOptimisticMessage(handle, {
-        messageId: sendAck.messageId,
+      appendMessage({
+        id: sendAck.messageId,
         seq: sendAck.seq,
+        content: content.trim(),
+        senderName: currentUser,
+        senderType: "human",
+        senderDeleted: false,
         createdAt: sendAck.createdAt,
-        clientNonce: sendAck.clientNonce,
       });
       setContent("");
     } catch (e) {
       console.error("Thread send failed:", e);
-      const message = e instanceof Error ? e.message : String(e);
-      if (optimisticHandle) {
-        failOptimisticMessage(optimisticHandle, message);
-      }
       setToasts((current) => [
         ...current,
         {
@@ -119,43 +104,6 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
       ]);
     } finally {
       setSending(false);
-    }
-  }
-
-  async function handleRetryMessage(message: (typeof messages)[number]) {
-    if (!threadTarget || !currentUser) return;
-    const retryHandle = retryOptimisticMessage(message.id);
-    if (!retryHandle) return;
-    try {
-      if (!threadConversationId || !openThreadMsg)
-        throw new Error("thread unavailable");
-      const sendAck = await sendMessage(
-        threadConversationId,
-        message.content,
-        message.attachments?.map((attachment) => attachment.id) ?? [],
-        {
-          clientNonce: retryHandle.clientNonce,
-          threadParentId: openThreadMsg.id,
-          suppressEvent: true,
-        },
-      );
-      ackOptimisticMessage(retryHandle, {
-        messageId: sendAck.messageId,
-        seq: sendAck.seq,
-        createdAt: sendAck.createdAt,
-        clientNonce: sendAck.clientNonce,
-      });
-    } catch (retryError) {
-      const retryMessage =
-        retryError instanceof Error ? retryError.message : String(retryError);
-      failOptimisticMessage(retryHandle, retryMessage);
-      setToasts((current) => [
-        ...current,
-        {
-          id: `thread-retry-failed-${Date.now()}`,
-          message: "Message failed to send",
-        },
-      ]);
     }
   }
 
@@ -191,7 +139,6 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
           lastReadSeq={lastReadSeq}
           currentUser={currentUser}
           unreadIds={unreadIds}
-          onRetry={handleRetryMessage}
           emptyLabel="No replies yet"
         />
       </div>

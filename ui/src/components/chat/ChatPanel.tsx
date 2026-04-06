@@ -85,7 +85,6 @@ interface ChatPanelProps {
   loading: boolean;
   lastReadSeq: number;
   unreadIds: Set<string>;
-  onRetryMessage?: (message: HistoryMessage) => void;
 }
 
 export function ChatPanel({
@@ -94,7 +93,6 @@ export function ChatPanel({
   loading,
   lastReadSeq,
   unreadIds,
-  onRetryMessage,
 }: ChatPanelProps) {
   const { currentUser, setOpenThreadMsg } = useStore();
 
@@ -118,7 +116,6 @@ export function ChatPanel({
         currentUser={currentUser}
         unreadIds={unreadIds}
         onReply={setOpenThreadMsg}
-        onRetry={onRetryMessage}
       />
     </div>
   );

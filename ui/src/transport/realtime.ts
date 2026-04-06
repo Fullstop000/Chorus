@@ -22,19 +22,12 @@ export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
     senderDeleted: p.senderDeleted ?? false,
     createdAt: p.createdAt ?? new Date().toISOString(),
     thread_parent_id: p.threadParentId ?? undefined,
-    clientNonce: p.clientNonce,
   }
 }
 
 export function upsertMessage(messages: HistoryMessage[], incoming: HistoryMessage): HistoryMessage[] {
-  const isDuplicate =
-    messages.some((m) => m.id === incoming.id) ||
-    (incoming.clientNonce && messages.some((m) => m.clientNonce === incoming.clientNonce))
-  if (isDuplicate) return messages
-
-  const merged = new Map(messages.map((m) => [m.id, m]))
-  merged.set(incoming.id, incoming)
-  return [...merged.values()].sort((a, b) => a.seq - b.seq)
+  if (messages.some((m) => m.seq === incoming.seq)) return messages
+  return [...messages, incoming].sort((a, b) => a.seq - b.seq)
 }
 
 export function bumpReplyCount(messages: HistoryMessage[], parentId: string): HistoryMessage[] {

@@ -85,7 +85,6 @@ impl Store {
             sender_name,
             sender_type.as_str(),
             content,
-            None,
         );
         let stream_event = StreamEvent::new(
             channel.id.clone(),
@@ -121,7 +120,6 @@ impl Store {
             "system",
             "human",
             content,
-            None,
         );
         let stream_event = StreamEvent::new(
             channel.id.clone(),
@@ -140,7 +138,6 @@ impl Store {
         sender_type: SenderType,
         content: &str,
         attachment_ids: &[String],
-        client_nonce: Option<&str>,
         suppress_event: bool,
     ) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
@@ -186,7 +183,6 @@ impl Store {
             sender_name,
             sender_type.as_str(),
             content,
-            client_nonce,
         );
         let stream_event = StreamEvent::new(
             channel.id.clone(),

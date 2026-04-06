@@ -29,7 +29,6 @@ export interface InviteChannelMemberRequest {
 export interface SendMessageRequest {
   content: string
   attachmentIds?: string[]
-  clientNonce?: string
   suppressAgentDelivery?: boolean
   suppressEvent?: boolean
   threadParentId?: string

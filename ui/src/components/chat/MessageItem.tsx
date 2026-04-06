@@ -1,144 +1,206 @@
-import React from 'react'
-import ReactMarkdown from 'react-markdown'
-import { MessageSquare, Copy, Paperclip, LoaderCircle, CircleAlert, RotateCcw } from 'lucide-react'
-import type { AgentInfo, HistoryMessage } from '../../data'
-import { attachmentUrl } from '../../data'
-import { useStore } from '../../store'
-import { useAgents } from '../../hooks/data'
+import React, { useRef } from "react";
+import ReactMarkdown from "react-markdown";
+import { MessageSquare, Copy, Paperclip } from "lucide-react";
+import type { AgentInfo, HistoryMessage } from "../../data";
+import { attachmentUrl } from "../../data";
+import { useStore } from "../../store";
+import { useAgents } from "../../hooks/data";
 
 function replyLabel(n: number) {
-  return n === 1 ? '1 reply' : `${n} replies`
+  return n === 1 ? "1 reply" : `${n} replies`;
 }
 
 // Render message content with markdown + @mention pills
-function renderContent(content: string, agents: AgentInfo[], onSelectAgent: (agent: AgentInfo) => void) {
+function renderContent(
+  content: string,
+  agents: AgentInfo[],
+  onSelectAgent: (agent: AgentInfo) => void,
+) {
   return (
     <ReactMarkdown
       components={{
         // Intercept text nodes to highlight @mentions
         p({ children }) {
-          return <p>{processChildren(children, agents, onSelectAgent)}</p>
+          return <p>{processChildren(children, agents, onSelectAgent)}</p>;
         },
         li({ children }) {
-          return <li>{processChildren(children, agents, onSelectAgent)}</li>
+          return <li>{processChildren(children, agents, onSelectAgent)}</li>;
         },
       }}
     >
       {content}
     </ReactMarkdown>
-  )
+  );
 }
 
-function processChildren(children: React.ReactNode, agents: AgentInfo[], onSelectAgent: (agent: AgentInfo) => void): React.ReactNode {
-  if (typeof children === 'string') return injectMentions(children, agents, onSelectAgent)
-  if (Array.isArray(children)) return children.map((c, i) => {
-    if (typeof c === 'string') return <span key={i}>{injectMentions(c, agents, onSelectAgent)}</span>
-    return c
-  })
-  return children
+function processChildren(
+  children: React.ReactNode,
+  agents: AgentInfo[],
+  onSelectAgent: (agent: AgentInfo) => void,
+): React.ReactNode {
+  if (typeof children === "string")
+    return injectMentions(children, agents, onSelectAgent);
+  if (Array.isArray(children))
+    return children.map((c, i) => {
+      if (typeof c === "string")
+        return <span key={i}>{injectMentions(c, agents, onSelectAgent)}</span>;
+      return c;
+    });
+  return children;
 }
 
 function MentionPill({ mention, agents, onSelectAgent }: MentionPillProps) {
-  const name = mention.slice(1) // remove @
-  const agent = agents.find((a) => a.name === name)
-  
+  const name = mention.slice(1); // remove @
+  const agent = agents.find((a) => a.name === name);
+
   if (!agent) {
-    return <span className="mention-pill">{mention}</span>
+    return <span className="mention-pill">{mention}</span>;
   }
-  
+
   return (
-    <span 
-      className="mention-pill mention-pill-clickable" 
+    <span
+      className="mention-pill mention-pill-clickable"
       onClick={() => onSelectAgent(agent)}
       title={`View @${name} profile`}
     >
       {mention}
     </span>
-  )
+  );
 }
 
-function injectMentions(text: string, agents: AgentInfo[], onSelectAgent: (agent: AgentInfo) => void): React.ReactNode {
-  const parts = text.split(/(@[\w-]+)/g)
-  if (parts.length === 1) return text
+function injectMentions(
+  text: string,
+  agents: AgentInfo[],
+  onSelectAgent: (agent: AgentInfo) => void,
+): React.ReactNode {
+  const parts = text.split(/(@[\w-]+)/g);
+  if (parts.length === 1) return text;
   return parts.map((part, i) =>
-    part.startsWith('@') ? (
-      <MentionPill key={i} mention={part} agents={agents} onSelectAgent={onSelectAgent} />
-    ) : part
-  )
+    part.startsWith("@") ? (
+      <MentionPill
+        key={i}
+        mention={part}
+        agents={agents}
+        onSelectAgent={onSelectAgent}
+      />
+    ) : (
+      part
+    ),
+  );
 }
 
 function formatTime(iso: string): string {
   try {
-    return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return new Date(iso).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   } catch {
-    return iso
+    return iso;
   }
 }
 
 function formatDate(iso: string): string {
   try {
     return new Date(iso).toLocaleDateString([], {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    })
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
   } catch {
-    return iso
+    return iso;
   }
 }
 
 function senderColor(name: string): string {
   const colors = [
-    '#C0392B','#2980B9','#27AE60','#8E44AD','#D35400','#16A085','#2C3E50',
-  ]
-  let h = 0
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) & 0xffffffff
-  return colors[Math.abs(h) % colors.length]
+    "#C0392B",
+    "#2980B9",
+    "#27AE60",
+    "#8E44AD",
+    "#D35400",
+    "#16A085",
+    "#2C3E50",
+  ];
+  let h = 0;
+  for (let i = 0; i < name.length; i++)
+    h = (h * 31 + name.charCodeAt(i)) & 0xffffffff;
+  return colors[Math.abs(h) % colors.length];
 }
 
 interface MentionPillProps {
-  mention: string
-  agents: AgentInfo[]
-  onSelectAgent: (agent: AgentInfo) => void
+  mention: string;
+  agents: AgentInfo[];
+  onSelectAgent: (agent: AgentInfo) => void;
 }
 
 interface MessageItemProps {
-  message: HistoryMessage
-  currentUser: string | null
-  prevMessage?: HistoryMessage
-  onReply?: (msg: HistoryMessage) => void
-  onRetry?: (msg: HistoryMessage) => void
+  message: HistoryMessage;
+  currentUser: string | null;
+  prevMessage?: HistoryMessage;
+  onReply?: (msg: HistoryMessage) => void;
 }
 
-export function MessageItem({ message, currentUser, prevMessage, onReply, onRetry }: MessageItemProps) {
-  const { setActiveTab, setCurrentAgent } = useStore()
-  const agents = useAgents()
-  
+export function MessageItem({
+  message,
+  currentUser,
+  prevMessage,
+  onReply,
+}: MessageItemProps) {
+  const { setActiveTab, setCurrentAgent } = useStore();
+  const agents = useAgents();
+  const itemRef = useRef<HTMLDivElement>(null);
+
+  // useEffect(() => {
+  //   const el = itemRef.current
+  //   if (!el) return
+
+  //   const observer = new IntersectionObserver(
+  //     (entries) => {
+  //       const name = message.senderName
+  //       const content = message.content.slice(0, 20)
+  //       entries.forEach((entry) => {
+  //         if (entry.isIntersecting && entry.intersectionRatio >= 1) {
+  //           console.log(`[${name}] message ${message.id} fully visible: "${content}"`)
+  //         } else if (!entry.isIntersecting) {
+  //           console.log(`[${name}] message ${message.id} out of screen: "${content}"`)
+  //         }
+  //       })
+  //     },
+  //     { threshold: [0, 1] }
+  //   )
+  //   observer.observe(el)
+  //   return () => observer.disconnect()
+  // }, [message.id])
+
   const handleSelectAgent = (agent: AgentInfo) => {
-    setCurrentAgent(agent)
-    setActiveTab('profile')
-  }
-  
-  const isMe = message.senderName === currentUser
-  const initial = message.senderName[0]?.toUpperCase() ?? '?'
-  const color = senderColor(message.senderName)
-  const deletedClass = message.senderDeleted ? ' message-deleted' : ''
+    setCurrentAgent(agent);
+    setActiveTab("profile");
+  };
+
+  const isMe = message.senderName === currentUser;
+  const initial = message.senderName[0]?.toUpperCase() ?? "?";
+  const color = senderColor(message.senderName);
+  const deletedClass = message.senderDeleted ? " message-deleted" : "";
 
   // Group messages from the same sender within 5 minutes
   const isGrouped =
-    !message.clientStatus &&
-    !prevMessage?.clientStatus &&
     prevMessage?.senderName === message.senderName &&
     Math.abs(
-      new Date(message.createdAt).getTime() - new Date(prevMessage.createdAt).getTime()
-    ) < 5 * 60 * 1000
+      new Date(message.createdAt).getTime() -
+        new Date(prevMessage.createdAt).getTime(),
+    ) <
+      5 * 60 * 1000;
 
   function handleCopy() {
-    navigator.clipboard.writeText(message.content).catch(() => {})
+    navigator.clipboard.writeText(message.content).catch(() => {});
   }
 
   return (
-    <div className={`message-item${isGrouped ? ' grouped' : ''}${deletedClass} message-group`}>
+    <div
+      ref={itemRef}
+      className={`message-item${isGrouped ? " grouped" : ""}${deletedClass} message-group`}
+    >
       {!isGrouped && (
         <div
           className="message-avatar"
@@ -146,8 +208,14 @@ export function MessageItem({ message, currentUser, prevMessage, onReply, onRetr
             background: color,
           }}
         >
-          {message.senderType === 'agent' ? (
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700 }}>
+          {message.senderType === "agent" ? (
+            <span
+              style={{
+                fontFamily: "var(--font-mono)",
+                fontSize: 11,
+                fontWeight: 700,
+              }}
+            >
               {initial}
             </span>
           ) : (
@@ -161,50 +229,37 @@ export function MessageItem({ message, currentUser, prevMessage, onReply, onRetr
           <div className="message-header">
             <span className="message-sender" style={{ color }}>
               {message.senderName}
-              {message.senderType === 'agent' && (
+              {message.senderType === "agent" && (
                 <span className="agent-badge">BOT</span>
               )}
-              {message.senderDeleted && <span className="deleted-inline-badge">deleted</span>}
+              {message.senderDeleted && (
+                <span className="deleted-inline-badge">deleted</span>
+              )}
               {isMe && <span className="you-inline-badge">you</span>}
             </span>
             <span className="message-time">
               {formatDate(message.createdAt)} {formatTime(message.createdAt)}
             </span>
-            {message.clientStatus === 'sending' && (
-              <span className="message-status message-status-sending" aria-label="Sending">
-                <LoaderCircle size={12} className="message-status-spin" />
-                Sending
-              </span>
-            )}
-            {message.clientStatus === 'failed' && (
-              <>
-                <span className="message-status message-status-failed" aria-label="Failed to send">
-                  <CircleAlert size={12} />
-                  Failed
-                </span>
-                {onRetry && (
-                  <button
-                    className="message-action-btn"
-                    type="button"
-                    aria-label="Retry send"
-                    title="Retry send"
-                    onClick={() => onRetry(message)}
-                  >
-                    <RotateCcw size={13} />
-                  </button>
-                )}
-              </>
-            )}
           </div>
         )}
-        <div className="message-content">{renderContent(message.content, agents, handleSelectAgent)}</div>
+        <div className="message-content">
+          {renderContent(message.content, agents, handleSelectAgent)}
+        </div>
         <div className="message-actions">
           {onReply && (
-            <button className="message-action-btn" title="Reply in thread" onClick={() => onReply(message)}>
+            <button
+              className="message-action-btn"
+              title="Reply in thread"
+              onClick={() => onReply(message)}
+            >
               <MessageSquare size={13} />
             </button>
           )}
-          <button className="message-action-btn" title="Copy markdown" onClick={handleCopy}>
+          <button
+            className="message-action-btn"
+            title="Copy markdown"
+            onClick={handleCopy}
+          >
             <Copy size={13} />
           </button>
         </div>
@@ -235,5 +290,5 @@ export function MessageItem({ message, currentUser, prevMessage, onReply, onRetr
         )}
       </div>
     </div>
-  )
+  );
 }

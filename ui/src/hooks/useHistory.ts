@@ -19,18 +19,6 @@ interface UseHistoryOptions {
   onReadCursorAck?: (ack: ReadCursorAckPayload) => void
 }
 
-interface OptimisticMessageHandle {
-  tempId: string
-  clientNonce: string
-}
-
-function createClientNonce(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
-}
-
 export function useHistory(
   username: string,
   targetKey: string | null,
@@ -120,6 +108,8 @@ export function useHistory(
             return
           }
 
+          let messageAdded = false
+
           queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
             if (!current) return current
             const before = current.messages.length
@@ -129,10 +119,13 @@ export function useHistory(
               if (msg.senderName !== username) {
                 addUnreadMessageId(targetKey!, msg.id)
               }
+              messageAdded = true
               return { ...current, messages: updated }
             }
             return current
           })
+
+          if (messageAdded) return
 
           const incrementalAfter = historyFetchAfterForNotification(
             activeRealtimeTarget,
@@ -216,73 +209,9 @@ export function useHistory(
     [conversationId, loadedTarget, options?.onReadCursorAck, options?.threadParentId, targetKey, username, queryClient, queryKey]
   )
 
-  const addOptimisticMessage = useCallback(
-    (draft: { content: string; attachments?: HistoryMessage['attachments'] }): OptimisticMessageHandle => {
-      const tempId = `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
-      const clientNonce = createClientNonce()
-      const optimisticMessage: HistoryMessage = {
-        id: tempId,
-        seq: maxLoadedSeqRef.current + 1,
-        content: draft.content,
-        senderName: username,
-        senderType: 'human',
-        senderDeleted: false,
-        createdAt: new Date().toISOString(),
-        attachments: draft.attachments,
-        clientNonce,
-        clientStatus: 'sending',
-      }
-      commitMessages((current) => [...current, optimisticMessage])
-      return { tempId, clientNonce }
-    },
-    [commitMessages, username]
-  )
-
-  const ackOptimisticMessage = useCallback(
-    (handle: OptimisticMessageHandle, ack: { messageId: string; seq: number; createdAt: string; clientNonce?: string }) => {
-      const nonce = ack.clientNonce ?? handle.clientNonce
-      commitMessages((current) =>
-        current.map((message) =>
-          message.clientNonce === nonce || message.id === handle.tempId
-            ? {
-                ...message,
-                id: ack.messageId,
-                seq: ack.seq,
-                createdAt: ack.createdAt,
-                clientNonce: nonce,
-                clientStatus: undefined,
-                clientError: undefined,
-              }
-            : message
-        )
-      )
-    },
-    [commitMessages]
-  )
-
-  const failOptimisticMessage = useCallback(
-    (handle: OptimisticMessageHandle, errorMessage: string) => {
-      commitMessages((current) =>
-        current.map((message) =>
-          message.clientNonce === handle.clientNonce || message.id === handle.tempId
-            ? { ...message, clientStatus: 'failed', clientError: errorMessage }
-            : message
-        )
-      )
-    },
-    [commitMessages]
-  )
-
-  const retryOptimisticMessage = useCallback(
-    (messageId: string): OptimisticMessageHandle | null => {
-      const nextHandle = { tempId: messageId, clientNonce: createClientNonce() }
-      commitMessages((current) =>
-        current.map((message) => {
-          if (message.id !== messageId) return message
-          return { ...message, clientNonce: nextHandle.clientNonce, clientStatus: 'sending', clientError: undefined }
-        })
-      )
-      return nextHandle
+  const appendMessage = useCallback(
+    (message: HistoryMessage) => {
+      commitMessages((current) => [...current, message])
     },
     [commitMessages]
   )
@@ -298,9 +227,6 @@ export function useHistory(
     refresh: refetch,
     reportVisibleSeq,
     unreadIds,
-    addOptimisticMessage,
-    ackOptimisticMessage,
-    failOptimisticMessage,
-    retryOptimisticMessage,
+    appendMessage,
   }
 }

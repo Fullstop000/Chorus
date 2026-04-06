@@ -6,6 +6,13 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_drop_legacy_event_tables(conn)?;
     migrate_remove_legacy_shared_memory_channel(conn)?;
     migrate_inbox_read_state(conn)?;
+    migrate_drop_client_nonce_column(conn)?;
+    Ok(())
+}
+
+/// Drop the `client_nonce` column from messages (optimistic-update dedup removed).
+fn migrate_drop_client_nonce_column(conn: &Connection) -> Result<()> {
+    conn.execute_batch("ALTER TABLE messages DROP COLUMN client_nonce")?;
     Ok(())
 }
 

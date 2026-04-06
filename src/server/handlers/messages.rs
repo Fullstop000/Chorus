@@ -48,8 +48,6 @@ pub struct PublicConversationSendRequest {
     pub content: String,
     #[serde(default, rename = "attachmentIds")]
     pub attachment_ids: Vec<String>,
-    #[serde(default, rename = "clientNonce")]
-    pub client_nonce: Option<String>,
     #[serde(default, rename = "suppressAgentDelivery")]
     pub suppress_agent_delivery: bool,
     #[serde(default, rename = "suppressEvent")]
@@ -75,8 +73,6 @@ pub struct SendRequest {
     pub content: String,
     #[serde(default, rename = "attachmentIds")]
     pub attachment_ids: Vec<String>,
-    #[serde(default, rename = "clientNonce")]
-    pub client_nonce: Option<String>,
     /// Skip fan-out to other agents when the caller wants a human-only side effect,
     /// such as "send this message and create one task" without triggering agent replies.
     #[serde(default, rename = "suppressAgentDelivery")]
@@ -94,8 +90,6 @@ pub struct SendResponse {
     pub seq: i64,
     #[serde(rename = "createdAt")]
     pub created_at: String,
-    #[serde(rename = "clientNonce", skip_serializing_if = "Option::is_none")]
-    pub client_nonce: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -450,7 +444,6 @@ async fn send_message_to_channel(
     thread_parent_id: Option<&str>,
     content: &str,
     attachment_ids: &[String],
-    client_nonce: Option<String>,
     suppress_agent_delivery: bool,
     suppress_event: bool,
 ) -> ApiResult<SendResponse> {
@@ -472,7 +465,6 @@ async fn send_message_to_channel(
             sender_type,
             content,
             attachment_ids,
-            client_nonce.as_deref(),
             suppress_event,
         )
         .map_err(|e| api_err(e.to_string()))?;
@@ -561,7 +553,6 @@ async fn send_message_to_channel(
         message_id,
         seq: message_view.seq,
         created_at: message_view.created_at,
-        client_nonce,
     }))
 }
 
@@ -637,7 +628,6 @@ pub async fn handle_send(
         thread_parent_id.as_deref(),
         &req.content,
         &req.attachment_ids,
-        req.client_nonce,
         req.suppress_agent_delivery,
         req.suppress_event,
     )
@@ -886,7 +876,6 @@ pub async fn handle_public_send(
         req.thread_parent_id.as_deref(),
         &req.content,
         &req.attachment_ids,
-        req.client_nonce,
         req.suppress_agent_delivery,
         req.suppress_event,
     )

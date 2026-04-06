@@ -31,9 +31,6 @@ export interface HistoryMessage {
   attachments?: AttachmentRef[]
   replyCount?: number
   forwardedFrom?: ForwardedFrom
-  clientNonce?: string
-  clientStatus?: 'sending' | 'failed'
-  clientError?: string
 }
 
 export interface HistoryResponse {
@@ -59,7 +56,6 @@ export interface MessageCreatedPayload {
   attachments: unknown[]
   seq: number
   createdAt: string
-  clientNonce?: string
 }
 
 export interface StreamEvent {
@@ -89,7 +85,7 @@ export function sendMessage(
   content: string,
   attachmentIds?: string[],
   options?: Partial<SendMessageRequest>
-): Promise<{ messageId: string; seq: number; createdAt: string; clientNonce?: string }> {
+): Promise<{ messageId: string; seq: number; createdAt: string }> {
   return post(conversationPath(conversationId, '/messages'), {
     content,
     attachmentIds: attachmentIds ?? [],

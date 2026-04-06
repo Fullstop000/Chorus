@@ -65,9 +65,6 @@ export function MessageInput({ target, conversationId, history }: Props) {
       return;
     setSending(true);
     setError(null);
-    let optimisticHandle: ReturnType<
-      typeof history.addOptimisticMessage
-    > | null = null;
     const trimmedContent = content.trim();
     try {
       const attachmentIds: string[] = [];
@@ -76,31 +73,28 @@ export function MessageInput({ target, conversationId, history }: Props) {
         attachmentIds.push(res.id);
       }
 
-      const handle = history.addOptimisticMessage({
-        content: trimmedContent,
-        attachments: attachmentIds.map((id, index) => ({
-          id,
-          filename: pendingFiles[index]?.name ?? "attachment",
-        })),
-      });
-      optimisticHandle = handle;
-
       if (!conversationId) throw new Error("conversation unavailable");
       const sendAck = await sendMessage(
         conversationId,
         trimmedContent,
         attachmentIds,
         {
-          clientNonce: handle.clientNonce,
           suppressAgentDelivery: alsoTask && !!currentChannel,
           suppressEvent: true,
         },
       );
-      history.ackOptimisticMessage(handle, {
-        messageId: sendAck.messageId,
+      history.appendMessage({
+        id: sendAck.messageId,
         seq: sendAck.seq,
+        content: trimmedContent,
+        senderName: currentUser,
+        senderType: "human",
+        senderDeleted: false,
         createdAt: sendAck.createdAt,
-        clientNonce: sendAck.clientNonce,
+        attachments: attachmentIds.map((id, index) => ({
+          id,
+          filename: pendingFiles[index]?.name ?? "attachment",
+        })),
       });
       setContent("");
       setPendingFiles([]);
@@ -108,9 +102,6 @@ export function MessageInput({ target, conversationId, history }: Props) {
     } catch (e) {
       console.error("Send failed:", e);
       const message = e instanceof Error ? e.message : String(e);
-      if (optimisticHandle) {
-        history.failOptimisticMessage(optimisticHandle, message);
-      }
       setError(message);
       setToasts((current) => [
         ...current,

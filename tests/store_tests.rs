@@ -191,7 +191,16 @@ fn test_send_and_receive_messages() {
         .unwrap();
 
     let msg_id = store
-        .create_message("general", None, "alice", SenderType::Human, "hello", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "hello",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     assert!(!msg_id.is_empty());
 
@@ -214,7 +223,7 @@ fn test_send_and_receive_messages() {
             "hello bot",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     let msgs = store.get_messages_for_agent("bot1", false).unwrap();
@@ -240,7 +249,7 @@ fn test_agent_does_not_receive_its_own_sent_message() {
             "hello alice",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -274,8 +283,8 @@ fn test_message_history_pagination() {
                 SenderType::Human,
                 &format!("msg {i}"),
                 &[],
-            None,
-                false
+                None,
+                false,
             )
             .unwrap();
     }
@@ -303,10 +312,28 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
         .unwrap();
 
     store
-        .create_message("general", None, "alice", SenderType::Human, "one", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "one",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "two", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "two",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
 
     let snapshot = store
@@ -338,7 +365,16 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         .unwrap();
 
     let first_top_level = store
-        .create_message("general", None, "alice", SenderType::Human, "one", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "one",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
         .create_message(
@@ -349,11 +385,20 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             "thread reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     let second_top_level = store
-        .create_message("general", None, "alice", SenderType::Human, "two", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "two",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
 
     let state_before = store
@@ -438,10 +483,28 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         .unwrap();
 
     store
-        .create_message("general", None, "alice", SenderType::Human, "one", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "one",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "two", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "two",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
 
     let unread_before = store.get_unread_summary("bot1").unwrap();
@@ -482,7 +545,16 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
         .unwrap();
 
     let parent_id = store
-        .create_message("general", None, "bot1", SenderType::Agent, "parent", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "bot1",
+            SenderType::Agent,
+            "parent",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     let reply_id = store
         .create_message(
@@ -493,7 +565,7 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
             "reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -541,10 +613,28 @@ fn test_history_read_cursor_rejects_seq_above_max() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "a", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "a",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "b", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "b",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
 
     let err = store
@@ -569,7 +659,16 @@ fn test_history_read_cursor_rejects_negative_seq() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "a", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "a",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
 
     let err = store
@@ -592,7 +691,16 @@ fn test_history_read_cursor_heals_orphan_above_max_seq() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_message("general", None, "alice", SenderType::Human, "a", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "a",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
 
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
@@ -626,7 +734,16 @@ fn test_conversation_messages_view_projects_message_rows() {
         .unwrap();
 
     let message_id = store
-        .create_message("general", None, "alice", SenderType::Human, "hello", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "hello",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
 
@@ -679,7 +796,16 @@ fn test_conversation_message_view_matches_history_projection() {
         .unwrap();
 
     let parent_id = store
-        .create_message("general", None, "alice", SenderType::Human, "parent", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "parent",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
         .create_message(
@@ -690,7 +816,7 @@ fn test_conversation_message_view_matches_history_projection() {
             "reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -742,7 +868,16 @@ fn test_thread_summaries_view_projects_thread_metadata() {
         .unwrap();
 
     let parent_id = store
-        .create_message("general", None, "alice", SenderType::Human, "parent", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "parent",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
         .create_message(
@@ -753,7 +888,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
             "reply one",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     let last_reply_id = store
@@ -765,7 +900,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
             "reply two",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
@@ -811,7 +946,16 @@ fn test_thread_summary_projection_matches_history() {
         .unwrap();
 
     let parent_id = store
-        .create_message("general", None, "alice", SenderType::Human, "parent", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "parent",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     let last_reply_id = store
         .create_message(
@@ -822,7 +966,7 @@ fn test_thread_summary_projection_matches_history() {
             "reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -912,7 +1056,16 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
         .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
         .unwrap();
     store
-        .create_message("general", None, "bot1", SenderType::Agent, "hello", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "bot1",
+            SenderType::Agent,
+            "hello",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
 
     store.mark_agent_messages_deleted("bot1").unwrap();
@@ -933,7 +1086,16 @@ fn test_create_message_persists_top_level() {
         .unwrap();
 
     let message_id = store
-        .create_message("general", None, "alice", SenderType::Human, "hello", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "hello",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     let (history, _) = store.get_history("general", None, 10, None, None).unwrap();
     assert_eq!(history.len(), 1);
@@ -960,7 +1122,16 @@ fn test_thread_reply_updates_inbox_read_models() {
         .unwrap();
 
     let parent_id = store
-        .create_message("general", None, "alice", SenderType::Human, "parent", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "parent",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     let reply_id = store
         .create_message(
@@ -971,7 +1142,7 @@ fn test_thread_reply_updates_inbox_read_models() {
             "reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -1026,7 +1197,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             "oldest unread parent",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     store
@@ -1038,7 +1209,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             "oldest unread reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -1051,7 +1222,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             "newest read parent",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     let _newest_read_reply = store
@@ -1063,7 +1234,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             "newest read reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     store
@@ -1085,7 +1256,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             "newest unread parent",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     let _newest_unread_reply = store
@@ -1097,7 +1268,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             "newest unread reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -1150,7 +1321,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             "from bot a",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     store
@@ -1162,7 +1333,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             "from bot b",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -1193,7 +1364,16 @@ fn test_unread_excludes_own_messages_for_sender() {
     assert_eq!(alice_state.unread_count, 2);
 
     let parent = store
-        .create_message("general", None, "alice", SenderType::Human, "parent", &[], None, false)
+        .create_message(
+            "general",
+            None,
+            "alice",
+            SenderType::Human,
+            "parent",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
         .create_message(
@@ -1204,7 +1384,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             "reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -1397,7 +1577,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
             "human parent",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -1417,7 +1597,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
             "bot1 thread reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 
@@ -1665,7 +1845,16 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
         .unwrap();
 
     let parent_id = store
-        .create_message("eng", None, "alice", SenderType::Human, "hello", &[], None, false)
+        .create_message(
+            "eng",
+            None,
+            "alice",
+            SenderType::Human,
+            "hello",
+            &[],
+            None,
+            false,
+        )
         .unwrap();
     store
         .create_message(
@@ -1676,7 +1865,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
             "thread reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     store.create_tasks("eng", "bot1", &["ship it"]).unwrap();
@@ -1800,7 +1989,7 @@ fn test_thread_unread_count_clears_after_reading_all_messages() {
             "channel message",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
     let reply_id = store
@@ -1812,7 +2001,7 @@ fn test_thread_unread_count_clears_after_reading_all_messages() {
             "thread reply",
             &[],
             None,
-                false
+            false,
         )
         .unwrap();
 

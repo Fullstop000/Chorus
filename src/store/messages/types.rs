@@ -397,10 +397,6 @@ pub(crate) struct MessageCreatedPayload {
     pub seq: i64,
     /// ISO-8601 timestamp of when the message was persisted.
     pub created_at: String,
-    /// Client-generated nonce for optimistic-update dedup; omitted for
-    /// server-authored messages (agent replies, system messages).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_nonce: Option<String>,
 }
 
 /// Sender identity embedded inside the WebSocket event payload.
@@ -422,7 +418,6 @@ impl InsertedMessage {
         sender_name: &str,
         sender_type: &str,
         content: &str,
-        client_nonce: Option<&str>,
     ) -> MessageCreatedPayload {
         MessageCreatedPayload {
             message_id: self.id.clone(),
@@ -439,7 +434,6 @@ impl InsertedMessage {
             attachments: Vec::new(),
             seq: self.seq,
             created_at: chrono::Utc::now().to_rfc3339(),
-            client_nonce: client_nonce.map(|s| s.to_string()),
         }
     }
 }

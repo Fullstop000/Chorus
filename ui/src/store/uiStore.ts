@@ -125,11 +125,11 @@ export const useStore = create<UIStore>((set) => ({
         state.currentAgent?.display_name ??
         state.currentAgent?.name ??
         conversationId
-      console.log(
-        `[markSeen] conversation=${convName} (${conversationId}) msg=${messageId} content=${messageContent ?? '(unknown)'}`
-      )
       const next = new Set(prev)
       next.delete(messageId)
+      console.log(
+        `[markSeen] conversation=${convName} (${conversationId}) agent=${state.currentAgent?.name} msg=${messageId} content=${messageContent?.slice(0, 20) ?? '(unknown)'} unreadCnt: ${prev.size} → ${next.size}`
+      )
       return {
         unreadMessageIds: { ...state.unreadMessageIds, [conversationId]: next },
       }
@@ -137,6 +137,7 @@ export const useStore = create<UIStore>((set) => ({
 
   clearAllUnread: (conversationId: string) =>
     set((state) => {
+      console.log('clearAllUnread', conversationId, 'unreadMessageIDs:', state.unreadMessageIds[conversationId])
       if (!state.unreadMessageIds[conversationId]) return state
       const convName =
         state.currentChannel?.name ??

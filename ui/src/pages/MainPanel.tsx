@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { getChannelMembers, getTeam, sendMessage } from "../data";
+import { getChannelMembers, getTeam } from "../data";
 import { useStore } from "../store";
 import {
   useAgents,
@@ -147,32 +147,6 @@ export function MainPanel() {
     }
   }
 
-  async function handleRetryChatMessage(
-    message: (typeof chatHistory.messages)[number],
-  ) {
-    if (!chatTarget || !currentUser || !activeConversationId) return;
-    const retryHandle = chatHistory.retryOptimisticMessage(message.id);
-    if (!retryHandle) return;
-    try {
-      const sendAck = await sendMessage(
-        activeConversationId,
-        message.content,
-        message.attachments?.map((attachment) => attachment.id) ?? [],
-        { clientNonce: retryHandle.clientNonce },
-      );
-      chatHistory.ackOptimisticMessage(retryHandle, {
-        messageId: sendAck.messageId,
-        seq: sendAck.seq,
-        createdAt: sendAck.createdAt,
-        clientNonce: sendAck.clientNonce,
-      });
-    } catch (retryError) {
-      const retryMessage =
-        retryError instanceof Error ? retryError.message : String(retryError);
-      chatHistory.failOptimisticMessage(retryHandle, retryMessage);
-    }
-  }
-
   return (
     <div
       style={{
@@ -221,7 +195,6 @@ export function MainPanel() {
                 loading={chatHistory.loading}
                 lastReadSeq={chatHistory.lastReadSeq}
                 unreadIds={chatHistory.unreadIds}
-                onRetryMessage={handleRetryChatMessage}
               />
               <MessageInput
                 target={chatTarget}
