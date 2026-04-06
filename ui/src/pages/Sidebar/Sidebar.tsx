@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ChevronDown, Ellipsis, Pencil, Plus, Settings2, Sparkles, Trash2, Users } from 'lucide-react'
+import { Ellipsis, Pencil, Plus, Settings2, Trash2, Users } from 'lucide-react'
 import { useStore } from '../../store'
 import { useAgents, useChannels, useHumans, useInbox, useRefresh } from '../../hooks/data'
 import type { AgentInfo } from '../../components/agents/types'
@@ -63,6 +63,9 @@ export function Sidebar() {
   const [deleteTarget, setDeleteTarget] = useState<ChannelInfo | null>(null)
   const [openChannelMenuId, setOpenChannelMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const [channelsCollapsed, setChannelsCollapsed] = useState(false)
+  const [agentsCollapsed, setAgentsCollapsed] = useState(false)
+  const [humansCollapsed, setHumansCollapsed] = useState(false)
 
   const channels = loadedChannels.filter(isVisibleSidebarChannel)
 
@@ -88,33 +91,33 @@ export function Sidebar() {
         <div className="sidebar-header">
           <div className="sidebar-server-block">
             <span className="sidebar-server-label">[chorus::workspace]</span>
-            <span className="sidebar-server-name">
-              Chorus
-              <button type="button" aria-label="Open workspace menu">
-                <ChevronDown size={14} />
-              </button>
-            </span>
-          </div>
-          <div className="sidebar-header-actions">
-            <button className="sidebar-icon-btn" type="button" aria-label="Open suggestions">
-              <Sparkles size={15} />
-            </button>
-            <button className="sidebar-icon-btn" type="button" aria-label="Create">
-              <Plus size={15} />
-            </button>
+            <span className="sidebar-server-name">Chorus</span>
           </div>
         </div>
 
         <div className="sidebar-body">
           <div className="sidebar-section">
-            <div className="sidebar-section-header">
+            <div
+              className="sidebar-section-header"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!channelsCollapsed}
+              onClick={() => setChannelsCollapsed((v) => !v)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setChannelsCollapsed((v) => !v)
+                }
+              }}
+            >
               <span className="sidebar-section-label">Channels</span>
               <div style={{ display: 'flex', gap: 4 }}>
                 <button
                   className="sidebar-add-btn"
                   type="button"
                   title="Add channel"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation()
                     setCreateModalMode('channel')
                     setShowCreateChannel(true)
                   }}
@@ -125,7 +128,8 @@ export function Sidebar() {
                   className="sidebar-add-btn"
                   type="button"
                   title="Add team"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation()
                     setCreateModalMode('team')
                     setShowCreateChannel(true)
                   }}
@@ -134,7 +138,7 @@ export function Sidebar() {
                 </button>
               </div>
             </div>
-            {systemChannels.map((ch) => {
+            {!channelsCollapsed && systemChannels.map((ch) => {
               const unreadCount = getConversationUnread(ch.id ?? null)
               const threadUnreadCount = getConversationThreadUnreadCount(ch.id ?? null)
               const showUnreadBadge = unreadCount > 0
@@ -162,7 +166,7 @@ export function Sidebar() {
                 </button>
               )
             })}
-            {channels.map((ch) => {
+            {!channelsCollapsed && channels.map((ch) => {
               const isActive = currentChannel?.name === ch.name
               const isMenuOpen = openChannelMenuId === ch.id
               const unreadCount = getConversationUnread(ch.id ?? null)
@@ -250,18 +254,33 @@ export function Sidebar() {
           </div>
 
           <div className="sidebar-section">
-            <div className="sidebar-section-header">
+            <div
+              className="sidebar-section-header"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!agentsCollapsed}
+              onClick={() => setAgentsCollapsed((v) => !v)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setAgentsCollapsed((v) => !v)
+                }
+              }}
+            >
               <span className="sidebar-section-label">Agents</span>
               <button
                 className="sidebar-add-btn"
                 type="button"
                 title="Create agent"
-                onClick={() => setShowCreateAgent(true)}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setShowCreateAgent(true)
+                }}
               >
                 <Plus size={14} />
               </button>
             </div>
-            {agents.map((agent) => {
+            {!agentsCollapsed && agents.map((agent) => {
               const unreadCount = getAgentUnread(agent.name)
               const conversationId = getAgentConversationId(agent.name)
               return (
@@ -290,10 +309,22 @@ export function Sidebar() {
           </div>
 
           <div className="sidebar-section">
-            <div className="sidebar-section-header">
+            <div
+              className="sidebar-section-header"
+              role="button"
+              tabIndex={0}
+              aria-expanded={!humansCollapsed}
+              onClick={() => setHumansCollapsed((v) => !v)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setHumansCollapsed((v) => !v)
+                }
+              }}
+            >
               <span className="sidebar-section-label">Humans</span>
             </div>
-            {humans.map((h) => (
+            {!humansCollapsed && humans.map((h) => (
               <div key={h.name} className="sidebar-item">
                 <div
                   className="agent-avatar"
