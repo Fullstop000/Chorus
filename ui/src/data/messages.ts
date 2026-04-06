@@ -1,13 +1,4 @@
-import type { HistoryMessage, StreamEvent } from '../components/chat/types'
-
-const BASE = ''
-
-export function createRealtimeSocket(viewer: string): WebSocket {
-  const url = new URL(`${BASE}/api/events/ws`, window.location.origin)
-  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
-  url.searchParams.set('viewer', viewer)
-  return new WebSocket(url)
-}
+import type { HistoryMessage, StreamEvent } from './chat'
 
 export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
   if (event.eventType !== 'message.created') return null

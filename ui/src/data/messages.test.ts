@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeEvent, upsertMessage, bumpReplyCount, historyFetchAfterForNotification } from './realtime'
-import type { HistoryMessage, StreamEvent } from '../components/chat/types'
+import { normalizeEvent, upsertMessage, bumpReplyCount, historyFetchAfterForNotification } from './messages'
+import type { HistoryMessage, StreamEvent } from './chat'
 
 function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
   return {

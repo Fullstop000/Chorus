@@ -22,7 +22,7 @@ import {
   type InboxState,
 } from "./inbox";
 import { isVisibleSidebarChannel } from "./pages/Sidebar/sidebarChannels";
-import { getRealtimeSession } from "./transport/realtimeSession";
+import { getSession } from "./transport";
 import { queryClient as appQueryClient } from "./lib/queryClient";
 import type { ReadCursorAckPayload } from "./inbox";
 import { MainPanel } from "./pages/MainPanel";
@@ -209,10 +209,10 @@ function subscribeInbox(params: {
       dmChannels,
       agents,
     });
-    const targets = conversationRegistry.map(
-      (e) => `conversation:${e.conversationId}`,
+    const knownChannelIds = new Set(
+      conversationRegistry.map((e) => e.conversationId),
     );
-    if (targets.length === 0) return;
+    if (knownChannelIds.size === 0) return;
 
     const scheduleInboxRefresh = (
       key: string,
@@ -239,50 +239,48 @@ function subscribeInbox(params: {
         });
     };
 
-    return getRealtimeSession(currentUser).subscribe({
-      targets,
-      onFrame: (frame) => {
-        if (frame.type === "error") {
-          console.error("Inbox realtime subscription failed", frame.message);
-          return;
-        }
-        if (frame.event.eventType === "message.created") {
-          const channelId = frame.event.channelId;
-          const threadParentId = parseThreadParentId(
-            frame.event.payload.threadParentId,
-          );
-          const key = `${channelId}:${threadParentId ?? ""}`;
-          if (inboxRefreshInFlight.current.has(key)) {
-            inboxRefreshPending.current.set(key, [channelId, threadParentId]);
-          } else {
-            void getConversationInboxNotification(channelId, threadParentId)
-              .then((payload) => {
-                updateInboxState((current: InboxState) =>
-                  mergeInboxNotificationRefresh(current, payload),
+    return getSession(currentUser).subscribeAll((frame) => {
+      if (frame.type === "error") {
+        console.error("Inbox realtime subscription failed", frame.message);
+        return;
+      }
+      if (!knownChannelIds.has(frame.event.channelId)) return;
+      if (frame.event.eventType === "message.created") {
+        const channelId = frame.event.channelId;
+        const threadParentId = parseThreadParentId(
+          frame.event.payload.threadParentId,
+        );
+        const key = `${channelId}:${threadParentId ?? ""}`;
+        if (inboxRefreshInFlight.current.has(key)) {
+          inboxRefreshPending.current.set(key, [channelId, threadParentId]);
+        } else {
+          void getConversationInboxNotification(channelId, threadParentId)
+            .then((payload) => {
+              updateInboxState((current: InboxState) =>
+                mergeInboxNotificationRefresh(current, payload),
+              );
+              inboxRefreshInFlight.current.delete(key);
+              const pending = inboxRefreshPending.current.get(key);
+              if (pending) {
+                inboxRefreshPending.current.delete(key);
+                void getConversationInboxNotification(
+                  pending[0],
+                  pending[1] || undefined,
+                ).then((p) =>
+                  updateInboxState((c: InboxState) =>
+                    mergeInboxNotificationRefresh(c, p),
+                  ),
                 );
-                inboxRefreshInFlight.current.delete(key);
-                const pending = inboxRefreshPending.current.get(key);
-                if (pending) {
-                  inboxRefreshPending.current.delete(key);
-                  void getConversationInboxNotification(
-                    pending[0],
-                    pending[1] || undefined,
-                  ).then((p) =>
-                    updateInboxState((c: InboxState) =>
-                      mergeInboxNotificationRefresh(c, p),
-                    ),
-                  );
-                }
-              })
-              .catch((error) => {
-                inboxRefreshInFlight.current.delete(key);
-                console.error("Failed to refresh inbox after message", error);
-              });
-            inboxRefreshInFlight.current.add(key);
-          }
-          return;
+              }
+            })
+            .catch((error) => {
+              inboxRefreshInFlight.current.delete(key);
+              console.error("Failed to refresh inbox after message", error);
+            });
+          inboxRefreshInFlight.current.add(key);
         }
-      },
+        return;
+      }
     });
   }, [
     agents,

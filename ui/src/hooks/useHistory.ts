@@ -5,11 +5,12 @@ import {
   normalizeEvent,
   upsertMessage,
   bumpReplyCount,
-  historyFetchAfterForNotification,
   maxHistorySeq,
   mergeHistoryMessages,
-} from '../transport/realtime'
-import { getRealtimeSession } from '../transport/realtimeSession'
+  historyFetchAfterForNotification,
+} from '../data/messages'
+import { getSession } from '../transport'
+import type { RealtimeFrame } from '../transport'
 import type { HistoryMessage, HistoryResponse } from '../data'
 import type { ReadCursorAckPayload } from '../inbox'
 import { useStore } from '../store'
@@ -77,83 +78,65 @@ export function useHistory(
 
     let cancelled = false
     let unsubscribeRealtime: (() => void) | null = null
-    let activeRealtimeTarget: string | null = null
 
-    async function bootstrap() {
-      try {
-        activeRealtimeTarget = `conversation:${conversationId}`
-      } catch (targetError) {
-        if (!cancelled) {
-          console.error(targetError instanceof Error ? targetError.message : String(targetError))
-        }
+    const handleFrame = (frame: RealtimeFrame) => {
+      if (cancelled) return
+      if (frame.type === 'error') {
+        console.error(frame.message)
         return
       }
 
-      unsubscribeRealtime = getRealtimeSession(username).subscribe({
-        targets: [activeRealtimeTarget],
-        onFrame: (frame) => {
-          if (cancelled) return
-          if (frame.type === 'error') {
-            console.error(frame.message)
-            return
+      const msg = normalizeEvent(frame.event)
+      if (!msg) return
+
+      // Thread replies bump the parent's reply count but don't insert into root history
+      if (msg.thread_parent_id) {
+        commitMessages((current) => bumpReplyCount(current, msg.thread_parent_id!))
+        return
+      }
+
+      // Insert the new message optimistically
+      queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
+        if (!current) return current
+        const before = current.messages.length
+        const updated = upsertMessage(current.messages, msg)
+        if (updated.length > before) {
+          maxLoadedSeqRef.current = maxHistorySeq(updated)
+          if (msg.senderName !== username) {
+            addUnreadMessageId(targetKey!, msg.id)
           }
-
-          const msg = normalizeEvent(frame.event)
-          if (!msg) return
-
-          const isThreadView = !!options?.threadParentId
-
-          if (msg.thread_parent_id && !isThreadView) {
-            commitMessages((current) => bumpReplyCount(current, msg.thread_parent_id!))
-            return
-          }
-
-          let messageAdded = false
-
-          queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
-            if (!current) return current
-            const before = current.messages.length
-            const updated = upsertMessage(current.messages, msg)
-            if (updated.length > before) {
-              maxLoadedSeqRef.current = maxHistorySeq(updated)
-              if (msg.senderName !== username) {
-                addUnreadMessageId(targetKey!, msg.id)
-              }
-              messageAdded = true
-              return { ...current, messages: updated }
-            }
-            return current
-          })
-
-          if (messageAdded) return
-
-          const incrementalAfter = historyFetchAfterForNotification(
-            activeRealtimeTarget,
-            frame.event,
-            maxLoadedSeqRef.current,
-            options?.threadParentId ?? null
-          )
-
-          if (incrementalAfter != null && conversationId) {
-            void getHistoryAfter(conversationId, incrementalAfter, 50, options?.threadParentId ?? undefined).then(
-              (res) => {
-                if (cancelled) return
-                queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
-                  if (!current) return current
-                  const merged = mergeHistoryMessages(current.messages, res.messages)
-                  maxLoadedSeqRef.current = maxHistorySeq(merged)
-                  return { ...current, messages: merged, last_read_seq: res.last_read_seq ?? current.last_read_seq }
-                })
-              }
-            )
-          } else if (frame.event.eventType === 'message.created' && conversationId) {
-            void refetch()
-          }
-        },
+          return { ...current, messages: updated }
+        }
+        return current
       })
+
+      // Check if we missed messages and need to backfill
+      const target = `conversation:${conversationId}`
+      const incrementalAfter = historyFetchAfterForNotification(
+        target,
+        frame.event,
+        maxLoadedSeqRef.current,
+        options?.threadParentId
+      )
+
+      if (incrementalAfter != null) {
+        void getHistoryAfter(conversationId, incrementalAfter, 50, options?.threadParentId ?? undefined).then(
+          (res) => {
+            if (cancelled) return
+            queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
+              if (!current) return current
+              const merged = mergeHistoryMessages(current.messages, res.messages)
+              maxLoadedSeqRef.current = maxHistorySeq(merged)
+              return { ...current, messages: merged, last_read_seq: res.last_read_seq ?? current.last_read_seq }
+            })
+          }
+        )
+      } else if (frame.event.eventType === 'message.created') {
+        void refetch()
+      }
     }
 
-    void bootstrap()
+    unsubscribeRealtime = getSession(username).subscribe(conversationId, handleFrame)
 
     return () => {
       cancelled = true
@@ -163,7 +146,7 @@ export function useHistory(
       }
       unsubscribeRealtime?.()
     }
-  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey, refetch])
+  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey, refetch, commitMessages])
 
   const reportVisibleSeq = useCallback(
     (visibleSeq: number) => {
