@@ -1,30 +1,25 @@
-import { useMemo, useRef, useEffect } from "react";
+import { useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { useStore } from "./store/uiStore";
 import {
   whoamiQuery,
-  agentsQuery,
   channelsQuery,
   teamsQuery,
   humansQuery,
   inboxQuery,
   ensureDirectMessageConversation,
   channelQueryKeys,
-  getConversationInboxNotification,
 } from "./data";
-import type { AgentInfo, ChannelInfo } from "./data";
+import type { ChannelInfo } from "./data";
 import {
   dmConversationNameForParticipants,
   ensureInboxConversations,
-  buildConversationRegistry,
-  mergeInboxNotificationRefresh,
   type InboxState,
 } from "./inbox";
 import { isVisibleSidebarChannel } from "./pages/Sidebar/sidebarChannels";
-import { getSession } from "./transport";
+import { getSession, EventType } from "./transport";
 import { queryClient as appQueryClient } from "./lib/queryClient";
-import type { ReadCursorAckPayload } from "./inbox";
 import { MainPanel } from "./pages/MainPanel";
 import { Sidebar } from "./pages/Sidebar";
 
@@ -34,7 +29,6 @@ function loadAppData(
   channelsData?: import("./data").ChannelInfo[],
 ) {
   const whoamiResult = useQuery(whoamiQuery);
-  const agentsResult = useQuery(agentsQuery(currentUser));
   const channelsResult = useQuery(channelsQuery(currentUser));
   const teamsResult = useQuery(teamsQuery(currentUser));
   const humansResult = useQuery(humansQuery(currentUser));
@@ -44,7 +38,6 @@ function loadAppData(
 
   return {
     whoamiQuery: whoamiResult,
-    agentsQuery: agentsResult,
     channelsQuery: channelsResult,
     teamsQuery: teamsResult,
     humansQuery: humansResult,
@@ -171,126 +164,25 @@ function ensureAgentDm(params: {
   ]);
 }
 
-function parseThreadParentId(raw: unknown): string | undefined {
-  return typeof raw === "string" && raw.length > 0 ? raw : undefined;
-}
-
-function subscribeInbox(params: {
-  currentUser: string;
-  shellBootstrapped: boolean;
-  systemChannels: ChannelInfo[];
-  channels: ChannelInfo[];
-  dmChannels: ChannelInfo[];
-  agents: AgentInfo[];
-  updateInboxState: (u: (c: InboxState) => InboxState) => void;
-}): void {
-  const {
-    currentUser,
-    shellBootstrapped,
-    systemChannels,
-    channels,
-    dmChannels,
-    agents,
-    updateInboxState,
-  } = params;
-
-  const inboxRefreshInFlight = useRef<Set<string>>(new Set());
-  const inboxRefreshPending = useRef<Map<string, [string, string | undefined]>>(
-    new Map(),
+/** Advance latestSeq for ALL conversations on realtime messages so sidebar badges update. */
+function useGlobalSeqListener(
+  currentUser: string,
+  shellBootstrapped: boolean,
+): void {
+  const advanceConversationLatestSeq = useStore(
+    (s) => s.advanceConversationLatestSeq,
   );
-
   useEffect(() => {
     if (!currentUser || !shellBootstrapped) return;
-
-    const conversationRegistry = buildConversationRegistry({
-      currentUser,
-      systemChannels,
-      channels,
-      dmChannels,
-      agents,
-    });
-    const knownChannelIds = new Set(
-      conversationRegistry.map((e) => e.conversationId),
-    );
-    if (knownChannelIds.size === 0) return;
-
-    const scheduleInboxRefresh = (
-      key: string,
-      channelId: string,
-      threadParentId: string | undefined,
-    ): void => {
-      inboxRefreshInFlight.current.add(key);
-      void getConversationInboxNotification(channelId, threadParentId)
-        .then((payload) => {
-          updateInboxState((current: InboxState) =>
-            mergeInboxNotificationRefresh(current, payload),
-          );
-        })
-        .catch((error) => {
-          console.error("Failed to refresh inbox after message", error);
-        })
-        .finally(() => {
-          inboxRefreshInFlight.current.delete(key);
-          const pending = inboxRefreshPending.current.get(key);
-          if (pending) {
-            inboxRefreshPending.current.delete(key);
-            scheduleInboxRefresh(key, pending[0], pending[1]);
-          }
-        });
-    };
-
     return getSession(currentUser).subscribeAll((frame) => {
-      if (frame.type === "error") {
-        console.error("Inbox realtime subscription failed", frame.message);
-        return;
-      }
-      if (!knownChannelIds.has(frame.event.channelId)) return;
-      if (frame.event.eventType === "message.created") {
-        const channelId = frame.event.channelId;
-        const threadParentId = parseThreadParentId(
-          frame.event.payload.threadParentId,
-        );
-        const key = `${channelId}:${threadParentId ?? ""}`;
-        if (inboxRefreshInFlight.current.has(key)) {
-          inboxRefreshPending.current.set(key, [channelId, threadParentId]);
-        } else {
-          void getConversationInboxNotification(channelId, threadParentId)
-            .then((payload) => {
-              updateInboxState((current: InboxState) =>
-                mergeInboxNotificationRefresh(current, payload),
-              );
-              inboxRefreshInFlight.current.delete(key);
-              const pending = inboxRefreshPending.current.get(key);
-              if (pending) {
-                inboxRefreshPending.current.delete(key);
-                void getConversationInboxNotification(
-                  pending[0],
-                  pending[1] || undefined,
-                ).then((p) =>
-                  updateInboxState((c: InboxState) =>
-                    mergeInboxNotificationRefresh(c, p),
-                  ),
-                );
-              }
-            })
-            .catch((error) => {
-              inboxRefreshInFlight.current.delete(key);
-              console.error("Failed to refresh inbox after message", error);
-            });
-          inboxRefreshInFlight.current.add(key);
-        }
-        return;
+      if (frame.type === "error") return;
+      if (frame.event.eventType !== EventType.MessageCreated) return;
+      const seq = frame.event.payload?.seq;
+      if (typeof seq === "number") {
+        advanceConversationLatestSeq(frame.event.channelId, seq);
       }
     });
-  }, [
-    agents,
-    channels,
-    currentUser,
-    dmChannels,
-    shellBootstrapped,
-    systemChannels,
-    updateInboxState,
-  ]);
+  }, [currentUser, shellBootstrapped, advanceConversationLatestSeq]);
 }
 
 export default function App() {
@@ -309,12 +201,10 @@ export default function App() {
     shellBootstrapped,
     prevAllChannelsRef.current,
   );
-  const { whoamiQuery, agentsQuery, channelsQuery, inboxQuery } = queries;
+  const { whoamiQuery, channelsQuery, inboxQuery } = queries;
 
   const channelsData = channelsQuery.data;
   prevAllChannelsRef.current = channelsData?.allChannels;
-
-  const agents = useMemo(() => agentsQuery.data ?? [], [agentsQuery.data]);
   const allChannels = channelsData?.allChannels ?? [];
   const channels = channelsData?.channels ?? [];
   const systemChannels = channelsData?.systemChannels ?? [];
@@ -350,15 +240,7 @@ export default function App() {
     setShellBootstrapped(true);
   }, [inboxBootstrapData, updateInboxState, setShellBootstrapped]);
 
-  subscribeInbox({
-    currentUser,
-    shellBootstrapped,
-    systemChannels,
-    channels,
-    dmChannels,
-    agents,
-    updateInboxState,
-  });
+  useGlobalSeqListener(currentUser, shellBootstrapped);
 
   return (
     <div className="app-shell">
@@ -366,13 +248,4 @@ export default function App() {
       <MainPanel />
     </div>
   );
-}
-
-export function applyReadCursorAck(params: {
-  queryClient: typeof appQueryClient;
-}) {
-  return (ack: ReadCursorAckPayload) => {
-    (useStore as any).getState().applyReadCursorAck(ack);
-    params.queryClient.invalidateQueries({ queryKey: ["inbox"] });
-  };
 }

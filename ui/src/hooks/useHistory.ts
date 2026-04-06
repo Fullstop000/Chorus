@@ -54,7 +54,7 @@ export function useHistory(
     (updater: (current: HistoryMessage[]) => HistoryMessage[]) => {
       queryClient.setQueryData(queryKey, (current: HistoryResponse | undefined) => {
         if (!current) return current
-        const next = updater(current.messages).sort((left, right) => left.seq - right.seq)
+        const next = updater(current.messages)
         if (conversationId) advanceConversationLatestSeq(conversationId, maxHistorySeq(next))
         return { ...current, messages: next }
       })
@@ -84,14 +84,13 @@ export function useHistory(
         return
       }
 
-      // Seq-gated append: only insert if this message is newer than what we've seen
-      const currentLatestSeq = useStore.getState().inboxState.conversations[conversationId]?.latestSeq ?? 0
-      if (msg.seq <= currentLatestSeq) return
-
+      // Append if newer than the last message in cache
       advanceConversationLatestSeq(conversationId, msg.seq)
       queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
         if (!current) return current
-        return { ...current, messages: [...current.messages, msg].sort((a, b) => a.seq - b.seq) }
+        const lastSeq = current.messages.length > 0 ? current.messages[current.messages.length - 1].seq : 0
+        if (msg.seq <= lastSeq) return current
+        return { ...current, messages: [...current.messages, msg] }
       })
     }
 

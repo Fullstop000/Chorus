@@ -18,7 +18,6 @@ import {
   mergeChannelThreadInboxEntries,
   type InboxState,
 } from '../inbox'
-import { applyReadCursorAck } from '../App'
 import type { AgentInfo } from '../data'
 
 function useAppInboxSelectors(params: {
@@ -195,16 +194,14 @@ export function useRefresh() {
 }
 
 /**
- * Inbox selectors + read-cursor ack handler.
- * Returns unread counts per conversation/thread/agent, thread listings,
- * and `applyReadCursorAck` for marking threads as read.
+ * Inbox selectors.
+ * Returns unread counts per conversation/thread/agent and thread listings.
  */
 export function useInbox() {
   const currentUser = useStore((s) => s.currentUser)
   const inboxState = useStore((s) => s.inboxState)
   const conversationThreads = useStore((s) => s.conversationThreads)
   const { dmChannels } = useChannels()
-  const queryClient = useQueryClient()
 
   const selectors = useAppInboxSelectors({
     currentUser,
@@ -213,9 +210,7 @@ export function useInbox() {
     dmChannels,
   })
 
-  const applyReadCursorAckFn = applyReadCursorAck({ queryClient })
-
-  return { ...selectors, applyReadCursorAck: applyReadCursorAckFn }
+  return selectors
 }
 
 /** Backend routing key for the current selection. Centralizes the `#`/`dm:@` prefix. */

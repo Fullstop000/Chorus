@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { AgentInfo, ChannelInfo, HistoryMessage, ThreadInboxEntry } from '../data'
-import type { InboxState, ReadCursorAckPayload } from '../inbox'
-import { createInboxState, mergeReadCursorAckIntoInboxState, threadNotificationKey } from '../inbox'
+import type { InboxState } from '../inbox'
+import { createInboxState, threadNotificationKey } from '../inbox'
 
 export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
@@ -30,8 +30,6 @@ interface UIActions {
   setCurrentAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
   setOpenThreadMsg: (msg: HistoryMessage | null) => void
-  /** Merge a server-side read-cursor ack into the local inbox state */
-  applyReadCursorAck: (ack: ReadCursorAckPayload) => void
   /** Bulk-replace inboxState (used by realtime subscription on reconnect) */
   updateInboxState: (updater: (current: InboxState) => InboxState) => void
   setConversationThreads: (conversationId: string, threads: ThreadInboxEntry[]) => void
@@ -88,11 +86,6 @@ export const useStore = create<UIStore>((set) => ({
   setActiveTab: (activeTab: ActiveTab) => set({ activeTab }),
 
   setOpenThreadMsg: (openThreadMsg: HistoryMessage | null) => set({ openThreadMsg }),
-
-  applyReadCursorAck: (ack: ReadCursorAckPayload) =>
-    set((state) => ({
-      inboxState: mergeReadCursorAckIntoInboxState(state.inboxState, ack),
-    })),
 
   updateInboxState: (updater: (current: InboxState) => InboxState) =>
     set((state) => ({ inboxState: updater(state.inboxState) })),

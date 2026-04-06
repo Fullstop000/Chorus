@@ -6,7 +6,6 @@ import { NewMessageBadge } from "./NewMessageBadge";
 import { useVisibilityTracking } from "../../hooks/useVisibilityTracking";
 import { updateReadCursor, historyQueryKeys } from "../../data";
 import type { HistoryMessage, HistoryResponse } from "../../data";
-import { mergeReadCursorAckIntoInboxState } from "../../inbox";
 import { useStore } from "../../store";
 import "./MessageList.css";
 import type { RefObject } from "react";
@@ -81,29 +80,25 @@ export function MessageList({
   const lastReadSeqRef = useRef(0);
   const pendingReadSeqRef = useRef<number | null>(null);
   const readCursorTimerRef = useRef<number | null>(null);
+  const activeTargetRef = useRef(targetKey);
   const queryClient = useQueryClient();
   const queryKey = historyQueryKeys.history(
     conversationId ?? "",
     threadParentId ?? null,
   );
-  const {
-    advanceConversationLastReadSeq,
-    advanceThreadLastReadSeq,
-    updateInboxState,
-  } = useStore();
+  const { advanceConversationLastReadSeq, advanceThreadLastReadSeq } =
+    useStore();
+
+  activeTargetRef.current = targetKey;
 
   useEffect(() => {
     lastReadSeqRef.current = lastReadSeq;
   }, [lastReadSeq]);
 
-  // Clean up pending timer on unmount or target change.
+  // Reset pending state when target changes.
   useEffect(() => {
-    return () => {
-      if (readCursorTimerRef.current != null) {
-        window.clearTimeout(readCursorTimerRef.current);
-        readCursorTimerRef.current = null;
-      }
-    };
+    pendingReadSeqRef.current = null;
+    lastReadSeqRef.current = lastReadSeq;
   }, [targetKey]);
 
   const reportVisibleSeq = useCallback(
@@ -129,9 +124,11 @@ export function MessageList({
         const flushSeq = pendingReadSeqRef.current;
         pendingReadSeqRef.current = null;
         if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return;
+        // Target changed while timer was pending — discard stale update.
+        if (activeTargetRef.current !== targetKey) return;
         if (document.visibilityState !== "visible") return;
         try {
-          const res = await updateReadCursor(
+          await updateReadCursor(
             conversationId,
             flushSeq,
             threadParentId || undefined,
@@ -149,19 +146,6 @@ export function MessageList({
                   }
                 : current,
           );
-          updateInboxState((current) =>
-            mergeReadCursorAckIntoInboxState(current, {
-              conversationId,
-              conversationUnreadCount: res.conversationUnreadCount,
-              conversationLastReadSeq: res.conversationLastReadSeq,
-              conversationLatestSeq: res.conversationLatestSeq,
-              conversationThreadUnreadCount: res.conversationThreadUnreadCount,
-              threadParentId: res.threadParentId ?? null,
-              threadUnreadCount: res.threadUnreadCount,
-              threadLastReadSeq: res.threadLastReadSeq,
-              threadLatestSeq: res.threadLatestSeq,
-            }),
-          );
         } catch (cursorError) {
           console.error("Failed to update read cursor", cursorError);
         }
@@ -177,7 +161,6 @@ export function MessageList({
       queryKey,
       advanceConversationLastReadSeq,
       advanceThreadLastReadSeq,
-      updateInboxState,
     ],
   );
 

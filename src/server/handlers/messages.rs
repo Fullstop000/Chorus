@@ -104,9 +104,9 @@ pub struct HistoryResponse {
     pub last_read_seq: i64,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct InboxResponse {
-    pub conversations: Vec<crate::store::InboxConversationNotificationView>,
+    pub conversations: Vec<PublicInboxConversationNotification>,
 }
 
 /// CamelCase inbox row for browser clients (matches `InboxConversationState` in the UI).
@@ -751,10 +751,13 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
         return Err(api_err(format!("viewer not found: {}", actor_id)));
     }
 
-    let conversations = state
+    let conversations: Vec<PublicInboxConversationNotification> = state
         .store
         .get_inbox_conversation_notifications(&actor_id)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| internal_err(e.to_string()))?
+        .iter()
+        .map(PublicInboxConversationNotification::from)
+        .collect();
     Ok(Json(InboxResponse { conversations }))
 }
 

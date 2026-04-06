@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import { normalizeEvent, bumpReplyCount } from './messages'
 import type { HistoryMessage, StreamEvent } from './chat'
+import { EventType } from '../transport'
 
 function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
   return {
-    eventType: 'message.created',
+    eventType: EventType.MessageCreated,
     channelId: 'conversation-1',
     latestSeq: 6,
     payload: {
@@ -21,7 +22,7 @@ function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
 
 describe('normalizeEvent', () => {
   it('returns null for non-message events', () => {
-    const event: StreamEvent = { ...makeEvent(), eventType: 'tombstone_changed' }
+    const event: StreamEvent = { ...makeEvent(), eventType: EventType.TombstoneChanged }
     expect(normalizeEvent(event)).toBeNull()
   })
 

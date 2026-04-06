@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  applyConversationRead,
   bootstrapInboxState,
   ensureInboxConversations,
   mergeInboxNotificationRefresh,
-  mergeReadCursorAckIntoInboxState,
 } from './inbox'
 import type { ChannelInfo } from '../components/channels/types'
 import type { InboxConversationState } from './types'
@@ -166,62 +164,4 @@ describe('ensureInboxConversations', () => {
   })
 })
 
-describe('mergeReadCursorAckIntoInboxState', () => {
-  it('applies server conversation unread after a thread read (channel badge drops thread replies)', () => {
-    const state = bootstrapInboxState([
-      makeConversation({
-        latestSeq: 10,
-        lastReadSeq: 5,
-        unreadCount: 4,
-      }),
-    ])
 
-    const next = mergeReadCursorAckIntoInboxState(state, {
-      conversationId: 'conversation-1',
-      conversationUnreadCount: 2,
-      conversationLastReadSeq: 5,
-      conversationLatestSeq: 10,
-      threadParentId: 'parent-1',
-      threadUnreadCount: 0,
-      threadLastReadSeq: 8,
-      threadLatestSeq: 8,
-    })
-
-    expect(next.conversations['conversation-1']).toEqual(
-      expect.objectContaining({
-        unreadCount: 2,
-        lastReadSeq: 5,
-        latestSeq: 10,
-      })
-    )
-    expect(next.threads['conversation-1:parent-1']).toEqual(
-      expect.objectContaining({
-        unreadCount: 0,
-        lastReadSeq: 8,
-        latestSeq: 8,
-      })
-    )
-  })
-})
-
-describe('applyConversationRead', () => {
-  it('reduces unreadCount when the local conversation read cursor advances', () => {
-    const state = bootstrapInboxState([
-      makeConversation({
-        latestSeq: 5,
-        lastReadSeq: 2,
-        unreadCount: 3,
-      }),
-    ])
-
-    const next = applyConversationRead(state, 'conversation-1', 5)
-
-    expect(next.conversations['conversation-1']).toEqual(
-      expect.objectContaining({
-        latestSeq: 5,
-        lastReadSeq: 5,
-        unreadCount: 0,
-      })
-    )
-  })
-})

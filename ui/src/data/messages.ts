@@ -1,7 +1,8 @@
 import type { HistoryMessage, StreamEvent } from './chat'
+import { EventType } from '../transport'
 
 export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
-  if (event.eventType !== 'message.created') return null
+  if (event.eventType !== EventType.MessageCreated) return null
   const p = event.payload
   if (!p.messageId || !p.content || !p.sender?.name) return null
   return {

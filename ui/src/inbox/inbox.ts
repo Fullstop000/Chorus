@@ -22,18 +22,6 @@ export interface InboxState {
   threads: Record<string, ThreadInboxState>
 }
 
-/** Authoritative inbox fields returned from `POST .../read-cursor`. */
-export interface ReadCursorAckPayload {
-  conversationId: string
-  conversationUnreadCount: number
-  conversationLastReadSeq: number
-  conversationLatestSeq: number
-  conversationThreadUnreadCount?: number
-  threadParentId?: string | null
-  threadUnreadCount?: number
-  threadLastReadSeq?: number
-  threadLatestSeq?: number
-}
 
 export interface ConversationRegistryEntry {
   conversationId: string
@@ -214,90 +202,7 @@ export function mergeInboxNotificationRefresh(
   }
 }
 
-export function applyConversationRead(
-  state: InboxState,
-  conversationId: string,
-  lastReadSeq: number
-): InboxState {
-  const current = state.conversations[conversationId]
-  if (!current || lastReadSeq <= current.lastReadSeq) {
-    return state
-  }
 
-  const nextLastReadSeq = Math.max(current.lastReadSeq, lastReadSeq)
-  const unreadCount = Math.max(current.latestSeq - nextLastReadSeq, 0)
-
-  return {
-    ...state,
-    conversations: {
-      ...state.conversations,
-      [conversationId]: {
-        ...current,
-        lastReadSeq: nextLastReadSeq,
-        unreadCount,
-      },
-    },
-  }
-}
-
-/** Apply server read-cursor response so sidebar/thread badges match SQLite inbox views. */
-export function mergeReadCursorAckIntoInboxState(
-  state: InboxState,
-  ack: ReadCursorAckPayload
-): InboxState {
-  const current = state.conversations[ack.conversationId]
-  if (!current) {
-    return state
-  }
-
-  const nextConversation: InboxConversationState = {
-    ...current,
-    unreadCount: ack.conversationUnreadCount,
-    threadUnreadCount: ack.conversationThreadUnreadCount ?? current.threadUnreadCount,
-    lastReadSeq: ack.conversationLastReadSeq,
-    latestSeq: ack.conversationLatestSeq,
-  }
-
-  const hasThreadSnapshot =
-    ack.threadParentId &&
-    ack.threadUnreadCount != null &&
-    ack.threadLastReadSeq != null &&
-    ack.threadLatestSeq != null
-
-  if (!hasThreadSnapshot) {
-    return {
-      ...state,
-      conversations: {
-        ...state.conversations,
-        [ack.conversationId]: nextConversation,
-      },
-    }
-  }
-
-  const key = threadNotificationKey(ack.conversationId, ack.threadParentId!)
-  const priorThread = state.threads[key]
-
-  return {
-    ...state,
-    conversations: {
-      ...state.conversations,
-      [ack.conversationId]: nextConversation,
-    },
-    threads: {
-      ...state.threads,
-      [key]: {
-        conversationId: ack.conversationId,
-        threadParentId: ack.threadParentId!,
-        latestSeq: ack.threadLatestSeq!,
-        lastReadSeq: ack.threadLastReadSeq!,
-        unreadCount: ack.threadUnreadCount!,
-        lastReadMessageId: priorThread?.lastReadMessageId,
-        lastReplyMessageId: priorThread?.lastReplyMessageId,
-        lastReplyAt: priorThread?.lastReplyAt,
-      },
-    },
-  }
-}
 
 export function bootstrapInboxState(
   conversations: InboxConversationState[],
