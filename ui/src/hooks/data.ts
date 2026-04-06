@@ -26,18 +26,17 @@ function useAppInboxSelectors(params: {
   inboxState: InboxState
   conversationThreads: Record<string, ThreadInboxEntry[]>
   dmChannels: ChannelInfo[]
-  unreadMessageIds: Record<string, Set<string>>
 }) {
-  const { currentUser, inboxState, conversationThreads, dmChannels, unreadMessageIds } = params
+  const { currentUser, inboxState, conversationThreads, dmChannels } = params
 
   const getConversationUnread = useCallback(
     (conversationId?: string | null) => {
       if (!conversationId) return 0
-      const serverUnread = inboxState.conversations[conversationId]?.unreadCount ?? 0
-      const clientUnread = unreadMessageIds[conversationId]?.size ?? 0
-      return serverUnread + clientUnread
+      const conv = inboxState.conversations[conversationId]
+      if (!conv) return 0
+      return Math.max(conv.latestSeq - conv.lastReadSeq, 0)
     },
-    [inboxState.conversations, unreadMessageIds]
+    [inboxState.conversations]
   )
 
   const getConversationThreadUnreadCount = useCallback(
@@ -212,7 +211,6 @@ export function useInbox() {
     inboxState,
     conversationThreads,
     dmChannels,
-    unreadMessageIds: useStore((s) => s.unreadMessageIds),
   })
 
   const applyReadCursorAckFn = applyReadCursorAck({ queryClient })

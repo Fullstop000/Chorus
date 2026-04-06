@@ -41,7 +41,7 @@ export function MainPanel() {
   } = useStore();
   const agents = useAgents();
   const humans = useHumans();
-  const { getAgentConversationId, applyReadCursorAck } = useInbox();
+  const { getAgentConversationId } = useInbox();
   const { refreshChannels, refreshAgents, refreshTeams } = useRefresh();
   const chatTarget = useTarget();
   const activeConversationId =
@@ -51,7 +51,6 @@ export function MainPanel() {
     currentUser,
     activeTab === "chat" ? chatTarget : null,
     activeConversationId,
-    { onReadCursorAck: applyReadCursorAck },
   );
   const [members, setMembers] = useState<ChannelMemberInfo[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
@@ -191,10 +190,10 @@ export function MainPanel() {
             <>
               <ChatPanel
                 target={chatTarget}
+                conversationId={activeConversationId}
                 messages={chatHistory.messages}
                 loading={chatHistory.loading}
                 lastReadSeq={chatHistory.lastReadSeq}
-                unreadIds={chatHistory.unreadIds}
               />
               <MessageInput
                 target={chatTarget}

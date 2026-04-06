@@ -81,18 +81,18 @@ export function ChatHeader({
 
 interface ChatPanelProps {
   target: string | null;
+  conversationId: string | null;
   messages: HistoryMessage[];
   loading: boolean;
   lastReadSeq: number;
-  unreadIds: Set<string>;
 }
 
 export function ChatPanel({
   target,
+  conversationId,
   messages,
   loading,
   lastReadSeq,
-  unreadIds,
 }: ChatPanelProps) {
   const { currentUser, setOpenThreadMsg } = useStore();
 
@@ -110,11 +110,11 @@ export function ChatPanel({
     <div className="chat-panel">
       <MessageList
         targetKey={target}
+        conversationId={conversationId}
         messages={messages}
         loading={loading}
         lastReadSeq={lastReadSeq}
         currentUser={currentUser}
-        unreadIds={unreadIds}
         onReply={setOpenThreadMsg}
       />
     </div>

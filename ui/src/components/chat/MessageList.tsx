@@ -1,9 +1,13 @@
 import { useEffect, useRef, useCallback } from "react";
-import { useStore } from "../../store";
+import { useQueryClient } from "@tanstack/react-query";
 import { MessageItem } from "./MessageItem";
 import { NewMessageDivider } from "./NewMessageDivider";
 import { NewMessageBadge } from "./NewMessageBadge";
-import type { HistoryMessage } from "./types";
+import { useVisibilityTracking } from "../../hooks/useVisibilityTracking";
+import { updateReadCursor, historyQueryKeys } from "../../data";
+import type { HistoryMessage, HistoryResponse } from "../../data";
+import { mergeReadCursorAckIntoInboxState } from "../../inbox";
+import { useStore } from "../../store";
 import "./MessageList.css";
 import type { RefObject } from "react";
 
@@ -34,6 +38,8 @@ export function getBottomTransition(
 interface MessageListProps {
   // Stable store key for the current channel, DM, or thread.
   targetKey: string;
+  // Conversation id for read-cursor tracking.
+  conversationId: string | null;
   // Messages rendered in visual order.
   messages: HistoryMessage[];
   // True while history is still loading.
@@ -42,8 +48,6 @@ interface MessageListProps {
   lastReadSeq: number;
   // Logged-in username for self styling.
   currentUser: string | null;
-  // Unread message ids tracked for the active target.
-  unreadIds: Set<string>;
   // Chooses whether this component owns scrolling or inherits a parent scroller.
   scrollMode?: "internal" | "inherit";
   // Parent scroll container used when scrollMode is inherit.
@@ -52,44 +56,158 @@ interface MessageListProps {
   onReply?: (message: HistoryMessage) => void;
   // Empty state copy shown when no messages exist.
   emptyLabel?: string;
-}
-
-function SeenTracker({
-  messageId,
-  messageContent,
-  targetKey,
-}: {
-  messageId: string;
-  messageContent?: string;
-  targetKey: string;
-}) {
-  const markUnreadAsSeen = useStore((s) => s.markUnreadAsSeen);
-  useEffect(() => {
-    markUnreadAsSeen(targetKey, messageId, messageContent);
-  }, [targetKey, messageId, messageContent, markUnreadAsSeen]);
-  return null;
+  // Thread parent id — set when rendering a thread message list.
+  threadParentId?: string | null;
 }
 
 export function MessageList({
   targetKey,
+  conversationId,
   messages,
   loading,
   lastReadSeq,
   currentUser,
-  unreadIds,
   scrollMode = "internal",
   externalScrollContainerRef,
   onReply,
   emptyLabel = "No messages yet. Be the first to say something!",
+  threadParentId,
 }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
   const internalScrollContainerRef = useRef<HTMLDivElement>(null);
   const firstUnreadAnchorRef = useRef<HTMLDivElement>(null);
   const lastTargetRef = useRef<string>("");
-  const clearAllUnread = useStore((s) => s.clearAllUnread);
+  const messageRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const lastReadSeqRef = useRef(0);
+  const pendingReadSeqRef = useRef<number | null>(null);
+  const readCursorTimerRef = useRef<number | null>(null);
+  const queryClient = useQueryClient();
+  const queryKey = historyQueryKeys.history(
+    conversationId ?? "",
+    threadParentId ?? null,
+  );
+  const {
+    advanceConversationLastReadSeq,
+    advanceThreadLastReadSeq,
+    updateInboxState,
+  } = useStore();
+
+  useEffect(() => {
+    lastReadSeqRef.current = lastReadSeq;
+  }, [lastReadSeq]);
+
+  // Clean up pending timer on unmount or target change.
+  useEffect(() => {
+    return () => {
+      if (readCursorTimerRef.current != null) {
+        window.clearTimeout(readCursorTimerRef.current);
+        readCursorTimerRef.current = null;
+      }
+    };
+  }, [targetKey]);
+
+  const reportVisibleSeq = useCallback(
+    (visibleSeq: number) => {
+      if (!currentUser || !targetKey || !conversationId || visibleSeq <= 0)
+        return;
+      if (loading) return;
+      if (document.visibilityState !== "visible") return;
+      const nextSeq = Math.max(visibleSeq, pendingReadSeqRef.current ?? 0);
+      if (nextSeq <= lastReadSeqRef.current) return;
+      pendingReadSeqRef.current = nextSeq;
+      if (readCursorTimerRef.current != null) return;
+
+      // Optimistically advance lastReadSeq so unread count drops immediately.
+      if (threadParentId) {
+        advanceThreadLastReadSeq(conversationId, threadParentId, nextSeq);
+      } else {
+        advanceConversationLastReadSeq(conversationId, nextSeq);
+      }
+
+      readCursorTimerRef.current = window.setTimeout(async () => {
+        readCursorTimerRef.current = null;
+        const flushSeq = pendingReadSeqRef.current;
+        pendingReadSeqRef.current = null;
+        if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return;
+        if (document.visibilityState !== "visible") return;
+        try {
+          const res = await updateReadCursor(
+            conversationId,
+            flushSeq,
+            threadParentId || undefined,
+          );
+          queryClient.setQueryData<HistoryResponse | undefined>(
+            queryKey,
+            (current) =>
+              current
+                ? {
+                    ...current,
+                    last_read_seq: Math.max(
+                      current.last_read_seq ?? 0,
+                      flushSeq,
+                    ),
+                  }
+                : current,
+          );
+          updateInboxState((current) =>
+            mergeReadCursorAckIntoInboxState(current, {
+              conversationId,
+              conversationUnreadCount: res.conversationUnreadCount,
+              conversationLastReadSeq: res.conversationLastReadSeq,
+              conversationLatestSeq: res.conversationLatestSeq,
+              conversationThreadUnreadCount: res.conversationThreadUnreadCount,
+              threadParentId: res.threadParentId ?? null,
+              threadUnreadCount: res.threadUnreadCount,
+              threadLastReadSeq: res.threadLastReadSeq,
+              threadLatestSeq: res.threadLatestSeq,
+            }),
+          );
+        } catch (cursorError) {
+          console.error("Failed to update read cursor", cursorError);
+        }
+      }, 150);
+    },
+    [
+      conversationId,
+      loading,
+      threadParentId,
+      targetKey,
+      currentUser,
+      queryClient,
+      queryKey,
+      advanceConversationLastReadSeq,
+      advanceThreadLastReadSeq,
+      updateInboxState,
+    ],
+  );
+
+  const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } =
+    useVisibilityTracking(reportVisibleSeq);
 
   const firstUnreadIndex = messages.findIndex((m) => m.seq > lastReadSeq);
-  const hasUnread = unreadIds.size > 0;
+  const unreadCount =
+    firstUnreadIndex >= 0 ? messages.length - firstUnreadIndex : 0;
+  const hasUnread = unreadCount > 0;
+
+  const buildVisibilityItems = useCallback(() => {
+    return messages.map((msg) => ({
+      seq: msg.seq,
+      element: messageRowRefs.current.get(msg.id) ?? null,
+    }));
+  }, [messages]);
+
+  const scheduleCheck = useCallback(() => {
+    const container =
+      scrollMode === "inherit"
+        ? (externalScrollContainerRef?.current ?? null)
+        : internalScrollContainerRef.current;
+    scheduleBatchVisibilityCheck(buildVisibilityItems(), container);
+  }, [
+    scrollMode,
+    externalScrollContainerRef,
+    buildVisibilityItems,
+    scheduleBatchVisibilityCheck,
+  ]);
 
   const handleScrollToBottom = useCallback(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -108,16 +226,22 @@ export function MessageList({
       const transition = getBottomTransition(isAtBottom, container);
       const nowAtBottom = isNearBottom(container);
       if (transition === "entered") {
-        console.log("scrolled to bottom, clearAllUnread:", targetKey);
-        clearAllUnread(targetKey);
+        // no-op: read cursor is advanced by reportVisibleSeq in useHistory
       } else if (transition === "left") {
-        console.log("scrolled from bottom");
+        // scrolled away from bottom
       }
       isAtBottom = nowAtBottom;
+      scheduleCheck();
     };
     container.addEventListener("scroll", onScroll);
     return () => container.removeEventListener("scroll", onScroll);
-  }, [scrollMode, externalScrollContainerRef, targetKey, clearAllUnread]);
+  }, [scrollMode, externalScrollContainerRef, targetKey, scheduleCheck]);
+
+  // Schedule a visibility check when the message list changes (new messages rendered).
+  useEffect(() => {
+    if (!messages.length || loading) return;
+    scheduleCheck();
+  }, [messages.length, loading, scheduleCheck]);
 
   useEffect(() => {
     const container =
@@ -142,8 +266,15 @@ export function MessageList({
       } else {
         bottomRef.current?.scrollIntoView();
       }
+      // Check visibility after initial scroll so already-visible messages are marked read.
+      scheduleCheck();
     });
-  }, [targetKey, messages.length, loading, firstUnreadIndex]);
+  }, [targetKey, messages.length, loading, firstUnreadIndex, scheduleCheck]);
+
+  // Reset the visibility watermark when the target changes.
+  useEffect(() => {
+    resetHighestVisibleSeq();
+  }, [targetKey, resetHighestVisibleSeq]);
 
   return (
     <div
@@ -156,9 +287,14 @@ export function MessageList({
       {!loading && messages.length === 0 && (
         <div className="message-list-empty">{emptyLabel}</div>
       )}
-      {hasUnread && <NewMessageDivider />}
       {messages.map((msg, i) => (
-        <div key={msg.id}>
+        <div
+          key={msg.id}
+          ref={(el) => {
+            if (el) messageRowRefs.current.set(msg.id, el);
+            else messageRowRefs.current.delete(msg.id);
+          }}
+        >
           <div
             ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
           />
@@ -169,19 +305,12 @@ export function MessageList({
             prevMessage={messages[i - 1]}
             onReply={onReply}
           />
-          {unreadIds.has(msg.id) && (
-            <SeenTracker
-              messageId={msg.id}
-              messageContent={msg.content}
-              targetKey={targetKey}
-            />
-          )}
         </div>
       ))}
       <div ref={bottomRef} />
       {hasUnread && (
         <NewMessageBadge
-          unreadCount={unreadIds.size}
+          unreadCount={unreadCount}
           onScrollToBottom={handleScrollToBottom}
         />
       )}

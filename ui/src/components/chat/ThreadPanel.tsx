@@ -32,7 +32,7 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
   const agents = useAgents();
   const teams = useTeams();
   const humans = useHumans();
-  const { getAgentConversationId, applyReadCursorAck } = useInbox();
+  const { getAgentConversationId } = useInbox();
   const members: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
     ...humans.map((h) => ({ name: h.name, type: "human" as const })),
@@ -45,11 +45,14 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
     currentChannel?.id ??
     (currentAgent ? getAgentConversationId(currentAgent.name) : null);
 
-  const { messages, loading, lastReadSeq, unreadIds, appendMessage } =
-    useHistory(currentUser, threadTarget, threadConversationId, {
+  const { messages, loading, lastReadSeq, appendMessage } = useHistory(
+    currentUser,
+    threadTarget,
+    threadConversationId,
+    {
       threadParentId: openThreadMsg?.id ?? null,
-      onReadCursorAck: applyReadCursorAck,
-    });
+    },
+  );
   const [content, setContent] = useState("");
   const [sending, setSending] = useState(false);
   const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>(
@@ -134,12 +137,13 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
 
         <MessageList
           targetKey={threadTarget ?? ""}
+          conversationId={threadConversationId}
           messages={messages}
           loading={loading}
           lastReadSeq={lastReadSeq}
           currentUser={currentUser}
-          unreadIds={unreadIds}
           emptyLabel="No replies yet"
+          threadParentId={openThreadMsg?.id}
         />
       </div>
 
