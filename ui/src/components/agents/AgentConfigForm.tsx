@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { LoaderCircle } from "lucide-react";
 import type { AgentEnvVar, RuntimeStatusInfo } from "./types";
 import { useRuntimeModels } from "../../hooks/useRuntimeModels";
 import {
@@ -120,6 +121,21 @@ function groupModelsByProvider(
     .map(([provider, models]) => ({ provider, models }));
 }
 
+export function modelSelectDisplayLabel({
+  selectedModel,
+  runtimeModels,
+  isLoading,
+}: {
+  selectedModel: string;
+  runtimeModels: string[];
+  isLoading: boolean;
+}): string {
+  if (isLoading) return "Loading models…";
+  if (selectedModel) return selectedModel;
+  if (runtimeModels.length > 0) return runtimeModels[0];
+  return "No models available";
+}
+
 export function AgentConfigForm({
   state,
   runtimeStatuses = [],
@@ -127,7 +143,7 @@ export function AgentConfigForm({
   editableName = false,
   onChange,
 }: Props) {
-  const { runtimeModels, runtimeModelsError } = useRuntimeModels(state.runtime);
+  const { runtimeModels, runtimeModelsError, isLoading } = useRuntimeModels(state.runtime);
 
   useEffect(() => {
     if (runtimeModels.length === 0 || runtimeModels.includes(state.model)) {
@@ -162,6 +178,11 @@ export function AgentConfigForm({
   }
 
   const runtimeSummary = runtimeStatusSummary(state.runtime, runtimeStatuses);
+  const modelLabel = modelSelectDisplayLabel({
+    selectedModel: state.model,
+    runtimeModels,
+    isLoading,
+  });
 
   return (
     <div className="agent-config-form">
@@ -290,9 +311,17 @@ export function AgentConfigForm({
             <Select
               value={state.model}
               onValueChange={(model) => onChange({ ...state, model })}
+              disabled={isLoading || runtimeModels.length === 0}
             >
               <SelectTrigger aria-label="Model">
-                <SelectValue />
+                {isLoading ? (
+                  <span className="select-trigger-loading">
+                    <LoaderCircle size={14} className="select-trigger-spinner" />
+                    <span>{modelLabel}</span>
+                  </span>
+                ) : (
+                  <span className="select-trigger-text">{modelLabel}</span>
+                )}
               </SelectTrigger>
               <SelectContent className="max-h-[320px] overflow-y-auto">
                 {groupModelsByProvider(runtimeModels).map(

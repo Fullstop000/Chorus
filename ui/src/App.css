@@ -196,3 +196,28 @@ body {
   border-radius: 0;
 }
 ::-webkit-scrollbar-thumb:hover { background: rgba(35, 32, 26, 0.24); }
+
+.select-trigger-text,
+.select-trigger-loading {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.select-trigger-loading {
+  gap: 8px;
+  color: var(--color-muted-foreground);
+}
+
+.select-trigger-spinner {
+  flex: 0 0 auto;
+  animation: form-control-spin 0.9s linear infinite;
+}
+
+@keyframes form-control-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
