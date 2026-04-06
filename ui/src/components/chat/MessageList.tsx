@@ -72,15 +72,23 @@ export function MessageList({
   emptyLabel = "No messages yet. Be the first to say something!",
   threadParentId,
 }: MessageListProps) {
+  // ── DOM refs ──
   const bottomRef = useRef<HTMLDivElement>(null);
   const internalScrollContainerRef = useRef<HTMLDivElement>(null);
   const firstUnreadAnchorRef = useRef<HTMLDivElement>(null);
-  const lastTargetRef = useRef<string>("");
   const messageRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  // ── Read cursor refs ──
   const lastReadSeqRef = useRef(0);
   const pendingReadSeqRef = useRef<number | null>(null);
   const readCursorTimerRef = useRef<number | null>(null);
+
+  // ── Target tracking refs ──
+  const lastTargetRef = useRef<string>("");
   const activeTargetRef = useRef(targetKey);
+  activeTargetRef.current = targetKey;
+
+  // ── Store / query ──
   const queryClient = useQueryClient();
   const queryKey = historyQueryKeys.history(
     conversationId ?? "",
@@ -89,67 +97,75 @@ export function MessageList({
   const { advanceConversationLastReadSeq, advanceThreadLastReadSeq } =
     useStore();
 
-  activeTargetRef.current = targetKey;
-
+  // ── Sync refs with props ──
   useEffect(() => {
     lastReadSeqRef.current = lastReadSeq;
   }, [lastReadSeq]);
 
-  // Reset pending state when target changes.
   useEffect(() => {
     pendingReadSeqRef.current = null;
     lastReadSeqRef.current = lastReadSeq;
   }, [targetKey]);
 
+  // ── Debounced server flush ──
+  // Sends the highest pending read-cursor seq to the server after 150ms of quiet.
+  // Guards: stale target, tab hidden, seq already persisted.
+  const flushReadCursor = useCallback(async () => {
+    readCursorTimerRef.current = null;
+    const flushSeq = pendingReadSeqRef.current;
+    pendingReadSeqRef.current = null;
+    // Nothing new to persist, or target changed while timer was pending.
+    if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return;
+    if (activeTargetRef.current !== targetKey) return;
+    if (document.visibilityState !== "visible") return;
+    try {
+      await updateReadCursor(
+        conversationId!,
+        flushSeq,
+        threadParentId || undefined,
+      );
+      // Sync the server-confirmed seq back into the React Query cache.
+      queryClient.setQueryData<HistoryResponse | undefined>(
+        queryKey,
+        (current) =>
+          current
+            ? {
+                ...current,
+                last_read_seq: Math.max(current.last_read_seq ?? 0, flushSeq),
+              }
+            : current,
+      );
+    } catch (cursorError) {
+      console.error("Failed to update read cursor", cursorError);
+    }
+  }, [conversationId, threadParentId, targetKey, queryClient, queryKey]);
+
+  // ── Visibility callback ──
+  // Called by useVisibilityTracking when a message DOM element enters the viewport.
+  // Two responsibilities:
+  //   1. Optimistically advance lastReadSeq in the store (instant badge update).
+  //   2. Schedule a debounced server flush (coalesces rapid scroll into one API call).
   const reportVisibleSeq = useCallback(
     (visibleSeq: number) => {
       if (!currentUser || !targetKey || !conversationId || visibleSeq <= 0)
         return;
-      if (loading) return;
-      if (document.visibilityState !== "visible") return;
+      if (loading || document.visibilityState !== "visible") return;
+
+      // Keep the highest seq seen so far; ignore stale or duplicate reports.
       const nextSeq = Math.max(visibleSeq, pendingReadSeqRef.current ?? 0);
       if (nextSeq <= lastReadSeqRef.current) return;
       pendingReadSeqRef.current = nextSeq;
-      if (readCursorTimerRef.current != null) return;
 
-      // Optimistically advance lastReadSeq so unread count drops immediately.
+      // 1. Optimistically advance lastReadSeq so unread count drops immediately.
       if (threadParentId) {
         advanceThreadLastReadSeq(conversationId, threadParentId, nextSeq);
       } else {
         advanceConversationLastReadSeq(conversationId, nextSeq);
       }
 
-      readCursorTimerRef.current = window.setTimeout(async () => {
-        readCursorTimerRef.current = null;
-        const flushSeq = pendingReadSeqRef.current;
-        pendingReadSeqRef.current = null;
-        if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return;
-        // Target changed while timer was pending — discard stale update.
-        if (activeTargetRef.current !== targetKey) return;
-        if (document.visibilityState !== "visible") return;
-        try {
-          await updateReadCursor(
-            conversationId,
-            flushSeq,
-            threadParentId || undefined,
-          );
-          queryClient.setQueryData<HistoryResponse | undefined>(
-            queryKey,
-            (current) =>
-              current
-                ? {
-                    ...current,
-                    last_read_seq: Math.max(
-                      current.last_read_seq ?? 0,
-                      flushSeq,
-                    ),
-                  }
-                : current,
-          );
-        } catch (cursorError) {
-          console.error("Failed to update read cursor", cursorError);
-        }
-      }, 150);
+      // 2. Debounce: if a flush is already scheduled, it will pick up the new seq.
+      if (readCursorTimerRef.current != null) return;
+      readCursorTimerRef.current = window.setTimeout(flushReadCursor, 150);
     },
     [
       conversationId,
@@ -157,20 +173,15 @@ export function MessageList({
       threadParentId,
       targetKey,
       currentUser,
-      queryClient,
-      queryKey,
+      flushReadCursor,
       advanceConversationLastReadSeq,
       advanceThreadLastReadSeq,
     ],
   );
 
+  // ── Visibility tracking ──
   const { scheduleBatchVisibilityCheck, resetHighestVisibleSeq } =
     useVisibilityTracking(reportVisibleSeq);
-
-  const firstUnreadIndex = messages.findIndex((m) => m.seq > lastReadSeq);
-  const unreadCount =
-    firstUnreadIndex >= 0 ? messages.length - firstUnreadIndex : 0;
-  const hasUnread = unreadCount > 0;
 
   const buildVisibilityItems = useCallback(() => {
     return messages.map((msg) => ({
@@ -192,10 +203,13 @@ export function MessageList({
     scheduleBatchVisibilityCheck,
   ]);
 
-  const handleScrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
+  // ── Derived state ──
+  const firstUnreadIndex = messages.findIndex((m) => m.seq > lastReadSeq);
+  const unreadCount =
+    firstUnreadIndex >= 0 ? messages.length - firstUnreadIndex : 0;
+  const hasUnread = unreadCount > 0;
 
+  // ── Scroll management ──
   useEffect(() => {
     const container =
       scrollMode === "inherit"
@@ -210,7 +224,6 @@ export function MessageList({
     return () => container.removeEventListener("scroll", onScroll);
   }, [scrollMode, externalScrollContainerRef, targetKey, scheduleReadCheck]);
 
-  // Schedule a visibility check when the message list changes (new messages rendered).
   useEffect(() => {
     if (!messages.length || loading) return;
     scheduleReadCheck();
@@ -267,6 +280,11 @@ export function MessageList({
   useEffect(() => {
     resetHighestVisibleSeq();
   }, [targetKey, resetHighestVisibleSeq]);
+
+  // ── Handlers ──
+  const handleScrollToBottom = useCallback(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
 
   return (
     <div
