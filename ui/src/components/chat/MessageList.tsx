@@ -203,11 +203,7 @@ export function MessageList({
         : internalScrollContainerRef.current;
     if (!container) return;
 
-    let isAtBottom = isNearBottom(container);
-
     const onScroll = () => {
-      const nowAtBottom = isNearBottom(container);
-      isAtBottom = nowAtBottom;
       scheduleReadCheck();
     };
     container.addEventListener("scroll", onScroll);

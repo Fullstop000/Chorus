@@ -130,6 +130,7 @@ impl Store {
         Ok(inserted.id)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_message(
         &self,
         channel_name: &str,
@@ -138,6 +139,7 @@ impl Store {
         sender_type: SenderType,
         content: &str,
         attachment_ids: &[String],
+        _client_nonce: Option<&str>,
         suppress_event: bool,
     ) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
@@ -179,7 +181,7 @@ impl Store {
         let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
-            thread_parent_id.as_deref(),
+            thread_parent_id,
             sender_name,
             sender_type.as_str(),
             content,

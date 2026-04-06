@@ -465,6 +465,7 @@ async fn send_message_to_channel(
             sender_type,
             content,
             attachment_ids,
+            None,
             suppress_event,
         )
         .map_err(|e| api_err(e.to_string()))?;
