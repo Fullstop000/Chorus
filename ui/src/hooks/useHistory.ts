@@ -1,13 +1,10 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { getHistoryAfter, updateReadCursor, historyQueryKeys } from '../data'
+import { updateReadCursor, historyQueryKeys } from '../data'
 import {
   normalizeEvent,
-  upsertMessage,
   bumpReplyCount,
   maxHistorySeq,
-  mergeHistoryMessages,
-  historyFetchAfterForNotification,
 } from '../data/messages'
 import { getSession } from '../transport'
 import type { RealtimeFrame } from '../transport'
@@ -47,15 +44,16 @@ export function useHistory(
   const messages = response?.messages ?? []
   const lastReadSeq = response?.last_read_seq ?? 0
   const loadedTarget = targetKey && !isLoading && !isError ? targetKey : null
-  const maxLoadedSeqRef = useRef(0)
   const lastReadSeqRef = useRef(0)
   const pendingReadSeqRef = useRef<number | null>(null)
   const readCursorTimerRef = useRef<number | null>(null)
-  const { addUnreadMessageId, unreadMessageIds } = useStore()
+  const { addUnreadMessageId, advanceConversationLatestSeq, unreadMessageIds } = useStore()
 
   useEffect(() => {
-    if (response) maxLoadedSeqRef.current = maxHistorySeq(response.messages)
-  }, [response])
+    if (response && conversationId) {
+      advanceConversationLatestSeq(conversationId, maxHistorySeq(response.messages))
+    }
+  }, [response, conversationId, advanceConversationLatestSeq])
 
   useEffect(() => {
     lastReadSeqRef.current = lastReadSeq
@@ -66,11 +64,11 @@ export function useHistory(
       queryClient.setQueryData(queryKey, (current: HistoryResponse | undefined) => {
         if (!current) return current
         const next = updater(current.messages).sort((left, right) => left.seq - right.seq)
-        maxLoadedSeqRef.current = maxHistorySeq(next)
+        if (conversationId) advanceConversationLatestSeq(conversationId, maxHistorySeq(next))
         return { ...current, messages: next }
       })
     },
-    [queryClient, queryKey]
+    [queryClient, queryKey, conversationId, advanceConversationLatestSeq]
   )
 
   useEffect(() => {
@@ -95,45 +93,18 @@ export function useHistory(
         return
       }
 
-      // Insert the new message optimistically
+      // Seq-gated append: only insert if this message is newer than what we've seen
+      const currentLatestSeq = useStore.getState().inboxState.conversations[conversationId]?.latestSeq ?? 0
+      if (msg.seq <= currentLatestSeq) return
+
+      advanceConversationLatestSeq(conversationId, msg.seq)
+      if (msg.senderName !== username) {
+        addUnreadMessageId(targetKey!, msg.id)
+      }
       queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
         if (!current) return current
-        const before = current.messages.length
-        const updated = upsertMessage(current.messages, msg)
-        if (updated.length > before) {
-          maxLoadedSeqRef.current = maxHistorySeq(updated)
-          if (msg.senderName !== username) {
-            addUnreadMessageId(targetKey!, msg.id)
-          }
-          return { ...current, messages: updated }
-        }
-        return current
+        return { ...current, messages: [...current.messages, msg].sort((a, b) => a.seq - b.seq) }
       })
-
-      // Check if we missed messages and need to backfill
-      const target = `conversation:${conversationId}`
-      const incrementalAfter = historyFetchAfterForNotification(
-        target,
-        frame.event,
-        maxLoadedSeqRef.current,
-        options?.threadParentId
-      )
-
-      if (incrementalAfter != null) {
-        void getHistoryAfter(conversationId, incrementalAfter, 50, options?.threadParentId ?? undefined).then(
-          (res) => {
-            if (cancelled) return
-            queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
-              if (!current) return current
-              const merged = mergeHistoryMessages(current.messages, res.messages)
-              maxLoadedSeqRef.current = maxHistorySeq(merged)
-              return { ...current, messages: merged, last_read_seq: res.last_read_seq ?? current.last_read_seq }
-            })
-          }
-        )
-      } else if (frame.event.eventType === 'message.created') {
-        void refetch()
-      }
     }
 
     unsubscribeRealtime = getSession(username).subscribe(conversationId, handleFrame)
@@ -146,7 +117,7 @@ export function useHistory(
       }
       unsubscribeRealtime?.()
     }
-  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey, refetch, commitMessages])
+  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey, commitMessages, addUnreadMessageId, advanceConversationLatestSeq])
 
   const reportVisibleSeq = useCallback(
     (visibleSeq: number) => {

@@ -119,7 +119,6 @@ export {
 export {
   sendMessage,
   getHistory,
-  getHistoryAfter,
   uploadFile,
   attachmentUrl,
   updateReadCursor,

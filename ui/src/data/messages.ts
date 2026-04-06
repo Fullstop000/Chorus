@@ -16,11 +16,6 @@ export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
   }
 }
 
-export function upsertMessage(messages: HistoryMessage[], incoming: HistoryMessage): HistoryMessage[] {
-  if (messages.some((m) => m.seq === incoming.seq)) return messages
-  return [...messages, incoming].sort((a, b) => a.seq - b.seq)
-}
-
 export function bumpReplyCount(messages: HistoryMessage[], parentId: string): HistoryMessage[] {
   return messages.map((message) =>
     message.id === parentId
@@ -33,57 +28,3 @@ export function maxHistorySeq(messages: HistoryMessage[]): number {
   return messages.reduce((maxSeq, message) => Math.max(maxSeq, message.seq), 0)
 }
 
-export function mergeHistoryMessages(
-  current: HistoryMessage[],
-  incoming: HistoryMessage[]
-): HistoryMessage[] {
-  const byId = new Map<string, HistoryMessage>()
-  for (const message of current) {
-    byId.set(message.id, message)
-  }
-  for (const message of incoming) {
-    const prior = byId.get(message.id)
-    byId.set(message.id, prior ? { ...prior, ...message } : message)
-  }
-  return [...byId.values()].sort((left, right) => left.seq - right.seq)
-}
-
-function eventMatchesActiveRealtimeTarget(
-  activeRealtimeTarget: string | null,
-  event: StreamEvent
-): boolean {
-  if (!activeRealtimeTarget) return false
-  if (!activeRealtimeTarget.startsWith('conversation:')) {
-    return false
-  }
-  return event.channelId === activeRealtimeTarget.slice('conversation:'.length)
-}
-
-export function historyFetchAfterForNotification(
-  activeRealtimeTarget: string | null,
-  event: StreamEvent,
-  loadedMaxSeq: number,
-  threadParentId?: string | null
-): number | null {
-  if (event.eventType !== 'message.created') {
-    return null
-  }
-  if (!eventMatchesActiveRealtimeTarget(activeRealtimeTarget, event)) {
-    return null
-  }
-  if (threadParentId) {
-    const eventThreadParentId = event.payload.threadParentId
-    if (eventThreadParentId !== threadParentId) {
-      return null
-    }
-  } else {
-    const eventThreadParentId = event.payload.threadParentId
-    if (typeof eventThreadParentId === 'string' && eventThreadParentId.length > 0) {
-      return null
-    }
-  }
-  if (event.latestSeq <= loadedMaxSeq) {
-    return null
-  }
-  return loadedMaxSeq
-}

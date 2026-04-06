@@ -43,6 +43,8 @@ interface UIActions {
   markUnreadAsSeen: (conversationId: string, messageId: string, messageContent?: string) => void
   /** Clear all unread IDs for a conversation (called on scroll-to-bottom) */
   clearAllUnread: (conversationId: string) => void
+  /** Optimistically bump latestSeq for a conversation (used by realtime append) */
+  advanceConversationLatestSeq: (conversationId: string, seq: number) => void
   setShellBootstrapped: (value: boolean) => void
   /** Clear all selection state back to defaults (used on logout / session reset) */
   resetUserSession: () => void
@@ -149,6 +151,21 @@ export const useStore = create<UIStore>((set) => ({
       )
       return {
         unreadMessageIds: { ...state.unreadMessageIds, [conversationId]: new Set() },
+      }
+    }),
+
+  advanceConversationLatestSeq: (conversationId: string, seq: number) =>
+    set((state) => {
+      const conv = state.inboxState.conversations[conversationId]
+      if (!conv || seq <= conv.latestSeq) return state
+      return {
+        inboxState: {
+          ...state.inboxState,
+          conversations: {
+            ...state.inboxState.conversations,
+            [conversationId]: { ...conv, latestSeq: seq },
+          },
+        },
       }
     }),
 

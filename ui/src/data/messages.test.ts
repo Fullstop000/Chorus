@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeEvent, upsertMessage, bumpReplyCount, historyFetchAfterForNotification } from './messages'
+import { normalizeEvent, bumpReplyCount } from './messages'
 import type { HistoryMessage, StreamEvent } from './chat'
 
 function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
@@ -18,68 +18,6 @@ function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
     ...overrides,
   }
 }
-
-describe('historyFetchAfterForNotification', () => {
-  it('refetches the active root conversation when a newer message arrives', () => {
-    expect(
-      historyFetchAfterForNotification('conversation:conversation-1', makeEvent(), 5, null)
-    ).toBe(5)
-  })
-
-  it('only refetches an open thread when the incoming event belongs to that thread', () => {
-    expect(
-      historyFetchAfterForNotification(
-        'conversation:conversation-1',
-        makeEvent({
-          payload: {
-            messageId: 'reply-9',
-            conversationId: 'conversation-1',
-            conversationType: 'channel',
-            threadParentId: 'thread-123',
-          },
-        }),
-        5,
-        'thread-123'
-      )
-    ).toBe(5)
-
-    expect(
-      historyFetchAfterForNotification(
-        'conversation:conversation-1',
-        makeEvent({
-          latestSeq: 7,
-          payload: {
-            messageId: 'reply-10',
-            conversationId: 'conversation-1',
-            conversationType: 'channel',
-            threadParentId: 'thread-other',
-          },
-        }),
-        5,
-        'thread-123'
-      )
-    ).toBeNull()
-  })
-
-  it('does not refetch root history for thread replies (they are omitted from root pages)', () => {
-    expect(
-      historyFetchAfterForNotification(
-        'conversation:conversation-1',
-        makeEvent({
-          latestSeq: 9,
-          payload: {
-            messageId: 'reply-9',
-            conversationId: 'conversation-1',
-            conversationType: 'channel',
-            threadParentId: 'thread-123',
-          },
-        }),
-        5,
-        null
-      )
-    ).toBeNull()
-  })
-})
 
 describe('normalizeEvent', () => {
   it('returns null for non-message events', () => {
@@ -113,26 +51,6 @@ describe('normalizeEvent', () => {
       senderDeleted: false,
       createdAt: '2025-01-01T00:00:00Z',
     })
-  })
-})
-
-describe('upsertMessage', () => {
-  it('appends a new message', () => {
-    const messages: HistoryMessage[] = [
-      { id: 'm1', seq: 1, content: 'hello', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T' },
-    ]
-    const incoming: HistoryMessage = { id: 'm2', seq: 2, content: 'world', senderName: 'b', senderType: 'human', senderDeleted: false, createdAt: 'T' }
-    const result = upsertMessage(messages, incoming)
-    expect(result).toHaveLength(2)
-    expect(result[1].id).toBe('m2')
-  })
-
-  it('deduplicates by seq', () => {
-    const messages: HistoryMessage[] = [
-      { id: 'm1', seq: 1, content: 'hello', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T' },
-    ]
-    const incoming: HistoryMessage = { id: 'm1-dup', seq: 1, content: 'updated', senderName: 'a', senderType: 'human', senderDeleted: false, createdAt: 'T' }
-    expect(upsertMessage(messages, incoming)).toEqual(messages)
   })
 })
 
