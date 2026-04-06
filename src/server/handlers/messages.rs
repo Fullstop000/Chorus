@@ -14,7 +14,7 @@ use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
 use crate::store::channels::ChannelType;
 use crate::store::inbox::{InboxConversationNotificationView, ThreadNotificationStateView};
-use crate::store::messages::{ForwardedFrom, ReceivedMessage, SenderType};
+use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
 
 // ── Inline query structs ──
@@ -48,10 +48,10 @@ pub struct PublicConversationSendRequest {
     pub content: String,
     #[serde(default, rename = "attachmentIds")]
     pub attachment_ids: Vec<String>,
-    #[serde(default, rename = "clientNonce")]
-    pub client_nonce: Option<String>,
     #[serde(default, rename = "suppressAgentDelivery")]
     pub suppress_agent_delivery: bool,
+    #[serde(default, rename = "suppressEvent")]
+    pub suppress_event: bool,
     #[serde(default, rename = "threadParentId")]
     pub thread_parent_id: Option<String>,
 }
@@ -73,12 +73,14 @@ pub struct SendRequest {
     pub content: String,
     #[serde(default, rename = "attachmentIds")]
     pub attachment_ids: Vec<String>,
-    #[serde(default, rename = "clientNonce")]
-    pub client_nonce: Option<String>,
     /// Skip fan-out to other agents when the caller wants a human-only side effect,
     /// such as "send this message and create one task" without triggering agent replies.
     #[serde(default, rename = "suppressAgentDelivery")]
     pub suppress_agent_delivery: bool,
+    /// When true, skip broadcasting the message.created event via WebSocket.
+    /// The sender already has an optimistic copy and will promote it on HTTP ack.
+    #[serde(default, rename = "suppressEvent")]
+    pub suppress_event: bool,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -88,8 +90,6 @@ pub struct SendResponse {
     pub seq: i64,
     #[serde(rename = "createdAt")]
     pub created_at: String,
-    #[serde(rename = "clientNonce", skip_serializing_if = "Option::is_none")]
-    pub client_nonce: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -104,9 +104,9 @@ pub struct HistoryResponse {
     pub last_read_seq: i64,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct InboxResponse {
-    pub conversations: Vec<crate::store::InboxConversationNotificationView>,
+    pub conversations: Vec<PublicInboxConversationNotification>,
 }
 
 /// CamelCase inbox row for browser clients (matches `InboxConversationState` in the UI).
@@ -444,8 +444,8 @@ async fn send_message_to_channel(
     thread_parent_id: Option<&str>,
     content: &str,
     attachment_ids: &[String],
-    client_nonce: Option<String>,
     suppress_agent_delivery: bool,
+    suppress_event: bool,
 ) -> ApiResult<SendResponse> {
     let store = &state.store;
     let sender_type = sender_type_for_actor(store, actor_id)?;
@@ -458,14 +458,15 @@ async fn send_message_to_channel(
     info!(agent = %actor_id, target = %target_label, content = %preview, "send_message");
 
     let message_id = store
-        .create_message(
-            &channel.name,
+        .create_message(CreateMessage {
+            channel_name: &channel.name,
             thread_parent_id,
-            actor_id,
+            sender_name: actor_id,
             sender_type,
             content,
             attachment_ids,
-        )
+            suppress_event,
+        })
         .map_err(|e| api_err(e.to_string()))?;
 
     let short_id = if message_id.len() >= 8 {
@@ -552,7 +553,6 @@ async fn send_message_to_channel(
         message_id,
         seq: message_view.seq,
         created_at: message_view.created_at,
-        client_nonce,
     }))
 }
 
@@ -628,8 +628,8 @@ pub async fn handle_send(
         thread_parent_id.as_deref(),
         &req.content,
         &req.attachment_ids,
-        req.client_nonce,
         req.suppress_agent_delivery,
+        req.suppress_event,
     )
     .await
 }
@@ -751,10 +751,13 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
         return Err(api_err(format!("viewer not found: {}", actor_id)));
     }
 
-    let conversations = state
+    let conversations: Vec<PublicInboxConversationNotification> = state
         .store
         .get_inbox_conversation_notifications(&actor_id)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| internal_err(e.to_string()))?
+        .iter()
+        .map(PublicInboxConversationNotification::from)
+        .collect();
     Ok(Json(InboxResponse { conversations }))
 }
 
@@ -876,8 +879,8 @@ pub async fn handle_public_send(
         req.thread_parent_id.as_deref(),
         &req.content,
         &req.attachment_ids,
-        req.client_nonce,
         req.suppress_agent_delivery,
+        req.suppress_event,
     )
     .await
 }

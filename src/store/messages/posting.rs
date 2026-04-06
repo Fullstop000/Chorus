@@ -1,12 +1,21 @@
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Transaction};
-use serde_json::json;
 use uuid::Uuid;
 
 use crate::store::channels::Channel;
 use crate::store::messages::*;
 use crate::store::stream::StreamEvent;
 use crate::store::Store;
+
+pub struct CreateMessage<'a> {
+    pub channel_name: &'a str,
+    pub thread_parent_id: Option<&'a str>,
+    pub sender_name: &'a str,
+    pub sender_type: SenderType,
+    pub content: &'a str,
+    pub attachment_ids: &'a [String],
+    pub suppress_event: bool,
+}
 
 impl Store {
     #[allow(clippy::too_many_arguments)]
@@ -79,13 +88,19 @@ impl Store {
         )?;
         tx.commit()?;
 
-        let event_payload = json!({
-            "messageId": inserted.id.as_str(),
-            "conversationId": channel.id.as_str(),
-            "conversationType": channel.channel_type.as_api_str(),
-            "threadParentId": null,
-        });
-        let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
+        let payload = inserted.to_event_payload(
+            channel.id.as_str(),
+            channel.channel_type.as_api_str(),
+            None,
+            sender_name,
+            sender_type.as_str(),
+            content,
+        );
+        let stream_event = StreamEvent::new(
+            channel.id.clone(),
+            inserted.seq,
+            serde_json::to_value(payload)?,
+        );
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)
     }
@@ -108,47 +123,45 @@ impl Store {
         )?;
         tx.commit()?;
 
-        let event_payload = json!({
-            "messageId": inserted.id.as_str(),
-            "conversationId": channel.id.as_str(),
-            "conversationType": channel.channel_type.as_api_str(),
-            "threadParentId": null,
-        });
-        let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
+        let payload = inserted.to_event_payload(
+            channel.id.as_str(),
+            channel.channel_type.as_api_str(),
+            None,
+            "system",
+            "human",
+            content,
+        );
+        let stream_event = StreamEvent::new(
+            channel.id.clone(),
+            inserted.seq,
+            serde_json::to_value(payload)?,
+        );
         let _ = self.stream_tx.send(stream_event);
         Ok(inserted.id)
     }
 
-    pub fn create_message(
-        &self,
-        channel_name: &str,
-        thread_parent_id: Option<&str>,
-        sender_name: &str,
-        sender_type: SenderType,
-        content: &str,
-        attachment_ids: &[String],
-    ) -> Result<String> {
+    pub fn create_message(&self, message: CreateMessage<'_>) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        let channel = Self::get_channel_by_name_inner(&tx, channel_name)?
-            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        let channel = Self::get_channel_by_name_inner(&tx, message.channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", message.channel_name))?;
         let inserted = Self::insert_message_tx(
             &tx,
             &channel,
-            thread_parent_id,
-            sender_name,
-            sender_type,
-            content,
-            attachment_ids,
+            message.thread_parent_id,
+            message.sender_name,
+            message.sender_type,
+            message.content,
+            message.attachment_ids,
             None,
         )?;
-        if let Some(parent_id) = thread_parent_id {
+        if let Some(parent_id) = message.thread_parent_id {
             Self::set_thread_read_cursor_tx(
                 &tx,
                 &channel,
                 parent_id,
-                sender_name,
-                sender_type.as_str(),
+                message.sender_name,
+                message.sender_type.as_str(),
                 inserted.seq,
                 Some(&inserted.id),
             )?;
@@ -156,22 +169,30 @@ impl Store {
             Self::set_inbox_read_cursor_tx(
                 &tx,
                 &channel,
-                sender_name,
-                sender_type.as_str(),
+                message.sender_name,
+                message.sender_type.as_str(),
                 inserted.seq,
                 Some(&inserted.id),
             )?;
         }
         tx.commit()?;
 
-        let event_payload = json!({
-            "messageId": inserted.id.as_str(),
-            "conversationId": channel.id.as_str(),
-            "conversationType": channel.channel_type.as_api_str(),
-            "threadParentId": thread_parent_id,
-        });
-        let stream_event = StreamEvent::new(channel.id.clone(), inserted.seq, event_payload);
-        let _ = self.stream_tx.send(stream_event);
+        let payload = inserted.to_event_payload(
+            channel.id.as_str(),
+            channel.channel_type.as_api_str(),
+            message.thread_parent_id,
+            message.sender_name,
+            message.sender_type.as_str(),
+            message.content,
+        );
+        let stream_event = StreamEvent::new(
+            channel.id.clone(),
+            inserted.seq,
+            serde_json::to_value(payload)?,
+        );
+        if !message.suppress_event {
+            let _ = self.stream_tx.send(stream_event);
+        }
         Ok(inserted.id)
     }
 }

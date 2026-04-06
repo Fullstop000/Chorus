@@ -1,31 +1,19 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { getHistory, getHistoryAfter, updateReadCursor } from '../api'
+import { useCallback, useEffect, useRef } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { historyQueryKeys } from '../data'
+import { getHistoryAfter } from '../data/chat'
 import {
-  applyRealtimeEvent,
-  historyFetchAfterForNotification,
+  normalizeEvent,
+  bumpReplyCount,
   maxHistorySeq,
-  mergeHistoryMessages,
-} from '../transport/realtime'
-import { getRealtimeSession } from '../transport/realtimeSession'
-import type { ReadCursorAckPayload } from '../inbox'
-import type { HistoryMessage, HistoryResponse } from '../types'
-import { loadSharedRequest } from './historyRequestCache'
+} from '../data/messages'
+import { getSession } from '../transport'
+import type { RealtimeFrame } from '../transport'
+import type { HistoryMessage, HistoryResponse } from '../data'
+import { useStore } from '../store'
 
 interface UseHistoryOptions {
   threadParentId?: string | null
-  onReadCursorAck?: (ack: ReadCursorAckPayload) => void
-}
-
-interface OptimisticMessageHandle {
-  tempId: string
-  clientNonce: string
-}
-
-function createClientNonce(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
 }
 
 export function useHistory(
@@ -34,280 +22,130 @@ export function useHistory(
   conversationId: string | null,
   options?: UseHistoryOptions
 ) {
-  const [messages, setMessages] = useState<HistoryMessage[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [lastReadSeq, setLastReadSeq] = useState(0)
-  const [loadedTarget, setLoadedTarget] = useState<string | null>(null)
-  const maxLoadedSeqRef = useRef(0)
-  const incrementalFetchAfterRef = useRef<number | null>(null)
-  const lastReadSeqRef = useRef(0)
-  const pendingReadSeqRef = useRef<number | null>(null)
-  const readCursorTimerRef = useRef<number | null>(null)
+  const queryClient = useQueryClient()
+  const queryKey = historyQueryKeys.history(conversationId ?? '', options?.threadParentId ?? null)
+
+  const {
+    data: response,
+    isLoading,
+    isError,
+    error: queryError,
+    refetch,
+  } = useQuery({
+    queryKey,
+    queryFn: () =>
+      conversationId
+        ? import('../data').then((m) => m.getHistory(conversationId, 50, options?.threadParentId ?? undefined))
+        : Promise.resolve(null),
+    enabled: !!username && !!targetKey && !!conversationId,
+  })
+
+  const messages = response?.messages ?? []
+  const lastReadSeq = response?.last_read_seq ?? 0
+  const loadedTarget = targetKey && !isLoading && !isError ? targetKey : null
+  const { advanceConversationLatestSeq } = useStore()
+  const storeLatestSeq = useStore((s) =>
+    conversationId ? (s.inboxState.conversations[conversationId]?.latestSeq ?? 0) : 0
+  )
 
   useEffect(() => {
-    lastReadSeqRef.current = lastReadSeq
-  }, [lastReadSeq])
-
-  const commitMessages = useCallback((updater: (current: HistoryMessage[]) => HistoryMessage[]) => {
-    setMessages((current) => {
-      const next = updater(current).sort((left, right) => left.seq - right.seq)
-      maxLoadedSeqRef.current = maxHistorySeq(next)
-      return next
-    })
-  }, [])
-
-  const fetchHistory = useCallback(async (after?: number): Promise<HistoryResponse | null> => {
-    if (!username || !targetKey || !conversationId) return null
-    if (after != null && incrementalFetchAfterRef.current === after) {
-      return null
+    if (response && conversationId) {
+      advanceConversationLatestSeq(conversationId, maxHistorySeq(response.messages))
     }
-    if (after != null) {
-      incrementalFetchAfterRef.current = after
-    }
-    try {
-      const res =
-        after != null
-          ? await getHistoryAfter(
-            conversationId,
-            after,
-            50,
-            options?.threadParentId ?? undefined
-          )
-          : await loadSharedRequest(
-            `history:${conversationId}:${options?.threadParentId ?? 'root'}:bootstrap`,
-            () => getHistory(conversationId, 50, options?.threadParentId ?? undefined)
-          )
-      if (after != null) {
-        commitMessages((current) => {
-          const merged = mergeHistoryMessages(current, res.messages)
-          return merged
+  }, [response, conversationId, advanceConversationLatestSeq])
+
+  // Fetch gap messages when the global listener has advanced latestSeq beyond cached messages.
+  // Instead of refetching the full history, fetch only messages after the cache's max seq.
+  const isFetchingGapRef = useRef(false)
+  useEffect(() => {
+    if (!response || isLoading || !conversationId) return
+    const cacheMaxSeq = maxHistorySeq(response.messages)
+    if (storeLatestSeq <= cacheMaxSeq) return
+    if (isFetchingGapRef.current) return
+    isFetchingGapRef.current = true
+
+    getHistoryAfter(conversationId, cacheMaxSeq, storeLatestSeq - cacheMaxSeq, options?.threadParentId ?? undefined)
+      .then((gap) => {
+        if (gap.messages.length === 0) return
+        queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
+          if (!current) return current
+          const existingMaxSeq = maxHistorySeq(current.messages)
+          const newMessages = gap.messages.filter((m) => m.seq > existingMaxSeq)
+          if (newMessages.length === 0) return current
+          return { ...current, messages: [...current.messages, ...newMessages] }
         })
-      } else {
-        setMessages(res.messages)
-        maxLoadedSeqRef.current = maxHistorySeq(res.messages)
-      }
-      setLastReadSeq(res.last_read_seq ?? 0)
-      setLoadedTarget(targetKey)
-      setError(null)
-      return res
-    } catch (e) {
-      setError(String(e))
-      return null
-    } finally {
-      if (after == null) {
-        setLoading(false)
-      }
-      if (incrementalFetchAfterRef.current === after) {
-        incrementalFetchAfterRef.current = null
-      }
-    }
-  }, [conversationId, options?.threadParentId, targetKey, username])
+      })
+      .finally(() => {
+        isFetchingGapRef.current = false
+      })
+  }, [storeLatestSeq, response, isLoading, conversationId, queryClient, queryKey, options?.threadParentId])
+
+  const commitMessages = useCallback(
+    (updater: (current: HistoryMessage[]) => HistoryMessage[]) => {
+      queryClient.setQueryData(queryKey, (current: HistoryResponse | undefined) => {
+        if (!current) return current
+        const next = updater(current.messages)
+        if (conversationId) advanceConversationLatestSeq(conversationId, maxHistorySeq(next))
+        return { ...current, messages: next }
+      })
+    },
+    [queryClient, queryKey, conversationId, advanceConversationLatestSeq]
+  )
 
   useEffect(() => {
-    if (!username || !targetKey || !conversationId) {
-      setMessages([])
-      setError(null)
-      setLastReadSeq(0)
-      setLoadedTarget(null)
-      maxLoadedSeqRef.current = 0
-      incrementalFetchAfterRef.current = null
-      return
-    }
+    if (!username || !targetKey || !conversationId) return
 
     let cancelled = false
     let unsubscribeRealtime: (() => void) | null = null
-    let activeRealtimeTarget: string | null = null
-    async function bootstrap() {
-      setLoading(true)
-      setMessages([])
-      setError(null)
-      setLastReadSeq(0)
-      setLoadedTarget(null)
-      maxLoadedSeqRef.current = 0
-      incrementalFetchAfterRef.current = null
-      pendingReadSeqRef.current = null
-      if (readCursorTimerRef.current != null) {
-        window.clearTimeout(readCursorTimerRef.current)
-        readCursorTimerRef.current = null
-      }
 
-      const history = await fetchHistory()
-      if (cancelled || !history) return
-
-      try {
-        activeRealtimeTarget = `conversation:${conversationId}`
-      } catch (targetError) {
-        if (!cancelled) {
-          setError(targetError instanceof Error ? targetError.message : String(targetError))
-        }
+    const handleFrame = (frame: RealtimeFrame) => {
+      if (cancelled) return
+      if (frame.type === 'error') {
+        console.error(frame.message)
         return
       }
 
-      unsubscribeRealtime = getRealtimeSession(username).subscribe({
-        targets: [activeRealtimeTarget],
-        onFrame: (frame) => {
-          if (cancelled) return
-          if (frame.type === 'error') {
-            setError(frame.message)
-            return
-          }
-          commitMessages((current) => applyRealtimeEvent(current, frame.event))
-          const incrementalAfter = historyFetchAfterForNotification(
-            activeRealtimeTarget,
-            frame.event,
-            maxLoadedSeqRef.current,
-            options?.threadParentId ?? null
-          )
-          if (incrementalAfter != null) {
-            void fetchHistory(incrementalAfter)
-          }
-          setError(null)
-        },
+      const msg = normalizeEvent(frame.event)
+      if (!msg) return
+
+      // Thread replies bump the parent's reply count but don't insert into root history
+      if (msg.thread_parent_id) {
+        commitMessages((current) => bumpReplyCount(current, msg.thread_parent_id!))
+        return
+      }
+
+      // Append if newer than the last message in cache
+      advanceConversationLatestSeq(conversationId, msg.seq)
+      queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
+        if (!current) return current
+        const lastSeq = current.messages.length > 0 ? current.messages[current.messages.length - 1].seq : 0
+        if (msg.seq <= lastSeq) return current
+        return { ...current, messages: [...current.messages, msg] }
       })
     }
 
-    void bootstrap()
+    unsubscribeRealtime = getSession(username).subscribe(conversationId, handleFrame)
 
     return () => {
       cancelled = true
-      if (readCursorTimerRef.current != null) {
-        window.clearTimeout(readCursorTimerRef.current)
-        readCursorTimerRef.current = null
-      }
       unsubscribeRealtime?.()
     }
-  }, [conversationId, fetchHistory, options?.threadParentId, targetKey, username])
+  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey, commitMessages, advanceConversationLatestSeq])
 
-  const reportVisibleSeq = useCallback((visibleSeq: number) => {
-    if (!username || !targetKey || !conversationId || visibleSeq <= 0) return
-    if (loadedTarget !== targetKey) return
-    if (document.visibilityState !== 'visible') return
-    const nextSeq = Math.max(visibleSeq, pendingReadSeqRef.current ?? 0)
-    if (nextSeq <= lastReadSeqRef.current) return
-    pendingReadSeqRef.current = nextSeq
-    if (readCursorTimerRef.current != null) return
-
-    readCursorTimerRef.current = window.setTimeout(async () => {
-      readCursorTimerRef.current = null
-      const flushSeq = pendingReadSeqRef.current
-      pendingReadSeqRef.current = null
-      if (flushSeq == null || flushSeq <= lastReadSeqRef.current) return
-      if (document.visibilityState !== 'visible') return
-      try {
-        const res = await updateReadCursor(
-          conversationId,
-          flushSeq,
-          options?.threadParentId || undefined
-        )
-        setLastReadSeq((current) => Math.max(current, flushSeq))
-        options?.onReadCursorAck?.({
-          conversationId,
-          conversationUnreadCount: res.conversationUnreadCount,
-          conversationLastReadSeq: res.conversationLastReadSeq,
-          conversationLatestSeq: res.conversationLatestSeq,
-          conversationThreadUnreadCount: res.conversationThreadUnreadCount,
-          threadParentId: res.threadParentId ?? null,
-          threadUnreadCount: res.threadUnreadCount,
-          threadLastReadSeq: res.threadLastReadSeq,
-          threadLatestSeq: res.threadLatestSeq,
-        })
-      } catch (cursorError) {
-        console.error('Failed to update read cursor', cursorError)
-      }
-    }, 150)
-  }, [conversationId, loadedTarget, options?.onReadCursorAck, options?.threadParentId, targetKey, username])
-
-  const addOptimisticMessage = useCallback((draft: {
-    content: string
-    attachments?: HistoryMessage['attachments']
-  }): OptimisticMessageHandle => {
-    const tempId = `client:${Date.now()}:${Math.random().toString(16).slice(2)}`
-    const clientNonce = createClientNonce()
-    const optimisticMessage: HistoryMessage = {
-      id: tempId,
-      seq: maxLoadedSeqRef.current + 1,
-      content: draft.content,
-      senderName: username,
-      senderType: 'human',
-      senderDeleted: false,
-      createdAt: new Date().toISOString(),
-      attachments: draft.attachments,
-      clientNonce,
-      clientStatus: 'sending',
-    }
-    commitMessages((current) => [...current, optimisticMessage])
-    return { tempId, clientNonce }
-  }, [commitMessages, username])
-
-  const ackOptimisticMessage = useCallback((handle: OptimisticMessageHandle, ack: {
-    messageId: string
-    seq: number
-    createdAt: string
-    clientNonce?: string
-  }) => {
-    const nonce = ack.clientNonce ?? handle.clientNonce
-    commitMessages((current) =>
-      current.map((message) =>
-        message.clientNonce === nonce || message.id === handle.tempId
-          ? {
-            ...message,
-            id: ack.messageId,
-            seq: ack.seq,
-            createdAt: ack.createdAt,
-            clientNonce: nonce,
-            clientStatus: undefined,
-            clientError: undefined,
-          }
-          : message
-      )
-    )
-  }, [commitMessages])
-
-  const failOptimisticMessage = useCallback((handle: OptimisticMessageHandle, errorMessage: string) => {
-    commitMessages((current) =>
-      current.map((message) =>
-        message.clientNonce === handle.clientNonce || message.id === handle.tempId
-          ? {
-            ...message,
-            clientStatus: 'failed',
-            clientError: errorMessage,
-          }
-          : message
-      )
-    )
-  }, [commitMessages])
-
-  const retryOptimisticMessage = useCallback((messageId: string): OptimisticMessageHandle | null => {
-    const nextHandle = {
-      tempId: messageId,
-      clientNonce: createClientNonce(),
-    }
-    commitMessages((current) =>
-      current.map((message) => {
-        if (message.id !== messageId) return message
-        return {
-          ...message,
-          clientNonce: nextHandle.clientNonce,
-          clientStatus: 'sending',
-          clientError: undefined,
-        }
-      })
-    )
-    return nextHandle
-  }, [commitMessages])
+  const appendMessage = useCallback(
+    (message: HistoryMessage) => {
+      commitMessages((current) => [...current, message])
+    },
+    [commitMessages]
+  )
 
   return {
     messages,
-    loading,
-    error,
+    loading: isLoading,
+    error: queryError ? String(queryError) : null,
     lastReadSeq,
     loadedTarget,
-    refresh: fetchHistory,
-    reportVisibleSeq,
-    addOptimisticMessage,
-    ackOptimisticMessage,
-    failOptimisticMessage,
-    retryOptimisticMessage,
+    refresh: refetch,
+    appendMessage,
   }
 }

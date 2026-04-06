@@ -6,4 +6,5 @@ pub mod targets;
 pub mod threads;
 pub mod types;
 
+pub use posting::CreateMessage;
 pub use types::*;

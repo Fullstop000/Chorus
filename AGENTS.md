@@ -86,11 +86,15 @@ This file is the working contract for agents. Read it before making changes.
 | Path | Purpose |
 |------|---------|
 | `ui/src/App.tsx` | Top-level shell |
-| `ui/src/api.ts` | Browser-to-server API calls |
-| `ui/src/store.tsx` | Client app state and selection logic |
+| `ui/src/api/` | Browser-to-server API (`index.ts`) |
+| `ui/src/store/` | Client app state (`index.tsx`, `uiStore.ts`) |
+| `ui/src/types/` | Re-exports only; domain types live in `*/types.ts` next to `chat/`, `channels/`, `agents/`, `tasks/`, `inbox/`, `transport/` |
+| `ui/src/inbox/` | Thread inbox + read-cursor state (`inbox.ts`, `index.ts`) |
+| `ui/src/lib/` | Shared helpers (`utils.ts`: `cn`, app `queryClient`) |
 | `ui/src/hooks/` | Reusable data-loading and interaction hooks |
-| `ui/src/components/` | UI grouped by panel, modal, component responsibility |
-| `ui/src/channelList.ts`, `types.ts` | Shared UI-side derivation and types |
+| `ui/src/transport/` | Realtime WebSocket client |
+| `ui/src/pages/` | Workspace shell (`MainPanel`, `TabBar`; `Sidebar/` includes `sidebarChannels` filter) |
+| `ui/src/components/` | Feature modules: `chat/`, `channels/`, `agents/` (includes `agents/profile/`, `agents/activity/`), `tasks/`, plus `ui/` (shadcn primitives) |
 
 ## Project Conventions
 
@@ -99,8 +103,8 @@ This file is the working contract for agents. Read it before making changes.
 - Component styles in co-located `.css` files
 - Design tokens in CSS variables in `App.css`
 - Icons: `lucide-react` (13px inline, 16px panel)
-- No global state mutations outside `ui/src/store.tsx`
-- API calls through `ui/src/api.ts`
+- No global state mutations outside `ui/src/store/`
+- API calls through `ui/src/api/`
 - Do not introduce a second visual style for shared dialogs, forms, or selects
 - Do not separate labels from their focusable controls
 - Do not use the browser viewport for read visibility
