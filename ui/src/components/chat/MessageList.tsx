@@ -179,7 +179,7 @@ export function MessageList({
     }));
   }, [messages]);
 
-  const scheduleCheck = useCallback(() => {
+  const scheduleReadCheck = useCallback(() => {
     const container =
       scrollMode === "inherit"
         ? (externalScrollContainerRef?.current ?? null)
@@ -206,25 +206,19 @@ export function MessageList({
     let isAtBottom = isNearBottom(container);
 
     const onScroll = () => {
-      const transition = getBottomTransition(isAtBottom, container);
       const nowAtBottom = isNearBottom(container);
-      if (transition === "entered") {
-        // no-op: read cursor is advanced by reportVisibleSeq in useHistory
-      } else if (transition === "left") {
-        // scrolled away from bottom
-      }
       isAtBottom = nowAtBottom;
-      scheduleCheck();
+      scheduleReadCheck();
     };
     container.addEventListener("scroll", onScroll);
     return () => container.removeEventListener("scroll", onScroll);
-  }, [scrollMode, externalScrollContainerRef, targetKey, scheduleCheck]);
+  }, [scrollMode, externalScrollContainerRef, targetKey, scheduleReadCheck]);
 
   // Schedule a visibility check when the message list changes (new messages rendered).
   useEffect(() => {
     if (!messages.length || loading) return;
-    scheduleCheck();
-  }, [messages.length, loading, scheduleCheck]);
+    scheduleReadCheck();
+  }, [messages.length, loading, scheduleReadCheck]);
 
   useEffect(() => {
     const container =
@@ -233,8 +227,21 @@ export function MessageList({
         : internalScrollContainerRef.current;
     if (!container || !messages.length || loading) return;
 
-    if (isNearBottom(container, 100)) {
-      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const lastMessage = messages[messages.length - 1];
+    const isSelfMessage = lastMessage.senderName === currentUser;
+
+    if (isSelfMessage || isNearBottom(container, 100)) {
+      const totalMessages = messages.length;
+      const approxFirstVisibleIndex = Math.min(
+        totalMessages - 1,
+        Math.floor(
+          (container.scrollTop / container.scrollHeight) * totalMessages,
+        ),
+      );
+      const minVisibleSeq = messages[approxFirstVisibleIndex].seq;
+      const scrollDistance = lastMessage.seq - minVisibleSeq;
+      const behavior = scrollDistance > 40 ? "instant" : "smooth";
+      bottomRef.current?.scrollIntoView({ behavior });
     }
   }, [messages.length, loading]);
 
@@ -250,9 +257,15 @@ export function MessageList({
         bottomRef.current?.scrollIntoView();
       }
       // Check visibility after initial scroll so already-visible messages are marked read.
-      scheduleCheck();
+      scheduleReadCheck();
     });
-  }, [targetKey, messages.length, loading, firstUnreadIndex, scheduleCheck]);
+  }, [
+    targetKey,
+    messages.length,
+    loading,
+    firstUnreadIndex,
+    scheduleReadCheck,
+  ]);
 
   // Reset the visibility watermark when the target changes.
   useEffect(() => {
