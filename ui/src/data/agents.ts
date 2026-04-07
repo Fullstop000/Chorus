@@ -53,25 +53,19 @@ export interface ActivityResponse {
 }
 
 export type ActivityEntryKind =
+  | 'start'
   | 'thinking'
-  | 'tool_start'
+  | 'tool_call'
+  | 'tool_result'
   | 'text'
-  | 'raw_output'
-  | 'message_received'
-  | 'message_sent'
-  | 'status'
 
 export interface ActivityEntry {
   kind: ActivityEntryKind
+  is_resume?: boolean
   text?: string
   content?: string
   tool_name?: string
   tool_input?: string
-  channel_label?: string
-  sender_name?: string
-  target?: string
-  activity?: string
-  detail?: string
 }
 
 export interface ActivityLogEntry {

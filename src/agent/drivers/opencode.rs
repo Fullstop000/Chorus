@@ -186,10 +186,9 @@ impl Driver for OpencodeDriver {
                 tool_prefix: "chat_".to_string(),
                 extra_critical_rules: vec![
                     "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- ALWAYS call `chat_wait_for_message()` after completing any task so you return to the idle loop.".to_string(),
                 ],
                 post_startup_notes: vec![
-                    "**IMPORTANT**: Your process may exit after an idle wait completes. The server will resume you when new work arrives.".to_string(),
+                    "**IMPORTANT**: Complete your work and stop. The server will wake you when new work arrives.".to_string(),
                 ],
                 include_stdin_notification_section: false,
                 teams: config.teams.clone(),
@@ -201,8 +200,6 @@ impl Driver for OpencodeDriver {
         match name {
             "chat_send_message" => "Sending message\u{2026}".to_string(),
             "chat_check_messages" => "Checking messages\u{2026}".to_string(),
-            "chat_wait_for_message" => "Waiting for messages\u{2026}".to_string(),
-            "chat_receive_message" => "Receiving messages\u{2026}".to_string(),
             "chat_upload_file" => "Uploading file\u{2026}".to_string(),
             "chat_view_file" => "Viewing file\u{2026}".to_string(),
             "chat_list_tasks" => "Listing tasks\u{2026}".to_string(),
@@ -255,7 +252,7 @@ impl Driver for OpencodeDriver {
                 }
             }
             "web_search" => str_field("query"),
-            "chat_check_messages" | "chat_wait_for_message" => String::new(),
+            "chat_check_messages" => String::new(),
             "chat_send_message" => {
                 let t = str_field("target");
                 if t.is_empty() {

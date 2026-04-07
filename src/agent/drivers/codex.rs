@@ -232,6 +232,14 @@ impl Driver for CodexDriver {
                                     name,
                                     input: arguments,
                                 });
+                            } else if event_type == "item.completed" {
+                                if let Some(output) = item.get("output").and_then(|v| v.as_str()) {
+                                    if !output.is_empty() {
+                                        events.push(ParsedEvent::ToolResult {
+                                            content: output.to_string(),
+                                        });
+                                    }
+                                }
                             }
                         }
                         "collab_tool_call" => {
@@ -318,10 +326,9 @@ impl Driver for CodexDriver {
                 tool_prefix: "mcp_chat_".to_string(),
                 extra_critical_rules: vec![
                     "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- ALWAYS call `mcp_chat_wait_for_message()` after completing any task so you return to the idle loop.".to_string(),
                 ],
                 post_startup_notes: vec![
-                    "**IMPORTANT**: Your process may exit after an idle wait completes. The server will resume you when new work arrives.".to_string(),
+                    "**IMPORTANT**: Your process may exit after completing a task. The server will wake you when new work arrives.".to_string(),
                 ],
                 include_stdin_notification_section: false,
                 teams: config.teams.clone(),
@@ -333,8 +340,6 @@ impl Driver for CodexDriver {
         match name {
             "mcp_chat_send_message" => "Sending message\u{2026}".to_string(),
             "mcp_chat_check_messages" => "Checking messages\u{2026}".to_string(),
-            "mcp_chat_wait_for_message" => "Waiting for messages\u{2026}".to_string(),
-            "mcp_chat_receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp_chat_upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp_chat_view_file" => "Viewing file\u{2026}".to_string(),
             "mcp_chat_list_tasks" => "Listing tasks\u{2026}".to_string(),

@@ -8,7 +8,6 @@ use tracing::{debug, info, warn};
 
 use super::dto::ChannelInfo;
 use super::{api_err, format_anyhow_error, internal_err, ApiResult, AppState};
-use crate::agent::activity_log::ActivityEntry;
 use crate::agent::collaboration::make_collaboration_model;
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
@@ -244,40 +243,6 @@ fn content_preview(text: &str) -> String {
     }
 }
 
-/// Convert a delivered message into the label shown in the activity timeline.
-fn activity_channel_label(message: &ReceivedMessage) -> String {
-    match message.channel_type.as_str() {
-        "channel" => format!("#{}", message.channel_name),
-        "dm" => format!("dm:@{}", message.channel_name),
-        "thread" => {
-            let parent_type = message.parent_channel_type.as_deref().unwrap_or("channel");
-            let parent_name = message
-                .parent_channel_name
-                .as_deref()
-                .unwrap_or(&message.channel_name);
-            match parent_type {
-                "dm" => format!("dm:@{} thread", parent_name),
-                _ => format!("#{} thread", parent_name),
-            }
-        }
-        _ => message.channel_name.clone(),
-    }
-}
-
-/// Record received messages in the activity log so the UI can show communication flow.
-fn push_received_activity(state: &AppState, agent_id: &str, messages: &[ReceivedMessage]) {
-    for message in messages {
-        state.lifecycle.push_activity_entry(
-            agent_id,
-            ActivityEntry::MessageReceived {
-                channel_label: activity_channel_label(message),
-                sender_name: message.sender_name.clone(),
-                content: content_preview(&message.content),
-            },
-        );
-    }
-}
-
 fn resolve_history_target(
     store: &Store,
     agent_id: &str,
@@ -475,15 +440,7 @@ async fn send_message_to_channel(
         &message_id
     };
     info!(agent = %actor_id, msg = %short_id, "send_message ok");
-    if sender_type == SenderType::Agent {
-        state.lifecycle.push_activity_entry(
-            actor_id,
-            ActivityEntry::MessageSent {
-                target: target_label,
-                content: preview,
-            },
-        );
-    }
+
 
     let mut consensus_message_id = None;
     if sender_type == SenderType::Agent && channel.channel_type == ChannelType::Team {
@@ -652,7 +609,7 @@ pub async fn handle_receive(
         for m in &messages {
             info!(agent = %agent_id, target = %format!("{}:{}", m.channel_type, m.channel_name), sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
         }
-        push_received_activity(&state, &agent_id, &messages);
+
         return Ok(Json(ReceiveResponse { messages }));
     }
     if !blocking {
@@ -682,7 +639,7 @@ pub async fn handle_receive(
                     for m in &messages {
                         info!(agent = %agent_id, target = %format!("{}:{}", m.channel_type, m.channel_name), sender = %m.sender_name, content = %m.content.chars().take(120).collect::<String>(), "  ← message");
                     }
-                    push_received_activity(&state, &agent_id, &messages);
+
                     return Ok(Json(ReceiveResponse { messages }));
                 }
             }

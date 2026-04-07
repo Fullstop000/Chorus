@@ -77,13 +77,18 @@ impl Driver for ClaudeDriver {
             .spawn()?;
 
         // Send initial user message via stdin
-        let stdin_msg = serde_json::json!({
+        let mut stdin_msg = serde_json::json!({
             "type": "user",
             "message": {
                 "role": "user",
                 "content": [{"type": "text", "text": &ctx.prompt}]
             }
         });
+        if let Some(ref sid) = ctx.config.session_id {
+            if !sid.is_empty() {
+                stdin_msg["session_id"] = serde_json::Value::String(sid.clone());
+            }
+        }
 
         if let Some(ref mut stdin) = child.stdin {
             let mut line = serde_json::to_string(&stdin_msg)?;
@@ -151,6 +156,39 @@ impl Driver for ClaudeDriver {
                     }
                 }
             }
+            Some("user") => {
+                if let Some(content) = event
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for block in content {
+                        if block.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
+                            let content_val = block.get("content");
+                            let text = match content_val {
+                                Some(serde_json::Value::String(s)) => s.clone(),
+                                Some(serde_json::Value::Array(arr)) => arr
+                                    .iter()
+                                    .filter_map(|b| {
+                                        if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                            b.get("text")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                                _ => String::new(),
+                            };
+                            if !text.is_empty() {
+                                events.push(ParsedEvent::ToolResult { content: text });
+                            }
+                        }
+                    }
+                }
+            }
             Some("result") => {
                 let session_id = event
                     .get("session_id")
@@ -205,8 +243,6 @@ impl Driver for ClaudeDriver {
         match name {
             "mcp__chat__send_message" => "Sending message\u{2026}".to_string(),
             "mcp__chat__check_messages" => "Checking messages\u{2026}".to_string(),
-            "mcp__chat__wait_for_message" => "Waiting for messages\u{2026}".to_string(),
-            "mcp__chat__receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp__chat__upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp__chat__view_file" => "Viewing file\u{2026}".to_string(),
             "mcp__chat__list_tasks" => "Listing tasks\u{2026}".to_string(),

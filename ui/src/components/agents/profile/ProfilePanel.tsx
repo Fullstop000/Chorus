@@ -228,6 +228,21 @@ export function ProfilePanel() {
           >
             {agent.status}
           </span>
+          {agent.session_id && (
+            <>
+              <span className="profile-config-key">Session</span>
+              <span
+                className="badge"
+                style={{
+                  fontFamily: "monospace",
+                  fontSize: "10px",
+                  letterSpacing: 0,
+                }}
+              >
+                {agent.session_id}
+              </span>
+            </>
+          )}
         </div>
         <div
           className={`runtime-status-banner runtime-status-banner-${runtimeSummary.tone}`}

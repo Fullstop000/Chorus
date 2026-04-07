@@ -13,20 +13,6 @@ pub(super) struct SendMessageParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct ReceiveMessageParams {
-    /// Whether to block (wait) for new messages (default true)
-    #[serde(default = "default_true")]
-    pub(super) block: Option<bool>,
-    /// How long to wait in ms when blocking (default 59000)
-    #[serde(default)]
-    pub(super) timeout_ms: Option<u64>,
-}
-
-pub(super) fn default_true() -> Option<bool> {
-    Some(true)
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct EmptyParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]

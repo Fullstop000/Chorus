@@ -21,8 +21,8 @@ struct RunningAgent {
     process: Child,
     driver: Arc<dyn Driver>,
     session_id: Option<String>,
-    is_in_receive_message: bool,
     pending_notification_count: u32,
+    last_tool_name: Option<String>,
 }
 
 pub struct AgentManager {
@@ -93,7 +93,7 @@ impl AgentManager {
                     .clone()
                     .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
             ),
-            AgentRuntime::Claude => None,
+            AgentRuntime::Claude => agent.session_id.clone(),
         };
 
         let config = AgentConfig {
@@ -177,15 +177,25 @@ impl AgentManager {
                     process: child,
                     driver: driver.clone(),
                     session_id: running_session_id,
-                    is_in_receive_message: false,
                     pending_notification_count: 0,
+                    last_tool_name: None,
                 },
             );
         }
 
         self.store
             .update_agent_status(agent_name, AgentStatus::Active)?;
-        activity_log::set_activity_state(&self.activity_logs, agent_name, "working", "Starting…");
+        activity_log::set_activity_state(
+            &self.activity_logs,
+            agent_name,
+            "working",
+            "Starting\u{2026}",
+        );
+        activity_log::push_activity(
+            &self.activity_logs,
+            agent_name,
+            ActivityEntry::Start { is_resume },
+        );
 
         self.spawn_output_reader(agent_name.to_string(), stdout, driver, instance_id);
         if let Some(stderr) = stderr {
@@ -240,10 +250,7 @@ impl AgentManager {
             None => return Ok(()),
         };
 
-        if !running.driver.supports_stdin_notification()
-            || running.is_in_receive_message
-            || running.session_id.is_none()
-        {
+        if !running.driver.supports_stdin_notification() || running.session_id.is_none() {
             return Ok(());
         }
 
@@ -257,7 +264,7 @@ impl AgentManager {
             let mut agents = agents_ref.lock().await;
             if let Some(running) = agents.get_mut(&name) {
                 let current_count = running.pending_notification_count;
-                if current_count == 0 || running.is_in_receive_message || current_count != count {
+                if current_count == 0 || current_count != count {
                     running.pending_notification_count = 0;
                     return;
                 }
@@ -328,11 +335,6 @@ impl AgentManager {
 
                 if driver.runtime() == AgentRuntime::Kimi {
                     debug!(agent = %name, raw_stdout = %line, "raw agent stdout");
-                    activity_log::push_activity(
-                        &activity_logs,
-                        &name,
-                        ActivityEntry::RawOutput { text: line.clone() },
-                    );
                 }
 
                 for event in driver.parse_line(&line) {
@@ -430,7 +432,6 @@ async fn handle_parsed_event(
             activity_log::set_activity_state(logs, agent_name, "online", "Ready");
         }
         ParsedEvent::Thinking { ref text } => {
-            running.is_in_receive_message = false;
             let preview: String = text.chars().take(120).collect();
             let preview = if text.chars().count() > 120 {
                 format!("{preview}…")
@@ -443,10 +444,8 @@ async fn handle_parsed_event(
                 agent_name,
                 ActivityEntry::Thinking { text: text.clone() },
             );
-            activity_log::set_activity_state(logs, agent_name, "thinking", "Thinking…");
         }
         ParsedEvent::Text { ref text } => {
-            running.is_in_receive_message = false;
             let preview: String = text.chars().take(120).collect();
             let preview = if text.chars().count() > 120 {
                 format!("{preview}…")
@@ -464,46 +463,34 @@ async fn handle_parsed_event(
             ref name,
             ref input,
         } => {
-            let receive_tool = format!("{}receive_message", driver.mcp_tool_prefix());
-            let wait_tool = format!("{}wait_for_message", driver.mcp_tool_prefix());
-            if *name == receive_tool || *name == wait_tool {
-                running.is_in_receive_message = true;
-                running.pending_notification_count = 0;
-                info!(agent = %agent_name, "waiting for messages");
-                let display_name = driver.tool_display_name(name);
-                activity_log::push_activity(
-                    logs,
-                    agent_name,
-                    ActivityEntry::ToolStart {
-                        tool_name: display_name,
-                        tool_input: String::new(),
-                    },
-                );
-                activity_log::set_activity_state(
-                    logs,
-                    agent_name,
-                    "online",
-                    "Waiting for messages",
-                );
-            } else {
-                running.is_in_receive_message = false;
-                let display_name = driver.tool_display_name(name);
-                let tool_input = driver.summarize_tool_input(name, input);
-                info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
-                activity_log::push_activity(
-                    logs,
-                    agent_name,
-                    ActivityEntry::ToolStart {
-                        tool_name: display_name.clone(),
-                        tool_input,
-                    },
-                );
-                activity_log::set_activity_state(logs, agent_name, "working", &display_name);
-            }
+            let display_name = driver.tool_display_name(name);
+            let tool_input = driver.summarize_tool_input(name, input);
+            info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
+            running.last_tool_name = Some(display_name.clone());
+            activity_log::push_activity(
+                logs,
+                agent_name,
+                ActivityEntry::ToolCall {
+                    tool_name: display_name.clone(),
+                    tool_input,
+                },
+            );
+            activity_log::set_activity_state(logs, agent_name, "working", &display_name);
+        }
+        ParsedEvent::ToolResult { ref content } => {
+            info!(agent = %agent_name, "tool result");
+            let tool_name = running.last_tool_name.clone().unwrap_or_default();
+            activity_log::push_activity(
+                logs,
+                agent_name,
+                ActivityEntry::ToolResult {
+                    tool_name,
+                    content: content.clone(),
+                },
+            );
         }
         ParsedEvent::TurnEnd { session_id } => {
             info!(agent = %agent_name, "turn ended");
-            running.is_in_receive_message = false;
             if let Some(ref sid) = session_id {
                 running.session_id = Some(sid.clone());
                 let _ = store.update_agent_session(agent_name, Some(sid));
@@ -512,14 +499,6 @@ async fn handle_parsed_event(
         }
         ParsedEvent::Error { ref message } => {
             error!(agent = %agent_name, message = %message, "agent error");
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::Status {
-                    activity: "error".to_string(),
-                    detail: message.clone(),
-                },
-            );
         }
     }
 }
@@ -558,10 +537,6 @@ impl AgentLifecycle for AgentManager {
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         activity_log::all_activity_states(&self.activity_logs)
     }
-
-    fn push_activity_entry(&self, agent_name: &str, entry: ActivityEntry) {
-        activity_log::push_activity(&self.activity_logs, agent_name, entry);
-    }
 }
 
 // ── Prompt builder for start/resume ──
@@ -598,7 +573,7 @@ fn build_start_prompt(
         }
         prompt.push_str(
             "\n\nUse read_history to catch up on important channels, \
-             then call the wait_for_message tool to return to the idle loop.",
+             then stop. New messages will be delivered to you automatically.",
         );
         if driver.supports_stdin_notification() {
             prompt.push_str(&format!(
@@ -609,10 +584,8 @@ fn build_start_prompt(
         }
         prompt
     } else {
-        let mut prompt = format!(
-            "No new messages while you were away. \
-             Call {prefix}wait_for_message() to listen for new messages."
-        );
+        let mut prompt =
+            "No new messages while you were away. Nothing to do right now — just stop.".to_string();
         if driver.supports_stdin_notification() {
             prompt.push_str(&format!(
                 "\n\nNote: While you are busy, you may receive \
@@ -656,10 +629,6 @@ fn build_wake_message_prompt(
             prompt.push_str(&format!("\n- {channel_name}: {count} unread"));
         }
     }
-
-    prompt.push_str(&format!(
-        "\n\nAfter you finish the triggered work, return to {prefix}wait_for_message()."
-    ));
 
     prompt
 }
@@ -805,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn wake_prompt_for_resumed_agent_mentions_check_and_wait_tools() {
+    fn wake_prompt_for_resumed_agent_mentions_check_tool() {
         let config = sample_config(Some("thread-123"));
         let driver = FakeDriver;
         let prompt = build_start_prompt(
@@ -818,7 +787,10 @@ mod tests {
 
         assert!(prompt.contains("woken by a new unread message"));
         assert!(prompt.contains("mcp_chat_check_messages() now"));
-        assert!(prompt.contains("mcp_chat_wait_for_message()"));
+        assert!(
+            !prompt.contains("wait_for_message"),
+            "push-idle: agents no longer use wait_for_message"
+        );
         assert!(prompt.contains("Please investigate the Codex restart path."));
         assert!(
             !prompt.contains("BASE PROMPT"),
@@ -896,8 +868,8 @@ mod tests {
                     process: first,
                     driver: driver.clone(),
                     session_id: None,
-                    is_in_receive_message: false,
                     pending_notification_count: 0,
+                    last_tool_name: None,
                 },
             );
         }
@@ -924,8 +896,8 @@ mod tests {
                     process: second,
                     driver,
                     session_id: None,
-                    is_in_receive_message: false,
                     pending_notification_count: 0,
+                    last_tool_name: None,
                 },
             );
         }

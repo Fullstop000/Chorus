@@ -182,7 +182,16 @@ impl Driver for KimiDriver {
                     events.push(ParsedEvent::TurnEnd { session_id: None });
                 }
             }
-            Some("tool") => {}
+            Some("tool") => {
+                let content = event
+                    .get("content")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if !content.is_empty() {
+                    events.push(ParsedEvent::ToolResult { content });
+                }
+            }
             Some("error") => {
                 let message = event
                     .get("message")
@@ -213,9 +222,8 @@ impl Driver for KimiDriver {
                 tool_prefix: "".to_string(),
                 extra_critical_rules: vec![
                     "- Do NOT use bash/curl/sqlite to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- Call `wait_for_message()` when you are idle so the agent stays in the receive loop.".to_string(),
-                    "- After `wait_for_message()` or `check_messages()` returns a real user message, you must either send a reply or deliberately explain why no reply is needed before going idle again.".to_string(),
-                    "- Direct messages and explicit @mentions are addressed to you. Do not silently consume them and return to waiting.".to_string(),
+                    "- After `check_messages()` returns a real user message, you must either send a reply or deliberately explain why no reply is needed before stopping.".to_string(),
+                    "- Direct messages and explicit @mentions are addressed to you. Do not silently consume them and stop.".to_string(),
                     "- Never treat raw assistant stdout as a user-visible reply. Any reply meant for humans must be delivered with `send_message()`.".to_string(),
                 ],
                 post_startup_notes: vec![],
@@ -229,8 +237,6 @@ impl Driver for KimiDriver {
         match name {
             "send_message" => "Sending message…".to_string(),
             "check_messages" => "Checking messages…".to_string(),
-            "wait_for_message" => "Waiting for messages…".to_string(),
-            "receive_message" => "Receiving messages…".to_string(),
             "upload_file" => "Uploading file…".to_string(),
             "view_file" => "Viewing file…".to_string(),
             "list_tasks" => "Listing tasks…".to_string(),
