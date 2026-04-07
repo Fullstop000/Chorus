@@ -534,4 +534,121 @@ mod tests {
 
         assert_eq!(status, RuntimeAuthStatus::Authed);
     }
+
+    #[test]
+    fn parse_line_ignores_non_json() {
+        let d = CodexDriver;
+        assert!(d.parse_line("plaintext").is_empty());
+        assert!(d.parse_line("").is_empty());
+    }
+
+    #[test]
+    fn parse_line_thread_started() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"thread.started","thread_id":"thread-1"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "thread-1")
+        );
+    }
+
+    #[test]
+    fn parse_line_turn_started() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"turn.started"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { .. }));
+    }
+
+    #[test]
+    fn parse_line_reasoning_item() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.updated","item":{"type":"reasoning","text":"thinking hard"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { text } if text == "thinking hard"));
+    }
+
+    #[test]
+    fn parse_line_agent_message_completed() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"all done"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "all done"));
+    }
+
+    #[test]
+    fn parse_line_agent_message_started_ignored() {
+        let d = CodexDriver;
+        // agent_message only produces Text on item.completed
+        assert!(d
+            .parse_line(
+                r#"{"type":"item.started","item":{"type":"agent_message","text":"partial"}}"#
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn parse_line_command_execution() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        let ParsedEvent::ToolCall { name, input } = &events[0] else {
+            panic!("expected ToolCall")
+        };
+        assert_eq!(name, "shell");
+        assert_eq!(input["command"], "ls -la");
+    }
+
+    #[test]
+    fn parse_line_mcp_tool_call_started() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"item.started","item":{"type":"mcp_tool_call","server":"chat","tool":"send_message","arguments":{}}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "mcp_chat_send_message")
+        );
+    }
+
+    #[test]
+    fn parse_line_mcp_tool_result() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"chat","tool":"send_message","output":"sent"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::ToolResult { content } if content == "sent"));
+    }
+
+    #[test]
+    fn parse_line_turn_completed() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"turn.completed"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::TurnEnd { .. }));
+    }
+
+    #[test]
+    fn parse_line_turn_failed() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"turn.failed","error":{"message":"rate limited"}}"#);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ParsedEvent::Error { message } if message == "rate limited"));
+        assert!(matches!(&events[1], ParsedEvent::TurnEnd { .. }));
+    }
+
+    #[test]
+    fn parse_line_item_error() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.completed","item":{"type":"error","message":"context exceeded"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "context exceeded")
+        );
+    }
 }

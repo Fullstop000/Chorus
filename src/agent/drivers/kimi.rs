@@ -447,4 +447,70 @@ mod tests {
             assert_eq!(status.auth_status, None);
         }
     }
+
+    #[test]
+    fn parse_line_ignores_non_json() {
+        let d = KimiDriver;
+        assert!(d.parse_line("not json").is_empty());
+        assert!(d.parse_line("").is_empty());
+    }
+
+    #[test]
+    fn parse_line_assistant_text_string() {
+        let d = KimiDriver;
+        let events = d.parse_line(r#"{"role":"assistant","content":"hello world"}"#);
+        // No tool calls → TurnEnd appended after Text
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "hello world"));
+        assert!(matches!(&events[1], ParsedEvent::TurnEnd { .. }));
+    }
+
+    #[test]
+    fn parse_line_assistant_text_block_array() {
+        let d = KimiDriver;
+        let events =
+            d.parse_line(r#"{"role":"assistant","content":[{"type":"text","text":"hi"}]}"#);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "hi"));
+        assert!(matches!(&events[1], ParsedEvent::TurnEnd { .. }));
+    }
+
+    #[test]
+    fn parse_line_assistant_tool_use_block() {
+        let d = KimiDriver;
+        let events = d.parse_line(r#"{"role":"assistant","content":[{"type":"tool_use","name":"mcp__chat__send_message","input":{}}]}"#);
+        // has_tool_calls = true → no TurnEnd
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "send_message"));
+    }
+
+    #[test]
+    fn parse_line_assistant_tool_calls_field() {
+        let d = KimiDriver;
+        let events = d.parse_line(r#"{"role":"assistant","content":null,"tool_calls":[{"function":{"name":"mcp__chat__check_messages","arguments":"{}"}}]}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "check_messages")
+        );
+    }
+
+    #[test]
+    fn parse_line_tool_result() {
+        let d = KimiDriver;
+        let events = d.parse_line(r#"{"role":"tool","content":"message sent"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolResult { content } if content == "message sent")
+        );
+    }
+
+    #[test]
+    fn parse_line_error() {
+        let d = KimiDriver;
+        let events = d.parse_line(r#"{"role":"error","message":"quota exceeded"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "quota exceeded")
+        );
+    }
 }

@@ -457,4 +457,83 @@ mod tests {
             ParsedEvent::SessionInit { session_id } if session_id == "sess-99"
         ));
     }
+
+    #[test]
+    fn parse_line_ignores_non_json() {
+        let d = OpencodeDriver;
+        assert!(d.parse_line("not json").is_empty());
+        assert!(d.parse_line("").is_empty());
+    }
+
+    #[test]
+    fn parse_line_step_start() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"step_start","sessionID":"sess-oc-1"}"#);
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "sess-oc-1")
+        );
+        assert!(matches!(&events[1], ParsedEvent::Thinking { .. }));
+    }
+
+    #[test]
+    fn parse_line_reasoning() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"reasoning","part":{"text":"pondering"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { text } if text == "pondering"));
+    }
+
+    #[test]
+    fn parse_line_text() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"text","part":{"text":"done"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "done"));
+    }
+
+    #[test]
+    fn parse_line_tool_use_pending() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"tool_use","part":{"state":"pending","tool":"chat_send_message","input":{}}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "chat_send_message")
+        );
+    }
+
+    #[test]
+    fn parse_line_tool_use_completed_ignored() {
+        let d = OpencodeDriver;
+        // only pending/running states emit ToolCall
+        assert!(d.parse_line(r#"{"type":"tool_use","part":{"state":"completed","tool":"chat_send_message","input":{}}}"#).is_empty());
+    }
+
+    #[test]
+    fn parse_line_step_finish_with_session() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"step_finish","sessionID":"sess-oc-2"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::TurnEnd { session_id: Some(id) } if id == "sess-oc-2")
+        );
+    }
+
+    #[test]
+    fn parse_line_error_nested() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"error","error":{"message":"network failure"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "network failure")
+        );
+    }
+
+    #[test]
+    fn parse_line_error_flat() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"error","message":"timeout"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Error { message } if message == "timeout"));
+    }
 }
