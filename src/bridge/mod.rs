@@ -169,18 +169,6 @@ impl ChatBridge {
     }
 
     #[tool(
-        description = "Receive new messages. Use block=true to wait for new messages. Returns messages formatted with target, sender, and content."
-    )]
-    async fn receive_message(
-        &self,
-        Parameters(params): Parameters<ReceiveMessageParams>,
-    ) -> Result<String, rmcp::ErrorData> {
-        let block = params.block.unwrap_or(true);
-        let timeout_ms = params.timeout_ms.unwrap_or(59_000);
-        self.receive_and_format(block, timeout_ms).await
-    }
-
-    #[tool(
         description = "Check for new messages without waiting. Returns immediately with any pending messages, or 'No new messages.' if none are queued."
     )]
     async fn check_messages(
@@ -188,36 +176,6 @@ impl ChatBridge {
         _params: Parameters<EmptyParams>,
     ) -> Result<String, rmcp::ErrorData> {
         self.receive_and_format(false, 0).await
-    }
-
-    #[tool(
-        description = "Block and wait for new messages. Only use this when you have no work left to do and want to return to the idle loop."
-    )]
-    async fn wait_for_message(
-        &self,
-        _params: Parameters<EmptyParams>,
-    ) -> Result<String, rmcp::ErrorData> {
-        const POLL_INTERVAL_MS: u64 = 25_000;
-        const MAX_WAIT_MS: u64 = 270_000;
-
-        let start = std::time::Instant::now();
-        loop {
-            let elapsed_ms = start.elapsed().as_millis() as u64;
-            if elapsed_ms >= MAX_WAIT_MS {
-                let final_poll = self.receive_and_format(true, 1_000).await?;
-                if final_poll == "No new messages." {
-                    return Ok("No new messages. Take a rest — new messages will be delivered to you directly. Do not take any further action until notified.".to_string());
-                }
-                return Ok(final_poll);
-            }
-
-            let remaining_ms = MAX_WAIT_MS - elapsed_ms;
-            let this_poll_ms = std::cmp::min(POLL_INTERVAL_MS, remaining_ms);
-            let poll = self.receive_and_format(true, this_poll_ms).await?;
-            if poll != "No new messages." {
-                return Ok(poll);
-            }
-        }
     }
 
     #[tool(

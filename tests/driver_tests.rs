@@ -23,8 +23,8 @@ fn test_claude_prompt_uses_split_message_tools() {
     let prompt = driver.build_system_prompt(&config, "agent-id");
 
     assert!(
-        prompt.contains("mcp__chat__wait_for_message"),
-        "Claude prompts must teach the blocking idle tool explicitly"
+        !prompt.contains("mcp__chat__wait_for_message"),
+        "push-idle: agents no longer use wait_for_message"
     );
     assert!(
         prompt.contains("mcp__chat__check_messages"),
@@ -54,8 +54,8 @@ fn test_codex_prompt_uses_split_message_tools() {
     let prompt = driver.build_system_prompt(&config, "agent-id");
 
     assert!(
-        prompt.contains("mcp_chat_wait_for_message"),
-        "Codex prompts must reference the blocking idle tool"
+        !prompt.contains("mcp_chat_wait_for_message"),
+        "push-idle: agents no longer use wait_for_message"
     );
     assert!(
         prompt.contains("mcp_chat_check_messages"),
@@ -97,8 +97,8 @@ fn test_kimi_prompt_uses_split_message_tools() {
     let prompt = driver.build_system_prompt(&config, "agent-id");
 
     assert!(
-        prompt.contains("wait_for_message"),
-        "Kimi prompts must teach the blocking idle tool explicitly with the Kimi-native tool name"
+        !prompt.contains("wait_for_message"),
+        "push-idle: agents no longer use wait_for_message"
     );
     assert!(
         prompt.contains("check_messages"),
@@ -144,8 +144,8 @@ fn test_opencode_prompt_uses_split_message_tools() {
     let prompt = driver.build_system_prompt(&config, "agent-id");
 
     assert!(
-        prompt.contains("chat_wait_for_message"),
-        "OpenCode prompts must reference the blocking idle tool"
+        !prompt.contains("chat_wait_for_message"),
+        "push-idle: agents no longer use wait_for_message"
     );
     assert!(
         prompt.contains("chat_check_messages"),

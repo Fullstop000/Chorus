@@ -186,10 +186,9 @@ impl Driver for OpencodeDriver {
                 tool_prefix: "chat_".to_string(),
                 extra_critical_rules: vec![
                     "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- ALWAYS call `chat_wait_for_message()` after completing any task so you return to the idle loop.".to_string(),
                 ],
                 post_startup_notes: vec![
-                    "**IMPORTANT**: Your process may exit after an idle wait completes. The server will resume you when new work arrives.".to_string(),
+                    "**IMPORTANT**: Complete your work and stop. The server will wake you when new work arrives.".to_string(),
                 ],
                 include_stdin_notification_section: false,
                 teams: config.teams.clone(),
@@ -201,8 +200,6 @@ impl Driver for OpencodeDriver {
         match name {
             "chat_send_message" => "Sending message\u{2026}".to_string(),
             "chat_check_messages" => "Checking messages\u{2026}".to_string(),
-            "chat_wait_for_message" => "Waiting for messages\u{2026}".to_string(),
-            "chat_receive_message" => "Receiving messages\u{2026}".to_string(),
             "chat_upload_file" => "Uploading file\u{2026}".to_string(),
             "chat_view_file" => "Viewing file\u{2026}".to_string(),
             "chat_list_tasks" => "Listing tasks\u{2026}".to_string(),
@@ -255,7 +252,7 @@ impl Driver for OpencodeDriver {
                 }
             }
             "web_search" => str_field("query"),
-            "chat_check_messages" | "chat_wait_for_message" => String::new(),
+            "chat_check_messages" => String::new(),
             "chat_send_message" => {
                 let t = str_field("target");
                 if t.is_empty() {
@@ -459,5 +456,84 @@ mod tests {
             &events[0],
             ParsedEvent::SessionInit { session_id } if session_id == "sess-99"
         ));
+    }
+
+    #[test]
+    fn parse_line_ignores_non_json() {
+        let d = OpencodeDriver;
+        assert!(d.parse_line("not json").is_empty());
+        assert!(d.parse_line("").is_empty());
+    }
+
+    #[test]
+    fn parse_line_step_start() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"step_start","sessionID":"sess-oc-1"}"#);
+        assert_eq!(events.len(), 2);
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "sess-oc-1")
+        );
+        assert!(matches!(&events[1], ParsedEvent::Thinking { .. }));
+    }
+
+    #[test]
+    fn parse_line_reasoning() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"reasoning","part":{"text":"pondering"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { text } if text == "pondering"));
+    }
+
+    #[test]
+    fn parse_line_text() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"text","part":{"text":"done"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "done"));
+    }
+
+    #[test]
+    fn parse_line_tool_use_pending() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"tool_use","part":{"state":"pending","tool":"chat_send_message","input":{}}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "chat_send_message")
+        );
+    }
+
+    #[test]
+    fn parse_line_tool_use_completed_ignored() {
+        let d = OpencodeDriver;
+        // only pending/running states emit ToolCall
+        assert!(d.parse_line(r#"{"type":"tool_use","part":{"state":"completed","tool":"chat_send_message","input":{}}}"#).is_empty());
+    }
+
+    #[test]
+    fn parse_line_step_finish_with_session() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"step_finish","sessionID":"sess-oc-2"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::TurnEnd { session_id: Some(id) } if id == "sess-oc-2")
+        );
+    }
+
+    #[test]
+    fn parse_line_error_nested() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"error","error":{"message":"network failure"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "network failure")
+        );
+    }
+
+    #[test]
+    fn parse_line_error_flat() {
+        let d = OpencodeDriver;
+        let events = d.parse_line(r#"{"type":"error","message":"timeout"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Error { message } if message == "timeout"));
     }
 }

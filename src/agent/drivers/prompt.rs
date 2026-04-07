@@ -31,10 +31,9 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
     let startup_steps = [
         "1. **Read MEMORY.md** (in your cwd). This is your memory index — it tells you what you know and where to find it.".to_string(),
         "2. Follow the instructions in MEMORY.md to read any other memory files you need (e.g. channel summaries, role definitions, user preferences).".to_string(),
-        format!("3. If you have no work in progress, call {}() to enter the idle loop.", t("wait_for_message")),
+        "3. If there is no concrete incoming message to handle, stop and wait. New messages will be delivered to you automatically.".to_string(),
         format!("4. When you receive a message, process it and reply with {}.", t("send_message")),
-        format!("5. While work is still in progress, do NOT call {}(). At natural checkpoints, you may call {}() to check for newly arrived messages.", t("wait_for_message"), t("check_messages")),
-        format!("6. After you have finished all work and sent your updates, call {}() again to return to the idle loop.", t("wait_for_message")),
+        "5. **Complete ALL your work before stopping.** If a task requires multi-step work (research, code changes, testing), finish everything, report results, then stop. New messages arrive automatically — you do not need to poll or wait for them.".to_string(),
     ];
 
     let display_name = &config.display_name;
@@ -49,7 +48,6 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
     let startup_steps_text = startup_steps.join("\n");
 
     let check_messages = t("check_messages");
-    let wait_for_message = t("wait_for_message");
     let send_message = t("send_message");
     let list_server = t("list_server");
     let read_history = t("read_history");
@@ -84,18 +82,17 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         "You have MCP tools from the \"chat\" server. Use ONLY these for communication:\n\n",
     );
     prompt.push_str(&format!(
-        "1. **{wait_for_message}** — Block and wait for new messages only when you have no work left to do.\n\
-         2. **{check_messages}** — Check for newly arrived messages without going idle.\n\
-         3. **{send_message}** — Send a message to a channel or DM.\n\
-         4. **{list_server}** — List all channels in this server, which ones you have joined, plus all agents and humans.\n\
-         5. **{read_history}** — Read past messages from a channel or DM.\n\
-         6. **{list_tasks}** — View a channel's task board.\n\
-         7. **{create_tasks}** — Create tasks on a channel's task board (supports batch).\n\
-         8. **{claim_tasks}** — Claim tasks by number (supports batch, handles conflicts).\n\
-         9. **{unclaim_task}** — Release your claim on a task.\n\
-         10. **{update_task_status}** — Change a task's status (e.g. to in_review or done).\n\
-         11. **{upload_file}** — Upload an image file to attach to a message. Returns an attachment ID to pass to send_message.\n\
-         12. **{view_file}** — Download an attached image by its attachment ID so you can inspect it when a message includes relevant attachments.",
+        "1. **{check_messages}** — Non-blocking check for new messages. Use freely during work — at natural breakpoints or after notifications.\n\
+         2. **{send_message}** — Send a message to a channel or DM.\n\
+         3. **{list_server}** — List all channels in this server, which ones you have joined, plus all agents and humans.\n\
+         4. **{read_history}** — Read past messages from a channel or DM.\n\
+         5. **{list_tasks}** — View a channel's task board.\n\
+         6. **{create_tasks}** — Create tasks on a channel's task board (supports batch).\n\
+         7. **{claim_tasks}** — Claim tasks by number (supports batch, handles conflicts).\n\
+         8. **{unclaim_task}** — Release your claim on a task.\n\
+         9. **{update_task_status}** — Change a task's status (e.g. to in_review or done).\n\
+         10. **{upload_file}** — Upload an image file to attach to a message. Returns an attachment ID to pass to send_message.\n\
+         11. **{view_file}** — Download an attached image by its attachment ID so you can inspect it when a message includes relevant attachments.",
     ));
 
     prompt.push_str("\n\nCRITICAL RULES:\n");
@@ -268,9 +265,9 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
             "- After completing your current step, call `{check_messages}()` to check for messages.\n"
         ));
         prompt.push_str("- Do not ignore notifications for too long — acknowledge new messages in a timely manner.\n");
-        prompt.push_str(&format!(
-            "- These notifications are batched (you won't get one per message), so the count tells you how many are waiting.\n- `{check_messages}()` returns immediately; `{wait_for_message}()` is only for returning to the idle loop."
-        ));
+        prompt.push_str(
+            "- These notifications are batched (you won't get one per message), so the count tells you how many are waiting.\n- `check_messages()` returns immediately with any pending messages."
+        );
     }
 
     // Optional initial role section

@@ -8,31 +8,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEntry {
+    Start {
+        is_resume: bool,
+    },
     Thinking {
         text: String,
     },
-    ToolStart {
+    ToolCall {
         tool_name: String,
         tool_input: String,
     },
+    ToolResult {
+        tool_name: String,
+        content: String,
+    },
     Text {
         text: String,
-    },
-    RawOutput {
-        text: String,
-    },
-    MessageReceived {
-        channel_label: String,
-        sender_name: String,
-        content: String,
-    },
-    MessageSent {
-        target: String,
-        content: String,
-    },
-    Status {
-        activity: String,
-        detail: String,
     },
 }
 
@@ -80,15 +71,8 @@ impl AgentActivityLog {
     }
 
     pub fn set_state(&mut self, activity: &str, detail: &str) {
-        if self.activity == activity && self.detail == detail {
-            return;
-        }
         self.activity = activity.to_string();
         self.detail = detail.to_string();
-        self.push(ActivityEntry::Status {
-            activity: activity.to_string(),
-            detail: detail.to_string(),
-        });
     }
 
     pub fn entries_since(&self, after_seq: u64) -> Vec<ActivityLogEntry> {
@@ -166,7 +150,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_set_activity_state_skips_duplicate_entries() {
+    fn test_set_activity_state_does_not_emit_log_entries() {
         let logs = ActivityLogMap::default();
 
         set_activity_state(&logs, "bot1", "online", "Idle");
@@ -175,8 +159,10 @@ mod tests {
         let resp = get_activity_log(&logs, "bot1", None);
         assert_eq!(
             resp.entries.len(),
-            1,
-            "duplicate state transitions should not create duplicate log rows"
+            0,
+            "set_activity_state should not create log entries — only updates activity state fields"
         );
+        assert_eq!(resp.agent_activity, "online");
+        assert_eq!(resp.agent_detail, "Idle");
     }
 }

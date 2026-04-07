@@ -77,13 +77,18 @@ impl Driver for ClaudeDriver {
             .spawn()?;
 
         // Send initial user message via stdin
-        let stdin_msg = serde_json::json!({
+        let mut stdin_msg = serde_json::json!({
             "type": "user",
             "message": {
                 "role": "user",
                 "content": [{"type": "text", "text": &ctx.prompt}]
             }
         });
+        if let Some(ref sid) = ctx.config.session_id {
+            if !sid.is_empty() {
+                stdin_msg["session_id"] = serde_json::Value::String(sid.clone());
+            }
+        }
 
         if let Some(ref mut stdin) = child.stdin {
             let mut line = serde_json::to_string(&stdin_msg)?;
@@ -151,6 +156,39 @@ impl Driver for ClaudeDriver {
                     }
                 }
             }
+            Some("user") => {
+                if let Some(content) = event
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for block in content {
+                        if block.get("type").and_then(|v| v.as_str()) == Some("tool_result") {
+                            let content_val = block.get("content");
+                            let text = match content_val {
+                                Some(serde_json::Value::String(s)) => s.clone(),
+                                Some(serde_json::Value::Array(arr)) => arr
+                                    .iter()
+                                    .filter_map(|b| {
+                                        if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                            b.get("text")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                                _ => String::new(),
+                            };
+                            if !text.is_empty() {
+                                events.push(ParsedEvent::ToolResult { content: text });
+                            }
+                        }
+                    }
+                }
+            }
             Some("result") => {
                 let session_id = event
                     .get("session_id")
@@ -205,8 +243,6 @@ impl Driver for ClaudeDriver {
         match name {
             "mcp__chat__send_message" => "Sending message\u{2026}".to_string(),
             "mcp__chat__check_messages" => "Checking messages\u{2026}".to_string(),
-            "mcp__chat__wait_for_message" => "Waiting for messages\u{2026}".to_string(),
-            "mcp__chat__receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp__chat__upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp__chat__view_file" => "Viewing file\u{2026}".to_string(),
             "mcp__chat__list_tasks" => "Listing tasks\u{2026}".to_string(),
@@ -373,5 +409,96 @@ impl Driver for ClaudeDriver {
             "opus".to_string(),
             "haiku".to_string(),
         ])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::drivers::{Driver, ParsedEvent};
+
+    #[test]
+    fn parse_line_ignores_non_json() {
+        let d = ClaudeDriver;
+        assert!(d.parse_line("not json").is_empty());
+        assert!(d.parse_line("").is_empty());
+    }
+
+    #[test]
+    fn parse_line_session_init() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(r#"{"type":"system","subtype":"init","session_id":"sess-abc"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "sess-abc")
+        );
+    }
+
+    #[test]
+    fn parse_line_thinking_block() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"let me reason"}]}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { text } if text == "let me reason"));
+    }
+
+    #[test]
+    fn parse_line_text_block() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "hello"));
+    }
+
+    #[test]
+    fn parse_line_tool_use_block() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"mcp__chat__send_message","input":{}}]}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "mcp__chat__send_message")
+        );
+    }
+
+    #[test]
+    fn parse_line_tool_result_string() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::ToolResult { content } if content == "ok"));
+    }
+
+    #[test]
+    fn parse_line_tool_result_array() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(r#"{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"line1"},{"type":"text","text":"line2"}]}]}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolResult { content } if content == "line1\nline2")
+        );
+    }
+
+    #[test]
+    fn parse_line_turn_end_with_session() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(r#"{"type":"result","session_id":"sess-xyz"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::TurnEnd { session_id: Some(id) } if id == "sess-xyz")
+        );
+    }
+
+    #[test]
+    fn parse_line_multiple_content_blocks() {
+        let d = ClaudeDriver;
+        let events = d.parse_line(r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"done"},{"type":"tool_use","name":"bash","input":{}}]}}"#);
+        assert_eq!(events.len(), 3);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { .. }));
+        assert!(matches!(&events[1], ParsedEvent::Text { text } if text == "done"));
+        assert!(matches!(&events[2], ParsedEvent::ToolCall { name, .. } if name == "bash"));
     }
 }

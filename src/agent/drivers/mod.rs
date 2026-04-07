@@ -33,6 +33,9 @@ pub enum ParsedEvent {
         name: String,
         input: serde_json::Value,
     },
+    ToolResult {
+        content: String,
+    },
     TurnEnd {
         session_id: Option<String>,
     },

@@ -52,26 +52,21 @@ export interface ActivityResponse {
   messages: ActivityMessage[]
 }
 
-export type ActivityEntryKind =
-  | 'thinking'
-  | 'tool_start'
-  | 'text'
-  | 'raw_output'
-  | 'message_received'
-  | 'message_sent'
-  | 'status'
+export enum ActivityEntryKind {
+  Start = 'start',
+  Thinking = 'thinking',
+  ToolCall = 'tool_call',
+  ToolResult = 'tool_result',
+  Text = 'text',
+}
 
 export interface ActivityEntry {
   kind: ActivityEntryKind
+  is_resume?: boolean
   text?: string
   content?: string
   tool_name?: string
   tool_input?: string
-  channel_label?: string
-  sender_name?: string
-  target?: string
-  activity?: string
-  detail?: string
 }
 
 export interface ActivityLogEntry {

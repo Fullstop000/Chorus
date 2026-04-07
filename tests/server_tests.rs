@@ -1,6 +1,6 @@
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
-use chorus::agent::activity_log::{ActivityEntry, ActivityLogResponse};
+use chorus::agent::activity_log::ActivityLogResponse;
 use chorus::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus, RuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::server::dto::ChannelInfo;
@@ -167,10 +167,6 @@ impl AgentLifecycle for MockLifecycle {
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         activity_log::all_activity_states(&self.activity_logs)
     }
-
-    fn push_activity_entry(&self, agent_name: &str, entry: ActivityEntry) {
-        activity_log::push_activity(&self.activity_logs, agent_name, entry);
-    }
 }
 
 impl AgentLifecycle for FailStartLifecycle {
@@ -211,8 +207,6 @@ impl AgentLifecycle for FailStartLifecycle {
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         vec![]
     }
-
-    fn push_activity_entry(&self, _agent_name: &str, _entry: ActivityEntry) {}
 }
 
 fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
@@ -1936,77 +1930,6 @@ async fn test_history_accepts_dm_target() {
     let hist: HistoryResponse = serde_json::from_slice(&body).unwrap();
     assert_eq!(hist.messages.len(), 1);
     assert_eq!(hist.messages[0].content, "hello in dm");
-}
-
-#[tokio::test]
-async fn test_activity_log_includes_message_send_and_receive_events() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
-
-    store
-        .create_message(CreateMessage {
-            channel_name: "general",
-            thread_parent_id: None,
-            sender_name: "alice",
-            sender_type: SenderType::Human,
-            content: "hello bot1",
-            attachment_ids: &[],
-            suppress_event: false,
-        })
-        .unwrap();
-
-    let recv_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/internal/agent/bot1/receive?block=false")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(recv_resp.status(), StatusCode::OK);
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "reply from bot1" });
-    let send_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/bot1/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(send_resp.status(), StatusCode::OK);
-
-    let activity = lifecycle.get_activity_log_data("bot1", None);
-    let kinds: Vec<&str> = activity
-        .entries
-        .iter()
-        .map(|entry| match &entry.entry {
-            ActivityEntry::MessageReceived { .. } => "message_received",
-            ActivityEntry::MessageSent { .. } => "message_sent",
-            ActivityEntry::Status { .. } => "status",
-            ActivityEntry::Thinking { .. } => "thinking",
-            ActivityEntry::ToolStart { .. } => "tool_start",
-            ActivityEntry::Text { .. } => "text",
-            ActivityEntry::RawOutput { .. } => "raw_output",
-        })
-        .collect();
-
-    assert!(
-        kinds.contains(&"message_received"),
-        "activity log should surface received messages to the UI"
-    );
-    assert!(
-        kinds.contains(&"message_sent"),
-        "activity log should surface sent messages to the UI"
-    );
 }
 
 #[tokio::test]

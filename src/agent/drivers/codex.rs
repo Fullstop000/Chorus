@@ -232,6 +232,14 @@ impl Driver for CodexDriver {
                                     name,
                                     input: arguments,
                                 });
+                            } else if event_type == "item.completed" {
+                                if let Some(output) = item.get("output").and_then(|v| v.as_str()) {
+                                    if !output.is_empty() {
+                                        events.push(ParsedEvent::ToolResult {
+                                            content: output.to_string(),
+                                        });
+                                    }
+                                }
                             }
                         }
                         "collab_tool_call" => {
@@ -318,10 +326,9 @@ impl Driver for CodexDriver {
                 tool_prefix: "mcp_chat_".to_string(),
                 extra_critical_rules: vec![
                     "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- ALWAYS call `mcp_chat_wait_for_message()` after completing any task so you return to the idle loop.".to_string(),
                 ],
                 post_startup_notes: vec![
-                    "**IMPORTANT**: Your process may exit after an idle wait completes. The server will resume you when new work arrives.".to_string(),
+                    "**IMPORTANT**: Your process may exit after completing a task. The server will wake you when new work arrives.".to_string(),
                 ],
                 include_stdin_notification_section: false,
                 teams: config.teams.clone(),
@@ -333,8 +340,6 @@ impl Driver for CodexDriver {
         match name {
             "mcp_chat_send_message" => "Sending message\u{2026}".to_string(),
             "mcp_chat_check_messages" => "Checking messages\u{2026}".to_string(),
-            "mcp_chat_wait_for_message" => "Waiting for messages\u{2026}".to_string(),
-            "mcp_chat_receive_message" => "Receiving messages\u{2026}".to_string(),
             "mcp_chat_upload_file" => "Uploading file\u{2026}".to_string(),
             "mcp_chat_view_file" => "Viewing file\u{2026}".to_string(),
             "mcp_chat_list_tasks" => "Listing tasks\u{2026}".to_string(),
@@ -528,5 +533,122 @@ mod tests {
         });
 
         assert_eq!(status, RuntimeAuthStatus::Authed);
+    }
+
+    #[test]
+    fn parse_line_ignores_non_json() {
+        let d = CodexDriver;
+        assert!(d.parse_line("plaintext").is_empty());
+        assert!(d.parse_line("").is_empty());
+    }
+
+    #[test]
+    fn parse_line_thread_started() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"thread.started","thread_id":"thread-1"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "thread-1")
+        );
+    }
+
+    #[test]
+    fn parse_line_turn_started() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"turn.started"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { .. }));
+    }
+
+    #[test]
+    fn parse_line_reasoning_item() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.updated","item":{"type":"reasoning","text":"thinking hard"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Thinking { text } if text == "thinking hard"));
+    }
+
+    #[test]
+    fn parse_line_agent_message_completed() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"all done"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "all done"));
+    }
+
+    #[test]
+    fn parse_line_agent_message_started_ignored() {
+        let d = CodexDriver;
+        // agent_message only produces Text on item.completed
+        assert!(d
+            .parse_line(
+                r#"{"type":"item.started","item":{"type":"agent_message","text":"partial"}}"#
+            )
+            .is_empty());
+    }
+
+    #[test]
+    fn parse_line_command_execution() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.started","item":{"type":"command_execution","command":"ls -la"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        let ParsedEvent::ToolCall { name, input } = &events[0] else {
+            panic!("expected ToolCall")
+        };
+        assert_eq!(name, "shell");
+        assert_eq!(input["command"], "ls -la");
+    }
+
+    #[test]
+    fn parse_line_mcp_tool_call_started() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"item.started","item":{"type":"mcp_tool_call","server":"chat","tool":"send_message","arguments":{}}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "mcp_chat_send_message")
+        );
+    }
+
+    #[test]
+    fn parse_line_mcp_tool_result() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"chat","tool":"send_message","output":"sent"}}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::ToolResult { content } if content == "sent"));
+    }
+
+    #[test]
+    fn parse_line_turn_completed() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"turn.completed"}"#);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::TurnEnd { .. }));
+    }
+
+    #[test]
+    fn parse_line_turn_failed() {
+        let d = CodexDriver;
+        let events = d.parse_line(r#"{"type":"turn.failed","error":{"message":"rate limited"}}"#);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ParsedEvent::Error { message } if message == "rate limited"));
+        assert!(matches!(&events[1], ParsedEvent::TurnEnd { .. }));
+    }
+
+    #[test]
+    fn parse_line_item_error() {
+        let d = CodexDriver;
+        let events = d.parse_line(
+            r#"{"type":"item.completed","item":{"type":"error","message":"context exceeded"}}"#,
+        );
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "context exceeded")
+        );
     }
 }
