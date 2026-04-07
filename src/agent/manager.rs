@@ -130,7 +130,7 @@ impl AgentManager {
         }
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
 
-        let is_resume = config.session_id.is_some();
+        let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
 
         let prompt = build_start_prompt(
@@ -444,6 +444,7 @@ async fn handle_parsed_event(
                 agent_name,
                 ActivityEntry::Thinking { text: text.clone() },
             );
+            activity_log::set_activity_state(logs, agent_name, "thinking", "Thinking\u{2026}");
         }
         ParsedEvent::Text { ref text } => {
             let preview: String = text.chars().take(120).collect();
@@ -499,6 +500,7 @@ async fn handle_parsed_event(
         }
         ParsedEvent::Error { ref message } => {
             error!(agent = %agent_name, message = %message, "agent error");
+            activity_log::set_activity_state(logs, agent_name, "error", message);
         }
     }
 }

@@ -441,7 +441,6 @@ async fn send_message_to_channel(
     };
     info!(agent = %actor_id, msg = %short_id, "send_message ok");
 
-
     let mut consensus_message_id = None;
     if sender_type == SenderType::Agent && channel.channel_type == ChannelType::Team {
         if let Some(team) = store

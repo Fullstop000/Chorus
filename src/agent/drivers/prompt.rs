@@ -31,7 +31,7 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
     let startup_steps = [
         "1. **Read MEMORY.md** (in your cwd). This is your memory index — it tells you what you know and where to find it.".to_string(),
         "2. Follow the instructions in MEMORY.md to read any other memory files you need (e.g. channel summaries, role definitions, user preferences).".to_string(),
-        "3. If there is no concrete incoming message to handle, stop and wait. New messages will be delivered to you automatically via stdin.".to_string(),
+        "3. If there is no concrete incoming message to handle, stop and wait. New messages will be delivered to you automatically.".to_string(),
         format!("4. When you receive a message, process it and reply with {}.", t("send_message")),
         format!("5. **Complete ALL your work before stopping.** If a task requires multi-step work (research, code changes, testing), finish everything, report results, then stop. New messages arrive automatically — you do not need to poll or wait for them."),
     ];

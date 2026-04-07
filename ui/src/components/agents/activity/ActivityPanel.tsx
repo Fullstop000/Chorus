@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import type { ReactNode } from "react";
 import {
   BrainCircuit,
   MessageSquare,
@@ -33,7 +34,7 @@ interface Props {
 
 // ── Tool icon + label lookup ──────────────────────────────────────
 
-type ToolMeta = { icon: React.ReactNode; label: string };
+type ToolMeta = { icon: ReactNode; label: string };
 
 function toolMeta(rawName: string): ToolMeta {
   const name = rawName ?? "";
