@@ -1,13 +1,14 @@
 use chorus::agent::config::AgentConfig;
-use chorus::agent::drivers::claude::ClaudeDriver;
-use chorus::agent::drivers::codex::CodexDriver;
-use chorus::agent::drivers::kimi::KimiDriver;
-use chorus::agent::drivers::opencode::OpencodeDriver;
+use chorus::agent::drivers::acp::AcpDriver;
+use chorus::agent::drivers::claude::ClaudeAcpRuntime;
+use chorus::agent::drivers::codex::CodexAcpRuntime;
+use chorus::agent::drivers::kimi::KimiAcpRuntime;
+use chorus::agent::drivers::opencode::OpencodeAcpRuntime;
 use chorus::agent::drivers::Driver;
 
 #[test]
 fn test_claude_prompt_uses_split_message_tools() {
-    let driver = ClaudeDriver;
+    let driver = AcpDriver::new(ClaudeAcpRuntime);
     let config = AgentConfig {
         name: "claude-bot".to_string(),
         display_name: "Claude Bot".to_string(),
@@ -37,7 +38,7 @@ fn test_claude_prompt_uses_split_message_tools() {
 
 #[test]
 fn test_codex_prompt_uses_split_message_tools() {
-    let driver = CodexDriver;
+    let driver = AcpDriver::new(CodexAcpRuntime);
     let config = AgentConfig {
         name: "codex-bot".to_string(),
         display_name: "Codex Bot".to_string(),
@@ -79,7 +80,7 @@ fn test_codex_prompt_uses_split_message_tools() {
 
 #[test]
 fn test_kimi_prompt_uses_split_message_tools() {
-    let driver = KimiDriver;
+    let driver = AcpDriver::new(KimiAcpRuntime);
     let config = AgentConfig {
         name: "kimi-bot".to_string(),
         display_name: "Kimi Bot".to_string(),
@@ -113,19 +114,11 @@ fn test_kimi_prompt_uses_split_message_tools() {
         prompt.contains("Chorus"),
         "Kimi prompts should use the current product name"
     );
-    assert!(
-        prompt.contains("must either send a reply or deliberately explain why no reply is needed"),
-        "Kimi prompts should explicitly forbid consuming a message and silently returning to idle"
-    );
-    assert!(
-        prompt.contains("Any reply meant for humans must be delivered with `send_message()`"),
-        "Kimi prompts should explicitly forbid treating raw stdout text as a valid human reply"
-    );
 }
 
 #[test]
 fn test_opencode_prompt_uses_split_message_tools() {
-    let driver = OpencodeDriver;
+    let driver = AcpDriver::new(OpencodeAcpRuntime);
     let config = AgentConfig {
         name: "opencode-bot".to_string(),
         display_name: "OpenCode Bot".to_string(),

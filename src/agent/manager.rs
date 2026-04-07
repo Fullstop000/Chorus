@@ -36,12 +36,19 @@ pub struct AgentManager {
 }
 
 fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
+    use crate::agent::drivers::acp::AcpDriver;
     match AgentRuntime::parse(runtime) {
-        Some(AgentRuntime::Claude) => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
-        Some(AgentRuntime::Codex) => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
-        Some(AgentRuntime::Kimi) => Ok(Arc::new(crate::agent::drivers::kimi::KimiDriver)),
+        Some(AgentRuntime::Claude) => {
+            Ok(Arc::new(AcpDriver::new(crate::agent::drivers::claude::ClaudeAcpRuntime)))
+        }
+        Some(AgentRuntime::Codex) => {
+            Ok(Arc::new(AcpDriver::new(crate::agent::drivers::codex::CodexAcpRuntime)))
+        }
+        Some(AgentRuntime::Kimi) => {
+            Ok(Arc::new(AcpDriver::new(crate::agent::drivers::kimi::KimiAcpRuntime)))
+        }
         Some(AgentRuntime::Opencode) => {
-            Ok(Arc::new(crate::agent::drivers::opencode::OpencodeDriver))
+            Ok(Arc::new(AcpDriver::new(crate::agent::drivers::opencode::OpencodeAcpRuntime)))
         }
         None => anyhow::bail!("Unknown runtime: {runtime}"),
     }
@@ -85,16 +92,8 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
 
         let driver = get_driver(&agent.runtime)?;
-        let resumable_session_id = match driver.runtime() {
-            AgentRuntime::Codex | AgentRuntime::Opencode => agent.session_id.clone(),
-            AgentRuntime::Kimi => Some(
-                agent
-                    .session_id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            ),
-            AgentRuntime::Claude => agent.session_id.clone(),
-        };
+        // ACP handles sessions uniformly via session/new vs session/load.
+        let resumable_session_id = agent.session_id.clone();
 
         let config = AgentConfig {
             name: agent.name.clone(),
@@ -138,12 +137,6 @@ impl AgentManager {
         );
 
         let running_session_id = config.session_id.clone();
-        if driver.runtime() == AgentRuntime::Kimi {
-            if let Some(ref session_id) = running_session_id {
-                self.store
-                    .update_agent_session(agent_name, Some(session_id.as_str()))?;
-            }
-        }
 
         let ctx = SpawnContext {
             agent_id: agent.name.clone(),

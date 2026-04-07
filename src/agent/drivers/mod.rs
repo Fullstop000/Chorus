@@ -1,3 +1,4 @@
+pub mod acp;
 pub mod claude;
 pub mod codex;
 pub mod kimi;
@@ -86,10 +87,10 @@ pub trait Driver: Send + Sync {
 
 pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {
     vec![
-        Arc::new(claude::ClaudeDriver),
-        Arc::new(codex::CodexDriver),
-        Arc::new(kimi::KimiDriver),
-        Arc::new(opencode::OpencodeDriver),
+        Arc::new(acp::AcpDriver::new(claude::ClaudeAcpRuntime)),
+        Arc::new(acp::AcpDriver::new(codex::CodexAcpRuntime)),
+        Arc::new(acp::AcpDriver::new(kimi::KimiAcpRuntime)),
+        Arc::new(acp::AcpDriver::new(opencode::OpencodeAcpRuntime)),
     ]
 }
 

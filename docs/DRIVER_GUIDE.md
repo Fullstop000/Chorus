@@ -2,6 +2,16 @@
 
 This guide is the practical checklist for adding a new agent runtime to Chorus and verifying that it actually works in the live product.
 
+## ACP-Based Architecture (Driver 2.0)
+
+All drivers now use the Agent Client Protocol (ACP) as the base transport layer. ACP is a JSON-RPC 2.0 protocol over stdio that standardizes communication between Chorus and agent CLIs.
+
+**Architecture:**
+- `src/agent/drivers/acp.rs` — shared ACP protocol handler (`AcpRuntime` trait + `AcpDriver<R>`)
+- `src/agent/drivers/<runtime>.rs` — thin `AcpRuntime` implementation per runtime (~50-80 lines)
+
+Adding a new runtime means implementing the `AcpRuntime` trait (binary name, CLI args, MCP config, auth detection, model listing). You do **not** need to write a custom stdout parser, stdin encoder, or tool display mapper — ACP handles all of that uniformly.
+
 The goal is not just "the process starts." The goal is:
 
 - the runtime can be spawned reliably
@@ -14,8 +24,10 @@ The goal is not just "the process starts." The goal is:
 
 New driver work usually touches these files:
 
+- `src/agent/drivers/acp.rs`
+  - shared ACP protocol: `AcpRuntime` trait definition, `AcpDriver<R>` implementation, JSON-RPC parsing, tool display names
 - `src/agent/drivers/<runtime>.rs`
-  - runtime-specific spawn, prompt, parsing, tool naming, and activity labels
+  - thin `AcpRuntime` impl: binary name, ACP CLI args, MCP config, env overrides, auth detection, model list
 - `src/agent/drivers/mod.rs`
   - module registration
 - `src/agent/manager.rs`
