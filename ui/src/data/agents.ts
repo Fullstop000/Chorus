@@ -52,12 +52,13 @@ export interface ActivityResponse {
   messages: ActivityMessage[]
 }
 
-export type ActivityEntryKind =
-  | 'start'
-  | 'thinking'
-  | 'tool_call'
-  | 'tool_result'
-  | 'text'
+export enum ActivityEntryKind {
+  Start = 'start',
+  Thinking = 'thinking',
+  ToolCall = 'tool_call',
+  ToolResult = 'tool_result',
+  Text = 'text',
+}
 
 export interface ActivityEntry {
   kind: ActivityEntryKind

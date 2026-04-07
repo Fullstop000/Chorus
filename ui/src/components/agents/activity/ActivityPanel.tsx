@@ -23,6 +23,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { getAgentActivityLog } from "../../../data";
+import { ActivityEntryKind } from "../../../data/agents";
 import type { ActivityLogEntry } from "../../../data";
 import "./ActivityPanel.css";
 
@@ -297,15 +298,15 @@ function ToolResultRow({ item }: { item: ActivityLogEntry }) {
 
 function ActivityRow({ item }: { item: ActivityLogEntry }) {
   switch (item.entry.kind) {
-    case "start":
+    case ActivityEntryKind.Start:
       return <StartRow item={item} />;
-    case "thinking":
+    case ActivityEntryKind.Thinking:
       return <ThinkingRow item={item} />;
-    case "tool_call":
+    case ActivityEntryKind.ToolCall:
       return <ToolRow item={item} />;
-    case "tool_result":
+    case ActivityEntryKind.ToolResult:
       return <ToolResultRow item={item} />;
-    case "text":
+    case ActivityEntryKind.Text:
       return <TextRow item={item} />;
     default:
       return null;
