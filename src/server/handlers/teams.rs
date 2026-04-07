@@ -13,8 +13,7 @@ use crate::store::teams::{Team, TeamMember};
 pub struct CreateTeamRequest {
     pub name: String,
     pub display_name: String,
-    #[serde(default)]
-    pub collaboration_model: String,
+    pub collaboration_model: Option<String>,
     pub leader_agent_name: Option<String>,
     #[serde(default)]
     pub members: Vec<CreateTeamMemberRequest>,
@@ -113,7 +112,7 @@ pub async fn handle_create_team(
         .create_team(
             &name,
             display_name,
-            &req.collaboration_model,
+            req.collaboration_model.as_deref().unwrap_or_default(),
             req.leader_agent_name.as_deref(),
         )
         .map_err(|e| api_err(e.to_string()))?;

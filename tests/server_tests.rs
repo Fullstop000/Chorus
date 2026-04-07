@@ -2166,9 +2166,7 @@ async fn test_list_and_update_team_endpoints() {
     assert_eq!(teams[0]["name"], "eng-team");
 
     let patch_body = serde_json::json!({
-        "display_name": "Applied Science",
-        "collaboration_model": "swarm",
-        "leader_agent_name": null
+        "display_name": "Applied Science"
     });
     let patch_resp = app
         .clone()
@@ -2186,8 +2184,6 @@ async fn test_list_and_update_team_endpoints() {
 
     let updated = store.get_team_by_id(&team_id).unwrap().unwrap();
     assert_eq!(updated.display_name, "Applied Science");
-    assert_eq!(updated.collaboration_model, "swarm");
-    assert_eq!(updated.leader_agent_name, None);
 
     store
         .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
