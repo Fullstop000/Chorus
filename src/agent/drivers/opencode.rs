@@ -26,7 +26,8 @@ impl AcpRuntime for OpencodeAcpRuntime {
     }
 
     fn build_acp_args(&self, ctx: &SpawnContext) -> Vec<String> {
-        let mut args = vec!["--acp".to_string()];
+        // OpenCode supports native ACP via the `acp` subcommand.
+        let mut args = vec!["acp".to_string()];
 
         if !ctx.config.model.is_empty() {
             args.push("--model".to_string());

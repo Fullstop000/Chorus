@@ -13,7 +13,7 @@ impl AcpRuntime for ClaudeAcpRuntime {
     }
 
     fn binary_name(&self) -> &str {
-        "claude"
+        "claude-agent-acp"
     }
 
     fn build_acp_args(&self, ctx: &SpawnContext) -> Vec<String> {
@@ -21,7 +21,6 @@ impl AcpRuntime for ClaudeAcpRuntime {
             std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
 
         let mut args = vec![
-            "--acp".to_string(),
             "--mcp-config".to_string(),
             mcp_config_path.to_string_lossy().into_owned(),
             "--model".to_string(),
@@ -33,7 +32,6 @@ impl AcpRuntime for ClaudeAcpRuntime {
         ];
 
         // Skip permissions for automated use
-        args.push("--allow-dangerously-skip-permissions".to_string());
         args.push("--dangerously-skip-permissions".to_string());
 
         args

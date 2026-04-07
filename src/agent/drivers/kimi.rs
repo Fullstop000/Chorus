@@ -20,8 +20,9 @@ impl AcpRuntime for KimiAcpRuntime {
         let mcp_config_path =
             std::path::Path::new(&ctx.working_directory).join(".chorus-kimi-mcp.json");
 
+        // Kimi supports native ACP via the `acp` subcommand.
         let mut args = vec![
-            "--acp".to_string(),
+            "acp".to_string(),
             "--work-dir".to_string(),
             ctx.working_directory.clone(),
             "--mcp-config-file".to_string(),

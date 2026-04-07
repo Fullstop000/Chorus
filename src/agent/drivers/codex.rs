@@ -14,7 +14,7 @@ impl AcpRuntime for CodexAcpRuntime {
     }
 
     fn binary_name(&self) -> &str {
-        "codex"
+        "codex-acp"
     }
 
     fn build_acp_args(&self, ctx: &SpawnContext) -> Vec<String> {
@@ -30,7 +30,6 @@ impl AcpRuntime for CodexAcpRuntime {
         .unwrap_or_default();
 
         let mut args = vec![
-            "--acp".to_string(),
             "--dangerously-bypass-approvals-and-sandbox".to_string(),
             "-c".to_string(),
             format!("mcp_servers.chat.command={bridge_binary_json}"),

@@ -1,8 +1,12 @@
 pub mod acp;
 pub mod claude;
+pub mod claude_raw;
 pub mod codex;
+pub mod codex_raw;
 pub mod kimi;
+pub mod kimi_raw;
 pub mod opencode;
+pub mod opencode_raw;
 pub mod prompt;
 
 use std::fs;
@@ -85,12 +89,56 @@ pub trait Driver: Send + Sync {
     fn list_models(&self) -> anyhow::Result<Vec<String>>;
 }
 
+/// ACP adapter binary names for each runtime.
+/// When the adapter is installed, the ACP driver is preferred over the raw driver.
+fn acp_adapter_binary(runtime: AgentRuntime) -> &'static str {
+    match runtime {
+        AgentRuntime::Claude => "claude-agent-acp",
+        AgentRuntime::Codex => "codex-acp",
+        // Kimi and OpenCode have native ACP support via subcommands,
+        // so we check for the main binary itself.
+        AgentRuntime::Kimi => "kimi",
+        AgentRuntime::Opencode => "opencode",
+    }
+}
+
+/// Build a driver for the given runtime, preferring ACP when the adapter is available.
+pub fn driver_for_runtime(runtime: AgentRuntime) -> Arc<dyn Driver> {
+    let acp_binary = acp_adapter_binary(runtime);
+    if command_exists(acp_binary) {
+        match runtime {
+            AgentRuntime::Claude => {
+                Arc::new(acp::AcpDriver::new(claude::ClaudeAcpRuntime))
+            }
+            AgentRuntime::Codex => {
+                Arc::new(acp::AcpDriver::new(codex::CodexAcpRuntime))
+            }
+            AgentRuntime::Kimi => {
+                Arc::new(acp::AcpDriver::new(kimi::KimiAcpRuntime))
+            }
+            AgentRuntime::Opencode => {
+                Arc::new(acp::AcpDriver::new(opencode::OpencodeAcpRuntime))
+            }
+        }
+    } else {
+        // Fallback to raw (1.0) driver when ACP adapter is not installed.
+        match runtime {
+            AgentRuntime::Claude => Arc::new(claude_raw::ClaudeRawDriver),
+            AgentRuntime::Codex => Arc::new(codex_raw::CodexRawDriver),
+            AgentRuntime::Kimi => Arc::new(kimi_raw::KimiRawDriver),
+            AgentRuntime::Opencode => Arc::new(opencode_raw::OpencodeRawDriver),
+        }
+    }
+}
+
+/// Return all runtime drivers for status detection and model listing.
+/// Uses raw drivers since these operations don't need ACP.
 pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {
     vec![
-        Arc::new(acp::AcpDriver::new(claude::ClaudeAcpRuntime)),
-        Arc::new(acp::AcpDriver::new(codex::CodexAcpRuntime)),
-        Arc::new(acp::AcpDriver::new(kimi::KimiAcpRuntime)),
-        Arc::new(acp::AcpDriver::new(opencode::OpencodeAcpRuntime)),
+        Arc::new(claude_raw::ClaudeRawDriver),
+        Arc::new(codex_raw::CodexRawDriver),
+        Arc::new(kimi_raw::KimiRawDriver),
+        Arc::new(opencode_raw::OpencodeRawDriver),
     ]
 }
 
