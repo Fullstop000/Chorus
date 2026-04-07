@@ -304,7 +304,6 @@ mod tests {
                 extra_critical_rules: Vec::new(),
                 post_startup_notes: Vec::new(),
                 include_stdin_notification_section: false,
-
             },
         );
 
