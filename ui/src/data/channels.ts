@@ -45,8 +45,6 @@ export interface Team {
   name: string
   display_name: string
   channel_id?: string | null
-  collaboration_model: 'leader_operators' | 'swarm'
-  leader_agent_name?: string | null
   created_at: string
 }
 

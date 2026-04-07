@@ -89,8 +89,6 @@ export interface DeleteAgentRequest {
 export interface CreateTeamRequest {
   name: string
   display_name: string
-  collaboration_model: 'leader_operators' | 'swarm'
-  leader_agent_name: string | null
   members: Array<{
     member_name: string
     member_type: 'agent' | 'human'
@@ -101,8 +99,6 @@ export interface CreateTeamRequest {
 
 export interface UpdateTeamRequest {
   display_name?: string
-  collaboration_model?: 'leader_operators' | 'swarm'
-  leader_agent_name?: string | null
 }
 
 export interface AddTeamMemberRequest {

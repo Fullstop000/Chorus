@@ -1,5 +1,4 @@
 pub mod activity_log;
-pub mod collaboration;
 pub mod config;
 pub mod drivers;
 pub mod lifecycle;

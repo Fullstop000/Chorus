@@ -8,10 +8,8 @@ use tracing::{debug, info, warn};
 
 use super::dto::ChannelInfo;
 use super::{api_err, format_anyhow_error, internal_err, ApiResult, AppState};
-use crate::agent::collaboration::make_collaboration_model;
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
-use crate::store::channels::ChannelType;
 use crate::store::inbox::{InboxConversationNotificationView, ThreadNotificationStateView};
 use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
@@ -441,31 +439,6 @@ async fn send_message_to_channel(
     };
     info!(agent = %actor_id, msg = %short_id, "send_message ok");
 
-    let mut consensus_message_id = None;
-    if sender_type == SenderType::Agent && channel.channel_type == ChannelType::Team {
-        if let Some(team) = store
-            .get_team(&channel.name)
-            .map_err(|e| internal_err(e.to_string()))?
-        {
-            let collaboration_model = make_collaboration_model(&team.collaboration_model);
-            if collaboration_model.is_consensus_signal(content) {
-                match store.record_swarm_signal(&team.id, actor_id, content) {
-                    Ok(true) => {
-                        let system_message_id = store
-                            .create_system_message(
-                                &channel.id,
-                                "[System] All members ready - execution begins.",
-                            )
-                            .map_err(|e| internal_err(e.to_string()))?;
-                        consensus_message_id = Some(system_message_id);
-                    }
-                    Ok(false) => {}
-                    Err(e) => warn!("swarm signal error: {e}"),
-                }
-            }
-        }
-    }
-
     if !suppress_agent_delivery {
         forward_team_mentions(state, &channel.name, actor_id, sender_type, content)
             .await
@@ -482,20 +455,6 @@ async fn send_message_to_channel(
                 message_id = %message_id,
                 error = %error_detail,
                 "message persisted but agent delivery failed"
-            );
-        }
-    }
-    if let Some(system_message_id) = consensus_message_id {
-        if let Err(err) =
-            deliver_message_to_agents(state, &channel.id, "system", &system_message_id).await
-        {
-            let error_detail = format_anyhow_error(&err);
-            warn!(
-                channel = %channel.name,
-                actor = "system",
-                message_id = %system_message_id,
-                error = %error_detail,
-                "system message persisted but agent delivery failed"
             );
         }
     }
@@ -547,15 +506,6 @@ async fn forward_team_mentions(
                 sender_name: sender_name.to_string(),
             }),
         )?;
-        let collaboration_model = make_collaboration_model(&team.collaboration_model);
-        if let Some(prompt) = collaboration_model.deliberation_prompt() {
-            state
-                .store
-                .snapshot_swarm_quorum(&team.id, &forwarded_message_id)?;
-            state
-                .store
-                .create_system_message(&team_channel.id, &prompt)?;
-        }
 
         deliver_message_to_agents(state, &team_channel.id, sender_name, &forwarded_message_id)
             .await?;
