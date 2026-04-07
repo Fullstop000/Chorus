@@ -1,9 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::store::agents::AgentEnvVar;
-use crate::store::teams::TeamMembership;
 
-/// Snapshot passed to the bridge when spawning an agent (includes team context).
+/// Snapshot passed to the bridge when spawning an agent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// Agent handle.
@@ -22,6 +21,4 @@ pub struct AgentConfig {
     pub reasoning_effort: Option<String>,
     /// Environment variables for the child process.
     pub env_vars: Vec<AgentEnvVar>,
-    /// Team memberships injected into the agent's system prompt at spawn time.
-    pub teams: Vec<TeamMembership>,
 }

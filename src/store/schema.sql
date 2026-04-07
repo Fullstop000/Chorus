@@ -139,26 +139,6 @@ CREATE TABLE IF NOT EXISTS team_members (
     PRIMARY KEY (team_id, member_name)
 );
 
--- Signals for team task coordination.
-CREATE TABLE IF NOT EXISTS team_task_signals (
-    id TEXT PRIMARY KEY, -- Unique UUID for the signal
-    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, -- Team ID
-    trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, -- Message that triggered the task
-    member_name TEXT NOT NULL, -- Member sending the signal
-    signal TEXT NOT NULL, -- The signal value
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the signal was sent
-    UNIQUE (trigger_message_id, member_name)
-);
-
--- Quorum state for team tasks.
-CREATE TABLE IF NOT EXISTS team_task_quorum (
-    trigger_message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE, -- Triggering message ID
-    team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, -- Team ID
-    member_name TEXT NOT NULL, -- Member part of the quorum
-    resolved_at TEXT, -- Timestamp when the quorum was resolved
-    PRIMARY KEY (trigger_message_id, member_name)
-);
-
 -- Views
 
 -- Explicit conversation history read model aligned with the current backing tables.

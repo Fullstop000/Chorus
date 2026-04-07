@@ -13,6 +13,7 @@ use crate::store::teams::{Team, TeamMember};
 pub struct CreateTeamRequest {
     pub name: String,
     pub display_name: String,
+    #[serde(default)]
     pub collaboration_model: String,
     pub leader_agent_name: Option<String>,
     #[serde(default)]
@@ -30,8 +31,6 @@ pub struct CreateTeamMemberRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateTeamRequest {
     pub display_name: Option<String>,
-    pub collaboration_model: Option<String>,
-    pub leader_agent_name: Option<Option<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,32 +47,6 @@ pub struct TeamResponse {
     pub members: Vec<TeamMember>,
 }
 
-fn validate_collaboration_model(
-    model: &str,
-) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
-    if matches!(model, "leader_operators" | "swarm") {
-        Ok(())
-    } else {
-        Err(api_err(
-            "collaboration_model must be 'leader_operators' or 'swarm'",
-        ))
-    }
-}
-
-fn validate_team_configuration(
-    collaboration_model: &str,
-    leader_agent_name: Option<&str>,
-) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
-    validate_collaboration_model(collaboration_model)?;
-    match (collaboration_model, leader_agent_name) {
-        ("leader_operators", None) => Err(api_err(
-            "leader_agent_name is required for leader_operators teams",
-        )),
-        ("swarm", Some(_)) => Err(api_err("leader_agent_name must be null for swarm teams")),
-        _ => Ok(()),
-    }
-}
-
 fn parse_member_type(
     member_type: &str,
 ) -> Result<SenderType, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
@@ -82,22 +55,6 @@ fn parse_member_type(
         "human" => Ok(SenderType::Human),
         _ => Err(api_err("member_type must be 'agent' or 'human'")),
     }
-}
-
-fn canonical_team_role(
-    member_name: &str,
-    member_type: &str,
-    current_role: &str,
-    collaboration_model: &str,
-    leader_agent_name: Option<&str>,
-) -> String {
-    if member_type != "agent" {
-        return current_role.to_string();
-    }
-    if collaboration_model == "leader_operators" && leader_agent_name == Some(member_name) {
-        return "leader".to_string();
-    }
-    "operator".to_string()
 }
 
 async fn sync_team_roles_and_agents(
@@ -109,23 +66,9 @@ async fn sync_team_roles_and_agents(
     let agent_workspace = AgentWorkspace::new(&agents_dir);
 
     for member in members {
-        let desired_role = canonical_team_role(
-            &member.member_name,
-            &member.member_type,
-            &member.role,
-            &team.collaboration_model,
-            team.leader_agent_name.as_deref(),
-        );
-        if desired_role != member.role {
-            state
-                .store
-                .update_team_member_role(&team.id, &member.member_name, &desired_role)
-                .map_err(|e| api_err(e.to_string()))?;
-        }
-
         if member.member_type == "agent" {
             agent_workspace
-                .set_team_role(&member.member_name, &team.name, &desired_role)
+                .set_team_role(&member.member_name, &team.name, &member.role)
                 .map_err(|e| internal_err(e.to_string()))?;
             restart_agent_member(state, &member.member_name).await?;
         }
@@ -164,7 +107,6 @@ pub async fn handle_create_team(
     if display_name.is_empty() {
         return Err(api_err("display_name is required"));
     }
-    validate_team_configuration(&req.collaboration_model, req.leader_agent_name.as_deref())?;
 
     let team_id = state
         .store
@@ -198,13 +140,6 @@ pub async fn handle_create_team(
 
     for member in &req.members {
         let sender_type = parse_member_type(&member.member_type)?;
-        let effective_role = canonical_team_role(
-            &member.member_name,
-            &member.member_type,
-            &member.role,
-            &req.collaboration_model,
-            req.leader_agent_name.as_deref(),
-        );
         state
             .store
             .create_team_member(
@@ -212,7 +147,7 @@ pub async fn handle_create_team(
                 &member.member_name,
                 &member.member_type,
                 &member.member_id,
-                &effective_role,
+                &member.role,
             )
             .map_err(|e| api_err(e.to_string()))?;
         state
@@ -222,7 +157,7 @@ pub async fn handle_create_team(
 
         if sender_type == SenderType::Agent {
             agent_workspace
-                .init_team_memory(&member.member_name, &name, &effective_role)
+                .init_team_memory(&member.member_name, &name, &member.role)
                 .map_err(|e| internal_err(e.to_string()))?;
             restart_agent_member(&state, &member.member_name).await?;
         }
@@ -282,27 +217,13 @@ pub async fn handle_update_team(
         .filter(|value| !value.is_empty())
         .unwrap_or(&team.display_name)
         .to_string();
-    let collaboration_model = req
-        .collaboration_model
-        .as_deref()
-        .unwrap_or(&team.collaboration_model)
-        .to_string();
-    let leader_agent_name = if collaboration_model == "swarm" {
-        None
-    } else {
-        req.leader_agent_name
-            .unwrap_or_else(|| team.leader_agent_name.clone())
-    };
-
-    validate_team_configuration(&collaboration_model, leader_agent_name.as_deref())?;
-
     state
         .store
         .update_team(
             &team.id,
             &display_name,
-            &collaboration_model,
-            leader_agent_name.as_deref(),
+            &team.collaboration_model,
+            team.leader_agent_name.as_deref(),
         )
         .map_err(|e| api_err(e.to_string()))?;
 

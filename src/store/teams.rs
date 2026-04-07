@@ -153,8 +153,7 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a team by id. Cascades to team_members, team_task_quorum, and team_task_signals
-    /// because the schema declares ON DELETE CASCADE and PRAGMA foreign_keys=ON is set at open.
+    /// Delete a team by id. Cascades to team_members via ON DELETE CASCADE.
     pub fn delete_team(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM teams WHERE id = ?1", params![id])?;
@@ -259,93 +258,5 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
-    }
-
-    /// Snapshot the current set of agent members into team_task_quorum for a new swarm task.
-    /// The trigger_message_id is the message that kicked off the task.
-    pub fn snapshot_swarm_quorum(&self, team_id: &str, trigger_message_id: &str) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        tx.execute(
-            "INSERT OR IGNORE INTO team_task_quorum (trigger_message_id, team_id, member_name)
-             SELECT ?1, team_id, member_name FROM team_members
-             WHERE team_id = ?2 AND member_type = 'agent'",
-            params![trigger_message_id, team_id],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Record a signal (e.g. "READY") from an agent for an open swarm task quorum.
-    ///
-    /// Finds the earliest unresolved trigger for this team, inserts the signal, then checks
-    /// whether all quorum members have now signalled. Returns `true` when consensus is reached
-    /// and the quorum row is marked resolved.
-    pub fn record_swarm_signal(
-        &self,
-        team_id: &str,
-        member_name: &str,
-        signal: &str,
-    ) -> Result<bool> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-
-        // Find the earliest unresolved trigger_message_id for this team.
-        let trigger_id: Option<String> = tx
-            .prepare(
-                "SELECT q.trigger_message_id FROM team_task_quorum q
-                 JOIN messages m ON m.id = q.trigger_message_id
-                 WHERE q.team_id = ?1 AND q.resolved_at IS NULL
-                 ORDER BY m.created_at ASC
-                 LIMIT 1",
-            )?
-            .query_row(params![team_id], |r| r.get(0))
-            .ok();
-
-        let trigger_id = match trigger_id {
-            None => return Ok(false), // no open quorum — discard signal
-            Some(id) => id,
-        };
-
-        // Only insert if member_name is in the quorum for this trigger; discard signals
-        // from agents that joined after the quorum was snapshotted.
-        let signal_id = Uuid::new_v4().to_string();
-        let inserted = tx.execute(
-            "INSERT OR IGNORE INTO team_task_signals (id, team_id, trigger_message_id, member_name, signal)
-             SELECT ?1, ?2, ?3, ?4, ?5
-             WHERE EXISTS (
-                 SELECT 1 FROM team_task_quorum
-                 WHERE trigger_message_id = ?3 AND member_name = ?4
-             )",
-            params![signal_id, team_id, trigger_id, member_name, signal],
-        )?;
-        if inserted == 0 {
-            return Ok(false); // non-quorum member, discard signal
-        }
-
-        // Check if quorum is now complete (all expected members have signalled).
-        let quorum_size: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM team_task_quorum WHERE trigger_message_id = ?1",
-            params![trigger_id],
-            |r| r.get(0),
-        )?;
-        let signal_count: i64 = tx.query_row(
-            "SELECT COUNT(*) FROM team_task_signals WHERE trigger_message_id = ?1",
-            params![trigger_id],
-            |r| r.get(0),
-        )?;
-
-        if signal_count >= quorum_size {
-            tx.execute(
-                "UPDATE team_task_quorum SET resolved_at = datetime('now')
-                 WHERE trigger_message_id = ?1",
-                params![trigger_id],
-            )?;
-            tx.commit()?;
-            return Ok(true);
-        }
-
-        tx.commit()?;
-        Ok(false)
     }
 }

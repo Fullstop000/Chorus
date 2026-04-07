@@ -2110,7 +2110,7 @@ async fn test_create_team_endpoint() {
     let members = store.get_team_members(&team.id).unwrap();
     assert_eq!(members.len(), 1);
     assert_eq!(members[0].member_name, "bot1");
-    assert_eq!(members[0].role, "leader");
+    assert_eq!(members[0].role, "operator");
 
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
@@ -2223,8 +2223,8 @@ async fn test_list_and_update_team_endpoints() {
         .iter()
         .find(|member| member.member_name == "bot2")
         .unwrap();
-    assert_eq!(bot1_member.role, "operator");
-    assert_eq!(bot2_member.role, "leader");
+    assert_eq!(bot1_member.role, "leader");
+    assert_eq!(bot2_member.role, "operator");
     assert_eq!(lifecycle.started_names().len(), 2);
     assert_eq!(lifecycle.stopped_names().len(), 2);
 }
@@ -2429,82 +2429,5 @@ async fn test_at_mention_forwards_to_team_channel() {
             .filter(|name| name.as_str() == "bot2")
             .count(),
         1
-    );
-}
-
-#[tokio::test]
-async fn test_swarm_ready_signals_emit_consensus_system_message() {
-    let (store, app, _lifecycle) = setup_with_lifecycle();
-    store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
-        .unwrap();
-    store
-        .join_channel("general", "bot2", SenderType::Agent)
-        .unwrap();
-    let team_id = store
-        .create_team("eng-team", "Engineering", "swarm", None)
-        .unwrap();
-    store
-        .create_channel("eng-team", None, ChannelType::Team)
-        .unwrap();
-    let bot1 = store.get_agent("bot1").unwrap().unwrap();
-    let bot2 = store.get_agent("bot2").unwrap().unwrap();
-    store
-        .create_team_member(&team_id, "bot1", "agent", &bot1.id, "builder")
-        .unwrap();
-    store
-        .create_team_member(&team_id, "bot2", "agent", &bot2.id, "reviewer")
-        .unwrap();
-    store
-        .join_channel("eng-team", "bot1", SenderType::Agent)
-        .unwrap();
-    store
-        .join_channel("eng-team", "bot2", SenderType::Agent)
-        .unwrap();
-
-    let trigger_req = serde_json::json!({
-        "target": "#general",
-        "content": "team please handle @eng-team"
-    });
-    let trigger_resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&trigger_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(trigger_resp.status(), StatusCode::OK);
-
-    let ready_req = |agent: &str| {
-        Request::builder()
-            .method("POST")
-            .uri(format!("/internal/agent/{agent}/send"))
-            .header("content-type", "application/json")
-            .body(Body::from(
-                serde_json::to_vec(&serde_json::json!({
-                    "target": "#eng-team",
-                    "content": "READY: begin execution"
-                }))
-                .unwrap(),
-            ))
-            .unwrap()
-    };
-
-    let bot1_resp = app.clone().oneshot(ready_req("bot1")).await.unwrap();
-    assert_eq!(bot1_resp.status(), StatusCode::OK);
-    let bot2_resp = app.oneshot(ready_req("bot2")).await.unwrap();
-    assert_eq!(bot2_resp.status(), StatusCode::OK);
-
-    let (history, _) = store.get_history("eng-team", None, 20, None, None).unwrap();
-    assert!(
-        history
-            .iter()
-            .any(|msg| msg.content.contains("All members ready")),
-        "consensus system message should be posted"
     );
 }

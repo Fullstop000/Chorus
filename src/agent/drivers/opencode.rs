@@ -191,7 +191,6 @@ impl Driver for OpencodeDriver {
                     "**IMPORTANT**: Complete your work and stop. The server will wake you when new work arrives.".to_string(),
                 ],
                 include_stdin_notification_section: false,
-                teams: config.teams.clone(),
             },
         )
     }
