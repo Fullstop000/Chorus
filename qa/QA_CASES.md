@@ -75,7 +75,7 @@ Cases are split into focused modules under [`cases/`](./cases/):
 | [`cases/channels.md`](./cases/channels.md) | CHN-001, CHN-002, CHN-003, CHN-004, CHN-005 |
 | [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, MSG-005, MSG-006, MSG-007, MSG-008, MSG-009, MSG-010, MSG-011, MSG-012, HIS-001, ATT-001, ERR-001 |
 | [`cases/tasks.md`](./cases/tasks.md) | TSK-001, TSK-002 |
-| [`cases/teams.md`](./cases/teams.md) | TMT-001, TMT-002, TMT-003, TMT-004, TMT-005, TMT-006, TMT-007, TMT-008, TMT-009 |
+| [`cases/teams.md`](./cases/teams.md) | TMT-001, TMT-002, TMT-005, TMT-007, TMT-009 |
 
 ## Maintenance Notes
 
