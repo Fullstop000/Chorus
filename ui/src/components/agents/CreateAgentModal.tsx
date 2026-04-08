@@ -3,9 +3,7 @@ import { useRuntimeStatuses } from '../../hooks/useRuntimeStatuses'
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { FormField, FormError } from '@/components/ui/form'
-import { Label } from '@/components/ui/label'
+import { FormError } from '@/components/ui/form'
 
 interface Props {
   open: boolean
@@ -94,18 +92,6 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
           </div>
           <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
         </DialogHeader>
-
-        <FormField>
-          <Label>Machine</Label>
-          <Select value="local" disabled>
-            <SelectTrigger aria-label="Machine">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="local">local</SelectItem>
-            </SelectContent>
-          </Select>
-        </FormField>
 
         <AgentConfigForm
           state={config}
