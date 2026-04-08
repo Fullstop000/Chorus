@@ -84,18 +84,17 @@ impl AgentManager {
         // Raw Kimi driver requires a pre-generated session id (it uses
         // stdin notifications, so supports_stdin_notification()=true).
         // ACP drivers handle sessions internally via session/new|load.
-        let resumable_session_id = if driver.runtime() == AgentRuntime::Kimi
-            && driver.supports_stdin_notification()
-        {
-            Some(
-                agent
-                    .session_id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            )
-        } else {
-            agent.session_id.clone()
-        };
+        let resumable_session_id =
+            if driver.runtime() == AgentRuntime::Kimi && driver.supports_stdin_notification() {
+                Some(
+                    agent
+                        .session_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                )
+            } else {
+                agent.session_id.clone()
+            };
 
         let config = AgentConfig {
             name: agent.name.clone(),
@@ -330,7 +329,8 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        error!(agent = %name, err = %e, "stdout read error");
+                        let bt = std::backtrace::Backtrace::capture();
+                        error!(agent = %name, err = %e, backtrace = %bt, "stdout read error");
                         break;
                     }
                 };
@@ -383,7 +383,8 @@ impl AgentManager {
                             }
                         }
                         Err(e) => {
-                            error!(agent = %name, err = %e, "failed to get exit status");
+                            let bt = std::backtrace::Backtrace::capture();
+                            error!(agent = %name, err = %e, backtrace = %bt, "failed to get exit status");
                             let _ = store.update_agent_status(&name, AgentStatus::Inactive);
                         }
                     }
@@ -406,7 +407,8 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        error!(agent = %agent_name, err = %e, "stderr read error");
+                        let bt = std::backtrace::Backtrace::capture();
+                        error!(agent = %agent_name, err = %e, backtrace = %bt, "stderr read error");
                         break;
                     }
                 };
@@ -451,7 +453,10 @@ async fn handle_parsed_event(
                     "[System notification: You have {pending} new message{plural} waiting. \
                      Call {check_tool} to read {them} when you're ready.]"
                 );
-                if let Some(encoded) = running.driver.encode_stdin_message(&notification, &session_id) {
+                if let Some(encoded) = running
+                    .driver
+                    .encode_stdin_message(&notification, &session_id)
+                {
                     if let Some(stdin) = running.process.stdin.as_mut() {
                         let _ = writeln!(stdin, "{encoded}");
                     }
@@ -526,7 +531,8 @@ async fn handle_parsed_event(
             activity_log::set_activity_state(logs, agent_name, "online", "Idle");
         }
         ParsedEvent::Error { ref message } => {
-            error!(agent = %agent_name, message = %message, "agent error");
+            let bt = std::backtrace::Backtrace::capture();
+            error!(agent = %agent_name, message = %message, backtrace = %bt, "agent error");
             activity_log::set_activity_state(logs, agent_name, "error", message);
         }
         ParsedEvent::WriteStdin { ref data } => {

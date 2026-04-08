@@ -2,9 +2,9 @@ use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
 use chorus::agent::manager::AgentManager;
+use chorus::agent::AgentRuntime;
 use chorus::bridge;
 use chorus::server::build_router_with_lifecycle;
-use chorus::agent::AgentRuntime;
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::SenderType;
@@ -116,11 +116,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Initialize tracing. Default level: chorus=info (override with RUST_LOG).
+    // Enable RUST_BACKTRACE by default so Backtrace::capture() works in error handlers.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("chorus=info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_file(true)
+        .with_line_number(true)
         .init();
 
     match cli.command {
