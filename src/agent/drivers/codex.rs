@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use super::acp::{AcpDriver, AcpRuntime};
 use super::{command_exists, run_command, SpawnContext};
 use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
-use crate::store::agents::AgentRuntime;
+use crate::agent::AgentRuntime;
 
 pub struct CodexAcpRuntime;
 
@@ -18,31 +18,12 @@ impl AcpRuntime for CodexAcpRuntime {
     }
 
     fn build_acp_args(&self, ctx: &SpawnContext) -> Vec<String> {
-        let bridge_binary_json =
-            serde_json::to_string(&ctx.bridge_binary).unwrap_or_default();
-        let bridge_args_json = serde_json::to_string(&vec![
-            "bridge",
-            "--agent-id",
-            &ctx.agent_id,
-            "--server-url",
-            &ctx.server_url,
-        ])
-        .unwrap_or_default();
-
         let mut args = vec![
-            "--dangerously-bypass-approvals-and-sandbox".to_string(),
+            // Run fully non-interactive: never prompt for approval, full sandbox access.
             "-c".to_string(),
-            format!("mcp_servers.chat.command={bridge_binary_json}"),
+            r#"approval_policy="never""#.to_string(),
             "-c".to_string(),
-            format!("mcp_servers.chat.args={bridge_args_json}"),
-            "-c".to_string(),
-            "mcp_servers.chat.startup_timeout_sec=30".to_string(),
-            "-c".to_string(),
-            "mcp_servers.chat.tool_timeout_sec=300".to_string(),
-            "-c".to_string(),
-            "mcp_servers.chat.enabled=true".to_string(),
-            "-c".to_string(),
-            "mcp_servers.chat.required=true".to_string(),
+            r#"sandbox_mode="danger-full-access""#.to_string(),
         ];
 
         if let Some(reasoning_effort) = ctx.config.reasoning_effort.as_deref() {
@@ -53,16 +34,35 @@ impl AcpRuntime for CodexAcpRuntime {
         }
 
         if !ctx.config.model.is_empty() {
-            args.push("-m".to_string());
-            args.push(ctx.config.model.clone());
+            if let Ok(val) = serde_json::to_string(&ctx.config.model) {
+                args.push("-c".to_string());
+                args.push(format!("model={val}"));
+            }
         }
 
         args
     }
 
+    // MCP bridge is registered via session/new mcpServers (ACP standard), not config file.
     fn write_mcp_config(&self, _ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> {
-        // Codex receives MCP config via -c flags, not a config file.
         Ok(None)
+    }
+
+    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
+        serde_json::json!({
+            "cwd": ctx.working_directory,
+            "mcpServers": [{
+                "name": "chat",
+                "command": ctx.bridge_binary,
+                "args": ["bridge", "--agent-id", ctx.agent_id, "--server-url", ctx.server_url],
+                "env": []
+            }]
+        })
+    }
+
+    fn requires_session_id_in_prompt(&self) -> bool {
+        // codex-acp requires the sessionId from session/new to be included in session/prompt.
+        true
     }
 
     fn env_overrides(&self, _ctx: &SpawnContext) -> Vec<(String, Option<String>)> {
