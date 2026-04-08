@@ -318,6 +318,37 @@ def kimi(ctx: Context, yolo: bool = False, ...):
 
 ---
 
+### Step 7: Verify Chorus correctly parses the runtime's wire format
+
+Wire looks correct but the activity log is still wrong? The bug may be in Chorus's own `parse_line`, not in the agent.
+
+**Symptom:** Raw wire shows the agent calling the right tool (e.g. `chat_send_message`), but DM-002 Step 7 fails ("activity log shows send_message tool call").
+
+**Root cause pattern:** `acp.rs` extracts the event `kind` from the update object. Different runtimes use different field names for the same concept, and a runtime may emit *multiple* fields where only one is the event discriminator.
+
+```
+opencode session/update:
+  {
+    "sessionUpdate": "tool_call",   ← event type (what we want)
+    "kind":          "other",       ← tool category (opencode-internal, NOT event type)
+    "title":         "chat_send_message"
+  }
+```
+
+If Chorus checks `kind` before `sessionUpdate`, it reads `"other"` instead of `"tool_call"` and the event falls through unhandled.
+
+**Check:** In `acp.rs`, find the `kind` extraction block and confirm field priority matches what the runtime actually uses as its event discriminator:
+
+```bash
+grep -n "get(\"kind\")\|get(\"type\")\|get(\"sessionUpdate\")" src/agent/drivers/acp.rs
+```
+
+The correct order is: `sessionUpdate` → `kind` → `type` (kimi and opencode use `sessionUpdate`; claude ACP uses `kind`).
+
+**Check tool name stripping:** Even if `ParsedEvent::ToolCall` fires, the display name lookup may fail. `strip_mcp_prefix` normalizes `mcp__chat__send_message`, `mcp_chat_send_message`, `chat_send_message` → `send_message`. If the runtime uses a different prefix scheme, add it to `strip_mcp_prefix` in `acp.rs`.
+
+---
+
 ### Failure Diagnosis Checklist
 
 ```
@@ -328,6 +359,7 @@ def kimi(ctx: Context, yolo: bool = False, ...):
 [ ] Verified CLI flags are not silently dropped by subcommand structure
 [ ] Confirmed no concurrent session/prompt calls were sent
 [ ] Checked agent's own debug log for the actual exception
+[ ] Wire looks correct but activity log wrong → check acp.rs kind-field priority and strip_mcp_prefix
 ```
 
 ---
