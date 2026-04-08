@@ -6,7 +6,7 @@ use super::{command_exists, home_dir, read_file, Driver, ParsedEvent, SpawnConte
 use crate::agent::config::AgentConfig;
 use crate::agent::drivers::prompt::{build_base_system_prompt, PromptOptions};
 use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
-use crate::store::agents::AgentRuntime;
+use crate::agent::AgentRuntime;
 
 pub struct KimiRawDriver;
 

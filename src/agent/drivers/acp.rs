@@ -11,7 +11,7 @@ use super::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::config::AgentConfig;
 use crate::agent::drivers::prompt::{build_base_system_prompt, PromptOptions};
 use crate::agent::runtime_status::RuntimeStatus;
-use crate::store::agents::AgentRuntime;
+use crate::agent::AgentRuntime;
 
 // ── AcpRuntime trait: per-runtime metadata ──
 

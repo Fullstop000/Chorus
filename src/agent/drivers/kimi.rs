@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use super::acp::{AcpDriver, AcpRuntime};
 use super::{command_exists, home_dir, read_file, SpawnContext};
 use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
-use crate::store::agents::AgentRuntime;
+use crate::agent::AgentRuntime;
 
 pub struct KimiAcpRuntime;
 

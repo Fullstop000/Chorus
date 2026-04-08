@@ -9,7 +9,8 @@ use tracing::{info, warn};
 use super::{acquire_transition, api_err, format_anyhow_error, internal_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
-use crate::store::agents::{AgentEnvVar, AgentRuntime, AgentStatus};
+use crate::agent::AgentRuntime;
+use crate::store::agents::{AgentEnvVar, AgentStatus};
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
 

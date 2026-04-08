@@ -20,7 +20,7 @@ use anyhow::Context;
 
 use crate::agent::config::AgentConfig;
 use crate::agent::runtime_status::RuntimeStatus;
-use crate::store::agents::AgentRuntime;
+use crate::agent::AgentRuntime;
 
 /// Events parsed from agent CLI stdout.
 #[derive(Debug, Clone)]

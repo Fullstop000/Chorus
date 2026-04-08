@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::acp::{AcpDriver, AcpRuntime};
 use super::{command_exists, run_command, SpawnContext};
 use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
-use crate::store::agents::AgentRuntime;
+use crate::agent::AgentRuntime;
 
 pub struct OpencodeAcpRuntime;
 

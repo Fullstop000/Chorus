@@ -12,7 +12,8 @@ use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLo
 use crate::agent::config::AgentConfig;
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::AgentLifecycle;
-use crate::store::agents::{AgentRuntime, AgentStatus};
+use crate::agent::AgentRuntime;
+use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
