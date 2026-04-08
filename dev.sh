@@ -11,19 +11,29 @@ RESET='\033[0m'
 
 echo -e "${CYAN}Chorus dev environment${RESET}"
 
-# ── Load nvm so ACP adapter binaries installed via npm are on PATH ──
-export NVM_DIR="$HOME/.nvm"
-if [ -s "$NVM_DIR/nvm.sh" ]; then
-  # shellcheck source=/dev/null
-  . "$NVM_DIR/nvm.sh"
+# ── Auto-install ACP adapter binaries when the base runtime is present ──
+# Uses the user's interactive shell to find npm, so this works regardless
+# of which node version manager (nvm, volta, fnm, system) they use.
+_npm=""
+if command -v npm >/dev/null 2>&1; then
+  _npm="npm"
+else
+  _shell="${SHELL:-/bin/sh}"
+  _npm_bin="$("$_shell" -i -c 'command -v npm 2>/dev/null' 2>/dev/null | tr -d '[:space:]')"
+  if [ -n "$_npm_bin" ]; then
+    _npm="$_npm_bin"
+  fi
 fi
 
-# ── Auto-install ACP adapter binaries when the base runtime is present ──
 install_acp_adapter() {
   local binary="$1" package="$2" runtime="$3"
   if command -v "$runtime" >/dev/null 2>&1 && ! command -v "$binary" >/dev/null 2>&1; then
-    echo -e "${YELLOW}▶ Installing $binary (ACP adapter for $runtime)...${RESET}"
-    npm install -g "$package"
+    if [ -n "$_npm" ]; then
+      echo -e "${YELLOW}▶ Installing $binary (ACP adapter for $runtime)...${RESET}"
+      "$_npm" install -g "$package"
+    else
+      echo -e "${YELLOW}⚠ $binary not found. Install it with: npm install -g $package${RESET}"
+    fi
   fi
 }
 

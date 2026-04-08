@@ -14,7 +14,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Child;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::Context;
 
@@ -141,16 +141,45 @@ pub fn all_runtime_drivers() -> Vec<Arc<dyn Driver>> {
 }
 
 pub(crate) fn command_exists(command: &str) -> bool {
-    std::env::var_os("PATH")
-        .map(|paths| std::env::split_paths(&paths).collect::<Vec<_>>())
-        .unwrap_or_default()
-        .into_iter()
+    is_executable_in_dirs(command, &process_path_dirs())
+        || is_executable_in_dirs(command, user_shell_path_dirs())
+}
+
+fn is_executable_in_dirs(command: &str, dirs: &[PathBuf]) -> bool {
+    dirs.iter()
         .map(|dir| dir.join(command))
         .any(|candidate| {
             fs::metadata(&candidate)
-                .map(|metadata| metadata.is_file() && (metadata.permissions().mode() & 0o111) != 0)
+                .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
                 .unwrap_or(false)
         })
+}
+
+fn process_path_dirs() -> Vec<PathBuf> {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default()
+}
+
+/// Resolve the user's interactive shell PATH once and cache it.
+/// Handles any node/tool version manager (nvm, volta, fnm, etc.) that
+/// hooks into the shell init files rather than the system PATH.
+static USER_SHELL_PATH_DIRS: OnceLock<Vec<PathBuf>> = OnceLock::new();
+
+fn user_shell_path_dirs() -> &'static [PathBuf] {
+    USER_SHELL_PATH_DIRS.get_or_init(|| {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
+        Command::new(&shell)
+            .args(["-i", "-c", "echo $PATH"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| std::env::split_paths(s.trim()).map(PathBuf::from).collect())
+            .unwrap_or_default()
+    })
 }
 
 pub(crate) fn run_command(program: &str, args: &[&str]) -> anyhow::Result<CommandProbeResult> {
