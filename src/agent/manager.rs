@@ -524,6 +524,15 @@ async fn handle_parsed_event(
             error!(agent = %agent_name, message = %message, "agent error");
             activity_log::set_activity_state(logs, agent_name, "error", message);
         }
+        ParsedEvent::WriteStdin { ref data } => {
+            if let Some(stdin) = running.process.stdin.as_mut() {
+                let _ = write!(stdin, "{data}");
+            }
+        }
+        ParsedEvent::PermissionRequested { tool_name: _ } => {
+            // Permission approval is handled inline — the response has already been
+            // written to stdin by WriteStdin. No retry needed.
+        }
     }
 }
 

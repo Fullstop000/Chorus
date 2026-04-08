@@ -50,6 +50,18 @@ pub trait AcpRuntime: Send + Sync + 'static {
 
     /// Return available model IDs.
     fn list_models(&self) -> anyhow::Result<Vec<String>>;
+
+    /// Build the params object for the `session/new` JSON-RPC call.
+    /// Default uses `{"workspaceDir": ...}`. Override for runtimes with different schemas (e.g. kimi).
+    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
+        json!({ "workspaceDir": ctx.working_directory })
+    }
+
+    /// Whether `session/prompt` requires a `sessionId` field.
+    /// When true, the startup prompt is deferred until `session/new` responds with a sessionId.
+    fn requires_session_id_in_prompt(&self) -> bool {
+        false
+    }
 }
 
 // ── AcpDriver: shared ACP protocol handler ──
@@ -69,6 +81,9 @@ enum AcpPhase {
 #[derive(Debug)]
 struct AcpState {
     phase: AcpPhase,
+    /// Startup prompt deferred until `session/new` returns a `sessionId`.
+    /// Used by runtimes (e.g. kimi) that require `sessionId` in `session/prompt`.
+    pending_startup_prompt: Option<String>,
 }
 
 /// A `Driver` implementation backed by the Agent Client Protocol.
@@ -86,6 +101,7 @@ impl<R: AcpRuntime> AcpDriver<R> {
             runtime_impl,
             state: Mutex::new(AcpState {
                 phase: AcpPhase::AwaitingInitResponse,
+                pending_startup_prompt: None,
             }),
             next_request_id: AtomicU64::new(4), // 1-3 are used by handshake
         }
@@ -118,11 +134,20 @@ impl<R: AcpRuntime> AcpDriver<R> {
                     .unwrap_or("")
                     .to_string();
                 state.phase = AcpPhase::Active;
-                if session_id.is_empty() {
+                let mut events = if session_id.is_empty() {
                     vec![]
                 } else {
-                    vec![ParsedEvent::SessionInit { session_id }]
+                    vec![ParsedEvent::SessionInit { session_id: session_id.clone() }]
+                };
+                // Flush deferred startup prompt that requires a sessionId.
+                if let Some(prompt) = state.pending_startup_prompt.take() {
+                    let prompt_req = json_rpc_request(3, "session/prompt", json!({
+                        "sessionId": session_id,
+                        "prompt": [{ "type": "text", "text": prompt }]
+                    }));
+                    events.push(ParsedEvent::WriteStdin { data: format!("{prompt_req}\n") });
                 }
+                events
             }
             AcpPhase::Active => {
                 // session/prompt response — turn ended
@@ -151,42 +176,55 @@ impl<R: AcpRuntime> AcpDriver<R> {
 
         let update = params.get("update").unwrap_or(params);
 
+        // `kind` can be in different fields depending on the runtime:
+        // - Most runtimes: `update.kind` or `update.type`
+        // - kimi: `update.sessionUpdate` (snake_case values like "agent_message_chunk")
         let kind = update
             .get("kind")
             .or_else(|| update.get("type"))
+            .or_else(|| update.get("sessionUpdate"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        // Extract text from a content value that may be either:
+        // - A plain string (most runtimes: `chunk`/`text` field)
+        // - A nested object (kimi: `{"text": "...", "type": "text"}`)
+        let extract_text = |update: &serde_json::Value| -> String {
+            update
+                .get("chunk")
+                .or_else(|| update.get("text"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+                .or_else(|| {
+                    update.get("content").and_then(|c| {
+                        c.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                    })
+                })
+                .unwrap_or_default()
+        };
+
         match kind {
-            "agentMessageChunk" => {
-                let text = update
-                    .get("chunk")
-                    .or_else(|| update.get("text"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            "agentMessageChunk" | "agent_message_chunk" => {
+                let text = extract_text(update);
                 if text.is_empty() {
                     vec![]
                 } else {
                     vec![ParsedEvent::Text { text }]
                 }
             }
-            "agentThoughtChunk" => {
-                let text = update
-                    .get("chunk")
-                    .or_else(|| update.get("text"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            "agentThoughtChunk" | "agent_thought_chunk" => {
+                let text = extract_text(update);
                 if text.is_empty() {
                     vec![]
                 } else {
                     vec![ParsedEvent::Thinking { text }]
                 }
             }
-            "toolCall" => {
+            "toolCall" | "tool_call" => {
+                // kimi uses `title` for the tool name; other runtimes use `toolName`
                 let name = update
                     .get("toolName")
+                    .or_else(|| update.get("title"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown_tool")
                     .to_string();
@@ -197,23 +235,33 @@ impl<R: AcpRuntime> AcpDriver<R> {
                     .unwrap_or(serde_json::Value::Null);
                 vec![ParsedEvent::ToolCall { name, input }]
             }
-            "toolCallUpdate" => {
+            "toolCallUpdate" | "tool_call_update" => {
                 let content = update
                     .get("content")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
                 if content.is_empty() {
-                    // Also check for structured content array
+                    // Also check for structured content array.
+                    // kimi format: [{"content": {"text": "...", "type": "text"}, "type": "content"}]
+                    // Other format: [{"type": "text", "text": "..."}]
                     if let Some(arr) = update.get("content").and_then(|v| v.as_array()) {
                         let text: String = arr
                             .iter()
                             .filter_map(|b| {
-                                if b.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                    b.get("text").and_then(|v| v.as_str()).map(str::to_string)
-                                } else {
-                                    None
-                                }
+                                // kimi nested: b.content.text
+                                b.get("content")
+                                    .and_then(|c| c.get("text"))
+                                    .and_then(|v| v.as_str())
+                                    .map(str::to_string)
+                                    // flat: b.text when b.type == "text"
+                                    .or_else(|| {
+                                        if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                                            b.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                                        } else {
+                                            None
+                                        }
+                                    })
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
@@ -231,6 +279,61 @@ impl<R: AcpRuntime> AcpDriver<R> {
             }
             _ => vec![],
         }
+    }
+
+    /// Handle JSON-RPC requests sent from the agent runtime to Chorus.
+    /// Currently only `session/request_permission` (used by kimi) is handled.
+    fn handle_rpc_request(&self, method: &str, msg: &serde_json::Value) -> Vec<ParsedEvent> {
+        if method != "session/request_permission" {
+            return vec![];
+        }
+
+        let id = match msg.get("id") {
+            Some(v) => v.clone(),
+            None => return vec![],
+        };
+
+        // Prefer "allow_always" (approve_for_session) so approval persists for the session.
+        let option_id = msg
+            .get("params")
+            .and_then(|p| p.get("options"))
+            .and_then(|o| o.as_array())
+            .and_then(|opts| {
+                opts.iter()
+                    .find(|o| {
+                        o.get("kind").and_then(|k| k.as_str()) == Some("allow_always")
+                    })
+                    .or_else(|| opts.iter().find(|o| {
+                        o.get("kind").and_then(|k| k.as_str()) == Some("allow_once")
+                    }))
+                    .and_then(|o| o.get("optionId"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("approve");
+
+        // ACP schema: result must be RequestPermissionResponse with a nested
+        // AllowedOutcome discriminated by `outcome: "selected"`.
+        let response = serde_json::to_string(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": {
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": option_id
+                }
+            }
+        }))
+        .expect("permission response serialization should not fail");
+
+        // Extract the bare tool name from toolCall.title (e.g. "send_message: {...}" → "send_message").
+        let tool_name = msg
+            .get("params")
+            .and_then(|p| p.get("toolCall"))
+            .and_then(|tc| tc.get("title"))
+            .and_then(|t| t.as_str())
+            .map(|t| t.split(':').next().unwrap_or(t).trim().to_string());
+
+        vec![ParsedEvent::WriteStdin { data: format!("{response}\n") }, ParsedEvent::PermissionRequested { tool_name }]
     }
 }
 
@@ -303,9 +406,10 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
         {
             let mut state = self.state.lock().unwrap();
             state.phase = AcpPhase::AwaitingInitResponse;
+            state.pending_startup_prompt = None;
         }
 
-        // Pipeline: write initialize, session/new or session/load, session/prompt
+        // Pipeline: write initialize, session/new or session/load, then session/prompt
         let stdin = child
             .stdin
             .as_mut()
@@ -329,22 +433,20 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
                 "sessionId": sid
             }))
         } else {
-            json_rpc_request(2, "session/new", json!({
-                "workspaceDir": ctx.working_directory
-            }))
+            json_rpc_request(2, "session/new", self.runtime_impl.session_new_params(ctx))
         };
         writeln!(stdin, "{session_req}")?;
 
-        // 3. session/prompt with initial prompt
-        // Note: sessionId is not yet known (it comes from the session/new response),
-        // but ACP agents can infer it from the active session.
-        let prompt_req = json_rpc_request(3, "session/prompt", json!({
-            "prompt": [{
-                "type": "text",
-                "text": ctx.prompt
-            }]
-        }));
-        writeln!(stdin, "{prompt_req}")?;
+        // 3. session/prompt with initial prompt.
+        // Runtimes that require a sessionId in the prompt defer this until session/new responds.
+        if self.runtime_impl.requires_session_id_in_prompt() {
+            self.state.lock().unwrap().pending_startup_prompt = Some(ctx.prompt.clone());
+        } else {
+            let prompt_req = json_rpc_request(3, "session/prompt", json!({
+                "prompt": [{ "type": "text", "text": ctx.prompt }]
+            }));
+            writeln!(stdin, "{prompt_req}")?;
+        }
 
         Ok(child)
     }
@@ -361,24 +463,28 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
             return self.handle_rpc_response(&mut state, &msg);
         }
 
-        // JSON-RPC notification: has "method" but no "id"
+        // JSON-RPC request from agent: has both "id" and "method".
+        // Used by runtimes (e.g. kimi) that request permission before tool execution.
         if let Some(method) = msg.get("method").and_then(|v| v.as_str()) {
-            if msg.get("id").is_none() {
-                return self.handle_rpc_notification(method, &msg);
+            if msg.get("id").is_some() {
+                return self.handle_rpc_request(method, &msg);
             }
+            // Notification: has "method" but no "id"
+            return self.handle_rpc_notification(method, &msg);
         }
 
         vec![]
     }
 
-    fn encode_stdin_message(&self, text: &str, _session_id: &str) -> Option<String> {
+    fn encode_stdin_message(&self, text: &str, session_id: &str) -> Option<String> {
         let id = self.next_request_id.fetch_add(1, Ordering::Relaxed);
-        let req = json_rpc_request(id, "session/prompt", json!({
-            "prompt": [{
-                "type": "text",
-                "text": text
-            }]
-        }));
+        let mut params = json!({
+            "prompt": [{ "type": "text", "text": text }]
+        });
+        if self.runtime_impl.requires_session_id_in_prompt() && !session_id.is_empty() {
+            params["sessionId"] = json!(session_id);
+        }
+        let req = json_rpc_request(id, "session/prompt", params);
         Some(req)
     }
 

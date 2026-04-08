@@ -20,9 +20,8 @@ impl AcpRuntime for KimiAcpRuntime {
         let mcp_config_path =
             std::path::Path::new(&ctx.working_directory).join(".chorus-kimi-mcp.json");
 
-        // Kimi supports native ACP via the `acp` subcommand.
+        // Global flags must precede the `acp` subcommand.
         let mut args = vec![
-            "acp".to_string(),
             "--work-dir".to_string(),
             ctx.working_directory.clone(),
             "--mcp-config-file".to_string(),
@@ -34,7 +33,28 @@ impl AcpRuntime for KimiAcpRuntime {
             args.push(ctx.config.model.clone());
         }
 
+        args.push("acp".to_string());
         args
+    }
+
+    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
+        // Kimi's session/new requires `cwd` and `mcpServers` as a list of typed server objects.
+        // Stdio servers need `name`, `command`, `args`, and `env`.
+        serde_json::json!({
+            "cwd": ctx.working_directory,
+            "mcpServers": [
+                {
+                    "name": "chat",
+                    "command": ctx.bridge_binary,
+                    "args": ["bridge", "--agent-id", ctx.agent_id, "--server-url", ctx.server_url],
+                    "env": []
+                }
+            ]
+        })
+    }
+
+    fn requires_session_id_in_prompt(&self) -> bool {
+        true
     }
 
     fn write_mcp_config(&self, ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> {
