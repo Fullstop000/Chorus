@@ -3,7 +3,6 @@ use std::sync::Arc;
 
 use chorus::agent::manager::AgentManager;
 use chorus::bridge;
-use chorus::server::build_router_with_lifecycle;
 use chorus::store::agents::{AgentRuntime, AgentStatus};
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::SenderType;
@@ -24,6 +23,9 @@ enum Commands {
         port: u16,
         #[arg(long)]
         data_dir: Option<String>,
+        /// Directory containing agent template markdown files.
+        #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
+        template_dir: String,
     },
     /// Run as MCP chat bridge (spawned by agent processes)
     Bridge {
@@ -128,12 +130,16 @@ async fn main() -> anyhow::Result<()> {
             server_url,
         }) => bridge::run_bridge(agent_id, server_url).await,
 
-        Some(Commands::Serve { port, data_dir }) => {
+        Some(Commands::Serve {
+            port,
+            data_dir,
+            template_dir,
+        }) => {
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
-            serve(port, data_dir_str).await
+            serve(port, data_dir_str, template_dir).await
         }
 
-        None => serve(3001, default_data_dir()).await,
+        None => serve(3001, default_data_dir(), "~/agency-agents".to_string()).await,
 
         Some(Commands::Send {
             target,
@@ -318,7 +324,7 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
-async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
+async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> anyhow::Result<()> {
     let data_dir = std::path::PathBuf::from(&data_dir_str);
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("chorus.db");
@@ -357,7 +363,17 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
         }
     }
 
-    let router = build_router_with_lifecycle(store.clone(), manager.clone());
+    // Load agent templates from the configured directory.
+    let template_path = chorus::agent::templates::expand_tilde(&template_dir_raw);
+    let templates = chorus::agent::templates::load_templates(&template_path);
+
+    let router = chorus::server::build_router_with_services(
+        store.clone(),
+        manager.clone(),
+        Arc::new(chorus::agent::runtime_status::SystemRuntimeStatusProvider)
+            as chorus::agent::runtime_status::SharedRuntimeStatusProvider,
+        templates,
+    );
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("Chorus running at {server_url}");
     println!("Human user: @{username}");

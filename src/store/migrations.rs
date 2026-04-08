@@ -6,6 +6,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_drop_legacy_event_tables(conn)?;
     migrate_remove_legacy_shared_memory_channel(conn)?;
     migrate_inbox_read_state(conn)?;
+    migrate_add_system_prompt_column(conn)?;
     Ok(())
 }
 
@@ -109,6 +110,19 @@ fn migrate_remove_legacy_shared_memory_channel(conn: &Connection) -> Result<()> 
         rusqlite::params![channel_id],
     )?;
     tracing::info!("removed legacy shared-memory system channel");
+    Ok(())
+}
+
+/// Add `system_prompt` column to agents table for rich template prompts.
+fn migrate_add_system_prompt_column(conn: &Connection) -> Result<()> {
+    let has_column: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('agents') WHERE name = 'system_prompt'")?
+        .query_map([], |_| Ok(true))?
+        .any(|r| r.unwrap_or(false));
+    if !has_column {
+        conn.execute("ALTER TABLE agents ADD COLUMN system_prompt TEXT", [])?;
+        tracing::info!("added system_prompt column to agents table");
+    }
     Ok(())
 }
 

@@ -10,6 +10,7 @@ use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 use crate::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
+use crate::agent::templates::AgentTemplate;
 use crate::agent::{AgentLifecycle, NoopAgentLifecycle};
 use crate::store::Store;
 
@@ -29,6 +30,7 @@ pub fn build_router_with_lifecycle(
         store,
         lifecycle,
         Arc::new(SystemRuntimeStatusProvider) as SharedRuntimeStatusProvider,
+        Vec::new(),
     )
 }
 
@@ -36,6 +38,7 @@ pub fn build_router_with_services(
     store: Arc<Store>,
     lifecycle: Arc<dyn AgentLifecycle>,
     runtime_status_provider: SharedRuntimeStatusProvider,
+    templates: Vec<AgentTemplate>,
 ) -> Router {
     use handlers::*;
     use transport::realtime::handle_events_ws;
@@ -50,6 +53,7 @@ pub fn build_router_with_services(
         lifecycle,
         runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
+        templates: Arc::new(templates),
     };
 
     // Agent runtimes and CLI flows still depend on an agent-scoped internal API.
@@ -169,6 +173,8 @@ pub fn build_router_with_services(
             "/agents/{name}/workspace/file",
             get(handle_agent_workspace_file),
         )
+        .route("/templates", get(handle_list_templates))
+        .route("/templates/launch-trio", post(handle_launch_trio))
         .route("/server-info", get(handle_ui_server_info))
         .route("/events/ws", get(handle_events_ws));
 

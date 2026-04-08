@@ -506,6 +506,7 @@ mod tests {
                 name: "bot1".to_string(),
                 display_name: "Bot 1".to_string(),
                 description: Some("test".to_string()),
+                system_prompt: None,
                 runtime: "codex".to_string(),
                 model: "gpt-5.4-mini".to_string(),
                 session_id: None,

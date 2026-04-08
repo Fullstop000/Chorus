@@ -253,7 +253,7 @@ fn setup_with_runtime_statuses(
         models_by_runtime,
     });
     let router =
-        build_router_with_services(store.clone(), lifecycle.clone(), runtime_status_provider);
+        build_router_with_services(store.clone(), lifecycle.clone(), runtime_status_provider, Vec::new());
     (store, router, lifecycle)
 }
 
@@ -1410,6 +1410,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
             name: "bot1",
             display_name: "Bot 1",
             description: Some("Replies in Chorus"),
+            system_prompt: None,
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: Some("high"),
@@ -2426,4 +2427,95 @@ async fn test_at_mention_forwards_to_team_channel() {
             .count(),
         1
     );
+}
+
+// ── Template API tests ──
+
+#[tokio::test]
+async fn test_get_templates_returns_grouped_categories() {
+    use chorus::agent::templates::AgentTemplate;
+
+    let templates = vec![
+        AgentTemplate {
+            id: "engineering/backend-architect".to_string(),
+            name: "Backend Architect".to_string(),
+            emoji: Some("🏗️".to_string()),
+            color: Some("blue".to_string()),
+            vibe: Some("Builds systems".to_string()),
+            description: Some("Designs scalable systems".to_string()),
+            category: "engineering".to_string(),
+            suggested_runtime: "claude".to_string(),
+            prompt_body: "You are a backend architect.".to_string(),
+        },
+        AgentTemplate {
+            id: "product/nudge-engine".to_string(),
+            name: "Nudge Engine".to_string(),
+            emoji: Some("🧠".to_string()),
+            color: None,
+            vibe: None,
+            description: None,
+            category: "product".to_string(),
+            suggested_runtime: "claude".to_string(),
+            prompt_body: "You are a nudge engine.".to_string(),
+        },
+    ];
+
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("chorus.db");
+    let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+    let lifecycle = Arc::new(MockLifecycle::default());
+    let runtime_status_provider = Arc::new(MockRuntimeStatusProvider {
+        statuses: vec![],
+        models_by_runtime: vec![],
+    });
+    let router = build_router_with_services(
+        store,
+        lifecycle,
+        runtime_status_provider,
+        templates,
+    );
+
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/templates")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap())
+            .unwrap();
+
+    let categories = body["categories"].as_array().unwrap();
+    assert_eq!(categories.len(), 2);
+    assert_eq!(categories[0]["name"], "engineering");
+    assert_eq!(categories[1]["name"], "product");
+    assert_eq!(
+        categories[0]["templates"][0]["prompt_body"],
+        "You are a backend architect."
+    );
+}
+
+#[tokio::test]
+async fn test_get_templates_returns_empty_when_no_templates() {
+    let (_, router) = setup();
+    let response = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/templates")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap())
+            .unwrap();
+    assert_eq!(body["categories"].as_array().unwrap().len(), 0);
 }

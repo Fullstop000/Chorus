@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS agents (
     name TEXT UNIQUE NOT NULL, -- Unique machine name
     display_name TEXT NOT NULL, -- Human-readable display name
     description TEXT, -- Description of the agent's role/capabilities
+    system_prompt TEXT, -- Full system prompt for the LLM (templates inject rich prompts here)
     runtime TEXT NOT NULL, -- The runtime driver used (e.g., 'claude', 'codex')
     model TEXT NOT NULL, -- The specific LLM model used
     reasoning_effort TEXT, -- The reasoning effort configuration

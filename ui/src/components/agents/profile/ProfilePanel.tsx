@@ -281,6 +281,7 @@ export function ProfilePanel() {
             name: agent.name,
             display_name: detail.agent.display_name ?? agent.name,
             description: detail.agent.description ?? "",
+            systemPrompt: detail.agent.systemPrompt ?? null,
             runtime: detail.agent.runtime ?? "claude",
             model: detail.agent.model ?? "sonnet",
             reasoningEffort:

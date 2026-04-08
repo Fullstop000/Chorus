@@ -4,6 +4,7 @@ pub mod drivers;
 pub mod lifecycle;
 pub mod manager;
 pub mod runtime_status;
+pub mod templates;
 pub mod workspace;
 
 pub use lifecycle::AgentLifecycle;

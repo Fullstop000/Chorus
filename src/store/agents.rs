@@ -19,6 +19,8 @@ pub struct Agent {
     pub display_name: String,
     /// Optional longer description.
     pub description: Option<String>,
+    /// Full system prompt for the LLM (rich template prompts go here).
+    pub system_prompt: Option<String>,
     /// Which subprocess driver to spawn (`claude`, `codex`, `kimi`, …).
     pub runtime: String,
     /// Model identifier for the driver.
@@ -126,6 +128,8 @@ pub struct AgentRecordUpsert<'a> {
     pub display_name: &'a str,
     /// Optional description column.
     pub description: Option<&'a str>,
+    /// Optional system prompt for the LLM.
+    pub system_prompt: Option<&'a str>,
     /// Driver column.
     pub runtime: &'a str,
     /// Model column.
@@ -150,6 +154,7 @@ impl Store {
             name,
             display_name,
             description,
+            system_prompt: None,
             runtime,
             model,
             reasoning_effort: None,
@@ -164,12 +169,13 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO agents (id, name, display_name, description, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO agents (id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 id,
                 record.name,
                 record.display_name,
                 record.description,
+                record.system_prompt,
                 record.runtime,
                 record.model,
                 record.reasoning_effort
@@ -202,7 +208,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
-                "SELECT id, name, display_name, description, runtime, model, reasoning_effort, status, session_id, created_at FROM agents ORDER BY name",
+                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents ORDER BY name",
             )?
             .query_map([], |row| {
                 Ok(Agent {
@@ -210,13 +216,14 @@ impl Store {
                     name: row.get(1)?,
                     display_name: row.get(2)?,
                     description: row.get(3)?,
-                    runtime: row.get(4)?,
-                    model: row.get(5)?,
-                    reasoning_effort: row.get(6)?,
+                    system_prompt: row.get(4)?,
+                    runtime: row.get(5)?,
+                    model: row.get(6)?,
+                    reasoning_effort: row.get(7)?,
                     env_vars: Vec::new(),
-                    status: AgentStatus::from_status_str(&row.get::<_, String>(7)?),
-                    session_id: row.get(8)?,
-                    created_at: parse_datetime(&row.get::<_, String>(9)?),
+                    status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
+                    session_id: row.get(9)?,
+                    created_at: parse_datetime(&row.get::<_, String>(10)?),
                 })
             })?
             .filter_map(|r| r.ok())
@@ -227,7 +234,7 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, display_name, description, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
+            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], |row| {
             Ok(Agent {
@@ -235,13 +242,14 @@ impl Store {
                 name: row.get(1)?,
                 display_name: row.get(2)?,
                 description: row.get(3)?,
-                runtime: row.get(4)?,
-                model: row.get(5)?,
-                reasoning_effort: row.get(6)?,
+                system_prompt: row.get(4)?,
+                runtime: row.get(5)?,
+                model: row.get(6)?,
+                reasoning_effort: row.get(7)?,
                 env_vars: Vec::new(),
-                status: AgentStatus::from_status_str(&row.get::<_, String>(7)?),
-                session_id: row.get(8)?,
-                created_at: parse_datetime(&row.get::<_, String>(9)?),
+                status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
+                session_id: row.get(9)?,
+                created_at: parse_datetime(&row.get::<_, String>(10)?),
             })
         })?;
         let mut agent = rows.next().transpose()?;
@@ -264,6 +272,7 @@ impl Store {
             name,
             display_name,
             description,
+            system_prompt: None,
             runtime,
             model,
             reasoning_effort: None,
@@ -274,10 +283,11 @@ impl Store {
     pub fn update_agent_record_with_reasoning(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE agents SET display_name = ?1, description = ?2, runtime = ?3, model = ?4, reasoning_effort = ?5 WHERE name = ?6",
+            "UPDATE agents SET display_name = ?1, description = ?2, system_prompt = ?3, runtime = ?4, model = ?5, reasoning_effort = ?6 WHERE name = ?7",
             params![
                 record.display_name,
                 record.description,
+                record.system_prompt,
                 record.runtime,
                 record.model,
                 record.reasoning_effort,
