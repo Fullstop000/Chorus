@@ -107,6 +107,26 @@ impl AgentRuntime {
             _ => None,
         }
     }
+
+    pub const fn binary_name(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Kimi => "kimi",
+            Self::Opencode => "opencode",
+        }
+    }
+
+    pub const fn acp_adaptor_binary(self) -> &'static str {
+        match self {
+            Self::Claude => "claude-agent-acp",
+            Self::Codex => "codex-acp",
+            // Kimi and OpenCode have native ACP support via subcommands,
+            // so we check for the main binary itself.
+            Self::Kimi => "kimi",
+            Self::Opencode => "opencode",
+        }
+    }
 }
 
 /// Registered human user (can post and own channels).

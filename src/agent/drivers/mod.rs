@@ -92,14 +92,7 @@ pub trait Driver: Send + Sync {
 /// ACP adapter binary names for each runtime.
 /// When the adapter is installed, the ACP driver is preferred over the raw driver.
 fn acp_adapter_binary(runtime: AgentRuntime) -> &'static str {
-    match runtime {
-        AgentRuntime::Claude => "claude-agent-acp",
-        AgentRuntime::Codex => "codex-acp",
-        // Kimi and OpenCode have native ACP support via subcommands,
-        // so we check for the main binary itself.
-        AgentRuntime::Kimi => "kimi",
-        AgentRuntime::Opencode => "opencode",
-    }
+    runtime.acp_adaptor_binary()
 }
 
 /// Build a driver for the given runtime, preferring ACP when the adapter is available.
@@ -107,18 +100,10 @@ pub fn driver_for_runtime(runtime: AgentRuntime) -> Arc<dyn Driver> {
     let acp_binary = acp_adapter_binary(runtime);
     if command_exists(acp_binary) {
         match runtime {
-            AgentRuntime::Claude => {
-                Arc::new(acp::AcpDriver::new(claude::ClaudeAcpRuntime))
-            }
-            AgentRuntime::Codex => {
-                Arc::new(acp::AcpDriver::new(codex::CodexAcpRuntime))
-            }
-            AgentRuntime::Kimi => {
-                Arc::new(acp::AcpDriver::new(kimi::KimiAcpRuntime))
-            }
-            AgentRuntime::Opencode => {
-                Arc::new(acp::AcpDriver::new(opencode::OpencodeAcpRuntime))
-            }
+            AgentRuntime::Claude => Arc::new(acp::AcpDriver::new(claude::ClaudeAcpRuntime)),
+            AgentRuntime::Codex => Arc::new(acp::AcpDriver::new(codex::CodexAcpRuntime)),
+            AgentRuntime::Kimi => Arc::new(acp::AcpDriver::new(kimi::KimiAcpRuntime)),
+            AgentRuntime::Opencode => Arc::new(acp::AcpDriver::new(opencode::OpencodeAcpRuntime)),
         }
     } else {
         // Fallback to raw (1.0) driver when ACP adapter is not installed.

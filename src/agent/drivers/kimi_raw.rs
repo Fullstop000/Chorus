@@ -228,7 +228,6 @@ impl Driver for KimiRawDriver {
                 ],
                 post_startup_notes: vec![],
                 include_stdin_notification_section: true,
-                teams: config.teams.clone(),
             },
         )
     }

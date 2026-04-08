@@ -394,7 +394,6 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
                     "Your process may exit after completing a task. This is normal. You will be restarted when new messages arrive.".to_string(),
                 ],
                 include_stdin_notification_section: false,
-                teams: config.teams.clone(),
             },
         )
     }

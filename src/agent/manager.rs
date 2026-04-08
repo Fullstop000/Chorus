@@ -247,7 +247,14 @@ impl AgentManager {
             None => return Ok(()),
         };
 
-        if !running.driver.supports_stdin_notification() || running.session_id.is_none() {
+        if !running.driver.supports_stdin_notification() {
+            return Ok(());
+        }
+
+        if running.session_id.is_none() {
+            // Agent is still initializing. Count the notification so it is
+            // delivered via stdin as soon as SessionInit is received.
+            running.pending_notification_count += 1;
             return Ok(());
         }
 
@@ -427,6 +434,24 @@ async fn handle_parsed_event(
             running.session_id = Some(session_id.clone());
             let _ = store.update_agent_session(agent_name, Some(&session_id));
             activity_log::set_activity_state(logs, agent_name, "online", "Ready");
+
+            // Flush notifications that arrived before the session was ready.
+            let pending = running.pending_notification_count;
+            if pending > 0 && running.driver.supports_stdin_notification() {
+                running.pending_notification_count = 0;
+                let plural = if pending > 1 { "s" } else { "" };
+                let them = if pending > 1 { "them" } else { "it" };
+                let check_tool = format!("{}check_messages", running.driver.mcp_tool_prefix());
+                let notification = format!(
+                    "[System notification: You have {pending} new message{plural} waiting. \
+                     Call {check_tool} to read {them} when you're ready.]"
+                );
+                if let Some(encoded) = running.driver.encode_stdin_message(&notification, &session_id) {
+                    if let Some(stdin) = running.process.stdin.as_mut() {
+                        let _ = writeln!(stdin, "{encoded}");
+                    }
+                }
+            }
         }
         ParsedEvent::Thinking { ref text } => {
             let preview: String = text.chars().take(120).collect();
