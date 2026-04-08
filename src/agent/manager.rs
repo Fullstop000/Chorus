@@ -329,8 +329,7 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        let bt = std::backtrace::Backtrace::capture();
-                        error!(agent = %name, err = %e, backtrace = %bt, "stdout read error");
+                        error!(agent = %name, err = %e, backtrace = %project_backtrace(), "stdout read error");
                         break;
                     }
                 };
@@ -383,8 +382,7 @@ impl AgentManager {
                             }
                         }
                         Err(e) => {
-                            let bt = std::backtrace::Backtrace::capture();
-                            error!(agent = %name, err = %e, backtrace = %bt, "failed to get exit status");
+                            error!(agent = %name, err = %e, backtrace = %project_backtrace(), "failed to get exit status");
                             let _ = store.update_agent_status(&name, AgentStatus::Inactive);
                         }
                     }
@@ -407,8 +405,7 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        let bt = std::backtrace::Backtrace::capture();
-                        error!(agent = %agent_name, err = %e, backtrace = %bt, "stderr read error");
+                        error!(agent = %agent_name, err = %e, backtrace = %project_backtrace(), "stderr read error");
                         break;
                     }
                 };
@@ -531,8 +528,7 @@ async fn handle_parsed_event(
             activity_log::set_activity_state(logs, agent_name, "online", "Idle");
         }
         ParsedEvent::Error { ref message } => {
-            let bt = std::backtrace::Backtrace::capture();
-            error!(agent = %agent_name, message = %message, backtrace = %bt, "agent error");
+            error!(agent = %agent_name, message = %message, backtrace = %project_backtrace(), "agent error");
             activity_log::set_activity_state(logs, agent_name, "error", message);
         }
         ParsedEvent::WriteStdin { ref data } => {
@@ -959,5 +955,21 @@ mod tests {
             contains_restarted_agent,
             "stale stdout reader removed the restarted agent from the running map"
         );
+    }
+}
+
+/// Capture a backtrace filtered to frames within this crate.
+/// Falls back to the full backtrace if no project frames are found
+/// (e.g. in release builds with debug info stripped).
+fn project_backtrace() -> String {
+    let full = std::backtrace::Backtrace::capture().to_string();
+    let project_frames: Vec<&str> = full
+        .lines()
+        .filter(|line| line.contains("chorus"))
+        .collect();
+    if project_frames.is_empty() {
+        full
+    } else {
+        project_frames.join("\n")
     }
 }
