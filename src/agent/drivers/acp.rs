@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use serde_json::json;
+use tracing::{debug, trace};
 
 use super::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::config::AgentConfig;
@@ -211,6 +212,7 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 if text.is_empty() {
                     vec![]
                 } else {
+                    trace!(kind, "acp text chunk");
                     vec![ParsedEvent::Text { text }]
                 }
             }
@@ -219,6 +221,7 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 if text.is_empty() {
                     vec![]
                 } else {
+                    trace!(kind, "acp thought chunk");
                     vec![ParsedEvent::Thinking { text }]
                 }
             }
@@ -235,6 +238,7 @@ impl<R: AcpRuntime> AcpDriver<R> {
                     .or_else(|| update.get("input"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
+                trace!(tool = %name, "acp tool call");
                 vec![ParsedEvent::ToolCall { name, input }]
             }
             "toolCallUpdate" | "tool_call_update" => {
@@ -270,16 +274,22 @@ impl<R: AcpRuntime> AcpDriver<R> {
                         if text.is_empty() {
                             vec![]
                         } else {
+                            trace!(kind, "acp tool result (structured)");
                             vec![ParsedEvent::ToolResult { content: text }]
                         }
                     } else {
                         vec![]
                     }
                 } else {
+                    trace!(kind, "acp tool result");
                     vec![ParsedEvent::ToolResult { content }]
                 }
             }
-            _ => vec![],
+            "" => vec![],
+            _ => {
+                debug!(kind, "acp session/update: unrecognized kind — update dropped");
+                vec![]
+            }
         }
     }
 

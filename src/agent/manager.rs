@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::config::AgentConfig;
@@ -337,8 +337,12 @@ impl AgentManager {
                     continue;
                 }
 
-                if driver.runtime() == AgentRuntime::Kimi {
-                    debug!(agent = %name, raw_stdout = %line, "raw agent stdout");
+                // ACP runtimes log raw stdout at trace level so `RUST_LOG=chorus=trace`
+                // gives a full wire dump without needing temporary code changes.
+                if driver.runtime() == AgentRuntime::Kimi
+                    || driver.runtime() == AgentRuntime::Opencode
+                {
+                    trace!(agent = %name, raw_stdout = %line, "raw agent stdout");
                 }
 
                 for event in driver.parse_line(&line) {
