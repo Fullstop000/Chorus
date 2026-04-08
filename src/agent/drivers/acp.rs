@@ -177,12 +177,14 @@ impl<R: AcpRuntime> AcpDriver<R> {
         let update = params.get("update").unwrap_or(params);
 
         // `kind` can be in different fields depending on the runtime:
-        // - Most runtimes: `update.kind` or `update.type`
-        // - kimi: `update.sessionUpdate` (snake_case values like "agent_message_chunk")
+        // - kimi / opencode: `update.sessionUpdate` (snake_case: "tool_call", "agent_message_chunk")
+        // - claude ACP and others: `update.kind` or `update.type`
+        // Note: opencode also emits `update.kind` with unrelated values ("read", "write", "other")
+        // that describe the tool category, not the event type — so sessionUpdate must win.
         let kind = update
-            .get("kind")
+            .get("sessionUpdate")
+            .or_else(|| update.get("kind"))
             .or_else(|| update.get("type"))
-            .or_else(|| update.get("sessionUpdate"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 

@@ -25,25 +25,34 @@ impl AcpRuntime for OpencodeAcpRuntime {
         "opencode"
     }
 
-    fn build_acp_args(&self, ctx: &SpawnContext) -> Vec<String> {
-        // OpenCode supports native ACP via the `acp` subcommand.
-        let mut args = vec!["acp".to_string()];
+    fn build_acp_args(&self, _ctx: &SpawnContext) -> Vec<String> {
+        // `opencode acp` has no --model or --variant flags; configuration is via opencode.json.
+        vec!["acp".to_string()]
+    }
 
-        if !ctx.config.model.is_empty() {
-            args.push("--model".to_string());
-            args.push(ctx.config.model.clone());
-        }
+    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
+        // OpenCode requires `cwd` and `mcpServers` (array). MCP bridge is registered via
+        // opencode.json (type "local"), so mcpServers here is empty.
+        serde_json::json!({ "cwd": ctx.working_directory, "mcpServers": [] })
+    }
 
-        if let Some(ref variant) = ctx.config.reasoning_effort {
-            args.push("--variant".to_string());
-            args.push(variant.clone());
-        }
-
-        args
+    fn requires_session_id_in_prompt(&self) -> bool {
+        true
     }
 
     fn write_mcp_config(&self, ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> {
+        // Build model ID: append reasoning variant as suffix if set (e.g. "openai/gpt-4o/low").
+        let model_id = match &ctx.config.reasoning_effort {
+            Some(variant) if !variant.is_empty() => {
+                format!("{}/{}", ctx.config.model, variant)
+            }
+            _ => ctx.config.model.clone(),
+        };
+
+        // McpLocalConfig requires `command` as a single array (binary + args).
+        // There is no separate `args` field; additionalProperties is false.
         let mcp_config = serde_json::json!({
+            "model": model_id,
             "mcp": {
                 "chat": {
                     "type": "local",

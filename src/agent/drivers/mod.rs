@@ -47,6 +47,19 @@ pub enum ParsedEvent {
     Error {
         message: String,
     },
+    /// Pre-encoded bytes to write directly to the agent's stdin.
+    /// Used by runtimes that need to write additional startup data after
+    /// receiving the session/new response (e.g. kimi's deferred session/prompt).
+    WriteStdin {
+        data: String,
+    },
+    /// Emitted alongside WriteStdin when a `session/request_permission` arrives.
+    /// The manager sets a flag so TurnEnd can send a follow-up session/prompt
+    /// that lets kimi read the buffered approval and re-attempt the tool.
+    PermissionRequested {
+        /// The bare tool name from the `toolCall.title` field, if extractable.
+        tool_name: Option<String>,
+    },
 }
 
 /// Spawn context passed to drivers.
