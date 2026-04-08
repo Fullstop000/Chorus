@@ -1,10 +1,195 @@
 # ACP Driver SOP
 
-Standard operating procedures for diagnosing ACP driver failures and integrating new ACP-based runtimes in Chorus.
+Standard operating procedures for adding new ACP runtimes to Chorus and diagnosing failures.
+
+> **Why this doc exists**: The kimi integration took multiple sessions. The mistakes were not hard to avoid — they came from skipping verification before writing code. This doc makes those steps mandatory gates, not optional reading.
 
 ---
 
-## Part 1 — Investigating ACP Driver Failures
+## Part 1 — Adding a New ACP Driver
+
+The rule: **understand before implementing**. Every field name, every response format, and every CLI flag must be verified against the agent's source or a captured wire trace before any Rust is written. Guessing costs sessions. Verifying costs minutes.
+
+---
+
+### Gate 1 (pre-code): Capture a reference wire trace
+
+Run the agent against its own official client (e.g., Zed) and capture the raw stdio exchange. This is the ground truth for every message format.
+
+```bash
+# Wrap the agent binary with a stdio tee
+#!/bin/bash
+exec <agent-binary> "$@" \
+  > >(tee /tmp/acp-agent-out.log) \
+  < <(tee /tmp/acp-host-in.log)
+```
+
+Or enable the agent's own wire logging:
+
+```bash
+KIMI_LOG_LEVEL=debug kimi acp ...
+OPENCODE_LOG=debug opencode acp ...
+```
+
+**What to record:**
+- `initialize` request/response pair
+- `session/new` request/response pair
+- At least one `session/prompt` exchange with tool calls
+- Any `session/request_permission` request and the client's response
+
+If you cannot get a wire trace, read the agent source directly (Gate 2). **Do not proceed without one or the other.**
+
+---
+
+### Gate 2 (pre-code): Read the agent's ACP source for every field you'll produce
+
+Field names in ACP are camelCase in JSON (Pydantic `alias`): `optionId` not `option_id`, `sessionId` not `session_id`, `stopReason` not `stop_reason`. **Never guess — read the model.**
+
+The three files that determine your implementation:
+
+| Agent file | What to extract |
+|---|---|
+| `acp/server.py` or `session/new` handler | Required fields beyond `cwd` + `mcpServers` |
+| `cli/__init__.py` or main entry | Whether global flags before a subcommand are silently dropped |
+| `soul/approval.py` or permission handler | Whether `approve_for_session` persists; what action key is used |
+
+**CLI flag trap — this cost us `--yolo` with kimi:**
+
+```python
+# kimi cli/__init__.py
+@app.command()
+def kimi(ctx: Context, yolo: bool = False, ...):
+    if ctx.invoked_subcommand is not None:
+        return   # ALL flags discarded when subcommand is invoked
+```
+
+If the runtime uses subcommands (`kimi acp`, `opencode acp`), any flag before the subcommand is dropped. The only reliable way to configure ACP-mode behavior is via `session/new` params or the agent's config file.
+
+**Before writing `spawn_args()`**, answer: does each flag I plan to add actually reach the ACP code path? Prove it from the source.
+
+---
+
+### Gate 3 (pre-code): Validate your message formats against the schema
+
+The ACP Python SDK ships canonical Pydantic models. Use them to validate what you plan to send before writing it in Rust.
+
+```bash
+# Find the schema from an installed ACP agent
+find ~/.local/share/uv/tools -name "schema.py" -path "*/acp/*" 2>/dev/null
+
+# Validate session/new params
+python3 -c "
+from acp.schema import NewSessionRequest
+payload = {'cwd': '/tmp', 'mcpServers': [{'name': 'chat', 'command': '/bin/echo', 'args': [], 'env': []}]}
+print(NewSessionRequest.model_validate(payload))
+"
+
+# Validate permission response
+python3 -c "
+from acp.schema import RequestPermissionResponse
+payload = {'outcome': {'outcome': 'selected', 'optionId': 'approve_for_session'}}
+print(RequestPermissionResponse.model_validate(payload))
+"
+
+# See exact serialized field names for any model
+python3 -c "
+from acp.schema import PermissionOption
+print(PermissionOption(option_id='approve_for_session', name='Approve', kind='allow_always').model_dump(by_alias=True))
+"
+```
+
+**Known correct formats** (verified against `agent-client-protocol==0.8.0`):
+
+| Message | Our role | Correct `result`/`params` format |
+|---|---|---|
+| `session/request_permission` response | Client → Agent | `{"outcome": {"outcome": "selected", "optionId": "<id>"}}` |
+| `session/request_permission` rejection | Client → Agent | `{"outcome": {"outcome": "cancelled"}}` |
+| `session/new` params | Client → Agent | `{"cwd": "<abs_path>", "mcpServers": [{...}]}` |
+| `session/prompt` params | Client → Agent | `{"sessionId": "<id>", "prompt": [{"type": "text", "text": "..."}]}` |
+
+Gates 1–3 are complete when you can answer without guessing:
+- What exact JSON does `session/new` need?
+- Do any spawn flags I want actually work in ACP mode?
+- What does a valid permission response look like for this runtime?
+
+---
+
+### Step 1: Implement `AcpRuntime`
+
+Create `src/agent/drivers/<runtime>.rs`. Every decision here should come from Gates 1–3.
+
+```rust
+impl AcpRuntime for MyRuntime {
+    fn runtime(&self) -> AgentRuntime { AgentRuntime::MyRuntime }
+    fn binary_name(&self) -> &str { "myruntime" }
+
+    fn spawn_args(&self, ctx: &SpawnContext) -> Vec<String> {
+        // Only include flags verified to work in ACP subcommand mode (Gate 2).
+        vec!["acp".to_string()]
+    }
+
+    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
+        // Field names from agent source or reference trace (Gates 1/2).
+        // Format validated against schema (Gate 3).
+        json!({
+            "cwd": ctx.working_directory,
+            "mcpServers": [{ "name": "chat", "command": ctx.mcp_command, "args": ctx.mcp_args, "env": [] }]
+        })
+    }
+
+    fn requires_session_id_in_prompt(&self) -> bool {
+        // Determined from agent's session/prompt handler (Gate 2).
+        true
+    }
+}
+```
+
+---
+
+### Step 2: Run DM-002
+
+```bash
+cargo build
+
+nohup ./target/debug/chorus serve --port 3102 --data-dir /tmp/chorus-test-3102 \
+  > /tmp/chorus-3102.log 2>&1 &
+
+cd qa/cases/playwright
+CHORUS_BASE_URL=http://127.0.0.1:3102 \
+CHORUS_RUNTIME=<runtime> \
+CHORUS_MODEL=<model> \
+npx playwright test DM-002.spec.ts --reporter=list --timeout=180000
+```
+
+Expected: passes in under 60s. If it times out, go to Part 2.
+
+---
+
+### Step 3: Verify permission persistence
+
+If the runtime uses `session/request_permission`: send a **second** message after the first succeeds. It must **not** trigger permission requests for the same tools.
+
+If it does, `approve_for_session` was never stored — your approval response was silently rejected. Re-check format against Gate 3.
+
+---
+
+### Step 4: Commit
+
+```
+feat(<runtime>): add ACP driver for <runtime>
+
+- spawn_args: <what flags and why>
+- session_new_params: <what fields the agent requires>
+- requires_session_id_in_prompt: <true/false and why>
+
+Verified: DM-002 passes with <runtime>/<model> in <N>s
+
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+```
+
+---
+
+## Part 2 — Diagnosing ACP Driver Failures
 
 ### Step 1: Identify which phase failed
 
@@ -143,153 +328,6 @@ def kimi(ctx: Context, yolo: bool = False, ...):
 [ ] Verified CLI flags are not silently dropped by subcommand structure
 [ ] Confirmed no concurrent session/prompt calls were sent
 [ ] Checked agent's own debug log for the actual exception
-```
-
----
-
-## Part 2 — Adding a New ACP Driver
-
-### Pre-work: Read the agent's ACP source
-
-Before writing any Rust, read the agent's ACP implementation. The three files that matter:
-
-| File pattern | What to find |
-|---|---|
-| `acp/server.py` or equivalent | `session/new` params — what fields are required? |
-| `acp/session.py` or equivalent | Permission flow — does it use `session/request_permission`? What options? |
-| `soul/approval.py` or equivalent | How is `approve_for_session` stored? Does it persist across turns? |
-
-If source is not available, capture a reference trace from the official client (e.g., Zed) using a proxy.
-
----
-
-### Step 1: Implement `AcpRuntime` (~50–80 lines)
-
-Create `src/agent/drivers/<runtime>.rs`:
-
-```rust
-impl AcpRuntime for MyRuntime {
-    fn runtime(&self) -> AgentRuntime { AgentRuntime::MyRuntime }
-    fn binary_name(&self) -> &str { "myruntime" }
-
-    fn spawn_args(&self, ctx: &SpawnContext) -> Vec<String> {
-        // IMPORTANT: read the agent's CLI source first.
-        // Flags before a subcommand may be silently dropped.
-        vec!["acp".to_string()]
-    }
-
-    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
-        // Match the agent's expected session/new schema exactly.
-        // Validate against the agent source or a reference trace.
-        json!({
-            "cwd": ctx.working_directory,
-            "mcpServers": [{ "name": "chat", "command": ctx.mcp_command, "args": ctx.mcp_args }]
-        })
-    }
-
-    fn requires_session_id_in_prompt(&self) -> bool {
-        // Set true if agent expects sessionId in session/prompt params.
-        // Check the agent's session/prompt handler.
-        true
-    }
-}
-```
-
----
-
-### Step 2: Verify `session/new` params against the agent schema
-
-The agent must receive exactly the fields it expects. Common mismatches:
-
-| Runtime | Gotcha |
-|---|---|
-| kimi | Requires `mcpServers` (array), not `mcp_servers`. Env must be `[]` not omitted. |
-| opencode | May require different MCP transport type field names |
-| Generic ACP | `cwd` must be an absolute path per spec |
-
-**Verify by looking at the agent's `session/new` handler**, not by guessing from the ACP spec. Agents frequently add required fields beyond the spec minimum.
-
----
-
-### Step 3: Confirm `session/request_permission` behavior
-
-Determine if the agent uses permissions and what options it sends:
-
-1. Run the agent manually against a test MCP server
-2. Capture the `session/request_permission` params
-3. Check the `options` array — find the `"kind": "allow_always"` entry
-4. Confirm the `optionId` value for that option (usually `"approve_for_session"`)
-
-The ACP spec response format is fixed:
-```json
-{
-  "jsonrpc": "2.0",
-  "id": <request_id>,
-  "result": {
-    "outcome": {
-      "outcome": "selected",
-      "optionId": "<option_id_from_request>"
-    }
-  }
-}
-```
-
-This is handled by `acp.rs::handle_rpc_request()` — you typically do not need to change it. But verify the agent actually sends `options` with the expected `kind` values.
-
----
-
-### Step 4: Run DM-002 and watch the logs
-
-```bash
-# Build
-cargo build
-
-# Start a test server
-nohup ./target/debug/chorus serve --port 3102 --data-dir /tmp/chorus-test-3102 \
-  > /tmp/chorus-3102.log 2>&1 &
-
-# Run the e2e test
-cd qa/cases/playwright
-CHORUS_BASE_URL=http://127.0.0.1:3102 \
-CHORUS_RUNTIME=<runtime> \
-CHORUS_MODEL=<model> \
-npx playwright test DM-002.spec.ts --reporter=list --timeout=180000
-```
-
-Expected: test passes in under 60s. The agent should:
-1. Receive the DM message
-2. Call `check_messages` + `list_server` (possibly with permission approval)
-3. Call `send_message` with a response containing the test token
-4. End the turn
-
-If the test times out, tail the log and check which phase stalled:
-
-```bash
-tail -f /tmp/chorus-3102.log | grep -E "→|←|TurnEnd|session/|permission"
-```
-
----
-
-### Step 5: Verify permission persistence (if applicable)
-
-If the runtime uses `session/request_permission`, send a second message after the first completes. The second message should NOT trigger permission requests for the same tools.
-
-If it does, `approve_for_session` is not being stored — re-check the response format.
-
----
-
-### Step 6: Commit
-
-```
-feat(<runtime>): add ACP driver for <runtime>
-
-- spawn_args: <what flags and why>
-- session_new_params: <what fields the agent requires>
-- requires_session_id_in_prompt: <true/false and why>
-
-Verified: DM-002 passes with <runtime>/<model> in <N>s
-
-Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
 ---
