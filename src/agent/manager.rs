@@ -966,6 +966,7 @@ fn project_backtrace() -> String {
     let project_frames: Vec<&str> = full
         .lines()
         .filter(|line| line.contains("chorus"))
+        .take(15)
         .collect();
     if project_frames.is_empty() {
         full
