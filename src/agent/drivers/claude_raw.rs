@@ -41,8 +41,6 @@ impl Driver for ClaudeRawDriver {
             "--verbose".to_string(),
             "--output-format".to_string(),
             "stream-json".to_string(),
-            "--input-format".to_string(),
-            "stream-json".to_string(),
             "--mcp-config".to_string(),
             mcp_config_path.to_string_lossy().into_owned(),
             "--disallowed-tools".to_string(),
