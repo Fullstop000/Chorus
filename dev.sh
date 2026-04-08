@@ -11,6 +11,24 @@ RESET='\033[0m'
 
 echo -e "${CYAN}Chorus dev environment${RESET}"
 
+# ── Load nvm so ACP adapter binaries installed via npm are on PATH ──
+export NVM_DIR="$HOME/.nvm"
+if [ -s "$NVM_DIR/nvm.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$NVM_DIR/nvm.sh"
+fi
+
+# ── Auto-install ACP adapter binaries when the base runtime is present ──
+install_acp_adapter() {
+  local binary="$1" package="$2" runtime="$3"
+  if command -v "$runtime" >/dev/null 2>&1 && ! command -v "$binary" >/dev/null 2>&1; then
+    echo -e "${YELLOW}▶ Installing $binary (ACP adapter for $runtime)...${RESET}"
+    npm install -g "$package"
+  fi
+}
+
+install_acp_adapter "codex-acp" "@zed-industries/codex-acp" "codex"
+
 port_in_use() {
   lsof -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
 }

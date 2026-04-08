@@ -299,6 +299,14 @@ export function AgentConfigForm({
               <strong>{runtimeSummary.title}</strong>
               <span>{runtimeSummary.detail}</span>
             </div>
+            {runtimeStatuses.length > 0 && (
+              <p className="text-xs text-muted-foreground leading-relaxed mt-1">
+                Driver:{" "}
+                <span className="badge">
+                  {runtimeStatuses.find((s) => s.runtime === state.runtime)?.driverMode ?? "raw"}
+                </span>
+              </p>
+            )}
             {runtimeStatusError && (
               <p className="text-xs text-muted-foreground leading-relaxed mt-1">
                 {runtimeStatusError}
