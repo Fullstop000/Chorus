@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRuntimeStatuses } from '../../hooks/useRuntimeStatuses'
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
@@ -13,6 +13,8 @@ interface Props {
   onCreated: () => void
 }
 
+const RUNTIME_ORDER = ['claude', 'codex', 'kimi', 'opencode']
+
 export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   const [config, setConfig] = useState<AgentConfigState>({
     name: '',
@@ -26,6 +28,25 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses(open)
+
+  // Reset form when modal closes.
+  useEffect(() => {
+    if (!open) {
+      setConfig({ name: '', display_name: '', description: '', runtime: 'claude', model: '', reasoningEffort: null, envVars: [] })
+      setError(null)
+    }
+  }, [open])
+
+  // Default to the first installed ACP runtime once statuses load.
+  useEffect(() => {
+    if (runtimeStatuses.length === 0 || config.name !== '') return
+    const acpRuntime = RUNTIME_ORDER.find((rt) =>
+      runtimeStatuses.find((s) => s.runtime === rt && s.installed && s.driverMode === 'acp'),
+    )
+    if (acpRuntime && acpRuntime !== config.runtime) {
+      setConfig((prev) => ({ ...prev, runtime: acpRuntime, model: '' }))
+    }
+  }, [runtimeStatuses]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleCreate() {
     if (!config.name.trim()) {

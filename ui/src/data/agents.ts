@@ -33,6 +33,7 @@ export interface RuntimeStatusInfo {
   runtime: 'claude' | 'codex' | 'kimi' | 'opencode' | string
   installed: boolean
   authStatus?: RuntimeAuthStatus
+  driverMode: 'acp' | 'raw'
 }
 
 export interface AgentDetailResponse {
