@@ -6,13 +6,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::config::AgentConfig;
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::AgentLifecycle;
-use crate::store::agents::{AgentRuntime, AgentStatus};
+use crate::agent::AgentRuntime;
+use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
@@ -22,7 +23,9 @@ struct RunningAgent {
     driver: Arc<dyn Driver>,
     session_id: Option<String>,
     pending_notification_count: u32,
-    last_tool_name: Option<String>,
+    last_tool_raw_name: Option<String>,
+    /// Accumulated thinking chunks, flushed to log/activity on the next non-Thinking event.
+    pending_thinking: String,
 }
 
 pub struct AgentManager {
@@ -37,12 +40,7 @@ pub struct AgentManager {
 
 fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
     match AgentRuntime::parse(runtime) {
-        Some(AgentRuntime::Claude) => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
-        Some(AgentRuntime::Codex) => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
-        Some(AgentRuntime::Kimi) => Ok(Arc::new(crate::agent::drivers::kimi::KimiDriver)),
-        Some(AgentRuntime::Opencode) => {
-            Ok(Arc::new(crate::agent::drivers::opencode::OpencodeDriver))
-        }
+        Some(rt) => Ok(crate::agent::drivers::driver_for_runtime(rt)),
         None => anyhow::bail!("Unknown runtime: {runtime}"),
     }
 }
@@ -85,16 +83,20 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
 
         let driver = get_driver(&agent.runtime)?;
-        let resumable_session_id = match driver.runtime() {
-            AgentRuntime::Codex | AgentRuntime::Opencode => agent.session_id.clone(),
-            AgentRuntime::Kimi => Some(
-                agent
-                    .session_id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            ),
-            AgentRuntime::Claude => agent.session_id.clone(),
-        };
+        // Raw Kimi driver requires a pre-generated session id (it uses
+        // stdin notifications, so supports_stdin_notification()=true).
+        // ACP drivers handle sessions internally via session/new|load.
+        let resumable_session_id =
+            if driver.runtime() == AgentRuntime::Kimi && driver.supports_stdin_notification() {
+                Some(
+                    agent
+                        .session_id
+                        .clone()
+                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                )
+            } else {
+                agent.session_id.clone()
+            };
 
         let config = AgentConfig {
             name: agent.name.clone(),
@@ -138,7 +140,8 @@ impl AgentManager {
         );
 
         let running_session_id = config.session_id.clone();
-        if driver.runtime() == AgentRuntime::Kimi {
+        // Pre-write session id for raw Kimi driver (it reads from store on spawn).
+        if driver.runtime() == AgentRuntime::Kimi && driver.supports_stdin_notification() {
             if let Some(ref session_id) = running_session_id {
                 self.store
                     .update_agent_session(agent_name, Some(session_id.as_str()))?;
@@ -174,7 +177,8 @@ impl AgentManager {
                     driver: driver.clone(),
                     session_id: running_session_id,
                     pending_notification_count: 0,
-                    last_tool_name: None,
+                    last_tool_raw_name: None,
+                    pending_thinking: String::new(),
                 },
             );
         }
@@ -212,6 +216,8 @@ impl AgentManager {
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Inactive)?;
+        // Clear persisted session so next start uses session/new.
+        let _ = self.store.update_agent_session(agent_name, None);
         activity_log::set_activity_state(
             &self.activity_logs,
             agent_name,
@@ -234,6 +240,8 @@ impl AgentManager {
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Sleeping)?;
+        // Clear persisted session so next start uses session/new.
+        let _ = self.store.update_agent_session(agent_name, None);
         activity_log::set_activity_state(&self.activity_logs, agent_name, "offline", "Sleeping");
         Ok(())
     }
@@ -246,7 +254,14 @@ impl AgentManager {
             None => return Ok(()),
         };
 
-        if !running.driver.supports_stdin_notification() || running.session_id.is_none() {
+        if !running.driver.supports_stdin_notification() {
+            return Ok(());
+        }
+
+        if running.session_id.is_none() {
+            // Agent is still initializing. Count the notification so it is
+            // delivered via stdin as soon as SessionInit is received.
+            running.pending_notification_count += 1;
             return Ok(());
         }
 
@@ -321,7 +336,7 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        error!(agent = %name, err = %e, "stdout read error");
+                        error!(agent = %name, err = %e, backtrace = %project_backtrace(), "stdout read error");
                         break;
                     }
                 };
@@ -329,8 +344,19 @@ impl AgentManager {
                     continue;
                 }
 
-                if driver.runtime() == AgentRuntime::Kimi {
-                    debug!(agent = %name, raw_stdout = %line, "raw agent stdout");
+                // ACP runtimes log raw stdout at trace level so `RUST_LOG=chorus=trace`
+                // gives a full wire dump without needing temporary code changes.
+                // Skip per-chunk streaming lines to avoid log floods.
+                if (driver.runtime() == AgentRuntime::Kimi
+                    || driver.runtime() == AgentRuntime::Opencode)
+                    && !line.contains("agent_message_chunk")
+                    && !line.contains("agentMessageChunk")
+                    && !line.contains("agent_thought_chunk")
+                    && !line.contains("agentThoughtChunk")
+                    && !line.contains("tool_call_update")
+                    && !line.contains("toolCallUpdate")
+                {
+                    trace!(agent = %name, raw_stdout = %line, "raw agent stdout");
                 }
 
                 for event in driver.parse_line(&line) {
@@ -368,10 +394,13 @@ impl AgentManager {
                                 warn!(agent = %name, code, "process crashed — marking inactive");
                                 let _ = store.update_agent_status(&name, AgentStatus::Inactive);
                             }
+                            // Clear persisted session so next start uses session/new.
+                            let _ = store.update_agent_session(&name, None);
                         }
                         Err(e) => {
-                            error!(agent = %name, err = %e, "failed to get exit status");
+                            error!(agent = %name, err = %e, backtrace = %project_backtrace(), "failed to get exit status");
                             let _ = store.update_agent_status(&name, AgentStatus::Inactive);
+                            let _ = store.update_agent_session(&name, None);
                         }
                     }
                 }
@@ -393,7 +422,7 @@ impl AgentManager {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        error!(agent = %agent_name, err = %e, "stderr read error");
+                        error!(agent = %agent_name, err = %e, backtrace = %project_backtrace(), "stderr read error");
                         break;
                     }
                 };
@@ -420,36 +449,57 @@ async fn handle_parsed_event(
         None => return,
     };
 
+    // Flush accumulated thinking when a non-Thinking event arrives.
+    let is_thinking_event = matches!(event, ParsedEvent::Thinking { .. });
+    if !is_thinking_event && !running.pending_thinking.is_empty() {
+        let full_thought = std::mem::take(&mut running.pending_thinking);
+        let preview: String = full_thought.chars().take(200).collect();
+        let preview = if full_thought.chars().count() > 200 {
+            format!("{preview}…")
+        } else {
+            preview
+        };
+        trace!(agent = %agent_name, thought = %preview, "thinking block complete");
+        activity_log::push_activity(
+            logs,
+            agent_name,
+            ActivityEntry::Thinking { text: full_thought },
+        );
+    }
+
     match event {
         ParsedEvent::SessionInit { session_id } => {
             info!(agent = %agent_name, session = %session_id, "session started");
             running.session_id = Some(session_id.clone());
             let _ = store.update_agent_session(agent_name, Some(&session_id));
             activity_log::set_activity_state(logs, agent_name, "online", "Ready");
+
+            // Flush notifications that arrived before the session was ready.
+            let pending = running.pending_notification_count;
+            if pending > 0 && running.driver.supports_stdin_notification() {
+                running.pending_notification_count = 0;
+                let plural = if pending > 1 { "s" } else { "" };
+                let them = if pending > 1 { "them" } else { "it" };
+                let check_tool = format!("{}check_messages", running.driver.mcp_tool_prefix());
+                let notification = format!(
+                    "[System notification: You have {pending} new message{plural} waiting. \
+                     Call {check_tool} to read {them} when you're ready.]"
+                );
+                if let Some(encoded) = running
+                    .driver
+                    .encode_stdin_message(&notification, &session_id)
+                {
+                    if let Some(stdin) = running.process.stdin.as_mut() {
+                        let _ = writeln!(stdin, "{encoded}");
+                    }
+                }
+            }
         }
         ParsedEvent::Thinking { ref text } => {
-            let preview: String = text.chars().take(120).collect();
-            let preview = if text.chars().count() > 120 {
-                format!("{preview}…")
-            } else {
-                preview
-            };
-            debug!(agent = %agent_name, text = %preview, "thinking");
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::Thinking { text: text.clone() },
-            );
+            running.pending_thinking.push_str(text);
             activity_log::set_activity_state(logs, agent_name, "thinking", "Thinking\u{2026}");
         }
         ParsedEvent::Text { ref text } => {
-            let preview: String = text.chars().take(120).collect();
-            let preview = if text.chars().count() > 120 {
-                format!("{preview}…")
-            } else {
-                preview
-            };
-            info!(agent = %agent_name, text = %preview, "text output");
             activity_log::push_activity(
                 logs,
                 agent_name,
@@ -463,28 +513,20 @@ async fn handle_parsed_event(
             let display_name = driver.tool_display_name(name);
             let tool_input = driver.summarize_tool_input(name, input);
             info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
-            running.last_tool_name = Some(display_name.clone());
+            running.last_tool_raw_name = Some(name.clone());
             activity_log::push_activity(
                 logs,
                 agent_name,
                 ActivityEntry::ToolCall {
-                    tool_name: display_name.clone(),
+                    tool_name: name.clone(),
                     tool_input,
                 },
             );
             activity_log::set_activity_state(logs, agent_name, "working", &display_name);
         }
         ParsedEvent::ToolResult { ref content } => {
-            info!(agent = %agent_name, "tool result");
-            let tool_name = running.last_tool_name.clone().unwrap_or_default();
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::ToolResult {
-                    tool_name,
-                    content: content.clone(),
-                },
-            );
+            let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
+            activity_log::upsert_tool_result_activity(logs, agent_name, tool_name, content.clone());
         }
         ParsedEvent::TurnEnd { session_id } => {
             info!(agent = %agent_name, "turn ended");
@@ -495,8 +537,17 @@ async fn handle_parsed_event(
             activity_log::set_activity_state(logs, agent_name, "online", "Idle");
         }
         ParsedEvent::Error { ref message } => {
-            error!(agent = %agent_name, message = %message, "agent error");
+            error!(agent = %agent_name, message = %message, backtrace = %project_backtrace(), "agent error");
             activity_log::set_activity_state(logs, agent_name, "error", message);
+        }
+        ParsedEvent::WriteStdin { ref data } => {
+            if let Some(stdin) = running.process.stdin.as_mut() {
+                let _ = write!(stdin, "{data}");
+            }
+        }
+        ParsedEvent::PermissionRequested { tool_name: _ } => {
+            // Permission approval is handled inline — the response has already been
+            // written to stdin by WriteStdin. No retry needed.
         }
     }
 }
@@ -666,6 +717,23 @@ fn truncate_prompt_text(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Capture a backtrace filtered to frames within this crate.
+/// Falls back to the full backtrace if no project frames are found
+/// (e.g. in release builds with debug info stripped).
+fn project_backtrace() -> String {
+    let full = std::backtrace::Backtrace::capture().to_string();
+    let project_frames: Vec<&str> = full
+        .lines()
+        .filter(|line| line.contains("chorus"))
+        .take(15)
+        .collect();
+    if project_frames.is_empty() {
+        full
+    } else {
+        project_frames.join("\n")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -726,6 +794,214 @@ mod tests {
 
         fn list_models(&self) -> anyhow::Result<Vec<String>> {
             Ok(vec!["gpt-5.4-mini".to_string()])
+        }
+    }
+
+    // ── Chunk accumulation tests ──
+
+    /// Helper: create a minimal RunningAgent backed by a real (sleeping) child process.
+    fn make_running_agent(driver: Arc<dyn Driver>) -> RunningAgent {
+        let mut proc = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        proc.stdout.take(); // detach so no reader is needed
+        RunningAgent {
+            instance_id: 99,
+            process: proc,
+            driver,
+            session_id: Some("s1".to_string()),
+            pending_notification_count: 0,
+            last_tool_raw_name: None,
+            pending_thinking: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn thinking_chunks_accumulate_and_flush_as_single_activity_entry() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        let agents: Arc<Mutex<HashMap<String, RunningAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+
+        agents
+            .lock()
+            .await
+            .insert("bot1".to_string(), make_running_agent(driver.clone()));
+
+        // Feed three thinking chunks — should not appear in the log yet.
+        for chunk in &["Let me ", "think ", "carefully."] {
+            handle_parsed_event(
+                &agents,
+                &logs,
+                &store,
+                "bot1",
+                ParsedEvent::Thinking {
+                    text: chunk.to_string(),
+                },
+                &driver,
+            )
+            .await;
+        }
+        let pre_flush = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let pre_thinking_count = pre_flush
+            .iter()
+            .filter(|e| matches!(e.entry, ActivityEntry::Thinking { .. }))
+            .count();
+        assert_eq!(
+            pre_thinking_count, 0,
+            "thinking chunks must not be pushed until flushed"
+        );
+
+        // A non-Thinking event flushes the buffer.
+        handle_parsed_event(
+            &agents,
+            &logs,
+            &store,
+            "bot1",
+            ParsedEvent::TurnEnd { session_id: None },
+            &driver,
+        )
+        .await;
+
+        let entries = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let thinking_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| matches!(e.entry, ActivityEntry::Thinking { .. }))
+            .collect();
+        assert_eq!(
+            thinking_entries.len(),
+            1,
+            "all thinking chunks must flush as exactly one Thinking entry"
+        );
+        if let ActivityEntry::Thinking { ref text } = thinking_entries[0].entry {
+            assert_eq!(text, "Let me think carefully.");
+        } else {
+            panic!("expected Thinking entry");
+        }
+
+        {
+            let mut map = agents.lock().await;
+            if let Some(mut r) = map.remove("bot1") {
+                let _ = r.process.kill();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn message_chunks_each_create_separate_text_entry() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        let agents: Arc<Mutex<HashMap<String, RunningAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+
+        agents
+            .lock()
+            .await
+            .insert("bot1".to_string(), make_running_agent(driver.clone()));
+
+        for chunk in &["Hello ", "world", "!"] {
+            handle_parsed_event(
+                &agents,
+                &logs,
+                &store,
+                "bot1",
+                ParsedEvent::Text {
+                    text: chunk.to_string(),
+                },
+                &driver,
+            )
+            .await;
+        }
+
+        let entries = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let text_entries: Vec<_> = entries
+            .iter()
+            .filter_map(|e| {
+                if let ActivityEntry::Text { ref text } = e.entry {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            text_entries,
+            vec!["Hello ", "world", "!"],
+            "each message chunk produces its own Text activity entry"
+        );
+
+        {
+            let mut map = agents.lock().await;
+            if let Some(mut r) = map.remove("bot1") {
+                let _ = r.process.kill();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn interleaved_thinking_chunks_flush_before_tool_call() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        let agents: Arc<Mutex<HashMap<String, RunningAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+
+        agents
+            .lock()
+            .await
+            .insert("bot1".to_string(), make_running_agent(driver.clone()));
+
+        // Feed two thinking chunks then a ToolCall.
+        for chunk in &["step one ", "step two"] {
+            handle_parsed_event(
+                &agents,
+                &logs,
+                &store,
+                "bot1",
+                ParsedEvent::Thinking {
+                    text: chunk.to_string(),
+                },
+                &driver,
+            )
+            .await;
+        }
+        handle_parsed_event(
+            &agents,
+            &logs,
+            &store,
+            "bot1",
+            ParsedEvent::ToolCall {
+                name: "send_message".to_string(),
+                input: serde_json::json!({}),
+            },
+            &driver,
+        )
+        .await;
+
+        let entries = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let thinking_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| matches!(e.entry, ActivityEntry::Thinking { .. }))
+            .collect();
+        assert_eq!(thinking_entries.len(), 1);
+        if let ActivityEntry::Thinking { ref text } = thinking_entries[0].entry {
+            assert_eq!(text, "step one step two");
+        }
+
+        {
+            let mut map = agents.lock().await;
+            if let Some(mut r) = map.remove("bot1") {
+                let _ = r.process.kill();
+            }
         }
     }
 
@@ -866,7 +1142,8 @@ mod tests {
                     driver: driver.clone(),
                     session_id: None,
                     pending_notification_count: 0,
-                    last_tool_name: None,
+                    last_tool_raw_name: None,
+                    pending_thinking: String::new(),
                 },
             );
         }
@@ -894,7 +1171,8 @@ mod tests {
                     driver,
                     session_id: None,
                     pending_notification_count: 0,
-                    last_tool_name: None,
+                    last_tool_raw_name: None,
+                    pending_thinking: String::new(),
                 },
             );
         }

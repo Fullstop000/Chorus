@@ -119,6 +119,7 @@
 .activity-item-meta {
   color: var(--color-accent-foreground);
   font-family: var(--font-mono);
+  word-break: break-all;
 }
 
 .activity-item-chip {

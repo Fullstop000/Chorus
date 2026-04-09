@@ -26,6 +26,8 @@ use axum::http::StatusCode;
 use axum::Json;
 use tracing::debug;
 
+use crate::agent::drivers::command_exists;
+use crate::agent::runtime::AgentRuntime;
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::AgentLifecycle;
 use crate::store::Store;
@@ -178,10 +180,23 @@ pub async fn handle_list_runtime_statuses(
         .list_statuses()
         .map_err(|e| internal_err(e.to_string()))?
         .into_iter()
-        .map(|status| dto::RuntimeStatusInfo {
-            runtime: status.runtime,
-            installed: status.installed,
-            auth_status: status.auth_status,
+        .map(|status| {
+            let driver_mode = AgentRuntime::parse(&status.runtime)
+                .map(|rt| {
+                    if command_exists(rt.acp_adaptor_binary()) {
+                        "acp"
+                    } else {
+                        "raw"
+                    }
+                })
+                .unwrap_or("raw")
+                .to_string();
+            dto::RuntimeStatusInfo {
+                runtime: status.runtime,
+                installed: status.installed,
+                auth_status: status.auth_status,
+                driver_mode,
+            }
         })
         .collect();
     Ok(Json(statuses))

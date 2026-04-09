@@ -51,7 +51,7 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(_)) => {}
                     Some(Err(err)) => {
-                        warn!(viewer = %viewer, error = %err, "realtime websocket receive failed");
+                        debug!(viewer = %viewer, error = %err, "realtime websocket receive failed");
                         break;
                     }
                 }

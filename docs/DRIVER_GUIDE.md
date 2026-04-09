@@ -2,6 +2,32 @@
 
 This guide is the practical checklist for adding a new agent runtime to Chorus and verifying that it actually works in the live product.
 
+## Dual-Driver Architecture (Raw 1.0 + ACP 2.0)
+
+Each runtime has two driver implementations:
+
+| Layer | Files | Purpose |
+|-------|-------|---------|
+| **Raw (1.0)** | `<runtime>_raw.rs` | Bespoke per-runtime JSON parsing. Always works — no extra dependencies. |
+| **ACP (2.0)** | `<runtime>.rs` + `acp.rs` | Thin `AcpRuntime` impl + shared ACP protocol handler. Requires ACP adapter. |
+
+**Selection logic** (`mod.rs::driver_for_runtime()`): if the ACP adapter binary is on `$PATH`, use ACP driver; otherwise fall back to raw driver.
+
+| Runtime | ACP adapter binary | Native ACP? |
+|---------|-------------------|-------------|
+| Claude | `claude-agent-acp` | No — needs [acpx](https://github.com/openclaw/acpx) adapter |
+| Codex | `codex-acp` | No — needs acpx adapter |
+| Kimi | `kimi` (subcommand `acp`) | Yes — native `kimi acp` |
+| OpenCode | `opencode` (subcommand `acp`) | Yes — native `opencode acp` |
+
+**Adding a new runtime with ACP:**
+1. Implement the `AcpRuntime` trait in `<runtime>.rs` (~50-80 lines)
+2. You do **not** need a custom stdout parser, stdin encoder, or tool display mapper — ACP handles it
+
+**Adding a new runtime raw-only:**
+1. Implement the full `Driver` trait in `<runtime>_raw.rs` (~400-500 lines)
+2. Write the custom stdout parser, stdin encoder, tool display mapper
+
 The goal is not just "the process starts." The goal is:
 
 - the runtime can be spawned reliably
@@ -14,10 +40,14 @@ The goal is not just "the process starts." The goal is:
 
 New driver work usually touches these files:
 
+- `src/agent/drivers/acp.rs`
+  - shared ACP protocol: `AcpRuntime` trait definition, `AcpDriver<R>` implementation, JSON-RPC parsing, tool display names
 - `src/agent/drivers/<runtime>.rs`
-  - runtime-specific spawn, prompt, parsing, tool naming, and activity labels
+  - thin `AcpRuntime` impl: binary name, ACP CLI args, MCP config, env overrides, auth detection, model list
+- `src/agent/drivers/<runtime>_raw.rs`
+  - full raw `Driver` impl: bespoke stdout parsing, stdin encoding, tool display, status detection
 - `src/agent/drivers/mod.rs`
-  - module registration
+  - module registration, `driver_for_runtime()` selection logic
 - `src/agent/manager.rs`
   - driver selection, session handling, and subprocess lifecycle
 - `src/main.rs`

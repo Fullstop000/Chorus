@@ -227,8 +227,6 @@ function ThinkingRow({ item }: { item: ActivityLogEntry }) {
 
 function ToolRow({ item }: { item: ActivityLogEntry }) {
   const { entry, timestamp_ms } = item;
-  // entry.tool_name is already the human-readable display name from backend
-  // We look up a matching icon by trying the raw name first, fallback to display name
   const meta = toolMeta(entry.tool_name ?? "");
   const input = entry.tool_input ?? "";
 
@@ -238,9 +236,7 @@ function ToolRow({ item }: { item: ActivityLogEntry }) {
       <div className="activity-item-main">
         <div className="activity-item-heading">
           <span className="activity-item-label">Tool</span>
-          <span className="activity-item-meta">
-            {entry.tool_name || meta.label}
-          </span>
+          <span className="activity-item-meta">{entry.tool_name}</span>
         </div>
         {input && (
           <div className="activity-item-body activity-tool-input">
@@ -312,6 +308,31 @@ function ActivityRow({ item }: { item: ActivityLogEntry }) {
     default:
       return null;
   }
+}
+
+// Merge consecutive Thinking and Text entries so streaming tokens appear as one row.
+function coalesceEntries(entries: ActivityLogEntry[]): ActivityLogEntry[] {
+  const result: ActivityLogEntry[] = [];
+  for (const entry of entries) {
+    const last = result[result.length - 1];
+    if (
+      last &&
+      last.entry.kind === entry.entry.kind &&
+      (entry.entry.kind === ActivityEntryKind.Thinking ||
+        entry.entry.kind === ActivityEntryKind.Text)
+    ) {
+      result[result.length - 1] = {
+        ...last,
+        entry: {
+          ...last.entry,
+          text: (last.entry.text ?? "") + (entry.entry.text ?? ""),
+        },
+      };
+    } else {
+      result.push(entry);
+    }
+  }
+  return result;
 }
 
 // ── Main panel ────────────────────────────────────────────────────
@@ -409,7 +430,7 @@ export function ActivityPanel({ agentName }: Props) {
         <div className="activity-empty">No activity yet.</div>
       ) : (
         <div className="activity-list" ref={listRef}>
-          {entries.map((item) => (
+          {coalesceEntries(entries).map((item) => (
             <ActivityRow key={item.seq} item={item} />
           ))}
         </div>

@@ -40,6 +40,9 @@ TODOS.md
 
 # Test output
 /tmp/chorus-test/
+test-results/
+ui/test-results/
+**/.last-run.json
 
 # UI build artifacts
 ui/dist/
