@@ -16,38 +16,31 @@ impl AcpRuntime for ClaudeAcpRuntime {
         "claude-agent-acp"
     }
 
-    fn build_acp_args(&self, ctx: &SpawnContext) -> Vec<String> {
-        let mcp_config_path = std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
-
-        let mut args = vec![
-            "--mcp-config".to_string(),
-            mcp_config_path.to_string_lossy().into_owned(),
-            "--model".to_string(),
-            if ctx.config.model.is_empty() {
-                "sonnet".to_string()
-            } else {
-                ctx.config.model.clone()
-            },
-        ];
-
-        // Skip permissions for automated use
-        args.push("--dangerously-skip-permissions".to_string());
-
-        args
+    fn build_acp_args(&self, _ctx: &SpawnContext) -> Vec<String> {
+        // claude-agent-acp is a pure ACP stdio agent (Claude Agent SDK adapter).
+        // No CLI flags — MCP servers and model are configured via session/new params.
+        vec![]
     }
 
-    fn write_mcp_config(&self, ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> {
-        let mcp_config = serde_json::json!({
-            "mcpServers": {
-                "chat": {
-                    "command": ctx.bridge_binary,
-                    "args": ["bridge", "--agent-id", &ctx.agent_id, "--server-url", &ctx.server_url]
-                }
-            }
-        });
-        let mcp_config_path = std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
-        std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)?;
-        Ok(Some(mcp_config_path))
+    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
+        serde_json::json!({
+            "cwd": ctx.working_directory,
+            "mcpServers": [{
+                "name": "chat",
+                "command": ctx.bridge_binary,
+                "args": ["bridge", "--agent-id", &ctx.agent_id, "--server-url", &ctx.server_url],
+                "env": []
+            }]
+        })
+    }
+
+    fn requires_session_id_in_prompt(&self) -> bool {
+        true
+    }
+
+    fn write_mcp_config(&self, _ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> {
+        // MCP servers are registered via session/new params, not a config file.
+        Ok(None)
     }
 
     fn env_overrides(&self, _ctx: &SpawnContext) -> Vec<(String, Option<String>)> {
