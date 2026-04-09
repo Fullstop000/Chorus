@@ -345,8 +345,13 @@ impl AgentManager {
 
                 // ACP runtimes log raw stdout at trace level so `RUST_LOG=chorus=trace`
                 // gives a full wire dump without needing temporary code changes.
-                if driver.runtime() == AgentRuntime::Kimi
-                    || driver.runtime() == AgentRuntime::Opencode
+                // Skip per-chunk streaming lines to avoid log floods.
+                if (driver.runtime() == AgentRuntime::Kimi
+                    || driver.runtime() == AgentRuntime::Opencode)
+                    && !line.contains("agent_message_chunk")
+                    && !line.contains("agentMessageChunk")
+                    && !line.contains("tool_call_update")
+                    && !line.contains("toolCallUpdate")
                 {
                     trace!(agent = %name, raw_stdout = %line, "raw agent stdout");
                 }
@@ -485,13 +490,6 @@ async fn handle_parsed_event(
             activity_log::set_activity_state(logs, agent_name, "thinking", "Thinking\u{2026}");
         }
         ParsedEvent::Text { ref text } => {
-            let preview: String = text.chars().take(120).collect();
-            let preview = if text.chars().count() > 120 {
-                format!("{preview}…")
-            } else {
-                preview
-            };
-            trace!(agent = %agent_name, text = %preview, "text output");
             activity_log::push_activity(
                 logs,
                 agent_name,
@@ -518,16 +516,8 @@ async fn handle_parsed_event(
             activity_log::set_activity_state(logs, agent_name, "working", &display_name);
         }
         ParsedEvent::ToolResult { ref content } => {
-            info!(agent = %agent_name, "tool result");
             let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::ToolResult {
-                    tool_name,
-                    content: content.clone(),
-                },
-            );
+            activity_log::upsert_tool_result_activity(logs, agent_name, tool_name, content.clone());
         }
         ParsedEvent::TurnEnd { session_id } => {
             info!(agent = %agent_name, "turn ended");

@@ -44,35 +44,69 @@ port_in_use() {
 }
 
 API_PORT=3001
-if port_in_use "$API_PORT"; then
-  echo -e "${YELLOW}⚠ Port :$API_PORT is already in use.${RESET}"
-  if [ ! -t 0 ]; then
-    echo "Run interactively to choose another API port."
-    exit 1
-  fi
 
+pick_alternate_port() {
   while true; do
     printf "Enter a different API port, or type 'q' to abort: "
     read -r CHOSEN_PORT
-
     if [ "$CHOSEN_PORT" = "q" ] || [ "$CHOSEN_PORT" = "Q" ]; then
       echo "Aborted."
       exit 1
     fi
-
     if ! [[ "$CHOSEN_PORT" =~ ^[0-9]+$ ]] || [ "$CHOSEN_PORT" -lt 1 ] || [ "$CHOSEN_PORT" -gt 65535 ]; then
       echo "Port must be a number between 1 and 65535."
       continue
     fi
-
     if port_in_use "$CHOSEN_PORT"; then
       echo "Port :$CHOSEN_PORT is also in use."
       continue
     fi
-
     API_PORT="$CHOSEN_PORT"
     break
   done
+}
+
+if port_in_use "$API_PORT"; then
+  PORT_PID=$(lsof -iTCP:"$API_PORT" -sTCP:LISTEN -t 2>/dev/null | head -1)
+  IS_CHORUS=false
+  if [ -n "$PORT_PID" ]; then
+    PROC_CMD=$(ps -o comm= -p "$PORT_PID" 2>/dev/null | xargs basename 2>/dev/null)
+    if [ "$PROC_CMD" = "chorus" ]; then
+      IS_CHORUS=true
+    fi
+  fi
+
+  if [ "$IS_CHORUS" = true ]; then
+    echo -e "${YELLOW}⚠ Port :$API_PORT is in use by a Chorus backend process (pid $PORT_PID).${RESET}"
+    if [ ! -t 0 ]; then
+      # Non-interactive: kill the old Chorus process automatically.
+      kill "$PORT_PID" 2>/dev/null
+      sleep 0.3
+    else
+      printf "Kill it and restart? [Y/n/q] "
+      read -r ANSWER
+      case "$ANSWER" in
+        q|Q)
+          echo "Aborted."
+          exit 1
+          ;;
+        n|N)
+          pick_alternate_port
+          ;;
+        *)
+          kill "$PORT_PID" 2>/dev/null
+          sleep 0.3
+          ;;
+      esac
+    fi
+  else
+    echo -e "${YELLOW}⚠ Port :$API_PORT is already in use by another process (pid ${PORT_PID:-unknown}).${RESET}"
+    if [ ! -t 0 ]; then
+      echo "Run interactively to choose another API port."
+      exit 1
+    fi
+    pick_alternate_port
+  fi
 fi
 
 # ── Build Rust binary if needed ──

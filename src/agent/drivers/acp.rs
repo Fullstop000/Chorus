@@ -233,7 +233,6 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 if text.is_empty() {
                     vec![]
                 } else {
-                    trace!(kind, "acp text chunk");
                     vec![ParsedEvent::Text { text }]
                 }
             }
@@ -242,7 +241,6 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 if text.is_empty() {
                     vec![]
                 } else {
-                    trace!(kind, "acp thought chunk");
                     vec![ParsedEvent::Thinking { text }]
                 }
             }
