@@ -262,7 +262,7 @@ impl<R: AcpRuntime> AcpDriver<R> {
                     .or_else(|| update.get("input"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
-                trace!(tool = %name, "acp tool call");
+                trace!(agent = self.runtime_impl.runtime().as_str(), tool = %name, "acp tool call");
                 vec![ParsedEvent::ToolCall { name, input }]
             }
             "toolCallUpdate" | "tool_call_update" => {
@@ -300,22 +300,45 @@ impl<R: AcpRuntime> AcpDriver<R> {
                         if text.is_empty() {
                             vec![]
                         } else {
-                            trace!(kind, "acp tool result (structured)");
+                            trace!(
+                                agent = self.runtime_impl.runtime().as_str(),
+                                kind,
+                                "acp tool result (structured)"
+                            );
                             vec![ParsedEvent::ToolResult { content: text }]
                         }
                     } else {
                         vec![]
                     }
                 } else {
-                    trace!(kind, "acp tool result");
+                    trace!(
+                        agent = self.runtime_impl.runtime().as_str(),
+                        kind,
+                        "acp tool result"
+                    );
                     vec![ParsedEvent::ToolResult { content }]
                 }
             }
-            "" => vec![],
+            // ACP-defined update kinds that Chorus doesn't act on.
+            // user_message_chunk: echo of the user's prompt being streamed back.
+            // plan / available_commands_update / current_mode_update /
+            // config_option_update / session_info_update: informational.
+            "userMessageChunk"
+            | "user_message_chunk"
+            | "plan"
+            | "availableCommandsUpdate"
+            | "available_commands_update"
+            | "currentModeUpdate"
+            | "current_mode_update"
+            | "configOptionUpdate"
+            | "config_option_update"
+            | "sessionInfoUpdate"
+            | "session_info_update"
+            | "" => vec![],
             _ => {
                 debug!(
-                    kind,
-                    "acp session/update: unrecognized kind — update dropped"
+                    agent = self.runtime_impl.runtime().as_str(),
+                    kind, "acp session/update: unrecognized kind — update dropped"
                 );
                 vec![]
             }
