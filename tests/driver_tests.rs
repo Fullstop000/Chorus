@@ -178,7 +178,6 @@ fn test_claude_acp_prompt_uses_split_message_tools() {
         session_id: None,
         reasoning_effort: None,
         env_vars: Vec::new(),
-        teams: vec![],
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");
@@ -205,7 +204,6 @@ fn test_codex_acp_prompt_uses_split_message_tools() {
         session_id: None,
         reasoning_effort: None,
         env_vars: Vec::new(),
-        teams: vec![],
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");
@@ -232,7 +230,6 @@ fn test_kimi_acp_prompt_uses_split_message_tools() {
         session_id: None,
         reasoning_effort: None,
         env_vars: Vec::new(),
-        teams: vec![],
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");
@@ -255,7 +252,6 @@ fn test_opencode_acp_prompt_uses_split_message_tools() {
         session_id: None,
         reasoning_effort: None,
         env_vars: Vec::new(),
-        teams: vec![],
     };
 
     let prompt = driver.build_system_prompt(&config, "agent-id");
