@@ -23,8 +23,9 @@ struct RunningAgent {
     driver: Arc<dyn Driver>,
     session_id: Option<String>,
     pending_notification_count: u32,
-    last_tool_name: Option<String>,
     last_tool_raw_name: Option<String>,
+    /// Accumulated thinking chunks, flushed to log/activity on the next non-Thinking event.
+    pending_thinking: String,
 }
 
 pub struct AgentManager {
@@ -176,8 +177,8 @@ impl AgentManager {
                     driver: driver.clone(),
                     session_id: running_session_id,
                     pending_notification_count: 0,
-                    last_tool_name: None,
                     last_tool_raw_name: None,
+                    pending_thinking: String::new(),
                 },
             );
         }
@@ -350,6 +351,8 @@ impl AgentManager {
                     || driver.runtime() == AgentRuntime::Opencode)
                     && !line.contains("agent_message_chunk")
                     && !line.contains("agentMessageChunk")
+                    && !line.contains("agent_thought_chunk")
+                    && !line.contains("agentThoughtChunk")
                     && !line.contains("tool_call_update")
                     && !line.contains("toolCallUpdate")
                 {
@@ -446,6 +449,24 @@ async fn handle_parsed_event(
         None => return,
     };
 
+    // Flush accumulated thinking when a non-Thinking event arrives.
+    let is_thinking_event = matches!(event, ParsedEvent::Thinking { .. });
+    if !is_thinking_event && !running.pending_thinking.is_empty() {
+        let full_thought = std::mem::take(&mut running.pending_thinking);
+        let preview: String = full_thought.chars().take(200).collect();
+        let preview = if full_thought.chars().count() > 200 {
+            format!("{preview}…")
+        } else {
+            preview
+        };
+        trace!(agent = %agent_name, thought = %preview, "thinking block complete");
+        activity_log::push_activity(
+            logs,
+            agent_name,
+            ActivityEntry::Thinking { text: full_thought },
+        );
+    }
+
     match event {
         ParsedEvent::SessionInit { session_id } => {
             info!(agent = %agent_name, session = %session_id, "session started");
@@ -475,18 +496,7 @@ async fn handle_parsed_event(
             }
         }
         ParsedEvent::Thinking { ref text } => {
-            let preview: String = text.chars().take(120).collect();
-            let preview = if text.chars().count() > 120 {
-                format!("{preview}…")
-            } else {
-                preview
-            };
-            trace!(agent = %agent_name, text = %preview, "thinking");
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::Thinking { text: text.clone() },
-            );
+            running.pending_thinking.push_str(text);
             activity_log::set_activity_state(logs, agent_name, "thinking", "Thinking\u{2026}");
         }
         ParsedEvent::Text { ref text } => {
@@ -503,7 +513,6 @@ async fn handle_parsed_event(
             let display_name = driver.tool_display_name(name);
             let tool_input = driver.summarize_tool_input(name, input);
             info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
-            running.last_tool_name = Some(display_name.clone());
             running.last_tool_raw_name = Some(name.clone());
             activity_log::push_activity(
                 logs,
@@ -771,6 +780,214 @@ mod tests {
         }
     }
 
+    // ── Chunk accumulation tests ──
+
+    /// Helper: create a minimal RunningAgent backed by a real (sleeping) child process.
+    fn make_running_agent(driver: Arc<dyn Driver>) -> RunningAgent {
+        let mut proc = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        proc.stdout.take(); // detach so no reader is needed
+        RunningAgent {
+            instance_id: 99,
+            process: proc,
+            driver,
+            session_id: Some("s1".to_string()),
+            pending_notification_count: 0,
+            last_tool_raw_name: None,
+            pending_thinking: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn thinking_chunks_accumulate_and_flush_as_single_activity_entry() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        let agents: Arc<Mutex<HashMap<String, RunningAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+
+        agents
+            .lock()
+            .await
+            .insert("bot1".to_string(), make_running_agent(driver.clone()));
+
+        // Feed three thinking chunks — should not appear in the log yet.
+        for chunk in &["Let me ", "think ", "carefully."] {
+            handle_parsed_event(
+                &agents,
+                &logs,
+                &store,
+                "bot1",
+                ParsedEvent::Thinking {
+                    text: chunk.to_string(),
+                },
+                &driver,
+            )
+            .await;
+        }
+        let pre_flush = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let pre_thinking_count = pre_flush
+            .iter()
+            .filter(|e| matches!(e.entry, ActivityEntry::Thinking { .. }))
+            .count();
+        assert_eq!(
+            pre_thinking_count, 0,
+            "thinking chunks must not be pushed until flushed"
+        );
+
+        // A non-Thinking event flushes the buffer.
+        handle_parsed_event(
+            &agents,
+            &logs,
+            &store,
+            "bot1",
+            ParsedEvent::TurnEnd { session_id: None },
+            &driver,
+        )
+        .await;
+
+        let entries = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let thinking_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| matches!(e.entry, ActivityEntry::Thinking { .. }))
+            .collect();
+        assert_eq!(
+            thinking_entries.len(),
+            1,
+            "all thinking chunks must flush as exactly one Thinking entry"
+        );
+        if let ActivityEntry::Thinking { ref text } = thinking_entries[0].entry {
+            assert_eq!(text, "Let me think carefully.");
+        } else {
+            panic!("expected Thinking entry");
+        }
+
+        {
+            let mut map = agents.lock().await;
+            if let Some(mut r) = map.remove("bot1") {
+                let _ = r.process.kill();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn message_chunks_each_create_separate_text_entry() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        let agents: Arc<Mutex<HashMap<String, RunningAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+
+        agents
+            .lock()
+            .await
+            .insert("bot1".to_string(), make_running_agent(driver.clone()));
+
+        for chunk in &["Hello ", "world", "!"] {
+            handle_parsed_event(
+                &agents,
+                &logs,
+                &store,
+                "bot1",
+                ParsedEvent::Text {
+                    text: chunk.to_string(),
+                },
+                &driver,
+            )
+            .await;
+        }
+
+        let entries = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let text_entries: Vec<_> = entries
+            .iter()
+            .filter_map(|e| {
+                if let ActivityEntry::Text { ref text } = e.entry {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(
+            text_entries,
+            vec!["Hello ", "world", "!"],
+            "each message chunk produces its own Text activity entry"
+        );
+
+        {
+            let mut map = agents.lock().await;
+            if let Some(mut r) = map.remove("bot1") {
+                let _ = r.process.kill();
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn interleaved_thinking_chunks_flush_before_tool_call() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        let agents: Arc<Mutex<HashMap<String, RunningAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
+        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+
+        agents
+            .lock()
+            .await
+            .insert("bot1".to_string(), make_running_agent(driver.clone()));
+
+        // Feed two thinking chunks then a ToolCall.
+        for chunk in &["step one ", "step two"] {
+            handle_parsed_event(
+                &agents,
+                &logs,
+                &store,
+                "bot1",
+                ParsedEvent::Thinking {
+                    text: chunk.to_string(),
+                },
+                &driver,
+            )
+            .await;
+        }
+        handle_parsed_event(
+            &agents,
+            &logs,
+            &store,
+            "bot1",
+            ParsedEvent::ToolCall {
+                name: "send_message".to_string(),
+                input: serde_json::json!({}),
+            },
+            &driver,
+        )
+        .await;
+
+        let entries = activity_log::get_activity_log(&logs, "bot1", None).entries;
+        let thinking_entries: Vec<_> = entries
+            .iter()
+            .filter(|e| matches!(e.entry, ActivityEntry::Thinking { .. }))
+            .collect();
+        assert_eq!(thinking_entries.len(), 1);
+        if let ActivityEntry::Thinking { ref text } = thinking_entries[0].entry {
+            assert_eq!(text, "step one step two");
+        }
+
+        {
+            let mut map = agents.lock().await;
+            if let Some(mut r) = map.remove("bot1") {
+                let _ = r.process.kill();
+            }
+        }
+    }
+
     fn sample_config(session_id: Option<&str>) -> AgentConfig {
         AgentConfig {
             name: "bot1".to_string(),
@@ -908,8 +1125,8 @@ mod tests {
                     driver: driver.clone(),
                     session_id: None,
                     pending_notification_count: 0,
-                    last_tool_name: None,
                     last_tool_raw_name: None,
+                    pending_thinking: String::new(),
                 },
             );
         }
@@ -937,8 +1154,8 @@ mod tests {
                     driver,
                     session_id: None,
                     pending_notification_count: 0,
-                    last_tool_name: None,
                     last_tool_raw_name: None,
+                    pending_thinking: String::new(),
                 },
             );
         }
