@@ -146,13 +146,11 @@ pub(crate) fn command_exists(command: &str) -> bool {
 }
 
 fn is_executable_in_dirs(command: &str, dirs: &[PathBuf]) -> bool {
-    dirs.iter()
-        .map(|dir| dir.join(command))
-        .any(|candidate| {
-            fs::metadata(&candidate)
-                .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
-                .unwrap_or(false)
-        })
+    dirs.iter().map(|dir| dir.join(command)).any(|candidate| {
+        fs::metadata(&candidate)
+            .map(|m| m.is_file() && (m.permissions().mode() & 0o111) != 0)
+            .unwrap_or(false)
+    })
 }
 
 fn process_path_dirs() -> Vec<PathBuf> {

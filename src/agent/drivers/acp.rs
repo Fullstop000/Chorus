@@ -135,13 +135,18 @@ impl<R: AcpRuntime> AcpDriver<R> {
 
         let result = msg.get("result");
 
-        match state.phase {
-            AcpPhase::AwaitingInitResponse => {
-                // initialize response — extract capabilities, advance phase
+        // Dispatch by request id to handle out-of-order responses correctly.
+        // Handshake ids: 1 = initialize, 2 = session/new|load, 3 = session/prompt.
+        // Ids >= 4 are follow-up session/prompt requests (stdin notifications).
+        let id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        match id {
+            1 => {
+                // initialize response — advance phase
                 state.phase = AcpPhase::AwaitingSessionResponse;
                 vec![]
             }
-            AcpPhase::AwaitingSessionResponse => {
+            2 => {
                 // session/new or session/load response — extract sessionId.
                 // kimi's session/load response may omit sessionId (it was given in
                 // the request), so fall back to the stored pending_session_id.
@@ -175,8 +180,8 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 }
                 events
             }
-            AcpPhase::Active => {
-                // session/prompt response — turn ended
+            _ => {
+                // session/prompt response (id 3 = initial, >= 4 = follow-ups) — turn ended
                 let session_id = result
                     .and_then(|r| r.get("sessionId"))
                     .and_then(|v| v.as_str())
