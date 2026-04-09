@@ -35,6 +35,34 @@
   letter-spacing: 0.02em;
 }
 
+/* Server-authored notices. Mirrors `.new-message-divider` structurally but
+   muted so it reads as an ambient boundary, not an attention marker. */
+.system-message-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 2px;
+  margin: 2px 0;
+}
+
+.system-message-divider__line {
+  flex: 1;
+  height: 1px;
+  background: var(--color-border);
+  opacity: 0.6;
+}
+
+.system-message-divider__label {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.02em;
+  line-height: 1.4;
+  max-width: 60%;
+  text-align: center;
+  white-space: normal;
+}
+
 .new-message-badge {
   position: fixed;
   bottom: 24px;
