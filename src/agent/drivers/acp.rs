@@ -63,6 +63,12 @@ pub trait AcpRuntime: Send + Sync + 'static {
     fn requires_session_id_in_prompt(&self) -> bool {
         false
     }
+
+    /// Additional CRITICAL RULES to append to the system prompt for this runtime.
+    /// Used to enforce runtime-specific response behaviors.
+    fn extra_critical_rules(&self) -> Vec<String> {
+        vec![]
+    }
 }
 
 // ── AcpDriver: shared ACP protocol handler ──
@@ -85,6 +91,9 @@ struct AcpState {
     /// Startup prompt deferred until `session/new` returns a `sessionId`.
     /// Used by runtimes (e.g. kimi) that require `sessionId` in `session/prompt`.
     pending_startup_prompt: Option<String>,
+    /// Session id sent in `session/load`, used as fallback when the response
+    /// does not echo the sessionId back (kimi's session/load omits it).
+    pending_session_id: Option<String>,
 }
 
 /// A `Driver` implementation backed by the Agent Client Protocol.
@@ -103,12 +112,17 @@ impl<R: AcpRuntime> AcpDriver<R> {
             state: Mutex::new(AcpState {
                 phase: AcpPhase::AwaitingInitResponse,
                 pending_startup_prompt: None,
+                pending_session_id: None,
             }),
             next_request_id: AtomicU64::new(4), // 1-3 are used by handshake
         }
     }
 
-    fn handle_rpc_response(&self, state: &mut AcpState, msg: &serde_json::Value) -> Vec<ParsedEvent> {
+    fn handle_rpc_response(
+        &self,
+        state: &mut AcpState,
+        msg: &serde_json::Value,
+    ) -> Vec<ParsedEvent> {
         // Check for error response
         if let Some(err) = msg.get("error") {
             let message = err
@@ -128,25 +142,36 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 vec![]
             }
             AcpPhase::AwaitingSessionResponse => {
-                // session/new or session/load response — extract sessionId
+                // session/new or session/load response — extract sessionId.
+                // kimi's session/load response may omit sessionId (it was given in
+                // the request), so fall back to the stored pending_session_id.
                 let session_id = result
                     .and_then(|r| r.get("sessionId"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+                    .map(|s| s.to_string())
+                    .or_else(|| state.pending_session_id.take())
+                    .unwrap_or_default();
                 state.phase = AcpPhase::Active;
                 let mut events = if session_id.is_empty() {
                     vec![]
                 } else {
-                    vec![ParsedEvent::SessionInit { session_id: session_id.clone() }]
+                    vec![ParsedEvent::SessionInit {
+                        session_id: session_id.clone(),
+                    }]
                 };
                 // Flush deferred startup prompt that requires a sessionId.
                 if let Some(prompt) = state.pending_startup_prompt.take() {
-                    let prompt_req = json_rpc_request(3, "session/prompt", json!({
-                        "sessionId": session_id,
-                        "prompt": [{ "type": "text", "text": prompt }]
-                    }));
-                    events.push(ParsedEvent::WriteStdin { data: format!("{prompt_req}\n") });
+                    let prompt_req = json_rpc_request(
+                        3,
+                        "session/prompt",
+                        json!({
+                            "sessionId": session_id,
+                            "prompt": [{ "type": "text", "text": prompt }]
+                        }),
+                    );
+                    events.push(ParsedEvent::WriteStdin {
+                        data: format!("{prompt_req}\n"),
+                    });
                 }
                 events
             }
@@ -161,11 +186,7 @@ impl<R: AcpRuntime> AcpDriver<R> {
         }
     }
 
-    fn handle_rpc_notification(
-        &self,
-        method: &str,
-        msg: &serde_json::Value,
-    ) -> Vec<ParsedEvent> {
+    fn handle_rpc_notification(&self, method: &str, msg: &serde_json::Value) -> Vec<ParsedEvent> {
         if method != "session/update" {
             return vec![];
         }
@@ -199,9 +220,9 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .or_else(|| {
-                    update.get("content").and_then(|c| {
-                        c.get("text").and_then(|v| v.as_str()).map(str::to_string)
-                    })
+                    update
+                        .get("content")
+                        .and_then(|c| c.get("text").and_then(|v| v.as_str()).map(str::to_string))
                 })
                 .unwrap_or_default()
         };
@@ -263,7 +284,9 @@ impl<R: AcpRuntime> AcpDriver<R> {
                                     // flat: b.text when b.type == "text"
                                     .or_else(|| {
                                         if b.get("type").and_then(|v| v.as_str()) == Some("text") {
-                                            b.get("text").and_then(|v| v.as_str()).map(str::to_string)
+                                            b.get("text")
+                                                .and_then(|v| v.as_str())
+                                                .map(str::to_string)
                                         } else {
                                             None
                                         }
@@ -287,7 +310,10 @@ impl<R: AcpRuntime> AcpDriver<R> {
             }
             "" => vec![],
             _ => {
-                debug!(kind, "acp session/update: unrecognized kind — update dropped");
+                debug!(
+                    kind,
+                    "acp session/update: unrecognized kind — update dropped"
+                );
                 vec![]
             }
         }
@@ -312,12 +338,11 @@ impl<R: AcpRuntime> AcpDriver<R> {
             .and_then(|o| o.as_array())
             .and_then(|opts| {
                 opts.iter()
-                    .find(|o| {
-                        o.get("kind").and_then(|k| k.as_str()) == Some("allow_always")
+                    .find(|o| o.get("kind").and_then(|k| k.as_str()) == Some("allow_always"))
+                    .or_else(|| {
+                        opts.iter()
+                            .find(|o| o.get("kind").and_then(|k| k.as_str()) == Some("allow_once"))
                     })
-                    .or_else(|| opts.iter().find(|o| {
-                        o.get("kind").and_then(|k| k.as_str()) == Some("allow_once")
-                    }))
                     .and_then(|o| o.get("optionId"))
                     .and_then(|v| v.as_str())
             })
@@ -345,7 +370,12 @@ impl<R: AcpRuntime> AcpDriver<R> {
             .and_then(|t| t.as_str())
             .map(|t| t.split(':').next().unwrap_or(t).trim().to_string());
 
-        vec![ParsedEvent::WriteStdin { data: format!("{response}\n") }, ParsedEvent::PermissionRequested { tool_name }]
+        vec![
+            ParsedEvent::WriteStdin {
+                data: format!("{response}\n"),
+            },
+            ParsedEvent::PermissionRequested { tool_name },
+        ]
     }
 }
 
@@ -400,8 +430,12 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
         }
         for (key, value) in self.runtime_impl.env_overrides(ctx) {
             match value {
-                Some(v) => { env_vars.insert(key, v); }
-                None => { env_vars.remove(&key); }
+                Some(v) => {
+                    env_vars.insert(key, v);
+                }
+                None => {
+                    env_vars.remove(&key);
+                }
             }
         }
 
@@ -419,6 +453,7 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
             let mut state = self.state.lock().unwrap();
             state.phase = AcpPhase::AwaitingInitResponse;
             state.pending_startup_prompt = None;
+            state.pending_session_id = None;
         }
 
         // Pipeline: write initialize, session/new or session/load, then session/prompt
@@ -428,22 +463,30 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
             .ok_or_else(|| anyhow::anyhow!("failed to open ACP agent stdin"))?;
 
         // 1. initialize
-        let init_req = json_rpc_request(1, "initialize", json!({
-            "protocolVersion": 1,
-            "clientInfo": {
-                "name": "chorus",
-                "title": "Chorus",
-                "version": env!("CARGO_PKG_VERSION")
-            },
-            "clientCapabilities": {}
-        }));
+        let init_req = json_rpc_request(
+            1,
+            "initialize",
+            json!({
+                "protocolVersion": 1,
+                "clientInfo": {
+                    "name": "chorus",
+                    "title": "Chorus",
+                    "version": env!("CARGO_PKG_VERSION")
+                },
+                "clientCapabilities": {}
+            }),
+        );
         writeln!(stdin, "{init_req}")?;
 
-        // 2. session/new or session/load
+        // 2. session/new or session/load (resume previous session)
         let session_req = if let Some(ref sid) = ctx.config.session_id {
-            json_rpc_request(2, "session/load", json!({
-                "sessionId": sid
-            }))
+            json_rpc_request(
+                2,
+                "session/load",
+                json!({
+                    "sessionId": sid
+                }),
+            )
         } else {
             json_rpc_request(2, "session/new", self.runtime_impl.session_new_params(ctx))
         };
@@ -452,11 +495,19 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
         // 3. session/prompt with initial prompt.
         // Runtimes that require a sessionId in the prompt defer this until session/new responds.
         if self.runtime_impl.requires_session_id_in_prompt() {
-            self.state.lock().unwrap().pending_startup_prompt = Some(ctx.prompt.clone());
+            let mut state = self.state.lock().unwrap();
+            state.pending_startup_prompt = Some(ctx.prompt.clone());
+            // Store the session/load id so the AwaitingSessionResponse handler can
+            // use it as a fallback when session/load doesn't echo the sessionId.
+            state.pending_session_id = ctx.config.session_id.clone();
         } else {
-            let prompt_req = json_rpc_request(3, "session/prompt", json!({
-                "prompt": [{ "type": "text", "text": ctx.prompt }]
-            }));
+            let prompt_req = json_rpc_request(
+                3,
+                "session/prompt",
+                json!({
+                    "prompt": [{ "type": "text", "text": ctx.prompt }]
+                }),
+            );
             writeln!(stdin, "{prompt_req}")?;
         }
 
@@ -501,13 +552,15 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
     }
 
     fn build_system_prompt(&self, config: &AgentConfig, _agent_id: &str) -> String {
+        let mut extra_critical_rules = vec![
+            "- Do NOT use bash/curl/sqlite to send or receive messages. The MCP tools handle everything.".to_string(),
+        ];
+        extra_critical_rules.extend(self.runtime_impl.extra_critical_rules());
         build_base_system_prompt(
             config,
             &PromptOptions {
                 tool_prefix: self.runtime_impl.tool_prefix().to_string(),
-                extra_critical_rules: vec![
-                    "- Do NOT use bash/curl/sqlite to send or receive messages. The MCP tools handle everything.".to_string(),
-                ],
+                extra_critical_rules,
                 post_startup_notes: vec![
                     "Your process may exit after completing a task. This is normal. You will be restarted when new messages arrive.".to_string(),
                 ],
@@ -532,8 +585,7 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
             "read_history" => "Reading history\u{2026}".to_string(),
             other => {
                 let label = other.replace('_', " ");
-                let truncated: String = label.chars().take(20).collect();
-                format!("Using {truncated}\u{2026}")
+                format!("{label}\u{2026}")
             }
         }
     }
@@ -556,7 +608,11 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
             "check_messages" | "wait_for_message" => String::new(),
             "send_message" => {
                 let target = str_field("target");
-                let target = if target.is_empty() { str_field("channel") } else { target };
+                let target = if target.is_empty() {
+                    str_field("channel")
+                } else {
+                    target
+                };
                 let content = str_field("content");
                 if content.is_empty() {
                     target
@@ -567,17 +623,27 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
                     } else {
                         preview
                     };
-                    if target.is_empty() { preview } else { format!("{target}: {preview}") }
+                    if target.is_empty() {
+                        preview
+                    } else {
+                        format!("{target}: {preview}")
+                    }
                 }
             }
             "read_history" => {
                 let t = str_field("target");
-                if t.is_empty() { str_field("channel") } else { t }
+                if t.is_empty() {
+                    str_field("channel")
+                } else {
+                    t
+                }
             }
             "list_tasks" | "create_tasks" => str_field("channel"),
             "claim_tasks" => {
                 let channel = str_field("channel");
-                if channel.is_empty() { return String::new(); }
+                if channel.is_empty() {
+                    return String::new();
+                }
                 let nums = input.get("task_numbers");
                 let nums_str = match nums {
                     Some(serde_json::Value::Array(arr)) => arr
@@ -587,7 +653,11 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
                         .collect::<Vec<_>>()
                         .join(","),
                     Some(v) => {
-                        if let Some(n) = v.as_i64() { format!("#t{n}") } else { format!("#t{v}") }
+                        if let Some(n) = v.as_i64() {
+                            format!("#t{n}")
+                        } else {
+                            format!("#t{v}")
+                        }
                     }
                     None => return channel,
                 };
@@ -595,7 +665,9 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
             }
             "unclaim_task" | "update_task_status" => {
                 let channel = str_field("channel");
-                if channel.is_empty() { return String::new(); }
+                if channel.is_empty() {
+                    return String::new();
+                }
                 let tn = input
                     .get("task_number")
                     .and_then(|v| v.as_i64())
@@ -607,11 +679,17 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
             _ => {
                 // Generic: try common field names
                 let p = str_field("file_path");
-                if !p.is_empty() { return p; }
+                if !p.is_empty() {
+                    return p;
+                }
                 let p = str_field("path");
-                if !p.is_empty() { return p; }
+                if !p.is_empty() {
+                    return p;
+                }
                 let p = str_field("pattern");
-                if !p.is_empty() { return p; }
+                if !p.is_empty() {
+                    return p;
+                }
                 let p = str_field("command");
                 if !p.is_empty() {
                     let truncated: String = p.chars().take(100).collect();
@@ -622,9 +700,13 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
                     };
                 }
                 let p = str_field("query");
-                if !p.is_empty() { return p; }
+                if !p.is_empty() {
+                    return p;
+                }
                 let p = str_field("url");
-                if !p.is_empty() { return p; }
+                if !p.is_empty() {
+                    return p;
+                }
                 String::new()
             }
         }
@@ -662,12 +744,24 @@ mod tests {
 
     struct TestRuntime;
     impl AcpRuntime for TestRuntime {
-        fn runtime(&self) -> AgentRuntime { AgentRuntime::Claude }
-        fn binary_name(&self) -> &str { "test-agent" }
-        fn build_acp_args(&self, _ctx: &SpawnContext) -> Vec<String> { vec![] }
-        fn write_mcp_config(&self, _ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> { Ok(None) }
-        fn env_overrides(&self, _ctx: &SpawnContext) -> Vec<(String, Option<String>)> { vec![] }
-        fn tool_prefix(&self) -> &str { "mcp__chat__" }
+        fn runtime(&self) -> AgentRuntime {
+            AgentRuntime::Claude
+        }
+        fn binary_name(&self) -> &str {
+            "test-agent"
+        }
+        fn build_acp_args(&self, _ctx: &SpawnContext) -> Vec<String> {
+            vec![]
+        }
+        fn write_mcp_config(&self, _ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> {
+            Ok(None)
+        }
+        fn env_overrides(&self, _ctx: &SpawnContext) -> Vec<(String, Option<String>)> {
+            vec![]
+        }
+        fn tool_prefix(&self) -> &str {
+            "mcp__chat__"
+        }
         fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus> {
             Ok(RuntimeStatus {
                 runtime: "test".to_string(),
@@ -675,7 +769,9 @@ mod tests {
                 auth_status: None,
             })
         }
-        fn list_models(&self) -> anyhow::Result<Vec<String>> { Ok(vec!["test-model".to_string()]) }
+        fn list_models(&self) -> anyhow::Result<Vec<String>> {
+            Ok(vec!["test-model".to_string()])
+        }
     }
 
     #[test]
@@ -688,7 +784,9 @@ mod tests {
     #[test]
     fn parse_line_initialize_response_transitions_phase() {
         let d = make_test_driver();
-        let events = d.parse_line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#);
+        let events = d.parse_line(
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#,
+        );
         assert!(events.is_empty());
         let state = d.state.lock().unwrap();
         assert_eq!(state.phase, AcpPhase::AwaitingSessionResponse);
@@ -700,9 +798,12 @@ mod tests {
         // First: initialize response
         d.parse_line(r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}"#);
         // Then: session/new response
-        let events = d.parse_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-abc123"}}"#);
+        let events =
+            d.parse_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-abc123"}}"#);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "sess-abc123"));
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "sess-abc123")
+        );
         let state = d.state.lock().unwrap();
         assert_eq!(state.phase, AcpPhase::Active);
     }
@@ -720,9 +821,13 @@ mod tests {
     #[test]
     fn parse_line_error_response() {
         let d = make_test_driver();
-        let events = d.parse_line(r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#);
+        let events = d.parse_line(
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"Invalid request"}}"#,
+        );
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], ParsedEvent::Error { message } if message == "Invalid request"));
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "Invalid request")
+        );
     }
 
     // ── parse_line: session/update notifications ──
@@ -758,7 +863,9 @@ mod tests {
 
         let events = d.parse_line(r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCall","toolCallId":"call-1","toolName":"mcp__chat__send_message","title":"Send Message","status":"running","args":{"target":"#all","content":"hi"}}}}"##);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "mcp__chat__send_message"));
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "mcp__chat__send_message")
+        );
         if let ParsedEvent::ToolCall { input, .. } = &events[0] {
             assert_eq!(input["target"], "#all");
         }
@@ -772,7 +879,9 @@ mod tests {
 
         let events = d.parse_line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCallUpdate","toolCallId":"call-1","content":"Message sent successfully"}}}"#);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], ParsedEvent::ToolResult { content } if content == "Message sent successfully"));
+        assert!(
+            matches!(&events[0], ParsedEvent::ToolResult { content } if content == "Message sent successfully")
+        );
     }
 
     #[test]
@@ -787,10 +896,22 @@ mod tests {
     #[test]
     fn tool_display_name_strips_all_prefixes() {
         let d = make_test_driver();
-        assert_eq!(d.tool_display_name("mcp__chat__send_message"), "Sending message\u{2026}");
-        assert_eq!(d.tool_display_name("mcp_chat_send_message"), "Sending message\u{2026}");
-        assert_eq!(d.tool_display_name("chat_send_message"), "Sending message\u{2026}");
-        assert_eq!(d.tool_display_name("send_message"), "Sending message\u{2026}");
+        assert_eq!(
+            d.tool_display_name("mcp__chat__send_message"),
+            "Sending message\u{2026}"
+        );
+        assert_eq!(
+            d.tool_display_name("mcp_chat_send_message"),
+            "Sending message\u{2026}"
+        );
+        assert_eq!(
+            d.tool_display_name("chat_send_message"),
+            "Sending message\u{2026}"
+        );
+        assert_eq!(
+            d.tool_display_name("send_message"),
+            "Sending message\u{2026}"
+        );
     }
 
     // ── encode_stdin_message ──
@@ -809,6 +930,77 @@ mod tests {
 
     // ── Full pipeline ──
 
+    /// Regression: kimi's session/load response omits sessionId in the result.
+    /// The deferred session/prompt must use the original sessionId from the request,
+    /// not an empty string — otherwise kimi returns "Invalid params".
+    #[test]
+    fn session_load_response_without_session_id_uses_pending_fallback() {
+        struct KimiTestRuntime;
+        impl AcpRuntime for KimiTestRuntime {
+            fn runtime(&self) -> AgentRuntime {
+                AgentRuntime::Kimi
+            }
+            fn binary_name(&self) -> &str {
+                "kimi"
+            }
+            fn build_acp_args(&self, _ctx: &SpawnContext) -> Vec<String> {
+                vec![]
+            }
+            fn write_mcp_config(&self, _ctx: &SpawnContext) -> anyhow::Result<Option<PathBuf>> {
+                Ok(None)
+            }
+            fn env_overrides(&self, _ctx: &SpawnContext) -> Vec<(String, Option<String>)> {
+                vec![]
+            }
+            fn tool_prefix(&self) -> &str {
+                ""
+            }
+            fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus> {
+                Ok(RuntimeStatus {
+                    runtime: "kimi".into(),
+                    installed: true,
+                    auth_status: None,
+                })
+            }
+            fn list_models(&self) -> anyhow::Result<Vec<String>> {
+                Ok(vec![])
+            }
+            fn requires_session_id_in_prompt(&self) -> bool {
+                true
+            }
+        }
+
+        let d = AcpDriver::new(KimiTestRuntime);
+        // Prime state as if spawn() set up a deferred prompt + pending_session_id.
+        {
+            let mut state = d.state.lock().unwrap();
+            state.pending_startup_prompt = Some("hello kimi".to_string());
+            state.pending_session_id = Some("kimi-session-abc".to_string());
+            state.phase = AcpPhase::AwaitingSessionResponse;
+        }
+
+        // Simulate kimi's session/load response: result is empty (no sessionId echoed).
+        let events = d.parse_line(r#"{"jsonrpc":"2.0","id":2,"result":{}}"#);
+
+        // Should emit SessionInit with the pending session id and a WriteStdin for session/prompt.
+        assert_eq!(events.len(), 2, "expected SessionInit + WriteStdin");
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "kimi-session-abc"),
+            "SessionInit must carry the original session id"
+        );
+        if let ParsedEvent::WriteStdin { data } = &events[1] {
+            let parsed: serde_json::Value = serde_json::from_str(data.trim()).unwrap();
+            assert_eq!(parsed["method"], "session/prompt");
+            assert_eq!(
+                parsed["params"]["sessionId"], "kimi-session-abc",
+                "session/prompt must use the original session id, not empty string"
+            );
+            assert_eq!(parsed["params"]["prompt"][0]["text"], "hello kimi");
+        } else {
+            panic!("second event should be WriteStdin, got {:?}", events[1]);
+        }
+    }
+
     #[test]
     fn full_pipeline_init_session_updates_turn_end() {
         let d = make_test_driver();
@@ -820,7 +1012,9 @@ mod tests {
         // 2. session/new response
         let events = d.parse_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-xyz"}}"#);
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "sess-xyz"));
+        assert!(
+            matches!(&events[0], ParsedEvent::SessionInit { session_id } if session_id == "sess-xyz")
+        );
 
         // 3. session/update: thinking
         let events = d.parse_line(r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-xyz","update":{"kind":"agentThoughtChunk","chunk":"reasoning..."}}}"#);
@@ -843,8 +1037,12 @@ mod tests {
         assert!(matches!(&events[0], ParsedEvent::Text { text } if text == "Done."));
 
         // 7. prompt response (turn end)
-        let events = d.parse_line(r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","sessionId":"sess-xyz"}}"#);
+        let events = d.parse_line(
+            r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","sessionId":"sess-xyz"}}"#,
+        );
         assert_eq!(events.len(), 1);
-        assert!(matches!(&events[0], ParsedEvent::TurnEnd { session_id: Some(sid) } if sid == "sess-xyz"));
+        assert!(
+            matches!(&events[0], ParsedEvent::TurnEnd { session_id: Some(sid) } if sid == "sess-xyz")
+        );
     }
 }

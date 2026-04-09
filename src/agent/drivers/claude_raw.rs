@@ -253,11 +253,11 @@ impl Driver for ClaudeRawDriver {
             "mcp__chat__read_history" => "Reading history\u{2026}".to_string(),
             n if n.starts_with("mcp__chat__") => {
                 let op = n.trim_start_matches("mcp__chat__").replace('_', " ");
-                format!("Using {op}\u{2026}")
+                format!("{op}\u{2026}")
             }
             other => {
-                let truncated: String = other.chars().take(20).collect();
-                format!("Using {truncated}\u{2026}")
+                let label = other.replace('_', " ");
+                format!("{label}\u{2026}")
             }
         }
     }

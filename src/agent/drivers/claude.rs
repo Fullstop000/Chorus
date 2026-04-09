@@ -17,8 +17,7 @@ impl AcpRuntime for ClaudeAcpRuntime {
     }
 
     fn build_acp_args(&self, ctx: &SpawnContext) -> Vec<String> {
-        let mcp_config_path =
-            std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
+        let mcp_config_path = std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
 
         let mut args = vec![
             "--mcp-config".to_string(),
@@ -46,8 +45,7 @@ impl AcpRuntime for ClaudeAcpRuntime {
                 }
             }
         });
-        let mcp_config_path =
-            std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
+        let mcp_config_path = std::path::Path::new(&ctx.working_directory).join(".chorus-mcp.json");
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)?;
         Ok(Some(mcp_config_path))
     }

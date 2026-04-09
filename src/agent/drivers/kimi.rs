@@ -73,9 +73,7 @@ impl AcpRuntime for KimiAcpRuntime {
     }
 
     fn env_overrides(&self, _ctx: &SpawnContext) -> Vec<(String, Option<String>)> {
-        vec![
-            ("NO_COLOR".to_string(), Some("1".to_string())),
-        ]
+        vec![("NO_COLOR".to_string(), Some("1".to_string()))]
     }
 
     fn tool_prefix(&self) -> &str {
@@ -88,6 +86,13 @@ impl AcpRuntime for KimiAcpRuntime {
 
     fn list_models(&self) -> anyhow::Result<Vec<String>> {
         Ok(vec!["kimi-code/kimi-for-coding".to_string()])
+    }
+
+    fn extra_critical_rules(&self) -> Vec<String> {
+        vec![
+            "- After check_messages() returns a real user message, you MUST either send a reply with send_message() or explicitly explain why no reply is needed before stopping.".to_string(),
+            "- Direct messages and explicit @mentions are addressed to you personally. Do not silently consume them and stop without replying.".to_string(),
+        ]
     }
 }
 

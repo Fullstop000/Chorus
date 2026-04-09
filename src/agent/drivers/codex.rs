@@ -66,9 +66,7 @@ impl AcpRuntime for CodexAcpRuntime {
     }
 
     fn env_overrides(&self, _ctx: &SpawnContext) -> Vec<(String, Option<String>)> {
-        vec![
-            ("NO_COLOR".to_string(), Some("1".to_string())),
-        ]
+        vec![("NO_COLOR".to_string(), Some("1".to_string()))]
     }
 
     fn pre_spawn_setup(&self, ctx: &SpawnContext) -> anyhow::Result<()> {

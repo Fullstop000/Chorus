@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::config::AgentConfig;
@@ -24,6 +24,7 @@ struct RunningAgent {
     session_id: Option<String>,
     pending_notification_count: u32,
     last_tool_name: Option<String>,
+    last_tool_raw_name: Option<String>,
 }
 
 pub struct AgentManager {
@@ -176,6 +177,7 @@ impl AgentManager {
                     session_id: running_session_id,
                     pending_notification_count: 0,
                     last_tool_name: None,
+                    last_tool_raw_name: None,
                 },
             );
         }
@@ -213,6 +215,8 @@ impl AgentManager {
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Inactive)?;
+        // Clear persisted session so next start uses session/new.
+        let _ = self.store.update_agent_session(agent_name, None);
         activity_log::set_activity_state(
             &self.activity_logs,
             agent_name,
@@ -235,6 +239,8 @@ impl AgentManager {
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Sleeping)?;
+        // Clear persisted session so next start uses session/new.
+        let _ = self.store.update_agent_session(agent_name, None);
         activity_log::set_activity_state(&self.activity_logs, agent_name, "offline", "Sleeping");
         Ok(())
     }
@@ -380,10 +386,13 @@ impl AgentManager {
                                 warn!(agent = %name, code, "process crashed — marking inactive");
                                 let _ = store.update_agent_status(&name, AgentStatus::Inactive);
                             }
+                            // Clear persisted session so next start uses session/new.
+                            let _ = store.update_agent_session(&name, None);
                         }
                         Err(e) => {
                             error!(agent = %name, err = %e, backtrace = %project_backtrace(), "failed to get exit status");
                             let _ = store.update_agent_status(&name, AgentStatus::Inactive);
+                            let _ = store.update_agent_session(&name, None);
                         }
                     }
                 }
@@ -467,7 +476,7 @@ async fn handle_parsed_event(
             } else {
                 preview
             };
-            debug!(agent = %agent_name, text = %preview, "thinking");
+            trace!(agent = %agent_name, text = %preview, "thinking");
             activity_log::push_activity(
                 logs,
                 agent_name,
@@ -482,7 +491,7 @@ async fn handle_parsed_event(
             } else {
                 preview
             };
-            info!(agent = %agent_name, text = %preview, "text output");
+            trace!(agent = %agent_name, text = %preview, "text output");
             activity_log::push_activity(
                 logs,
                 agent_name,
@@ -497,11 +506,12 @@ async fn handle_parsed_event(
             let tool_input = driver.summarize_tool_input(name, input);
             info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
             running.last_tool_name = Some(display_name.clone());
+            running.last_tool_raw_name = Some(name.clone());
             activity_log::push_activity(
                 logs,
                 agent_name,
                 ActivityEntry::ToolCall {
-                    tool_name: display_name.clone(),
+                    tool_name: name.clone(),
                     tool_input,
                 },
             );
@@ -509,7 +519,7 @@ async fn handle_parsed_event(
         }
         ParsedEvent::ToolResult { ref content } => {
             info!(agent = %agent_name, "tool result");
-            let tool_name = running.last_tool_name.clone().unwrap_or_default();
+            let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
             activity_log::push_activity(
                 logs,
                 agent_name,
@@ -909,6 +919,7 @@ mod tests {
                     session_id: None,
                     pending_notification_count: 0,
                     last_tool_name: None,
+                    last_tool_raw_name: None,
                 },
             );
         }
@@ -937,6 +948,7 @@ mod tests {
                     session_id: None,
                     pending_notification_count: 0,
                     last_tool_name: None,
+                    last_tool_raw_name: None,
                 },
             );
         }
