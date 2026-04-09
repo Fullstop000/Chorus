@@ -1970,3 +1970,318 @@ fn test_thread_unread_count_clears_after_reading_all_messages() {
         Some(reply_id.as_str())
     );
 }
+
+// ── System message tests ──
+
+#[test]
+fn test_sender_type_system_round_trip() {
+    // Pure enum round-trip — no store needed.
+    assert_eq!(SenderType::System.as_str(), "system");
+    assert_eq!(
+        SenderType::from_sender_type_str("system"),
+        SenderType::System
+    );
+    // Existing variants still work.
+    assert_eq!(SenderType::Human.as_str(), "human");
+    assert_eq!(SenderType::Agent.as_str(), "agent");
+    assert_eq!(SenderType::from_sender_type_str("agent"), SenderType::Agent);
+    // Unknown values still default to Human (legacy safety).
+    assert_eq!(SenderType::from_sender_type_str("??"), SenderType::Human);
+}
+
+#[test]
+fn test_create_system_message_writes_system_sender_type() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    let msg_id = store
+        .create_system_message(&channel_id, "Team assembled: Alpha, Beta.")
+        .unwrap();
+    assert!(!msg_id.is_empty());
+
+    let (history, _) = store.get_history("general", None, 10, None, None).unwrap();
+    let sys_msg = history
+        .iter()
+        .find(|m| m.id == msg_id)
+        .expect("system message should appear in history");
+    assert_eq!(sys_msg.sender_name, "system");
+    assert_eq!(
+        sys_msg.sender_type, "system",
+        "sender_type should be 'system', not 'human'"
+    );
+    assert_eq!(sys_msg.content, "Team assembled: Alpha, Beta.");
+}
+
+#[test]
+fn test_channel_unread_count_excludes_system_messages() {
+    // The primary regression guard for the inbox_conversation_state_view change.
+    // A server-authored system message must not bump the channel unread badge.
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel("general", "bob", SenderType::Human)
+        .unwrap();
+
+    // A regular message from bob — alice should see 1 unread.
+    store
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "bob",
+            sender_type: SenderType::Human,
+            content: "hey",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
+        .unwrap();
+
+    let unread_before = store.get_unread_summary("alice").unwrap();
+    assert_eq!(
+        unread_before.get("general"),
+        Some(&1),
+        "baseline: one human message counts as unread"
+    );
+
+    // A system message — must NOT bump alice's unread.
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    store
+        .create_system_message(&channel_id, "Team assembled.")
+        .unwrap();
+
+    let unread_after = store.get_unread_summary("alice").unwrap();
+    assert_eq!(
+        unread_after.get("general"),
+        Some(&1),
+        "system message must not increment channel unread count"
+    );
+}
+
+#[test]
+fn test_thread_view_excludes_system_replies() {
+    // Defensive test: system replies don't exist through the public API today,
+    // but the SQL view's thread-level subquery was updated alongside the
+    // channel-level one. Insert a system thread reply directly to exercise
+    // the exact SQL path that was changed.
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel("general", "bob", SenderType::Human)
+        .unwrap();
+
+    // Alice posts a top-level message. Bob will use this as a thread parent.
+    let parent_id = store
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "parent",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
+        .unwrap();
+
+    // Bob posts one human reply — alice should see 1 thread unread.
+    store
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: Some(&parent_id),
+            sender_name: "bob",
+            sender_type: SenderType::Human,
+            content: "bob reply",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
+        .unwrap();
+
+    // Directly insert a system reply bypassing the public API, to prove the
+    // view's `reply.sender_type != 'system'` filter is doing its job.
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    {
+        let conn = store.conn_for_test();
+        let max_seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE channel_id = ?1",
+                params![channel_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, thread_parent_id, sender_name, sender_type, content, seq) \
+             VALUES (?1, ?2, ?3, 'system', 'system', 'sys reply', ?4)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                channel_id,
+                parent_id,
+                max_seq + 1
+            ],
+        )
+        .unwrap();
+    }
+
+    // Alice's inbox view: channel-level unread is still the top-level parent
+    // (1), and thread_unread_count should count only the human reply (1), not
+    // the system reply.
+    let snapshot = store
+        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .unwrap();
+    // parent is alice's own → doesn't count; 1 human reply → 1. System reply excluded.
+    // Verify via the view directly since thread_unread_count is on the view row.
+    let conn = store.conn_for_test();
+    let (chan_unread, thread_unread): (i64, i64) = conn
+        .query_row(
+            "SELECT unread_count, thread_unread_count
+             FROM inbox_conversation_state_view
+             WHERE conversation_name = 'general' AND member_name = 'alice'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    // Alice's own top-level message doesn't count for her; no other top-level from bob.
+    assert_eq!(
+        chan_unread, 0,
+        "channel unread is 0 (alice authored the only top-level message)"
+    );
+    assert_eq!(
+        thread_unread, 1,
+        "thread_unread_count must count only bob's human reply, not the system reply"
+    );
+    // Keep the snapshot variable used so clippy is happy.
+    let _ = snapshot;
+}
+
+#[test]
+fn test_thread_notification_state_excludes_system_messages() {
+    // Covers src/store/inbox.rs query. This test inserts a system thread
+    // reply directly (same technique as the view test above) and verifies
+    // that ThreadNotificationStateView.unread_count does not count it.
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel("general", "bob", SenderType::Human)
+        .unwrap();
+
+    let parent_id = store
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "parent",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
+        .unwrap();
+
+    store
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: Some(&parent_id),
+            sender_name: "bob",
+            sender_type: SenderType::Human,
+            content: "bob reply",
+            attachment_ids: &[],
+            suppress_event: false,
+        })
+        .unwrap();
+
+    // Direct insert: system thread reply.
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    {
+        let conn = store.conn_for_test();
+        let max_seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) FROM messages WHERE channel_id = ?1",
+                params![channel_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, thread_parent_id, sender_name, sender_type, content, seq) \
+             VALUES (?1, ?2, ?3, 'system', 'system', 'sys reply', ?4)",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                channel_id,
+                parent_id,
+                max_seq + 1
+            ],
+        )
+        .unwrap();
+    }
+
+    let state = store
+        .get_thread_notification_state("general", &parent_id, "alice")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        state.unread_count, 1,
+        "thread notification state must count only the human reply, not the system reply"
+    );
+}
+
+#[test]
+fn test_create_system_message_emits_system_typed_stream_event() {
+    // Subscribe before posting to capture the stream event. Verifies the
+    // payload's sender.type is "system" (not "human" as the legacy code wrote).
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+
+    let mut rx = store.subscribe();
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    store
+        .create_system_message(&channel_id, "Team assembled.")
+        .unwrap();
+
+    let event = rx
+        .try_recv()
+        .expect("stream event should be delivered synchronously");
+    let payload = event.event_payload;
+    let sender = payload.get("sender").expect("payload has sender field");
+    let sender_type = sender
+        .get("type")
+        .and_then(|v| v.as_str())
+        .expect("sender.type is a string");
+    assert_eq!(
+        sender_type, "system",
+        "stream event must tag system messages with sender.type=system"
+    );
+    let sender_name = sender
+        .get("name")
+        .and_then(|v| v.as_str())
+        .expect("sender.name is a string");
+    assert_eq!(sender_name, "system");
+}

@@ -538,6 +538,7 @@ impl Store {
              WHERE channel_id = ?1
                AND thread_parent_id = ?2
                AND seq > ?3
+               AND sender_type != 'system'
                AND NOT (sender_name = ?4 AND sender_type = ?5)",
             params![
                 channel_id,
