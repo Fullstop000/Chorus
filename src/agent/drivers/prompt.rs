@@ -320,7 +320,8 @@ mod tests {
     fn system_prompt_takes_precedence_over_description() {
         let mut config = sample_config();
         config.description = Some("Brief description".to_string());
-        config.system_prompt = Some("You are a detailed persona agent with rich instructions.".to_string());
+        config.system_prompt =
+            Some("You are a detailed persona agent with rich instructions.".to_string());
 
         let prompt = build_base_system_prompt(
             &config,

@@ -45,9 +45,7 @@ pub struct LaunchTrioError {
 
 // ── Handlers ──
 
-pub async fn handle_list_templates(
-    State(state): State<AppState>,
-) -> ApiResult<TemplatesResponse> {
+pub async fn handle_list_templates(State(state): State<AppState>) -> ApiResult<TemplatesResponse> {
     let categories = group_by_category(&state.templates);
     Ok(Json(TemplatesResponse { categories }))
 }
@@ -74,7 +72,11 @@ pub async fn handle_launch_trio(
     let channel_name = format!("trio-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
     let channel_id = state
         .store
-        .create_channel(&channel_name, None, crate::store::channels::ChannelType::Channel)
+        .create_channel(
+            &channel_name,
+            None,
+            crate::store::channels::ChannelType::Channel,
+        )
         .map_err(|e| internal_err(format!("failed to create trio channel: {e}")))?;
 
     // Join the human user to the channel.
@@ -116,8 +118,9 @@ pub async fn handle_launch_trio(
         };
 
         // Create the agent record.
-        let agent_id = match state.store.create_agent_record_with_reasoning(
-            &AgentRecordUpsert {
+        let agent_id = match state
+            .store
+            .create_agent_record_with_reasoning(&AgentRecordUpsert {
                 name: &agent_name,
                 display_name: &template.name,
                 description: template.description.as_deref(),
@@ -126,8 +129,7 @@ pub async fn handle_launch_trio(
                 model: &model,
                 reasoning_effort: None,
                 env_vars: &[],
-            },
-        ) {
+            }) {
             Ok(id) => id,
             Err(e) => {
                 errors.push(LaunchTrioError {
@@ -206,7 +208,14 @@ fn find_available_name(state: &AppState, base_name: &str) -> String {
         }
     }
     // Fallback: use UUID suffix.
-    format!("{base_name}-{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("x"))
+    format!(
+        "{base_name}-{}",
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("x")
+    )
 }
 
 /// Pick the first available model for a runtime.

@@ -252,8 +252,12 @@ fn setup_with_runtime_statuses(
         statuses,
         models_by_runtime,
     });
-    let router =
-        build_router_with_services(store.clone(), lifecycle.clone(), runtime_status_provider, Vec::new());
+    let router = build_router_with_services(
+        store.clone(),
+        lifecycle.clone(),
+        runtime_status_provider,
+        Vec::new(),
+    );
     (store, router, lifecycle)
 }
 
@@ -2468,12 +2472,7 @@ async fn test_get_templates_returns_grouped_categories() {
         statuses: vec![],
         models_by_runtime: vec![],
     });
-    let router = build_router_with_services(
-        store,
-        lifecycle,
-        runtime_status_provider,
-        templates,
-    );
+    let router = build_router_with_services(store, lifecycle, runtime_status_provider, templates);
 
     let response = router
         .oneshot(
@@ -2486,9 +2485,12 @@ async fn test_get_templates_returns_grouped_categories() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap())
-            .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
 
     let categories = body["categories"].as_array().unwrap();
     assert_eq!(categories.len(), 2);
@@ -2514,8 +2516,11 @@ async fn test_get_templates_returns_empty_when_no_templates() {
         .unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
-    let body: serde_json::Value =
-        serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1 << 20).await.unwrap())
-            .unwrap();
+    let body: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(body["categories"].as_array().unwrap().len(), 0);
 }
