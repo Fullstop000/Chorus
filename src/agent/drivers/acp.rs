@@ -407,9 +407,8 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
     }
 
     fn supports_stdin_notification(&self) -> bool {
-        // ACP does not support mid-turn message injection.
-        // Agents pick up new messages via check_messages MCP tool.
-        false
+        // ACP agents receive notifications via session/prompt on stdin.
+        true
     }
 
     fn mcp_tool_prefix(&self) -> &str {
@@ -480,13 +479,9 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
 
         // 2. session/new or session/load (resume previous session)
         let session_req = if let Some(ref sid) = ctx.config.session_id {
-            json_rpc_request(
-                2,
-                "session/load",
-                json!({
-                    "sessionId": sid
-                }),
-            )
+            let mut params = self.runtime_impl.session_new_params(ctx);
+            params["sessionId"] = json!(sid);
+            json_rpc_request(2, "session/load", params)
         } else {
             json_rpc_request(2, "session/new", self.runtime_impl.session_new_params(ctx))
         };
