@@ -717,6 +717,23 @@ fn truncate_prompt_text(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Capture a backtrace filtered to frames within this crate.
+/// Falls back to the full backtrace if no project frames are found
+/// (e.g. in release builds with debug info stripped).
+fn project_backtrace() -> String {
+    let full = std::backtrace::Backtrace::capture().to_string();
+    let project_frames: Vec<&str> = full
+        .lines()
+        .filter(|line| line.contains("chorus"))
+        .take(15)
+        .collect();
+    if project_frames.is_empty() {
+        full
+    } else {
+        project_frames.join("\n")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1177,19 +1194,4 @@ mod tests {
     }
 }
 
-/// Capture a backtrace filtered to frames within this crate.
-/// Falls back to the full backtrace if no project frames are found
-/// (e.g. in release builds with debug info stripped).
-fn project_backtrace() -> String {
-    let full = std::backtrace::Backtrace::capture().to_string();
-    let project_frames: Vec<&str> = full
-        .lines()
-        .filter(|line| line.contains("chorus"))
-        .take(15)
-        .collect();
-    if project_frames.is_empty() {
-        full
-    } else {
-        project_frames.join("\n")
-    }
-}
+

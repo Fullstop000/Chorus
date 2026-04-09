@@ -175,7 +175,7 @@ fn user_shell_path_dirs() -> &'static [PathBuf] {
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok())
-            .map(|s| std::env::split_paths(s.trim()).map(PathBuf::from).collect())
+            .map(|s| std::env::split_paths(s.trim()).collect())
             .unwrap_or_default()
     })
 }
