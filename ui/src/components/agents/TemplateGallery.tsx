@@ -8,11 +8,10 @@ import './TemplateGallery.css'
 interface Props {
   categories: TemplateCategory[]
   allTemplates: AgentTemplate[]
-  selected: AgentTemplate | null
   onSelect: (template: AgentTemplate | null) => void
 }
 
-export function TemplateGallery({ categories, allTemplates, selected, onSelect }: Props) {
+export function TemplateGallery({ categories, allTemplates, onSelect }: Props) {
   const [search, setSearch] = useState('')
   const [activeCategory, setActiveCategory] = useState<string | null>(null)
 
@@ -35,23 +34,6 @@ export function TemplateGallery({ categories, allTemplates, selected, onSelect }
     if (allTemplates.length === 0) return
     const random = allTemplates[Math.floor(Math.random() * allTemplates.length)]
     onSelect(random)
-  }
-
-  // Collapsed mode: show only the selected row with a "Change" button.
-  if (selected) {
-    return (
-      <div className="template-gallery-collapsed">
-        <TemplateRow template={selected} />
-        <Button
-          variant="ghost"
-          size="sm"
-          className="template-change-btn"
-          onClick={() => onSelect(null)}
-        >
-          Change template
-        </Button>
-      </div>
-    )
   }
 
   return (

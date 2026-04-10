@@ -171,38 +171,6 @@
   }
 }
 
-/* Collapsed state */
-.template-gallery-collapsed {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.template-gallery-collapsed .template-row {
-  flex: 1;
-  cursor: default;
-  border-bottom: none;
-}
-
-.template-gallery-collapsed .template-row:hover {
-  background: var(--color-accent);
-  color: var(--color-foreground);
-}
-
-.template-gallery-collapsed .template-row:hover .template-row-desc {
-  color: var(--color-muted-foreground);
-}
-
-.template-gallery-collapsed .template-row:hover .template-row-badge {
-  background: transparent;
-  color: var(--color-muted-foreground);
-  border-color: var(--color-border);
-}
-
-.template-change-btn {
-  flex-shrink: 0;
-  font-size: 12px;
-}
 
 /* Preview */
 .template-preview {

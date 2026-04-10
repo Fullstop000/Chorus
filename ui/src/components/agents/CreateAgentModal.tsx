@@ -184,7 +184,6 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
             <TemplateGallery
               categories={categories}
               allTemplates={allTemplates}
-              selected={null}
               onSelect={handleTemplateSelect}
             />
 
