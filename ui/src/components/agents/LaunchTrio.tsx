@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
-import { Button } from '@/components/ui/button'
 import { launchTrio } from '../../data/templates'
 import type { AgentTemplate } from '../../hooks/useTemplates'
 import './LaunchTrio.css'
@@ -46,35 +45,30 @@ export function LaunchTrio({ allTemplates, onLaunched }: Props) {
     }
   }
 
+  const agentLine = trioTemplates
+    .map(t => `${t.emoji ?? '🤖'} ${t.name}`)
+    .join('  ·  ')
+
   return (
     <div className="launch-trio">
       <div className="launch-trio-header">
-        <span className="launch-trio-label">Launch Trio — spin up a team in one click</span>
-        <Button
-          size="sm"
-          variant="outline"
+        <span className="launch-trio-label">Launch Trio</span>
+        <button
+          className="launch-trio-btn"
           onClick={handleLaunch}
           disabled={isLaunching}
-          className="launch-trio-btn"
         >
           {isLaunching ? (
             <>
-              <LoaderCircle size={13} className="launch-trio-spinner" />
+              <LoaderCircle size={11} className="launch-trio-spinner" />
               Launching...
             </>
           ) : (
             'Launch All 3'
           )}
-        </Button>
+        </button>
       </div>
-      <div className="launch-trio-chips">
-        {trioTemplates.map(t => (
-          <span key={t.id} className="launch-trio-chip">
-            <span className="launch-trio-chip-emoji">{t.emoji ?? '🤖'}</span>
-            {t.name}
-          </span>
-        ))}
-      </div>
+      <div className="launch-trio-agents">{agentLine}</div>
       {error && <p className="launch-trio-error">{error}</p>}
     </div>
   )

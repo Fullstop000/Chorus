@@ -37,11 +37,11 @@ export function TemplateGallery({ categories, allTemplates, selected, onSelect }
     onSelect(random)
   }
 
-  // Collapsed mode: show only the selected card with a "Change" button.
+  // Collapsed mode: show only the selected row with a "Change" button.
   if (selected) {
     return (
       <div className="template-gallery-collapsed">
-        <TemplateCardPreview template={selected} />
+        <TemplateRow template={selected} />
         <Button
           variant="ghost"
           size="sm"
@@ -57,12 +57,18 @@ export function TemplateGallery({ categories, allTemplates, selected, onSelect }
   return (
     <div className="template-gallery">
       <div className="template-filter-bar">
-        <Input
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          placeholder="Search templates..."
-          className="template-search"
-        />
+        <div className="template-filter-row">
+          <Input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search templates..."
+            className="template-search"
+          />
+          <Button variant="ghost" size="sm" onClick={handleSurprise} title="Surprise me">
+            <Shuffle size={13} />
+            <span className="template-surprise-label">Surprise me</span>
+          </Button>
+        </div>
         <div className="template-category-tags">
           <button
             className={`template-tag ${activeCategory === null ? 'active' : ''}`}
@@ -80,21 +86,16 @@ export function TemplateGallery({ categories, allTemplates, selected, onSelect }
             </button>
           ))}
         </div>
-        <Button variant="ghost" size="sm" onClick={handleSurprise} title="Surprise me">
-          <Shuffle size={13} />
-          <span className="template-surprise-label">Surprise me</span>
-        </Button>
       </div>
 
-      <div className="template-grid" role="listbox" aria-label="Agent templates">
+      <div className="template-list" role="listbox" aria-label="Agent templates">
         {filtered.length === 0 && (
           <div className="template-empty">No templates match your search.</div>
         )}
         {filtered.map(template => (
-          <TemplateCard
+          <TemplateRow
             key={template.id}
             template={template}
-            isSelected={false}
             onClick={() => onSelect(template)}
           />
         ))}
@@ -103,56 +104,26 @@ export function TemplateGallery({ categories, allTemplates, selected, onSelect }
   )
 }
 
-function TemplateCard({
+function TemplateRow({
   template,
-  isSelected,
   onClick,
 }: {
   template: AgentTemplate
-  isSelected: boolean
-  onClick: () => void
+  onClick?: () => void
 }) {
   return (
-    <button
-      className={`template-card ${isSelected ? 'selected' : ''}`}
+    <div
+      className="template-row"
       onClick={onClick}
       role="option"
-      aria-selected={isSelected}
       aria-label={`${template.name} - ${template.vibe ?? template.description ?? ''}`}
+      tabIndex={0}
+      onKeyDown={e => { if (onClick && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onClick() } }}
     >
-      <span
-        className="template-card-emoji"
-        style={{ borderLeftColor: template.color ?? 'var(--color-border)' }}
-      >
-        {template.emoji ?? '🤖'}
-      </span>
-      <span className="template-card-body">
-        <span className="template-card-name">{template.name}</span>
-        <span className="template-card-vibe">{template.vibe ?? template.description ?? ''}</span>
-        <span className="template-card-tag">{template.category}</span>
-      </span>
-    </button>
-  )
-}
-
-function TemplateCardPreview({ template }: { template: AgentTemplate }) {
-  return (
-    <div
-      className="template-card selected"
-      role="status"
-      aria-label={`Selected: ${template.name}`}
-    >
-      <span
-        className="template-card-emoji"
-        style={{ borderLeftColor: template.color ?? 'var(--color-border)' }}
-      >
-        {template.emoji ?? '🤖'}
-      </span>
-      <span className="template-card-body">
-        <span className="template-card-name">{template.name}</span>
-        <span className="template-card-vibe">{template.vibe ?? template.description ?? ''}</span>
-        <span className="template-card-tag">{template.category}</span>
-      </span>
+      <span className="template-row-emoji">{template.emoji ?? '🤖'}</span>
+      <span className="template-row-name">{template.name}</span>
+      <span className="template-row-desc">{template.vibe ?? template.description ?? ''}</span>
+      <span className="template-row-badge">{template.category}</span>
     </div>
   )
 }

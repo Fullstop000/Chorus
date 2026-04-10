@@ -6,39 +6,54 @@
 
 .template-filter-bar {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.template-filter-row {
+  display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
 }
 
 .template-search {
   flex: 1;
-  min-width: 140px;
+  min-width: 0;
 }
 
 .template-category-tags {
   display: flex;
   gap: 4px;
   overflow-x: auto;
-  flex-shrink: 0;
+  min-width: 0;
+  max-width: 100%;
+  padding-bottom: 2px;
 }
 
 .template-tag {
-  padding: 3px 10px;
-  border-radius: 12px;
-  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 0;
+  font-size: 10px;
   font-family: var(--font-mono);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--color-muted-foreground);
-  background: var(--color-secondary);
+  background: transparent;
   border: 1px solid var(--color-border);
   cursor: pointer;
   white-space: nowrap;
 }
 
+.template-tag:hover {
+  background: var(--color-secondary);
+}
+
 .template-tag.active {
-  color: var(--color-foreground);
-  border-color: var(--color-ring);
-  background: var(--color-accent);
+  color: var(--color-primary-foreground);
+  background: var(--color-primary);
+  border-color: var(--color-primary);
 }
 
 .template-surprise-label {
@@ -46,97 +61,118 @@
   margin-left: 4px;
 }
 
-.template-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+/* Dense row list (Terminal Catalog) */
+.template-list {
   max-height: 320px;
   overflow-y: auto;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.template-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.template-row:last-child {
+  border-bottom: none;
+}
+
+.template-row:hover {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+.template-row:hover .template-row-desc {
+  color: rgba(250, 249, 246, 0.55);
+}
+
+.template-row:hover .template-row-badge {
+  background: rgba(250, 249, 246, 0.12);
+  color: var(--color-primary-foreground);
+  border-color: rgba(250, 249, 246, 0.2);
+}
+
+.template-row:focus-visible {
+  outline: 2px solid var(--color-ring);
+  outline-offset: -2px;
+}
+
+.template-row.selected {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+}
+
+.template-row.selected .template-row-desc {
+  color: rgba(250, 249, 246, 0.55);
+}
+
+.template-row.selected .template-row-badge {
+  background: rgba(250, 249, 246, 0.12);
+  color: var(--color-primary-foreground);
+  border-color: rgba(250, 249, 246, 0.2);
+}
+
+.template-row-emoji {
+  font-size: 18px;
+  flex-shrink: 0;
+  width: 24px;
+  text-align: center;
+  line-height: 1;
+}
+
+.template-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.template-row-desc {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.template-row-badge {
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 500;
+  text-transform: lowercase;
+  padding: 2px 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.template-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 13px;
 }
 
 @media (max-width: 640px) {
-  .template-grid {
-    grid-template-columns: 1fr;
-  }
   .template-category-tags {
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
   }
-}
-
-.template-empty {
-  grid-column: 1 / -1;
-  padding: 24px;
-  text-align: center;
-  color: var(--color-muted-foreground);
-  font-size: 13px;
-}
-
-.template-card {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  padding: 10px;
-  border-radius: 6px;
-  border: 1px solid var(--color-border);
-  background: var(--color-card);
-  cursor: pointer;
-  text-align: left;
-  transition: border-color 0.15s;
-}
-
-.template-card:hover {
-  border-color: var(--color-muted-foreground);
-}
-
-.template-card:focus-visible {
-  outline: 2px solid var(--color-ring);
-  outline-offset: 1px;
-}
-
-.template-card.selected {
-  border-color: var(--color-ring);
-  background: var(--color-accent);
-}
-
-.template-card-emoji {
-  font-size: 20px;
-  flex-shrink: 0;
-  width: 32px;
-  height: 32px;
-  display: grid;
-  place-items: center;
-  border-left: 2px solid transparent;
-  border-radius: 4px;
-}
-
-.template-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.template-card-name {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-foreground);
-}
-
-.template-card-vibe {
-  font-size: 11px;
-  color: var(--color-muted-foreground);
-  line-height: 1.4;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.template-card-tag {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  color: var(--color-muted-foreground);
-  margin-top: 2px;
+  .template-row-desc {
+    display: none;
+  }
 }
 
 /* Collapsed state */
@@ -146,9 +182,25 @@
   gap: 8px;
 }
 
-.template-gallery-collapsed .template-card {
+.template-gallery-collapsed .template-row {
   flex: 1;
-  pointer-events: none;
+  cursor: default;
+  border-bottom: none;
+}
+
+.template-gallery-collapsed .template-row:hover {
+  background: var(--color-accent);
+  color: var(--color-foreground);
+}
+
+.template-gallery-collapsed .template-row:hover .template-row-desc {
+  color: var(--color-muted-foreground);
+}
+
+.template-gallery-collapsed .template-row:hover .template-row-badge {
+  background: transparent;
+  color: var(--color-muted-foreground);
+  border-color: var(--color-border);
 }
 
 .template-change-btn {
@@ -159,7 +211,7 @@
 /* Preview */
 .template-preview {
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: 0;
   background: var(--color-muted);
   border: 1px solid var(--color-border);
 }
@@ -174,7 +226,8 @@
 
 .template-preview-text {
   font-size: 12px;
-  line-height: 1.5;
+  font-family: var(--font-mono);
+  line-height: 1.55;
   color: var(--color-foreground);
   margin-top: 4px;
   white-space: pre-wrap;

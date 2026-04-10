@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { ArrowLeft } from 'lucide-react'
 import { useRuntimeStatuses } from '../../hooks/useRuntimeStatuses'
 import { useTemplates } from '../../hooks/useTemplates'
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
@@ -28,7 +29,10 @@ const EMPTY_CONFIG: AgentConfigState = {
 
 const RUNTIME_ORDER = ['claude', 'codex', 'kimi', 'opencode']
 
+type Step = 'browse' | 'configure'
+
 export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
+  const [step, setStep] = useState<Step>('browse')
   const [config, setConfig] = useState<AgentConfigState>({ ...EMPTY_CONFIG })
   const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null)
   const [creating, setCreating] = useState(false)
@@ -36,36 +40,57 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses(open)
   const { categories, allTemplates, isLoading: templatesLoading } = useTemplates(open)
 
+  const hasTemplates = !templatesLoading && allTemplates.length > 0
+
   function handleTemplateSelect(template: AgentTemplate | null) {
+    if (!template) return
     setSelectedTemplate(template)
-    if (template) {
-      const agentName = template.id.split('/')[1] ?? template.id
-      setConfig({
-        name: agentName,
-        display_name: template.name,
-        description: template.description ?? '',
-        systemPrompt: template.prompt_body,
-        runtime: template.suggested_runtime,
-        model: '',
-        reasoningEffort: null,
-        envVars: [],
-      })
-    } else {
-      setConfig({ ...EMPTY_CONFIG })
-    }
+    const agentName = template.id.split('/')[1] ?? template.id
+    setConfig({
+      name: agentName,
+      display_name: template.name,
+      description: template.description ?? '',
+      systemPrompt: template.prompt_body,
+      runtime: template.suggested_runtime,
+      model: '',
+      reasoningEffort: null,
+      envVars: [],
+    })
+    setStep('configure')
+  }
+
+  function handleFromScratch() {
+    setSelectedTemplate(null)
+    setConfig({ ...EMPTY_CONFIG })
+    setStep('configure')
+  }
+
+  function handleBack() {
+    setSelectedTemplate(null)
+    setConfig({ ...EMPTY_CONFIG })
+    setStep('browse')
   }
 
   function handleTrioLaunched(_channelId: string) {
     onCreated()
   }
 
-  // Reset form when modal closes.
+  // Reset everything when modal closes.
   useEffect(() => {
     if (!open) {
+      setStep('browse')
       setConfig({ ...EMPTY_CONFIG })
+      setSelectedTemplate(null)
       setError(null)
     }
   }, [open])
+
+  // If no templates, skip straight to configure step.
+  useEffect(() => {
+    if (open && !templatesLoading && !hasTemplates) {
+      setStep('configure')
+    }
+  }, [open, templatesLoading, hasTemplates])
 
   // Default to the first installed ACP runtime once statuses load.
   useEffect(() => {
@@ -115,63 +140,85 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
     }
   }
 
-  const hasTemplates = !templatesLoading && allTemplates.length > 0
-
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="w-[min(720px,96vw)]">
         <DialogHeader>
           <div className="flex flex-col gap-1">
-            <DialogTitle>Create Agent</DialogTitle>
-            <DialogDescription>[agent::new]</DialogDescription>
+            <DialogTitle>
+              {step === 'browse' ? 'Create Agent' : (
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <button
+                    onClick={handleBack}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'inherit' }}
+                    aria-label="Back to templates"
+                  >
+                    <ArrowLeft size={16} />
+                  </button>
+                  Configure Agent
+                </span>
+              )}
+            </DialogTitle>
+            <DialogDescription>
+              {step === 'browse' ? '[agent::new]' : (selectedTemplate ? selectedTemplate.name : '[from scratch]')}
+            </DialogDescription>
           </div>
           <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
         </DialogHeader>
 
-        {hasTemplates && (
+        {/* Step 1: Browse templates */}
+        {step === 'browse' && (
           <>
+            <LaunchTrio
+              allTemplates={allTemplates}
+              onLaunched={handleTrioLaunched}
+            />
+
             <TemplateGallery
               categories={categories}
               allTemplates={allTemplates}
-              selected={selectedTemplate}
+              selected={null}
               onSelect={handleTemplateSelect}
             />
 
-            {selectedTemplate && <TemplatePreview template={selectedTemplate} />}
-
-            {!selectedTemplate && (
-              <LaunchTrio
-                allTemplates={allTemplates}
-                onLaunched={handleTrioLaunched}
-              />
-            )}
-
-            <div className="text-center text-xs text-muted-foreground py-1">
-              — or create from scratch —
-            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button variant="outline" onClick={handleFromScratch}>
+                Create from scratch
+              </Button>
+            </DialogFooter>
           </>
         )}
 
+        {/* Step 2: Configure agent */}
+        {step === 'configure' && (
+          <>
+            {selectedTemplate && <TemplatePreview template={selectedTemplate} />}
 
-        <AgentConfigForm
-          state={config}
-          runtimeStatuses={runtimeStatuses}
-          runtimeStatusError={runtimeStatusError}
-          editableName
-          onChange={setConfig}
-        />
+            <AgentConfigForm
+              state={config}
+              runtimeStatuses={runtimeStatuses}
+              runtimeStatusError={runtimeStatusError}
+              editableName
+              onChange={setConfig}
+            />
 
-        {error && <FormError>{error}</FormError>}
+            {error && <FormError>{error}</FormError>}
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button
-            onClick={handleCreate}
-            disabled={creating || !config.name.trim() || !config.model.trim()}
-          >
-            {creating ? 'Creating...' : 'Create Agent'}
-          </Button>
-        </DialogFooter>
+            <DialogFooter>
+              {hasTemplates && (
+                <Button variant="outline" onClick={handleBack}>Back</Button>
+              )}
+              <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button
+                onClick={handleCreate}
+                disabled={creating || !config.name.trim() || !config.model.trim()}
+              >
+                {creating ? 'Creating...' : 'Create Agent'}
+              </Button>
+            </DialogFooter>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   )

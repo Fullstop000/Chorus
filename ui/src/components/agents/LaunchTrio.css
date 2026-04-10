@@ -1,25 +1,45 @@
 .launch-trio {
-  padding: 12px;
-  border: 1px dashed var(--color-border);
-  border-radius: 8px;
-  background: var(--color-muted);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  padding: 12px 14px;
 }
 
 .launch-trio-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 .launch-trio-label {
-  font-size: 12px;
+  font-size: 10px;
+  font-family: var(--font-mono);
   font-weight: 600;
-  color: var(--color-foreground);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .launch-trio-btn {
-  font-size: 12px;
+  font-size: 10px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: var(--color-primary-foreground);
+  color: var(--color-primary);
+  border: 1px solid var(--color-primary-foreground);
+  border-radius: 0;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.launch-trio-btn:hover {
+  opacity: 0.9;
+}
+
+.launch-trio-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .launch-trio-spinner {
@@ -32,29 +52,16 @@
   to { transform: rotate(360deg); }
 }
 
-.launch-trio-chips {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.launch-trio-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  font-size: 11px;
-  border-radius: 6px;
-  background: var(--color-secondary);
-  color: var(--color-foreground);
-}
-
-.launch-trio-chip-emoji {
-  font-size: 14px;
+.launch-trio-agents {
+  font-size: 12px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  opacity: 0.8;
 }
 
 .launch-trio-error {
   margin-top: 6px;
   font-size: 11px;
+  font-family: var(--font-mono);
   color: var(--color-destructive);
 }
