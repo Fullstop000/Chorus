@@ -875,3 +875,21 @@ pub async fn handle_trace_events(
         .map_err(|e| internal_err(e.to_string()))?;
     Ok(Json(TraceEventsResponse { events }))
 }
+
+// ── Agent runs ──
+
+#[derive(Serialize)]
+pub struct AgentRunsResponse {
+    pub runs: Vec<serde_json::Value>,
+}
+
+pub async fn handle_agent_runs(
+    State(state): State<AppState>,
+    Path(agent_name): Path<String>,
+) -> ApiResult<AgentRunsResponse> {
+    let runs = state
+        .store
+        .get_agent_runs(&agent_name, 20)
+        .map_err(|e| internal_err(e.to_string()))?;
+    Ok(Json(AgentRunsResponse { runs }))
+}

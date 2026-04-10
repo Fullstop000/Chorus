@@ -21,11 +21,13 @@ import {
   ChevronDown,
   ChevronUp,
   AlertCircle,
+  GitCompare,
 } from 'lucide-react'
 import { useTraceStore } from '../../../store/traceStore'
 import { getTraceEvents } from '../../../data/chat'
 import type { TraceEventRecord } from '../../../data/chat'
 import type { TraceFrame } from '../../../transport/types'
+import { RunComparison } from './RunComparison'
 import './ActivityPanel.css'
 
 interface Props {
@@ -266,6 +268,7 @@ function coalesceFrames<T extends { kind: string; data: Record<string, string> }
 export function TelescopeActivity({ agentName }: Props) {
   const trace = useTraceStore((s) => s.traces[agentName])
   const listRef = useRef<HTMLDivElement>(null)
+  const [showComparison, setShowComparison] = useState(false)
 
   // Historical events fetched from API when no live trace is available
   const [histEvents, setHistEvents] = useState<TraceEventRecord[] | null>(null)
@@ -322,14 +325,42 @@ export function TelescopeActivity({ agentName }: Props) {
 
   const hasRows = liveRows.length > 0 || histRows.length > 0
 
+  if (showComparison) {
+    return (
+      <div className="activity-panel">
+        <div className="activity-header">
+          <span className="activity-title">TELESCOPE — {agentName.toUpperCase()}</span>
+          <button
+            className="activity-compare-btn"
+            onClick={() => setShowComparison(false)}
+            title="Back to live trace"
+          >
+            ← Live
+          </button>
+        </div>
+        <RunComparison agentName={agentName} />
+      </div>
+    )
+  }
+
   return (
     <div className="activity-panel">
       <div className="activity-header">
         <span className="activity-title">TELESCOPE — {agentName.toUpperCase()}</span>
-        <span className="activity-status" style={{ color: dotColor }}>
-          <Circle size={8} fill="currentColor" />
-          <span>{statusLabel}</span>
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button
+            className="activity-compare-btn"
+            onClick={() => setShowComparison(true)}
+            title="Compare runs"
+          >
+            <GitCompare size={12} />
+            Compare
+          </button>
+          <span className="activity-status" style={{ color: dotColor }}>
+            <Circle size={8} fill="currentColor" />
+            <span>{statusLabel}</span>
+          </span>
+        </div>
       </div>
       {!hasRows && !histLoading && (
         <div className="activity-empty">No trace events yet.</div>

@@ -156,6 +156,32 @@ impl Store {
         Ok(events)
     }
 
+    /// List recent runs for an agent (messages with run_id and trace_summary).
+    pub fn get_agent_runs(&self, agent_name: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare(
+            "SELECT id, run_id, trace_summary, created_at FROM messages
+             WHERE sender_name = ?1 AND run_id IS NOT NULL AND trace_summary IS NOT NULL
+             ORDER BY created_at DESC LIMIT ?2",
+        )?;
+        let runs: Vec<serde_json::Value> = stmt
+            .query_map(params![agent_name, limit as i64], |row| {
+                let id: String = row.get(0)?;
+                let run_id: String = row.get(1)?;
+                let summary: String = row.get(2)?;
+                let created_at: String = row.get(3)?;
+                Ok(serde_json::json!({
+                    "messageId": id,
+                    "runId": run_id,
+                    "traceSummary": serde_json::from_str::<serde_json::Value>(&summary).unwrap_or_default(),
+                    "createdAt": created_at,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(runs)
+    }
+
     // ── Sender type lookup ──
 
     pub fn lookup_sender_type(&self, name: &str) -> Result<Option<SenderType>> {
