@@ -174,6 +174,12 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
               onLaunched={handleTrioLaunched}
             />
 
+            <div className="new-message-divider" style={{ padding: '4px 0' }}>
+              <div className="new-message-divider__line" />
+              <span className="new-message-divider__label" style={{ fontSize: 11, color: 'var(--color-muted-foreground)' }}>or choose a template</span>
+              <div className="new-message-divider__line" />
+            </div>
+
             <TemplateGallery
               categories={categories}
               allTemplates={allTemplates}
