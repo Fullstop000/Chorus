@@ -58,12 +58,6 @@ pub trait AcpRuntime: Send + Sync + 'static {
         json!({ "workspaceDir": ctx.working_directory })
     }
 
-    /// Build a minimal params object for `session/new` when falling back from a
-    /// failed `session/load` (no SpawnContext available in the parse path).
-    fn session_new_default_params(&self) -> serde_json::Value {
-        json!({})
-    }
-
     /// Whether `session/prompt` requires a `sessionId` field.
     /// When true, the startup prompt is deferred until `session/new` responds with a sessionId.
     fn requires_session_id_in_prompt(&self) -> bool {
@@ -129,31 +123,8 @@ impl<R: AcpRuntime> AcpDriver<R> {
         state: &mut AcpState,
         msg: &serde_json::Value,
     ) -> Vec<ParsedEvent> {
-        let id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-
         // Check for error response
         if let Some(err) = msg.get("error") {
-            // If session/load (id=2) failed, fall back to session/new.
-            if id == 2 && state.phase == AcpPhase::AwaitingSessionResponse {
-                let message = err
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                tracing::warn!(
-                    "session/load failed ({message}), falling back to session/new"
-                );
-                // Clear stale pending session id.
-                state.pending_session_id.take();
-                let fallback_req = json_rpc_request(
-                    2,
-                    "session/new",
-                    self.runtime_impl.session_new_default_params(),
-                );
-                return vec![ParsedEvent::WriteStdin {
-                    data: format!("{fallback_req}\n"),
-                }];
-            }
-
             let message = err
                 .get("message")
                 .and_then(|v| v.as_str())
@@ -161,6 +132,8 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 .to_string();
             return vec![ParsedEvent::Error { message }];
         }
+
+        let id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
 
         let result = msg.get("result");
 
@@ -1100,38 +1073,23 @@ mod tests {
         );
     }
 
-    /// Regression: creating a new Kimi ACP agent with no stored session should
-    /// send session/new, not session/load with a random UUID. If session/load
-    /// fails (stale session), the driver should fall back to session/new.
+    /// Regression: ACP error responses surface as ParsedEvent::Error, not silently swallowed.
     #[test]
-    fn session_load_error_falls_back_to_session_new() {
+    fn session_load_error_surfaces_as_error_event() {
         let d = make_test_driver();
-        // Simulate: init response received, now awaiting session response.
         {
             let mut state = d.state.lock().unwrap();
             state.phase = AcpPhase::AwaitingSessionResponse;
         }
 
-        // Simulate: session/load returns error "Session not found".
         let events = d.parse_line(
             r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"Invalid params","data":{"session_id":"Session not found"}}}"#,
         );
 
-        // Should NOT emit Error. Should emit WriteStdin with a session/new request.
-        assert_eq!(events.len(), 1, "expected exactly one WriteStdin event");
-        if let ParsedEvent::WriteStdin { data } = &events[0] {
-            let parsed: serde_json::Value = serde_json::from_str(data.trim()).unwrap();
-            assert_eq!(parsed["method"], "session/new", "fallback must send session/new");
-            assert_eq!(parsed["id"], 2, "reuse id 2 for the fallback request");
-        } else {
-            panic!(
-                "expected WriteStdin with session/new fallback, got {:?}",
-                events[0]
-            );
-        }
-
-        // Phase should still be AwaitingSessionResponse (waiting for the fallback response).
-        let state = d.state.lock().unwrap();
-        assert_eq!(state.phase, AcpPhase::AwaitingSessionResponse);
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "Invalid params"),
+            "session/load errors must surface, not be silently retried"
+        );
     }
 }
