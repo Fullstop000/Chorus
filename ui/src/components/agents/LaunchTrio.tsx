@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { LoaderCircle } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import { launchTrio } from '../../data/templates'
 import type { AgentTemplate } from '../../hooks/useTemplates'
 import './LaunchTrio.css'
@@ -53,7 +54,8 @@ export function LaunchTrio({ allTemplates, onLaunched }: Props) {
     <div className="launch-trio">
       <div className="launch-trio-header">
         <span className="launch-trio-label">Launch Trio</span>
-        <button
+        <Button
+          size="sm"
           className="launch-trio-btn"
           onClick={handleLaunch}
           disabled={isLaunching}
@@ -66,7 +68,7 @@ export function LaunchTrio({ allTemplates, onLaunched }: Props) {
           ) : (
             'Launch All 3'
           )}
-        </button>
+        </Button>
       </div>
       <div className="launch-trio-agents">{agentLine}</div>
       {error && <p className="launch-trio-error">{error}</p>}
