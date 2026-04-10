@@ -2,7 +2,7 @@
 // WebSocket lifecycle, subscriber registry, frame dispatch.
 // No app logic — consumers decide what events mean.
 
-import type { RealtimeFrame } from './types'
+import type { RealtimeFrame, TraceFrame } from './types'
 
 // ── Subscriber entry stored in the registry ──
 
@@ -21,6 +21,7 @@ export class RealtimeSession {
   private reconnectTimer: number | null = null
   private disposed = false
   private subscribers = new Map<string, Subscriber>()
+  private traceSubscribers = new Map<string, (frame: TraceFrame) => void>()
 
   constructor(private readonly viewer: string) {}
 
@@ -34,9 +35,18 @@ export class RealtimeSession {
     return this.addSubscriber(null, onEvent)
   }
 
+  /** Subscribe to agent trace frames only. Returns unsubscribe fn. */
+  subscribeTraces(onTrace: (frame: TraceFrame) => void): () => void {
+    const id = `trace-${nextSubId++}`
+    this.traceSubscribers.set(id, onTrace)
+    this.ensureSocket()
+    return () => { this.traceSubscribers.delete(id) }
+  }
+
   dispose() {
     this.disposed = true
     this.subscribers.clear()
+    this.traceSubscribers.clear()
     if (this.reconnectTimer != null) {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -78,6 +88,14 @@ export class RealtimeSession {
         frame = JSON.parse(String(raw.data)) as RealtimeFrame
       } catch {
         console.error('[chorus:realtime] bad frame', raw.data)
+        return
+      }
+
+      // Route trace frames to dedicated trace subscribers only.
+      if (frame.type === 'trace') {
+        for (const cb of this.traceSubscribers.values()) {
+          cb(frame.event)
+        }
         return
       }
 

@@ -100,10 +100,7 @@ export function useHistory(
 
     const handleFrame = (frame: RealtimeFrame) => {
       if (cancelled) return
-      if (frame.type === 'error') {
-        console.error(frame.message)
-        return
-      }
+      if (frame.type !== 'event') return
 
       const msg = normalizeEvent(frame.event)
       if (!msg) return

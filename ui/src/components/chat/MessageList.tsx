@@ -7,6 +7,7 @@ import { useVisibilityTracking } from "../../hooks/useVisibilityTracking";
 import { updateReadCursor, historyQueryKeys } from "../../data";
 import type { HistoryMessage, HistoryResponse } from "../../data";
 import { useStore } from "../../store";
+import { useTraceStore } from "../../store/traceStore";
 import "./MessageList.css";
 import type { RefObject } from "react";
 
@@ -286,6 +287,19 @@ export function MessageList({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
+  // ── Telescope: determine which messages show an agent trace ──
+  const traces = useTraceStore((s) => s.traces);
+  const expandedAgents = useTraceStore((s) => s.expandedAgents);
+  const toggleExpanded = useTraceStore((s) => s.toggleExpanded);
+
+  // Map: agentName → last message id from that agent
+  const agentLastMsgId = new Map<string, string>();
+  for (const msg of messages) {
+    if (msg.senderType === "agent") {
+      agentLastMsgId.set(msg.senderName, msg.id);
+    }
+  }
+
   return (
     <div
       className={`message-list${scrollMode === "inherit" ? " message-list--inherit" : ""}`}
@@ -297,26 +311,36 @@ export function MessageList({
       {!loading && messages.length === 0 && (
         <div className="message-list-empty">{emptyLabel}</div>
       )}
-      {messages.map((msg, i) => (
-        <div
-          key={msg.id}
-          ref={(el) => {
-            if (el) messageRowRefs.current.set(msg.id, el);
-            else messageRowRefs.current.delete(msg.id);
-          }}
-        >
+      {messages.map((msg, i) => {
+        const agentTrace =
+          msg.senderType === "agent" &&
+          agentLastMsgId.get(msg.senderName) === msg.id
+            ? traces[msg.senderName]
+            : undefined;
+        return (
           <div
-            ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
-          />
-          {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
-          <MessageItem
-            message={msg}
-            currentUser={currentUser}
-            prevMessage={messages[i - 1]}
-            onReply={onReply}
-          />
-        </div>
-      ))}
+            key={msg.id}
+            ref={(el) => {
+              if (el) messageRowRefs.current.set(msg.id, el);
+              else messageRowRefs.current.delete(msg.id);
+            }}
+          >
+            <div
+              ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
+            />
+            {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
+            <MessageItem
+              message={msg}
+              currentUser={currentUser}
+              prevMessage={messages[i - 1]}
+              onReply={onReply}
+              traceData={agentTrace}
+              isTraceExpanded={expandedAgents[msg.senderName] ?? true}
+              onToggleTrace={() => toggleExpanded(msg.senderName)}
+            />
+          </div>
+        );
+      })}
       <div ref={bottomRef} />
       {hasUnread && (
         <NewMessageBadge

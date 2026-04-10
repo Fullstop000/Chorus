@@ -5,6 +5,8 @@ import type { AgentInfo, HistoryMessage } from "../../data";
 import { attachmentUrl } from "../../data";
 import { useStore } from "../../store";
 import { useAgents } from "../../hooks/data";
+import { Telescope } from "./Telescope";
+import type { AgentTrace } from "../../store/traceStore";
 
 function replyLabel(n: number) {
   return n === 1 ? "1 reply" : `${n} replies`;
@@ -139,6 +141,9 @@ interface MessageItemProps {
   currentUser: string | null;
   prevMessage?: HistoryMessage;
   onReply?: (msg: HistoryMessage) => void;
+  traceData?: AgentTrace;
+  isTraceExpanded?: boolean;
+  onToggleTrace?: () => void;
 }
 
 export function MessageItem({
@@ -146,6 +151,9 @@ export function MessageItem({
   currentUser,
   prevMessage,
   onReply,
+  traceData,
+  isTraceExpanded,
+  onToggleTrace,
 }: MessageItemProps) {
   const { setActiveTab, setCurrentAgent } = useStore();
   const agents = useAgents();
@@ -241,6 +249,17 @@ export function MessageItem({
               {formatDate(message.createdAt)} {formatTime(message.createdAt)}
             </span>
           </div>
+        )}
+        {traceData && (
+          <Telescope
+            agentName={message.senderName}
+            runId={traceData.runId}
+            events={traceData.events}
+            isActive={traceData.isActive}
+            isError={traceData.isError}
+            isExpanded={isTraceExpanded}
+            onToggleExpand={onToggleTrace}
+          />
         )}
         <div className="message-content">
           {renderContent(message.content, agents, handleSelectAgent)}
