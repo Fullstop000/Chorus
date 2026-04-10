@@ -1,7 +1,5 @@
 import { useState, useMemo } from 'react'
-import { Shuffle } from 'lucide-react'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
+import { Search, Shuffle } from 'lucide-react'
 import type { AgentTemplate, TemplateCategory } from '../../hooks/useTemplates'
 import './TemplateGallery.css'
 
@@ -39,17 +37,24 @@ export function TemplateGallery({ categories, allTemplates, onSelect }: Props) {
   return (
     <div className="template-gallery">
       <div className="template-filter-bar">
-        <div className="template-filter-row">
-          <Input
+        <div className="template-search-bar">
+          <Search size={14} className="template-search-icon" />
+          <input
+            type="text"
             value={search}
             onChange={e => setSearch(e.target.value)}
             placeholder="Search templates..."
-            className="template-search"
+            className="template-search-input"
           />
-          <Button variant="outline" size="sm" onClick={handleSurprise} title="Surprise me">
-            <Shuffle size={13} />
-            <span className="template-surprise-label">Surprise me</span>
-          </Button>
+          <button
+            className="template-surprise-btn"
+            onClick={handleSurprise}
+            title="Surprise me"
+            type="button"
+          >
+            <Shuffle size={12} />
+            <span>Surprise me</span>
+          </button>
         </div>
         <div className="template-category-tags">
           <button
