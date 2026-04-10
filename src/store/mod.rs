@@ -96,9 +96,25 @@ impl Store {
         self.data_dir.join("teams")
     }
 
+    /// Lock the database connection, handling mutex poison gracefully.
+    /// If the mutex is poisoned (from a previous panic), the lock is recovered
+    /// and the operation proceeds. This avoids crashing the server on panics
+    /// in other threads.
+    fn lock_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        match self.conn.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                tracing::warn!("Database mutex was poisoned, recovering");
+                self.conn.clear_poison();
+                poisoned.into_inner()
+            }
+        }
+    }
+
     /// Expose the raw connection guard for use in integration tests only.
     /// Not intended for production use.
     pub fn conn_for_test(&self) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+        // Tests may expect a clean state; panicking is acceptable here.
         self.conn.lock().unwrap()
     }
 
@@ -119,7 +135,7 @@ impl Store {
     // ── Sender type lookup ──
 
     pub fn lookup_sender_type(&self, name: &str) -> Result<Option<SenderType>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.lock_conn();
         Self::lookup_sender_type_inner(&conn, name)
     }
 
