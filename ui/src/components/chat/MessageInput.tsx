@@ -1,7 +1,13 @@
 import { useEffect, useState, useRef } from "react";
 import { Paperclip, Plus } from "lucide-react";
 import { useStore } from "../../store";
-import { useAgents, useTeams, useHumans, useChannels, useChannelMembers } from "../../hooks/data";
+import {
+  useAgents,
+  useTeams,
+  useHumans,
+  useChannels,
+  useChannelMembers,
+} from "../../hooks/data";
 import { useHistory } from "../../hooks/useHistory";
 import { sendMessage, createTasks, uploadFile } from "../../data";
 import { MentionTextarea } from "./MentionTextarea";

@@ -512,7 +512,11 @@ async fn handle_parsed_event(
         } => {
             let display_name = driver.tool_display_name(name);
             let tool_input = driver.summarize_tool_input(name, input);
-            info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
+            if tool_input.is_empty() {
+                info!(agent = %agent_name, tool = %name, "tool call");
+            } else {
+                info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
+            }
             running.last_tool_raw_name = Some(name.clone());
             activity_log::push_activity(
                 logs,
