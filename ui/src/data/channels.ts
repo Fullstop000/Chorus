@@ -158,6 +158,7 @@ export const channelQueryKeys = {
   whoami: ['whoami'] as const,
   channels: (user: string) => ['channels', user] as const,
   humans: ['humans'] as const,
+  members: (channelId: string) => ['channelMembers', channelId] as const,
 } as const
 
 export const whoamiQuery = queryOptions({
@@ -179,4 +180,11 @@ export const humansQuery = (currentUser: string) =>
     queryKey: channelQueryKeys.humans,
     queryFn: listHumans,
     enabled: !!currentUser,
+  })
+
+export const channelMembersQuery = (channelId: string | null) =>
+  queryOptions({
+    queryKey: channelQueryKeys.members(channelId ?? ''),
+    queryFn: () => getChannelMembers(channelId!),
+    enabled: !!channelId,
   })

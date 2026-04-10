@@ -7,6 +7,7 @@ import {
   useHumans,
   useInbox,
   useTarget,
+  useChannelMembers,
 } from "../../hooks/data";
 import { useHistory } from "../../hooks/useHistory";
 import { MessageItem } from "./MessageItem";
@@ -33,11 +34,17 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
   const teams = useTeams();
   const humans = useHumans();
   const { getAgentConversationId } = useInbox();
-  const members: MentionMember[] = [
+  const channelMembers = useChannelMembers(currentChannel?.id ?? null);
+  const allMembers: MentionMember[] = [
     ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
     ...humans.map((h) => ({ name: h.name, type: "human" as const })),
     ...teams.map((team) => ({ name: team.name, type: "team" as const })),
   ];
+  const members: MentionMember[] = currentChannel?.id
+    ? allMembers.filter((m) =>
+        channelMembers.some((cm) => cm.memberName === m.name),
+      )
+    : allMembers;
   const mainTarget = useTarget();
   const threadTarget =
     mainTarget && openThreadMsg ? `${mainTarget}:${openThreadMsg.id}` : null;
