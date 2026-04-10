@@ -932,6 +932,12 @@ mod tests {
         }
     }
 
+    fn make_test_trace() -> (Arc<AgentTraceStore>, broadcast::Sender<TraceEvent>) {
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _) = broadcast::channel(64);
+        (trace_store, trace_tx)
+    }
+
     #[tokio::test]
     async fn thinking_chunks_accumulate_and_flush_as_single_activity_entry() {
         let dir = tempdir().unwrap();
@@ -940,6 +946,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new()));
         let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+        let (trace_store, trace_tx) = make_test_trace();
 
         agents
             .lock()
@@ -951,6 +958,8 @@ mod tests {
             handle_parsed_event(
                 &agents,
                 &logs,
+                &trace_store,
+                &trace_tx,
                 &store,
                 "bot1",
                 ParsedEvent::Thinking {
@@ -974,6 +983,8 @@ mod tests {
         handle_parsed_event(
             &agents,
             &logs,
+            &trace_store,
+            &trace_tx,
             &store,
             "bot1",
             ParsedEvent::TurnEnd { session_id: None },
@@ -1013,6 +1024,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new()));
         let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+        let (trace_store, trace_tx) = make_test_trace();
 
         agents
             .lock()
@@ -1023,6 +1035,8 @@ mod tests {
             handle_parsed_event(
                 &agents,
                 &logs,
+                &trace_store,
+                &trace_tx,
                 &store,
                 "bot1",
                 ParsedEvent::Text {
@@ -1066,6 +1080,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new()));
         let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+        let (trace_store, trace_tx) = make_test_trace();
 
         agents
             .lock()
@@ -1077,6 +1092,8 @@ mod tests {
             handle_parsed_event(
                 &agents,
                 &logs,
+                &trace_store,
+                &trace_tx,
                 &store,
                 "bot1",
                 ParsedEvent::Thinking {
@@ -1089,6 +1106,8 @@ mod tests {
         handle_parsed_event(
             &agents,
             &logs,
+            &trace_store,
+            &trace_tx,
             &store,
             "bot1",
             ParsedEvent::ToolCall {
