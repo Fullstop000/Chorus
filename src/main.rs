@@ -354,20 +354,28 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
         for agent_name in active_agents {
             tracing::info!(agent = %agent_name, "auto-restarting active agent");
             if let Err(e) = manager.start_agent(&agent_name, None).await {
-                tracing::error!(agent = %agent_name, err = %e, "failed to restart agent — marking inactive so subsequent delivery can retry");
+                let error_detail = format!("{e:#}");
+                tracing::error!(agent = %agent_name, err = %error_detail, "failed to restart agent — marking inactive so subsequent delivery can retry");
                 // Mark inactive so next message delivery can attempt a fresh start
                 if let Err(e) = store.update_agent_status(&agent_name, AgentStatus::Inactive) {
                     tracing::error!(agent = %agent_name, err = %e, "also failed to mark agent inactive — manual intervention required");
                 }
-                failed_agents.push(agent_name);
+                failed_agents.push((agent_name, error_detail));
             }
         }
         if !failed_agents.is_empty() {
             eprintln!(
                 "Warning: {} agent(s) failed to auto-restart and were marked inactive: {}",
                 failed_agents.len(),
-                failed_agents.join(", ")
+                failed_agents
+                    .iter()
+                    .map(|(agent_name, _)| agent_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
+            for (agent_name, error_detail) in &failed_agents {
+                eprintln!("  - {agent_name}: {error_detail}");
+            }
             eprintln!("They will be retried on next message delivery. To restart immediately: `chorus agent start <name>`");
         }
     }

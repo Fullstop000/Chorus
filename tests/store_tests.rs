@@ -1628,3 +1628,25 @@ fn test_record_swarm_signal_ignores_non_quorum_agent() {
         "quorum should still be unresolved after non-quorum signal"
     );
 }
+
+#[test]
+fn test_lookup_sender_type_recovers_after_mutex_poison() {
+    use chorus::store::messages::SenderType;
+
+    let store = Store::open(":memory:").unwrap();
+    store.create_human("alice").unwrap();
+
+    let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _conn = store.conn_for_test();
+        panic!("poison the store connection mutex");
+    }));
+    assert!(
+        panic_result.is_err(),
+        "expected intentional panic to poison mutex"
+    );
+
+    let sender_type = store.lookup_sender_type("alice").unwrap();
+    assert_eq!(sender_type, Some(SenderType::Human));
+
+    let _conn = store.conn_for_test();
+}
