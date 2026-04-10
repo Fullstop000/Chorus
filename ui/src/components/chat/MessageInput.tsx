@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { Paperclip, Plus } from "lucide-react";
 import { useStore } from "../../store";
 import {
@@ -46,19 +46,29 @@ export function MessageInput({ target, conversationId, history }: Props) {
     return () => window.clearTimeout(timer);
   }, [toasts]);
 
-  const allMembers: MentionMember[] = [
-    ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
-    ...humans.map((h) => ({ name: h.name, type: "human" as const })),
-    ...teams.map((team) => ({ name: team.name, type: "team" as const })),
-  ];
+  const allMembers: MentionMember[] = useMemo(
+    () => [
+      ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
+      ...humans.map((h) => ({ name: h.name, type: "human" as const })),
+      ...teams.map((team) => ({ name: team.name, type: "team" as const })),
+    ],
+    [agents, humans, teams],
+  );
+
+  const channelMemberSet = useMemo(
+    () => new Set(channelMembers.map((cm) => cm.memberName)),
+    [channelMembers],
+  );
 
   // In a channel context, only suggest members who belong to the channel.
   // In DM or no-channel context, show all members.
-  const members: MentionMember[] = currentChannel?.id
-    ? allMembers.filter((m) =>
-        channelMembers.some((cm) => cm.memberName === m.name),
-      )
-    : allMembers;
+  const members = useMemo(
+    () =>
+      currentChannel?.id
+        ? allMembers.filter((m) => channelMemberSet.has(m.name))
+        : allMembers,
+    [allMembers, channelMemberSet, currentChannel?.id],
+  );
 
   const isReadOnlySystem = !!(
     currentChannel &&

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { X, Paperclip } from "lucide-react";
 import { useStore } from "../../store";
 import {
@@ -35,16 +35,25 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
   const humans = useHumans();
   const { getAgentConversationId } = useInbox();
   const channelMembers = useChannelMembers(currentChannel?.id ?? null);
-  const allMembers: MentionMember[] = [
-    ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
-    ...humans.map((h) => ({ name: h.name, type: "human" as const })),
-    ...teams.map((team) => ({ name: team.name, type: "team" as const })),
-  ];
-  const members: MentionMember[] = currentChannel?.id
-    ? allMembers.filter((m) =>
-        channelMembers.some((cm) => cm.memberName === m.name),
-      )
-    : allMembers;
+  const allMembers: MentionMember[] = useMemo(
+    () => [
+      ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
+      ...humans.map((h) => ({ name: h.name, type: "human" as const })),
+      ...teams.map((team) => ({ name: team.name, type: "team" as const })),
+    ],
+    [agents, humans, teams],
+  );
+  const channelMemberSet = useMemo(
+    () => new Set(channelMembers.map((cm) => cm.memberName)),
+    [channelMembers],
+  );
+  const members = useMemo(
+    () =>
+      currentChannel?.id
+        ? allMembers.filter((m) => channelMemberSet.has(m.name))
+        : allMembers,
+    [allMembers, channelMemberSet, currentChannel?.id],
+  );
   const mainTarget = useTarget();
   const threadTarget =
     mainTarget && openThreadMsg ? `${mainTarget}:${openThreadMsg.id}` : null;
