@@ -1,7 +1,13 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useMemo } from "react";
 import { Paperclip, Plus } from "lucide-react";
 import { useStore } from "../../store";
-import { useAgents, useTeams, useHumans, useChannels } from "../../hooks/data";
+import {
+  useAgents,
+  useTeams,
+  useHumans,
+  useChannels,
+  useChannelMembers,
+} from "../../hooks/data";
 import { useHistory } from "../../hooks/useHistory";
 import { sendMessage, createTasks, uploadFile } from "../../data";
 import { MentionTextarea } from "./MentionTextarea";
@@ -21,6 +27,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
   const teams = useTeams();
   const humans = useHumans();
   const { systemChannels } = useChannels();
+  const channelMembers = useChannelMembers(currentChannel?.id ?? null);
   const [content, setContent] = useState("");
   const [alsoTask, setAlsoTask] = useState(false);
   const [sending, setSending] = useState(false);
@@ -39,11 +46,29 @@ export function MessageInput({ target, conversationId, history }: Props) {
     return () => window.clearTimeout(timer);
   }, [toasts]);
 
-  const members: MentionMember[] = [
-    ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
-    ...humans.map((h) => ({ name: h.name, type: "human" as const })),
-    ...teams.map((team) => ({ name: team.name, type: "team" as const })),
-  ];
+  const allMembers: MentionMember[] = useMemo(
+    () => [
+      ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
+      ...humans.map((h) => ({ name: h.name, type: "human" as const })),
+      ...teams.map((team) => ({ name: team.name, type: "team" as const })),
+    ],
+    [agents, humans, teams],
+  );
+
+  const channelMemberSet = useMemo(
+    () => new Set(channelMembers.map((cm) => cm.memberName)),
+    [channelMembers],
+  );
+
+  // In a channel context, only suggest members who belong to the channel.
+  // In DM or no-channel context, show all members.
+  const members = useMemo(
+    () =>
+      currentChannel?.id
+        ? allMembers.filter((m) => channelMemberSet.has(m.name))
+        : allMembers,
+    [allMembers, channelMemberSet, currentChannel?.id],
+  );
 
   const isReadOnlySystem = !!(
     currentChannel &&

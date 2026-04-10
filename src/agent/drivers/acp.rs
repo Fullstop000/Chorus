@@ -251,12 +251,12 @@ impl<R: AcpRuntime> AcpDriver<R> {
             }
             "toolCall" | "tool_call" => {
                 // kimi uses `title` for the tool name; other runtimes use `toolName`
-                let name = update
+                let raw_name = update
                     .get("toolName")
                     .or_else(|| update.get("title"))
                     .and_then(|v| v.as_str())
-                    .unwrap_or("unknown_tool")
-                    .to_string();
+                    .unwrap_or("unknown_tool");
+                let name = strip_mcp_prefix(raw_name).to_string();
                 let input = update
                     .get("args")
                     .or_else(|| update.get("input"))
@@ -419,10 +419,22 @@ fn json_rpc_request(id: u64, method: &str, params: serde_json::Value) -> String 
 
 /// Strip any known MCP server prefix to get the bare tool name.
 pub(crate) fn strip_mcp_prefix(name: &str) -> &str {
-    name.strip_prefix("mcp__chat__")
+    // Standard MCP prefix forms: mcp__chat__, mcp_chat_, chat_
+    if let Some(s) = name
+        .strip_prefix("mcp__chat__")
         .or_else(|| name.strip_prefix("mcp_chat_"))
         .or_else(|| name.strip_prefix("chat_"))
-        .unwrap_or(name)
+    {
+        return s;
+    }
+    // Claude ACP formats tool titles as "Tool: <server>/<tool_name>"
+    // e.g. "Tool: chat/send_message" → "send_message"
+    if name.starts_with("Tool: ") {
+        if let Some(slash) = name.find('/') {
+            return &name[slash + 1..];
+        }
+    }
+    name
 }
 
 // ── Driver impl ──
@@ -637,18 +649,10 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
                 let content = str_field("content");
                 if content.is_empty() {
                     target
+                } else if target.is_empty() {
+                    content
                 } else {
-                    let preview: String = content.chars().take(80).collect();
-                    let preview = if content.chars().count() > 80 {
-                        format!("{preview}\u{2026}")
-                    } else {
-                        preview
-                    };
-                    if target.is_empty() {
-                        preview
-                    } else {
-                        format!("{target}: {preview}")
-                    }
+                    format!("{target}: {content}")
                 }
             }
             "read_history" => {
@@ -713,18 +717,18 @@ impl<R: AcpRuntime> Driver for AcpDriver<R> {
                 }
                 let p = str_field("command");
                 if !p.is_empty() {
-                    let truncated: String = p.chars().take(100).collect();
-                    return if p.chars().count() > 100 {
-                        format!("{truncated}\u{2026}")
-                    } else {
-                        truncated
-                    };
+                    return p;
                 }
                 let p = str_field("query");
                 if !p.is_empty() {
                     return p;
                 }
                 let p = str_field("url");
+                if !p.is_empty() {
+                    return p;
+                }
+                // `input` is used by Claude's Terminal/Bash tool.
+                let p = str_field("input");
                 if !p.is_empty() {
                     return p;
                 }
@@ -755,6 +759,9 @@ mod tests {
         assert_eq!(strip_mcp_prefix("chat_send_message"), "send_message");
         assert_eq!(strip_mcp_prefix("send_message"), "send_message");
         assert_eq!(strip_mcp_prefix("Bash"), "Bash");
+        // Claude ACP title format
+        assert_eq!(strip_mcp_prefix("Tool: chat/send_message"), "send_message");
+        assert_eq!(strip_mcp_prefix("Tool: chat/read_history"), "read_history");
     }
 
     // ── parse_line: JSON-RPC responses ──
@@ -884,9 +891,7 @@ mod tests {
 
         let events = d.parse_line(r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCall","toolCallId":"call-1","toolName":"mcp__chat__send_message","title":"Send Message","status":"running","args":{"target":"#all","content":"hi"}}}}"##);
         assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "mcp__chat__send_message")
-        );
+        assert!(matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "send_message"));
         if let ParsedEvent::ToolCall { input, .. } = &events[0] {
             assert_eq!(input["target"], "#all");
         }
