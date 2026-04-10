@@ -49,42 +49,46 @@ export function LaunchTrio({ allTemplates, onLaunched }: Props) {
     }
   }
 
-  const agentLine = trioTemplates
-    .map(t => `${t.emoji ?? '🤖'} ${t.name}`)
-    .join('  ·  ')
-
   return (
     <div className="launch-trio">
-      <div className="launch-trio-header">
-        <span className="launch-trio-label">Launch Trio</span>
-        <div className="launch-trio-actions">
-          <button
-            className="launch-trio-shuffle"
-            onClick={handleShuffle}
-            disabled={isLaunching}
-            title="Shuffle agents"
-            type="button"
-          >
-            <RefreshCw size={12} />
-          </button>
-          <Button
-            size="sm"
-            className="launch-trio-btn"
-            onClick={handleLaunch}
-            disabled={isLaunching}
-          >
-            {isLaunching ? (
-              <>
-                <LoaderCircle size={11} className="launch-trio-spinner" />
-                Launching...
-              </>
-            ) : (
-              'Launch All 3'
-            )}
-          </Button>
-        </div>
+      <span className="launch-trio-kicker">Launch Trio</span>
+
+      <div className="launch-trio-cards">
+        {trioTemplates.map(t => (
+          <div key={t.id} className="launch-trio-card">
+            <span className="launch-trio-card-emoji">{t.emoji ?? '🤖'}</span>
+            <span className="launch-trio-card-name">{t.name}</span>
+          </div>
+        ))}
       </div>
-      <div className="launch-trio-agents">{agentLine}</div>
+
+      <div className="launch-trio-actions">
+        <button
+          className="launch-trio-shuffle"
+          onClick={handleShuffle}
+          disabled={isLaunching}
+          type="button"
+        >
+          <RefreshCw size={12} />
+          Shuffle
+        </button>
+        <Button
+          size="sm"
+          className="launch-trio-btn"
+          onClick={handleLaunch}
+          disabled={isLaunching}
+        >
+          {isLaunching ? (
+            <>
+              <LoaderCircle size={11} className="launch-trio-spinner" />
+              Launching...
+            </>
+          ) : (
+            'Launch All 3'
+          )}
+        </Button>
+      </div>
+
       {error && <p className="launch-trio-error">{error}</p>}
     </div>
   )

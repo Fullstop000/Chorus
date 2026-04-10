@@ -1,98 +1,127 @@
 .launch-trio {
-  background: var(--color-primary);
-  color: var(--color-primary-foreground);
-  padding: 14px 18px;
-}
-
-.launch-trio-header {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 6px;
+  flex-direction: column;
+  gap: 10px;
 }
 
-.launch-trio-label {
+.launch-trio-kicker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 10px;
   font-family: var(--font-mono);
-  font-weight: 600;
+  font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+  color: var(--color-muted-foreground);
+}
+
+.launch-trio-kicker::before {
+  content: '';
+  width: 8px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.55;
+}
+
+.launch-trio-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.launch-trio-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 14px 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  text-align: center;
+  position: relative;
+}
+
+.launch-trio-card::before {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(35, 32, 26, 0.08);
+  pointer-events: none;
+}
+
+.launch-trio-card-emoji {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.launch-trio-card-name {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--color-foreground);
+  line-height: 1.3;
 }
 
 .launch-trio-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .launch-trio-shuffle {
   display: flex;
   align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
+  gap: 5px;
+  padding: 5px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-foreground);
   background: transparent;
-  border: 1px solid rgba(250, 249, 246, 0.25);
+  border: 1px solid var(--color-border);
   border-radius: 0;
-  color: var(--color-primary-foreground);
   cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.12s ease, background 0.12s ease;
+  transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 
 .launch-trio-shuffle:hover {
-  opacity: 1;
-  background: rgba(250, 249, 246, 0.12);
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  border-color: var(--color-primary);
 }
 
 .launch-trio-shuffle:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
-.launch-trio-btn {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: var(--color-primary-foreground);
-  color: var(--color-primary);
-  border: 1px solid var(--color-primary-foreground);
-  border-radius: 0;
-  padding: 4px 12px;
-  cursor: pointer;
-}
-
-.launch-trio-btn:hover {
-  opacity: 0.9;
-}
-
-.launch-trio-btn:disabled {
   opacity: 0.45;
   cursor: default;
 }
 
+.launch-trio-btn {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .launch-trio-spinner {
-  animation: spin 1s linear infinite;
+  animation: launch-trio-spin 1s linear infinite;
   margin-right: 4px;
 }
 
-@keyframes spin {
+@keyframes launch-trio-spin {
   from { transform: rotate(0deg); }
   to { transform: rotate(360deg); }
 }
 
-.launch-trio-agents {
-  font-size: 12px;
-  font-family: var(--font-mono);
-  line-height: 1.5;
-  opacity: 0.8;
-}
-
 .launch-trio-error {
-  margin-top: 6px;
   font-size: 11px;
   font-family: var(--font-mono);
   color: var(--color-destructive);
+}
+
+@media (max-width: 640px) {
+  .launch-trio-cards {
+    grid-template-columns: 1fr;
+  }
 }
