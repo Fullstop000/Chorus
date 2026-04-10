@@ -122,6 +122,7 @@ export {
   getHistory,
   uploadFile,
   attachmentUrl,
+  getTraceEvents,
   updateReadCursor,
   sortMessagesBySeq,
   findAttachmentById,
@@ -135,6 +136,8 @@ export {
   type StreamEvent,
   type UploadResponse,
   type Target,
+  type TraceSummary,
+  type TraceEventRecord,
 } from './chat'
 
 export {

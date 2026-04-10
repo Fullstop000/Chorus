@@ -14,6 +14,8 @@ export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
     senderDeleted: p.senderDeleted ?? false,
     createdAt: p.createdAt ?? new Date().toISOString(),
     thread_parent_id: p.threadParentId ?? undefined,
+    runId: p.runId ?? undefined,
+    traceSummary: p.traceSummary ?? undefined,
   }
 }
 

@@ -1,6 +1,8 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { classifyTool } from '../../lib/toolCategories'
+import { getTraceEvents } from '../../data/chat'
+import type { TraceSummary, TraceEventRecord } from '../../data/chat'
 import './Telescope.css'
 
 // ── Trace event types (canonical source: transport/types.ts) ──
@@ -24,6 +26,7 @@ interface TelescopeProps {
   isError: boolean
   onToggleExpand?: () => void
   isExpanded?: boolean
+  traceSummary?: TraceSummary
 }
 
 // ── Helpers ──
@@ -63,10 +66,20 @@ function truncate(s: string, max: number): string {
   return s.slice(0, max) + '…'
 }
 
-function summary(events: TraceEvent[]): string {
+function summaryText(events: TraceEvent[]): string {
   const toolCalls = events.filter(e => e.kind === 'tool_call').length
   if (toolCalls === 0) return 'no tool calls'
   return toolCalls === 1 ? '1 tool call' : `${toolCalls} tool calls`
+}
+
+function historySummaryText(ts: TraceSummary): string {
+  const n = ts.toolCalls
+  const label = n === 0 ? 'no tool calls' : n === 1 ? '1 tool call' : `${n} tool calls`
+  if (ts.duration > 0) {
+    const sec = Math.round(ts.duration / 1000)
+    return sec > 0 ? `${label} · ${sec}s` : label
+  }
+  return label
 }
 
 // ── Row ──
@@ -87,17 +100,40 @@ function TelescopeRow({ event }: { event: TraceEvent }) {
   )
 }
 
+function HistoryRow({ event }: { event: TraceEventRecord }) {
+  const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
+  const { icon: Icon } = event.kind === 'tool_call' || event.kind === 'tool_result'
+    ? classifyTool(data.toolName ?? '')
+    : { icon: null }
+
+  return (
+    <div className="tele-row">
+      {Icon && <Icon size={13} className="tele-row-icon" />}
+      {!Icon && <span className="tele-row-icon" style={{ width: 13 }} />}
+      <span className="tele-row-label">{rowLabel(event.kind, data)}</span>
+      <span className="tele-row-detail">{rowDetail(event.kind, data)}</span>
+      <span className="tele-row-time">{relativeTime(event.timestampMs)}</span>
+    </div>
+  )
+}
+
 // ── Main component ──
 
 export function Telescope({
   agentName,
+  runId,
   events,
   isActive,
   isError,
   onToggleExpand,
   isExpanded = true,
+  traceSummary,
 }: TelescopeProps) {
   const rowsRef = useRef<HTMLDivElement>(null)
+  const isHistorical = !!traceSummary && events.length === 0
+  const [histExpanded, setHistExpanded] = useState(false)
+  const [histEvents, setHistEvents] = useState<TraceEventRecord[] | null>(null)
+  const [histLoading, setHistLoading] = useState(false)
 
   // Auto-scroll to bottom when new events arrive while active
   useEffect(() => {
@@ -106,6 +142,43 @@ export function Telescope({
     }
   }, [events.length, isExpanded, isActive])
 
+  const handleHistToggle = useCallback(() => {
+    const next = !histExpanded
+    setHistExpanded(next)
+    if (next && histEvents === null && !histLoading) {
+      setHistLoading(true)
+      getTraceEvents(runId)
+        .then(res => setHistEvents(res.events))
+        .catch(() => setHistEvents([]))
+        .finally(() => setHistLoading(false))
+    }
+  }, [histExpanded, histEvents, histLoading, runId])
+
+  // ── Historical mode ──
+  if (isHistorical) {
+    const dotClass = isError ? 'tele-dot error' : 'tele-dot'
+    return (
+      <div className={`telescope${isError ? ' error' : ''}`}>
+        <div className="tele-header" onClick={handleHistToggle}>
+          <span className={dotClass} />
+          <span className="tele-agent-name">{agentName}</span>
+          <span className="tele-summary">{historySummaryText(traceSummary)}</span>
+          <ChevronDown
+            size={13}
+            className={`tele-chevron${histExpanded ? ' expanded' : ''}`}
+          />
+        </div>
+        {histExpanded && (
+          <div className="tele-rows" ref={rowsRef}>
+            {histLoading && <div className="tele-row"><span className="tele-row-detail">Loading…</span></div>}
+            {histEvents?.map(e => <HistoryRow key={e.seq} event={e} />)}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  // ── Live mode ──
   if (events.length === 0 && isActive) {
     return (
       <div className="telescope">
@@ -126,7 +199,7 @@ export function Telescope({
       <div className="tele-header" onClick={onToggleExpand}>
         <span className={dotClass} />
         <span className="tele-agent-name">{agentName}</span>
-        <span className="tele-summary">{summary(events)}</span>
+        <span className="tele-summary">{summaryText(events)}</span>
         <ChevronDown
           size={13}
           className={`tele-chevron${isExpanded ? ' expanded' : ''}`}

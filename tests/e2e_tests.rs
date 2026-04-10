@@ -45,6 +45,7 @@ async fn test_human_to_agent_message_flow() {
             content: "hello bot",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -144,6 +145,7 @@ async fn test_blocking_receive_wakes_on_message() {
             content: "wake up!",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 

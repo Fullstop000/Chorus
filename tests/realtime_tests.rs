@@ -65,6 +65,7 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -100,6 +101,7 @@ async fn test_realtime_skips_non_member_channel() {
             content: "secret",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -127,6 +129,7 @@ async fn test_realtime_member_receives_live_messages_without_subscribe_frame() {
             content: "live",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 

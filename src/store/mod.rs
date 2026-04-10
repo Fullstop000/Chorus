@@ -7,6 +7,7 @@ pub mod migrations;
 pub mod stream;
 pub mod tasks;
 pub mod teams;
+pub mod trace_writer;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -122,6 +123,37 @@ impl Store {
 
     pub fn trace_sender(&self) -> broadcast::Sender<TraceEvent> {
         self.trace_tx.clone()
+    }
+
+    /// Return the path to the SQLite database file (for trace_writer's separate connection).
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("chorus.db")
+    }
+
+    /// Retrieve ordered trace events for a given run_id.
+    pub fn get_trace_events(&self, run_id: &str) -> Result<Vec<serde_json::Value>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare(
+            "SELECT run_id, seq, timestamp_ms, kind, data FROM trace_events WHERE run_id = ?1 ORDER BY seq ASC",
+        )?;
+        let events: Vec<serde_json::Value> = stmt
+            .query_map(params![run_id], |row| {
+                let run_id: String = row.get(0)?;
+                let seq: i64 = row.get(1)?;
+                let timestamp_ms: i64 = row.get(2)?;
+                let kind: String = row.get(3)?;
+                let data: String = row.get(4)?;
+                Ok(serde_json::json!({
+                    "runId": run_id,
+                    "seq": seq,
+                    "timestampMs": timestamp_ms,
+                    "kind": kind,
+                    "data": serde_json::from_str::<serde_json::Value>(&data).unwrap_or_default(),
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(events)
     }
 
     // ── Sender type lookup ──

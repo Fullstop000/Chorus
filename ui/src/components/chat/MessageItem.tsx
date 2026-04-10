@@ -1,7 +1,7 @@
-import React, { useRef } from "react";
+import React, { useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import { MessageSquare, Copy, Paperclip } from "lucide-react";
-import type { AgentInfo, HistoryMessage } from "../../data";
+import type { AgentInfo, HistoryMessage, TraceSummary } from "../../data";
 import { attachmentUrl } from "../../data";
 import { useStore } from "../../store";
 import { useAgents } from "../../hooks/data";
@@ -186,6 +186,11 @@ export function MessageItem({
     setActiveTab("profile");
   };
 
+  const parsedSummary = useMemo<TraceSummary | undefined>(() => {
+    if (traceData || !message.traceSummary) return undefined;
+    try { return JSON.parse(message.traceSummary) } catch { return undefined }
+  }, [traceData, message.traceSummary]);
+
   const isMe = message.senderName === currentUser;
   const initial = message.senderName[0]?.toUpperCase() ?? "?";
   const color = senderColor(message.senderName);
@@ -259,6 +264,16 @@ export function MessageItem({
             isError={traceData.isError}
             isExpanded={isTraceExpanded}
             onToggleExpand={onToggleTrace}
+          />
+        )}
+        {!traceData && parsedSummary && message.runId && (
+          <Telescope
+            agentName={message.senderName}
+            runId={message.runId}
+            events={[]}
+            isActive={false}
+            isError={parsedSummary.status === 'error'}
+            traceSummary={parsedSummary}
           />
         )}
         <div className="message-content">

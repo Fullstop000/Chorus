@@ -135,6 +135,8 @@ impl Store {
                     conversation_messages_view.created_at AS created_at,
                     conversation_messages_view.seq AS seq,
                     conversation_messages_view.forwarded_from AS forwarded_from,
+                    conversation_messages_view.run_id AS run_id,
+                    conversation_messages_view.trace_summary AS trace_summary,
                     thread_summaries_view.reply_count AS reply_count
              FROM conversation_messages_view
              LEFT JOIN thread_summaries_view
@@ -213,6 +215,8 @@ impl Store {
                         conversation_messages_view.created_at AS created_at,
                         conversation_messages_view.seq AS seq,
                         conversation_messages_view.forwarded_from AS forwarded_from,
+                        conversation_messages_view.run_id AS run_id,
+                        conversation_messages_view.trace_summary AS trace_summary,
                         thread_summaries_view.reply_count AS reply_count
                  FROM conversation_messages_view
                  LEFT JOIN thread_summaries_view
