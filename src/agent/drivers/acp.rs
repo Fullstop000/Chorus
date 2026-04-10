@@ -891,9 +891,7 @@ mod tests {
 
         let events = d.parse_line(r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCall","toolCallId":"call-1","toolName":"mcp__chat__send_message","title":"Send Message","status":"running","args":{"target":"#all","content":"hi"}}}}"##);
         assert_eq!(events.len(), 1);
-        assert!(
-            matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "mcp__chat__send_message")
-        );
+        assert!(matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "send_message"));
         if let ParsedEvent::ToolCall { input, .. } = &events[0] {
             assert_eq!(input["target"], "#all");
         }
