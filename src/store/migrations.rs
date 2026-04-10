@@ -6,6 +6,24 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_drop_legacy_event_tables(conn)?;
     migrate_remove_legacy_shared_memory_channel(conn)?;
     migrate_inbox_read_state(conn)?;
+    migrate_add_run_id_to_messages(conn)?;
+    Ok(())
+}
+
+/// Add run_id column to messages for Telescope trace correlation.
+fn migrate_add_run_id_to_messages(conn: &Connection) -> Result<()> {
+    let schema: String = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or_default();
+    if !schema.contains("run_id") {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN run_id TEXT")?;
+        tracing::info!("migration: added run_id column to messages");
+    }
     Ok(())
 }
 
