@@ -1,7 +1,8 @@
-import { Search, Settings2, Users } from "lucide-react";
+import { Search, Settings2, Users, Activity } from "lucide-react";
 import { useStore } from "../../store";
 import { useChannels } from "../../hooks/data";
 import { MessageList } from "./MessageList";
+import { CrossAgentTimeline } from "./CrossAgentTimeline";
 import type { HistoryMessage } from "./types";
 import "./ChatPanel.css";
 
@@ -9,6 +10,8 @@ interface ChatHeaderProps {
   memberCount?: number | null;
   membersOpen: boolean;
   isTeamChannel?: boolean;
+  timelineOpen?: boolean;
+  onToggleTimeline?: () => void;
   onToggleMembers: () => void;
   onOpenTeamSettings?: () => void;
 }
@@ -17,6 +20,8 @@ export function ChatHeader({
   memberCount,
   membersOpen,
   isTeamChannel,
+  timelineOpen,
+  onToggleTimeline,
   onToggleMembers,
   onOpenTeamSettings,
 }: ChatHeaderProps) {
@@ -46,6 +51,16 @@ export function ChatHeader({
         </div>
       </div>
       <div className="chat-header-actions">
+        {onToggleTimeline && (
+          <button
+            className={`chat-header-btn${timelineOpen ? " active" : ""}`}
+            type="button"
+            aria-label={timelineOpen ? "Hide agent timeline" : "Show all agent activity"}
+            onClick={onToggleTimeline}
+          >
+            <Activity size={15} />
+          </button>
+        )}
         {currentChannel && (
           <button
             className={`chat-header-member-btn${membersOpen ? " active" : ""}`}
@@ -85,6 +100,7 @@ interface ChatPanelProps {
   messages: HistoryMessage[];
   loading: boolean;
   lastReadSeq: number;
+  timelineOpen?: boolean;
 }
 
 export function ChatPanel({
@@ -93,6 +109,7 @@ export function ChatPanel({
   messages,
   loading,
   lastReadSeq,
+  timelineOpen,
 }: ChatPanelProps) {
   const { currentUser, setOpenThreadMsg } = useStore();
 
@@ -108,6 +125,7 @@ export function ChatPanel({
 
   return (
     <div className="chat-panel">
+      {timelineOpen && <CrossAgentTimeline />}
       <MessageList
         targetKey={target}
         conversationId={conversationId}

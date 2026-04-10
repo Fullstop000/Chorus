@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { classifyTool } from '../../lib/toolCategories'
 import { getTraceEvents } from '../../data/chat'
+import { useTraceStore } from '../../store/traceStore'
 import type { TraceSummary, TraceEventRecord } from '../../data/chat'
 import './Telescope.css'
 
@@ -134,6 +135,7 @@ export function Telescope({
   const [histExpanded, setHistExpanded] = useState(false)
   const [histEvents, setHistEvents] = useState<TraceEventRecord[] | null>(null)
   const [histLoading, setHistLoading] = useState(false)
+  const isFlashing = useTraceStore((s) => s.completionFlash[agentName] ?? false)
 
   // Auto-scroll to bottom when new events arrive while active
   useEffect(() => {
@@ -193,9 +195,10 @@ export function Telescope({
   if (events.length === 0) return null
 
   const dotClass = isError ? 'tele-dot error' : isActive ? 'tele-dot active' : 'tele-dot'
+  const wrapperClass = `telescope${isError ? ' error' : ''}${isFlashing ? ' completion-flash' : ''}`
 
   return (
-    <div className={`telescope${isError ? ' error' : ''}`}>
+    <div className={wrapperClass}>
       <div className="tele-header" onClick={onToggleExpand}>
         <span className={dotClass} />
         <span className="tele-agent-name">{agentName}</span>

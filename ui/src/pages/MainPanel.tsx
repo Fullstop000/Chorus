@@ -58,6 +58,7 @@ export function MainPanel() {
   const [membersLoading, setMembersLoading] = useState(false);
   const [showMembersPanel, setShowMembersPanel] = useState(false);
   const [showTeamSettings, setShowTeamSettings] = useState(false);
+  const [showTimeline, setShowTimeline] = useState(false);
   const [teamDetails, setTeamDetails] = useState<TeamResponse | null>(null);
   const [teamSettingsLoading, setTeamSettingsLoading] = useState(false);
 
@@ -72,6 +73,7 @@ export function MainPanel() {
   useEffect(() => {
     setShowMembersPanel(false);
     setShowTeamSettings(false);
+    setShowTimeline(false);
   }, [channelId]);
 
   useEffect(() => {
@@ -171,6 +173,8 @@ export function MainPanel() {
             }
             isTeamChannel={isTeamChannel}
             membersOpen={showMembersPanel}
+            timelineOpen={showTimeline}
+            onToggleTimeline={() => setShowTimeline((c) => !c)}
             onOpenTeamSettings={isTeamChannel ? openTeamSettings : undefined}
             onToggleMembers={() => setShowMembersPanel((current) => !current)}
           />
@@ -196,6 +200,7 @@ export function MainPanel() {
                 messages={chatHistory.messages}
                 loading={chatHistory.loading}
                 lastReadSeq={chatHistory.lastReadSeq}
+                timelineOpen={showTimeline}
               />
               <MessageInput
                 target={chatTarget}

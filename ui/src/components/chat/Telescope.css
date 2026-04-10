@@ -148,3 +148,13 @@
   0%, 100% { opacity: 1; }
   50% { opacity: 0.35; }
 }
+
+/* ── Completion flash (Delight Touch 7) ── */
+.telescope.completion-flash .tele-header {
+  animation: tele-flash 1.2s ease-out;
+}
+
+@keyframes tele-flash {
+  0% { background: rgba(39, 174, 96, 0.25); }
+  100% { background: transparent; }
+}
