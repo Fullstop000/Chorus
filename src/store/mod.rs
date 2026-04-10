@@ -31,12 +31,16 @@ pub use stream::StreamEvent;
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
 
+use crate::agent::trace::TraceEvent;
+
 /// SQLite-backed persistence and pub/sub for new messages.
 pub struct Store {
     /// Serialized access to the rusqlite connection.
     conn: Mutex<Connection>,
     /// Broadcast channel for stream events (message.created only).
     stream_tx: broadcast::Sender<StreamEvent>,
+    /// Broadcast channel for agent trace events (tool calls, thinking, etc.).
+    trace_tx: broadcast::Sender<TraceEvent>,
     /// Root data directory (db parent, attachments, agents, teams).
     data_dir: PathBuf,
 }
@@ -51,9 +55,11 @@ impl Store {
         Self::init_schema(&conn)?;
         migrations::run_migrations(&conn)?;
         let (stream_tx, _) = broadcast::channel(256);
+        let (trace_tx, _) = broadcast::channel(1024);
         Ok(Self {
             conn: Mutex::new(conn),
             stream_tx,
+            trace_tx,
             data_dir: derive_data_dir(path),
         })
     }
@@ -108,6 +114,14 @@ impl Store {
 
     pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
         self.stream_tx.subscribe()
+    }
+
+    pub fn subscribe_traces(&self) -> broadcast::Receiver<TraceEvent> {
+        self.trace_tx.subscribe()
+    }
+
+    pub fn trace_sender(&self) -> broadcast::Sender<TraceEvent> {
+        self.trace_tx.clone()
     }
 
     // ── Sender type lookup ──
