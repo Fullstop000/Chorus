@@ -41,7 +41,7 @@ export function TemplateGallery({ categories, allTemplates, selected, onSelect }
   if (selected) {
     return (
       <div className="template-gallery-collapsed">
-        <TemplateCard template={selected} isSelected onClick={() => {}} />
+        <TemplateCardPreview template={selected} />
         <Button
           variant="ghost"
           size="sm"
@@ -132,6 +132,28 @@ function TemplateCard({
         <span className="template-card-tag">{template.category}</span>
       </span>
     </button>
+  )
+}
+
+function TemplateCardPreview({ template }: { template: AgentTemplate }) {
+  return (
+    <div
+      className="template-card selected"
+      role="status"
+      aria-label={`Selected: ${template.name}`}
+    >
+      <span
+        className="template-card-emoji"
+        style={{ borderLeftColor: template.color ?? 'var(--color-border)' }}
+      >
+        {template.emoji ?? '🤖'}
+      </span>
+      <span className="template-card-body">
+        <span className="template-card-name">{template.name}</span>
+        <span className="template-card-vibe">{template.vibe ?? template.description ?? ''}</span>
+        <span className="template-card-tag">{template.category}</span>
+      </span>
+    </div>
   )
 }
 

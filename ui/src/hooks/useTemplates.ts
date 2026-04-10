@@ -4,7 +4,7 @@ import type { AgentTemplate, TemplateCategory } from '../data/templates'
 
 export type { AgentTemplate, TemplateCategory }
 
-export function useTemplates(): {
+export function useTemplates(enabled = true): {
   categories: TemplateCategory[]
   allTemplates: AgentTemplate[]
   isLoading: boolean
@@ -15,6 +15,8 @@ export function useTemplates(): {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!enabled) return
+
     let cancelled = false
 
     async function load() {
@@ -34,7 +36,7 @@ export function useTemplates(): {
 
     void load()
     return () => { cancelled = true }
-  }, [])
+  }, [enabled])
 
   const allTemplates = categories.flatMap(c => c.templates)
 

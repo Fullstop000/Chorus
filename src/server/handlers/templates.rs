@@ -69,7 +69,11 @@ pub async fn handle_launch_trio(
     }
 
     // Create the trio channel.
-    let channel_name = format!("trio-{}", chrono::Utc::now().format("%Y%m%d-%H%M%S"));
+    let channel_name = format!(
+        "trio-{}-{}",
+        chrono::Utc::now().format("%Y%m%d-%H%M%S"),
+        &uuid::Uuid::new_v4().to_string()[..6]
+    );
     let channel_id = state
         .store
         .create_channel(
@@ -180,7 +184,7 @@ pub async fn handle_launch_trio(
     let status = if errors.is_empty() {
         StatusCode::CREATED
     } else if agents.is_empty() {
-        StatusCode::INTERNAL_SERVER_ERROR
+        StatusCode::MULTI_STATUS
     } else {
         StatusCode::MULTI_STATUS
     };

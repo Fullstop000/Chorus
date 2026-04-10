@@ -34,7 +34,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   const [creating, setCreating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses(open)
-  const { categories, allTemplates, isLoading: templatesLoading } = useTemplates()
+  const { categories, allTemplates, isLoading: templatesLoading } = useTemplates(open)
 
   function handleTemplateSelect(template: AgentTemplate | null) {
     setSelectedTemplate(template)

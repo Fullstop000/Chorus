@@ -268,7 +268,11 @@ mod tests {
     #[test]
     fn expand_tilde_works() {
         let expanded = expand_tilde("~/agency-agents");
-        assert!(!expanded.to_str().unwrap().starts_with('~'));
+        if dirs::home_dir().is_some() {
+            assert!(!expanded.to_str().unwrap().starts_with('~'));
+        } else {
+            assert_eq!(expanded, PathBuf::from("~/agency-agents"));
+        }
     }
 
     #[test]
