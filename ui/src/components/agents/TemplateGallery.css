@@ -1,14 +1,13 @@
 .template-gallery {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 10px;
 }
 
 .template-filter-bar {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  min-width: 0;
+  gap: 8px;
 }
 
 .template-filter-row {
@@ -24,11 +23,8 @@
 
 .template-category-tags {
   display: flex;
-  gap: 4px;
-  overflow-x: auto;
-  min-width: 0;
-  max-width: 100%;
-  padding-bottom: 2px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .template-tag {
