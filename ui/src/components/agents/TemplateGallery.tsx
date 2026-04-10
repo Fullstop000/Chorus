@@ -46,7 +46,7 @@ export function TemplateGallery({ categories, allTemplates, onSelect }: Props) {
             placeholder="Search templates..."
             className="template-search"
           />
-          <Button variant="ghost" size="sm" onClick={handleSurprise} title="Surprise me">
+          <Button variant="outline" size="sm" onClick={handleSurprise} title="Surprise me">
             <Shuffle size={13} />
             <span className="template-surprise-label">Surprise me</span>
           </Button>
