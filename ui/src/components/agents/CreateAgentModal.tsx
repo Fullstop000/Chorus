@@ -9,6 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogD
 import { Button } from '@/components/ui/button'
 import { FormError } from '@/components/ui/form'
 import type { AgentTemplate } from '../../hooks/useTemplates'
+import './CreateAgentModal.css'
 
 interface Props {
   open: boolean
@@ -147,10 +148,10 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
           <div className="flex flex-col gap-1">
             <DialogTitle>
               {step === 'browse' ? 'Create Agent' : (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <span className="modal-title-with-back">
                   <button
                     onClick={handleBack}
-                    style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 0, display: 'flex', color: 'inherit' }}
+                    className="modal-back-btn"
                     aria-label="Back to templates"
                   >
                     <ArrowLeft size={16} />
