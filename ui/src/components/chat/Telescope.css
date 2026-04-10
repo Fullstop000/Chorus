@@ -1,0 +1,150 @@
+/* ── Telescope: inline agent execution trace ── */
+
+/* Dark terminal surface tokens */
+.telescope {
+  --tele-bg: #1c1b19;
+  --tele-fg: #d4d0c8;
+  --tele-muted: #8a8478;
+  --tele-accent: #c6a24a;
+  --tele-border: #2e2d2a;
+  --tele-row-hover: rgba(255, 255, 255, 0.04);
+  --tele-error: #c0392b;
+
+  background: var(--tele-bg);
+  border: 1px solid var(--tele-border);
+  border-radius: 3px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--tele-fg);
+  margin: 4px 0 6px;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+.tele-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--tele-border);
+  cursor: pointer;
+  user-select: none;
+}
+
+.tele-header:hover {
+  background: var(--tele-row-hover);
+}
+
+.tele-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--tele-accent);
+  flex-shrink: 0;
+}
+
+.tele-dot.active {
+  animation: tele-pulse 1.6s ease-in-out infinite;
+}
+
+.tele-dot.error {
+  background: var(--tele-error);
+  animation: none;
+}
+
+.tele-agent-name {
+  font-weight: 600;
+  color: var(--tele-fg);
+}
+
+.tele-summary {
+  color: var(--tele-muted);
+  margin-left: auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tele-chevron {
+  color: var(--tele-muted);
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.tele-chevron.expanded {
+  transform: rotate(180deg);
+}
+
+/* ── Rows container ── */
+.tele-rows {
+  max-height: 240px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--tele-border) transparent;
+}
+
+/* ── Single trace row ── */
+.tele-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--tele-border);
+}
+
+.tele-row:last-child {
+  border-bottom: none;
+}
+
+.tele-row:hover {
+  background: var(--tele-row-hover);
+}
+
+.tele-row-icon {
+  color: var(--tele-muted);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.tele-row-label {
+  font-weight: 500;
+  color: var(--tele-accent);
+  white-space: nowrap;
+}
+
+.tele-row-detail {
+  color: var(--tele-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.tele-row-time {
+  color: var(--tele-muted);
+  margin-left: auto;
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ── Loading state ── */
+.tele-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  color: var(--tele-muted);
+}
+
+/* ── Error state ── */
+.telescope.error {
+  border-color: var(--tele-error);
+}
+
+/* ── Pulse animation ── */
+@keyframes tele-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
