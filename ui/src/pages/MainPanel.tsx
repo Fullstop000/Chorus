@@ -14,7 +14,7 @@ import { TabBar } from "./TabBar";
 import { ChatHeader, ChatPanel } from "../components/chat/ChatPanel";
 import { TasksPanel } from "../components/tasks/TasksPanel";
 import { ProfilePanel } from "../components/agents/profile/ProfilePanel";
-import { ActivityPanel } from "../components/agents/activity/ActivityPanel";
+import { TelescopeActivity } from "../components/agents/activity/TelescopeActivity";
 import { WorkspacePanel } from "../components/agents/WorkspacePanel";
 import { MessageInput } from "../components/chat/MessageInput";
 import { ThreadPanel } from "../components/chat/ThreadPanel";
@@ -208,7 +208,7 @@ export function MainPanel() {
           {activeTab === "tasks" && <TasksPanel />}
           {activeTab === "profile" && <ProfilePanel />}
           {activeTab === "activity" && currentAgent && (
-            <ActivityPanel agentName={currentAgent.name} />
+            <TelescopeActivity agentName={currentAgent.name} />
           )}
           {activeTab === "workspace" && currentAgent && (
             <WorkspacePanel agentName={currentAgent.name} />
