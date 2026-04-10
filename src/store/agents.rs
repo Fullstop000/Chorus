@@ -80,37 +80,6 @@ impl AgentStatus {
     }
 }
 
-/// Supported local agent runtimes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRuntime {
-    Claude,
-    Codex,
-    Kimi,
-    Opencode,
-}
-
-impl AgentRuntime {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Kimi => "kimi",
-            Self::Opencode => "opencode",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "kimi" => Some(Self::Kimi),
-            "opencode" => Some(Self::Opencode),
-            _ => None,
-        }
-    }
-}
-
 /// Registered human user (can post and own channels).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Human {

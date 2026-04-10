@@ -70,6 +70,29 @@ impl AgentActivityLog {
         }
     }
 
+    /// Update the last `ToolResult` entry in-place if it has the same `tool_name`,
+    /// otherwise push a new entry. This prevents streaming chunks from flooding
+    /// the log with dozens of near-identical entries.
+    pub fn upsert_tool_result(&mut self, tool_name: String, content: String) {
+        if let Some(last) = self.entries.back_mut() {
+            if let ActivityEntry::ToolResult {
+                tool_name: ref existing_name,
+                content: ref mut existing_content,
+            } = last.entry
+            {
+                if *existing_name == tool_name {
+                    *existing_content = content;
+                    last.timestamp_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    return;
+                }
+            }
+        }
+        self.push(ActivityEntry::ToolResult { tool_name, content });
+    }
+
     pub fn set_state(&mut self, activity: &str, detail: &str) {
         self.activity = activity.to_string();
         self.detail = detail.to_string();
@@ -98,6 +121,21 @@ pub fn push_activity(logs: &ActivityLogMap, agent_name: &str, entry: ActivityEnt
         .entry(agent_name.to_string())
         .or_default()
         .push(entry);
+}
+
+/// Upsert a ToolResult for an agent: update the last entry in-place if it
+/// matches the same tool_name, otherwise push a new entry.
+pub fn upsert_tool_result_activity(
+    logs: &ActivityLogMap,
+    agent_name: &str,
+    tool_name: String,
+    content: String,
+) {
+    logs.lock()
+        .unwrap()
+        .entry(agent_name.to_string())
+        .or_default()
+        .upsert_tool_result(tool_name, content);
 }
 
 /// Update the activity state for an agent (also appends a Status entry).

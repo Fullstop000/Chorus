@@ -321,6 +321,38 @@
   - wrong agent profile shown
   - profile panel does not open
 
+### DM-002 Single-Agent DM E2E Reply
+
+- Tier: 0
+- Release-sensitive: yes when touching DM routing, agent lifecycle, driver output parsing, or bridge wiring
+- Execution mode: hybrid
+- Goal:
+  - verify that a single agent of any runtime can receive a DM, process it, and reply into the same DM timeline
+  - parameterisable by runtime so the same test routine covers all supported runtimes
+- Script:
+  - [`playwright/DM-002.spec.ts`](./playwright/DM-002.spec.ts)
+- Preconditions:
+  - server running with the branch under test
+  - runtime and model selected via env vars `CHORUS_RUNTIME` (default: `claude`) and `CHORUS_MODEL` (default: `sonnet`)
+  - agent `dm-e2e-<runtime>` seeded automatically by the spec `beforeAll`
+- Steps:
+  1. Seed or confirm agent `dm-e2e-<runtime>` exists with the chosen runtime/model.
+  2. Open a DM with the agent.
+  3. Send a message containing a unique exact token (e.g. `DM2-<timestamp>`).
+  4. Verify the human message appears immediately in the DM timeline.
+  5. Poll the history API for an agent reply that contains the token, up to 2 minutes.
+  6. Verify the reply appears in the DM timeline in the browser, not in a channel.
+  7. Verify the agent activity log shows a `tool_start` entry for `send_message`.
+- Expected:
+  - human message visible immediately after send
+  - agent reply appears in the same DM target with the token
+  - reply does not appear in any channel timeline
+  - activity log confirms the agent used `send_message` (not raw stdout)
+- Common failure signals:
+  - no agent reply arrives within the timeout (lifecycle or bridge failure)
+  - reply routes to the wrong target (DM routing bug)
+  - activity log shows only raw text output instead of a `send_message` tool call
+
 ### HIS-001 Message History Pagination
 
 - Tier: 1

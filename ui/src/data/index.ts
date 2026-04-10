@@ -43,6 +43,7 @@ export {
   channelQueryKeys,
   whoamiQuery,
   channelsQuery,
+  channelMembersQuery,
   humansQuery,
   type ChannelSlices,
   type ChannelInfo,

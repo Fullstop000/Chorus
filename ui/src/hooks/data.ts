@@ -4,6 +4,7 @@ import { useStore } from '../store/uiStore'
 import {
   agentsQuery,
   channelsQuery,
+  channelMembersQuery,
   teamsQuery,
   humansQuery,
   getChannelThreads,
@@ -119,6 +120,12 @@ export function useHumans() {
   const currentUser = useStore((s) => s.currentUser)
   const { data } = useQuery(humansQuery(currentUser))
   return data ?? []
+}
+
+/** Members of a specific channel. Returns empty array for DMs or when no channelId. */
+export function useChannelMembers(channelId: string | null) {
+  const { data } = useQuery(channelMembersQuery(channelId))
+  return data?.members ?? []
 }
 
 /**

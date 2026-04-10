@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useRuntimeStatuses } from '../../hooks/useRuntimeStatuses'
 import { useTemplates } from '../../hooks/useTemplates'
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
@@ -6,9 +6,7 @@ import { TemplateGallery, TemplatePreview } from './TemplateGallery'
 import { LaunchTrio } from './LaunchTrio'
 import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { FormField, FormError } from '@/components/ui/form'
-import { Label } from '@/components/ui/label'
+import { FormError } from '@/components/ui/form'
 import type { AgentTemplate } from '../../hooks/useTemplates'
 
 interface Props {
@@ -27,6 +25,8 @@ const EMPTY_CONFIG: AgentConfigState = {
   reasoningEffort: null,
   envVars: [],
 }
+
+const RUNTIME_ORDER = ['claude', 'codex', 'kimi', 'opencode']
 
 export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   const [config, setConfig] = useState<AgentConfigState>({ ...EMPTY_CONFIG })
@@ -58,6 +58,25 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   function handleTrioLaunched(_channelId: string) {
     onCreated()
   }
+
+  // Reset form when modal closes.
+  useEffect(() => {
+    if (!open) {
+      setConfig({ ...EMPTY_CONFIG })
+      setError(null)
+    }
+  }, [open])
+
+  // Default to the first installed ACP runtime once statuses load.
+  useEffect(() => {
+    if (runtimeStatuses.length === 0 || config.name !== '') return
+    const acpRuntime = RUNTIME_ORDER.find((rt) =>
+      runtimeStatuses.find((s) => s.runtime === rt && s.installed && s.driverMode === 'acp'),
+    )
+    if (acpRuntime && acpRuntime !== config.runtime) {
+      setConfig((prev) => ({ ...prev, runtime: acpRuntime, model: '' }))
+    }
+  }, [runtimeStatuses]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleCreate() {
     if (!config.name.trim()) {
@@ -133,17 +152,6 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
           </>
         )}
 
-        <FormField>
-          <Label>Machine</Label>
-          <Select value="local" disabled>
-            <SelectTrigger aria-label="Machine">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="local">local</SelectItem>
-            </SelectContent>
-          </Select>
-        </FormField>
 
         <AgentConfigForm
           state={config}

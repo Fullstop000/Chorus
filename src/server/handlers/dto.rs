@@ -97,6 +97,9 @@ pub struct RuntimeStatusInfo {
     /// Authentication state when the runtime is installed.
     #[serde(rename = "authStatus", skip_serializing_if = "Option::is_none")]
     pub auth_status: Option<RuntimeAuthStatus>,
+    /// Active driver mode: `"acp"` when the ACP adapter binary is installed, otherwise `"raw"`.
+    #[serde(rename = "driverMode")]
+    pub driver_mode: String,
 }
 
 /// Human user row for agent workspace snapshots and the UI shell.

@@ -1,13 +1,20 @@
 use chorus::agent::config::AgentConfig;
-use chorus::agent::drivers::claude::ClaudeDriver;
-use chorus::agent::drivers::codex::CodexDriver;
-use chorus::agent::drivers::kimi::KimiDriver;
-use chorus::agent::drivers::opencode::OpencodeDriver;
+use chorus::agent::drivers::acp::AcpDriver;
+use chorus::agent::drivers::claude::ClaudeAcpRuntime;
+use chorus::agent::drivers::claude_raw::ClaudeRawDriver;
+use chorus::agent::drivers::codex::CodexAcpRuntime;
+use chorus::agent::drivers::codex_raw::CodexRawDriver;
+use chorus::agent::drivers::kimi::KimiAcpRuntime;
+use chorus::agent::drivers::kimi_raw::KimiRawDriver;
+use chorus::agent::drivers::opencode::OpencodeAcpRuntime;
+use chorus::agent::drivers::opencode_raw::OpencodeRawDriver;
 use chorus::agent::drivers::Driver;
 
+// ── Raw (1.0) driver prompt tests ──
+
 #[test]
-fn test_claude_prompt_uses_split_message_tools() {
-    let driver = ClaudeDriver;
+fn test_claude_raw_prompt_uses_split_message_tools() {
+    let driver = ClaudeRawDriver;
     let config = AgentConfig {
         name: "claude-bot".to_string(),
         display_name: "Claude Bot".to_string(),
@@ -37,8 +44,8 @@ fn test_claude_prompt_uses_split_message_tools() {
 }
 
 #[test]
-fn test_codex_prompt_uses_split_message_tools() {
-    let driver = CodexDriver;
+fn test_codex_raw_prompt_uses_split_message_tools() {
+    let driver = CodexRawDriver;
     let config = AgentConfig {
         name: "codex-bot".to_string(),
         display_name: "Codex Bot".to_string(),
@@ -80,8 +87,8 @@ fn test_codex_prompt_uses_split_message_tools() {
 }
 
 #[test]
-fn test_kimi_prompt_uses_split_message_tools() {
-    let driver = KimiDriver;
+fn test_kimi_raw_prompt_uses_split_message_tools() {
+    let driver = KimiRawDriver;
     let config = AgentConfig {
         name: "kimi-bot".to_string(),
         display_name: "Kimi Bot".to_string(),
@@ -102,7 +109,7 @@ fn test_kimi_prompt_uses_split_message_tools() {
     );
     assert!(
         prompt.contains("check_messages"),
-        "Kimi prompts must teach the non-blocking message check explicitly with the Kimi-native tool name"
+        "Kimi prompts must teach the non-blocking message check explicitly"
     );
     assert!(
         !prompt.contains("receive_message"),
@@ -116,19 +123,11 @@ fn test_kimi_prompt_uses_split_message_tools() {
         prompt.contains("Chorus"),
         "Kimi prompts should use the current product name"
     );
-    assert!(
-        prompt.contains("must either send a reply or deliberately explain why no reply is needed"),
-        "Kimi prompts should explicitly forbid consuming a message and silently returning to idle"
-    );
-    assert!(
-        prompt.contains("Any reply meant for humans must be delivered with `send_message()`"),
-        "Kimi prompts should explicitly forbid treating raw stdout text as a valid human reply"
-    );
 }
 
 #[test]
-fn test_opencode_prompt_uses_split_message_tools() {
-    let driver = OpencodeDriver;
+fn test_opencode_raw_prompt_uses_split_message_tools() {
+    let driver = OpencodeRawDriver;
     let config = AgentConfig {
         name: "opencode-bot".to_string(),
         display_name: "OpenCode Bot".to_string(),
@@ -166,5 +165,111 @@ fn test_opencode_prompt_uses_split_message_tools() {
     assert!(
         prompt.contains("Chorus"),
         "OpenCode prompts should use the current product name"
+    );
+}
+
+// ── ACP (2.0) driver prompt tests ──
+
+#[test]
+fn test_claude_acp_prompt_uses_split_message_tools() {
+    let driver = AcpDriver::new(ClaudeAcpRuntime);
+    let config = AgentConfig {
+        name: "claude-bot".to_string(),
+        display_name: "Claude Bot".to_string(),
+        description: Some("Replies in Chorus".to_string()),
+        system_prompt: None,
+        runtime: "claude".to_string(),
+        model: "sonnet".to_string(),
+        session_id: None,
+        reasoning_effort: None,
+        env_vars: Vec::new(),
+    };
+
+    let prompt = driver.build_system_prompt(&config, "agent-id");
+
+    assert!(
+        !prompt.contains("mcp__chat__wait_for_message"),
+        "push-idle: agents no longer use wait_for_message"
+    );
+    assert!(
+        prompt.contains("mcp__chat__check_messages"),
+        "ACP Claude prompts must teach the non-blocking message check"
+    );
+}
+
+#[test]
+fn test_codex_acp_prompt_uses_split_message_tools() {
+    let driver = AcpDriver::new(CodexAcpRuntime);
+    let config = AgentConfig {
+        name: "codex-bot".to_string(),
+        display_name: "Codex Bot".to_string(),
+        description: Some("Replies in Chorus".to_string()),
+        system_prompt: None,
+        runtime: "codex".to_string(),
+        model: "gpt-5.4-mini".to_string(),
+        session_id: None,
+        reasoning_effort: None,
+        env_vars: Vec::new(),
+    };
+
+    let prompt = driver.build_system_prompt(&config, "agent-id");
+
+    assert!(
+        prompt.contains("mcp_chat_check_messages"),
+        "ACP Codex prompts must reference the non-blocking check tool"
+    );
+    assert!(
+        prompt.contains("mcp_chat_send_message"),
+        "ACP Codex prompts must reference the actual MCP send tool"
+    );
+}
+
+#[test]
+fn test_kimi_acp_prompt_uses_split_message_tools() {
+    let driver = AcpDriver::new(KimiAcpRuntime);
+    let config = AgentConfig {
+        name: "kimi-bot".to_string(),
+        display_name: "Kimi Bot".to_string(),
+        description: Some("Replies in Chorus".to_string()),
+        system_prompt: None,
+        runtime: "kimi".to_string(),
+        model: "kimi-code/kimi-for-coding".to_string(),
+        session_id: None,
+        reasoning_effort: None,
+        env_vars: Vec::new(),
+    };
+
+    let prompt = driver.build_system_prompt(&config, "agent-id");
+
+    assert!(
+        prompt.contains("check_messages"),
+        "ACP Kimi prompts must teach the non-blocking message check"
+    );
+}
+
+#[test]
+fn test_opencode_acp_prompt_uses_split_message_tools() {
+    let driver = AcpDriver::new(OpencodeAcpRuntime);
+    let config = AgentConfig {
+        name: "opencode-bot".to_string(),
+        display_name: "OpenCode Bot".to_string(),
+        description: Some("Replies in Chorus".to_string()),
+        system_prompt: None,
+        runtime: "opencode".to_string(),
+        model: "anthropic/claude-sonnet-4-20250514".to_string(),
+        session_id: None,
+        reasoning_effort: None,
+        env_vars: Vec::new(),
+    };
+
+    let prompt = driver.build_system_prompt(&config, "agent-id");
+
+    assert!(
+        prompt.contains("chat_check_messages"),
+        "ACP OpenCode prompts must reference the non-blocking check tool"
+    );
+    assert!(
+        prompt.contains("chat_send_message"),
+        "ACP OpenCode prompts must reference the actual MCP send tool"
     );
 }

@@ -2,8 +2,9 @@ use clap::{Parser, Subcommand};
 use std::sync::Arc;
 
 use chorus::agent::manager::AgentManager;
+use chorus::agent::AgentRuntime;
 use chorus::bridge;
-use chorus::store::agents::{AgentRuntime, AgentStatus};
+use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::SenderType;
 use chorus::store::Store;
@@ -117,11 +118,17 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     // Initialize tracing. Default level: chorus=info (override with RUST_LOG).
+    // Enable RUST_BACKTRACE by default so Backtrace::capture() works in error handlers.
+    if std::env::var_os("RUST_BACKTRACE").is_none() {
+        std::env::set_var("RUST_BACKTRACE", "1");
+    }
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("chorus=info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
+        .with_file(true)
+        .with_line_number(true)
         .init();
 
     match cli.command {
@@ -346,7 +353,8 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
         server_url.clone(),
     ));
 
-    // Auto-restart agents that were active before server restart
+    // Auto-restart agents that were active before server restart.
+    // Track failures per agent so repeated failures can be surfaced.
     {
         let active_agents: Vec<String> = store
             .get_agents()
@@ -355,11 +363,33 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
             .filter(|a| a.status == AgentStatus::Active)
             .map(|a| a.name)
             .collect();
+        let mut failed_agents = Vec::new();
         for agent_name in active_agents {
             tracing::info!(agent = %agent_name, "auto-restarting active agent");
             if let Err(e) = manager.start_agent(&agent_name, None).await {
-                tracing::warn!(agent = %agent_name, err = %e, "failed to restart agent");
+                let error_detail = format!("{e:#}");
+                tracing::error!(agent = %agent_name, err = %error_detail, "failed to restart agent — marking inactive so subsequent delivery can retry");
+                // Mark inactive so next message delivery can attempt a fresh start
+                if let Err(e) = store.update_agent_status(&agent_name, AgentStatus::Inactive) {
+                    tracing::error!(agent = %agent_name, err = %e, "also failed to mark agent inactive — manual intervention required");
+                }
+                failed_agents.push((agent_name, error_detail));
             }
+        }
+        if !failed_agents.is_empty() {
+            eprintln!(
+                "Warning: {} agent(s) failed to auto-restart and were marked inactive: {}",
+                failed_agents.len(),
+                failed_agents
+                    .iter()
+                    .map(|(agent_name, _)| agent_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            for (agent_name, error_detail) in &failed_agents {
+                eprintln!("  - {agent_name}: {error_detail}");
+            }
+            eprintln!("They will be retried on next message delivery. To restart immediately: `chorus agent start <name>`");
         }
     }
 
