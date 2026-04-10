@@ -340,7 +340,8 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
         server_url.clone(),
     ));
 
-    // Auto-restart agents that were active before server restart
+    // Auto-restart agents that were active before server restart.
+    // Track failures per agent so repeated failures can be surfaced.
     {
         let active_agents: Vec<String> = store
             .get_agents()
@@ -349,11 +350,21 @@ async fn serve(port: u16, data_dir_str: String) -> anyhow::Result<()> {
             .filter(|a| a.status == AgentStatus::Active)
             .map(|a| a.name)
             .collect();
+        let mut failed_agents = Vec::new();
         for agent_name in active_agents {
             tracing::info!(agent = %agent_name, "auto-restarting active agent");
             if let Err(e) = manager.start_agent(&agent_name, None).await {
-                tracing::warn!(agent = %agent_name, err = %e, "failed to restart agent");
+                tracing::error!(agent = %agent_name, err = %e, "failed to restart agent — it will not be available until manually started");
+                failed_agents.push(agent_name);
             }
+        }
+        if !failed_agents.is_empty() {
+            eprintln!(
+                "Warning: {} agent(s) failed to auto-restart: {}",
+                failed_agents.len(),
+                failed_agents.join(", ")
+            );
+            eprintln!("Check agent logs for details. Restart manually with `chorus agent start <name>`");
         }
     }
 
