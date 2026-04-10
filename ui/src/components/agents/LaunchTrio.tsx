@@ -58,6 +58,7 @@ export function LaunchTrio({ allTemplates, onLaunched }: Props) {
           <div key={t.id} className="launch-trio-card">
             <span className="launch-trio-card-emoji">{t.emoji ?? '🤖'}</span>
             <span className="launch-trio-card-name">{t.name}</span>
+            <span className="launch-trio-card-role">{t.category}</span>
           </div>
         ))}
       </div>
