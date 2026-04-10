@@ -8,170 +8,47 @@ This file is the working contract for agents. Read it before making changes.
 
 ## General Rules
 
-- Simplest working solution. No over-engineering.
-- No abstractions for single-use operations.
-- No speculative features or "you might also want..."
-- Read the file before modifying it. Never edit blind.
+Listed in priority order. When two rules point different directions, the earlier rule wins.
 
-| Rule                       | Example                                                              |
-| -------------------------- | -------------------------------------------------------------------- |
-| Names are documentation    | `isLoading` not `loading`; `hasPermission()` not `checkPermission()` |
-| Name for the reason, not the control | `isRuntimeAvailable` not `canSelectRuntime`              |
-| One word per concept       | Don't alternate fetch/get/retrieve/load                              |
-| Booleans read as questions | `isLoading`, `hasError`, `canSubmit`                                 |
-| No cryptic shortcuts       | `id`, `url`, `err` ok in narrow scopes only                          |
-| Functions do one thing     | Ideal: 5-15 lines. Nested conditionals > 2 levels = extract          |
-| Max 3 arguments            | Use options object: `createUser({ name, age, role })`                |
-| Return early               | Guard clauses > deep nesting                                         |
-| Pure functions preferred   | Isolate I/O, mutations, randomness at edges                          |
-
-**Structure:**
-
-- Organize by feature: `src/auth/`, `src/billing/` — not `src/models/`, `src/controllers/`
-- Files over ~300 lines = refactor signal. Over 500 lines = problem.
-- UI contains no SQL. Business logic contains no display strings.
-
-**State:**
-
-- Minimize mutable state. Prefer `const` over `let`.
-- Colocate state with consumers. No global state unless truly shared.
-- Make invalid states unrepresentable: `type Status = 'idle' | 'loading' | 'error'` not `{ isLoading: true, hasError: true }`
-
-**Error Handling:**
-
-- Fail fast and loudly. Never swallow exceptions.
-- Add context when re-throwing: `throw new Error(\`Failed to load user ${userId}: ${e.message}\`)`
-- Use typed errors, not `null` for failures.
-
-**Testing:**
-
-- Follow Arrange–Act–Assert (AAA).
-- Test behavior, not implementation.
-- One assertion per test (ideally).
-
-**Debugging:**
-
-- Never speculate about a bug without reading the relevant code first.
-- State what you found, where, and the fix. One pass.
-- If cause is unclear: say so. Do not guess.
-
-** Review **
-
-- State the bug. Show the fix. Stop.
-- No suggestions beyond the scope of the review.
-- No compliments on the code before or after the review.
-
-**Comments:**
-
-- Explain _why_, not _what_.
-- Outdated comments are worse than no comments.
-
-> **Meta-Principle:** Code is written once, read hundreds of times. Optimize for the next reader (often you, six months from now).
+1. **The next reader is you, six months from now.** Every naming choice, every comment, every commit message is a letter to that person. Optimize for recognition, not cleverness.
+2. **Read before you write.** Read the file before editing. Read the surrounding code before inventing a pattern. Read the existing tests before adding a new one. Never speculate about a bug without reading the relevant code first. If the cause is unclear, say so.
+3. **Match the neighborhood.** Chorus has strong conventions: enum-first types, SQL views for read models, mono chat content, zero-radius UI, kicker labels, horizontal-rule dividers. Before adding a new pattern, check whether an existing one covers the job. Inconsistency is a tax every future agent pays. See `docs/conventions/` for the written versions.
+4. **Make invalid states unrepresentable.** Reach for enums before booleans. Typed errors before `null`. Required arguments before optional flags. `type Status = 'idle' | 'loading' | 'error'` not `{ isLoading: true, hasError: true }`. In Rust: `enum SenderType { Human, Agent, System }`.
+5. **Names are documentation.** `isLoading` not `loading`. `hasPermission()` not `checkPermission()`. Booleans read as questions. One concept = one word, don't alternate fetch/get/retrieve/load. Names outlive their authors, so spend the extra minute.
+6. **One thing, done well.** One function = one job (5-15 lines ideal, nested conditionals > 2 levels = extract). One file = one concept (300 lines = signal, 500 = problem). One commit = one logical change. One PR = one feature. Guard clauses over deep nesting. Pure functions over side effects. When in doubt, split.
+7. **Fail loudly with context.** Never swallow exceptions. Never return `null` for failures. Add one line of context when rethrowing: `anyhow!("channel not found: {name}")`. A silent failure is a future 3am debugging session.
+8. **Explain why, not what.** Comments justify decisions the code cannot express. Outdated comments are worse than no comments. Commit messages, PR descriptions, and TODOs all answer "why", never "what". State the bug, show the fix, stop.
+9. **Verification matches risk.** Do not claim done without running the matching verification. Backend change -> focused Rust tests. Data path -> `cargo test --test e2e_tests`. User-visible change -> `/gstack-qa`. If verification cannot run, state it clearly; do not claim "fully verified".
+10. **When in doubt, stop and ask.** The human has context you don't. "I don't know" is a valid answer. Silent guessing is not. Every agent in this repo overcommits occasionally; the reliable escape hatch is asking.
 
 ---
 
 ## Project Organization
 
-**Backend:**
-| Path | Purpose |
-|------|---------|
-| `src/main.rs` | CLI entrypoint, `serve` bootstrap |
-| `src/lib.rs` | Crate-level module exports |
-| `src/agent/` | Agent lifecycle, process management, activity log, collaboration, workspace. Runtime drivers: `src/agent/drivers/` |
-| `src/bridge/` | MCP bridge, request/response formatting |
-| `src/server/` | Axum router assembly in `mod.rs`. Handlers grouped by domain under `src/server/handlers/` |
-| `src/store/` | SQLite persistence. Modules: `agents`, `channels`, `messages`, `tasks`, `teams` |
+**Docs (indexed by reader-type, not by topic):**
 
-**Frontend:**
-| Path | Purpose |
-|------|---------|
-| `ui/src/App.tsx` | Top-level shell |
-| `ui/src/api/` | Browser-to-server API (`index.ts`) |
-| `ui/src/store/` | Client app state (`index.tsx`, `uiStore.ts`) |
-| `ui/src/types/` | Re-exports only; domain types live in `*/types.ts` next to `chat/`, `channels/`, `agents/`, `tasks/`, `inbox/`, `transport/` |
-| `ui/src/inbox/` | Thread inbox + read-cursor state (`inbox.ts`, `index.ts`) |
-| `ui/src/lib/` | Shared helpers (`utils.ts`: `cn`, app `queryClient`) |
-| `ui/src/hooks/` | Reusable data-loading and interaction hooks |
-| `ui/src/transport/` | Realtime WebSocket client |
-| `ui/src/pages/` | Workspace shell (`MainPanel`, `TabBar`; `Sidebar/` includes `sidebarChannels` filter) |
-| `ui/src/components/` | Feature modules: `chat/`, `channels/`, `agents/` (includes `agents/profile/`, `agents/activity/`), `tasks/`, plus `ui/` (shadcn primitives) |
 
-## Project Conventions
+| Reader-type | Folder              | When to read                                                                                                       |
+| ----------- | ------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| Code writer | `docs/conventions/` | Before writing new code in any subsystem. Contains `backend.md` (Rust) and `design.md` (frontend visual language). |
+| Operator    | `docs/operations/`  | Before running, testing, shipping, or recovering. Contains `development.md`.                                       |
+| Mechanic    | `docs/mechanisms/`  | When you need to understand a subsystem deeply enough to modify it. Contains `inbox.md` and will grow.             |
+| Extender    | `docs/extensions/`  | When adding a new runtime driver, template type, or plugin. Contains `driver-guide.md`.                            |
+| Historian   | `docs/adr/`         | When wondering "why did we choose X over Y" — architecture decision records.                                       |
 
-**UI:**
 
-- Component styles in co-located `.css` files
-- Design tokens in CSS variables in `App.css`
-- Icons: `lucide-react` (13px inline, 16px panel)
-- No global state mutations outside `ui/src/store/`
-- API calls through `ui/src/api/`
-- Do not introduce a second visual style for shared dialogs, forms, or selects
-- Do not separate labels from their focusable controls
-- Do not use the browser viewport for read visibility
-
-**Logging:**
-
-- `RUST_LOG=chorus=debug` for verbose output
-- Use `tracing`; never `eprintln!` or `println!` in library code
+Each folder has a `README.md` that lists its files with one-line summaries.
+Agents follow the two-hop lookup: this table → category README → file.
+New docs slot into an existing category without touching this table.
 
 ---
 
-## Dev Workflow
-
-**Branch Workflow:**
-
-1. Check worktree dirty before switching branches
-2. If local changes exist, ask user to commit/stash/move
-3. Start from up-to-date `main` based on `origin/main`
-4. Create branch with `{agent}/` prefix (`codex/`, `claude/`, `gemini/`, etc.)
-5. Don't carry unrelated changes into new branch
-
-**Commits:**
-
-- Use conventional style with scope: `feat(settings):`, `fix(command):`, `refactor(config):`, `docs(agent):`, `ci:`
-
----
-
-## Verification Policy
-
-Do not claim complete without matching verification.
-
-**Minimum:**
-
-1. Run focused Rust tests for affected modules
-2. Run `cargo test --test e2e_tests` when backend message/task/DM/thread/agent flow affected
-3. For user-facing changes, run browser QA pass in `qa/README.md`
-
-**Escalation:**
-
-- Backend/data-path changes: Rust tests first
-- Core user process changes: headless-browser e2e testing mandatory
-- Core paths: channel messaging, DM flows, thread replies, task board, agent loops
-- Backend tests alone insufficient for user-visible changes
-- If headless-browser verification cannot run, state it clearly; don't claim fully verified
-
----
-
-## QA Workflow
-
-Authoritative workflow in `qa/README.md`. Case catalog and templates under `qa/`.
-
----
-
-## Extension Points
-
-**Adding A New Driver:**
-
-Follow `docs/DRIVER_GUIDE.md`
-
----
 
 ## GStack
 
-Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
-
-**Available skills:**
-`/office-hours`, `/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/design-consultation`, `/design-shotgun`, `/design-html`, `/review`, `/ship`, `/land-and-deploy`, `/canary`, `/benchmark`, `/browse`, `/connect-chrome`, `/qa`, `/qa-only`, `/design-review`, `/setup-browser-cookies`, `/setup-deploy`, `/retro`, `/investigate`, `/document-release`, `/codex`, `/cso`, `/autoplan`, `/plan-devex-review`, `/devex-review`, `/careful`, `/freeze`, `/guard`, `/unfreeze`, `/gstack-upgrade`, `/learn`
+- **Browser access:** use `/gstack-browse` for all web browsing. **Never** use `mcp__claude-in-chrome__`* tools.
+- **Skill prefix:** this project has `SKILL_PREFIX=true`, so invoke skills with the `/gstack-` prefix (`/gstack-qa`, `/gstack-ship`, `/gstack-investigate`, etc.).
+- **Discovery:** skill inventory lives in gstack itself. Run `/gstack-upgrade` to keep them current. The routing rules below cover the common entry points — not an exhaustive list.
 
 ---
 
@@ -179,10 +56,12 @@ Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude
 
 Before stopping, confirm:
 
-- [ ] Change lives in correct subsystem and file
-- [ ] Verification matches risk of change
-- [ ] Required e2e/browser QA run for user-facing critical paths, or gap called out
-- [ ] `AGENTS.md` or related docs updated if shipped behavior/workflow changed
+- Change lives in correct subsystem and file
+- Verification matches risk of change
+- Required e2e/browser QA run for user-facing critical paths, or gap called out
+- `AGENTS.md` or related docs updated if shipped behavior/workflow changed
+
+---
 
 ## Skill routing
 
@@ -190,16 +69,60 @@ When the user's request matches an available skill, ALWAYS invoke it using the S
 tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
 The skill has specialized workflows that produce better results than ad-hoc answers.
 
-Key routing rules:
-- Product ideas, "is this worth building", brainstorming → invoke office-hours
-- Bugs, errors, "why is this broken", 500 errors → invoke investigate
-- Ship, deploy, push, create PR → invoke ship
-- QA, test the site, find bugs → invoke qa
-- Code review, check my diff → invoke review
-- Update docs after shipping → invoke document-release
-- Weekly retro → invoke retro
-- Design system, brand → invoke design-consultation
-- Visual audit, design polish → invoke design-review
-- Architecture review → invoke plan-eng-review
-- Save progress, checkpoint, resume → invoke checkpoint
-- Code quality, health check → invoke health
+Key routing rules (all prefixed with `/gstack-` — see `SKILL_PREFIX=true` above):
+
+- Product ideas, "is this worth building", brainstorming → `/gstack-office-hours`
+- Bugs, errors, "why is this broken", 500 errors → `/gstack-investigate`
+- Ship, deploy, push, create PR → `/gstack-ship`
+- QA, test the site, find bugs → `/gstack-qa`
+- Code review, check my diff → `/gstack-review`
+- Update docs after shipping → `/gstack-document-release`
+- Weekly retro → `/gstack-retro`
+- Design system, brand → `/gstack-design-consultation`
+- Visual audit, design polish → `/gstack-design-review`
+- Architecture review → `/gstack-plan-eng-review`
+- Save progress, checkpoint, resume → `/gstack-checkpoint`
+- Code quality, health check → `/gstack-health`
+
+---
+
+## Rules for docs
+
+How the `docs/` tree stays sharp over years instead of collapsing into
+noise. Enforced on the annual audit (see "Rules for this file" below).
+
+1. **Index by reader-type, not by topic.** The `docs/` index above has
+  five rows (conventions, operations, mechanisms, extensions, adr) and
+   never grows. New docs slot into an existing category.
+2. **Default to extending an existing doc.** Split a doc only when one of:
+  it crosses ~500 lines (same budget as source files), a new reader-type
+   emerges (rare — maybe once every two years), or a subsection gets cited
+   in reviews more often than its parent doc.
+3. **A new doc is indexed in its category's `README.md` in the same PR
+  it's born.** A doc that isn't in a README doesn't exist. Orphan docs
+   get deleted on the annual audit.
+4. **Delete before you add.** Before writing a new doc, check if an
+  existing one is obsolete or redundant. Shrink before you grow.
+5. **A doc uncited and untouched for 18 months is a deletion candidate.**
+  Same pressure as the audit rule for `AGENTS.md`. Annual audit runs it.
+6. **A category `README.md` is a table, not a wall of text.** One line
+  per file: what it covers, when to read it. If the README starts
+   explaining instead of pointing, the docs have failed and need
+   reorganizing.
+
+## Rules for this file
+
+1. **Every rule earns its place by preventing a real problem.** If you
+  can't cite the incident it came from, it doesn't belong.
+2. **Adding a rule means deleting a weaker one.** This file has a fixed
+  budget. Growth is not progress.
+3. **Update this file in the same PR that made you wish it said
+  something.** Drift happens in the gap between "we should document this"
+   and "someone should document this".
+4. **The owner of this file runs an annual audit.** Read every rule and
+  every doc pointer. Delete what's stale. Rewrite what's unclear. If
+   you didn't delete anything, you didn't audit carefully enough.
+5. **If a rule hasn't been cited in a review in a year, delete it.**
+  Rules that go unused are noise. This file should shrink over time,
+   not grow.
+
