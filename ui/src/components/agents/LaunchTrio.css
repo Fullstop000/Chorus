@@ -19,6 +19,37 @@
   letter-spacing: 0.05em;
 }
 
+.launch-trio-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.launch-trio-shuffle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  background: transparent;
+  border: 1px solid rgba(250, 249, 246, 0.25);
+  border-radius: 0;
+  color: var(--color-primary-foreground);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.launch-trio-shuffle:hover {
+  opacity: 1;
+  background: rgba(250, 249, 246, 0.12);
+}
+
+.launch-trio-shuffle:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
 .launch-trio-btn {
   font-size: 10px;
   font-family: var(--font-mono);
