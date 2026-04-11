@@ -2,13 +2,13 @@
 
 AI agent collaboration platform. Agents run as OS processes and communicate through a Slack-like chat interface.
 
-This file is the routing table for agents working in this repo. Read it first, follow the pointers.
+This file is the routing table. Read it first, follow the pointers.
 
 ---
 
 ## Principles
 
-1. **The next reader is you, six months from now.** Optimize for recognition, not cleverness.
+1. **Read before you write.** Read the file, the surrounding code, the existing tests. Never speculate about a bug without reading the relevant code first.
 2. **Fix root causes, not symptoms.** No silent fallbacks. Surface errors; the caller decides.
 3. **When in doubt, stop and ask.** The human has context you don't. Silent guessing is not an answer.
 
@@ -28,46 +28,58 @@ Two-hop lookup: this table → category README → file.
 
 ---
 
-## Skill Routing
+## Chorus Workflows
 
 All skills prefixed with `/gstack-` (`SKILL_PREFIX=true`).
-When a request matches a skill, invoke it as the FIRST action.
+When a request matches a skill, ALWAYS invoke it using the Skill tool as the FIRST action.
+Do NOT answer directly or use other tools first. The skill has specialized workflows.
 
-| Workflow | Skill | When |
-|----------|-------|------|
-| Think | `/gstack-office-hours` | Product ideas, brainstorming, "is this worth building" |
-| Think | `/gstack-plan-eng-review` | Architecture review |
-| Dev | `/gstack-investigate` | Bugs, errors, "why is this broken" |
-| Dev | `/gstack-review` | Code review, check my diff |
-| Dev | `/gstack-health` | Code quality, health check |
-| Design | `/gstack-design-consultation` | Design system, brand |
-| Design | `/gstack-design-review` | Visual audit, design polish |
-| Release | `/gstack-ship` | Ship, deploy, push, create PR |
-| Release | `/gstack-qa` | QA, test the site, find bugs |
-| Doc | `/gstack-document-release` | Update docs after shipping |
-| Doc | `/gstack-retro` | Weekly retro |
-| Util | `/gstack-checkpoint` | Save progress, checkpoint, resume |
+### Spec
+
+| Skill | When |
+|-------|------|
+| `/gstack-office-hours` | New feature idea, "is this worth building", problem framing |
+| `/gstack-plan-eng-review` | Architecture review before implementation |
+| `/gstack-plan-ceo-review` | Scope challenge, dream state mapping, expansion decisions |
+
+### Build
+
+| Skill | When |
+|-------|------|
+| `/gstack-investigate` | Agent won't start, message not delivered, driver error, any bug |
+| `/gstack-review` | Code review, check my diff before shipping |
+| `/gstack-health` | Code quality dashboard, test coverage, dead code |
+
+### Polish
+
+| Skill | When |
+|-------|------|
+| `/gstack-design-consultation` | Design system, brand, typography, color |
+| `/gstack-design-review` | Visual audit, spacing issues, design polish |
+
+### Ship
+
+| Skill | When |
+|-------|------|
+| `/gstack-ship` | Create PR, push, deploy |
+| `/gstack-qa` | Test the live site, find bugs, verify fix |
+
+### Maintain
+
+| Skill | When |
+|-------|------|
+| `/gstack-document-release` | Update docs after shipping |
+| `/gstack-retro` | Weekly retro, what shipped, what broke |
+| `/gstack-checkpoint` | Save progress, resume later |
 
 Browser: use `/gstack-browse`. Never use `mcp__claude-in-chrome__`* tools.
-Discovery: run `/gstack-upgrade` to update skill inventory.
+Run `/gstack-upgrade` to update skill inventory.
 
 ---
 
-## Stats
+## Rules for This File
 
-Rule citation tracking. Rules uncited for 12 months are deletion candidates.
-
-| Rule | Last cited | Count |
-|------|-----------|-------|
-| Principles §1 — next reader | — | 0 |
-| Principles §2 — root cause | 2026-04-11 | 1 |
-| Principles §3 — stop and ask | — | 0 |
-| `general.md` — code rules | — | 0 |
-| `general.md` — errors | 2026-04-11 | 1 |
-| `general.md` — verification | — | 0 |
-| `general.md` — doc governance | — | 0 |
-| `backend.md` | — | 0 |
-| `design.md` | — | 0 |
-
-Update this table in the same PR when a rule is cited in a review or commit.
-Annual audit: delete any row with 0 citations and last-cited older than 12 months.
+1. **Every rule earns its place by preventing a real problem.** No rule without an incident.
+2. **Adding a rule means deleting a weaker one.** Fixed budget. Growth is not progress.
+3. **Update in the same PR that made you wish it said something.**
+4. **Annual audit.** Read every rule, every doc pointer. Delete what's stale. If you didn't delete anything, you didn't audit.
