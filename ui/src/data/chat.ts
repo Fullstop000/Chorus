@@ -24,7 +24,7 @@ export interface HistoryMessage {
   seq: number
   content: string
   senderName: string
-  senderType: 'human' | 'agent'
+  senderType: 'human' | 'agent' | 'system'
   senderDeleted: boolean
   createdAt: string
   thread_parent_id?: string
@@ -43,7 +43,7 @@ export interface HistoryResponse {
 
 export interface MessageSenderInfo {
   name: string
-  type: 'human' | 'agent'
+  type: 'human' | 'agent' | 'system'
 }
 
 export interface MessageCreatedPayload {

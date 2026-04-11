@@ -106,6 +106,12 @@ pub trait Driver: Send + Sync {
     fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus>;
     /// Return the runtime's currently supported model ids.
     fn list_models(&self) -> anyhow::Result<Vec<String>>;
+    /// Whether the driver needs a pre-generated session ID before spawning.
+    /// True for raw Kimi driver (stdin notifications require a session ID up front).
+    /// False for ACP drivers (they negotiate sessions via session/new).
+    fn needs_pregenerated_session_id(&self) -> bool {
+        false
+    }
 }
 
 /// ACP adapter binary names for each runtime.

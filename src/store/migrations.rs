@@ -6,23 +6,10 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_drop_legacy_event_tables(conn)?;
     migrate_remove_legacy_shared_memory_channel(conn)?;
     migrate_inbox_read_state(conn)?;
+    migrate_add_system_prompt_column(conn)?;
     migrate_add_run_id_to_messages(conn)?;
     migrate_add_trace_summary_to_messages(conn)?;
     migrate_create_trace_events_table(conn)?;
-    Ok(())
-}
-
-/// Add run_id column to messages for Telescope trace correlation.
-fn migrate_add_run_id_to_messages(conn: &Connection) -> Result<()> {
-    let has_column = conn
-        .prepare("PRAGMA table_info(messages)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .filter_map(|r| r.ok())
-        .any(|col| col == "run_id");
-    if !has_column {
-        conn.execute_batch("ALTER TABLE messages ADD COLUMN run_id TEXT")?;
-        tracing::info!("migration: added run_id column to messages");
-    }
     Ok(())
 }
 
@@ -129,6 +116,19 @@ fn migrate_remove_legacy_shared_memory_channel(conn: &Connection) -> Result<()> 
     Ok(())
 }
 
+/// Add `system_prompt` column to agents table for rich template prompts.
+fn migrate_add_system_prompt_column(conn: &Connection) -> Result<()> {
+    let has_column: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('agents') WHERE name = 'system_prompt'")?
+        .query_map([], |_| Ok(true))?
+        .any(|r| r.unwrap_or(false));
+    if !has_column {
+        conn.execute("ALTER TABLE agents ADD COLUMN system_prompt TEXT", [])?;
+        tracing::info!("added system_prompt column to agents table");
+    }
+    Ok(())
+}
+
 pub(super) fn migrate_inbox_read_state(conn: &Connection) -> Result<()> {
     conn.execute(
         "INSERT OR IGNORE INTO inbox_read_state (
@@ -149,6 +149,20 @@ pub(super) fn migrate_inbox_read_state(conn: &Connection) -> Result<()> {
          FROM channel_members cm",
         [],
     )?;
+    Ok(())
+}
+
+/// Add run_id column to messages for Telescope trace correlation.
+fn migrate_add_run_id_to_messages(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "run_id");
+    if !has_column {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN run_id TEXT")?;
+        tracing::info!("migration: added run_id column to messages");
+    }
     Ok(())
 }
 

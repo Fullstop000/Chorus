@@ -133,12 +133,13 @@ impl<R: AcpRuntime> AcpDriver<R> {
             return vec![ParsedEvent::Error { message }];
         }
 
+        let id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+
         let result = msg.get("result");
 
         // Dispatch by request id to handle out-of-order responses correctly.
         // Handshake ids: 1 = initialize, 2 = session/new|load, 3 = session/prompt.
         // Ids >= 4 are follow-up session/prompt requests (stdin notifications).
-        let id = msg.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
 
         match id {
             1 => {
@@ -1133,6 +1134,26 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(
             matches!(&events[0], ParsedEvent::TurnEnd { session_id: Some(sid) } if sid == "sess-xyz")
+        );
+    }
+
+    /// Regression: ACP error responses surface as ParsedEvent::Error, not silently swallowed.
+    #[test]
+    fn session_load_error_surfaces_as_error_event() {
+        let d = make_test_driver();
+        {
+            let mut state = d.state.lock().unwrap();
+            state.phase = AcpPhase::AwaitingSessionResponse;
+        }
+
+        let events = d.parse_line(
+            r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32602,"message":"Invalid params","data":{"session_id":"Session not found"}}}"#,
+        );
+
+        assert_eq!(events.len(), 1);
+        assert!(
+            matches!(&events[0], ParsedEvent::Error { message } if message == "Invalid params"),
+            "session/load errors must surface, not be silently retried"
         );
     }
 }

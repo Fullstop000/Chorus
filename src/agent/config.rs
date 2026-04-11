@@ -11,6 +11,8 @@ pub struct AgentConfig {
     pub display_name: String,
     /// Optional description for system prompt.
     pub description: Option<String>,
+    /// Full system prompt (rich template prompts go here; takes precedence over description).
+    pub system_prompt: Option<String>,
     /// Driver key.
     pub runtime: String,
     /// Model id.

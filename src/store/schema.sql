@@ -84,6 +84,7 @@ CREATE TABLE IF NOT EXISTS agents (
     name TEXT UNIQUE NOT NULL, -- Unique machine name
     display_name TEXT NOT NULL, -- Human-readable display name
     description TEXT, -- Description of the agent's role/capabilities
+    system_prompt TEXT, -- Full system prompt for the LLM (templates inject rich prompts here)
     runtime TEXT NOT NULL, -- The runtime driver used (e.g., 'claude', 'codex')
     model TEXT NOT NULL, -- The specific LLM model used
     reasoning_effort TEXT, -- The reasoning effort configuration
@@ -228,19 +229,22 @@ SELECT
     cm.member_type AS member_type,
     COALESCE(irs.last_read_seq, 0) AS last_read_seq,
     irs.last_read_message_id AS last_read_message_id,
-    -- Channel-level unread count (top-level messages only, excludes thread replies)
+    -- Channel-level unread count (top-level messages only, excludes thread replies
+    -- and system-authored messages, which are ambient markers, not unread signal).
     (
         SELECT COUNT(*)
         FROM messages top_level
         WHERE top_level.channel_id = cm.channel_id
           AND top_level.thread_parent_id IS NULL
           AND top_level.seq > COALESCE(irs.last_read_seq, 0)
+          AND top_level.sender_type != 'system'
           AND NOT (
             top_level.sender_name = cm.member_name
             AND top_level.sender_type = cm.member_type
           )
     ) AS unread_count,
-    -- Thread-level unread count (all accessible thread replies, shown in thread tab)
+    -- Thread-level unread count (all accessible thread replies, shown in thread tab;
+    -- excludes system-authored replies for the same reason).
     (
         SELECT COUNT(*)
         FROM messages reply
@@ -251,6 +255,7 @@ SELECT
         WHERE reply.channel_id = cm.channel_id
           AND reply.thread_parent_id IS NOT NULL
           AND reply.seq > COALESCE(itrs.last_read_seq, 0)
+          AND reply.sender_type != 'system'
           AND NOT (
             reply.sender_name = cm.member_name
             AND reply.sender_type = cm.member_type

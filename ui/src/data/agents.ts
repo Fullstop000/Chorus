@@ -17,6 +17,7 @@ export interface AgentInfo {
   model?: string
   reasoningEffort?: string
   description?: string
+  systemPrompt?: string
   session_id?: string
   activity?: string
   activity_detail?: string

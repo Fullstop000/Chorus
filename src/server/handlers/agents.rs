@@ -50,6 +50,8 @@ pub struct CreateAgentRequest {
     pub display_name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, rename = "systemPrompt")]
+    pub system_prompt: Option<String>,
     #[serde(default = "default_runtime")]
     pub runtime: String,
     #[serde(default = "default_model")]
@@ -65,6 +67,8 @@ pub struct UpdateAgentRequest {
     pub display_name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, rename = "systemPrompt")]
+    pub system_prompt: Option<String>,
     #[serde(default = "default_runtime")]
     pub runtime: String,
     #[serde(default = "default_model")]
@@ -217,6 +221,7 @@ pub async fn handle_create_agent(
             name: &name,
             display_name: &display_name,
             description,
+            system_prompt: req.system_prompt.as_deref(),
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
@@ -306,6 +311,7 @@ pub async fn handle_update_agent(
             name: &name,
             display_name: &display_name,
             description,
+            system_prompt: req.system_prompt.as_deref(),
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),

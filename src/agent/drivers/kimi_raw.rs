@@ -38,6 +38,10 @@ impl Driver for KimiRawDriver {
         true
     }
 
+    fn needs_pregenerated_session_id(&self) -> bool {
+        true
+    }
+
     fn mcp_tool_prefix(&self) -> &str {
         ""
     }

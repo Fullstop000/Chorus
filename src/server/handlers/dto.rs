@@ -64,6 +64,9 @@ pub struct AgentInfo {
     /// Optional longer blurb.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Full system prompt (rich persona prompts from templates).
+    #[serde(rename = "systemPrompt", skip_serializing_if = "Option::is_none")]
+    pub system_prompt: Option<String>,
     /// Driver key, e.g. `claude`, `codex`, `kimi`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
@@ -128,6 +131,7 @@ impl From<&Agent> for AgentInfo {
             status: agent.status.as_str().to_string(),
             display_name: Some(agent.display_name.clone()),
             description: agent.description.clone(),
+            system_prompt: agent.system_prompt.clone(),
             runtime: Some(agent.runtime.clone()),
             model: Some(agent.model.clone()),
             reasoning_effort: agent.reasoning_effort.clone(),

@@ -5,6 +5,7 @@ pub mod lifecycle;
 pub mod manager;
 pub mod runtime;
 pub mod runtime_status;
+pub mod templates;
 pub mod trace;
 pub mod workspace;
 

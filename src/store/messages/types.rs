@@ -14,6 +14,9 @@ pub enum SenderType {
     Human,
     /// Agent row from `agents`.
     Agent,
+    /// Server-synthetic sender for system notices (e.g. channel kickoff).
+    /// Never appears in `agents` / `humans` / `channel_members`.
+    System,
 }
 
 impl SenderType {
@@ -22,6 +25,7 @@ impl SenderType {
         match self {
             Self::Human => "human",
             Self::Agent => "agent",
+            Self::System => "system",
         }
     }
 
@@ -29,6 +33,7 @@ impl SenderType {
     pub fn from_sender_type_str(s: &str) -> Self {
         match s {
             "agent" => Self::Agent,
+            "system" => Self::System,
             _ => Self::Human,
         }
     }

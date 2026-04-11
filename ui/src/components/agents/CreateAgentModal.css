@@ -1,0 +1,18 @@
+.modal-title-with-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.modal-back-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  color: inherit;
+}
+
+.modal-back-btn:hover {
+  color: var(--color-muted-foreground);
+}

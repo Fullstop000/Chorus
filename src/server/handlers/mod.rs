@@ -6,6 +6,7 @@ pub mod messages;
 pub mod server_info;
 pub mod tasks;
 pub mod teams;
+pub mod templates;
 pub mod workspace;
 
 pub use agents::*;
@@ -14,6 +15,7 @@ pub use channels::*;
 pub use messages::*;
 pub use tasks::*;
 pub use teams::*;
+pub use templates::*;
 pub use workspace::*;
 
 use std::backtrace::{Backtrace, BacktraceStatus};
@@ -29,6 +31,7 @@ use tracing::debug;
 use crate::agent::drivers::command_exists;
 use crate::agent::runtime::AgentRuntime;
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
+use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
 use crate::store::Store;
 use dto::ServerInfo;
@@ -49,6 +52,7 @@ pub struct AppState {
     pub lifecycle: Arc<dyn AgentLifecycle>,
     pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
+    pub templates: Arc<Vec<AgentTemplate>>,
 }
 
 pub(super) fn api_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {

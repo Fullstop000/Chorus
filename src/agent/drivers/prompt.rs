@@ -267,8 +267,10 @@ pub fn build_base_system_prompt(config: &AgentConfig, opts: &PromptOptions) -> S
         );
     }
 
-    // Optional initial role section
-    if let Some(ref description) = config.description {
+    // System prompt takes precedence over description for the role section.
+    if let Some(ref system_prompt) = config.system_prompt {
+        prompt.push_str(&format!("\n\n## Initial role\n{system_prompt}"));
+    } else if let Some(ref description) = config.description {
         prompt.push_str(&format!(
             "\n\n## Initial role\n{description}. This may evolve."
         ));
@@ -287,6 +289,7 @@ mod tests {
             name: "bot1".to_string(),
             display_name: "Bot 1".to_string(),
             description: Some("Test agent".to_string()),
+            system_prompt: None,
             runtime: "codex".to_string(),
             model: "gpt-5.4-mini".to_string(),
             session_id: None,
@@ -311,5 +314,45 @@ mod tests {
         assert!(!prompt.contains("recall"));
         assert!(!prompt.contains("#shared-memory"));
         assert!(!prompt.contains("shared knowledge store"));
+    }
+
+    #[test]
+    fn system_prompt_takes_precedence_over_description() {
+        let mut config = sample_config();
+        config.description = Some("Brief description".to_string());
+        config.system_prompt =
+            Some("You are a detailed persona agent with rich instructions.".to_string());
+
+        let prompt = build_base_system_prompt(
+            &config,
+            &PromptOptions {
+                tool_prefix: "mcp__chat__".to_string(),
+                extra_critical_rules: Vec::new(),
+                post_startup_notes: Vec::new(),
+                include_stdin_notification_section: false,
+            },
+        );
+
+        assert!(prompt.contains("You are a detailed persona agent"));
+        assert!(!prompt.contains("Brief description"));
+    }
+
+    #[test]
+    fn description_used_when_no_system_prompt() {
+        let mut config = sample_config();
+        config.description = Some("Brief role".to_string());
+        config.system_prompt = None;
+
+        let prompt = build_base_system_prompt(
+            &config,
+            &PromptOptions {
+                tool_prefix: "mcp__chat__".to_string(),
+                extra_critical_rules: Vec::new(),
+                post_startup_notes: Vec::new(),
+                include_stdin_notification_section: false,
+            },
+        );
+
+        assert!(prompt.contains("Brief role"));
     }
 }

@@ -148,6 +148,25 @@ interface MessageItemProps {
   onToggleTrace?: () => void;
 }
 
+// Server-authored notices (e.g. Launch Trio kickoff). Rendered as a quiet
+// horizontal-rule divider mirroring `NewMessageDivider`, styled muted to read
+// as an ambient marker rather than a participant.
+function SystemMessageItem({ message }: { message: HistoryMessage }) {
+  const fullTime = `${formatDate(message.createdAt)} ${formatTime(message.createdAt)}`;
+  return (
+    <div
+      className="system-message-divider"
+      role="status"
+      aria-live="polite"
+      title={fullTime}
+    >
+      <div className="system-message-divider__line" />
+      <span className="system-message-divider__label">{message.content}</span>
+      <div className="system-message-divider__line" />
+    </div>
+  );
+}
+
 export function MessageItem({
   message,
   currentUser,
@@ -162,6 +181,10 @@ export function MessageItem({
   const { setActiveTab, setCurrentAgent } = useStore();
   const agents = useAgents();
   const itemRef = useRef<HTMLDivElement>(null);
+
+  if (message.senderType === "system") {
+    return <SystemMessageItem message={message} />;
+  }
 
   // useEffect(() => {
   //   const el = itemRef.current

@@ -31,6 +31,7 @@ export interface AgentConfigState {
   name: string;
   display_name: string;
   description: string;
+  systemPrompt: string | null;
   runtime: string;
   model: string;
   reasoningEffort: string | null;

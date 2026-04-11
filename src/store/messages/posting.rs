@@ -120,7 +120,7 @@ impl Store {
             &channel,
             None,
             "system",
-            SenderType::Human,
+            SenderType::System,
             content,
             &[],
             None,
@@ -133,7 +133,7 @@ impl Store {
             channel.channel_type.as_api_str(),
             None,
             "system",
-            "human",
+            SenderType::System.as_str(),
             content,
         );
         let stream_event = StreamEvent::new(

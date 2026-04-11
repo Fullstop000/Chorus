@@ -2,159 +2,145 @@
 
 AI agent collaboration platform. Agents run as OS processes and communicate through a Slack-like chat interface.
 
-This file is the working contract for agents. Read it before making changes.
+---
+
+## Principles
+
+1. **Read before you write.** Read the file, the surrounding code, the existing tests. Never speculate about a bug without reading the relevant code first.
+2. **Fix root causes, not symptoms.** No silent fallbacks. Surface errors; the caller decides.
+3. **When in doubt, stop and ask.** The human has context you don't. Silent guessing is not an answer.
 
 ---
 
-## General Rules
+## Part I — Getting Started
 
-- Simplest working solution. No over-engineering.
-- No abstractions for single-use operations.
-- No speculative features or "you might also want..."
-- Read the file before modifying it. Never edit blind.
+```bash
+# Run
+cargo run -- serve --port 3001        # backend
+cd ui && npm run dev                   # frontend (proxies to :3001)
 
-| Rule                       | Example                                                              |
-| -------------------------- | -------------------------------------------------------------------- |
-| Names are documentation    | `isLoading` not `loading`; `hasPermission()` not `checkPermission()` |
-| Name for the reason, not the control | `isRuntimeAvailable` not `canSelectRuntime`              |
-| One word per concept       | Don't alternate fetch/get/retrieve/load                              |
-| Booleans read as questions | `isLoading`, `hasError`, `canSubmit`                                 |
-| No cryptic shortcuts       | `id`, `url`, `err` ok in narrow scopes only                          |
-| Functions do one thing     | Ideal: 5-15 lines. Nested conditionals > 2 levels = extract          |
-| Max 3 arguments            | Use options object: `createUser({ name, age, role })`                |
-| Return early               | Guard clauses > deep nesting                                         |
-| Pure functions preferred   | Isolate I/O, mutations, randomness at edges                          |
+# Test
+cargo test                             # all Rust tests
+cargo test --test e2e_tests            # e2e (message/agent flows)
+cd ui && npm run test                  # vitest (all frontend tests)
+cd ui && npx tsc --noEmit              # typecheck only
 
-**Structure:**
+# Build
+cargo build                            # backend
+cd ui && npm run build                 # frontend production build
+```
 
-- Organize by feature: `src/auth/`, `src/billing/` — not `src/models/`, `src/controllers/`
-- Files over ~300 lines = refactor signal. Over 500 lines = problem.
-- UI contains no SQL. Business logic contains no display strings.
-
-**State:**
-
-- Minimize mutable state. Prefer `const` over `let`.
-- Colocate state with consumers. No global state unless truly shared.
-- Make invalid states unrepresentable: `type Status = 'idle' | 'loading' | 'error'` not `{ isLoading: true, hasError: true }`
-
-**Error Handling:**
-
-- Fail fast and loudly. Never swallow exceptions.
-- Add context when re-throwing: `throw new Error(\`Failed to load user ${userId}: ${e.message}\`)`
-- Use typed errors, not `null` for failures.
-
-**Testing:**
-
-- Follow Arrange–Act–Assert (AAA).
-- Test behavior, not implementation.
-- One assertion per test (ideally).
-
-**Debugging:**
-
-- Never speculate about a bug without reading the relevant code first.
-- State what you found, where, and the fix. One pass.
-- If cause is unclear: say so. Do not guess.
-
-** Review **
-
-- State the bug. Show the fix. Stop.
-- No suggestions beyond the scope of the review.
-- No compliments on the code before or after the review.
-
-**Comments:**
-
-- Explain _why_, not _what_.
-- Outdated comments are worse than no comments.
-
-> **Meta-Principle:** Code is written once, read hundreds of times. Optimize for the next reader (often you, six months from now).
+Full setup, prerequisites, and dev workflow: `[docs/DEV.md](docs/DEV.md)`
 
 ---
 
-## Project Organization
+## Part II — Conventions
 
-**Backend:**
-| Path | Purpose |
-|------|---------|
-| `src/main.rs` | CLI entrypoint, `serve` bootstrap |
-| `src/lib.rs` | Crate-level module exports |
-| `src/agent/` | Agent lifecycle, process management, activity log, collaboration, workspace. Runtime drivers: `src/agent/drivers/` |
-| `src/bridge/` | MCP bridge, request/response formatting |
-| `src/server/` | Axum router assembly in `mod.rs`. Handlers grouped by domain under `src/server/handlers/` |
-| `src/store/` | SQLite persistence. Modules: `agents`, `channels`, `messages`, `tasks`, `teams` |
+How we write code. Read the relevant doc before touching that subsystem.
 
-**Frontend:**
-| Path | Purpose |
-|------|---------|
-| `ui/src/App.tsx` | Top-level shell |
-| `ui/src/api/` | Browser-to-server API (`index.ts`) |
-| `ui/src/store/` | Client app state (`index.tsx`, `uiStore.ts`) |
-| `ui/src/types/` | Re-exports only; domain types live in `*/types.ts` next to `chat/`, `channels/`, `agents/`, `tasks/`, `inbox/`, `transport/` |
-| `ui/src/inbox/` | Thread inbox + read-cursor state (`inbox.ts`, `index.ts`) |
-| `ui/src/lib/` | Shared helpers (`utils.ts`: `cn`, app `queryClient`) |
-| `ui/src/hooks/` | Reusable data-loading and interaction hooks |
-| `ui/src/transport/` | Realtime WebSocket client |
-| `ui/src/pages/` | Workspace shell (`MainPanel`, `TabBar`; `Sidebar/` includes `sidebarChannels` filter) |
-| `ui/src/components/` | Feature modules: `chat/`, `channels/`, `agents/` (includes `agents/profile/`, `agents/activity/`), `tasks/`, plus `ui/` (shadcn primitives) |
 
-## Project Conventions
+| Doc                                  | Covers                                                                      | Read before        |
+| ------------------------------------ | --------------------------------------------------------------------------- | ------------------ |
+| `[docs/BACKEND.md](docs/BACKEND.md)` | Rust — error handling, enums, logging, schema/views, tests, Axum handlers   | Any backend change |
+| `[docs/DESIGN.md](docs/DESIGN.md)`   | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change      |
 
-**UI:**
 
-- Component styles in co-located `.css` files
-- Design tokens in CSS variables in `App.css`
-- Icons: `lucide-react` (13px inline, 16px panel)
-- No global state mutations outside `ui/src/store/`
-- API calls through `ui/src/api/`
-- Do not introduce a second visual style for shared dialogs, forms, or selects
-- Do not separate labels from their focusable controls
-- Do not use the browser viewport for read visibility
+Cross-cutting rules (apply everywhere):
 
-**Logging:**
-
-- `RUST_LOG=chorus=debug` for verbose output
-- Use `tracing`; never `eprintln!` or `println!` in library code
+- **Match the neighborhood.** Enum-first types, SQL views for read models, mono chat content, zero-radius UI. Check existing patterns before inventing new ones.
+- **Make invalid states unrepresentable.** Enums over booleans. Typed errors over `null`. Required args over optional flags.
+- **Names are documentation.** `isLoading` not `loading`. One concept = one word.
+- **One thing, done well.** One function = one job. One file = one concept (300 lines = signal, 500 = problem).
+- **Fail loudly with context.** Never swallow exceptions. `anyhow!("channel not found: {name}")`. No silent retry logic.
+- **Explain why, not what.** Comments justify decisions the code cannot express.
+- **Verification matches risk.** Backend → `cargo test`. Data path → `cargo test --test e2e_tests`. UI → `/gstack-qa`.
 
 ---
 
-## Dev Workflow
+## Part III — Architecture
 
-**Branch Workflow:**
+Deep knowledge for modifying subsystems.
 
-1. Check worktree dirty before switching branches
-2. If local changes exist, ask user to commit/stash/move
-3. Start from up-to-date `main` based on `origin/main`
-4. Create branch with `{agent}/` prefix (`codex/`, `claude/`, `gemini/`, etc.)
-5. Don't carry unrelated changes into new branch
 
-**Commits:**
+| Doc                                  | Covers                                                        | Read when                   |
+| ------------------------------------ | ------------------------------------------------------------- | --------------------------- |
+| `[docs/INBOX.md](docs/INBOX.md)`     | Inbox delivery mechanism — how messages reach agents          | Modifying message delivery  |
+| `[docs/ACP.md](docs/ACP.md)`         | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver        |
+| `[docs/DRIVERS.md](docs/DRIVERS.md)` | Adding a new runtime driver or template type                  | Adding a new runtime        |
+| `[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)` | Decisions, bug postmortems, project facts, patterns      | Debugging non-obvious behavior, architecture choices |
 
-- Use conventional style with scope: `feat(settings):`, `fix(command):`, `refactor(config):`, `docs(agent):`, `ci:`
-
----
-
-## Verification Policy
-
-Do not claim complete without matching verification.
-
-**Minimum:**
-
-1. Run focused Rust tests for affected modules
-2. Run `cargo test --test e2e_tests` when backend message/task/DM/thread/agent flow affected
-3. For user-facing changes, run browser QA pass in `qa/README.md`
-
-**Escalation:**
-
-- Backend/data-path changes: Rust tests first
-- Core user process changes: headless-browser e2e testing mandatory
-- Core paths: channel messaging, DM flows, thread replies, task board, agent loops
-- Backend tests alone insufficient for user-visible changes
-- If headless-browser verification cannot run, state it clearly; don't claim fully verified
 
 ---
 
-## QA Workflow
+## Part IV — Chorus Workflows
 
-Authoritative workflow in `qa/README.md`. Case catalog and templates under `qa/`.
+All skills prefixed with `/gstack-` (`SKILL_PREFIX=true`).
+When a request matches a skill, ALWAYS invoke it using the Skill tool as the FIRST action.
+Do NOT answer directly or use other tools first.
+
+### Spec
+
+
+| Skill                     | When                                                        |
+| ------------------------- | ----------------------------------------------------------- |
+| `/gstack-office-hours`    | New feature idea, "is this worth building", problem framing |
+| `/gstack-plan-eng-review` | Architecture review before implementation                   |
+| `/gstack-plan-ceo-review` | Scope challenge, dream state mapping, expansion decisions   |
+
+
+### Develop
+
+
+| Skill                                     | When                                                            |
+| ----------------------------------------- | --------------------------------------------------------------- |
+| `superpowers:executing-plans`             | Implement a plan with review checkpoints                        |
+| `superpowers:subagent-driven-development` | Parallel implementation of independent tasks                    |
+| `/gstack-investigate`                     | Agent won't start, message not delivered, driver error, any bug |
+| `/gstack-review`                          | Code review, check my diff before shipping                      |
+| `/gstack-health`                          | Code quality dashboard, test coverage, dead code                |
+
+
+### Polish
+
+
+| Skill                         | When                                        |
+| ----------------------------- | ------------------------------------------- |
+| `/gstack-design-consultation` | Design system, brand, typography, color     |
+| `/gstack-design-review`       | Visual audit, spacing issues, design polish |
+
+
+### Ship
+
+
+| Skill          | When                                      |
+| -------------- | ----------------------------------------- |
+| `/gstack-ship` | Create PR, push, deploy                   |
+| `/gstack-qa`   | Test the live site, find bugs, verify fix |
+
+
+### Maintain
+
+
+| Skill                      | When                                   |
+| -------------------------- | -------------------------------------- |
+| `/gstack-document-release` | Update docs after shipping             |
+| `/gstack-retro`            | Weekly retro, what shipped, what broke |
+| `/gstack-checkpoint`       | Save progress, resume later            |
+| `/project-memory`          | Record a decision, bug postmortem, fact, or pattern |
+
+
+Browser: use `/gstack-browse`. Never use `mcp__claude-in-chrome__`* tools.
+Run `/gstack-upgrade` to update skill inventory.
+
+---
+
+## Rules for This File
+
+1. **Every rule earns its place by preventing a real problem.** No rule without an incident.
+2. **Adding a rule means deleting a weaker one.** Fixed budget. Growth is not progress.
+3. **Update in the same PR that made you wish it said something.**
+4. **Annual audit.** Read every rule, every doc pointer. Delete what's stale. If you didn't delete anything, you didn't audit.
+
 
 ---
 

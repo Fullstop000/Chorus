@@ -90,24 +90,24 @@ impl AgentManager {
 
         let driver = get_driver(&agent.runtime)?;
         // Raw Kimi driver requires a pre-generated session id (it uses
-        // stdin notifications, so supports_stdin_notification()=true).
+        // stdin notifications, so the server needs a session ID up front).
         // ACP drivers handle sessions internally via session/new|load.
-        let resumable_session_id =
-            if driver.runtime() == AgentRuntime::Kimi && driver.supports_stdin_notification() {
-                Some(
-                    agent
-                        .session_id
-                        .clone()
-                        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-                )
-            } else {
-                agent.session_id.clone()
-            };
+        let resumable_session_id = if driver.needs_pregenerated_session_id() {
+            Some(
+                agent
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+            )
+        } else {
+            agent.session_id.clone()
+        };
 
         let config = AgentConfig {
             name: agent.name.clone(),
             display_name: agent.display_name.clone(),
             description: agent.description.clone(),
+            system_prompt: agent.system_prompt.clone(),
             runtime: agent.runtime.clone(),
             model: agent.model.clone(),
             session_id: resumable_session_id,
@@ -1239,6 +1239,7 @@ mod tests {
             name: "bot1".to_string(),
             display_name: "Bot 1".to_string(),
             description: Some("Replies in Chorus".to_string()),
+            system_prompt: None,
             runtime: "codex".to_string(),
             model: "gpt-5.4-mini".to_string(),
             session_id: session_id.map(str::to_string),
