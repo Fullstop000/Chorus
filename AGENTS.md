@@ -67,6 +67,7 @@ Deep knowledge for modifying subsystems.
 | `[docs/INBOX.md](docs/INBOX.md)`     | Inbox delivery mechanism — how messages reach agents          | Modifying message delivery  |
 | `[docs/ACP.md](docs/ACP.md)`         | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver        |
 | `[docs/DRIVERS.md](docs/DRIVERS.md)` | Adding a new runtime driver or template type                  | Adding a new runtime        |
+| `[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)` | Decisions, bug postmortems, project facts, patterns      | Debugging non-obvious behavior, architecture choices |
 
 
 ---
@@ -125,6 +126,7 @@ Do NOT answer directly or use other tools first.
 | `/gstack-document-release` | Update docs after shipping             |
 | `/gstack-retro`            | Weekly retro, what shipped, what broke |
 | `/gstack-checkpoint`       | Save progress, resume later            |
+| `/project-memory`          | Record a decision, bug postmortem, fact, or pattern |
 
 
 Browser: use `/gstack-browse`. Never use `mcp__claude-in-chrome__`* tools.
