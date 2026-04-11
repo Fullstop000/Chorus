@@ -1,0 +1,320 @@
+/* ── Telescope: inline agent execution trace ── */
+
+.telescope {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-muted-foreground);
+  margin: 2px 0 4px;
+  overflow: visible;
+  display: inline-block;
+}
+
+/* When expanded, go full width for the rows */
+.telescope.expanded {
+  display: block;
+}
+
+/* ── Header (outer collapse/expand) ── */
+.tele-header {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 0;
+  cursor: pointer;
+  user-select: none;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+}
+
+/* Full-width header when expanded */
+.telescope.expanded .tele-header {
+  display: flex;
+  border: none;
+  border-radius: 0;
+  padding: 1px 0;
+}
+
+.tele-header:hover {
+  background: transparent;
+}
+
+.tele-header:hover .tele-summary {
+  color: var(--color-foreground);
+}
+
+.tele-dot {
+  display: none;
+}
+
+.tele-dot.active {
+  display: none;
+}
+
+.tele-dot.error {
+  display: none;
+}
+
+/* ASCII toggle indicator */
+.tele-toggle {
+  color: var(--color-muted-foreground);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.tele-summary {
+  color: var(--color-muted-foreground);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tele-chevron {
+  display: none;
+}
+
+.tele-chevron.expanded {
+  display: none;
+}
+
+/* ── Rows container ── */
+.tele-rows {
+  max-height: 300px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  border-left: 1px solid var(--color-border);
+  margin-left: 6px;
+  margin-top: 2px;
+  padding: 0 0 0 8px;
+}
+
+/* ── Per-row accordion ── */
+.tele-row + .tele-row {
+  border-top: none;
+}
+
+.tele-row-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 0;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tele-row-header.no-expand {
+  cursor: default;
+}
+
+.tele-row-header:not(.no-expand):hover .tele-row-label,
+.tele-row-header:not(.no-expand):hover .tele-tool-name,
+.tele-row-header:not(.no-expand):hover .tele-tool-detail {
+  color: var(--color-foreground);
+}
+
+.tele-bullet {
+  color: var(--color-muted-foreground);
+  flex-shrink: 0;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  width: auto;
+  text-align: left;
+  line-height: 1;
+}
+
+.tele-row-icon {
+  color: var(--color-muted-foreground);
+  flex-shrink: 0;
+}
+
+.tele-row-label {
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Tool row: name | content */
+.tele-tool-name {
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tele-pipe {
+  color: var(--color-border);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.tele-tool-detail {
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Per-row chevron — hidden, using text toggle */
+.tele-row-chevron {
+  display: none;
+}
+
+.tele-row-chevron.expanded {
+  display: none;
+}
+
+/* Expanded content area */
+.tele-row-content {
+  padding: 2px 0 4px 16px;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 1px solid var(--color-border);
+  margin-left: 0;
+}
+
+/* ── Loading state ── */
+.tele-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  color: var(--color-muted-foreground);
+}
+
+/* ── Typing dots indicator ── */
+.tele-typing-dots {
+  display: inline-flex;
+  gap: 0;
+  align-items: center;
+  margin-left: 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+.tele-typing-dots span {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  opacity: 0.3;
+  animation: tele-typing 1.2s ease-in-out infinite;
+}
+
+.tele-typing-dots span:nth-child(1) { animation-delay: 0s; }
+.tele-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.tele-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes tele-typing {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
+}
+
+/* ── Phase label (reading / thinking / responding) ── */
+.tele-phase {
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* ── Category chips ── */
+.tele-cats {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tele-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--color-muted-foreground);
+  position: relative;
+}
+
+.tele-cat[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  background: var(--color-foreground);
+  color: var(--color-primary-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+  z-index: 20;
+}
+
+.tele-cat[data-tip]:hover::after {
+  opacity: 1;
+}
+
+.tele-header:hover .tele-cat {
+  color: var(--color-foreground);
+}
+
+.tele-cat-n {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1;
+}
+
+.tele-dur {
+  color: var(--color-muted-foreground);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  opacity: 0.6;
+}
+
+/* ── Error state ── */
+.telescope.error {
+  border-color: #c0392b;
+}
+
+/* ── Pulse animation ── */
+@keyframes tele-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ── Completion flash ── */
+.telescope.completion-flash .tele-header {
+  animation: tele-flash 1.2s ease-out;
+}
+
+@keyframes tele-flash {
+  0% { background: rgba(31, 157, 77, 0.15); }
+  100% { background: transparent; }
+}

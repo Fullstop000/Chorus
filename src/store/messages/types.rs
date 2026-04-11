@@ -139,6 +139,12 @@ pub struct HistoryMessage {
     /// Set when this message was forwarded from another channel (e.g. via @team mention).
     #[serde(rename = "forwardedFrom", skip_serializing_if = "Option::is_none")]
     pub forwarded_from: Option<ForwardedFrom>,
+    /// Telescope trace run id linking to trace_events.
+    #[serde(rename = "runId", skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// JSON summary of the trace run for collapsed Telescope.
+    #[serde(rename = "traceSummary", skip_serializing_if = "Option::is_none")]
+    pub trace_summary: Option<String>,
 }
 
 /// Explicit read-model row for conversation history while `messages` remains
@@ -173,9 +179,11 @@ pub struct ConversationMessageView {
     pub reply_count: Option<i64>,
     /// Forward provenance when present.
     pub forwarded_from: Option<ForwardedFrom>,
+    /// Telescope trace run id.
+    pub run_id: Option<String>,
+    /// JSON trace summary for collapsed Telescope.
+    pub trace_summary: Option<String>,
 }
-
-/// Explicit read-model row for thread summary state projected from conversation
 /// messages while thread semantics remain conversation-local.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThreadSummaryView {
@@ -285,6 +293,8 @@ impl ConversationMessageView {
             attachments: Vec::new(),
             reply_count,
             forwarded_from: Store::parse_forwarded_from_raw(forwarded_from_raw.as_deref()),
+            run_id: row.get("run_id")?,
+            trace_summary: row.get("trace_summary")?,
         })
     }
 
@@ -300,6 +310,8 @@ impl ConversationMessageView {
             attachments: (!self.attachments.is_empty()).then(|| self.attachments.clone()),
             reply_count: self.reply_count,
             forwarded_from: self.forwarded_from.clone(),
+            run_id: self.run_id.clone(),
+            trace_summary: self.trace_summary.clone(),
         }
     }
 
@@ -326,6 +338,8 @@ impl ConversationMessageView {
             "seq": self.seq,
             "createdAt": self.created_at,
             "forwardedFrom": self.forwarded_from,
+            "runId": self.run_id,
+            "traceSummary": self.trace_summary,
         })
     }
 }

@@ -163,6 +163,28 @@ export function getAgentWorkspaceFile(agentName: string, path: string): Promise<
   return get(`/api/agents/${encodeURIComponent(agentName)}/workspace/file?path=${encodeURIComponent(path)}`)
 }
 
+// ── Agent runs (trace history) ──
+
+export interface AgentRunInfo {
+  messageId: string
+  runId: string
+  traceSummary: {
+    toolCalls: number
+    duration: number
+    status: 'completed' | 'error'
+    categories: Record<string, number>
+  }
+  createdAt: string
+}
+
+export interface AgentRunsResponse {
+  runs: AgentRunInfo[]
+}
+
+export function getAgentRuns(agentName: string): Promise<AgentRunsResponse> {
+  return get(`/api/agents/${encodeURIComponent(agentName)}/runs`)
+}
+
 // ── Transforms ──
 
 export function toAgentLabel(agent: AgentInfo): string {

@@ -1,10 +1,12 @@
-import React, { useRef } from "react";
+import React, { useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
-import { MessageSquare, Copy, Paperclip } from "lucide-react";
-import type { AgentInfo, HistoryMessage } from "../../data";
+import { MessageSquare, Copy, Paperclip, Loader } from "lucide-react";
+import type { AgentInfo, HistoryMessage, TraceSummary } from "../../data";
 import { attachmentUrl } from "../../data";
 import { useStore } from "../../store";
 import { useAgents } from "../../hooks/data";
+import { Telescope } from "./Telescope";
+import type { AgentTrace } from "../../store/traceStore";
 
 function replyLabel(n: number) {
   return n === 1 ? "1 reply" : `${n} replies`;
@@ -139,6 +141,11 @@ interface MessageItemProps {
   currentUser: string | null;
   prevMessage?: HistoryMessage;
   onReply?: (msg: HistoryMessage) => void;
+  traceData?: AgentTrace;
+  showTraceSummary?: boolean;
+  isRunActive?: boolean;
+  isTraceExpanded?: boolean;
+  onToggleTrace?: () => void;
 }
 
 export function MessageItem({
@@ -146,6 +153,11 @@ export function MessageItem({
   currentUser,
   prevMessage,
   onReply,
+  traceData,
+  showTraceSummary = true,
+  isRunActive = false,
+  isTraceExpanded,
+  onToggleTrace,
 }: MessageItemProps) {
   const { setActiveTab, setCurrentAgent } = useStore();
   const agents = useAgents();
@@ -177,6 +189,15 @@ export function MessageItem({
     setCurrentAgent(agent);
     setActiveTab("profile");
   };
+
+  const parsedSummary = useMemo<TraceSummary | undefined>(() => {
+    if (traceData || !message.traceSummary) return undefined;
+    try {
+      return JSON.parse(message.traceSummary);
+    } catch {
+      return undefined;
+    }
+  }, [traceData, message.traceSummary]);
 
   const isMe = message.senderName === currentUser;
   const initial = message.senderName[0]?.toUpperCase() ?? "?";
@@ -240,6 +261,33 @@ export function MessageItem({
             <span className="message-time">
               {formatDate(message.createdAt)} {formatTime(message.createdAt)}
             </span>
+          </div>
+        )}
+        {traceData && (
+          <Telescope
+            agentName={message.senderName}
+            runId={traceData.runId}
+            events={traceData.events}
+            isActive={traceData.isActive}
+            isError={traceData.isError}
+            isExpanded={isTraceExpanded}
+            onToggleExpand={onToggleTrace}
+          />
+        )}
+        {!traceData && parsedSummary && showTraceSummary && (
+          <Telescope
+            agentName={message.senderName}
+            runId={message.runId}
+            events={[]}
+            isActive={false}
+            isError={parsedSummary.status === "error"}
+            traceSummary={parsedSummary}
+          />
+        )}
+        {!traceData && !showTraceSummary && isRunActive && (
+          <div className="msg-run-active">
+            <Loader size={11} className="msg-run-active-spin" />
+            <span>run in progress</span>
           </div>
         )}
         <div className="message-content">

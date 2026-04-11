@@ -1,12 +1,14 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { MessageItem } from "./MessageItem";
+import { Telescope } from "./Telescope";
 import { NewMessageDivider } from "./NewMessageDivider";
 import { NewMessageBadge } from "./NewMessageBadge";
 import { useVisibilityTracking } from "../../hooks/useVisibilityTracking";
 import { updateReadCursor, historyQueryKeys } from "../../data";
 import type { HistoryMessage, HistoryResponse } from "../../data";
 import { useStore } from "../../store";
+import { useTraceStore } from "../../store/traceStore";
 import "./MessageList.css";
 import type { RefObject } from "react";
 
@@ -286,6 +288,49 @@ export function MessageList({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
+  // ── Telescope: determine which messages show an agent trace ──
+  const traces = useTraceStore((s) => s.traces);
+  const expandedAgents = useTraceStore((s) => s.expandedAgents);
+  const toggleExpanded = useTraceStore((s) => s.toggleExpanded);
+
+  // Map: agentName:runId → message id with that runId (for exact binding)
+  // Map: agentName → last message id (fallback for inactive traces with no runId match)
+  // Map: runId → first message id (only first message per run shows static telescope)
+  const { agentRunIdMsgId, agentLastMsgId, firstMsgIdPerRun } = useMemo(() => {
+    const agentRunIdMsgId = new Map<string, string>();
+    const agentLastMsgId = new Map<string, string>();
+    const firstMsgIdPerRun = new Map<string, string>();
+    for (const msg of messages) {
+      if (msg.senderType === "agent") {
+        agentLastMsgId.set(msg.senderName, msg.id);
+        if (msg.runId) {
+          agentRunIdMsgId.set(`${msg.senderName}:${msg.runId}`, msg.id);
+          if (!firstMsgIdPerRun.has(msg.runId)) {
+            firstMsgIdPerRun.set(msg.runId, msg.id);
+          }
+        }
+      }
+    }
+    return { agentRunIdMsgId, agentLastMsgId, firstMsgIdPerRun };
+  }, [messages]);
+
+  // Collect active run IDs from live traces
+  const activeRunIds = new Set<string>();
+  for (const trace of Object.values(traces)) {
+    if (trace.isActive && trace.runId) activeRunIds.add(trace.runId);
+  }
+
+  // Compute orphaned traces: active traces whose runId has no matching message.
+  // These are rendered at the bottom as "agent working" indicators.
+  const orphanedTraces: Array<[string, (typeof traces)[string]]> = [];
+  for (const [agentName, trace] of Object.entries(traces)) {
+    if (!trace.isActive) continue;
+    const matchKey = `${agentName}:${trace.runId}`;
+    if (!agentRunIdMsgId.has(matchKey)) {
+      orphanedTraces.push([agentName, trace]);
+    }
+  }
+
   return (
     <div
       className={`message-list${scrollMode === "inherit" ? " message-list--inherit" : ""}`}
@@ -297,23 +342,72 @@ export function MessageList({
       {!loading && messages.length === 0 && (
         <div className="message-list-empty">{emptyLabel}</div>
       )}
-      {messages.map((msg, i) => (
-        <div
-          key={msg.id}
-          ref={(el) => {
-            if (el) messageRowRefs.current.set(msg.id, el);
-            else messageRowRefs.current.delete(msg.id);
-          }}
-        >
+      {messages.map((msg, i) => {
+        // Bind trace to message:
+        // 1. Exact runId match on the LAST message for this run → telescope tracks latest message
+        // 2. Inactive trace with no runId match → fallback to last message by agent
+        // 3. Active trace with no match → shown as orphaned at bottom, not here
+        let agentTrace: (typeof traces)[string] | undefined;
+        if (msg.senderType === "agent") {
+          const trace = traces[msg.senderName];
+          if (trace) {
+            const matchKey = `${msg.senderName}:${trace.runId}`;
+            if (
+              msg.runId &&
+              msg.runId === trace.runId &&
+              agentRunIdMsgId.get(matchKey) === msg.id
+            ) {
+              agentTrace = trace;
+            } else if (
+              !trace.isActive &&
+              !agentRunIdMsgId.has(matchKey) &&
+              agentLastMsgId.get(msg.senderName) === msg.id
+            ) {
+              agentTrace = trace;
+            }
+          }
+        }
+        return (
           <div
-            ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
-          />
-          {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
-          <MessageItem
-            message={msg}
-            currentUser={currentUser}
-            prevMessage={messages[i - 1]}
-            onReply={onReply}
+            key={msg.id}
+            ref={(el) => {
+              if (el) messageRowRefs.current.set(msg.id, el);
+              else messageRowRefs.current.delete(msg.id);
+            }}
+          >
+            <div
+              ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
+            />
+            {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
+            <MessageItem
+              message={msg}
+              currentUser={currentUser}
+              prevMessage={messages[i - 1]}
+              onReply={onReply}
+              traceData={agentTrace}
+              showTraceSummary={
+                !msg.runId || firstMsgIdPerRun.get(msg.runId) === msg.id
+              }
+              isRunActive={
+                !!msg.runId && activeRunIds.has(msg.runId)
+              }
+              isTraceExpanded={expandedAgents[msg.senderName] ?? true}
+              onToggleTrace={() => toggleExpanded(msg.senderName)}
+            />
+          </div>
+        );
+      })}
+      {orphanedTraces.map(([agentName, trace]) => (
+        <div key={`pending-${agentName}`} className="pending-trace-wrapper">
+          <span className="pending-trace-agent">{agentName}</span>
+          <Telescope
+            agentName={agentName}
+            runId={trace.runId}
+            events={trace.events as never[]}
+            isActive={trace.isActive}
+            isError={trace.isError}
+            isExpanded={expandedAgents[agentName] ?? true}
+            onToggleExpand={() => toggleExpanded(agentName)}
           />
         </div>
       ))}

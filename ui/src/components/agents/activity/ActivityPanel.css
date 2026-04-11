@@ -40,6 +40,25 @@
   font-family: var(--font-mono);
 }
 
+.activity-compare-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+}
+
+.activity-compare-btn:hover {
+  color: var(--color-foreground);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
 .activity-status-detail {
   opacity: 0.65;
 }

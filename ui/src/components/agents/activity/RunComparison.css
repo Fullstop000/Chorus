@@ -1,0 +1,336 @@
+/* Run Comparison — side-by-side trace diff */
+
+.rc-container {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 18px 18px;
+}
+
+/* ── Selector ── */
+
+.rc-selector {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.rc-selector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+}
+
+.rc-selector-title {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-muted-foreground);
+}
+
+.rc-compare-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+  color: var(--color-foreground);
+  cursor: pointer;
+}
+
+.rc-compare-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.rc-compare-btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+}
+
+.rc-loading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 20px;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  justify-content: center;
+}
+
+.rc-spinner {
+  animation: rc-spin 1s linear infinite;
+}
+
+@keyframes rc-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.rc-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-muted-foreground);
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+
+.rc-run-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.rc-run-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  border: 1px solid var(--color-border);
+  background: rgba(255, 255, 255, 0.74);
+  cursor: pointer;
+}
+
+.rc-run-item:hover {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.rc-run-item.selected {
+  border-color: var(--color-accent-foreground);
+  background: color-mix(in srgb, var(--color-accent) 8%, white);
+}
+
+.rc-run-item input[type="checkbox"] {
+  flex-shrink: 0;
+}
+
+.rc-run-time {
+  flex: 1;
+  color: var(--color-foreground);
+}
+
+.rc-run-status {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.rc-status-completed { color: var(--status-online); }
+.rc-status-error { color: var(--color-destructive); }
+
+.rc-run-tools {
+  color: var(--color-muted-foreground);
+  white-space: nowrap;
+}
+
+.rc-run-cats {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;  position: relative;
+}
+
+.rc-run-cat[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 7px;
+  background: var(--color-foreground);
+  color: var(--color-primary-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms ease;
+  z-index: 10;
+}
+
+.rc-run-cat[data-tip]:hover::after {
+  opacity: 1;}
+
+.rc-run-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-muted-foreground);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
+.rc-run-dur {
+  color: var(--color-muted-foreground);
+  white-space: nowrap;
+  min-width: 30px;
+  text-align: right;
+}
+
+/* ── Comparison view ── */
+
+.rc-comparison {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  overflow: hidden;
+}
+
+.rc-comparison-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+}
+
+.rc-back-btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  background: none;
+  border: none;
+  padding: 2px 6px;
+}
+
+.rc-back-btn:hover {
+  color: var(--color-foreground);
+}
+
+.rc-comparison-title {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--color-muted-foreground);
+}
+
+.rc-columns-header {
+  display: grid;
+  grid-template-columns: 1fr 60px 1fr;
+  gap: 2px;
+  padding: 4px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+}
+
+.rc-col-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rc-col-diff-label {
+  text-align: center;
+}
+
+.rc-rows {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.rc-row {
+  display: grid;
+  grid-template-columns: 1fr 60px 1fr;
+  gap: 2px;
+  font-size: 11px;
+  font-family: var(--font-mono);
+  line-height: 1.5;
+}
+
+.rc-cell {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 50%, transparent);
+  background: rgba(255, 255, 255, 0.74);
+  min-width: 0;
+}
+
+.rc-cell-empty {
+  background: color-mix(in srgb, var(--color-muted) 20%, transparent);
+  border-style: dashed;
+}
+
+.rc-cell-icon {
+  flex-shrink: 0;
+  color: var(--color-muted-foreground);
+}
+
+.rc-cell-tool {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-foreground);
+}
+
+.rc-cell-dur {
+  margin-left: auto;
+  color: var(--color-muted-foreground);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.rc-cell-added {
+  color: #27ae60;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.rc-diff {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 4px 2px;
+}
+
+.rc-diff-faster { color: #27ae60; }
+.rc-diff-slower { color: #c0392b; }
+.rc-diff-same { color: var(--color-muted-foreground); }
+.rc-diff-removed { color: #c0392b; font-size: 14px; }
+.rc-diff-added { color: #27ae60; font-size: 14px; }
+
+.rc-summary-bar {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+}

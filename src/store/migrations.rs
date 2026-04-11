@@ -6,6 +6,23 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_drop_legacy_event_tables(conn)?;
     migrate_remove_legacy_shared_memory_channel(conn)?;
     migrate_inbox_read_state(conn)?;
+    migrate_add_run_id_to_messages(conn)?;
+    migrate_add_trace_summary_to_messages(conn)?;
+    migrate_create_trace_events_table(conn)?;
+    Ok(())
+}
+
+/// Add run_id column to messages for Telescope trace correlation.
+fn migrate_add_run_id_to_messages(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "run_id");
+    if !has_column {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN run_id TEXT")?;
+        tracing::info!("migration: added run_id column to messages");
+    }
     Ok(())
 }
 
@@ -131,6 +148,37 @@ pub(super) fn migrate_inbox_read_state(conn: &Connection) -> Result<()> {
             )
          FROM channel_members cm",
         [],
+    )?;
+    Ok(())
+}
+
+/// Add trace_summary column to messages for collapsed Telescope rendering.
+fn migrate_add_trace_summary_to_messages(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "trace_summary");
+    if !has_column {
+        conn.execute_batch("ALTER TABLE messages ADD COLUMN trace_summary TEXT")?;
+        tracing::info!("migration: added trace_summary column to messages");
+    }
+    Ok(())
+}
+
+/// Create the trace_events table for Telescope trace persistence.
+fn migrate_create_trace_events_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS trace_events (
+            id INTEGER PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            timestamp_ms INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            data TEXT NOT NULL,
+            UNIQUE(run_id, seq)
+        );
+        CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq);",
     )?;
     Ok(())
 }

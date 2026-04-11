@@ -31,6 +31,8 @@ export interface HistoryMessage {
   attachments?: AttachmentRef[]
   replyCount?: number
   forwardedFrom?: ForwardedFrom
+  runId?: string
+  traceSummary?: string
 }
 
 export interface HistoryResponse {
@@ -56,6 +58,8 @@ export interface MessageCreatedPayload {
   attachments: unknown[]
   seq: number
   createdAt: string
+  runId?: string | null
+  traceSummary?: string | null
 }
 
 export interface StreamEvent {
@@ -123,6 +127,27 @@ export function uploadFile(file: File): Promise<UploadResponse> {
 
 export function attachmentUrl(id: string): string {
   return `/api/attachments/${id}`
+}
+
+// ── Trace types ──
+
+export interface TraceSummary {
+  toolCalls: number
+  duration: number
+  status: 'completed' | 'error'
+  categories: Record<string, number>
+}
+
+export interface TraceEventRecord {
+  runId: string
+  seq: number
+  timestampMs: number
+  kind: string
+  data: Record<string, string>
+}
+
+export function getTraceEvents(runId: string): Promise<{ events: TraceEventRecord[] }> {
+  return get(`/api/traces/${encodeURIComponent(runId)}`)
 }
 
 export interface ReadCursorResponse {

@@ -5,12 +5,14 @@ use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use tokio::sync::broadcast;
 use tokio::sync::Mutex;
 use tracing::{error, info, trace, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::config::AgentConfig;
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
+use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
 use crate::store::agents::AgentStatus;
@@ -26,11 +28,14 @@ struct RunningAgent {
     last_tool_raw_name: Option<String>,
     /// Accumulated thinking chunks, flushed to log/activity on the next non-Thinking event.
     pending_thinking: String,
+    /// Accumulated text output chunks, flushed as a single trace event on the next non-Text event.
+    pending_text: String,
 }
 
 pub struct AgentManager {
     agents: Arc<Mutex<HashMap<String, RunningAgent>>>,
     activity_logs: Arc<ActivityLogMap>,
+    trace_store: Arc<AgentTraceStore>,
     store: Arc<Store>,
     data_dir: PathBuf,
     bridge_binary: String,
@@ -55,6 +60,7 @@ impl AgentManager {
         Self {
             agents: Arc::new(Mutex::new(HashMap::new())),
             activity_logs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            trace_store: Arc::new(AgentTraceStore::new()),
             store,
             data_dir,
             bridge_binary,
@@ -179,6 +185,7 @@ impl AgentManager {
                     pending_notification_count: 0,
                     last_tool_raw_name: None,
                     pending_thinking: String::new(),
+                    pending_text: String::new(),
                 },
             );
         }
@@ -213,6 +220,22 @@ impl AgentManager {
                 None => return Ok(()),
             }
         };
+        // Emit synthetic error trace if the agent had an active run.
+        if let Some(run_id) = self.trace_store.active_run_id(agent_name) {
+            let seq = self.trace_store.next_seq(agent_name);
+            let ch = self.trace_store.run_channel_id(agent_name);
+            let event = trace::build_trace_event(
+                run_id,
+                agent_name,
+                ch,
+                seq,
+                TraceEventKind::Error {
+                    message: "Agent restarted".to_string(),
+                },
+            );
+            let _ = self.store.trace_sender().send(event);
+            self.trace_store.end_run(agent_name);
+        }
         let _ = running.process.kill();
         self.store
             .update_agent_status(agent_name, AgentStatus::Inactive)?;
@@ -269,6 +292,8 @@ impl AgentManager {
         let count = running.pending_notification_count;
 
         let agents_ref = self.agents.clone();
+        let trace_store = self.trace_store.clone();
+        let trace_tx = self.store.trace_sender();
         let name = agent_name.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -284,6 +309,18 @@ impl AgentManager {
                     None => return,
                 };
                 running.pending_notification_count = 0;
+
+                // Emit a Reading trace event so the frontend shows "reading…"
+                let (run_id, _) = trace_store.ensure_run(&name);
+                let seq = trace_store.next_seq(&name);
+                let ch = trace_store.run_channel_id(&name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    &name,
+                    ch,
+                    seq,
+                    TraceEventKind::Reading,
+                ));
 
                 let plural = if current_count > 1 { "s" } else { "" };
                 let them = if current_count > 1 { "them" } else { "it" };
@@ -326,6 +363,8 @@ impl AgentManager {
         let agents = self.agents.clone();
         let activity_logs = self.activity_logs.clone();
         let store = self.store.clone();
+        let trace_store = self.trace_store.clone();
+        let trace_tx = store.trace_sender();
         let name = agent_name.clone();
 
         tokio::task::spawn_blocking(move || {
@@ -362,8 +401,17 @@ impl AgentManager {
                 for event in driver.parse_line(&line) {
                     let rt = tokio::runtime::Handle::current();
                     rt.block_on(async {
-                        handle_parsed_event(&agents, &activity_logs, &store, &name, event, &driver)
-                            .await;
+                        handle_parsed_event(
+                            &agents,
+                            &activity_logs,
+                            &trace_store,
+                            &trace_tx,
+                            &store,
+                            &name,
+                            event,
+                            &driver,
+                        )
+                        .await;
                     });
                 }
             }
@@ -382,6 +430,23 @@ impl AgentManager {
 
                 info!(agent = %name, "stdout reader ended — checking exit status");
                 activity_log::set_activity_state(&activity_logs, &name, "offline", "Process stopped");
+
+                // Emit synthetic error trace if the agent had an active run.
+                if let Some(run_id) = trace_store.active_run_id(&name) {
+                    let seq = trace_store.next_seq(&name);
+                    let ch = trace_store.run_channel_id(&name);
+                    let event = trace::build_trace_event(
+                        run_id,
+                        &name,
+                        ch,
+                        seq,
+                        TraceEventKind::Error {
+                            message: "Agent process exited unexpectedly".to_string(),
+                        },
+                    );
+                    let _ = trace_tx.send(event);
+                    trace_store.end_run(&name);
+                }
 
                 if let Some(mut running) = agents_map.remove(&name) {
                     match running.process.wait() {
@@ -435,9 +500,12 @@ impl AgentManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_parsed_event(
     agents: &Arc<Mutex<HashMap<String, RunningAgent>>>,
     logs: &Arc<ActivityLogMap>,
+    trace_store: &Arc<AgentTraceStore>,
+    trace_tx: &broadcast::Sender<TraceEvent>,
     store: &Arc<Store>,
     agent_name: &str,
     event: ParsedEvent,
@@ -463,8 +531,38 @@ async fn handle_parsed_event(
         activity_log::push_activity(
             logs,
             agent_name,
-            ActivityEntry::Thinking { text: full_thought },
+            ActivityEntry::Thinking {
+                text: full_thought.clone(),
+            },
         );
+        // Emit trace event for accumulated thinking block.
+        let (run_id, _) = trace_store.ensure_run(agent_name);
+        let seq = trace_store.next_seq(agent_name);
+        let ch = trace_store.run_channel_id(agent_name);
+        let _ = trace_tx.send(trace::build_trace_event(
+            run_id,
+            agent_name,
+            ch,
+            seq,
+            TraceEventKind::Thinking { text: full_thought },
+        ));
+    }
+
+    // Flush accumulated text output when a non-Text event arrives.
+    let is_text_event = matches!(event, ParsedEvent::Text { .. });
+    if !is_text_event && !running.pending_text.is_empty() {
+        let full_text = std::mem::take(&mut running.pending_text);
+        // Use ensure_run so text-only turns (no prior Thinking/ToolCall) are traced.
+        let (run_id, _) = trace_store.ensure_run(agent_name);
+        let seq = trace_store.next_seq(agent_name);
+        let ch = trace_store.run_channel_id(agent_name);
+        let _ = trace_tx.send(trace::build_trace_event(
+            run_id,
+            agent_name,
+            ch,
+            seq,
+            TraceEventKind::Text { text: full_text },
+        ));
     }
 
     match event {
@@ -478,6 +576,19 @@ async fn handle_parsed_event(
             let pending = running.pending_notification_count;
             if pending > 0 && running.driver.supports_stdin_notification() {
                 running.pending_notification_count = 0;
+
+                // Emit a Reading trace event so the frontend shows "reading…"
+                let (run_id, _) = trace_store.ensure_run(agent_name);
+                let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    agent_name,
+                    ch,
+                    seq,
+                    TraceEventKind::Reading,
+                ));
+
                 let plural = if pending > 1 { "s" } else { "" };
                 let them = if pending > 1 { "them" } else { "it" };
                 let check_tool = format!("{}check_messages", running.driver.mcp_tool_prefix());
@@ -505,6 +616,8 @@ async fn handle_parsed_event(
                 agent_name,
                 ActivityEntry::Text { text: text.clone() },
             );
+            // Accumulate text chunks; flushed as a single trace event on next non-Text event.
+            running.pending_text.push_str(text);
         }
         ParsedEvent::ToolCall {
             ref name,
@@ -523,14 +636,70 @@ async fn handle_parsed_event(
                 agent_name,
                 ActivityEntry::ToolCall {
                     tool_name: name.clone(),
-                    tool_input,
+                    tool_input: tool_input.clone(),
                 },
             );
             activity_log::set_activity_state(logs, agent_name, "working", &display_name);
+            // Emit trace event for tool call.
+            let (run_id, _) = trace_store.ensure_run(agent_name);
+            let seq = trace_store.next_seq(agent_name);
+            let ch = trace_store.run_channel_id(agent_name);
+            let _ = trace_tx.send(trace::build_trace_event(
+                run_id,
+                agent_name,
+                ch,
+                seq,
+                TraceEventKind::ToolCall {
+                    tool_name: name.clone(),
+                    tool_input,
+                },
+            ));
+        }
+        ParsedEvent::ToolCallUpdate { ref input } => {
+            // Deferred tool-call input from ACP `tool_call_update` with `rawInput`.
+            let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
+            let tool_input = driver.summarize_tool_input(&tool_name, input);
+            if !tool_input.is_empty() {
+                info!(agent = %agent_name, tool = %tool_name, input = %tool_input, "tool call input update");
+                activity_log::update_tool_call_input(logs, agent_name, tool_input.clone());
+                // Emit a corrected trace event so the frontend has the real input.
+                let (run_id, _) = trace_store.ensure_run(agent_name);
+                let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    agent_name,
+                    ch,
+                    seq,
+                    TraceEventKind::ToolCall {
+                        tool_name,
+                        tool_input,
+                    },
+                ));
+            }
         }
         ParsedEvent::ToolResult { ref content } => {
             let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
-            activity_log::upsert_tool_result_activity(logs, agent_name, tool_name, content.clone());
+            activity_log::upsert_tool_result_activity(
+                logs,
+                agent_name,
+                tool_name.clone(),
+                content.clone(),
+            );
+            // Emit trace event for tool result.
+            let (run_id, _) = trace_store.ensure_run(agent_name);
+            let seq = trace_store.next_seq(agent_name);
+            let ch = trace_store.run_channel_id(agent_name);
+            let _ = trace_tx.send(trace::build_trace_event(
+                run_id,
+                agent_name,
+                ch,
+                seq,
+                TraceEventKind::ToolResult {
+                    tool_name,
+                    content: content.clone(),
+                },
+            ));
         }
         ParsedEvent::TurnEnd { session_id } => {
             info!(agent = %agent_name, "turn ended");
@@ -538,10 +707,38 @@ async fn handle_parsed_event(
                 running.session_id = Some(sid.clone());
                 let _ = store.update_agent_session(agent_name, Some(sid));
             }
+            // Emit trace TurnEnd before ending the run.
+            if let Some(run_id) = trace_store.active_run_id(agent_name) {
+                let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    agent_name,
+                    ch,
+                    seq,
+                    TraceEventKind::TurnEnd,
+                ));
+                trace_store.end_run(agent_name);
+            }
             activity_log::set_activity_state(logs, agent_name, "online", "Idle");
         }
         ParsedEvent::Error { ref message } => {
             error!(agent = %agent_name, message = %message, backtrace = %project_backtrace(), "agent error");
+            // Emit trace error and end the run.
+            if let Some(run_id) = trace_store.active_run_id(agent_name) {
+                let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    agent_name,
+                    ch,
+                    seq,
+                    TraceEventKind::Error {
+                        message: message.clone(),
+                    },
+                ));
+                trace_store.end_run(agent_name);
+            }
             activity_log::set_activity_state(logs, agent_name, "error", message);
         }
         ParsedEvent::WriteStdin { ref data } => {
@@ -589,6 +786,14 @@ impl AgentLifecycle for AgentManager {
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         activity_log::all_activity_states(&self.activity_logs)
+    }
+
+    fn active_run_id(&self, agent_name: &str) -> Option<String> {
+        self.trace_store.active_run_id(agent_name)
+    }
+
+    fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
+        self.trace_store.set_run_channel(agent_name, channel_id);
     }
 }
 
@@ -821,7 +1026,14 @@ mod tests {
             pending_notification_count: 0,
             last_tool_raw_name: None,
             pending_thinking: String::new(),
+            pending_text: String::new(),
         }
+    }
+
+    fn make_test_trace() -> (Arc<AgentTraceStore>, broadcast::Sender<TraceEvent>) {
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _) = broadcast::channel(64);
+        (trace_store, trace_tx)
     }
 
     #[tokio::test]
@@ -832,6 +1044,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new()));
         let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+        let (trace_store, trace_tx) = make_test_trace();
 
         agents
             .lock()
@@ -843,6 +1056,8 @@ mod tests {
             handle_parsed_event(
                 &agents,
                 &logs,
+                &trace_store,
+                &trace_tx,
                 &store,
                 "bot1",
                 ParsedEvent::Thinking {
@@ -866,6 +1081,8 @@ mod tests {
         handle_parsed_event(
             &agents,
             &logs,
+            &trace_store,
+            &trace_tx,
             &store,
             "bot1",
             ParsedEvent::TurnEnd { session_id: None },
@@ -905,6 +1122,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new()));
         let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+        let (trace_store, trace_tx) = make_test_trace();
 
         agents
             .lock()
@@ -915,6 +1133,8 @@ mod tests {
             handle_parsed_event(
                 &agents,
                 &logs,
+                &trace_store,
+                &trace_tx,
                 &store,
                 "bot1",
                 ParsedEvent::Text {
@@ -958,6 +1178,7 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new()));
         let logs: Arc<ActivityLogMap> = Arc::new(std::sync::Mutex::new(HashMap::new()));
         let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+        let (trace_store, trace_tx) = make_test_trace();
 
         agents
             .lock()
@@ -969,6 +1190,8 @@ mod tests {
             handle_parsed_event(
                 &agents,
                 &logs,
+                &trace_store,
+                &trace_tx,
                 &store,
                 "bot1",
                 ParsedEvent::Thinking {
@@ -981,6 +1204,8 @@ mod tests {
         handle_parsed_event(
             &agents,
             &logs,
+            &trace_store,
+            &trace_tx,
             &store,
             "bot1",
             ParsedEvent::ToolCall {
@@ -1148,6 +1373,7 @@ mod tests {
                     pending_notification_count: 0,
                     last_tool_raw_name: None,
                     pending_thinking: String::new(),
+                    pending_text: String::new(),
                 },
             );
         }
@@ -1177,6 +1403,7 @@ mod tests {
                     pending_notification_count: 0,
                     last_tool_raw_name: None,
                     pending_thinking: String::new(),
+                    pending_text: String::new(),
                 },
             );
         }
