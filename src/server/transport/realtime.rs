@@ -125,18 +125,23 @@ async fn forward_stream_event(
     .await
 }
 
-/// Forward a trace event to the viewer if they share a channel with the agent.
+/// Forward a trace event to the viewer if they are a member of the run's channel.
 async fn forward_trace_event(
     socket: &mut WebSocket,
     store: &Store,
     viewer: &str,
     event: &TraceEvent,
 ) -> anyhow::Result<()> {
-    // Check if the viewer shares any channel with this agent.
-    let agent_channels = store.agent_channel_ids(&event.agent_name)?;
-    let is_visible = agent_channels
-        .iter()
-        .any(|ch_id| store.channel_member_exists(ch_id, viewer).unwrap_or(false));
+    let is_visible = match event.channel_id {
+        Some(ref ch_id) => store.channel_member_exists(ch_id, viewer).unwrap_or(false),
+        // No channel context yet — fall back to checking all agent channels.
+        None => {
+            let agent_channels = store.agent_channel_ids(&event.agent_name)?;
+            agent_channels
+                .iter()
+                .any(|ch_id| store.channel_member_exists(ch_id, viewer).unwrap_or(false))
+        }
+    };
     if !is_visible {
         return Ok(());
     }

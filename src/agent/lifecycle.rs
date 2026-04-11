@@ -35,6 +35,9 @@ pub trait AgentLifecycle: Send + Sync {
     fn active_run_id(&self, _agent_name: &str) -> Option<String> {
         None
     }
+
+    /// Associate a channel with the agent's current or next trace run.
+    fn set_run_channel(&self, _agent_name: &str, _channel_id: &str) {}
 }
 
 pub(crate) struct NoopAgentLifecycle;

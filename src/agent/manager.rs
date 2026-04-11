@@ -223,9 +223,11 @@ impl AgentManager {
         // Emit synthetic error trace if the agent had an active run.
         if let Some(run_id) = self.trace_store.active_run_id(agent_name) {
             let seq = self.trace_store.next_seq(agent_name);
+            let ch = self.trace_store.run_channel_id(agent_name);
             let event = trace::build_trace_event(
                 run_id,
                 agent_name,
+                ch,
                 seq,
                 TraceEventKind::Error {
                     message: "Agent restarted".to_string(),
@@ -311,9 +313,11 @@ impl AgentManager {
                 // Emit a Reading trace event so the frontend shows "reading…"
                 let (run_id, _) = trace_store.ensure_run(&name);
                 let seq = trace_store.next_seq(&name);
+                let ch = trace_store.run_channel_id(&name);
                 let _ = trace_tx.send(trace::build_trace_event(
                     run_id,
                     &name,
+                    ch,
                     seq,
                     TraceEventKind::Reading,
                 ));
@@ -430,9 +434,11 @@ impl AgentManager {
                 // Emit synthetic error trace if the agent had an active run.
                 if let Some(run_id) = trace_store.active_run_id(&name) {
                     let seq = trace_store.next_seq(&name);
+                    let ch = trace_store.run_channel_id(&name);
                     let event = trace::build_trace_event(
                         run_id,
                         &name,
+                        ch,
                         seq,
                         TraceEventKind::Error {
                             message: "Agent process exited unexpectedly".to_string(),
@@ -531,9 +537,11 @@ async fn handle_parsed_event(
         // Emit trace event for accumulated thinking block.
         let (run_id, _) = trace_store.ensure_run(agent_name);
         let seq = trace_store.next_seq(agent_name);
+        let ch = trace_store.run_channel_id(agent_name);
         let _ = trace_tx.send(trace::build_trace_event(
             run_id,
             agent_name,
+            ch,
             seq,
             TraceEventKind::Thinking { text: full_thought },
         ));
@@ -546,9 +554,11 @@ async fn handle_parsed_event(
         // Emit a single combined trace event for the complete text output.
         if let Some(run_id) = trace_store.active_run_id(agent_name) {
             let seq = trace_store.next_seq(agent_name);
+            let ch = trace_store.run_channel_id(agent_name);
             let _ = trace_tx.send(trace::build_trace_event(
                 run_id,
                 agent_name,
+                ch,
                 seq,
                 TraceEventKind::Text { text: full_text },
             ));
@@ -570,9 +580,11 @@ async fn handle_parsed_event(
                 // Emit a Reading trace event so the frontend shows "reading…"
                 let (run_id, _) = trace_store.ensure_run(agent_name);
                 let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
                 let _ = trace_tx.send(trace::build_trace_event(
                     run_id,
                     agent_name,
+                    ch,
                     seq,
                     TraceEventKind::Reading,
                 ));
@@ -631,9 +643,11 @@ async fn handle_parsed_event(
             // Emit trace event for tool call.
             let (run_id, _) = trace_store.ensure_run(agent_name);
             let seq = trace_store.next_seq(agent_name);
+            let ch = trace_store.run_channel_id(agent_name);
             let _ = trace_tx.send(trace::build_trace_event(
                 run_id,
                 agent_name,
+                ch,
                 seq,
                 TraceEventKind::ToolCall {
                     tool_name: name.clone(),
@@ -651,9 +665,11 @@ async fn handle_parsed_event(
                 // Emit a corrected trace event so the frontend has the real input.
                 let (run_id, _) = trace_store.ensure_run(agent_name);
                 let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
                 let _ = trace_tx.send(trace::build_trace_event(
                     run_id,
                     agent_name,
+                    ch,
                     seq,
                     TraceEventKind::ToolCall {
                         tool_name,
@@ -673,9 +689,11 @@ async fn handle_parsed_event(
             // Emit trace event for tool result.
             let (run_id, _) = trace_store.ensure_run(agent_name);
             let seq = trace_store.next_seq(agent_name);
+            let ch = trace_store.run_channel_id(agent_name);
             let _ = trace_tx.send(trace::build_trace_event(
                 run_id,
                 agent_name,
+                ch,
                 seq,
                 TraceEventKind::ToolResult {
                     tool_name,
@@ -692,9 +710,11 @@ async fn handle_parsed_event(
             // Emit trace TurnEnd before ending the run.
             if let Some(run_id) = trace_store.active_run_id(agent_name) {
                 let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
                 let _ = trace_tx.send(trace::build_trace_event(
                     run_id,
                     agent_name,
+                    ch,
                     seq,
                     TraceEventKind::TurnEnd,
                 ));
@@ -707,9 +727,11 @@ async fn handle_parsed_event(
             // Emit trace error and end the run.
             if let Some(run_id) = trace_store.active_run_id(agent_name) {
                 let seq = trace_store.next_seq(agent_name);
+                let ch = trace_store.run_channel_id(agent_name);
                 let _ = trace_tx.send(trace::build_trace_event(
                     run_id,
                     agent_name,
+                    ch,
                     seq,
                     TraceEventKind::Error {
                         message: message.clone(),
@@ -768,6 +790,10 @@ impl AgentLifecycle for AgentManager {
 
     fn active_run_id(&self, agent_name: &str) -> Option<String> {
         self.trace_store.active_run_id(agent_name)
+    }
+
+    fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
+        self.trace_store.set_run_channel(agent_name, channel_id);
     }
 }
 

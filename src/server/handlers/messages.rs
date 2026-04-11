@@ -440,12 +440,7 @@ async fn send_message_to_channel(
         })
         .map_err(|e| api_err(e.to_string()))?;
 
-    let short_id = if message_id.len() >= 8 {
-        &message_id[..8]
-    } else {
-        &message_id
-    };
-    info!(agent = %actor_id, msg = %short_id, "send_message ok");
+    info!(agent = %actor_id, msg = %message_id, content=%content, "send_message ok");
 
     if !suppress_agent_delivery {
         forward_team_mentions(state, &channel.name, actor_id, sender_type, content)
@@ -842,6 +837,8 @@ pub(crate) async fn deliver_message_to_agents(
         let Some(agent) = state.store.get_agent(&recipient_name)? else {
             continue;
         };
+        // Associate the channel with the agent's trace run before notifying/starting.
+        state.lifecycle.set_run_channel(&recipient_name, channel_id);
         match agent.status {
             AgentStatus::Active => state.lifecycle.notify_agent(&recipient_name).await?,
             AgentStatus::Sleeping | AgentStatus::Inactive => {
@@ -869,6 +866,27 @@ pub async fn handle_trace_events(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
 ) -> ApiResult<TraceEventsResponse> {
+    let viewer = public_viewer_name();
+    // Check that the viewer is a member of the channel this run belongs to.
+    let run_channel_id = state
+        .store
+        .get_run_channel_id(&run_id)
+        .map_err(|e| internal_err(e.to_string()))?;
+    match run_channel_id {
+        Some(ch_id) => {
+            if !state
+                .store
+                .channel_member_exists(&ch_id, &viewer)
+                .map_err(|e| internal_err(e.to_string()))?
+            {
+                return Err(api_err("not a member of the channel for this run"));
+            }
+        }
+        None => {
+            return Err(api_err("run not found"));
+        }
+    }
+
     let events = state
         .store
         .get_trace_events(&run_id)
@@ -887,9 +905,10 @@ pub async fn handle_agent_runs(
     State(state): State<AppState>,
     Path(agent_name): Path<String>,
 ) -> ApiResult<AgentRunsResponse> {
+    let viewer = public_viewer_name();
     let runs = state
         .store
-        .get_agent_runs(&agent_name, 20)
+        .get_agent_runs(&agent_name, &viewer, 20)
         .map_err(|e| internal_err(e.to_string()))?;
     Ok(Json(AgentRunsResponse { runs }))
 }

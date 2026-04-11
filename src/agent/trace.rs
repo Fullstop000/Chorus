@@ -38,6 +38,7 @@ pub enum TraceEventKind {
 pub struct TraceEvent {
     pub run_id: RunId,
     pub agent_name: String,
+    pub channel_id: Option<String>,
     pub seq: u64,
     pub timestamp_ms: u64,
     #[serde(flatten)]
@@ -47,6 +48,7 @@ pub struct TraceEvent {
 /// Per-agent run tracking state.
 struct AgentRunState {
     active_run: Option<RunId>,
+    channel_id: Option<String>,
     next_seq: AtomicU64,
 }
 
@@ -54,6 +56,7 @@ impl AgentRunState {
     fn new() -> Self {
         Self {
             active_run: None,
+            channel_id: None,
             next_seq: AtomicU64::new(0),
         }
     }
@@ -71,6 +74,7 @@ impl AgentRunState {
 
     fn end_run(&mut self) {
         self.active_run = None;
+        self.channel_id = None;
     }
 }
 
@@ -99,6 +103,21 @@ impl AgentTraceStore {
                 (run_id, true)
             }
         }
+    }
+
+    /// Set the channel_id for the agent's current or next run.
+    pub fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
+        let mut agents = self.agents.lock().unwrap();
+        let state = agents
+            .entry(agent_name.to_string())
+            .or_insert_with(AgentRunState::new);
+        state.channel_id = Some(channel_id.to_string());
+    }
+
+    /// Get the channel_id for the agent's current run, if set.
+    pub fn run_channel_id(&self, agent_name: &str) -> Option<String> {
+        let agents = self.agents.lock().unwrap();
+        agents.get(agent_name).and_then(|s| s.channel_id.clone())
     }
 
     /// Get the next sequence number for the agent's current run.
@@ -133,12 +152,14 @@ fn now_ms() -> u64 {
 pub fn build_trace_event(
     run_id: RunId,
     agent_name: &str,
+    channel_id: Option<String>,
     seq: u64,
     kind: TraceEventKind,
 ) -> TraceEvent {
     TraceEvent {
         run_id,
         agent_name: agent_name.to_string(),
+        channel_id,
         seq,
         timestamp_ms: now_ms(),
         kind,

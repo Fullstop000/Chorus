@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::broadcast;
 
 use crate::utils::{derive_data_dir, parse_datetime};
@@ -130,6 +130,16 @@ impl Store {
         self.data_dir.join("chorus.db")
     }
 
+    /// Look up the channel_id for a given run_id (from the first message in that run).
+    pub fn get_run_channel_id(&self, run_id: &str) -> Result<Option<String>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare("SELECT channel_id FROM messages WHERE run_id = ?1 LIMIT 1")?;
+        let result = stmt
+            .query_row(params![run_id], |row| row.get(0))
+            .optional()?;
+        Ok(result)
+    }
+
     /// Retrieve ordered trace events for a given run_id.
     pub fn get_trace_events(&self, run_id: &str) -> Result<Vec<serde_json::Value>> {
         let conn = self.lock_conn();
@@ -156,17 +166,23 @@ impl Store {
         Ok(events)
     }
 
-    /// List recent runs for an agent (messages with run_id and trace_summary).
-    pub fn get_agent_runs(&self, agent_name: &str, limit: usize) -> Result<Vec<serde_json::Value>> {
+    /// List recent runs for an agent, filtered to channels the viewer is a member of.
+    pub fn get_agent_runs(
+        &self,
+        agent_name: &str,
+        viewer: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
         let conn = self.lock_conn();
         let mut stmt = conn.prepare(
-            "SELECT id, run_id, trace_summary, created_at FROM messages
-             WHERE sender_name = ?1 AND run_id IS NOT NULL AND trace_summary IS NOT NULL
-             GROUP BY run_id
-             ORDER BY created_at DESC LIMIT ?2",
+            "SELECT m.id, m.run_id, m.trace_summary, m.created_at FROM messages m
+             JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.member_name = ?2
+             WHERE m.sender_name = ?1 AND m.run_id IS NOT NULL AND m.trace_summary IS NOT NULL
+             GROUP BY m.run_id
+             ORDER BY m.created_at DESC LIMIT ?3",
         )?;
         let runs: Vec<serde_json::Value> = stmt
-            .query_map(params![agent_name, limit as i64], |row| {
+            .query_map(params![agent_name, viewer, limit as i64], |row| {
                 let id: String = row.get(0)?;
                 let run_id: String = row.get(1)?;
                 let summary: String = row.get(2)?;
