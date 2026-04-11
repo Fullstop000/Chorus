@@ -5,6 +5,7 @@ that subsystem. Update it in the same PR when you introduce a new pattern.
 
 | File | Covers | When to read |
 |---|---|---|
+| `general.md` | Cross-cutting rules — naming, structure, errors, verification, doc governance, completion checklist | Before any change |
 | `backend.md` | Rust conventions — error handling, enum-first types, logging, schema/views read model, test layout, Axum handlers | Before any backend change |
 | `design.md` | Frontend visual language — tokens, typography, component families, interaction states, motion, accessibility | Before any UI change |
 
