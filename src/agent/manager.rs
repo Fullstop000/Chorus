@@ -500,6 +500,7 @@ impl AgentManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_parsed_event(
     agents: &Arc<Mutex<HashMap<String, RunningAgent>>>,
     logs: &Arc<ActivityLogMap>,
