@@ -1,6 +1,6 @@
 import React, { useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
-import { MessageSquare, Copy, Paperclip } from "lucide-react";
+import { MessageSquare, Copy, Paperclip, Loader } from "lucide-react";
 import type { AgentInfo, HistoryMessage, TraceSummary } from "../../data";
 import { attachmentUrl } from "../../data";
 import { useStore } from "../../store";
@@ -142,6 +142,8 @@ interface MessageItemProps {
   prevMessage?: HistoryMessage;
   onReply?: (msg: HistoryMessage) => void;
   traceData?: AgentTrace;
+  showTraceSummary?: boolean;
+  isRunActive?: boolean;
   isTraceExpanded?: boolean;
   onToggleTrace?: () => void;
 }
@@ -152,6 +154,8 @@ export function MessageItem({
   prevMessage,
   onReply,
   traceData,
+  showTraceSummary = true,
+  isRunActive = false,
   isTraceExpanded,
   onToggleTrace,
 }: MessageItemProps) {
@@ -270,7 +274,7 @@ export function MessageItem({
             onToggleExpand={onToggleTrace}
           />
         )}
-        {!traceData && parsedSummary && (
+        {!traceData && parsedSummary && showTraceSummary && (
           <Telescope
             agentName={message.senderName}
             runId={message.runId}
@@ -279,6 +283,12 @@ export function MessageItem({
             isError={parsedSummary.status === "error"}
             traceSummary={parsedSummary}
           />
+        )}
+        {!traceData && !showTraceSummary && isRunActive && (
+          <div className="msg-run-active">
+            <Loader size={11} className="msg-run-active-spin" />
+            <span>run in progress</span>
+          </div>
         )}
         <div className="message-content">
           {renderContent(message.content, agents, handleSelectAgent)}

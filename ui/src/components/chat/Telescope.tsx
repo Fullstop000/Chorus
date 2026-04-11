@@ -1,5 +1,9 @@
 import { useRef, useEffect, useState, useCallback } from "react";
-import { classifyTool, iconForCategory } from "../../lib/toolCategories";
+import {
+  classifyTool,
+  iconForCategory,
+  labelForCategory,
+} from "../../lib/toolCategories";
 import { getTraceEvents } from "../../data/chat";
 import { useTraceStore } from "../../store/traceStore";
 import type { TraceSummary, TraceEventRecord } from "../../data/chat";
@@ -79,9 +83,11 @@ function CategoryChips({
   return (
     <span className="tele-cats">
       {entries.map(([cat, n]) => {
-        const Icon = iconForCategory(cat) as React.ComponentType<{ size: number }>;
+        const Icon = iconForCategory(cat) as React.ComponentType<{
+          size: number;
+        }>;
         return (
-          <span key={cat} className="tele-cat">
+          <span key={cat} className="tele-cat" data-tip={labelForCategory(cat)}>
             <Icon size={10} />
             <span className="tele-cat-n">{n}</span>
           </span>
@@ -345,7 +351,10 @@ export function Telescope({
       >
         <div className="tele-header" onClick={handleHistToggle}>
           <span className="tele-toggle">{histExpanded ? "▾" : "▸"}</span>
-          <CategoryChips categories={traceSummary.categories} duration={traceSummary.duration} />
+          <CategoryChips
+            categories={traceSummary.categories}
+            duration={traceSummary.duration}
+          />
         </div>
         {histExpanded && (
           <div className="tele-rows" ref={rowsRef}>
@@ -402,9 +411,11 @@ export function Telescope({
     <div className={wrapperClass}>
       <div className="tele-header" onClick={onToggleExpand}>
         <span className="tele-toggle">{isExpanded ? "▾" : "▸"}</span>
-        {phaseText(events, isActive)
-          ? <span className="tele-phase">{phaseText(events, isActive)}</span>
-          : <CategoryChips categories={deriveCategories(events)} />}
+        {phaseText(events, isActive) ? (
+          <span className="tele-phase">{phaseText(events, isActive)}</span>
+        ) : (
+          <CategoryChips categories={deriveCategories(events)} />
+        )}
       </div>
       {isExpanded && (
         <div className="tele-rows" ref={rowsRef}>

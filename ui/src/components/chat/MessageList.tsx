@@ -295,15 +295,26 @@ export function MessageList({
 
   // Map: agentName:runId → message id with that runId (for exact binding)
   // Map: agentName → last message id (fallback for inactive traces with no runId match)
+  // Map: runId → first message id (only first message per run shows static telescope)
   const agentRunIdMsgId = new Map<string, string>();
   const agentLastMsgId = new Map<string, string>();
+  const firstMsgIdPerRun = new Map<string, string>();
   for (const msg of messages) {
     if (msg.senderType === "agent") {
       agentLastMsgId.set(msg.senderName, msg.id);
       if (msg.runId) {
         agentRunIdMsgId.set(`${msg.senderName}:${msg.runId}`, msg.id);
+        if (!firstMsgIdPerRun.has(msg.runId)) {
+          firstMsgIdPerRun.set(msg.runId, msg.id);
+        }
       }
     }
+  }
+
+  // Collect active run IDs from live traces
+  const activeRunIds = new Set<string>();
+  for (const trace of Object.values(traces)) {
+    if (trace.isActive && trace.runId) activeRunIds.add(trace.runId);
   }
 
   // Compute orphaned traces: active traces whose runId has no matching message.
@@ -371,6 +382,12 @@ export function MessageList({
               prevMessage={messages[i - 1]}
               onReply={onReply}
               traceData={agentTrace}
+              showTraceSummary={
+                !msg.runId || firstMsgIdPerRun.get(msg.runId) === msg.id
+              }
+              isRunActive={
+                !!msg.runId && activeRunIds.has(msg.runId)
+              }
               isTraceExpanded={expandedAgents[msg.senderName] ?? true}
               onToggleTrace={() => toggleExpanded(msg.senderName)}
             />

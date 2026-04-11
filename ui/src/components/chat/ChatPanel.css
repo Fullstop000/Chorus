@@ -353,6 +353,29 @@
   text-decoration: underline;
 }
 
+/* ── Run-active indicator for non-first messages in an active run ── */
+.msg-run-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  margin-bottom: 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--status-thinking);
+}
+
+.msg-run-active-spin {
+  animation: msg-run-spin 0.9s linear infinite;
+}
+
+@keyframes msg-run-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 .message-group {
   position: relative;
 }

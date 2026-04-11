@@ -39,3 +39,16 @@ export function classifyTool(toolName: string): { category: ToolCategory; icon: 
 export function iconForCategory(category: string): LucideIcon {
   return rules.find(r => r.category === category)?.icon ?? Wrench
 }
+
+const categoryLabels: Record<string, string> = {
+  file: 'File operations',
+  search: 'Search',
+  terminal: 'Terminal commands',
+  net: 'Network requests',
+  compute: 'Compute',
+  other: 'Other tools',
+}
+
+export function labelForCategory(category: string): string {
+  return categoryLabels[category] ?? category
+}
