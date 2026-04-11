@@ -969,7 +969,9 @@ mod tests {
         let events = d.parse_line(r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCallUpdate","toolCallId":"call-1","rawInput":{"file_path":"/tmp/test.txt"},"content":"File written successfully","status":"completed"}}}"##);
         assert_eq!(events.len(), 2);
         assert!(matches!(&events[0], ParsedEvent::ToolCallUpdate { .. }));
-        assert!(matches!(&events[1], ParsedEvent::ToolResult { content } if content == "File written successfully"));
+        assert!(
+            matches!(&events[1], ParsedEvent::ToolResult { content } if content == "File written successfully")
+        );
     }
 
     #[test]

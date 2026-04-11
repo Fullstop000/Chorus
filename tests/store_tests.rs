@@ -284,7 +284,7 @@ fn test_message_history_pagination() {
                 content: &format!("msg {i}"),
                 attachment_ids: &[],
                 suppress_event: false,
-            run_id: None,
+                run_id: None,
             })
             .unwrap();
     }
