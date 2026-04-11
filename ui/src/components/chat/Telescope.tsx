@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, useCallback } from "react";
+import { classifyTool, iconForCategory } from "../../lib/toolCategories";
 import { getTraceEvents } from "../../data/chat";
 import { useTraceStore } from "../../store/traceStore";
 import type { TraceSummary, TraceEventRecord } from "../../data/chat";
@@ -49,30 +50,55 @@ function derivePhase(events: TraceEvent[]): AgentPhase {
   return "reading";
 }
 
-function summaryText(events: TraceEvent[], isActive: boolean): string {
-  const toolCalls = events.filter(
-    (e) => e.kind === "tool_call" || e.kind === "tool_done",
-  ).length;
-  if (isActive) {
-    const phase = derivePhase(events);
-    if (phase === "reading") return "reading…";
-    if (phase === "thinking") return "thinking…";
-    if (phase === "responding") return "responding…";
-    return toolCalls === 1 ? "1 tool call" : `${toolCalls} tool calls`;
+// ── Tool category chips ──
+
+function deriveCategories(events: TraceEvent[]): Record<string, number> {
+  const cats: Record<string, number> = {};
+  for (const e of events) {
+    if (e.kind === "tool_call" || e.kind === "tool_done") {
+      const name = getToolName(e.data);
+      const { category } = classifyTool(name);
+      cats[category] = (cats[category] ?? 0) + 1;
+    }
   }
-  if (toolCalls === 0) return "no tool calls";
-  return toolCalls === 1 ? "1 tool call" : `${toolCalls} tool calls`;
+  return cats;
 }
 
-function historySummaryText(ts: TraceSummary): string {
-  const n = ts.toolCalls;
-  const label =
-    n === 0 ? "no tool calls" : n === 1 ? "1 tool call" : `${n} tool calls`;
-  if (ts.duration > 0) {
-    const sec = Math.round(ts.duration / 1000);
-    return sec > 0 ? `${label} · ${sec}s` : label;
+function CategoryChips({
+  categories,
+  duration,
+}: {
+  categories: Record<string, number>;
+  duration?: number;
+}) {
+  const entries = Object.entries(categories).filter(([, n]) => n > 0);
+  const durSec = duration && duration > 0 ? Math.round(duration / 1000) : 0;
+  if (entries.length === 0) {
+    return <span className="tele-phase">no tools</span>;
   }
-  return label;
+  return (
+    <span className="tele-cats">
+      {entries.map(([cat, n]) => {
+        const Icon = iconForCategory(cat) as React.ComponentType<{ size: number }>;
+        return (
+          <span key={cat} className="tele-cat">
+            <Icon size={10} />
+            <span className="tele-cat-n">{n}</span>
+          </span>
+        );
+      })}
+      {durSec > 0 && <span className="tele-dur">· {durSec}s</span>}
+    </span>
+  );
+}
+
+function phaseText(events: TraceEvent[], isActive: boolean): string | null {
+  if (!isActive) return null;
+  const phase = derivePhase(events);
+  if (phase === "reading") return "reading…";
+  if (phase === "thinking") return "thinking…";
+  if (phase === "responding") return "responding…";
+  return null;
 }
 
 function findLastIdx<T>(arr: T[], pred: (v: T) => boolean): number {
@@ -319,9 +345,7 @@ export function Telescope({
       >
         <div className="tele-header" onClick={handleHistToggle}>
           <span className="tele-toggle">{histExpanded ? "▾" : "▸"}</span>
-          <span className="tele-summary">
-            {historySummaryText(traceSummary)}
-          </span>
+          <CategoryChips categories={traceSummary.categories} duration={traceSummary.duration} />
         </div>
         {histExpanded && (
           <div className="tele-rows" ref={rowsRef}>
@@ -357,7 +381,7 @@ export function Telescope({
       <div className="telescope">
         <div className="tele-header">
           <span className="tele-toggle">▸</span>
-          <span className="tele-summary">
+          <span className="tele-phase">
             {phase === "thinking" ? "thinking" : "reading"}
           </span>
           <span className="tele-typing-dots">
@@ -378,7 +402,9 @@ export function Telescope({
     <div className={wrapperClass}>
       <div className="tele-header" onClick={onToggleExpand}>
         <span className="tele-toggle">{isExpanded ? "▾" : "▸"}</span>
-        <span className="tele-summary">{summaryText(events, isActive)}</span>
+        {phaseText(events, isActive)
+          ? <span className="tele-phase">{phaseText(events, isActive)}</span>
+          : <CategoryChips categories={deriveCategories(events)} />}
       </div>
       {isExpanded && (
         <div className="tele-rows" ref={rowsRef}>

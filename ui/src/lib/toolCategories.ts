@@ -35,3 +35,7 @@ export function classifyTool(toolName: string): { category: ToolCategory; icon: 
   }
   return defaultResult
 }
+
+export function iconForCategory(category: string): LucideIcon {
+  return rules.find(r => r.category === category)?.icon ?? Wrench
+}

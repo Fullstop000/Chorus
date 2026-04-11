@@ -126,6 +126,21 @@
   color: var(--color-muted-foreground);
 }
 
+.ta-run-cats {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ta-run-cat {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-muted-foreground);
+  font-size: 10px;
+  font-family: var(--font-mono);
+}
+
 /* ── Detail panel ── */
 
 .ta-detail {

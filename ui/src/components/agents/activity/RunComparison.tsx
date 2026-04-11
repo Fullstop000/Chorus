@@ -2,11 +2,31 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 import { GitCompare, Loader2 } from "lucide-react";
 import { getAgentRuns, getTraceEvents } from "../../../data";
 import type { AgentRunInfo, TraceEventRecord } from "../../../data";
-import { classifyTool } from "../../../lib/toolCategories";
+import { classifyTool, iconForCategory } from "../../../lib/toolCategories";
 import "./RunComparison.css";
 
 interface Props {
   agentName: string;
+}
+
+// ── Category chips ──
+
+function CategoryChips({ categories }: { categories: Record<string, number> }) {
+  const entries = Object.entries(categories).filter(([, n]) => n > 0);
+  if (entries.length === 0) return <span className="rc-run-tools">0 tools</span>;
+  return (
+    <span className="rc-run-tools rc-run-cats">
+      {entries.map(([cat, n]) => {
+        const Icon = iconForCategory(cat) as React.ComponentType<{ size: number }>;
+        return (
+          <span key={cat} className="rc-run-cat">
+            <Icon size={10} />
+            <span>{n}</span>
+          </span>
+        );
+      })}
+    </span>
+  );
 }
 
 // ── Matching algorithm ──
@@ -170,7 +190,7 @@ function RunSelector({
               <span className={`rc-run-status rc-status-${ts.status}`}>
                 {ts.status}
               </span>
-              <span className="rc-run-tools">{ts.toolCalls} tools</span>
+              <CategoryChips categories={ts.categories} />
               <span className="rc-run-dur">{dur}</span>
             </label>
           );
@@ -294,14 +314,8 @@ function ComparisonView({
         })}
       </div>
       <div className="rc-summary-bar">
-        <span>
-          Left: {leftRun.traceSummary.toolCalls} tools,{" "}
-          {Math.round(leftRun.traceSummary.duration / 1000)}s
-        </span>
-        <span>
-          Right: {rightRun.traceSummary.toolCalls} tools,{" "}
-          {Math.round(rightRun.traceSummary.duration / 1000)}s
-        </span>
+        <span>Left: <CategoryChips categories={leftRun.traceSummary.categories} /> {Math.round(leftRun.traceSummary.duration / 1000)}s</span>
+        <span>Right: <CategoryChips categories={rightRun.traceSummary.categories} /> {Math.round(rightRun.traceSummary.duration / 1000)}s</span>
       </div>
     </div>
   );

@@ -26,6 +26,7 @@ import {
 import { useTraceStore } from "../../../store/traceStore";
 import { getTraceEvents } from "../../../data/chat";
 import { getAgentRuns } from "../../../data/agents";
+import { iconForCategory } from "../../../lib/toolCategories";
 import type { TraceEventRecord } from "../../../data/chat";
 import type { AgentRunInfo } from "../../../data/agents";
 import type { TraceFrame } from "../../../transport/types";
@@ -442,6 +443,26 @@ function coalesceFrames<
   return result;
 }
 
+// ── Category chips ──
+
+function CategoryChips({ categories }: { categories: Record<string, number> }) {
+  const entries = Object.entries(categories).filter(([, n]) => n > 0);
+  if (entries.length === 0) return <span className="ta-run-tools">0 tools</span>;
+  return (
+    <span className="ta-run-tools ta-run-cats">
+      {entries.map(([cat, n]) => {
+        const Icon = iconForCategory(cat) as React.ComponentType<{ size: number }>;
+        return (
+          <span key={cat} className="ta-run-cat">
+            <Icon size={10} />
+            <span>{n}</span>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 // ── Runs list sidebar item ──
 
 function RunItem({
@@ -476,7 +497,7 @@ function RunItem({
         </span>
       </div>
       <div className="ta-run-bottom">
-        <span className="ta-run-tools">{ts.toolCalls} tools</span>
+        <CategoryChips categories={ts.categories} />
         <span className="ta-run-dur">{dur}</span>
       </div>
     </button>
