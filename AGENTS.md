@@ -28,6 +28,28 @@ Two-hop lookup: this table → category README → file.
 
 ---
 
+## Quick Reference
+
+```bash
+# Run
+cargo run -- serve --port 3001        # backend
+cd ui && npm run dev                   # frontend (proxies to :3001)
+
+# Test
+cargo test                             # all Rust tests
+cargo test --test e2e_tests            # e2e (message/agent flows)
+cd ui && npm run test                  # vitest (all frontend tests)
+cd ui && npx tsc --noEmit              # typecheck only
+
+# Build
+cargo build                            # backend
+cd ui && npm run build                 # frontend production build
+```
+
+Full setup details: `docs/operations/development.md`.
+
+---
+
 ## Chorus Workflows
 
 All skills prefixed with `/gstack-` (`SKILL_PREFIX=true`).
@@ -42,10 +64,12 @@ Do NOT answer directly or use other tools first. The skill has specialized workf
 | `/gstack-plan-eng-review` | Architecture review before implementation |
 | `/gstack-plan-ceo-review` | Scope challenge, dream state mapping, expansion decisions |
 
-### Build
+### Develop
 
 | Skill | When |
 |-------|------|
+| `superpowers:executing-plans` | Implement a plan with review checkpoints |
+| `superpowers:subagent-driven-development` | Parallel implementation of independent tasks |
 | `/gstack-investigate` | Agent won't start, message not delivered, driver error, any bug |
 | `/gstack-review` | Code review, check my diff before shipping |
 | `/gstack-health` | Code quality dashboard, test coverage, dead code |
