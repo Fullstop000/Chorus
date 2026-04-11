@@ -40,6 +40,7 @@ export function LaunchTrio({ allTemplates, onLaunched }: Props) {
       if (res.errors && res.errors.length > 0) {
         const failedNames = res.errors.map(e => e.template_id).join(', ')
         setError(`Some agents failed to create: ${failedNames}`)
+        return
       }
       onLaunched(res.channel_id)
     } catch (e) {
