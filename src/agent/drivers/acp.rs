@@ -259,6 +259,7 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 let name = strip_mcp_prefix(raw_name).to_string();
                 let input = update
                     .get("args")
+                    .or_else(|| update.get("rawInput"))
                     .or_else(|| update.get("input"))
                     .cloned()
                     .unwrap_or(serde_json::Value::Null);
@@ -266,6 +267,24 @@ impl<R: AcpRuntime> AcpDriver<R> {
                 vec![ParsedEvent::ToolCall { name, input }]
             }
             "toolCallUpdate" | "tool_call_update" => {
+                // Check for deferred tool input (rawInput) delivered in this update.
+                // ACP runtimes send `tool_call` with empty args initially, then
+                // deliver the real input via `rawInput` in a subsequent update.
+                let mut events = Vec::new();
+                if let Some(raw_input) = update.get("rawInput").or_else(|| update.get("args")) {
+                    if !raw_input.is_null()
+                        && *raw_input != serde_json::Value::Object(Default::default())
+                    {
+                        trace!(
+                            agent = self.runtime_impl.runtime().as_str(),
+                            kind,
+                            "acp tool call input update"
+                        );
+                        events.push(ParsedEvent::ToolCallUpdate {
+                            input: raw_input.clone(),
+                        });
+                    }
+                }
                 let content = update
                     .get("content")
                     .and_then(|v| v.as_str())
@@ -297,18 +316,14 @@ impl<R: AcpRuntime> AcpDriver<R> {
                             })
                             .collect::<Vec<_>>()
                             .join("\n");
-                        if text.is_empty() {
-                            vec![]
-                        } else {
+                        if !text.is_empty() {
                             trace!(
                                 agent = self.runtime_impl.runtime().as_str(),
                                 kind,
                                 "acp tool result (structured)"
                             );
-                            vec![ParsedEvent::ToolResult { content: text }]
+                            events.push(ParsedEvent::ToolResult { content: text });
                         }
-                    } else {
-                        vec![]
                     }
                 } else {
                     trace!(
@@ -316,8 +331,9 @@ impl<R: AcpRuntime> AcpDriver<R> {
                         kind,
                         "acp tool result"
                     );
-                    vec![ParsedEvent::ToolResult { content }]
+                    events.push(ParsedEvent::ToolResult { content });
                 }
+                events
             }
             // ACP-defined update kinds that Chorus doesn't act on.
             // user_message_chunk: echo of the user's prompt being streamed back.
@@ -908,6 +924,52 @@ mod tests {
         assert!(
             matches!(&events[0], ParsedEvent::ToolResult { content } if content == "Message sent successfully")
         );
+    }
+
+    #[test]
+    fn parse_line_tool_call_with_raw_input() {
+        let d = make_test_driver();
+        d.parse_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        d.parse_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#);
+
+        // Some runtimes send rawInput instead of args in the initial tool_call
+        let events = d.parse_line(r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCall","toolCallId":"call-1","toolName":"mcp__chat__send_message","rawInput":{"target":"#general","content":"hello"},"status":"pending"}}}"##);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::ToolCall { name, .. } if name == "send_message"));
+        if let ParsedEvent::ToolCall { input, .. } = &events[0] {
+            assert_eq!(input["target"], "#general");
+            assert_eq!(input["content"], "hello");
+        }
+    }
+
+    #[test]
+    fn parse_line_tool_call_update_with_raw_input() {
+        let d = make_test_driver();
+        d.parse_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        d.parse_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#);
+
+        // ACP runtimes send tool_call with empty args, then deliver the real
+        // input via rawInput in a subsequent tool_call_update.
+        let events = d.parse_line(r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCallUpdate","toolCallId":"call-1","rawInput":{"target":"#all","content":"deferred args"}}}}"##);
+        assert_eq!(events.len(), 1);
+        assert!(matches!(&events[0], ParsedEvent::ToolCallUpdate { .. }));
+        if let ParsedEvent::ToolCallUpdate { input } = &events[0] {
+            assert_eq!(input["target"], "#all");
+            assert_eq!(input["content"], "deferred args");
+        }
+    }
+
+    #[test]
+    fn parse_line_tool_call_update_with_raw_input_and_content() {
+        let d = make_test_driver();
+        d.parse_line(r#"{"jsonrpc":"2.0","id":1,"result":{}}"#);
+        d.parse_line(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"s1"}}"#);
+
+        // A tool_call_update can carry both rawInput and content (result).
+        let events = d.parse_line(r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCallUpdate","toolCallId":"call-1","rawInput":{"file_path":"/tmp/test.txt"},"content":"File written successfully","status":"completed"}}}"##);
+        assert_eq!(events.len(), 2);
+        assert!(matches!(&events[0], ParsedEvent::ToolCallUpdate { .. }));
+        assert!(matches!(&events[1], ParsedEvent::ToolResult { content } if content == "File written successfully"));
     }
 
     #[test]

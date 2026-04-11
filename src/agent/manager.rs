@@ -528,6 +528,14 @@ async fn handle_parsed_event(
             );
             activity_log::set_activity_state(logs, agent_name, "working", &display_name);
         }
+        ParsedEvent::ToolCallUpdate { ref input } => {
+            let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
+            let tool_input = driver.summarize_tool_input(&tool_name, input);
+            if !tool_input.is_empty() {
+                info!(agent = %agent_name, tool = %tool_name, input = %tool_input, "tool call input update");
+                activity_log::update_tool_call_input(logs, agent_name, tool_input);
+            }
+        }
         ParsedEvent::ToolResult { ref content } => {
             let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
             activity_log::upsert_tool_result_activity(logs, agent_name, tool_name, content.clone());

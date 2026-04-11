@@ -93,6 +93,25 @@ impl AgentActivityLog {
         self.push(ActivityEntry::ToolResult { tool_name, content });
     }
 
+    /// Update the most recent `ToolCall` entry's input in-place.
+    /// Called when ACP runtimes deliver the real args in a deferred `tool_call_update`.
+    pub fn update_last_tool_call_input(&mut self, new_input: String) {
+        for entry in self.entries.iter_mut().rev() {
+            if let ActivityEntry::ToolCall {
+                tool_input: ref mut existing_input,
+                ..
+            } = entry.entry
+            {
+                *existing_input = new_input;
+                entry.timestamp_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                return;
+            }
+        }
+    }
+
     pub fn set_state(&mut self, activity: &str, detail: &str) {
         self.activity = activity.to_string();
         self.detail = detail.to_string();
@@ -136,6 +155,16 @@ pub fn upsert_tool_result_activity(
         .entry(agent_name.to_string())
         .or_default()
         .upsert_tool_result(tool_name, content);
+}
+
+/// Update the most recent ToolCall's input for an agent.
+/// Used when ACP runtimes deliver args in a deferred `tool_call_update`.
+pub fn update_tool_call_input(logs: &ActivityLogMap, agent_name: &str, new_input: String) {
+    logs.lock()
+        .unwrap()
+        .entry(agent_name.to_string())
+        .or_default()
+        .update_last_tool_call_input(new_input);
 }
 
 /// Update the activity state for an agent (also appends a Status entry).
