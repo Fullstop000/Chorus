@@ -197,10 +197,7 @@ async fn forward_trace_event(
 }
 
 async fn send_json(socket: &mut WebSocket, value: Value) -> anyhow::Result<()> {
-    debug!(
-        frame_type = value["type"].as_str().unwrap_or("unknown"),
-        "realtime websocket send"
-    );
+    debug!(value = value.to_string(), "realtime websocket send");
     socket.send(Message::Text(value.to_string().into())).await?;
     Ok(())
 }
