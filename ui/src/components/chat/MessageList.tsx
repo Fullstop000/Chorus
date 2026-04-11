@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef, useCallback, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { MessageItem } from "./MessageItem";
 import { Telescope } from "./Telescope";
@@ -296,20 +296,23 @@ export function MessageList({
   // Map: agentName:runId → message id with that runId (for exact binding)
   // Map: agentName → last message id (fallback for inactive traces with no runId match)
   // Map: runId → first message id (only first message per run shows static telescope)
-  const agentRunIdMsgId = new Map<string, string>();
-  const agentLastMsgId = new Map<string, string>();
-  const firstMsgIdPerRun = new Map<string, string>();
-  for (const msg of messages) {
-    if (msg.senderType === "agent") {
-      agentLastMsgId.set(msg.senderName, msg.id);
-      if (msg.runId) {
-        agentRunIdMsgId.set(`${msg.senderName}:${msg.runId}`, msg.id);
-        if (!firstMsgIdPerRun.has(msg.runId)) {
-          firstMsgIdPerRun.set(msg.runId, msg.id);
+  const { agentRunIdMsgId, agentLastMsgId, firstMsgIdPerRun } = useMemo(() => {
+    const agentRunIdMsgId = new Map<string, string>();
+    const agentLastMsgId = new Map<string, string>();
+    const firstMsgIdPerRun = new Map<string, string>();
+    for (const msg of messages) {
+      if (msg.senderType === "agent") {
+        agentLastMsgId.set(msg.senderName, msg.id);
+        if (msg.runId) {
+          agentRunIdMsgId.set(`${msg.senderName}:${msg.runId}`, msg.id);
+          if (!firstMsgIdPerRun.has(msg.runId)) {
+            firstMsgIdPerRun.set(msg.runId, msg.id);
+          }
         }
       }
     }
-  }
+    return { agentRunIdMsgId, agentLastMsgId, firstMsgIdPerRun };
+  }, [messages]);
 
   // Collect active run IDs from live traces
   const activeRunIds = new Set<string>();

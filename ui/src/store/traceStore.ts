@@ -56,6 +56,7 @@ export const useTraceStore = create<TraceState>((set) => ({
       const isNewRun = !prev || prev.runId !== frame.runId
 
       // Merge consecutive text events into a single entry (typewriter-style accumulation).
+      const MAX_EVENTS = 500
       let events: TraceFrame[]
       if (isNewRun) {
         events = [frame]
@@ -74,6 +75,11 @@ export const useTraceStore = create<TraceState>((set) => ({
         events = [...prev.events.slice(0, -1), merged]
       } else {
         events = [...prev.events, frame]
+      }
+
+      // Bound memory: keep the most recent MAX_EVENTS entries.
+      if (events.length > MAX_EVENTS) {
+        events = events.slice(events.length - MAX_EVENTS)
       }
 
       const isError = frame.kind === 'error'

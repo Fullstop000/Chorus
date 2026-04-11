@@ -14,15 +14,12 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
 
 /// Add run_id column to messages for Telescope trace correlation.
 fn migrate_add_run_id_to_messages(conn: &Connection) -> Result<()> {
-    let schema: String = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or_default();
-    if !schema.contains("run_id") {
+    let has_column = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "run_id");
+    if !has_column {
         conn.execute_batch("ALTER TABLE messages ADD COLUMN run_id TEXT")?;
         tracing::info!("migration: added run_id column to messages");
     }
@@ -157,15 +154,12 @@ pub(super) fn migrate_inbox_read_state(conn: &Connection) -> Result<()> {
 
 /// Add trace_summary column to messages for collapsed Telescope rendering.
 fn migrate_add_trace_summary_to_messages(conn: &Connection) -> Result<()> {
-    let schema: String = conn
-        .query_row(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='messages'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?
-        .unwrap_or_default();
-    if !schema.contains("trace_summary") {
+    let has_column = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "trace_summary");
+    if !has_column {
         conn.execute_batch("ALTER TABLE messages ADD COLUMN trace_summary TEXT")?;
         tracing::info!("migration: added trace_summary column to messages");
     }

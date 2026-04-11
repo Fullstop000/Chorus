@@ -551,18 +551,17 @@ async fn handle_parsed_event(
     let is_text_event = matches!(event, ParsedEvent::Text { .. });
     if !is_text_event && !running.pending_text.is_empty() {
         let full_text = std::mem::take(&mut running.pending_text);
-        // Emit a single combined trace event for the complete text output.
-        if let Some(run_id) = trace_store.active_run_id(agent_name) {
-            let seq = trace_store.next_seq(agent_name);
-            let ch = trace_store.run_channel_id(agent_name);
-            let _ = trace_tx.send(trace::build_trace_event(
-                run_id,
-                agent_name,
-                ch,
-                seq,
-                TraceEventKind::Text { text: full_text },
-            ));
-        }
+        // Use ensure_run so text-only turns (no prior Thinking/ToolCall) are traced.
+        let (run_id, _) = trace_store.ensure_run(agent_name);
+        let seq = trace_store.next_seq(agent_name);
+        let ch = trace_store.run_channel_id(agent_name);
+        let _ = trace_tx.send(trace::build_trace_event(
+            run_id,
+            agent_name,
+            ch,
+            seq,
+            TraceEventKind::Text { text: full_text },
+        ));
     }
 
     match event {

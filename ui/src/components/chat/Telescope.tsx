@@ -6,19 +6,12 @@ import {
 } from "../../lib/toolCategories";
 import { getTraceEvents } from "../../data/chat";
 import { useTraceStore } from "../../store/traceStore";
+import type { TraceFrame } from "../../transport/types";
 import type { TraceSummary, TraceEventRecord } from "../../data/chat";
 import "./Telescope.css";
 
-// ── Trace event types (canonical source: transport/types.ts) ──
-
-export interface TraceEvent {
-  runId: string;
-  agentName: string;
-  seq: number;
-  timestampMs: number;
-  kind: string;
-  data: Record<string, string>;
-}
+// TraceEvent is the canonical live trace event type from the transport layer.
+export type TraceEvent = TraceFrame;
 
 // ── Props ──
 
@@ -349,7 +342,13 @@ export function Telescope({
       <div
         className={`telescope${isError ? " error" : ""}${histExpanded ? " expanded" : ""}`}
       >
-        <div className="tele-header" onClick={handleHistToggle}>
+        <div
+          className="tele-header"
+          role="button"
+          tabIndex={0}
+          onClick={handleHistToggle}
+          onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && handleHistToggle()}
+        >
           <span className="tele-toggle">{histExpanded ? "▾" : "▸"}</span>
           <CategoryChips
             categories={traceSummary.categories}
@@ -409,7 +408,13 @@ export function Telescope({
 
   return (
     <div className={wrapperClass}>
-      <div className="tele-header" onClick={onToggleExpand}>
+      <div
+        className="tele-header"
+        role="button"
+        tabIndex={0}
+        onClick={onToggleExpand}
+        onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onToggleExpand?.()}
+      >
         <span className="tele-toggle">{isExpanded ? "▾" : "▸"}</span>
         {phaseText(events, isActive) ? (
           <span className="tele-phase">{phaseText(events, isActive)}</span>
