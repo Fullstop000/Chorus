@@ -2090,6 +2090,7 @@ fn test_channel_unread_count_excludes_system_messages() {
             sender_type: SenderType::Human,
             content: "hey",
             attachment_ids: &[],
+            run_id: None,
             suppress_event: false,
         })
         .unwrap();
@@ -2143,6 +2144,7 @@ fn test_thread_view_excludes_system_replies() {
             sender_type: SenderType::Human,
             content: "parent",
             attachment_ids: &[],
+            run_id: None,
             suppress_event: false,
         })
         .unwrap();
@@ -2156,6 +2158,7 @@ fn test_thread_view_excludes_system_replies() {
             sender_type: SenderType::Human,
             content: "bob reply",
             attachment_ids: &[],
+            run_id: None,
             suppress_event: false,
         })
         .unwrap();
@@ -2242,6 +2245,7 @@ fn test_thread_notification_state_excludes_system_messages() {
             sender_type: SenderType::Human,
             content: "parent",
             attachment_ids: &[],
+            run_id: None,
             suppress_event: false,
         })
         .unwrap();
@@ -2254,6 +2258,7 @@ fn test_thread_notification_state_excludes_system_messages() {
             sender_type: SenderType::Human,
             content: "bob reply",
             attachment_ids: &[],
+            run_id: None,
             suppress_event: false,
         })
         .unwrap();

@@ -183,8 +183,6 @@ pub async fn handle_launch_trio(
 
     let status = if errors.is_empty() {
         StatusCode::CREATED
-    } else if agents.is_empty() {
-        StatusCode::MULTI_STATUS
     } else {
         StatusCode::MULTI_STATUS
     };
