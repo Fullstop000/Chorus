@@ -45,7 +45,10 @@ pub fn spawn_trace_writer(db_path: String, mut trace_rx: broadcast::Receiver<Tra
                 }
             };
 
-            let is_run_end = matches!(event.kind, TraceEventKind::TurnEnd | TraceEventKind::Error { .. });
+            let is_run_end = matches!(
+                event.kind,
+                TraceEventKind::TurnEnd | TraceEventKind::Error { .. }
+            );
             run_events
                 .entry(event.run_id.clone())
                 .or_default()
@@ -57,7 +60,12 @@ pub fn spawn_trace_writer(db_path: String, mut trace_rx: broadcast::Receiver<Tra
                 flush_batch(&conn, &mut batch);
                 // Compute and write trace_summary for the finished run.
                 for (run_id, events) in run_events.drain() {
-                    if events.iter().any(|e| matches!(e.kind, TraceEventKind::TurnEnd | TraceEventKind::Error { .. })) {
+                    if events.iter().any(|e| {
+                        matches!(
+                            e.kind,
+                            TraceEventKind::TurnEnd | TraceEventKind::Error { .. }
+                        )
+                    }) {
                         write_trace_summary(&conn, &run_id, &events);
                     }
                 }
@@ -69,7 +77,10 @@ pub fn spawn_trace_writer(db_path: String, mut trace_rx: broadcast::Receiver<Tra
             while batch.len() < 50 {
                 match tokio::time::timeout_at(deadline, trace_rx.recv()).await {
                     Ok(Ok(event)) => {
-                        let is_end = matches!(event.kind, TraceEventKind::TurnEnd | TraceEventKind::Error { .. });
+                        let is_end = matches!(
+                            event.kind,
+                            TraceEventKind::TurnEnd | TraceEventKind::Error { .. }
+                        );
                         run_events
                             .entry(event.run_id.clone())
                             .or_default()
@@ -97,7 +108,12 @@ pub fn spawn_trace_writer(db_path: String, mut trace_rx: broadcast::Receiver<Tra
             let completed_runs: Vec<String> = run_events
                 .iter()
                 .filter(|(_, events)| {
-                    events.iter().any(|e| matches!(e.kind, TraceEventKind::TurnEnd | TraceEventKind::Error { .. }))
+                    events.iter().any(|e| {
+                        matches!(
+                            e.kind,
+                            TraceEventKind::TurnEnd | TraceEventKind::Error { .. }
+                        )
+                    })
                 })
                 .map(|(run_id, _)| run_id.clone())
                 .collect();
@@ -153,6 +169,7 @@ fn write_events(conn: &Connection, events: &[TraceEvent]) -> rusqlite::Result<()
 
 fn event_kind_str(kind: &TraceEventKind) -> &'static str {
     match kind {
+        TraceEventKind::Reading => "reading",
         TraceEventKind::Thinking { .. } => "thinking",
         TraceEventKind::ToolCall { .. } => "tool_call",
         TraceEventKind::ToolResult { .. } => "tool_result",
@@ -177,7 +194,10 @@ fn write_trace_summary(conn: &Connection, run_id: &str, events: &[TraceEvent]) {
         params![summary_json, run_id],
     ) {
         Ok(0) => {
-            debug!(run_id, "trace_writer: no message found for run_id (agent may not have replied yet)");
+            debug!(
+                run_id,
+                "trace_writer: no message found for run_id (agent may not have replied yet)"
+            );
         }
         Ok(_) => {
             debug!(run_id, "trace_writer: wrote trace_summary");

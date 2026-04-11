@@ -188,7 +188,11 @@ export function MessageItem({
 
   const parsedSummary = useMemo<TraceSummary | undefined>(() => {
     if (traceData || !message.traceSummary) return undefined;
-    try { return JSON.parse(message.traceSummary) } catch { return undefined }
+    try {
+      return JSON.parse(message.traceSummary);
+    } catch {
+      return undefined;
+    }
   }, [traceData, message.traceSummary]);
 
   const isMe = message.senderName === currentUser;
@@ -266,13 +270,13 @@ export function MessageItem({
             onToggleExpand={onToggleTrace}
           />
         )}
-        {!traceData && parsedSummary && message.runId && (
+        {!traceData && parsedSummary && (
           <Telescope
             agentName={message.senderName}
             runId={message.runId}
             events={[]}
             isActive={false}
-            isError={parsedSummary.status === 'error'}
+            isError={parsedSummary.status === "error"}
             traceSummary={parsedSummary}
           />
         )}

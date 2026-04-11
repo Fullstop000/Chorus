@@ -1,121 +1,274 @@
-import { useRef, useEffect, useState, useCallback } from 'react'
-import { ChevronDown } from 'lucide-react'
-import { classifyTool } from '../../lib/toolCategories'
-import { getTraceEvents } from '../../data/chat'
-import { useTraceStore } from '../../store/traceStore'
-import type { TraceSummary, TraceEventRecord } from '../../data/chat'
-import './Telescope.css'
+import { useRef, useEffect, useState, useCallback } from "react";
+import { getTraceEvents } from "../../data/chat";
+import { useTraceStore } from "../../store/traceStore";
+import type { TraceSummary, TraceEventRecord } from "../../data/chat";
+import "./Telescope.css";
 
 // ── Trace event types (canonical source: transport/types.ts) ──
 
 export interface TraceEvent {
-  runId: string
-  agentName: string
-  seq: number
-  timestampMs: number
-  kind: string
-  data: Record<string, string>
+  runId: string;
+  agentName: string;
+  seq: number;
+  timestampMs: number;
+  kind: string;
+  data: Record<string, string>;
 }
 
 // ── Props ──
 
 interface TelescopeProps {
-  agentName: string
-  runId: string
-  events: TraceEvent[]
-  isActive: boolean
-  isError: boolean
-  onToggleExpand?: () => void
-  isExpanded?: boolean
-  traceSummary?: TraceSummary
+  agentName: string;
+  runId?: string;
+  events: TraceEvent[];
+  isActive: boolean;
+  isError: boolean;
+  onToggleExpand?: () => void;
+  isExpanded?: boolean;
+  traceSummary?: TraceSummary;
 }
 
 // ── Helpers ──
 
-function relativeTime(timestampMs: number): string {
-  const delta = Date.now() - timestampMs
-  if (delta < 1000) return 'now'
-  if (delta < 60_000) return `${Math.floor(delta / 1000)}s`
-  return `${Math.floor(delta / 60_000)}m`
-}
-
-function rowLabel(kind: string, data: Record<string, string>): string {
-  switch (kind) {
-    case 'tool_call': return data.toolName ?? 'tool'
-    case 'tool_result': return `${data.toolName ?? 'tool'} ✓`
-    case 'thinking': return 'thinking'
-    case 'text': return 'response'
-    case 'turn_end': return 'done'
-    case 'error': return 'error'
-    default: return kind
-  }
-}
-
-function rowDetail(kind: string, data: Record<string, string>): string {
-  switch (kind) {
-    case 'tool_call': return truncate(data.toolInput ?? '', 80)
-    case 'tool_result': return truncate(data.content ?? '', 80)
-    case 'thinking': return truncate(data.text ?? '', 80)
-    case 'text': return truncate(data.text ?? '', 80)
-    case 'error': return data.message ?? ''
-    default: return ''
-  }
-}
-
 function truncate(s: string, max: number): string {
-  if (s.length <= max) return s
-  return s.slice(0, max) + '…'
+  if (s.length <= max) return s;
+  return s.slice(0, max) + "…";
 }
 
-function summaryText(events: TraceEvent[]): string {
-  const toolCalls = events.filter(e => e.kind === 'tool_call').length
-  if (toolCalls === 0) return 'no tool calls'
-  return toolCalls === 1 ? '1 tool call' : `${toolCalls} tool calls`
+/** Derive the agent's current phase from live trace events. */
+type AgentPhase = "reading" | "thinking" | "doing" | "responding";
+
+function derivePhase(events: TraceEvent[]): AgentPhase {
+  if (events.length === 0) return "reading";
+  for (let i = events.length - 1; i >= 0; i--) {
+    const k = events[i].kind;
+    if (k === "tool_call" || k === "tool_done") return "doing";
+  }
+  if (events.some((e) => e.kind === "thinking")) return "thinking";
+  if (events.some((e) => e.kind === "text")) return "responding";
+  return "reading";
+}
+
+function summaryText(events: TraceEvent[], isActive: boolean): string {
+  const toolCalls = events.filter(
+    (e) => e.kind === "tool_call" || e.kind === "tool_done",
+  ).length;
+  if (isActive) {
+    const phase = derivePhase(events);
+    if (phase === "reading") return "reading…";
+    if (phase === "thinking") return "thinking…";
+    if (phase === "responding") return "responding…";
+    return toolCalls === 1 ? "1 tool call" : `${toolCalls} tool calls`;
+  }
+  if (toolCalls === 0) return "no tool calls";
+  return toolCalls === 1 ? "1 tool call" : `${toolCalls} tool calls`;
 }
 
 function historySummaryText(ts: TraceSummary): string {
-  const n = ts.toolCalls
-  const label = n === 0 ? 'no tool calls' : n === 1 ? '1 tool call' : `${n} tool calls`
+  const n = ts.toolCalls;
+  const label =
+    n === 0 ? "no tool calls" : n === 1 ? "1 tool call" : `${n} tool calls`;
   if (ts.duration > 0) {
-    const sec = Math.round(ts.duration / 1000)
-    return sec > 0 ? `${label} · ${sec}s` : label
+    const sec = Math.round(ts.duration / 1000);
+    return sec > 0 ? `${label} · ${sec}s` : label;
   }
-  return label
+  return label;
 }
 
-// ── Row ──
+function findLastIdx<T>(arr: T[], pred: (v: T) => boolean): number {
+  for (let i = arr.length - 1; i >= 0; i--) {
+    if (pred(arr[i])) return i;
+  }
+  return -1;
+}
 
-function TelescopeRow({ event }: { event: TraceEvent }) {
-  const { icon: Icon } = event.kind === 'tool_call' || event.kind === 'tool_result'
-    ? classifyTool(event.data.toolName ?? '')
-    : { icon: null }
+/** Extract tool name from data regardless of snake_case vs camelCase. */
+function getToolName(data: Record<string, string>): string {
+  return data.toolName ?? data.tool_name ?? "";
+}
+
+function getToolInput(data: Record<string, string>): string {
+  return data.toolInput ?? data.tool_input ?? "";
+}
+
+/**
+ * Merge tool_call + tool_result pairs and consecutive text events.
+ * Filters out turn_end and reading events.
+ */
+function mergeEvents(events: TraceEvent[]): TraceEvent[] {
+  const merged: TraceEvent[] = [];
+  for (const e of events) {
+    if (e.kind === "turn_end" || e.kind === "reading") continue;
+    if (e.kind === "tool_result") {
+      const idx = findLastIdx(
+        merged,
+        (m) => m.kind === "tool_call" || m.kind === "tool_done",
+      );
+      if (idx !== -1) {
+        merged[idx] = {
+          ...merged[idx],
+          kind: "tool_done",
+          timestampMs: e.timestampMs,
+          data: {
+            ...merged[idx].data,
+            content: e.data.content ?? e.data.tool_result ?? "",
+          },
+        };
+      }
+      continue;
+    }
+    if (
+      e.kind === "text" &&
+      merged.length > 0 &&
+      merged[merged.length - 1].kind === "text"
+    ) {
+      const last = merged[merged.length - 1];
+      merged[merged.length - 1] = {
+        ...last,
+        data: { text: (last.data.text ?? "") + (e.data.text ?? "") },
+      };
+      continue;
+    }
+    merged.push(e);
+  }
+  return merged;
+}
+
+function mergeHistoryEvents(events: TraceEventRecord[]): TraceEventRecord[] {
+  const merged: TraceEventRecord[] = [];
+  for (const e of events) {
+    const data = typeof e.data === "string" ? JSON.parse(e.data) : e.data;
+    if (e.kind === "turn_end" || e.kind === "reading") continue;
+    if (e.kind === "tool_result") {
+      const idx = findLastIdx(
+        merged,
+        (m) => m.kind === "tool_call" || m.kind === "tool_done",
+      );
+      if (idx !== -1) {
+        const md =
+          typeof merged[idx].data === "string"
+            ? JSON.parse(merged[idx].data as string)
+            : merged[idx].data;
+        merged[idx] = {
+          ...merged[idx],
+          kind: "tool_done",
+          timestampMs: e.timestampMs,
+          data: { ...md, content: data.content ?? "" },
+        };
+      }
+      continue;
+    }
+    if (
+      e.kind === "text" &&
+      merged.length > 0 &&
+      merged[merged.length - 1].kind === "text"
+    ) {
+      const last = merged[merged.length - 1];
+      const lastData =
+        typeof last.data === "string"
+          ? JSON.parse(last.data as string)
+          : last.data;
+      merged[merged.length - 1] = {
+        ...last,
+        data: { text: (lastData.text ?? "") + (data.text ?? "") },
+      };
+      continue;
+    }
+    merged.push({ ...e, data });
+  }
+  return merged;
+}
+
+// ── Row helpers ──
+
+/** Label shown when row is expanded (category name). */
+function expandedLabel(kind: string, data: Record<string, string>): string {
+  switch (kind) {
+    case "thinking":
+      return "thinking";
+    case "tool_call":
+      return getToolName(data) || "tool";
+    case "tool_done":
+      return `${getToolName(data) || "tool"} ✓`;
+    case "text":
+      return "response";
+    case "error":
+      return data.message ?? "error";
+    default:
+      return kind;
+  }
+}
+
+/** Full content for expanded view. */
+function fullContent(kind: string, data: Record<string, string>): string {
+  switch (kind) {
+    case "thinking":
+      return data.text ?? "";
+    case "tool_call":
+      return getToolInput(data);
+    case "tool_done":
+      return data.content ?? "";
+    case "text":
+      return data.text ?? "";
+    case "error":
+      return data.message ?? "";
+    default:
+      return "";
+  }
+}
+
+// ── Expandable row component ──
+
+function ExpandableRow({
+  kind,
+  data,
+}: {
+  kind: string;
+  data: Record<string, string>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const content = fullContent(kind, data);
+  const canExpand = content.length > 50;
+  const isTool = kind === "tool_call" || kind === "tool_done";
 
   return (
     <div className="tele-row">
-      {Icon && <Icon size={13} className="tele-row-icon" />}
-      {!Icon && <span className="tele-row-icon" style={{ width: 13 }} />}
-      <span className="tele-row-label">{rowLabel(event.kind, event.data)}</span>
-      <span className="tele-row-detail">{rowDetail(event.kind, event.data)}</span>
-      <span className="tele-row-time">{relativeTime(event.timestampMs)}</span>
+      <div
+        className={`tele-row-header${canExpand ? "" : " no-expand"}`}
+        onClick={canExpand ? () => setExpanded(!expanded) : undefined}
+      >
+        <span className="tele-bullet">
+          {canExpand ? (expanded ? "▾" : "▸") : "─"}
+        </span>
+        {expanded ? (
+          <span className="tele-row-label">{expandedLabel(kind, data)}</span>
+        ) : isTool ? (
+          <>
+            <span className="tele-tool-name">{expandedLabel(kind, data)}</span>
+            {content && <span className="tele-pipe">|</span>}
+            {content && (
+              <span className="tele-tool-detail">{truncate(content, 50)}</span>
+            )}
+          </>
+        ) : (
+          <span className="tele-row-label">
+            {truncate(content, 60) || kind}
+          </span>
+        )}
+      </div>
+      {expanded && content && <div className="tele-row-content">{content}</div>}
     </div>
-  )
+  );
 }
 
-function HistoryRow({ event }: { event: TraceEventRecord }) {
-  const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data
-  const { icon: Icon } = event.kind === 'tool_call' || event.kind === 'tool_result'
-    ? classifyTool(data.toolName ?? '')
-    : { icon: null }
-
-  return (
-    <div className="tele-row">
-      {Icon && <Icon size={13} className="tele-row-icon" />}
-      {!Icon && <span className="tele-row-icon" style={{ width: 13 }} />}
-      <span className="tele-row-label">{rowLabel(event.kind, data)}</span>
-      <span className="tele-row-detail">{rowDetail(event.kind, data)}</span>
-      <span className="tele-row-time">{relativeTime(event.timestampMs)}</span>
-    </div>
-  )
+function TraceRow({
+  kind,
+  data,
+}: {
+  kind: string;
+  data: Record<string, string>;
+}) {
+  return <ExpandableRow kind={kind} data={data} />;
 }
 
 // ── Main component ──
@@ -130,91 +283,110 @@ export function Telescope({
   isExpanded = true,
   traceSummary,
 }: TelescopeProps) {
-  const rowsRef = useRef<HTMLDivElement>(null)
-  const isHistorical = !!traceSummary && events.length === 0
-  const [histExpanded, setHistExpanded] = useState(false)
-  const [histEvents, setHistEvents] = useState<TraceEventRecord[] | null>(null)
-  const [histLoading, setHistLoading] = useState(false)
-  const isFlashing = useTraceStore((s) => s.completionFlash[agentName] ?? false)
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const isHistorical = !!traceSummary && events.length === 0;
+  const [histExpanded, setHistExpanded] = useState(false);
+  const [histEvents, setHistEvents] = useState<TraceEventRecord[] | null>(null);
+  const [histLoading, setHistLoading] = useState(false);
+  const isFlashing = useTraceStore(
+    (s) => s.completionFlash[agentName] ?? false,
+  );
 
   // Auto-scroll to bottom when new events arrive while active
   useEffect(() => {
     if (isExpanded && isActive && rowsRef.current) {
-      rowsRef.current.scrollTop = rowsRef.current.scrollHeight
+      rowsRef.current.scrollTop = rowsRef.current.scrollHeight;
     }
-  }, [events.length, isExpanded, isActive])
+  }, [events.length, isExpanded, isActive]);
 
   const handleHistToggle = useCallback(() => {
-    const next = !histExpanded
-    setHistExpanded(next)
-    if (next && histEvents === null && !histLoading) {
-      setHistLoading(true)
+    const next = !histExpanded;
+    setHistExpanded(next);
+    if (next && histEvents === null && !histLoading && runId) {
+      setHistLoading(true);
       getTraceEvents(runId)
-        .then(res => setHistEvents(res.events))
+        .then((res) => setHistEvents(res.events))
         .catch(() => setHistEvents([]))
-        .finally(() => setHistLoading(false))
+        .finally(() => setHistLoading(false));
     }
-  }, [histExpanded, histEvents, histLoading, runId])
+  }, [histExpanded, histEvents, histLoading, runId]);
 
   // ── Historical mode ──
   if (isHistorical) {
-    const dotClass = isError ? 'tele-dot error' : 'tele-dot'
     return (
-      <div className={`telescope${isError ? ' error' : ''}`}>
+      <div
+        className={`telescope${isError ? " error" : ""}${histExpanded ? " expanded" : ""}`}
+      >
         <div className="tele-header" onClick={handleHistToggle}>
-          <span className={dotClass} />
-          <span className="tele-agent-name">{agentName}</span>
-          <span className="tele-summary">{historySummaryText(traceSummary)}</span>
-          <ChevronDown
-            size={13}
-            className={`tele-chevron${histExpanded ? ' expanded' : ''}`}
-          />
+          <span className="tele-toggle">{histExpanded ? "▾" : "▸"}</span>
+          <span className="tele-summary">
+            {historySummaryText(traceSummary)}
+          </span>
         </div>
         {histExpanded && (
           <div className="tele-rows" ref={rowsRef}>
-            {histLoading && <div className="tele-row"><span className="tele-row-detail">Loading…</span></div>}
-            {histEvents?.map(e => <HistoryRow key={e.seq} event={e} />)}
+            {histLoading && (
+              <div className="tele-row">
+                <div className="tele-row-header no-expand">
+                  <span className="tele-bullet">─</span>
+                  <span className="tele-row-label">loading…</span>
+                </div>
+              </div>
+            )}
+            {histEvents &&
+              mergeHistoryEvents(histEvents).map((e) => {
+                const data =
+                  typeof e.data === "string" ? JSON.parse(e.data) : e.data;
+                return <TraceRow key={e.seq} kind={e.kind} data={data} />;
+              })}
           </div>
         )}
       </div>
-    )
+    );
   }
 
   // ── Live mode ──
-  if (events.length === 0 && isActive) {
+  const phase = derivePhase(events);
+  const merged = mergeEvents(events);
+  const isPreContent =
+    phase === "reading" || (phase === "thinking" && merged.length === 0);
+
+  // Show typing dots when agent is active but has no displayable rows yet
+  if (isActive && isPreContent) {
     return (
       <div className="telescope">
-        <div className="tele-loading">
-          <span className="tele-dot active" />
-          <span>{agentName} connecting…</span>
+        <div className="tele-header">
+          <span className="tele-toggle">▸</span>
+          <span className="tele-summary">
+            {phase === "thinking" ? "thinking" : "reading"}
+          </span>
+          <span className="tele-typing-dots">
+            <span>.</span>
+            <span>.</span>
+            <span>.</span>
+          </span>
         </div>
       </div>
-    )
+    );
   }
 
-  if (events.length === 0) return null
+  if (events.length === 0) return null;
 
-  const dotClass = isError ? 'tele-dot error' : isActive ? 'tele-dot active' : 'tele-dot'
-  const wrapperClass = `telescope${isError ? ' error' : ''}${isFlashing ? ' completion-flash' : ''}`
+  const wrapperClass = `telescope${isError ? " error" : ""}${isFlashing ? " completion-flash" : ""}${isExpanded ? " expanded" : ""}`;
 
   return (
     <div className={wrapperClass}>
       <div className="tele-header" onClick={onToggleExpand}>
-        <span className={dotClass} />
-        <span className="tele-agent-name">{agentName}</span>
-        <span className="tele-summary">{summaryText(events)}</span>
-        <ChevronDown
-          size={13}
-          className={`tele-chevron${isExpanded ? ' expanded' : ''}`}
-        />
+        <span className="tele-toggle">{isExpanded ? "▾" : "▸"}</span>
+        <span className="tele-summary">{summaryText(events, isActive)}</span>
       </div>
       {isExpanded && (
         <div className="tele-rows" ref={rowsRef}>
-          {events.map(e => (
-            <TelescopeRow key={e.seq} event={e} />
+          {merged.map((e) => (
+            <TraceRow key={e.seq} kind={e.kind} data={e.data} />
           ))}
         </div>
       )}
     </div>
-  )
+  );
 }

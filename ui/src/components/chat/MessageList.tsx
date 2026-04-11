@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { MessageItem } from "./MessageItem";
+import { Telescope } from "./Telescope";
 import { NewMessageDivider } from "./NewMessageDivider";
 import { NewMessageBadge } from "./NewMessageBadge";
 import { useVisibilityTracking } from "../../hooks/useVisibilityTracking";
@@ -292,11 +293,27 @@ export function MessageList({
   const expandedAgents = useTraceStore((s) => s.expandedAgents);
   const toggleExpanded = useTraceStore((s) => s.toggleExpanded);
 
-  // Map: agentName → last message id from that agent
+  // Map: agentName:runId → message id with that runId (for exact binding)
+  // Map: agentName → last message id (fallback for inactive traces with no runId match)
+  const agentRunIdMsgId = new Map<string, string>();
   const agentLastMsgId = new Map<string, string>();
   for (const msg of messages) {
     if (msg.senderType === "agent") {
       agentLastMsgId.set(msg.senderName, msg.id);
+      if (msg.runId) {
+        agentRunIdMsgId.set(`${msg.senderName}:${msg.runId}`, msg.id);
+      }
+    }
+  }
+
+  // Compute orphaned traces: active traces whose runId has no matching message.
+  // These are rendered at the bottom as "agent working" indicators.
+  const orphanedTraces: Array<[string, (typeof traces)[string]]> = [];
+  for (const [agentName, trace] of Object.entries(traces)) {
+    if (!trace.isActive) continue;
+    const matchKey = `${agentName}:${trace.runId}`;
+    if (!agentRunIdMsgId.has(matchKey)) {
+      orphanedTraces.push([agentName, trace]);
     }
   }
 
@@ -312,11 +329,30 @@ export function MessageList({
         <div className="message-list-empty">{emptyLabel}</div>
       )}
       {messages.map((msg, i) => {
-        const agentTrace =
-          msg.senderType === "agent" &&
-          agentLastMsgId.get(msg.senderName) === msg.id
-            ? traces[msg.senderName]
-            : undefined;
+        // Bind trace to message:
+        // 1. Exact runId match on the LAST message for this run → telescope tracks latest message
+        // 2. Inactive trace with no runId match → fallback to last message by agent
+        // 3. Active trace with no match → shown as orphaned at bottom, not here
+        let agentTrace: (typeof traces)[string] | undefined;
+        if (msg.senderType === "agent") {
+          const trace = traces[msg.senderName];
+          if (trace) {
+            const matchKey = `${msg.senderName}:${trace.runId}`;
+            if (
+              msg.runId &&
+              msg.runId === trace.runId &&
+              agentRunIdMsgId.get(matchKey) === msg.id
+            ) {
+              agentTrace = trace;
+            } else if (
+              !trace.isActive &&
+              !agentRunIdMsgId.has(matchKey) &&
+              agentLastMsgId.get(msg.senderName) === msg.id
+            ) {
+              agentTrace = trace;
+            }
+          }
+        }
         return (
           <div
             key={msg.id}
@@ -341,6 +377,20 @@ export function MessageList({
           </div>
         );
       })}
+      {orphanedTraces.map(([agentName, trace]) => (
+        <div key={`pending-${agentName}`} className="pending-trace-wrapper">
+          <span className="pending-trace-agent">{agentName}</span>
+          <Telescope
+            agentName={agentName}
+            runId={trace.runId}
+            events={trace.events as never[]}
+            isActive={trace.isActive}
+            isError={trace.isError}
+            isExpanded={expandedAgents[agentName] ?? true}
+            onToggleExpand={() => toggleExpanded(agentName)}
+          />
+        </div>
+      ))}
       <div ref={bottomRef} />
       {hasUnread && (
         <NewMessageBadge

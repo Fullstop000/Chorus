@@ -9,9 +9,9 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
+use crate::agent::trace::TraceEvent;
 use crate::server::handlers::{api_err, AppState, ErrorResponse};
 use crate::store::{Store, StreamEvent};
-use crate::agent::trace::TraceEvent;
 
 #[derive(Debug, Deserialize)]
 pub struct RealtimeParams {
@@ -142,6 +142,9 @@ async fn forward_trace_event(
     }
 
     let kind_data = match &event.kind {
+        crate::agent::trace::TraceEventKind::Reading => {
+            json!({})
+        }
         crate::agent::trace::TraceEventKind::Thinking { text } => {
             json!({ "text": text })
         }
@@ -151,10 +154,7 @@ async fn forward_trace_event(
         } => {
             json!({ "toolName": tool_name, "toolInput": tool_input })
         }
-        crate::agent::trace::TraceEventKind::ToolResult {
-            tool_name,
-            content,
-        } => {
+        crate::agent::trace::TraceEventKind::ToolResult { tool_name, content } => {
             json!({ "toolName": tool_name, "content": content })
         }
         crate::agent::trace::TraceEventKind::Text { text } => {
@@ -169,6 +169,7 @@ async fn forward_trace_event(
     };
 
     let kind_str = match &event.kind {
+        crate::agent::trace::TraceEventKind::Reading => "reading",
         crate::agent::trace::TraceEventKind::Thinking { .. } => "thinking",
         crate::agent::trace::TraceEventKind::ToolCall { .. } => "tool_call",
         crate::agent::trace::TraceEventKind::ToolResult { .. } => "tool_result",

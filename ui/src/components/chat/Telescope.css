@@ -1,132 +1,200 @@
 /* ── Telescope: inline agent execution trace ── */
 
-/* Dark terminal surface tokens */
 .telescope {
-  --tele-bg: #1c1b19;
-  --tele-fg: #d4d0c8;
-  --tele-muted: #8a8478;
-  --tele-accent: #c6a24a;
-  --tele-border: #2e2d2a;
-  --tele-row-hover: rgba(255, 255, 255, 0.04);
-  --tele-error: #c0392b;
-
-  background: var(--tele-bg);
-  border: 1px solid var(--tele-border);
-  border-radius: 3px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 1.5;
-  color: var(--tele-fg);
-  margin: 4px 0 6px;
+  color: var(--color-muted-foreground);
+  margin: 2px 0 4px;
   overflow: hidden;
+  display: inline-block;
 }
 
-/* ── Header ── */
+/* When expanded, go full width for the rows */
+.telescope.expanded {
+  display: block;
+}
+
+/* ── Header (outer collapse/expand) ── */
 .tele-header {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--tele-border);
+  gap: 4px;
+  padding: 1px 0;
   cursor: pointer;
   user-select: none;
+  border-radius: 0;
+  border: none;
+  background: transparent;
+}
+
+/* Full-width header when expanded */
+.telescope.expanded .tele-header {
+  display: flex;
+  border: none;
+  border-radius: 0;
+  padding: 1px 0;
 }
 
 .tele-header:hover {
-  background: var(--tele-row-hover);
+  background: transparent;
+}
+
+.tele-header:hover .tele-summary {
+  color: var(--color-foreground);
 }
 
 .tele-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--tele-accent);
-  flex-shrink: 0;
+  display: none;
 }
 
 .tele-dot.active {
-  animation: tele-pulse 1.6s ease-in-out infinite;
+  display: none;
 }
 
 .tele-dot.error {
-  background: var(--tele-error);
-  animation: none;
+  display: none;
 }
 
-.tele-agent-name {
-  font-weight: 600;
-  color: var(--tele-fg);
+/* ASCII toggle indicator */
+.tele-toggle {
+  color: var(--color-muted-foreground);
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
 }
 
 .tele-summary {
-  color: var(--tele-muted);
-  margin-left: auto;
+  color: var(--color-muted-foreground);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .tele-chevron {
-  color: var(--tele-muted);
-  flex-shrink: 0;
-  transition: transform 0.15s ease;
+  display: none;
 }
 
 .tele-chevron.expanded {
-  transform: rotate(180deg);
+  display: none;
 }
 
 /* ── Rows container ── */
 .tele-rows {
-  max-height: 240px;
+  max-height: 300px;
   overflow-y: auto;
   scrollbar-width: thin;
-  scrollbar-color: var(--tele-border) transparent;
+  scrollbar-color: var(--color-border) transparent;
+  border-left: 1px solid var(--color-border);
+  margin-left: 6px;
+  margin-top: 2px;
+  padding: 0 0 0 8px;
 }
 
-/* ── Single trace row ── */
-.tele-row {
+/* ── Per-row accordion ── */
+.tele-row + .tele-row {
+  border-top: none;
+}
+
+.tele-row-header {
   display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 3px 8px;
-  border-bottom: 1px solid var(--tele-border);
+  align-items: center;
+  gap: 4px;
+  padding: 1px 0;
+  cursor: pointer;
+  user-select: none;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
-.tele-row:last-child {
-  border-bottom: none;
+.tele-row-header.no-expand {
+  cursor: default;
 }
 
-.tele-row:hover {
-  background: var(--tele-row-hover);
+.tele-row-header:not(.no-expand):hover .tele-row-label,
+.tele-row-header:not(.no-expand):hover .tele-tool-name,
+.tele-row-header:not(.no-expand):hover .tele-tool-detail {
+  color: var(--color-foreground);
+}
+
+.tele-bullet {
+  color: var(--color-muted-foreground);
+  flex-shrink: 0;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  width: auto;
+  text-align: left;
+  line-height: 1;
 }
 
 .tele-row-icon {
-  color: var(--tele-muted);
+  color: var(--color-muted-foreground);
   flex-shrink: 0;
-  margin-top: 2px;
 }
 
 .tele-row-label {
-  font-weight: 500;
-  color: var(--tele-accent);
-  white-space: nowrap;
-}
-
-.tele-row-detail {
-  color: var(--tele-muted);
+  color: var(--color-muted-foreground);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  flex: 1;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
-.tele-row-time {
-  color: var(--tele-muted);
-  margin-left: auto;
-  font-size: 11px;
+/* Tool row: name | content */
+.tele-tool-name {
+  font-weight: 500;
+  color: var(--color-muted-foreground);
   white-space: nowrap;
   flex-shrink: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.tele-pipe {
+  color: var(--color-border);
+  flex-shrink: 0;
+  margin: 0 2px;
+}
+
+.tele-tool-detail {
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* Per-row chevron — hidden, using text toggle */
+.tele-row-chevron {
+  display: none;
+}
+
+.tele-row-chevron.expanded {
+  display: none;
+}
+
+/* Expanded content area */
+.tele-row-content {
+  padding: 2px 0 4px 16px;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-left: 1px solid var(--color-border);
+  margin-left: 0;
 }
 
 /* ── Loading state ── */
@@ -134,13 +202,42 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px;
-  color: var(--tele-muted);
+  padding: 6px 10px;
+  color: var(--color-muted-foreground);
+}
+
+/* ── Typing dots indicator ── */
+.tele-typing-dots {
+  display: inline-flex;
+  gap: 0;
+  align-items: center;
+  margin-left: 2px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+.tele-typing-dots span {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  opacity: 0.3;
+  animation: tele-typing 1.2s ease-in-out infinite;
+}
+
+.tele-typing-dots span:nth-child(1) { animation-delay: 0s; }
+.tele-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+.tele-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes tele-typing {
+  0%, 100% { opacity: 0.25; }
+  50% { opacity: 1; }
 }
 
 /* ── Error state ── */
 .telescope.error {
-  border-color: var(--tele-error);
+  border-color: #c0392b;
 }
 
 /* ── Pulse animation ── */
@@ -149,12 +246,12 @@
   50% { opacity: 0.35; }
 }
 
-/* ── Completion flash (Delight Touch 7) ── */
+/* ── Completion flash ── */
 .telescope.completion-flash .tele-header {
   animation: tele-flash 1.2s ease-out;
 }
 
 @keyframes tele-flash {
-  0% { background: rgba(39, 174, 96, 0.25); }
+  0% { background: rgba(31, 157, 77, 0.15); }
   100% { background: transparent; }
 }

@@ -5,8 +5,8 @@ use std::process::Child;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
 use tokio::sync::broadcast;
+use tokio::sync::Mutex;
 use tracing::{error, info, trace, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
@@ -28,6 +28,8 @@ struct RunningAgent {
     last_tool_raw_name: Option<String>,
     /// Accumulated thinking chunks, flushed to log/activity on the next non-Thinking event.
     pending_thinking: String,
+    /// Accumulated text output chunks, flushed as a single trace event on the next non-Text event.
+    pending_text: String,
 }
 
 pub struct AgentManager {
@@ -183,6 +185,7 @@ impl AgentManager {
                     pending_notification_count: 0,
                     last_tool_raw_name: None,
                     pending_thinking: String::new(),
+                    pending_text: String::new(),
                 },
             );
         }
@@ -287,6 +290,8 @@ impl AgentManager {
         let count = running.pending_notification_count;
 
         let agents_ref = self.agents.clone();
+        let trace_store = self.trace_store.clone();
+        let trace_tx = self.store.trace_sender();
         let name = agent_name.to_string();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -302,6 +307,16 @@ impl AgentManager {
                     None => return,
                 };
                 running.pending_notification_count = 0;
+
+                // Emit a Reading trace event so the frontend shows "reading…"
+                let (run_id, _) = trace_store.ensure_run(&name);
+                let seq = trace_store.next_seq(&name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    &name,
+                    seq,
+                    TraceEventKind::Reading,
+                ));
 
                 let plural = if current_count > 1 { "s" } else { "" };
                 let them = if current_count > 1 { "them" } else { "it" };
@@ -382,8 +397,17 @@ impl AgentManager {
                 for event in driver.parse_line(&line) {
                     let rt = tokio::runtime::Handle::current();
                     rt.block_on(async {
-                        handle_parsed_event(&agents, &activity_logs, &trace_store, &trace_tx, &store, &name, event, &driver)
-                            .await;
+                        handle_parsed_event(
+                            &agents,
+                            &activity_logs,
+                            &trace_store,
+                            &trace_tx,
+                            &store,
+                            &name,
+                            event,
+                            &driver,
+                        )
+                        .await;
                     });
                 }
             }
@@ -500,7 +524,9 @@ async fn handle_parsed_event(
         activity_log::push_activity(
             logs,
             agent_name,
-            ActivityEntry::Thinking { text: full_thought.clone() },
+            ActivityEntry::Thinking {
+                text: full_thought.clone(),
+            },
         );
         // Emit trace event for accumulated thinking block.
         let (run_id, _) = trace_store.ensure_run(agent_name);
@@ -511,6 +537,22 @@ async fn handle_parsed_event(
             seq,
             TraceEventKind::Thinking { text: full_thought },
         ));
+    }
+
+    // Flush accumulated text output when a non-Text event arrives.
+    let is_text_event = matches!(event, ParsedEvent::Text { .. });
+    if !is_text_event && !running.pending_text.is_empty() {
+        let full_text = std::mem::take(&mut running.pending_text);
+        // Emit a single combined trace event for the complete text output.
+        if let Some(run_id) = trace_store.active_run_id(agent_name) {
+            let seq = trace_store.next_seq(agent_name);
+            let _ = trace_tx.send(trace::build_trace_event(
+                run_id,
+                agent_name,
+                seq,
+                TraceEventKind::Text { text: full_text },
+            ));
+        }
     }
 
     match event {
@@ -524,6 +566,17 @@ async fn handle_parsed_event(
             let pending = running.pending_notification_count;
             if pending > 0 && running.driver.supports_stdin_notification() {
                 running.pending_notification_count = 0;
+
+                // Emit a Reading trace event so the frontend shows "reading…"
+                let (run_id, _) = trace_store.ensure_run(agent_name);
+                let seq = trace_store.next_seq(agent_name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    agent_name,
+                    seq,
+                    TraceEventKind::Reading,
+                ));
+
                 let plural = if pending > 1 { "s" } else { "" };
                 let them = if pending > 1 { "them" } else { "it" };
                 let check_tool = format!("{}check_messages", running.driver.mcp_tool_prefix());
@@ -551,16 +604,8 @@ async fn handle_parsed_event(
                 agent_name,
                 ActivityEntry::Text { text: text.clone() },
             );
-            // Emit trace event for text output.
-            if let Some(run_id) = trace_store.active_run_id(agent_name) {
-                let seq = trace_store.next_seq(agent_name);
-                let _ = trace_tx.send(trace::build_trace_event(
-                    run_id,
-                    agent_name,
-                    seq,
-                    TraceEventKind::Text { text: text.clone() },
-                ));
-            }
+            // Accumulate text chunks; flushed as a single trace event on next non-Text event.
+            running.pending_text.push_str(text);
         }
         ParsedEvent::ToolCall {
             ref name,
@@ -596,9 +641,35 @@ async fn handle_parsed_event(
                 },
             ));
         }
+        ParsedEvent::ToolCallUpdate { ref input } => {
+            // Deferred tool-call input from ACP `tool_call_update` with `rawInput`.
+            let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
+            let tool_input = driver.summarize_tool_input(&tool_name, input);
+            if !tool_input.is_empty() {
+                info!(agent = %agent_name, tool = %tool_name, input = %tool_input, "tool call input update");
+                activity_log::update_tool_call_input(logs, agent_name, tool_input.clone());
+                // Emit a corrected trace event so the frontend has the real input.
+                let (run_id, _) = trace_store.ensure_run(agent_name);
+                let seq = trace_store.next_seq(agent_name);
+                let _ = trace_tx.send(trace::build_trace_event(
+                    run_id,
+                    agent_name,
+                    seq,
+                    TraceEventKind::ToolCall {
+                        tool_name,
+                        tool_input,
+                    },
+                ));
+            }
+        }
         ParsedEvent::ToolResult { ref content } => {
             let tool_name = running.last_tool_raw_name.clone().unwrap_or_default();
-            activity_log::upsert_tool_result_activity(logs, agent_name, tool_name.clone(), content.clone());
+            activity_log::upsert_tool_result_activity(
+                logs,
+                agent_name,
+                tool_name.clone(),
+                content.clone(),
+            );
             // Emit trace event for tool result.
             let (run_id, _) = trace_store.ensure_run(agent_name);
             let seq = trace_store.next_seq(agent_name);
@@ -929,6 +1000,7 @@ mod tests {
             pending_notification_count: 0,
             last_tool_raw_name: None,
             pending_thinking: String::new(),
+            pending_text: String::new(),
         }
     }
 
@@ -1275,6 +1347,7 @@ mod tests {
                     pending_notification_count: 0,
                     last_tool_raw_name: None,
                     pending_thinking: String::new(),
+                    pending_text: String::new(),
                 },
             );
         }
@@ -1304,6 +1377,7 @@ mod tests {
                     pending_notification_count: 0,
                     last_tool_raw_name: None,
                     pending_thinking: String::new(),
+                    pending_text: String::new(),
                 },
             );
         }

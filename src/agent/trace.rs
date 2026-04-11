@@ -11,6 +11,8 @@ pub type RunId = String;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum TraceEventKind {
+    /// Agent has been notified and is reading/processing messages.
+    Reading,
     Thinking {
         text: String,
     },

@@ -54,7 +54,28 @@ export const useTraceStore = create<TraceState>((set) => ({
     set((state) => {
       const prev = state.traces[frame.agentName]
       const isNewRun = !prev || prev.runId !== frame.runId
-      const events = isNewRun ? [frame] : [...prev.events, frame]
+
+      // Merge consecutive text events into a single entry (typewriter-style accumulation).
+      let events: TraceFrame[]
+      if (isNewRun) {
+        events = [frame]
+      } else if (
+        frame.kind === 'text' &&
+        prev.events.length > 0 &&
+        prev.events[prev.events.length - 1].kind === 'text'
+      ) {
+        // Replace the last text event with a merged version.
+        const last = prev.events[prev.events.length - 1]
+        const merged: TraceFrame = {
+          ...frame,
+          seq: last.seq,
+          data: { text: (last.data.text ?? '') + (frame.data.text ?? '') },
+        }
+        events = [...prev.events.slice(0, -1), merged]
+      } else {
+        events = [...prev.events, frame]
+      }
+
       const isError = frame.kind === 'error'
       const isActive = frame.kind !== 'turn_end' && !isError
       const isRunEnd = frame.kind === 'turn_end' || frame.kind === 'error'

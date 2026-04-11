@@ -354,9 +354,8 @@ impl Store {
     /// Get all channel IDs where an agent is a member (includes DM channels).
     pub fn agent_channel_ids(&self, agent_name: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT DISTINCT channel_id FROM channel_members WHERE member_name = ?1",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT channel_id FROM channel_members WHERE member_name = ?1")?;
         let ids = stmt
             .query_map(rusqlite::params![agent_name], |row| row.get(0))?
             .filter_map(|r| r.ok())
