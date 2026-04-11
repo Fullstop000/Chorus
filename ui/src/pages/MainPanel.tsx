@@ -9,11 +9,12 @@ import {
   useTarget,
 } from "../hooks/data";
 import { useHistory } from "../hooks/useHistory";
+import { useTraceSubscription } from "../hooks/useTraceSubscription";
 import { TabBar } from "./TabBar";
 import { ChatHeader, ChatPanel } from "../components/chat/ChatPanel";
 import { TasksPanel } from "../components/tasks/TasksPanel";
 import { ProfilePanel } from "../components/agents/profile/ProfilePanel";
-import { ActivityPanel } from "../components/agents/activity/ActivityPanel";
+import { TelescopeActivity } from "../components/agents/activity/TelescopeActivity";
 import { WorkspacePanel } from "../components/agents/WorkspacePanel";
 import { MessageInput } from "../components/chat/MessageInput";
 import { ThreadPanel } from "../components/chat/ThreadPanel";
@@ -52,10 +53,12 @@ export function MainPanel() {
     activeTab === "chat" ? chatTarget : null,
     activeConversationId,
   );
+  useTraceSubscription(currentUser);
   const [members, setMembers] = useState<ChannelMemberInfo[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [showMembersPanel, setShowMembersPanel] = useState(false);
   const [showTeamSettings, setShowTeamSettings] = useState(false);
+
   const [teamDetails, setTeamDetails] = useState<TeamResponse | null>(null);
   const [teamSettingsLoading, setTeamSettingsLoading] = useState(false);
 
@@ -70,6 +73,7 @@ export function MainPanel() {
   useEffect(() => {
     setShowMembersPanel(false);
     setShowTeamSettings(false);
+
   }, [channelId]);
 
   useEffect(() => {
@@ -194,6 +198,7 @@ export function MainPanel() {
                 messages={chatHistory.messages}
                 loading={chatHistory.loading}
                 lastReadSeq={chatHistory.lastReadSeq}
+
               />
               <MessageInput
                 target={chatTarget}
@@ -206,7 +211,7 @@ export function MainPanel() {
           {activeTab === "tasks" && <TasksPanel />}
           {activeTab === "profile" && <ProfilePanel />}
           {activeTab === "activity" && currentAgent && (
-            <ActivityPanel agentName={currentAgent.name} />
+            <TelescopeActivity agentName={currentAgent.name} />
           )}
           {activeTab === "workspace" && currentAgent && (
             <WorkspacePanel agentName={currentAgent.name} />

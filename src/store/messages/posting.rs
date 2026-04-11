@@ -15,6 +15,7 @@ pub struct CreateMessage<'a> {
     pub content: &'a str,
     pub attachment_ids: &'a [String],
     pub suppress_event: bool,
+    pub run_id: Option<&'a str>,
 }
 
 impl Store {
@@ -28,6 +29,7 @@ impl Store {
         content: &str,
         attachment_ids: &[String],
         forwarded_from: Option<&ForwardedFrom>,
+        run_id: Option<&str>,
     ) -> Result<InsertedMessage> {
         let seq: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE channel_id = ?1",
@@ -38,8 +40,8 @@ impl Store {
         let forwarded_from_json = forwarded_from.map(serde_json::to_string).transpose()?;
         tx.execute(
             "INSERT INTO messages (
-                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8)",
+                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from, run_id
+             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
             params![
                 msg_id,
                 channel.id,
@@ -48,7 +50,8 @@ impl Store {
                 sender_type.as_str(),
                 content,
                 seq,
-                forwarded_from_json
+                forwarded_from_json,
+                run_id
             ],
         )?;
         for att_id in attachment_ids {
@@ -85,6 +88,7 @@ impl Store {
             content,
             attachment_ids,
             forwarded_from.as_ref(),
+            None,
         )?;
         tx.commit()?;
 
@@ -120,6 +124,7 @@ impl Store {
             content,
             &[],
             None,
+            None,
         )?;
         tx.commit()?;
 
@@ -154,6 +159,7 @@ impl Store {
             message.content,
             message.attachment_ids,
             None,
+            message.run_id,
         )?;
         if let Some(parent_id) = message.thread_parent_id {
             Self::set_thread_read_cursor_tx(

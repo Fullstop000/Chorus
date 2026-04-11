@@ -92,3 +92,16 @@
   border-color: var(--color-primary);
   color: #f8f6f1;
 }
+
+/* ── Pending (orphaned) trace ── */
+.pending-trace-wrapper {
+  padding: 4px 0 4px 52px;
+}
+
+.pending-trace-agent {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted-foreground);
+  margin-bottom: 2px;
+  display: block;
+}

@@ -162,9 +162,16 @@ impl ChatBridge {
         } else {
             String::new()
         };
+        // Append sent content so trace viewers (Telescope) can display what was sent.
+        // The model already knows its own content; this is confirmation, not redundancy.
+        let content_suffix = if !params.content.is_empty() {
+            format!("\nSent: {}", params.content)
+        } else {
+            String::new()
+        };
         Ok(format!(
-            "Message sent to {}. Message ID: {}{}",
-            target, message_id, reply_hint
+            "Message sent to {}. Message ID: {}{}{}",
+            target, message_id, reply_hint, content_suffix
         ))
     }
 

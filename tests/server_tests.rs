@@ -1015,6 +1015,7 @@ async fn test_history_rejects_non_member_agent() {
             content: "secret channel update",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1088,6 +1089,7 @@ async fn test_delete_channel_via_api_removes_channel_owned_data() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1500,6 +1502,7 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1631,6 +1634,7 @@ async fn test_thread_send_only_starts_parent_author_agent() {
             content: "parent from bot1",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let thread_target = format!("#general:{}", &parent_message_id[..8]);
@@ -1685,6 +1689,7 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
             content: "parent from bot1",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -1696,6 +1701,7 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
             content: "bot2 already joined the thread",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1747,6 +1753,7 @@ async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents
             content: "human started the thread",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1868,6 +1875,7 @@ async fn test_history() {
             content: "msg 1",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -1879,6 +1887,7 @@ async fn test_history() {
             content: "msg 2",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 

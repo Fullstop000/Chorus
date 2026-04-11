@@ -176,7 +176,9 @@ pub fn build_router_with_services(
         .route("/templates", get(handle_list_templates))
         .route("/templates/launch-trio", post(handle_launch_trio))
         .route("/server-info", get(handle_ui_server_info))
-        .route("/events/ws", get(handle_events_ws));
+        .route("/events/ws", get(handle_events_ws))
+        .route("/traces/{run_id}", get(handle_trace_events))
+        .route("/agents/{name}/runs", get(handle_agent_runs));
 
     Router::new()
         .nest("/internal", internal_router)

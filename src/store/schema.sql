@@ -54,6 +54,8 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL DEFAULT (datetime('now')), -- Timestamp of creation
     seq INTEGER NOT NULL, -- Monotonically increasing sequence number within the channel
     forwarded_from TEXT, -- Optional JSON or text indicating where the message was forwarded from
+    run_id TEXT, -- Telescope trace run id linking to trace_events
+    trace_summary TEXT, -- JSON summary of the trace run (toolCalls, duration, status, categories)
     UNIQUE(channel_id, seq)
 );
 
@@ -63,6 +65,18 @@ CREATE TABLE IF NOT EXISTS message_attachments (
     attachment_id TEXT NOT NULL, -- Foreign key to attachments.id
     PRIMARY KEY (message_id, attachment_id)
 );
+
+-- Trace events persisted for Telescope history.
+CREATE TABLE IF NOT EXISTS trace_events (
+    id INTEGER PRIMARY KEY,
+    run_id TEXT NOT NULL,     -- Links to messages.run_id
+    seq INTEGER NOT NULL,     -- Monotonic within run
+    timestamp_ms INTEGER NOT NULL,
+    kind TEXT NOT NULL,        -- Event type: thinking, tool_call, tool_result, text, turn_end, error
+    data TEXT NOT NULL,        -- JSON payload for the event
+    UNIQUE(run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq);
 
 -- AI Agents configuration and status.
 CREATE TABLE IF NOT EXISTS agents (
@@ -157,7 +171,9 @@ SELECT
     m.content AS content,
     m.created_at AS created_at,
     m.seq AS seq,
-    m.forwarded_from AS forwarded_from
+    m.forwarded_from AS forwarded_from,
+    m.run_id AS run_id,
+    m.trace_summary AS trace_summary
 FROM messages m
 JOIN channels c ON c.id = m.channel_id;
 

@@ -38,6 +38,12 @@ pub enum ParsedEvent {
         name: String,
         input: serde_json::Value,
     },
+    /// Deferred tool-call input received via `tool_call_update` with `rawInput`.
+    /// ACP runtimes often send the initial `tool_call` with empty args, then
+    /// deliver the real input in a subsequent `tool_call_update`.
+    ToolCallUpdate {
+        input: serde_json::Value,
+    },
     ToolResult {
         content: String,
     },

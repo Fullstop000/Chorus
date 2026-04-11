@@ -141,3 +141,28 @@ Run `/gstack-upgrade` to update skill inventory.
 3. **Update in the same PR that made you wish it said something.**
 4. **Annual audit.** Read every rule, every doc pointer. Delete what's stale. If you didn't delete anything, you didn't audit.
 
+
+---
+
+## Extension Points
+
+**Adding A New Driver:**
+
+Follow `docs/DRIVER_GUIDE.md`
+
+---
+
+## Completion Checklist
+
+Before stopping, confirm:
+
+- [ ] Change lives in correct subsystem and file
+- [ ] Verification matches risk of change
+- [ ] Required e2e/browser QA run for user-facing critical paths, or gap called out
+- [ ] `AGENTS.md` or related docs updated if shipped behavior/workflow changed
+
+## Design System
+Always read DESIGN.md before making any visual or UI decisions.
+All font choices, colors, spacing, and aesthetic direction are defined there.
+Do not deviate without explicit user approval.
+In QA mode, flag any code that doesn't match DESIGN.md.

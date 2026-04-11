@@ -30,6 +30,14 @@ pub trait AgentLifecycle: Send + Sync {
     ) -> ActivityLogResponse;
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)>;
+
+    /// Get the active trace run id for an agent, if any.
+    fn active_run_id(&self, _agent_name: &str) -> Option<String> {
+        None
+    }
+
+    /// Associate a channel with the agent's current or next trace run.
+    fn set_run_channel(&self, _agent_name: &str, _channel_id: &str) {}
 }
 
 pub(crate) struct NoopAgentLifecycle;

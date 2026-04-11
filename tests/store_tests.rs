@@ -200,6 +200,7 @@ fn test_send_and_receive_messages() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     assert!(!msg_id.is_empty());
@@ -223,6 +224,7 @@ fn test_send_and_receive_messages() {
             content: "hello bot",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let msgs = store.get_messages_for_agent("bot1", false).unwrap();
@@ -248,6 +250,7 @@ fn test_agent_does_not_receive_its_own_sent_message() {
             content: "hello alice",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -282,6 +285,7 @@ fn test_message_history_pagination() {
                 content: &format!("msg {i}"),
                 attachment_ids: &[],
                 suppress_event: false,
+                run_id: None,
             })
             .unwrap();
     }
@@ -317,6 +321,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
             content: "one",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -328,6 +333,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
             content: "two",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -368,6 +374,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             content: "one",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -379,6 +386,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             content: "thread reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let second_top_level = store
@@ -390,6 +398,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             content: "two",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -483,6 +492,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
             content: "one",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -494,6 +504,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
             content: "two",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -543,6 +554,7 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
             content: "parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let reply_id = store
@@ -554,6 +566,7 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
             content: "reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -609,6 +622,7 @@ fn test_history_read_cursor_rejects_seq_above_max() {
             content: "a",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -620,6 +634,7 @@ fn test_history_read_cursor_rejects_seq_above_max() {
             content: "b",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -653,6 +668,7 @@ fn test_history_read_cursor_rejects_negative_seq() {
             content: "a",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -684,6 +700,7 @@ fn test_history_read_cursor_heals_orphan_above_max_seq() {
             content: "a",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -726,6 +743,7 @@ fn test_conversation_messages_view_projects_message_rows() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
@@ -787,6 +805,7 @@ fn test_conversation_message_view_matches_history_projection() {
             content: "parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -798,6 +817,7 @@ fn test_conversation_message_view_matches_history_projection() {
             content: "reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -857,6 +877,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
             content: "parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -868,6 +889,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
             content: "reply one",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let last_reply_id = store
@@ -879,6 +901,7 @@ fn test_thread_summaries_view_projects_thread_metadata() {
             content: "reply two",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
@@ -932,6 +955,7 @@ fn test_thread_summary_projection_matches_history() {
             content: "parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let last_reply_id = store
@@ -943,6 +967,7 @@ fn test_thread_summary_projection_matches_history() {
             content: "reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1042,6 +1067,7 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1071,6 +1097,7 @@ fn test_create_message_persists_top_level() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let (history, _) = store.get_history("general", None, 10, None, None).unwrap();
@@ -1106,6 +1133,7 @@ fn test_thread_reply_updates_inbox_read_models() {
             content: "parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let reply_id = store
@@ -1117,6 +1145,7 @@ fn test_thread_reply_updates_inbox_read_models() {
             content: "reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1171,6 +1200,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             content: "oldest unread parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -1182,6 +1212,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             content: "oldest unread reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1194,6 +1225,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             content: "newest read parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let _newest_read_reply = store
@@ -1205,6 +1237,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             content: "newest read reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -1226,6 +1259,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             content: "newest unread parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let _newest_unread_reply = store
@@ -1237,6 +1271,7 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
             content: "newest unread reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1289,6 +1324,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             content: "from bot a",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -1300,6 +1336,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             content: "from bot b",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1338,6 +1375,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             content: "parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -1349,6 +1387,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             content: "reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1541,6 +1580,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
             content: "human parent",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1560,6 +1600,7 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
             content: "bot1 thread reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 
@@ -1815,6 +1856,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
             content: "hello",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store
@@ -1826,6 +1868,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
             content: "thread reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     store.create_tasks("eng", "bot1", &["ship it"]).unwrap();
@@ -1894,6 +1937,7 @@ fn test_thread_unread_count_clears_after_reading_all_messages() {
             content: "channel message",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
     let reply_id = store
@@ -1905,6 +1949,7 @@ fn test_thread_unread_count_clears_after_reading_all_messages() {
             content: "thread reply",
             attachment_ids: &[],
             suppress_event: false,
+            run_id: None,
         })
         .unwrap();
 

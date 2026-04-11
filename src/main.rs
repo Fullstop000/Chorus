@@ -404,6 +404,13 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
             as chorus::agent::runtime_status::SharedRuntimeStatusProvider,
         templates,
     );
+
+    // Spawn background trace writer for Telescope persistence.
+    chorus::store::trace_writer::spawn_trace_writer(
+        db_path.to_str().unwrap().to_string(),
+        store.subscribe_traces(),
+    );
+
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     println!("Chorus running at {server_url}");
     println!("Human user: @{username}");

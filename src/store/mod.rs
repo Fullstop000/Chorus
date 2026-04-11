@@ -7,12 +7,13 @@ pub mod migrations;
 pub mod stream;
 pub mod tasks;
 pub mod teams;
+pub mod trace_writer;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Result;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tokio::sync::broadcast;
 
 use crate::utils::{derive_data_dir, parse_datetime};
@@ -31,12 +32,16 @@ pub use stream::StreamEvent;
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
 
+use crate::agent::trace::TraceEvent;
+
 /// SQLite-backed persistence and pub/sub for new messages.
 pub struct Store {
     /// Serialized access to the rusqlite connection.
     conn: Mutex<Connection>,
     /// Broadcast channel for stream events (message.created only).
     stream_tx: broadcast::Sender<StreamEvent>,
+    /// Broadcast channel for agent trace events (tool calls, thinking, etc.).
+    trace_tx: broadcast::Sender<TraceEvent>,
     /// Root data directory (db parent, attachments, agents, teams).
     data_dir: PathBuf,
 }
@@ -51,9 +56,11 @@ impl Store {
         Self::init_schema(&conn)?;
         migrations::run_migrations(&conn)?;
         let (stream_tx, _) = broadcast::channel(256);
+        let (trace_tx, _) = broadcast::channel(1024);
         Ok(Self {
             conn: Mutex::new(conn),
             stream_tx,
+            trace_tx,
             data_dir: derive_data_dir(path),
         })
     }
@@ -108,6 +115,88 @@ impl Store {
 
     pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
         self.stream_tx.subscribe()
+    }
+
+    pub fn subscribe_traces(&self) -> broadcast::Receiver<TraceEvent> {
+        self.trace_tx.subscribe()
+    }
+
+    pub fn trace_sender(&self) -> broadcast::Sender<TraceEvent> {
+        self.trace_tx.clone()
+    }
+
+    /// Return the path to the SQLite database file (for trace_writer's separate connection).
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("chorus.db")
+    }
+
+    /// Look up the channel_id for a given run_id (from the first message in that run).
+    pub fn get_run_channel_id(&self, run_id: &str) -> Result<Option<String>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare("SELECT channel_id FROM messages WHERE run_id = ?1 LIMIT 1")?;
+        let result = stmt
+            .query_row(params![run_id], |row| row.get(0))
+            .optional()?;
+        Ok(result)
+    }
+
+    /// Retrieve ordered trace events for a given run_id.
+    pub fn get_trace_events(&self, run_id: &str) -> Result<Vec<serde_json::Value>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare(
+            "SELECT run_id, seq, timestamp_ms, kind, data FROM trace_events WHERE run_id = ?1 ORDER BY seq ASC",
+        )?;
+        let events: Vec<serde_json::Value> = stmt
+            .query_map(params![run_id], |row| {
+                let run_id: String = row.get(0)?;
+                let seq: i64 = row.get(1)?;
+                let timestamp_ms: i64 = row.get(2)?;
+                let kind: String = row.get(3)?;
+                let data: String = row.get(4)?;
+                Ok(serde_json::json!({
+                    "runId": run_id,
+                    "seq": seq,
+                    "timestampMs": timestamp_ms,
+                    "kind": kind,
+                    "data": serde_json::from_str::<serde_json::Value>(&data).unwrap_or_default(),
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(events)
+    }
+
+    /// List recent runs for an agent, filtered to channels the viewer is a member of.
+    pub fn get_agent_runs(
+        &self,
+        agent_name: &str,
+        viewer: &str,
+        limit: usize,
+    ) -> Result<Vec<serde_json::Value>> {
+        let conn = self.lock_conn();
+        let mut stmt = conn.prepare(
+            "SELECT m.id, m.run_id, m.trace_summary, m.created_at FROM messages m
+             JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.member_name = ?2
+             WHERE m.sender_name = ?1 AND m.run_id IS NOT NULL AND m.trace_summary IS NOT NULL
+             GROUP BY m.run_id
+             ORDER BY m.created_at DESC LIMIT ?3",
+        )?;
+        let runs: Vec<serde_json::Value> = stmt
+            .query_map(params![agent_name, viewer, limit as i64], |row| {
+                let id: String = row.get(0)?;
+                let run_id: String = row.get(1)?;
+                let summary: String = row.get(2)?;
+                let created_at: String = row.get(3)?;
+                Ok(serde_json::json!({
+                    "messageId": id,
+                    "runId": run_id,
+                    "traceSummary": serde_json::from_str::<serde_json::Value>(&summary).unwrap_or_default(),
+                    "createdAt": created_at,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(runs)
     }
 
     // ── Sender type lookup ──
