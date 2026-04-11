@@ -4,9 +4,8 @@ How the Rust side of Chorus is organized, written, and tested. Read this
 before any backend change. Update it in the same PR when you introduce a new
 pattern.
 
-For the visual side, see `docs/conventions/design.md`. For how to run the
-app, see `docs/operations/development.md`. For the code-level map, see the
-tables in `AGENTS.md` § Project Organization.
+For the visual side, see `docs/DESIGN.md`. For how to run the app, see
+`docs/DEV.md`.
 
 ---
 
@@ -220,7 +219,7 @@ rather than scattering "models" and "queries" across separate folders.
 
 ## Adding a new runtime driver
 
-See `docs/extensions/driver-guide.md`.
+See `docs/DRIVERS.md`.
 
 ---
 

@@ -2,8 +2,6 @@
 
 AI agent collaboration platform. Agents run as OS processes and communicate through a Slack-like chat interface.
 
-This file is the routing table. Read it first, follow the pointers.
-
 ---
 
 ## Principles
@@ -14,21 +12,7 @@ This file is the routing table. Read it first, follow the pointers.
 
 ---
 
-## Docs
-
-| Reader-type | Folder              | When to read                                                   |
-| ----------- | ------------------- | -------------------------------------------------------------- |
-| Code writer | `docs/conventions/` | Before writing code. `general.md`, `backend.md`, `design.md`. |
-| Operator    | `docs/operations/`  | Before running, testing, shipping. `development.md`.           |
-| Mechanic    | `docs/mechanisms/`  | When modifying a subsystem. `inbox.md` and growing.            |
-| Extender    | `docs/extensions/`  | When adding a driver, template, or plugin. `driver-guide.md`.  |
-| Historian   | `docs/adr/`         | When wondering "why did we choose X over Y".                   |
-
-Two-hop lookup: this table → category README → file.
-
----
-
-## Quick Reference
+## Part I — Getting Started
 
 ```bash
 # Run
@@ -46,15 +30,49 @@ cargo build                            # backend
 cd ui && npm run build                 # frontend production build
 ```
 
-Full setup details: `docs/operations/development.md`.
+Full setup, prerequisites, and dev workflow: [`docs/DEV.md`](docs/DEV.md)
 
 ---
 
-## Chorus Workflows
+## Part II — Conventions
+
+How we write code. Read the relevant doc before touching that subsystem.
+
+| Doc | Covers | Read before |
+|-----|--------|-------------|
+| [`docs/BACKEND.md`](docs/BACKEND.md) | Rust — error handling, enums, logging, schema/views, tests, Axum handlers | Any backend change |
+| [`docs/DESIGN.md`](docs/DESIGN.md) | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change |
+
+Cross-cutting rules (apply everywhere):
+
+- **Match the neighborhood.** Enum-first types, SQL views for read models, mono chat content, zero-radius UI. Check existing patterns before inventing new ones.
+- **Make invalid states unrepresentable.** Enums over booleans. Typed errors over `null`. Required args over optional flags.
+- **Names are documentation.** `isLoading` not `loading`. One concept = one word.
+- **One thing, done well.** One function = one job. One file = one concept (300 lines = signal, 500 = problem).
+- **Fail loudly with context.** Never swallow exceptions. `anyhow!("channel not found: {name}")`. No silent retry logic.
+- **Explain why, not what.** Comments justify decisions the code cannot express.
+- **Verification matches risk.** Backend → `cargo test`. Data path → `cargo test --test e2e_tests`. UI → `/gstack-qa`.
+
+---
+
+## Part III — Architecture
+
+Deep knowledge for modifying subsystems.
+
+| Doc | Covers | Read when |
+|-----|--------|-----------|
+| [`docs/INBOX.md`](docs/INBOX.md) | Inbox delivery mechanism — how messages reach agents | Modifying message delivery |
+| [`docs/ACP.md`](docs/ACP.md) | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver |
+| [`docs/DRIVERS.md`](docs/DRIVERS.md) | Adding a new runtime driver or template type | Adding a new runtime |
+| [`docs/ADR.md`](docs/ADR.md) | Architecture decision records — "why did we choose X over Y" | Questioning a past decision |
+
+---
+
+## Part IV — Chorus Workflows
 
 All skills prefixed with `/gstack-` (`SKILL_PREFIX=true`).
 When a request matches a skill, ALWAYS invoke it using the Skill tool as the FIRST action.
-Do NOT answer directly or use other tools first. The skill has specialized workflows.
+Do NOT answer directly or use other tools first.
 
 ### Spec
 

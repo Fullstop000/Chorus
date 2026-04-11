@@ -3,8 +3,8 @@
 How to run, test, and iterate on Chorus locally. Everything a new contributor
 (human or agent) needs to get productive in 5 minutes.
 
-For code conventions see `docs/conventions/backend.md` (Rust) and
-`docs/conventions/design.md` (frontend). For the code map see the tables
+For code conventions see `docs/BACKEND.md` (Rust) and
+`docs/DESIGN.md` (frontend). For the code map see the tables
 in `AGENTS.md` § Project Organization.
 
 ---
@@ -74,7 +74,7 @@ cargo test <name>             # single test by name
 
 The test suite is ~190 tests across 6 integration files. It uses real
 SQLite tempdirs via the `make_store()` helper in `tests/store_tests.rs` —
-not mocks. See `docs/conventions/backend.md` § Testing for conventions and file
+not mocks. See `docs/BACKEND.md` § Testing for conventions and file
 layout.
 
 ### Frontend

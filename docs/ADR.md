@@ -53,7 +53,7 @@ evaluate whether the reasoning still holds.
 
 ## When NOT to write an ADR
 
-- Routine implementation choices covered by `docs/conventions/`
+- Routine implementation choices covered by `docs/BACKEND.md` or `docs/DESIGN.md`
 - Bug fixes (those belong in commit messages)
 - Personal preferences (those belong in a review thread)
 - Decisions that only affect one PR
