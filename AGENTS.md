@@ -30,7 +30,7 @@ cargo build                            # backend
 cd ui && npm run build                 # frontend production build
 ```
 
-Full setup, prerequisites, and dev workflow: [`docs/DEV.md`](docs/DEV.md)
+Full setup, prerequisites, and dev workflow: `[docs/DEV.md](docs/DEV.md)`
 
 ---
 
@@ -38,10 +38,12 @@ Full setup, prerequisites, and dev workflow: [`docs/DEV.md`](docs/DEV.md)
 
 How we write code. Read the relevant doc before touching that subsystem.
 
-| Doc | Covers | Read before |
-|-----|--------|-------------|
-| [`docs/BACKEND.md`](docs/BACKEND.md) | Rust — error handling, enums, logging, schema/views, tests, Axum handlers | Any backend change |
-| [`docs/DESIGN.md`](docs/DESIGN.md) | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change |
+
+| Doc                                  | Covers                                                                      | Read before        |
+| ------------------------------------ | --------------------------------------------------------------------------- | ------------------ |
+| `[docs/BACKEND.md](docs/BACKEND.md)` | Rust — error handling, enums, logging, schema/views, tests, Axum handlers   | Any backend change |
+| `[docs/DESIGN.md](docs/DESIGN.md)`   | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change      |
+
 
 Cross-cutting rules (apply everywhere):
 
@@ -59,12 +61,13 @@ Cross-cutting rules (apply everywhere):
 
 Deep knowledge for modifying subsystems.
 
-| Doc | Covers | Read when |
-|-----|--------|-----------|
-| [`docs/INBOX.md`](docs/INBOX.md) | Inbox delivery mechanism — how messages reach agents | Modifying message delivery |
-| [`docs/ACP.md`](docs/ACP.md) | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver |
-| [`docs/DRIVERS.md`](docs/DRIVERS.md) | Adding a new runtime driver or template type | Adding a new runtime |
-| [`docs/ADR.md`](docs/ADR.md) | Architecture decision records — "why did we choose X over Y" | Questioning a past decision |
+
+| Doc                                  | Covers                                                        | Read when                   |
+| ------------------------------------ | ------------------------------------------------------------- | --------------------------- |
+| `[docs/INBOX.md](docs/INBOX.md)`     | Inbox delivery mechanism — how messages reach agents          | Modifying message delivery  |
+| `[docs/ACP.md](docs/ACP.md)`         | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver        |
+| `[docs/DRIVERS.md](docs/DRIVERS.md)` | Adding a new runtime driver or template type                  | Adding a new runtime        |
+
 
 ---
 
@@ -76,43 +79,53 @@ Do NOT answer directly or use other tools first.
 
 ### Spec
 
-| Skill | When |
-|-------|------|
-| `/gstack-office-hours` | New feature idea, "is this worth building", problem framing |
-| `/gstack-plan-eng-review` | Architecture review before implementation |
-| `/gstack-plan-ceo-review` | Scope challenge, dream state mapping, expansion decisions |
+
+| Skill                     | When                                                        |
+| ------------------------- | ----------------------------------------------------------- |
+| `/gstack-office-hours`    | New feature idea, "is this worth building", problem framing |
+| `/gstack-plan-eng-review` | Architecture review before implementation                   |
+| `/gstack-plan-ceo-review` | Scope challenge, dream state mapping, expansion decisions   |
+
 
 ### Develop
 
-| Skill | When |
-|-------|------|
-| `superpowers:executing-plans` | Implement a plan with review checkpoints |
-| `superpowers:subagent-driven-development` | Parallel implementation of independent tasks |
-| `/gstack-investigate` | Agent won't start, message not delivered, driver error, any bug |
-| `/gstack-review` | Code review, check my diff before shipping |
-| `/gstack-health` | Code quality dashboard, test coverage, dead code |
+
+| Skill                                     | When                                                            |
+| ----------------------------------------- | --------------------------------------------------------------- |
+| `superpowers:executing-plans`             | Implement a plan with review checkpoints                        |
+| `superpowers:subagent-driven-development` | Parallel implementation of independent tasks                    |
+| `/gstack-investigate`                     | Agent won't start, message not delivered, driver error, any bug |
+| `/gstack-review`                          | Code review, check my diff before shipping                      |
+| `/gstack-health`                          | Code quality dashboard, test coverage, dead code                |
+
 
 ### Polish
 
-| Skill | When |
-|-------|------|
-| `/gstack-design-consultation` | Design system, brand, typography, color |
-| `/gstack-design-review` | Visual audit, spacing issues, design polish |
+
+| Skill                         | When                                        |
+| ----------------------------- | ------------------------------------------- |
+| `/gstack-design-consultation` | Design system, brand, typography, color     |
+| `/gstack-design-review`       | Visual audit, spacing issues, design polish |
+
 
 ### Ship
 
-| Skill | When |
-|-------|------|
-| `/gstack-ship` | Create PR, push, deploy |
-| `/gstack-qa` | Test the live site, find bugs, verify fix |
+
+| Skill          | When                                      |
+| -------------- | ----------------------------------------- |
+| `/gstack-ship` | Create PR, push, deploy                   |
+| `/gstack-qa`   | Test the live site, find bugs, verify fix |
+
 
 ### Maintain
 
-| Skill | When |
-|-------|------|
-| `/gstack-document-release` | Update docs after shipping |
-| `/gstack-retro` | Weekly retro, what shipped, what broke |
-| `/gstack-checkpoint` | Save progress, resume later |
+
+| Skill                      | When                                   |
+| -------------------------- | -------------------------------------- |
+| `/gstack-document-release` | Update docs after shipping             |
+| `/gstack-retro`            | Weekly retro, what shipped, what broke |
+| `/gstack-checkpoint`       | Save progress, resume later            |
+
 
 Browser: use `/gstack-browse`. Never use `mcp__claude-in-chrome__`* tools.
 Run `/gstack-upgrade` to update skill inventory.
@@ -125,3 +138,4 @@ Run `/gstack-upgrade` to update skill inventory.
 2. **Adding a rule means deleting a weaker one.** Fixed budget. Growth is not progress.
 3. **Update in the same PR that made you wish it said something.**
 4. **Annual audit.** Read every rule, every doc pointer. Delete what's stale. If you didn't delete anything, you didn't audit.
+
