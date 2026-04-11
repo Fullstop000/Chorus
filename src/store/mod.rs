@@ -162,6 +162,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, run_id, trace_summary, created_at FROM messages
              WHERE sender_name = ?1 AND run_id IS NOT NULL AND trace_summary IS NOT NULL
+             GROUP BY run_id
              ORDER BY created_at DESC LIMIT ?2",
         )?;
         let runs: Vec<serde_json::Value> = stmt
