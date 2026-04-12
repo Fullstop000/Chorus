@@ -31,7 +31,11 @@ pub async fn handle_events_ws(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", params.viewer));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "viewer not found: {}",
+            params.viewer
+        ));
     }
 
     Ok(ws.on_upgrade(move |socket| realtime_session(socket, state.store.clone(), params.viewer)))

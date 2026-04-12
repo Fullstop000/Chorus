@@ -103,11 +103,16 @@ pub async fn handle_agent_workspace_file(
     let file_path = workspace_dir.join(&relative);
 
     if !file_path.is_file() {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "workspace file not found"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "workspace file not found"
+        ));
     }
 
-    let metadata = std::fs::metadata(&file_path).map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let bytes = std::fs::read(&file_path).map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let metadata = std::fs::metadata(&file_path)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let bytes = std::fs::read(&file_path)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let limit = 100_000usize;
     let truncated = bytes.len() > limit;
     let content = if truncated {
