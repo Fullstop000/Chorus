@@ -59,6 +59,50 @@ pub struct AgentTemplateConfig {
     pub default: String,
 }
 
+/// File-logging settings. Applied by `chorus serve` / `chorus run` to
+/// write structured logs into `<data_dir>/logs/` alongside stdout output.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LogsConfig {
+    /// Tracing-subscriber directive string (same syntax as `RUST_LOG`).
+    /// Default `chorus=info`.
+    #[serde(default = "LogsConfig::default_level")]
+    pub level: String,
+
+    /// Rotation cadence: `"daily"` | `"hourly"` | `"never"`.
+    #[serde(default = "LogsConfig::default_rotation")]
+    pub rotation: String,
+
+    /// Max number of rotated log files to keep. Older files are deleted
+    /// as new ones are written. Only meaningful when `rotation` != "never".
+    #[serde(default = "LogsConfig::default_retention")]
+    pub retention: u32,
+}
+
+impl LogsConfig {
+    fn default_level() -> String {
+        "chorus=info".into()
+    }
+    fn default_rotation() -> String {
+        // `never` = one `chorus.log` that grows indefinitely. Set to
+        // `daily` or `hourly` in config.toml to enable date-stamped
+        // rotation with retention.
+        "never".into()
+    }
+    fn default_retention() -> u32 {
+        14
+    }
+}
+
+impl Default for LogsConfig {
+    fn default() -> Self {
+        Self {
+            level: Self::default_level(),
+            rotation: Self::default_rotation(),
+            retention: Self::default_retention(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChorusConfig {
     /// Stable random identifier for this installation. Generated at first
@@ -69,6 +113,9 @@ pub struct ChorusConfig {
 
     #[serde(default)]
     pub agent_template: AgentTemplateConfig,
+
+    #[serde(default)]
+    pub logs: LogsConfig,
 
     #[serde(default)]
     pub claude: AcpRuntimeConfig,

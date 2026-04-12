@@ -147,19 +147,24 @@ fn default_model_for_runtime(runtime: &str) -> &str {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Initialize tracing. Default level: chorus=info (override with RUST_LOG).
     // Enable RUST_BACKTRACE by default so Backtrace::capture() works in error handlers.
     if std::env::var_os("RUST_BACKTRACE").is_none() {
         std::env::set_var("RUST_BACKTRACE", "1");
     }
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("chorus=info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
-        .with_target(false)
-        .with_file(true)
-        .with_line_number(true)
-        .init();
+
+    // Only serve/run/setup/default (no subcommand) persist data and therefore
+    // want file logging. CLI-only subcommands (bridge, send, history, status,
+    // channel, agent) log to stdout only.
+    let log_data_dir: Option<String> = match &cli.command {
+        Some(Commands::Serve { data_dir, .. })
+        | Some(Commands::Setup { data_dir, .. })
+        | Some(Commands::Run { data_dir, .. }) => {
+            Some(data_dir.clone().unwrap_or_else(default_data_dir))
+        }
+        None => Some(default_data_dir()),
+        _ => None,
+    };
+    let _log_guard = chorus::logging::init_tracing(log_data_dir.as_deref());
 
     match cli.command {
         Some(Commands::Bridge {
