@@ -2,10 +2,10 @@ mod harness;
 
 use std::sync::Arc;
 
-use harness::build_router;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
+use harness::build_router;
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());

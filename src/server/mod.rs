@@ -11,7 +11,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
-use crate::agent::{AgentLifecycle};
+use crate::agent::AgentLifecycle;
 use crate::store::Store;
 
 pub use handlers::dto;

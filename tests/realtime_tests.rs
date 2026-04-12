@@ -3,11 +3,11 @@ mod harness;
 use std::sync::Arc;
 
 use anyhow::Context;
-use harness::build_router;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
 use futures_util::StreamExt;
+use harness::build_router;
 use serde_json::Value;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
