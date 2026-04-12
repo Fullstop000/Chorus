@@ -809,30 +809,7 @@ async fn cmd_setup(
         let _ = Store::open(db_path.to_str().unwrap())?;
     }
 
-    // Interactive seed
-    if interactive {
-        use dialoguer::theme::ColorfulTheme;
-        use dialoguer::Confirm;
-        println!();
-        let seed = Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Create a welcome channel (#general)?")
-            .default(true)
-            .interact()
-            .unwrap_or(false);
-        if seed {
-            let store = Store::open(db_path.to_str().unwrap())?;
-            let username = whoami::username();
-            match store.create_channel("general", Some("General chat"), ChannelType::Channel) {
-                Ok(_) => {
-                    let _ = store.join_channel("general", &username, SenderType::Human);
-                    row_ok("channel", "#general created");
-                }
-                Err(e) => row_warn("channel", &format!("could not create: {e}")),
-            }
-        }
-    }
-
-    // 5. Summary line
+    // Summary line
     println!();
     if detected_runtimes.is_empty() {
         println!(
