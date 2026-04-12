@@ -1,7 +1,4 @@
 import { get } from './client'
-import { queryString } from './common'
-import { queryOptions } from '@tanstack/react-query'
-import { bootstrapInboxState } from '../inbox'
 
 // ── Types (source of truth — API responses) ──
 
@@ -63,54 +60,12 @@ export function getInboxState(_username: string): Promise<InboxResponse> {
   return get('/api/inbox')
 }
 
-export function getConversationInboxNotification(
-  conversationId: string,
-  threadParentId?: string
-): Promise<ConversationInboxRefreshResponse> {
-  return get(
-    `/api/conversations/${encodeURIComponent(conversationId)}/inbox-notification${queryString({ threadParentId })}`
-  )
-}
-
 export function getChannelThreads(conversationId: string): Promise<ThreadInboxResponse> {
   return get(`/api/conversations/${encodeURIComponent(conversationId)}/threads`)
 }
 
-// ── Transforms ──
+// ── Conversation helpers ──
 
-export function sortByUnread<T extends { unreadCount: number }>(items: T[]): T[] {
-  return [...items].sort((a, b) => b.unreadCount - a.unreadCount)
+export function dmConversationNameForParticipants(left: string, right: string): string {
+  return `dm-${[left, right].sort().join('-')}`
 }
-
-export function hasUnread(item: { unreadCount: number }): boolean {
-  return item.unreadCount > 0
-}
-
-// ── Query definitions ──
-
-export const inboxQueryKeys = {
-  inbox: (user: string) => ['inbox', user] as const,
-} as const
-
-export type InboxState = ReturnType<typeof bootstrapInboxState>
-
-export const inboxQuery = (
-  currentUser: string,
-  shellBootstrapped: boolean,
-  channelsData?: import('./channels').ChannelInfo[]
-) =>
-  queryOptions({
-    queryKey: [
-      ...inboxQueryKeys.inbox(currentUser),
-      'bootstrapped',
-      channelsData !== undefined,
-    ],
-    queryFn: async () => {
-      const response = await getInboxState(currentUser)
-      return { response, channels: channelsData ?? [] }
-    },
-    enabled: !!currentUser && !shellBootstrapped && channelsData !== undefined,
-    staleTime: Infinity,
-    select: ({ response, channels }) =>
-      bootstrapInboxState(response.conversations, channels),
-  })

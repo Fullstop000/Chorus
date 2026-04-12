@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import type { AgentInfo, ChannelInfo, HistoryMessage, ThreadInboxEntry } from '../data'
-import type { InboxState } from '../inbox'
-import { createInboxState, threadNotificationKey } from '../inbox'
+import type { InboxState } from './inbox'
+import { createInboxState, threadNotificationKey } from './inbox'
 
 export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
 

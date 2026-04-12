@@ -145,16 +145,16 @@ export {
 
 export {
   getInboxState,
-  getConversationInboxNotification,
   getChannelThreads,
-  sortByUnread,
-  hasUnread,
-  inboxQueryKeys,
-  inboxQuery,
-  type InboxState,
+  dmConversationNameForParticipants,
   type InboxConversationState,
   type InboxResponse,
-  type ConversationInboxRefreshResponse,
   type ThreadInboxEntry,
   type ThreadInboxResponse,
 } from './inbox'
+
+export {
+  inboxQueryKeys,
+  inboxQuery,
+  type InboxState,
+} from '../store/inbox'
