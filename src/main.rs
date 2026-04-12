@@ -636,6 +636,25 @@ fn extract_version(s: &str) -> Option<String> {
     re.find(s).map(|m| m.as_str().to_string())
 }
 
+/// Resolve an executable's absolute path by walking `$PATH`, the same way
+/// `which <name>` does. Returns `None` if the binary isn't found.
+fn which_tool(name: &str) -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|p| p.is_file())
+}
+
+/// Fill `target` with the resolved absolute path for `name` iff `target`
+/// is currently empty. Preserves any user-pinned value across re-runs.
+fn fill_resolved_path(target: &mut String, name: &str) {
+    if target.is_empty() {
+        if let Some(p) = which_tool(name) {
+            *target = p.to_string_lossy().into_owned();
+        }
+    }
+}
+
 /// Run `<name> --version` and return the extracted dotted version, or `None`
 /// if the binary is missing or the command fails. Some tools print their
 /// version to stderr (historically `python --version` did), so we fall
@@ -930,6 +949,16 @@ async fn cmd_setup(
     let mut cfg = ChorusConfig::load(&data_dir)?.unwrap_or_default();
     let machine_id = cfg.ensure_machine_id().to_string();
     cfg.agent_template.dir = Some(template_dir_raw.clone());
+
+    // Pin runtime binaries to the exact paths detected on this machine,
+    // but don't overwrite anything the user has already customized.
+    fill_resolved_path(&mut cfg.claude.binary_path, "claude");
+    fill_resolved_path(&mut cfg.claude.acp_adaptor, "claude-agent-acp");
+    fill_resolved_path(&mut cfg.codex.binary_path, "codex");
+    fill_resolved_path(&mut cfg.codex.acp_adaptor, "codex-acp");
+    fill_resolved_path(&mut cfg.kimi.binary_path, "kimi");
+    fill_resolved_path(&mut cfg.opencode.binary_path, "opencode");
+
     let cfg_path = cfg.save(&data_dir)?;
 
     section("Layout");
