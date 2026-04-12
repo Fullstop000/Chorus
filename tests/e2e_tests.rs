@@ -1,6 +1,8 @@
+mod harness;
+
 use std::sync::Arc;
 
-use chorus::server::build_router;
+use harness::build_router;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;

@@ -1,60 +1,13 @@
+/* ── ShimmeringText: animate-ui per-character motion/react wave ── */
+
 .ui-shimmering-text {
   --shimmer-base: var(--color-muted-foreground);
-  --shimmer-accent: var(--color-foreground);
-  --shimmer-bright: var(--color-foreground);
-  --shimmer-duration: 1.45s;
-  display: inline-block;
-  color: var(--shimmer-base);
-}
-
-@supports ((-webkit-background-clip: text) or (background-clip: text)) {
-  .ui-shimmering-text {
-    color: transparent;
-    background-image: linear-gradient(
-      96deg,
-      var(--shimmer-base) 0%,
-      var(--shimmer-base) 34%,
-      var(--shimmer-accent) 46%,
-      var(--shimmer-bright) 50%,
-      var(--shimmer-accent) 54%,
-      var(--shimmer-base) 66%,
-      var(--shimmer-base) 100%
-    );
-    background-size: 165% 100%;
-    background-position: 120% 50%;
-    background-repeat: no-repeat;
-    background-clip: text;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    will-change: background-position;
-    animation: ui-shimmering-text var(--shimmer-duration) linear infinite;
-  }
+  --shimmer-bright: var(--color-background);
 }
 
 @media (forced-colors: active) {
-  .ui-shimmering-text {
-    color: CanvasText;
-    background-image: none;
-    -webkit-text-fill-color: currentColor;
-    animation: none;
-    will-change: auto;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .ui-shimmering-text {
-    animation: none;
-    background-position: 50% 50%;
-    will-change: auto;
-  }
-}
-
-@keyframes ui-shimmering-text {
-  from {
-    background-position: 120% 50%;
-  }
-
-  to {
-    background-position: -20% 50%;
+  .ui-shimmering-text * {
+    color: CanvasText !important;
+    animation: none !important;
   }
 }

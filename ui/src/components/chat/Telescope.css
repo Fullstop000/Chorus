@@ -98,7 +98,7 @@
 }
 
 /* ── Per-row accordion ── */
-.tele-row + .tele-row {
+.tele-row+.tele-row {
   border-top: none;
 }
 
@@ -226,14 +226,12 @@
 .tele-shimmer[data-phase="doing"],
 .tele-shimmer[data-phase="loading"] {
   --shimmer-base: var(--color-accent-foreground);
-  --shimmer-accent: var(--status-sleeping);
-  --shimmer-bright: var(--color-foreground);
+  --shimmer-bright: var(--status-sleeping);
 }
 
 .tele-shimmer[data-phase="reading"] {
   --shimmer-base: var(--color-muted-foreground);
-  --shimmer-accent: var(--color-foreground);
-  --shimmer-bright: var(--color-foreground);
+  --shimmer-bright: var(--color-background);
 }
 
 /* ── Category chips ── */
@@ -298,8 +296,15 @@
 
 /* ── Pulse animation ── */
 @keyframes tele-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
+
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.35;
+  }
 }
 
 /* ── Completion flash ── */
@@ -308,6 +313,11 @@
 }
 
 @keyframes tele-flash {
-  0% { background: rgba(31, 157, 77, 0.15); }
-  100% { background: transparent; }
+  0% {
+    background: rgba(31, 157, 77, 0.15);
+  }
+
+  100% {
+    background: transparent;
+  }
 }
