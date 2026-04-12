@@ -154,11 +154,11 @@ app_err!(StatusCode::NOT_FOUND, "channel not found: {name}")
 app_err!(StatusCode::INTERNAL_SERVER_ERROR, "store error: {e}")
 
 // AppErrorCode — machine-readable errors the frontend can act on
-app_err!(AppErrorCode::AgentNotRunning, "agent {id} is not running")
-app_err!(AppErrorCode::AgentAlreadyRunning, "agent {id} is already running")
+app_err!(AppErrorCode::AgentNameTaken, "agent name already exists: {name}")
+app_err!(AppErrorCode::MessageNotAMember, "sender is not a channel member")
 ```
 
-`AppErrorCode` variants produce a `code` field in the `ErrorResponse` JSON (e.g. `"code": "AgentNotRunning"`). The full list of variants is in `src/server/error.rs`. The matching frontend type is `ApiErrorCode` in `ui/src/lib/apiError.ts`.
+`AppErrorCode` variants produce a `code` field in the `ErrorResponse` JSON (e.g. `"code": "AGENT_NAME_TAKEN"`). The full list of variants is in `src/server/error.rs`. The matching frontend type is `ApiErrorCode` in `ui/src/lib/apiError.ts`.
 
 **Do not use `api_err`, `internal_err`, `conflict_err`, or `coded_err`** — they were consolidated into `app_err!()`.
 
