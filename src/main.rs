@@ -405,10 +405,12 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
 
     let server_url = format!("http://localhost:{port}");
     let bridge_binary = std::env::current_exe()?.to_string_lossy().into_owned();
-    let manager = Arc::new(
-        AgentManager::new(store.clone(), agents_dir, bridge_binary, server_url.clone())
-            .with_logs_dir(logs_dir.join("agents")),
-    );
+    let manager = Arc::new(AgentManager::new(
+        store.clone(),
+        agents_dir,
+        bridge_binary,
+        server_url.clone(),
+    ));
 
     // Auto-restart agents that were active before server restart.
     // Track failures per agent so repeated failures can be surfaced.
