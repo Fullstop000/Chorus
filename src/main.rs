@@ -467,15 +467,109 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
 
 // ---- chorus setup / chorus run -------------------------------------------
 
+use console::{style, Emoji};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::Command;
+use std::time::{Duration, Instant};
 
-/// Detected CLI tool: name, install hint, version if found.
+// Glyphs. `console::Emoji` falls back to ASCII on dumb terminals.
+static OK: Emoji<'_, '_> = Emoji("✓ ", "ok ");
+static BAD: Emoji<'_, '_> = Emoji("✗ ", "x  ");
+static WARN: Emoji<'_, '_> = Emoji("⚠ ", "!  ");
+
+fn banner() {
+    // Render visible content for each inner row at a fixed width, then apply
+    // ANSI styling on top (styling adds bytes but no visible columns).
+    const INNER: usize = 41;
+    let dashes = "─".repeat(INNER);
+    let row1_plain = format!(
+        "{:<width$}",
+        " Chorus · local AI agent platform",
+        width = INNER
+    );
+    let row1_styled = row1_plain
+        .replacen("Chorus", &style("Chorus").bold().cyan().to_string(), 1)
+        .replacen(
+            "· local AI agent platform",
+            &style("· local AI agent platform").dim().to_string(),
+            1,
+        );
+    let row2_styled = style(format!("{:<width$}", " first-run setup", width = INNER))
+        .dim()
+        .to_string();
+    let bar = style("│").dim();
+    println!();
+    println!("  {}", style(format!("┌{}┐", dashes)).dim());
+    println!("  {}{}{}", bar, row1_styled, bar);
+    println!("  {}{}{}", bar, row2_styled, bar);
+    println!("  {}", style(format!("└{}┘", dashes)).dim());
+    println!();
+}
+
+fn section(title: &str) {
+    println!();
+    println!("  {}", style(title).bold());
+}
+
+fn row_ok(name: &str, detail: &str) {
+    println!(
+        "  {}{:<12} {}",
+        style(OK).green(),
+        style(name).bold(),
+        style(detail).dim()
+    );
+}
+
+fn row_missing(name: &str, hint: &str) {
+    println!(
+        "  {}{:<12} {} {}",
+        style(BAD).red(),
+        style(name).bold(),
+        style("not found ·").dim(),
+        style(hint).dim().italic()
+    );
+}
+
+fn row_warn(name: &str, detail: &str) {
+    println!(
+        "  {}{:<12} {}",
+        style(WARN).yellow(),
+        style(name).bold(),
+        style(detail).dim()
+    );
+}
+
+fn row_info(label: &str, value: &str) {
+    println!("  {:<12} {}", style(label).dim(), value);
+}
+
+fn footer(elapsed: Duration, next: &str) {
+    println!();
+    println!("  {}", style("─".repeat(41)).dim());
+    println!(
+        "  All set in {}. Next:",
+        style(format!("{:.1}s", elapsed.as_secs_f64())).bold()
+    );
+    println!("    {} {}", style("$").dim(), style(next).cyan().bold());
+    println!();
+}
+
+/// Detected CLI tool: name, install hint, extracted version if found.
 struct ToolReport {
     name: &'static str,
     hint: &'static str,
     version: Option<String>,
+}
+
+/// Extract the first dotted version number from a version-output line,
+/// so we show "1.3.12" instead of "bun 1.3.12" or "kimi, version 1.31.0".
+fn extract_version(s: &str) -> Option<String> {
+    static VERSION_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = VERSION_RE
+        .get_or_init(|| regex::Regex::new(r"\b\d+\.\d+(?:\.\d+)?(?:[-+][\w.]+)?\b").unwrap());
+    re.find(s).map(|m| m.as_str().to_string())
 }
 
 fn check_tool(name: &'static str, hint: &'static str) -> ToolReport {
@@ -484,29 +578,19 @@ fn check_tool(name: &'static str, hint: &'static str) -> ToolReport {
         .output()
         .ok()
         .filter(|o| o.status.success())
-        .map(|o| {
-            String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        })
-        .filter(|v| !v.is_empty());
+        .and_then(|o| {
+            let raw = String::from_utf8_lossy(&o.stdout).to_string();
+            extract_version(&raw).or_else(|| {
+                raw.lines()
+                    .next()
+                    .map(|l| l.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+        });
     ToolReport {
         name,
         hint,
         version,
-    }
-}
-
-fn print_tool(report: &ToolReport, required: bool) {
-    match &report.version {
-        Some(v) => println!("  [ok] {:<10} {}", report.name, v),
-        None => {
-            let tag = if required { "MISSING" } else { "missing" };
-            println!("  [{}] {:<10} install: {}", tag, report.name, report.hint);
-        }
     }
 }
 
@@ -515,22 +599,28 @@ async fn cmd_setup(
     data_dir: Option<String>,
     force_ui_build: bool,
 ) -> anyhow::Result<()> {
+    let started = Instant::now();
     let interactive = !yes && std::io::stdin().is_terminal();
     if !yes && !interactive {
-        println!("stdin is not a terminal; running in --yes mode.");
+        println!(
+            "  {} stdin is not a terminal; running in non-interactive mode.",
+            style(WARN).yellow()
+        );
     }
 
     let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
     let data_dir = PathBuf::from(&data_dir_str);
 
-    println!("\nChorus setup");
-    println!("============");
-    println!("Data directory: {}", data_dir.display());
+    banner();
+    row_info("Data dir", &style(data_dir.display()).cyan().to_string());
 
     // 1. Environment checks
-    println!("\nEnvironment:");
+    section("Environment");
     let bun = check_tool("bun", "https://bun.sh");
-    print_tool(&bun, true);
+    match &bun.version {
+        Some(v) => row_ok(bun.name, v),
+        None => row_missing(bun.name, bun.hint),
+    }
     let runtimes = [
         check_tool("claude", "https://docs.claude.com/en/docs/claude-code"),
         check_tool("codex", "https://github.com/openai/codex"),
@@ -538,54 +628,79 @@ async fn cmd_setup(
         check_tool("opencode", "https://opencode.ai"),
     ];
     for r in &runtimes {
-        print_tool(r, false);
+        match &r.version {
+            Some(v) => row_ok(r.name, v),
+            None => row_missing(r.name, r.hint),
+        }
     }
     let detected_runtimes: Vec<&str> = runtimes
         .iter()
         .filter(|r| r.version.is_some())
         .map(|r| r.name)
         .collect();
-    if detected_runtimes.is_empty() {
-        println!("\n  Note: no agent runtimes detected. You can install one later and restart.");
-    }
 
     // 2. Data dir + DB
-    println!("\nData directory:");
+    section("Data directory");
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("chorus.db");
     if db_path.exists() {
-        println!("  [ok] already initialized at {}", data_dir.display());
+        row_ok(
+            "database",
+            &format!("already initialized at {}", data_dir.display()),
+        );
     } else {
         let _ = Store::open(db_path.to_str().unwrap())?;
-        println!("  [ok] initialized SQLite database");
+        row_ok("database", "SQLite initialized");
     }
 
     // 3. UI build
-    println!("\nUI assets:");
+    section("Web UI");
     let ui_dir = PathBuf::from("ui");
     let dist = ui_dir.join("dist");
     let has_real_dist = dist.join("assets").exists() || dist.join("index.js").exists();
     if bun.version.is_none() {
-        println!("  [skip] bun not installed; binary will serve embedded placeholder UI.");
+        row_warn("ui", "bun missing — binary will serve placeholder UI");
     } else if !ui_dir.join("package.json").exists() {
-        println!("  [skip] ui/package.json not found (running from installed binary?).");
+        row_warn("ui", "ui/package.json not found (installed binary?)");
     } else if has_real_dist && !force_ui_build {
-        println!("  [ok] ui/dist already built (use --force-ui-build to rebuild)");
+        let size = dist_size(&dist).unwrap_or(0);
+        row_ok(
+            "ui",
+            &format!(
+                "already built ({}) · --force-ui-build to rebuild",
+                human_bytes(size)
+            ),
+        );
     } else {
-        println!("  building UI (bun install && bun run build)...");
-        run_cmd(Command::new("bun").arg("install").current_dir(&ui_dir))?;
-        run_cmd(
+        run_spinner(
+            "Installing UI packages",
+            Command::new("bun").arg("install").current_dir(&ui_dir),
+        )?;
+        let build_started = Instant::now();
+        run_spinner(
+            "Building ui/dist",
             Command::new("bun")
                 .args(["run", "build"])
                 .current_dir(&ui_dir),
         )?;
-        println!("  [ok] ui/dist built");
+        let built_in = build_started.elapsed();
+        let size = dist_size(&dist).unwrap_or(0);
+        row_ok(
+            "ui",
+            &format!(
+                "built ui/dist ({}, {:.1}s)",
+                human_bytes(size),
+                built_in.as_secs_f64()
+            ),
+        );
     }
 
     // 4. Interactive seed
     if interactive {
+        use dialoguer::theme::ColorfulTheme;
         use dialoguer::Confirm;
-        let seed = Confirm::new()
+        println!();
+        let seed = Confirm::with_theme(&ColorfulTheme::default())
             .with_prompt("Create a welcome channel (#general)?")
             .default(true)
             .interact()
@@ -596,32 +711,102 @@ async fn cmd_setup(
             match store.create_channel("general", Some("General chat"), ChannelType::Channel) {
                 Ok(_) => {
                     let _ = store.join_channel("general", &username, SenderType::Human);
-                    println!("  [ok] #general created");
+                    row_ok("channel", "#general created");
                 }
-                Err(e) => println!("  [skip] could not create channel: {e}"),
+                Err(e) => row_warn("channel", &format!("could not create: {e}")),
             }
         }
     }
 
-    println!("\nSetup complete. Next: `chorus run` to start the server and open the UI.");
+    // 5. Summary line
+    println!();
+    if detected_runtimes.is_empty() {
+        println!(
+            "  {} no agent runtimes detected · install one, then re-run setup",
+            style(WARN).yellow()
+        );
+    } else {
+        println!(
+            "  {} runtimes available: {}",
+            style("→").cyan().bold(),
+            style(detected_runtimes.join(", ")).bold()
+        );
+        println!(
+            "  {} {}",
+            style(" ").dim(),
+            style("chorus agent create <name> --runtime <runtime>").dim()
+        );
+    }
+
+    footer(started.elapsed(), "chorus run");
     Ok(())
 }
 
-fn run_cmd(cmd: &mut Command) -> anyhow::Result<()> {
-    let status = cmd.status().map_err(|e| {
-        anyhow::anyhow!(
-            "failed to run `{}`: {e}",
-            cmd.get_program().to_string_lossy()
-        )
-    })?;
-    if !status.success() {
-        anyhow::bail!(
-            "`{}` exited with status {}",
-            cmd.get_program().to_string_lossy(),
-            status
-        );
+/// Run an external command with a spinner, swallowing output on success and
+/// replaying it on failure so the user actually sees what broke.
+fn run_spinner(label: &str, cmd: &mut Command) -> anyhow::Result<()> {
+    let pb = ProgressBar::new_spinner();
+    pb.set_style(
+        ProgressStyle::with_template("  {spinner:.cyan} {msg}")
+            .unwrap()
+            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
+    );
+    pb.set_message(style(label).dim().to_string());
+    pb.enable_steady_tick(Duration::from_millis(80));
+
+    let program = cmd.get_program().to_string_lossy().into_owned();
+    let output = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .map_err(|e| {
+            pb.finish_and_clear();
+            anyhow::anyhow!("failed to run `{}`: {e}", program)
+        })?;
+
+    pb.finish_and_clear();
+
+    if !output.status.success() {
+        eprintln!("  {}{} failed\n", style(BAD).red(), style(label).bold());
+        if !output.stdout.is_empty() {
+            eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+        }
+        if !output.stderr.is_empty() {
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
+        }
+        anyhow::bail!("`{}` exited with status {}", program, output.status);
     }
     Ok(())
+}
+
+fn dist_size(dist: &std::path::Path) -> std::io::Result<u64> {
+    fn walk(p: &std::path::Path, total: &mut u64) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(p)? {
+            let entry = entry?;
+            let meta = entry.metadata()?;
+            if meta.is_dir() {
+                walk(&entry.path(), total)?;
+            } else {
+                *total += meta.len();
+            }
+        }
+        Ok(())
+    }
+    let mut total = 0;
+    walk(dist, &mut total)?;
+    Ok(total)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.0} kB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} B", bytes)
+    }
 }
 
 async fn cmd_run(
