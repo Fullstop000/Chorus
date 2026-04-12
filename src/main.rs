@@ -25,8 +25,10 @@ enum Commands {
         #[arg(long)]
         data_dir: Option<String>,
         /// Directory containing agent template markdown files.
-        #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
-        template_dir: String,
+        /// Falls back to `<data_dir>/config.toml` then CHORUS_TEMPLATE_DIR
+        /// then `~/agency-agents`.
+        #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
+        template_dir: Option<String>,
     },
     /// First-run doctor: detect runtimes, ACP adaptors, and templates
     Setup {
@@ -36,8 +38,10 @@ enum Commands {
         #[arg(long)]
         data_dir: Option<String>,
         /// Directory containing agent template markdown files.
-        #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
-        template_dir: String,
+        /// Falls back to `<data_dir>/config.toml` then CHORUS_TEMPLATE_DIR
+        /// then `~/agency-agents`.
+        #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
+        template_dir: Option<String>,
     },
     /// Start the server and open the web UI in a browser
     Run {
@@ -49,8 +53,10 @@ enum Commands {
         #[arg(long)]
         no_open: bool,
         /// Directory containing agent template markdown files.
-        #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
-        template_dir: String,
+        /// Falls back to `<data_dir>/config.toml` then CHORUS_TEMPLATE_DIR
+        /// then `~/agency-agents`.
+        #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
+        template_dir: Option<String>,
     },
     /// Run as MCP chat bridge (spawned by agent processes)
     Bridge {
@@ -167,7 +173,8 @@ async fn main() -> anyhow::Result<()> {
             template_dir,
         }) => {
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
-            serve(port, data_dir_str, template_dir).await
+            let template_dir_str = resolve_template_dir(&data_dir_str, template_dir);
+            serve(port, data_dir_str, template_dir_str).await
         }
 
         Some(Commands::Setup {
@@ -183,7 +190,11 @@ async fn main() -> anyhow::Result<()> {
             template_dir,
         }) => cmd_run(port, data_dir, no_open, template_dir).await,
 
-        None => serve(3001, default_data_dir(), "~/agency-agents".to_string()).await,
+        None => {
+            let data_dir_str = default_data_dir();
+            let template_dir_str = resolve_template_dir(&data_dir_str, None);
+            serve(3001, data_dir_str, template_dir_str).await
+        }
 
         Some(Commands::Send {
             target,
@@ -467,10 +478,28 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
 
 // ---- chorus setup / chorus run -------------------------------------------
 
+use chorus::config::ChorusConfig;
 use console::{style, Emoji};
 use std::io::IsTerminal;
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+const DEFAULT_TEMPLATE_DIR: &str = "~/agency-agents";
+
+/// Resolve the effective template directory: CLI flag > config file > default.
+/// (The env-var layer is folded into `cli` by clap's `env` attribute.)
+fn resolve_template_dir(data_dir_str: &str, cli: Option<String>) -> String {
+    if let Some(v) = cli {
+        return v;
+    }
+    let data_dir = chorus::agent::templates::expand_tilde(data_dir_str);
+    match ChorusConfig::load(&data_dir) {
+        Ok(Some(cfg)) => cfg
+            .template_dir
+            .unwrap_or_else(|| DEFAULT_TEMPLATE_DIR.to_string()),
+        _ => DEFAULT_TEMPLATE_DIR.to_string(),
+    }
+}
 
 // Glyphs. `console::Emoji` falls back to ASCII on dumb terminals.
 static OK: Emoji<'_, '_> = Emoji("✓ ", "ok ");
@@ -701,7 +730,7 @@ fn check_template_dir(dir: &std::path::Path) -> (usize, usize) {
 async fn cmd_setup(
     yes: bool,
     data_dir: Option<String>,
-    template_dir_raw: String,
+    template_dir_cli: Option<String>,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
     let interactive = !yes && std::io::stdin().is_terminal();
@@ -730,6 +759,17 @@ async fn cmd_setup(
         None => default_data_dir(),
     };
     let data_dir = chorus::agent::templates::expand_tilde(&data_dir_str);
+
+    // Template dir precedence: CLI flag > existing config > default.
+    // Setup always writes the result back so `chorus run` picks it up later.
+    let template_dir_raw = template_dir_cli
+        .or_else(|| {
+            ChorusConfig::load(&data_dir)
+                .ok()
+                .flatten()
+                .and_then(|c| c.template_dir)
+        })
+        .unwrap_or_else(|| DEFAULT_TEMPLATE_DIR.to_string());
     let template_dir = chorus::agent::templates::expand_tilde(&template_dir_raw);
 
     row_info("Data dir", &style(data_dir.display()).cyan().to_string());
@@ -816,6 +856,21 @@ async fn cmd_setup(
     let db_path = data_dir.join("chorus.db");
     let _ = Store::open(db_path.to_str().unwrap())?;
 
+    // Persist config — machine_id (stable across re-runs) + template_dir,
+    // so `chorus run` can read the chosen paths without the user re-passing
+    // --template-dir every time.
+    let mut cfg = ChorusConfig::load(&data_dir)?.unwrap_or_default();
+    let machine_id = cfg.ensure_machine_id().to_string();
+    cfg.template_dir = Some(template_dir_raw.clone());
+    let cfg_path = cfg.save(&data_dir)?;
+
+    section("Config");
+    row_ok("config", &format!("wrote {}", cfg_path.display()));
+    row_ok(
+        "machine id",
+        &format!("{} (persistent)", style(&machine_id).cyan()),
+    );
+
     // Summary line
     println!();
     if detected_runtimes.is_empty() {
@@ -844,9 +899,10 @@ async fn cmd_run(
     port: u16,
     data_dir: Option<String>,
     no_open: bool,
-    template_dir: String,
+    template_dir: Option<String>,
 ) -> anyhow::Result<()> {
     let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
+    let template_dir = resolve_template_dir(&data_dir_str, template_dir);
 
     if !no_open {
         let url = format!("http://localhost:{port}");
