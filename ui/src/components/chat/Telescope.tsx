@@ -92,19 +92,17 @@ function CategoryChips({
   );
 }
 
-function phaseText(events: TraceEvent[], isActive: boolean): string | null {
-  if (!isActive) return null;
-  const phase = derivePhase(events);
+function activePhaseText(phase: AgentPhase): string {
   if (phase === "reading") return "reading…";
   if (phase === "thinking") return "thinking…";
+  if (phase === "doing") return "working…";
   if (phase === "responding") return "responding…";
-  return null;
+  return "reading…";
 }
 
 function loadingText(phase: AgentPhase | "loading"): string {
-  if (phase === "thinking") return "thinking…";
   if (phase === "loading") return "loading trace…";
-  return "reading…";
+  return activePhaseText(phase);
 }
 
 function findLastIdx<T>(arr: T[], pred: (v: T) => boolean): number {
@@ -391,11 +389,11 @@ export function Telescope({
   // ── Live mode ──
   const phase = derivePhase(events);
   const merged = mergeEvents(events);
-  const isPreContent =
-    phase === "reading" || (phase === "thinking" && merged.length === 0);
+  const categories = deriveCategories(events);
+  const hasCategories = Object.keys(categories).length > 0;
 
-  // Show shimmer text when the agent is active but has no displayable rows yet.
-  if (isActive && isPreContent) {
+  if (merged.length === 0) {
+    if (!isActive) return null;
     return (
       <div className="telescope">
         <div className="tele-header">
@@ -411,8 +409,6 @@ export function Telescope({
     );
   }
 
-  if (events.length === 0) return null;
-
   const wrapperClass = `telescope${isError ? " error" : ""}${isFlashing ? " completion-flash" : ""}${isExpanded ? " expanded" : ""}`;
 
   return (
@@ -425,10 +421,18 @@ export function Telescope({
         onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onToggleExpand?.()}
       >
         <span className="tele-toggle">{isExpanded ? "▾" : "▸"}</span>
-        {phaseText(events, isActive) ? (
-          <span className="tele-phase">{phaseText(events, isActive)}</span>
+        {isActive ? (
+          <>
+            <ShimmeringText
+              text={activePhaseText(phase)}
+              className="tele-phase tele-shimmer"
+              data-phase={phase}
+              aria-live="polite"
+            />
+            {hasCategories && <CategoryChips categories={categories} />}
+          </>
         ) : (
-          <CategoryChips categories={deriveCategories(events)} />
+          <CategoryChips categories={categories} />
         )}
       </div>
       {isExpanded && (

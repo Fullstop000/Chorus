@@ -222,8 +222,9 @@
 }
 
 .tele-shimmer[data-phase="thinking"],
+.tele-shimmer[data-phase="doing"],
 .tele-shimmer[data-phase="loading"] {
-  --shimmer-accent: var(--activity-thinking);
+  --shimmer-accent: var(--status-sleeping);
 }
 
 .tele-shimmer[data-phase="reading"] {
