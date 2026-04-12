@@ -26,6 +26,22 @@ pub const FILE_NAME: &str = "config.toml";
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeConfig {}
 
+/// Agent-template-related settings. Groups the markdown-template directory
+/// and the default template id under one section so they live together.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentTemplateConfig {
+    /// Directory holding agent-template markdown files.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+
+    /// Default template id (e.g. `engineering/backend-architect`) used
+    /// when `chorus agent create` runs without `--template`. Empty string
+    /// = no default; user is prompted or create fails if nothing else
+    /// resolves.
+    #[serde(default)]
+    pub default: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChorusConfig {
     /// Stable random identifier for this installation. Generated at first
@@ -34,16 +50,8 @@ pub struct ChorusConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
 
-    /// Directory holding agent-template markdown files.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub template_dir: Option<String>,
-
-    /// Default agent template id (e.g. `engineering/backend-architect`)
-    /// used when `chorus agent create` runs without `--template`. Empty
-    /// string = no default; user is prompted or create fails if nothing
-    /// else resolves.
     #[serde(default)]
-    pub agent_template: String,
+    pub agent_template: AgentTemplateConfig,
 
     #[serde(default)]
     pub claude: RuntimeConfig,
@@ -115,13 +123,16 @@ mod tests {
     fn save_then_load_roundtrips_template_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ChorusConfig {
-            template_dir: Some("/opt/templates".to_string()),
+            agent_template: AgentTemplateConfig {
+                dir: Some("/opt/templates".to_string()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let written = cfg.save(tmp.path()).unwrap();
         assert!(written.exists());
         let loaded = ChorusConfig::load(tmp.path()).unwrap().unwrap();
-        assert_eq!(loaded.template_dir.as_deref(), Some("/opt/templates"));
+        assert_eq!(loaded.agent_template.dir.as_deref(), Some("/opt/templates"));
     }
 
     #[test]
@@ -130,7 +141,8 @@ mod tests {
         let cfg = ChorusConfig::default();
         cfg.save(tmp.path()).unwrap();
         let raw = std::fs::read_to_string(ChorusConfig::path_for(tmp.path())).unwrap();
-        assert!(!raw.contains("template_dir"));
+        // Optional fields should not render when None / default.
+        assert!(!raw.contains("dir ="));
         assert!(!raw.contains("machine_id"));
     }
 
@@ -167,14 +179,20 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_preserves_agent_template() {
+    fn roundtrip_preserves_agent_template_default() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ChorusConfig {
-            agent_template: "engineering/backend-architect".to_string(),
+            agent_template: AgentTemplateConfig {
+                default: "engineering/backend-architect".to_string(),
+                ..Default::default()
+            },
             ..Default::default()
         };
         cfg.save(tmp.path()).unwrap();
         let loaded = ChorusConfig::load(tmp.path()).unwrap().unwrap();
-        assert_eq!(loaded.agent_template, "engineering/backend-architect");
+        assert_eq!(
+            loaded.agent_template.default,
+            "engineering/backend-architect"
+        );
     }
 }

@@ -548,7 +548,8 @@ fn resolve_template_dir(data_dir_str: &str, cli: Option<String>) -> String {
     let data_dir = chorus::agent::templates::expand_tilde(data_dir_str);
     match ChorusConfig::load(&data_dir) {
         Ok(Some(cfg)) => cfg
-            .template_dir
+            .agent_template
+            .dir
             .unwrap_or_else(|| DEFAULT_TEMPLATE_DIR.to_string()),
         _ => DEFAULT_TEMPLATE_DIR.to_string(),
     }
@@ -820,7 +821,7 @@ async fn cmd_setup(
             ChorusConfig::load(&data_dir)
                 .ok()
                 .flatten()
-                .and_then(|c| c.template_dir)
+                .and_then(|c| c.agent_template.dir)
         })
         .unwrap_or_else(|| DEFAULT_TEMPLATE_DIR.to_string());
     let template_dir = chorus::agent::templates::expand_tilde(&template_dir_raw);
@@ -928,7 +929,7 @@ async fn cmd_setup(
     // --template-dir every time.
     let mut cfg = ChorusConfig::load(&data_dir)?.unwrap_or_default();
     let machine_id = cfg.ensure_machine_id().to_string();
-    cfg.template_dir = Some(template_dir_raw.clone());
+    cfg.agent_template.dir = Some(template_dir_raw.clone());
     let cfg_path = cfg.save(&data_dir)?;
 
     section("Layout");
