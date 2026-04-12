@@ -162,13 +162,13 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             let data: serde_json::Value = res.json().await?;
             if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
-                eprintln!("Error: {err}");
+                tracing::error!("Error: {err}");
             } else {
                 let msg_id = data
                     .get("messageId")
                     .and_then(|v| v.as_str())
                     .unwrap_or("-");
-                println!("Message sent to {target}. ID: {msg_id}");
+                tracing::info!("Message sent to {target}. ID: {msg_id}");
             }
             Ok(())
         }
@@ -189,16 +189,16 @@ async fn main() -> anyhow::Result<()> {
                 .await?;
             let data: serde_json::Value = res.json().await?;
             if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
-                eprintln!("Error: {err}");
+                tracing::error!("Error: {err}");
             } else if let Some(messages) = data.get("messages").and_then(|v| v.as_array()) {
                 if messages.is_empty() {
-                    println!("No messages.");
+                    tracing::info!("No messages.");
                 } else {
                     for m in messages {
                         let sender = m.get("senderName").and_then(|v| v.as_str()).unwrap_or("?");
                         let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
                         let time = m.get("createdAt").and_then(|v| v.as_str()).unwrap_or("");
-                        println!("[{time}] @{sender}: {content}");
+                        tracing::info!("[{time}] @{sender}: {content}");
                     }
                 }
             }
@@ -213,7 +213,7 @@ async fn main() -> anyhow::Result<()> {
                 .send()
                 .await?;
             let data: serde_json::Value = res.json().await?;
-            println!("== Channels ==");
+            tracing::info!("== Channels ==");
             if let Some(channels) = data.get("channels").and_then(|v| v.as_array()) {
                 for ch in channels {
                     let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -221,25 +221,25 @@ async fn main() -> anyhow::Result<()> {
                     let desc = ch.get("description").and_then(|v| v.as_str()).unwrap_or("");
                     let status = if joined { "joined" } else { "not joined" };
                     if desc.is_empty() {
-                        println!("  #{name} [{status}]");
+                        tracing::info!("  #{name} [{status}]");
                     } else {
-                        println!("  #{name} [{status}] — {desc}");
+                        tracing::info!("  #{name} [{status}] — {desc}");
                     }
                 }
             }
-            println!("\n== Agents ==");
+            tracing::info!("\n== Agents ==");
             if let Some(agents) = data.get("agents").and_then(|v| v.as_array()) {
                 for a in agents {
                     let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                     let status = a.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("  @{name} ({status})");
+                    tracing::info!("  @{name} ({status})");
                 }
             }
-            println!("\n== Humans ==");
+            tracing::info!("\n== Humans ==");
             if let Some(humans) = data.get("humans").and_then(|v| v.as_array()) {
                 for h in humans {
                     let name = h.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    println!("  @{name}");
+                    tracing::info!("  @{name}");
                 }
             }
             Ok(())
@@ -256,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
             let store = Store::open(&db_path)?;
             store.create_channel(&name, description.as_deref(), ChannelType::Channel)?;
             store.join_channel(&name, &username, SenderType::Human)?;
-            println!("Channel #{name} created.");
+            tracing::info!("Channel #{name} created.");
             Ok(())
         }
 
@@ -289,17 +289,17 @@ async fn main() -> anyhow::Result<()> {
                     for ch in store.get_channels()? {
                         let _ = store.join_channel(&ch.name, &name, SenderType::Agent);
                     }
-                    println!("Agent @{name} created (runtime: {runtime}, model: {model}).");
-                    println!("Start it by running the server: `chorus serve`");
+                    tracing::info!("Agent @{name} created (runtime: {runtime}, model: {model}).");
+                    tracing::info!("Start it by running the server: `chorus serve`");
                     Ok(())
                 }
                 AgentCommands::Stop { name, data_dir } => {
-                    println!("Stopping agent @{name}...");
+                    tracing::info!("Stopping agent @{name}...");
                     let data_dir = data_dir.unwrap_or_else(default_data_dir);
                     let db_path = format!("{data_dir}/chorus.db");
                     let store = Store::open(&db_path)?;
                     store.update_agent_status(&name, AgentStatus::Inactive)?;
-                    println!("Agent @{name} marked as inactive.");
+                    tracing::info!("Agent @{name} marked as inactive.");
                     Ok(())
                 }
                 AgentCommands::List { server_url } => {
@@ -312,7 +312,7 @@ async fn main() -> anyhow::Result<()> {
                     let data: serde_json::Value = res.json().await?;
                     if let Some(agents) = data.get("agents").and_then(|v| v.as_array()) {
                         if agents.is_empty() {
-                            println!("No agents.");
+                            tracing::info!("No agents.");
                         } else {
                             for a in agents {
                                 let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
@@ -320,7 +320,7 @@ async fn main() -> anyhow::Result<()> {
                                     a.get("status").and_then(|v| v.as_str()).unwrap_or("?");
                                 let runtime =
                                     a.get("runtime").and_then(|v| v.as_str()).unwrap_or("?");
-                                println!("  @{name} [{status}] (runtime: {runtime})");
+                                tracing::info!("  @{name} [{status}] (runtime: {runtime})");
                             }
                         }
                     }
@@ -377,7 +377,7 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
             }
         }
         if !failed_agents.is_empty() {
-            eprintln!(
+            tracing::warn!(
                 "Warning: {} agent(s) failed to auto-restart and were marked inactive: {}",
                 failed_agents.len(),
                 failed_agents
@@ -387,9 +387,9 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
                     .join(", ")
             );
             for (agent_name, error_detail) in &failed_agents {
-                eprintln!("  - {agent_name}: {error_detail}");
+                tracing::warn!("  - {agent_name}: {error_detail}");
             }
-            eprintln!("They will be retried on next message delivery. To restart immediately: `chorus agent start <name>`");
+            tracing::warn!("They will be retried on next message delivery. To restart immediately: `chorus agent start <name>`");
         }
     }
 
@@ -412,15 +412,15 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
     );
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
-    println!("Chorus running at {server_url}");
-    println!("Human user: @{username}");
-    println!("Use `chorus send '#all' 'hello'` to send messages");
-    println!("Use `chorus agent create <name>` to create an agent");
+    tracing::info!("Chorus running at {server_url}");
+    tracing::info!("Human user: @{username}");
+    tracing::info!("Use `chorus send '#all' 'hello'` to send messages");
+    tracing::info!("Use `chorus agent create <name>` to create an agent");
 
     // Graceful shutdown on Ctrl+C
     let shutdown = async {
         tokio::signal::ctrl_c().await.ok();
-        println!("\nShutting down...");
+        tracing::info!("\nShutting down...");
     };
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)
