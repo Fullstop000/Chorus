@@ -8,6 +8,7 @@ import { getTraceEvents } from "../../data/chat";
 import { useTraceStore } from "../../store/traceStore";
 import type { TraceFrame } from "../../transport/types";
 import type { TraceSummary, TraceEventRecord } from "../../data/chat";
+import { ShimmeringText } from "../ui";
 import "./Telescope.css";
 
 // TraceEvent is the canonical live trace event type from the transport layer.
@@ -98,6 +99,12 @@ function phaseText(events: TraceEvent[], isActive: boolean): string | null {
   if (phase === "thinking") return "thinking…";
   if (phase === "responding") return "responding…";
   return null;
+}
+
+function loadingText(phase: AgentPhase | "loading"): string {
+  if (phase === "thinking") return "thinking…";
+  if (phase === "loading") return "loading trace…";
+  return "reading…";
 }
 
 function findLastIdx<T>(arr: T[], pred: (v: T) => boolean): number {
@@ -361,7 +368,11 @@ export function Telescope({
               <div className="tele-row">
                 <div className="tele-row-header no-expand">
                   <span className="tele-bullet">─</span>
-                  <span className="tele-row-label">loading…</span>
+                  <ShimmeringText
+                    text={loadingText("loading")}
+                    className="tele-row-label tele-shimmer"
+                    data-phase="loading"
+                  />
                 </div>
               </div>
             )}
@@ -383,20 +394,18 @@ export function Telescope({
   const isPreContent =
     phase === "reading" || (phase === "thinking" && merged.length === 0);
 
-  // Show typing dots when agent is active but has no displayable rows yet
+  // Show shimmer text when the agent is active but has no displayable rows yet.
   if (isActive && isPreContent) {
     return (
       <div className="telescope">
         <div className="tele-header">
           <span className="tele-toggle">▸</span>
-          <span className="tele-phase">
-            {phase === "thinking" ? "thinking" : "reading"}
-          </span>
-          <span className="tele-typing-dots">
-            <span>.</span>
-            <span>.</span>
-            <span>.</span>
-          </span>
+          <ShimmeringText
+            text={loadingText(phase)}
+            className="tele-phase tele-shimmer"
+            data-phase={phase}
+            aria-live="polite"
+          />
         </div>
       </div>
     );

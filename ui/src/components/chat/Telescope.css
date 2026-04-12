@@ -206,41 +206,28 @@
   color: var(--color-muted-foreground);
 }
 
-/* ── Typing dots indicator ── */
-.tele-typing-dots {
-  display: inline-flex;
-  gap: 0;
-  align-items: center;
-  margin-left: 2px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  color: var(--color-muted-foreground);
-}
-
-.tele-typing-dots span {
-  width: auto;
-  height: auto;
-  border-radius: 0;
-  background: none;
-  opacity: 0.3;
-  animation: tele-typing 1.2s ease-in-out infinite;
-}
-
-.tele-typing-dots span:nth-child(1) { animation-delay: 0s; }
-.tele-typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-.tele-typing-dots span:nth-child(3) { animation-delay: 0.4s; }
-
-@keyframes tele-typing {
-  0%, 100% { opacity: 0.25; }
-  50% { opacity: 1; }
-}
-
 /* ── Phase label (reading / thinking / responding) ── */
 .tele-phase {
   color: var(--color-muted-foreground);
   font-family: var(--font-mono);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.tele-shimmer {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.tele-shimmer[data-phase="thinking"],
+.tele-shimmer[data-phase="loading"] {
+  --shimmer-accent: var(--activity-thinking);
+}
+
+.tele-shimmer[data-phase="reading"] {
+  --shimmer-accent: var(--color-foreground);
 }
 
 /* ── Category chips ── */

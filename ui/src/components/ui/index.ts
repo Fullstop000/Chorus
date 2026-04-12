@@ -13,6 +13,7 @@ export * from "./input"
 export * from "./label"
 export * from "./select"
 export * from "./separator"
+export * from "./shimmering-text"
 export * from "./textarea"
 
 // Chorus async wrappers
