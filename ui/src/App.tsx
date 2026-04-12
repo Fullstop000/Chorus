@@ -13,10 +13,10 @@ import {
 } from "./data";
 import type { ChannelInfo } from "./data";
 import {
-  dmConversationNameForParticipants,
   ensureInboxConversations,
   type InboxState,
-} from "./inbox";
+} from "./store/inbox";
+import { dmConversationNameForParticipants } from "./data";
 import { isVisibleSidebarChannel } from "./pages/Sidebar/sidebarChannels";
 import { getSession, EventType } from "./transport";
 import { queryClient as appQueryClient } from "./lib/queryClient";
@@ -59,6 +59,7 @@ function syncWhoami(
   }, [username, currentUser, setCurrentUser, resetUserSession]);
 }
 
+/** Keep inbox conversations in sync as new channels arrive from the channels query. */
 function mirrorChannels(
   allChannels: ChannelInfo[],
   updateInboxState: (u: (c: InboxState) => InboxState) => void,
@@ -71,6 +72,7 @@ function mirrorChannels(
   }, [allChannels, updateInboxState]);
 }
 
+/** Pick the first joined channel on initial load when no channel or agent is already selected. */
 function autoSelectChannel(params: {
   shellBootstrapped: boolean;
   channels: ChannelInfo[];
@@ -102,6 +104,7 @@ function autoSelectChannel(params: {
   }, [shellBootstrapped, channels, systemChannels, setCurrentChannel]);
 }
 
+/** Create the DM channel for the selected agent if it doesn't exist yet, then register it in the query cache and inbox state. */
 function ensureAgentDm(params: {
   currentUser: string;
   currentAgentName: string | null;

@@ -15,10 +15,10 @@ import {
 import type { ChannelInfo, ThreadInboxEntry } from '../data'
 import {
   conversationThreadUnreadCount,
-  dmConversationNameForParticipants,
   mergeChannelThreadInboxEntries,
   type InboxState,
-} from '../inbox'
+} from '../store/inbox'
+import { dmConversationNameForParticipants } from '../data'
 import type { AgentInfo } from '../data'
 
 function useAppInboxSelectors(params: {

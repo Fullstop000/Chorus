@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import type { InboxState } from '../inbox'
+import type { InboxState } from '../store/inbox'
 import type { InboxConversationState, ThreadInboxEntry } from '../data/inbox'
 import {
   conversationThreadUnreadCount,
-  dmConversationNameForParticipants,
   mergeChannelThreadInboxEntries,
   threadNotificationKey,
-} from '../inbox'
+} from '../store/inbox'
+import { dmConversationNameForParticipants } from '../data/inbox'
 
 // ── Helpers ──
 
