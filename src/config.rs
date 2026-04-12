@@ -20,6 +20,18 @@ use serde::{Deserialize, Serialize};
 
 pub const FILE_NAME: &str = "config.toml";
 
+/// Per-runtime overrides. Each runtime gets its own `[<runtime>]` section
+/// in `config.toml` so users can see where to edit without hunting through
+/// docs. Add fields here as new per-runtime settings emerge.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeConfig {
+    /// Default agent template id (e.g. `engineering/backend-architect`) used
+    /// when `chorus agent create --runtime <name>` is invoked without an
+    /// explicit template. Empty string = no default.
+    #[serde(default)]
+    pub agent_template: String,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChorusConfig {
     /// Stable random identifier for this installation. Generated at first
@@ -31,6 +43,15 @@ pub struct ChorusConfig {
     /// Directory holding agent-template markdown files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_dir: Option<String>,
+
+    #[serde(default)]
+    pub claude: RuntimeConfig,
+    #[serde(default)]
+    pub codex: RuntimeConfig,
+    #[serde(default)]
+    pub kimi: RuntimeConfig,
+    #[serde(default)]
+    pub opencode: RuntimeConfig,
 }
 
 impl ChorusConfig {
@@ -128,5 +149,37 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.ensure_machine_id(), "custom-id");
+    }
+
+    #[test]
+    fn save_emits_all_runtime_sections() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ChorusConfig::default();
+        cfg.save(tmp.path()).unwrap();
+        let raw = std::fs::read_to_string(ChorusConfig::path_for(tmp.path())).unwrap();
+        for runtime in ["claude", "codex", "kimi", "opencode"] {
+            assert!(
+                raw.contains(&format!("[{runtime}]")),
+                "missing [{runtime}] section in:\n{raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_preserves_runtime_agent_template() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ChorusConfig {
+            claude: RuntimeConfig {
+                agent_template: "engineering/backend-architect".to_string(),
+            },
+            ..Default::default()
+        };
+        cfg.save(tmp.path()).unwrap();
+        let loaded = ChorusConfig::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(
+            loaded.claude.agent_template,
+            "engineering/backend-architect"
+        );
+        assert_eq!(loaded.codex.agent_template, ""); // default
     }
 }

@@ -381,12 +381,15 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> anyhow::Result<()> {
     let data_dir = std::path::PathBuf::from(&data_dir_str);
-    let data_subdir = data_dir.join("data");
+    let data_subdir = data_dir.join(DATA_SUBDIR);
     let logs_dir = data_dir.join("logs");
+    let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&data_subdir)?;
     std::fs::create_dir_all(&logs_dir)?;
+    std::fs::create_dir_all(&agents_dir)?;
     let db_path = data_subdir.join("chorus.db");
-    let store = Arc::new(Store::open(db_path.to_str().unwrap())?);
+    let store =
+        Arc::new(Store::open(db_path.to_str().unwrap())?.with_agents_dir(agents_dir.clone()));
 
     // Default human = OS username
     let username = whoami::username();
@@ -399,7 +402,7 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
     let bridge_binary = std::env::current_exe()?.to_string_lossy().into_owned();
     let manager = Arc::new(AgentManager::new(
         store.clone(),
-        data_subdir.join("agents"),
+        agents_dir,
         bridge_binary,
         server_url.clone(),
     ));
@@ -501,29 +504,37 @@ fn db_path_for(data_dir_root: &str) -> String {
     dir.join("chorus.db").to_string_lossy().into_owned()
 }
 
-/// Move legacy data (chorus.db*, agents/, attachments/, teams/) from the
-/// data-dir root into `<root>/data/` so older installs pick up the new
-/// layout transparently. Only moves when the source exists at the root
-/// AND the target doesn't — idempotent, refuses to clobber.
+/// Reconcile older installs with the current layout:
+///   root → <root>/data/   : chorus.db*, attachments/, teams/
+///   <root>/data/ → root   : agents/  (an earlier commit mistakenly moved it)
+/// Only moves when the source exists and the target doesn't — idempotent,
+/// refuses to clobber.
 fn migrate_legacy_layout(
     root: &std::path::Path,
     data_subdir: &std::path::Path,
 ) -> anyhow::Result<()> {
-    let candidates = [
+    // Things that live under <root>/data/ going forward.
+    let into_data = [
         "chorus.db",
         "chorus.db-wal",
         "chorus.db-shm",
-        "agents",
         "attachments",
         "teams",
     ];
-    for name in candidates {
+    for name in into_data {
         let src = root.join(name);
         let dst = data_subdir.join(name);
         if src.exists() && !dst.exists() {
             tracing::info!(from = %src.display(), to = %dst.display(), "migrating legacy layout");
             std::fs::rename(&src, &dst)?;
         }
+    }
+    // Undo the misplacement of agents/ by pulling it back to the root.
+    let stray = data_subdir.join("agents");
+    let home = root.join("agents");
+    if stray.exists() && !home.exists() {
+        tracing::info!(from = %stray.display(), to = %home.display(), "restoring agents/ to root");
+        std::fs::rename(&stray, &home)?;
     }
     Ok(())
 }
@@ -899,9 +910,13 @@ async fn cmd_setup(
     //       chorus.db*, agents/, attachments/, teams/
     let data_subdir = data_dir.join(DATA_SUBDIR);
     let logs_dir = data_dir.join("logs");
+    let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&data_subdir)?;
     std::fs::create_dir_all(&logs_dir)?;
+    // Migrate BEFORE creating an empty root `agents/`, otherwise the
+    // reverse move would see the target already exists and skip.
     migrate_legacy_layout(&data_dir, &data_subdir)?;
+    std::fs::create_dir_all(&agents_dir)?;
 
     // Always call Store::open: it runs migrations idempotently, so an
     // existing chorus.db gets schema upgrades as part of setup.
@@ -920,6 +935,7 @@ async fn cmd_setup(
     row_ok("config", &format!("wrote {}", cfg_path.display()));
     row_ok("data", &format!("{}", data_subdir.display()));
     row_ok("logs", &format!("{}", logs_dir.display()));
+    row_ok("agents", &format!("{}", agents_dir.display()));
     row_ok(
         "machine id",
         &format!("{} (persistent)", style(&machine_id).cyan()),
