@@ -4,8 +4,8 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::{app_err, ApiResult, AppState};
-use crate::server::error::AppErrorCode;
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
+use crate::server::error::AppErrorCode;
 use crate::server::handlers::channels::normalize_channel_name;
 use crate::store::channels::ChannelType;
 use crate::store::messages::SenderType;
@@ -54,7 +54,10 @@ fn parse_member_type(
     match member_type {
         "agent" => Ok(SenderType::Agent),
         "human" => Ok(SenderType::Human),
-        _ => Err(app_err!(StatusCode::BAD_REQUEST, "member_type must be 'agent' or 'human'")),
+        _ => Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "member_type must be 'agent' or 'human'"
+        )),
     }
 }
 
@@ -106,7 +109,10 @@ pub async fn handle_create_team(
     }
     let display_name = req.display_name.trim();
     if display_name.is_empty() {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "display_name is required"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "display_name is required"
+        ));
     }
 
     let team_id = state
@@ -175,7 +181,12 @@ pub async fn handle_create_team(
         .store
         .get_team(&name)
         .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "team not found after create: {name}"))?;
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "team not found after create: {name}"
+            )
+        })?;
     let members = state
         .store
         .get_team_members(&team_id)
@@ -239,7 +250,12 @@ pub async fn handle_update_team(
         .store
         .get_team(&name)
         .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "team not found after update: {name}"))?;
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "team not found after update: {name}"
+            )
+        })?;
     let members = state
         .store
         .get_team_members(&team.id)
@@ -342,7 +358,12 @@ pub async fn handle_add_team_member(
         .store
         .get_team(&name)
         .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "team not found after add member: {name}"))?;
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "team not found after add member: {name}"
+            )
+        })?;
     let members = state
         .store
         .get_team_members(&team.id)
@@ -370,7 +391,12 @@ pub async fn handle_remove_team_member(
         .iter()
         .find(|member| member.member_name == member_name)
         .cloned()
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team member not found: {member_name}"))?;
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::BAD_REQUEST,
+                "team member not found: {member_name}"
+            )
+        })?;
 
     state
         .store

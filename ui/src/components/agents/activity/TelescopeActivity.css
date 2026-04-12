@@ -129,7 +129,8 @@
 .ta-run-cats {
   display: inline-flex;
   align-items: center;
-  gap: 5px;  position: relative;
+  gap: 5px;
+  position: relative;
 }
 
 .ta-run-cat[data-tip]::after {
@@ -152,7 +153,8 @@
 }
 
 .ta-run-cat[data-tip]:hover::after {
-  opacity: 1;}
+  opacity: 1;
+}
 
 .ta-run-cat {
   display: inline-flex;
@@ -246,6 +248,7 @@
   display: block;
   margin-bottom: 4px;
 }
+
 .ae-md-p:last-child {
   margin-bottom: 0;
 }

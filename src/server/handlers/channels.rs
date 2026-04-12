@@ -86,7 +86,10 @@ pub(super) fn validate_channel_mutation(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))?;
     if channel.channel_type != ChannelType::Channel {
-        return Err(app_err!(AppErrorCode::ChannelOperationUnsupported, "only user channels can be modified"));
+        return Err(app_err!(
+            AppErrorCode::ChannelOperationUnsupported,
+            "only user channels can be modified"
+        ));
     }
     Ok(channel)
 }
@@ -139,7 +142,10 @@ pub async fn handle_create_channel(
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("UNIQUE constraint") {
-                app_err!(AppErrorCode::ChannelNameTaken, "channel name already in use")
+                app_err!(
+                    AppErrorCode::ChannelNameTaken,
+                    "channel name already in use"
+                )
             } else {
                 app_err!(StatusCode::BAD_REQUEST, msg)
             }
@@ -161,7 +167,10 @@ pub async fn handle_list_channel_members(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))?;
     if channel.channel_type == ChannelType::Dm {
-        return Err(app_err!(AppErrorCode::ChannelOperationUnsupported, "dm channels are not supported by this endpoint"));
+        return Err(app_err!(
+            AppErrorCode::ChannelOperationUnsupported,
+            "dm channels are not supported by this endpoint"
+        ));
     }
 
     let members = state
@@ -239,7 +248,10 @@ pub async fn handle_update_channel(
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
             .is_some()
     {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "channel already exists: {name}"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "channel already exists: {name}"
+        ));
     }
 
     state

@@ -87,7 +87,10 @@ impl ErrKind for AppErrorCode {
 
 /// Internal implementation — call the [`app_err!`] macro instead.
 #[doc(hidden)]
-pub(crate) fn app_err_inner(kind: impl ErrKind, msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
+pub(crate) fn app_err_inner(
+    kind: impl ErrKind,
+    msg: impl Into<String>,
+) -> (StatusCode, Json<ErrorResponse>) {
     (
         kind.status(),
         Json(ErrorResponse {

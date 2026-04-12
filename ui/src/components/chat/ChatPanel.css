@@ -301,9 +301,11 @@
 .message-content p {
   margin: 0 0 6px;
 }
+
 .message-content p:last-child {
   margin-bottom: 0;
 }
+
 .message-content h1,
 .message-content h2,
 .message-content h3 {
@@ -312,6 +314,7 @@
   margin: 8px 0 4px;
   color: var(--color-foreground);
 }
+
 .message-content pre {
   background: var(--color-muted);
   border: 1px solid var(--color-border);
@@ -323,6 +326,7 @@
   line-height: 1.55;
   margin: 6px 0;
 }
+
 .message-content code {
   font-family: var(--font-mono);
   font-size: 12px;
@@ -330,24 +334,29 @@
   padding: 1px 5px;
   border-radius: 0;
 }
+
 .message-content pre code {
   background: none;
   padding: 0;
 }
+
 .message-content ul,
 .message-content ol {
   padding-left: 20px;
   margin: 4px 0;
 }
+
 .message-content li {
   margin: 2px 0;
 }
+
 .message-content blockquote {
   border-left: 2px solid var(--color-input);
   margin: 4px 0;
   padding-left: 10px;
   color: var(--color-muted-foreground);
 }
+
 .message-content a {
   color: var(--color-foreground);
   text-decoration: underline;
@@ -372,8 +381,13 @@
 }
 
 @keyframes msg-run-spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .message-group {

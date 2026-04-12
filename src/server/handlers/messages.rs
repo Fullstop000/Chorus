@@ -285,7 +285,8 @@ fn require_channel_membership(
     {
         return Err(app_err!(
             AppErrorCode::MessageNotAMember,
-            "you are not a member of channel {}", denied_label
+            "you are not a member of channel {}",
+            denied_label
         ));
     }
     Ok(())
@@ -377,7 +378,12 @@ fn update_read_cursor_for_channel(
         .store
         .get_inbox_conversation_notification_for_member(&channel.id, actor_id)
         .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "inbox notification row missing after read cursor"))?;
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "inbox notification row missing after read cursor"
+            )
+        })?;
 
     let thread_snapshot = if let Some(parent_id) = thread_parent_id {
         state
@@ -467,7 +473,12 @@ async fn send_message_to_channel(
     let message_view = store
         .get_conversation_message_view(&message_id)
         .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "sent message missing from projection"))?;
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "sent message missing from projection"
+            )
+        })?;
 
     Ok(Json(SendResponse {
         message_id,
@@ -659,7 +670,11 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", actor_id));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "viewer not found: {}",
+            actor_id
+        ));
     }
 
     let conversations: Vec<PublicInboxConversationNotification> = state
@@ -684,7 +699,11 @@ pub async fn handle_public_conversation_inbox_notification(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", actor_id));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "viewer not found: {}",
+            actor_id
+        ));
     }
 
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
@@ -693,14 +712,23 @@ pub async fn handle_public_conversation_inbox_notification(
         .is_member(&channel.name, &actor_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "you are not a member of channel {}", conversation_id));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "you are not a member of channel {}",
+            conversation_id
+        ));
     }
 
     let notification = state
         .store
         .get_inbox_conversation_notification_for_member(&channel.id, &actor_id)
         .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "inbox row not found for this member"))?;
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::BAD_REQUEST,
+                "inbox row not found for this member"
+            )
+        })?;
 
     let conversation = PublicInboxConversationNotification::from(&notification);
 
@@ -726,7 +754,10 @@ pub async fn handle_public_ensure_dm(
 ) -> ApiResult<ChannelInfo> {
     let actor_id = public_viewer_name();
     if peer_name == actor_id {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "cannot create a dm with yourself"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "cannot create a dm with yourself"
+        ));
     }
     if state
         .store
@@ -734,7 +765,11 @@ pub async fn handle_public_ensure_dm(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", actor_id));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "viewer not found: {}",
+            actor_id
+        ));
     }
     if state
         .store
@@ -742,7 +777,11 @@ pub async fn handle_public_ensure_dm(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "peer not found: {}", peer_name));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "peer not found: {}",
+            peer_name
+        ));
     }
 
     let target = format!("dm:@{}", peer_name);
@@ -878,7 +917,10 @@ pub async fn handle_trace_events(
                 .channel_member_exists(&ch_id, &viewer)
                 .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             {
-                return Err(app_err!(StatusCode::BAD_REQUEST, "not a member of the channel for this run"));
+                return Err(app_err!(
+                    StatusCode::BAD_REQUEST,
+                    "not a member of the channel for this run"
+                ));
             }
         }
         None => {
