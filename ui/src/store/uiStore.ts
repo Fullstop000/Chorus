@@ -5,6 +5,12 @@ import { createInboxState, threadNotificationKey } from './inbox'
 
 export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
+export interface ToastEntry {
+  id: string
+  message: string
+  level: 'error' | 'warning' | 'info'
+}
+
 interface UIState {
   /** Logged-in username, set once after /api/whoami resolves */
   currentUser: string
@@ -22,6 +28,8 @@ interface UIState {
   conversationThreads: Record<string, ThreadInboxEntry[]>
   /** True once the initial whoami + channels + inbox bootstrap has completed; gates autoSelectChannel */
   shellBootstrapped: boolean
+  /** Global toast notifications */
+  toasts: ToastEntry[]
 }
 
 interface UIActions {
@@ -42,6 +50,8 @@ interface UIActions {
   setShellBootstrapped: (value: boolean) => void
   /** Clear all selection state back to defaults (used on logout / session reset) */
   resetUserSession: () => void
+  pushToast: (entry: ToastEntry) => void
+  dismissToast: (id: string) => void
 }
 
 export type UIStore = UIState & UIActions
@@ -55,6 +65,7 @@ const initialState: UIState = {
   inboxState: createInboxState(),
   conversationThreads: {},
   shellBootstrapped: false,
+  toasts: [],
 }
 
 export const useStore = create<UIStore>((set) => ({
@@ -76,9 +87,9 @@ export const useStore = create<UIStore>((set) => ({
       currentAgent: channel ? null : state.currentAgent,
       activeTab:
         channel &&
-        (state.activeTab === 'workspace' ||
-          state.activeTab === 'activity' ||
-          state.activeTab === 'profile')
+          (state.activeTab === 'workspace' ||
+            state.activeTab === 'activity' ||
+            state.activeTab === 'profile')
           ? 'chat'
           : state.activeTab,
     })),
@@ -152,5 +163,21 @@ export const useStore = create<UIStore>((set) => ({
       inboxState: createInboxState(),
       conversationThreads: {},
       shellBootstrapped: false,
+      toasts: [],
     }),
+
+  pushToast: (entry: ToastEntry) =>
+    set((state) => ({ toasts: [...state.toasts, entry] })),
+
+  dismissToast: (id: string) =>
+    set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }))
+
+export function pushErrorToast(err: unknown) {
+  const message = err instanceof Error ? err.message : String(err)
+  useStore.getState().pushToast({
+    id: `error-${Date.now()}`,
+    message,
+    level: 'error',
+  })
+}

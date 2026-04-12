@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ArrowLeft } from 'lucide-react'
+import { post } from '@/data/client'
 import { useRuntimeStatuses } from '../../hooks/useRuntimeStatuses'
 import { useTemplates } from '../../hooks/useTemplates'
 import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
@@ -115,10 +116,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
       if (!config.model.trim()) {
         throw new Error('Model is required')
       }
-      const res = await fetch('/api/agents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      await post<{ name: string; status: string; warning?: string }>('/api/agents', {
           name: config.name.trim(),
           display_name: config.display_name.trim(),
           description: config.description,
@@ -127,15 +125,10 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
           model: config.model,
           reasoningEffort: config.runtime === 'codex' || config.runtime === 'opencode' ? config.reasoningEffort : null,
           envVars: config.envVars,
-        }),
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({ error: res.statusText }))
-        throw new Error((body as { error?: string }).error ?? res.statusText)
-      }
+        })
       onCreated()
     } catch (e) {
-      setError(String(e))
+      setError(e instanceof Error ? e.message : String(e))
     } finally {
       setCreating(false)
     }

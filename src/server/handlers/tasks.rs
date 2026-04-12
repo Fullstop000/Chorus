@@ -1,8 +1,9 @@
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
-use super::{api_err, ApiResult, AppState};
+use super::{app_err, ApiResult, AppState};
 use crate::store::channels::Channel;
 use crate::store::tasks::TaskStatus;
 
@@ -62,8 +63,8 @@ fn load_channel_by_id(
     state
         .store
         .get_channel_by_id(conversation_id)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("channel not found"))
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))
 }
 
 // ── Agent-scoped compatibility handlers ──
@@ -78,7 +79,7 @@ pub async fn handle_list_tasks(
 ) -> ApiResult<serde_json::Value> {
     let channel_target = params
         .channel
-        .ok_or_else(|| api_err("missing channel parameter"))?;
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "missing channel parameter"))?;
     let channel_name = strip_channel_prefix(&channel_target);
     let status_filter = params
         .status
@@ -87,7 +88,7 @@ pub async fn handle_list_tasks(
     let tasks = state
         .store
         .get_tasks(channel_name, status_filter)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
 
@@ -101,7 +102,7 @@ pub async fn handle_create_tasks(
     let tasks = state
         .store
         .create_tasks(channel_name, &agent_id, &titles)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
 
@@ -114,7 +115,7 @@ pub async fn handle_claim_tasks(
     let results = state
         .store
         .update_tasks_claim(channel_name, &agent_id, &req.task_numbers)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "results": results })))
 }
 
@@ -127,7 +128,7 @@ pub async fn handle_unclaim_task(
     state
         .store
         .update_task_unclaim(channel_name, &agent_id, req.task_number)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -138,11 +139,11 @@ pub async fn handle_update_task_status(
 ) -> ApiResult<serde_json::Value> {
     let channel_name = strip_channel_prefix(&req.channel);
     let new_status = TaskStatus::from_status_str(&req.status)
-        .ok_or_else(|| api_err(format!("invalid status: {}", req.status)))?;
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "invalid status: {}", req.status))?;
     state
         .store
         .update_task_status(channel_name, req.task_number, &agent_id, new_status)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -159,7 +160,7 @@ pub async fn handle_public_list_tasks(
     let tasks = state
         .store
         .get_tasks(&channel.name, status_filter)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
 
@@ -174,7 +175,7 @@ pub async fn handle_public_create_tasks(
     let tasks = state
         .store
         .create_tasks(&channel.name, &actor_id, &titles)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "tasks": tasks })))
 }
 
@@ -188,7 +189,7 @@ pub async fn handle_public_claim_tasks(
     let results = state
         .store
         .update_tasks_claim(&channel.name, &actor_id, &req.task_numbers)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "results": results })))
 }
 
@@ -202,7 +203,7 @@ pub async fn handle_public_unclaim_task(
     state
         .store
         .update_task_unclaim(&channel.name, &actor_id, req.task_number)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -214,10 +215,10 @@ pub async fn handle_public_update_task_status(
     let actor_id = whoami::username();
     let channel = load_channel_by_id(&state, &conversation_id)?;
     let new_status = TaskStatus::from_status_str(&req.status)
-        .ok_or_else(|| api_err(format!("invalid status: {}", req.status)))?;
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "invalid status: {}", req.status))?;
     state
         .store
         .update_task_status(&channel.name, req.task_number, &actor_id, new_status)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
