@@ -7,6 +7,7 @@ use chorus::bridge;
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::SenderType;
+use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 
 #[derive(Parser)]
@@ -277,14 +278,16 @@ async fn main() -> anyhow::Result<()> {
                     let data_dir = data_dir.unwrap_or_else(default_data_dir);
                     let db_path = format!("{data_dir}/chorus.db");
                     let store = Store::open(&db_path)?;
-                    store.create_agent_record(
-                        &name,
-                        &name,
-                        description.as_deref(),
-                        &runtime,
-                        &model,
-                        &[],
-                    )?;
+                    store.create_agent_record(&AgentRecordUpsert {
+                        name: &name,
+                        display_name: &name,
+                        description: description.as_deref(),
+                        system_prompt: None,
+                        runtime: &runtime,
+                        model: &model,
+                        reasoning_effort: None,
+                        env_vars: &[],
+                    })?;
                     // Join default channels
                     for ch in store.get_channels()? {
                         let _ = store.join_channel(&ch.name, &name, SenderType::Agent);

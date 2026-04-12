@@ -105,7 +105,16 @@ fn test_shell_style_workspace_mutations_persist() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -209,7 +218,16 @@ fn test_send_and_receive_messages() {
     assert!(msgs.is_empty());
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -235,7 +253,16 @@ fn test_send_and_receive_messages() {
 fn test_agent_does_not_receive_its_own_sent_message() {
     let (store, _dir) = make_store();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store.create_human("alice").unwrap();
     let (dm_channel_id, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
@@ -359,7 +386,16 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -477,7 +513,16 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -539,7 +584,16 @@ fn test_explicit_thread_read_cursor_persists_separately_from_conversation_cursor
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -862,7 +916,16 @@ fn test_thread_summaries_view_projects_thread_metadata() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -1006,7 +1069,16 @@ fn test_agent_env_vars_persist_in_agent_record() {
         },
     ];
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &env_vars)
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &env_vars,
+            })
         .unwrap();
 
     let agent = store.get_agent("bot1").unwrap().unwrap();
@@ -1017,16 +1089,16 @@ fn test_agent_env_vars_persist_in_agent_record() {
 fn test_agent_reasoning_effort_persists_in_agent_record() {
     let (store, _dir) = make_store();
     store
-        .create_agent_record_with_reasoning(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "gpt-5.4-mini",
-            reasoning_effort: Some("low"),
-            env_vars: &[],
-        })
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-5.4-mini",
+                reasoning_effort: Some("low"),
+                env_vars: &[],
+            })
         .unwrap();
 
     let agent = store.get_agent("bot1").unwrap().unwrap();
@@ -1056,7 +1128,16 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
         .create_channel("general", None, ChannelType::Channel)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .create_message(CreateMessage {
@@ -1118,7 +1199,16 @@ fn test_thread_reply_updates_inbox_read_models() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -1185,7 +1275,16 @@ fn test_channel_thread_inbox_returns_rows_ordered_by_latest_reply_desc() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -1309,7 +1408,16 @@ fn test_unread_excludes_own_messages_for_sender() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -1414,7 +1522,16 @@ fn test_tasks_crud() {
         .create_channel("eng", None, ChannelType::Channel)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
 
     let tasks = store
@@ -1435,10 +1552,28 @@ fn test_task_claim_and_status() {
         .create_channel("eng", None, ChannelType::Channel)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "o3", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot2",
+                display_name: "Bot 2",
+                description: None,
+                system_prompt: None,
+                runtime: "codex",
+                model: "o3",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store.create_tasks("eng", "bot1", &["Task A"]).unwrap();
 
@@ -1463,7 +1598,16 @@ fn test_resolve_target() {
         .unwrap();
     store.create_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
 
     let (ch_id, thread_parent) = store.resolve_target("#general", "bot1").unwrap();
@@ -1482,7 +1626,16 @@ fn test_list_channels_excludes_dm() {
         .unwrap();
     store.create_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     // Create a DM channel via resolve_target
     store.resolve_target("dm:@alice", "bot1").unwrap();
@@ -1504,10 +1657,28 @@ fn test_dm_only_has_two_members() {
         .unwrap();
     store.create_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot2",
+                display_name: "Bot 2",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
 
     // Create DM between alice and bot1
@@ -1540,7 +1711,16 @@ fn test_dm_channels() {
     let (store, _dir) = make_store();
     store.create_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
 
     let (ch_id, _) = store.resolve_target("dm:@alice", "bot1").unwrap();
@@ -1559,13 +1739,31 @@ fn test_unrelated_agents_do_not_receive_thread_messages() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot2",
+                display_name: "Bot 2",
+                description: None,
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-5.4",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
@@ -1737,10 +1935,28 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
     store.create_human("alice").unwrap();
     store.create_human("zoe").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot2",
+                display_name: "Bot 2",
+                description: None,
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-5.4-mini",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
 
     store.ensure_builtin_channels("alice").unwrap();
@@ -1762,7 +1978,16 @@ fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
     let (store, _dir) = make_store();
     store.create_human("alice").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
 
     store.ensure_builtin_channels("alice").unwrap();
@@ -1822,7 +2047,16 @@ fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
 
     store.create_human("zoe").unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
 
     assert!(store.is_member("all", "alice").unwrap());
@@ -1841,7 +2075,16 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("eng", "bot1", SenderType::Agent)
@@ -1921,7 +2164,16 @@ fn test_thread_unread_count_clears_after_reading_all_messages() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)

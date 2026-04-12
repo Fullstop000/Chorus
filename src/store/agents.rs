@@ -110,45 +110,12 @@ pub struct AgentRecordUpsert<'a> {
 }
 
 impl Store {
-    pub fn create_agent_record(
-        &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        env_vars: &[AgentEnvVar],
-    ) -> Result<String> {
-        self.create_agent_record_with_reasoning(&AgentRecordUpsert {
-            name,
-            display_name,
-            description,
-            system_prompt: None,
-            runtime,
-            model,
-            reasoning_effort: None,
-            env_vars,
-        })
-    }
-
-    pub fn create_agent_record_with_reasoning(
-        &self,
-        record: &AgentRecordUpsert<'_>,
-    ) -> Result<String> {
+    pub fn create_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO agents (id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                id,
-                record.name,
-                record.display_name,
-                record.description,
-                record.system_prompt,
-                record.runtime,
-                record.model,
-                record.reasoning_effort
-            ],
+            params![id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
         if let Some(all_channel) =
