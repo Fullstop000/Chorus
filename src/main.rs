@@ -469,7 +469,6 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
 
 use console::{style, Emoji};
 use std::io::IsTerminal;
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
@@ -706,11 +705,26 @@ async fn cmd_setup(
         );
     }
 
-    let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
-    let data_dir = PathBuf::from(&data_dir_str);
+    banner();
+
+    // Data dir: respect --data-dir if given, otherwise prompt (with default)
+    // when interactive, or silently use the default when not.
+    let data_dir_str = match data_dir {
+        Some(s) => s,
+        None if interactive => {
+            use dialoguer::theme::ColorfulTheme;
+            use dialoguer::Input;
+            Input::<String>::with_theme(&ColorfulTheme::default())
+                .with_prompt("Data directory")
+                .default(default_data_dir())
+                .interact_text()
+                .unwrap_or_else(|_| default_data_dir())
+        }
+        None => default_data_dir(),
+    };
+    let data_dir = chorus::agent::templates::expand_tilde(&data_dir_str);
     let template_dir = chorus::agent::templates::expand_tilde(&template_dir_raw);
 
-    banner();
     row_info("Data dir", &style(data_dir.display()).cyan().to_string());
     row_info(
         "Templates",
