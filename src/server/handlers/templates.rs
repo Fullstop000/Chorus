@@ -8,7 +8,7 @@ use crate::agent::templates::group_by_category;
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
 
-use super::{api_err, internal_err, ApiResult, AppState};
+use super::{app_err, ApiResult, AppState};
 
 // ── Response types ──
 
@@ -55,7 +55,10 @@ pub async fn handle_launch_trio(
     Json(req): Json<LaunchTrioRequest>,
 ) -> Result<(StatusCode, Json<LaunchTrioResponse>), (StatusCode, Json<super::ErrorResponse>)> {
     if req.template_ids.is_empty() || req.template_ids.len() > 10 {
-        return Err(api_err("template_ids must contain 1-10 entries"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "template_ids must contain 1-10 entries"
+        ));
     }
 
     // Resolve templates.
@@ -64,7 +67,12 @@ pub async fn handle_launch_trio(
         let template = state.templates.iter().find(|t| t.id == *tid);
         match template {
             Some(t) => resolved.push(t.clone()),
-            None => return Err(api_err(format!("template not found: {tid}"))),
+            None => {
+                return Err(app_err!(
+                    StatusCode::BAD_REQUEST,
+                    "template not found: {tid}"
+                ))
+            }
         }
     }
 
@@ -81,7 +89,12 @@ pub async fn handle_launch_trio(
             None,
             crate::store::channels::ChannelType::Channel,
         )
-        .map_err(|e| internal_err(format!("failed to create trio channel: {e}")))?;
+        .map_err(|e| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to create trio channel: {e}"
+            )
+        })?;
 
     // Join the human user to the channel.
     if let Ok(humans) = state.store.get_humans() {

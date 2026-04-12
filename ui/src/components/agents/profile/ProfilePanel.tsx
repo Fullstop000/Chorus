@@ -508,12 +508,20 @@ function DeleteAgentModal({
   const [mode, setMode] = useState<DeleteMode>("preserve_workspace");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const pushToast = useStore((s) => s.pushToast);
 
   async function handleSubmit() {
     setSubmitting(true);
     setError(null);
     try {
-      await deleteAgent(agentName, mode);
+      const result = await deleteAgent(agentName, mode);
+      if (result.code === "AGENT_DELETE_WORKSPACE_CLEANUP_FAILED") {
+        pushToast({
+          id: crypto.randomUUID(),
+          message: "Agent deleted but workspace cleanup failed",
+          level: "warning",
+        });
+      }
       await onDeleted();
     } catch (e) {
       setError(String(e));

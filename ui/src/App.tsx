@@ -2,6 +2,7 @@ import { useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { useStore } from "./store/uiStore";
+import type { ToastEntry } from "./store/uiStore";
 import {
   whoamiQuery,
   channelsQuery,
@@ -13,15 +14,46 @@ import {
 } from "./data";
 import type { ChannelInfo } from "./data";
 import {
-  dmConversationNameForParticipants,
   ensureInboxConversations,
   type InboxState,
-} from "./inbox";
+} from "./store/inbox";
+import { dmConversationNameForParticipants } from "./data";
 import { isVisibleSidebarChannel } from "./pages/Sidebar/sidebarChannels";
 import { getSession, EventType } from "./transport";
 import { queryClient as appQueryClient } from "./lib/queryClient";
 import { MainPanel } from "./pages/MainPanel";
 import { Sidebar } from "./pages/Sidebar";
+import { ToastRegion } from "./components/chat/ToastRegion";
+
+function GlobalToasts() {
+  const toasts = useStore((s) => s.toasts);
+  const dismissToast = useStore((s) => s.dismissToast);
+  const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(() => {
+    // Start timers for newly arrived toasts only
+    for (const t of toasts) {
+      if (!timers.current.has(t.id)) {
+        timers.current.set(
+          t.id,
+          setTimeout(() => {
+            dismissToast(t.id);
+            timers.current.delete(t.id);
+          }, 4000),
+        );
+      }
+    }
+    // Cancel timers for toasts that were dismissed early
+    for (const [id, timer] of timers.current) {
+      if (!toasts.find((t: ToastEntry) => t.id === id)) {
+        clearTimeout(timer);
+        timers.current.delete(id);
+      }
+    }
+  }, [toasts, dismissToast]);
+
+  return <ToastRegion toasts={toasts} onDismiss={dismissToast} />;
+}
 
 function loadAppData(
   currentUser: string,
@@ -59,6 +91,7 @@ function syncWhoami(
   }, [username, currentUser, setCurrentUser, resetUserSession]);
 }
 
+/** Keep inbox conversations in sync as new channels arrive from the channels query. */
 function mirrorChannels(
   allChannels: ChannelInfo[],
   updateInboxState: (u: (c: InboxState) => InboxState) => void,
@@ -71,6 +104,7 @@ function mirrorChannels(
   }, [allChannels, updateInboxState]);
 }
 
+/** Pick the first joined channel on initial load when no channel or agent is already selected. */
 function autoSelectChannel(params: {
   shellBootstrapped: boolean;
   channels: ChannelInfo[];
@@ -102,6 +136,7 @@ function autoSelectChannel(params: {
   }, [shellBootstrapped, channels, systemChannels, setCurrentChannel]);
 }
 
+/** Create the DM channel for the selected agent if it doesn't exist yet, then register it in the query cache and inbox state. */
 function ensureAgentDm(params: {
   currentUser: string;
   currentAgentName: string | null;
@@ -246,6 +281,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar />
       <MainPanel />
+      <GlobalToasts />
     </div>
   );
 }

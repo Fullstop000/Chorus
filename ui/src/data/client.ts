@@ -1,9 +1,32 @@
 const BASE = ''
 
+export type ApiErrorCode =
+  | 'AGENT_NAME_TAKEN'
+  | 'CHANNEL_NAME_TAKEN'
+  | 'TEAM_NAME_TAKEN'
+  | 'AGENT_RESTART_FAILED'
+  | 'AGENT_DELETE_WORKSPACE_CLEANUP_FAILED'
+  | 'CHANNEL_OPERATION_UNSUPPORTED'
+  | 'MESSAGE_NOT_A_MEMBER'
+
+export class ApiError extends Error {
+  readonly status: number
+  readonly code?: ApiErrorCode
+
+  constructor(status: number, message: string, code?: ApiErrorCode) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
+
 async function parseResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error((err as { error?: string }).error ?? res.statusText)
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    const msg = (body as { error?: string }).error ?? res.statusText
+    const code = (body as { code?: ApiErrorCode }).code
+    throw new ApiError(res.status, msg, code)
   }
   return res.json() as Promise<T>
 }

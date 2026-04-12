@@ -26,24 +26,16 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::agent::drivers::command_exists;
 use crate::agent::runtime::AgentRuntime;
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
+use crate::server::error::{app_err, ApiResult, ErrorResponse};
 use crate::store::Store;
 use dto::ServerInfo;
-
-// ── Core types ──
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct ErrorResponse {
-    pub error: String,
-}
-
-pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 
 /// Shared application state injected into every handler via Axum's `State` extractor.
 #[derive(Clone)]
@@ -55,24 +47,19 @@ pub struct AppState {
     pub templates: Arc<Vec<AgentTemplate>>,
 }
 
-pub(super) fn api_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
-    (
-        StatusCode::BAD_REQUEST,
-        Json(ErrorResponse { error: msg.into() }),
-    )
-}
-
-pub(super) fn internal_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
+/// Log the underlying error server-side and return a generic 500 to the caller.
+///
+/// Use this instead of `app_err!(INTERNAL_SERVER_ERROR, e.to_string())` to avoid
+/// leaking internal details (SQLite schema, filesystem paths) to API consumers.
+pub(super) fn internal_err(e: impl Into<anyhow::Error>) -> (StatusCode, Json<ErrorResponse>) {
+    let e = e.into();
+    error!("{e:#}");
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse { error: msg.into() }),
-    )
-}
-
-pub(super) fn conflict_err(msg: impl Into<String>) -> (StatusCode, Json<ErrorResponse>) {
-    (
-        StatusCode::CONFLICT,
-        Json(ErrorResponse { error: msg.into() }),
+        Json(ErrorResponse {
+            error: "internal error".into(),
+            code: None,
+        }),
     )
 }
 
@@ -118,12 +105,15 @@ pub(super) fn acquire_transition(
     state: &AppState,
     agent_name: &str,
 ) -> Result<TransitionGuard, (StatusCode, Json<ErrorResponse>)> {
-    let mut transitioning = state
-        .transitioning_agents
-        .lock()
-        .map_err(|_| internal_err("failed to lock transition state"))?;
+    let mut transitioning = state.transitioning_agents.lock().map_err(|_| {
+        app_err!(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed to lock transition state",
+        )
+    })?;
     if !transitioning.insert(agent_name.to_string()) {
-        return Err(conflict_err(
+        return Err(app_err!(
+            StatusCode::CONFLICT,
             "agent lifecycle operation already in progress; retry when the current action completes",
         ));
     }
@@ -153,7 +143,7 @@ pub async fn handle_server_info(
 ) -> ApiResult<ServerInfo> {
     debug!(agent = %agent_id, "list_server");
     let info = server_info::build_server_info(state.store.as_ref(), &agent_id)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(info))
 }
 
@@ -161,7 +151,7 @@ pub async fn handle_server_info(
 
 pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
     let info = server_info::build_ui_shell_info(state.store.as_ref())
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::to_value(info).unwrap()))
 }
 
@@ -169,7 +159,7 @@ pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<
     let humans = state
         .store
         .get_humans()
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .into_iter()
         .map(dto::HumanInfo::from)
         .collect();
@@ -182,7 +172,7 @@ pub async fn handle_list_runtime_statuses(
     let statuses = state
         .runtime_status_provider
         .list_statuses()
-        .map_err(|e| internal_err(e.to_string()))?
+        .map_err(internal_err)?
         .into_iter()
         .map(|status| {
             let driver_mode = AgentRuntime::parse(&status.runtime)
@@ -213,7 +203,7 @@ pub async fn handle_list_runtime_models(
     let models = state
         .runtime_status_provider
         .list_models(&runtime)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(models))
 }
 
