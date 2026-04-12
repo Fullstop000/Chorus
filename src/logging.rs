@@ -32,7 +32,7 @@ use crate::agent::templates::expand_tilde;
 use crate::config::{ChorusConfig, LogsConfig};
 
 /// Span name that `AgentLogLayer` watches for. Reader tasks enter a
-/// `tracing::info_span!(AGENT_SPAN_NAME, name = %agent_name)` so every
+/// `tracing::info_span!(AGENT_SPAN_NAME, agent_name = %agent_name)` so every
 /// event inside the scope gets routed to that agent's log file.
 pub const AGENT_SPAN_NAME: &str = "agent";
 
@@ -117,7 +117,7 @@ struct AgentScope {
     name: String,
 }
 
-/// Visit a span's fields looking for `name = "..."`.
+/// Visit a span's fields looking for `agent_name = "..."`.
 #[derive(Default)]
 struct AgentNameVisitor {
     name: Option<String>,
@@ -125,12 +125,12 @@ struct AgentNameVisitor {
 
 impl Visit for AgentNameVisitor {
     fn record_str(&mut self, field: &Field, value: &str) {
-        if field.name() == "name" {
+        if field.name() == "agent_name" {
             self.name = Some(value.to_string());
         }
     }
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
-        if field.name() == "name" && self.name.is_none() {
+        if field.name() == "agent_name" && self.name.is_none() {
             // Debug-formatted strings come with surrounding quotes; strip them.
             let raw = format!("{value:?}");
             self.name = Some(raw.trim_matches('"').to_string());
@@ -325,7 +325,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let layer = AgentLogLayer::new(tmp.path().to_path_buf());
         with_default(test_subscriber(layer), || {
-            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "alice");
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "alice");
             let _g = span.enter();
             tracing::info!("hello from alice");
         });
@@ -339,12 +339,12 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let layer = AgentLogLayer::new(tmp.path().to_path_buf());
         with_default(test_subscriber(layer), || {
-            let a = tracing::info_span!(AGENT_SPAN_NAME, name = "alice");
+            let a = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "alice");
             {
                 let _g = a.enter();
                 tracing::info!("for alice");
             }
-            let b = tracing::info_span!(AGENT_SPAN_NAME, name = "bob");
+            let b = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "bob");
             {
                 let _g = b.enter();
                 tracing::info!("for bob");
@@ -377,7 +377,7 @@ mod tests {
         let layer = AgentLogLayer::new(tmp.path().to_path_buf());
         with_default(test_subscriber(layer), || {
             for bad in ["../evil", "/etc/passwd", ".hidden", "", "slash/ok"] {
-                let span = tracing::info_span!(AGENT_SPAN_NAME, name = bad);
+                let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = bad);
                 let _g = span.enter();
                 tracing::info!("should be dropped");
             }
@@ -392,7 +392,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let layer = AgentLogLayer::new(tmp.path().to_path_buf());
         with_default(test_subscriber(layer), || {
-            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "carol");
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "carol");
             let _g = span.enter();
             for i in 0..5 {
                 tracing::trace!(i, "tick");
@@ -408,7 +408,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let layer = AgentLogLayer::new(tmp.path().to_path_buf());
         with_default(test_subscriber(layer), || {
-            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "dave");
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "dave");
             let _g = span.enter();
             tracing::trace!(stream = "stdout", raw = "{\"k\":1}");
         });
@@ -439,7 +439,7 @@ mod tests {
 
         with_default(subscriber, || {
             tracing::info!("outside — should count");
-            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "x");
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "x");
             let _g = span.enter();
             tracing::info!("inside — should NOT count");
         });

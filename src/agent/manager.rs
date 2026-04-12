@@ -375,7 +375,7 @@ impl AgentManager {
             // handle plumbing required.
             let agent_span = tracing::info_span!(
                 crate::logging::AGENT_SPAN_NAME,
-                name = %name,
+                agent_name = %name,
                 instance_id,
             );
             let _span_guard = agent_span.enter();
@@ -482,7 +482,7 @@ impl AgentManager {
             use std::io::BufRead;
             let agent_span = tracing::info_span!(
                 crate::logging::AGENT_SPAN_NAME,
-                name = %agent_name,
+                agent_name = %agent_name,
                 instance_id,
             );
             let _span_guard = agent_span.enter();
