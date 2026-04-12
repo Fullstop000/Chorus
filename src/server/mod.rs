@@ -19,15 +19,17 @@ struct UiAssets;
 async fn serve_ui(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let candidate = if path.is_empty() { "index.html" } else { path };
-    match UiAssets::get(candidate).or_else(|| UiAssets::get("index.html")) {
-        Some(file) => {
-            let mime = file.metadata.mimetype();
-            Response::builder()
-                .header(header::CONTENT_TYPE, mime)
-                .body(Body::from(file.data.into_owned()))
-                .unwrap()
+    let Some(file) = UiAssets::get(candidate).or_else(|| UiAssets::get("index.html")) else {
+        return (StatusCode::NOT_FOUND, "UI assets missing").into_response();
+    };
+    let mime = file.metadata.mimetype();
+    let mut response = Response::new(Body::from(file.data.into_owned()));
+    match header::HeaderValue::from_str(mime) {
+        Ok(value) => {
+            response.headers_mut().insert(header::CONTENT_TYPE, value);
+            response
         }
-        None => (StatusCode::NOT_FOUND, "UI assets missing").into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -211,6 +213,9 @@ pub fn build_router_with_services(
         .nest("/internal", internal_router)
         .nest("/api", api_router)
         .layer(cors)
-        .fallback(serve_ui)
+        // Only GET falls through to the embedded UI — non-GET requests to
+        // unmatched paths (e.g. removed `/internal/.../remember`) should
+        // return 405/404 rather than silently serving index.html.
+        .fallback_service(get(serve_ui))
         .with_state(state)
 }

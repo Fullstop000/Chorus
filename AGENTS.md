@@ -154,10 +154,10 @@ Follow `docs/DRIVER_GUIDE.md`
 
 ## GStack
 
-Use the `/browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
+Use the `/gstack-browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
 
 **Available skills:**
-`/office-hours`, `/plan-ceo-review`, `/plan-eng-review`, `/plan-design-review`, `/design-consultation`, `/design-shotgun`, `/design-html`, `/review`, `/ship`, `/land-and-deploy`, `/canary`, `/benchmark`, `/browse`, `/connect-chrome`, `/qa`, `/qa-only`, `/design-review`, `/setup-browser-cookies`, `/setup-deploy`, `/retro`, `/investigate`, `/document-release`, `/codex`, `/cso`, `/autoplan`, `/plan-devex-review`, `/devex-review`, `/careful`, `/freeze`, `/guard`, `/unfreeze`, `/gstack-upgrade`, `/learn`
+`/gstack-office-hours`, `/gstack-plan-ceo-review`, `/gstack-plan-eng-review`, `/gstack-plan-design-review`, `/gstack-design-consultation`, `/gstack-design-shotgun`, `/gstack-design-html`, `/gstack-review`, `/gstack-ship`, `/gstack-land-and-deploy`, `/gstack-canary`, `/gstack-benchmark`, `/gstack-browse`, `/gstack-connect-chrome`, `/gstack-qa`, `/gstack-qa-only`, `/gstack-design-review`, `/gstack-setup-browser-cookies`, `/gstack-setup-deploy`, `/gstack-retro`, `/gstack-investigate`, `/gstack-document-release`, `/gstack-codex`, `/gstack-cso`, `/gstack-autoplan`, `/gstack-plan-devex-review`, `/gstack-devex-review`, `/gstack-careful`, `/gstack-freeze`, `/gstack-guard`, `/gstack-unfreeze`, `/gstack-upgrade`, `/gstack-learn`
 
 ---
 

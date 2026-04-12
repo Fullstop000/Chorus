@@ -554,22 +554,29 @@ fn extract_version(s: &str) -> Option<String> {
 }
 
 /// Run `<name> --version` and return the extracted dotted version, or `None`
-/// if the binary is missing or the command fails.
+/// if the binary is missing or the command fails. Some tools print their
+/// version to stderr (historically `python --version` did), so we fall
+/// back to stderr if stdout is empty.
 fn check_tool(name: &str) -> Option<String> {
-    Command::new(name)
+    let output = Command::new(name)
         .arg("--version")
         .output()
         .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| {
-            let raw = String::from_utf8_lossy(&o.stdout).to_string();
-            extract_version(&raw).or_else(|| {
-                raw.lines()
-                    .next()
-                    .map(|l| l.trim().to_string())
-                    .filter(|s| !s.is_empty())
-            })
-        })
+        .filter(|o| o.status.success())?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let source = if stdout.trim().is_empty() {
+        stderr
+    } else {
+        stdout
+    };
+    extract_version(&source).or_else(|| {
+        source
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+            .filter(|s| !s.is_empty())
+    })
 }
 
 /// What kind of ACP support a runtime has.
@@ -803,11 +810,11 @@ async fn cmd_setup(
     }
 
     // Silently ensure the data dir and DB exist — no dedicated section.
+    // Always call Store::open: it runs migrations idempotently, so an
+    // existing chorus.db gets schema upgrades as part of setup.
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("chorus.db");
-    if !db_path.exists() {
-        let _ = Store::open(db_path.to_str().unwrap())?;
-    }
+    let _ = Store::open(db_path.to_str().unwrap())?;
 
     // Summary line
     println!();
@@ -844,10 +851,16 @@ async fn cmd_run(
     if !no_open {
         let url = format!("http://localhost:{port}");
         tokio::spawn(async move {
-            let client = reqwest::Client::builder()
+            let client = match reqwest::Client::builder()
                 .timeout(std::time::Duration::from_millis(400))
                 .build()
-                .unwrap();
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(err = %e, "failed to build health-probe client; skipping browser open");
+                    return;
+                }
+            };
             let health = format!("{url}/health");
             for _ in 0..10 {
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;

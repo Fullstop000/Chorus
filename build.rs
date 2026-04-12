@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::Path;
 
-// rust-embed resolves `ui/dist/` at compile time. In debug builds it reads from
-// disk; in release builds it bakes files into the binary. Either way the folder
-// must exist. For fresh clones where the UI hasn't been built yet, create a
-// placeholder so `cargo build` succeeds and `chorus run` shows a helpful page.
+// The embedded UI assets are expected to come from `ui/dist/`, so the folder
+// must exist when the crate is compiled. For fresh clones where the UI hasn't
+// been built yet, create a placeholder so `cargo build` succeeds and
+// `chorus run` shows a helpful page instead of failing on a missing folder.
 fn main() {
     println!("cargo:rerun-if-changed=ui/dist");
 
@@ -19,8 +19,8 @@ fn main() {
             r#"<!doctype html><meta charset="utf-8"><title>Chorus</title>
 <style>body{font-family:system-ui;max-width:40rem;margin:4rem auto;padding:0 1rem;color:#222}</style>
 <h1>Chorus UI not built</h1>
-<p>This binary was built without a compiled UI. Run <code>chorus setup</code>
-(or <code>bun install &amp;&amp; bun run build</code> in <code>ui/</code>) and rebuild.</p>
+<p>This binary was built without a compiled UI. Run
+<code>bun install &amp;&amp; bun run build</code> in <code>ui/</code> and rebuild.</p>
 "#,
         )
         .expect("write placeholder index.html");
