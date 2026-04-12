@@ -1,9 +1,13 @@
+import { ApiError, type ApiErrorCode } from '@/lib/apiError'
+
 const BASE = ''
 
 async function parseResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: res.statusText }))
-    throw new Error((err as { error?: string }).error ?? res.statusText)
+    const body = await res.json().catch(() => ({ error: res.statusText }))
+    const msg = (body as { error?: string }).error ?? res.statusText
+    const code = (body as { code?: ApiErrorCode }).code
+    throw new ApiError(res.status, msg, code)
   }
   return res.json() as Promise<T>
 }

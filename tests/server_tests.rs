@@ -1028,7 +1028,7 @@ async fn test_history_rejects_non_member_agent() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
     let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
         .await
         .unwrap();

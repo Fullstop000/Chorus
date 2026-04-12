@@ -2,6 +2,7 @@ import { useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
 import { useStore } from "./store/uiStore";
+import type { ToastEntry } from "./store/uiStore";
 import {
   whoamiQuery,
   channelsQuery,
@@ -22,6 +23,22 @@ import { getSession, EventType } from "./transport";
 import { queryClient as appQueryClient } from "./lib/queryClient";
 import { MainPanel } from "./pages/MainPanel";
 import { Sidebar } from "./pages/Sidebar";
+import { ToastRegion } from "./components/chat/ToastRegion";
+
+function GlobalToasts() {
+  const toasts = useStore((s) => s.toasts);
+  const dismissToast = useStore((s) => s.dismissToast);
+
+  useEffect(() => {
+    if (toasts.length === 0) return;
+    const timers = toasts.map((t: ToastEntry) =>
+      setTimeout(() => dismissToast(t.id), 4000),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [toasts, dismissToast]);
+
+  return <ToastRegion toasts={toasts} onDismiss={dismissToast} />;
+}
 
 function loadAppData(
   currentUser: string,
@@ -249,6 +266,7 @@ export default function App() {
     <div className="app-shell">
       <Sidebar />
       <MainPanel />
+      <GlobalToasts />
     </div>
   );
 }

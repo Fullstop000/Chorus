@@ -6,10 +6,11 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use super::{acquire_transition, api_err, format_anyhow_error, internal_err, ApiResult, AppState};
+use super::{acquire_transition, app_err, format_anyhow_error, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
+use crate::server::error::AppErrorCode;
 use crate::store::agents::{AgentEnvVar, AgentStatus};
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
@@ -118,7 +119,10 @@ pub(super) fn normalize_agent_env_vars(
     env_vars: &[AgentEnvVarPayload],
 ) -> Result<Vec<AgentEnvVar>, (StatusCode, Json<super::ErrorResponse>)> {
     if env_vars.len() > 100 {
-        return Err(api_err("too many environment variables"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "too many environment variables",
+        ));
     }
 
     let mut seen = HashSet::new();
@@ -126,15 +130,22 @@ pub(super) fn normalize_agent_env_vars(
     for (index, env_var) in env_vars.iter().enumerate() {
         let key = env_var.key.trim().to_string();
         if key.is_empty() {
-            return Err(api_err("environment variable key is required"));
+            return Err(app_err!(
+                StatusCode::BAD_REQUEST,
+                "environment variable key is required",
+            ));
         }
         if key.len() > 8_192 || env_var.value.len() > 8_192 {
-            return Err(api_err("environment variable key/value is too large"));
+            return Err(app_err!(
+                StatusCode::BAD_REQUEST,
+                "environment variable key/value is too large",
+            ));
         }
         if !seen.insert(key.clone()) {
-            return Err(api_err(format!(
+            return Err(app_err!(
+                StatusCode::BAD_REQUEST,
                 "duplicate environment variable key: {key}"
-            )));
+            ));
         }
         normalized.push(AgentEnvVar {
             key,
@@ -165,9 +176,10 @@ pub(super) fn normalize_reasoning_effort(
         "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => {
             Ok(Some(reasoning_effort.to_string()))
         }
-        _ => Err(api_err(format!(
+        _ => Err(app_err!(
+            StatusCode::BAD_REQUEST,
             "unsupported reasoning effort: {reasoning_effort}"
-        ))),
+        )),
     }
 }
 
@@ -177,7 +189,7 @@ pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<
     let mut agents: Vec<AgentInfo> = state
         .store
         .get_agents()
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .iter()
         .map(AgentInfo::from)
         .collect();
@@ -200,7 +212,7 @@ pub async fn handle_create_agent(
 ) -> ApiResult<serde_json::Value> {
     let name = req.name.trim().to_string();
     if name.is_empty() {
-        return Err(api_err("name is required"));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
     let display_name = if req.display_name.is_empty() {
         name.clone()
@@ -227,11 +239,18 @@ pub async fn handle_create_agent(
             reasoning_effort: reasoning_effort.as_deref(),
             env_vars: &env_vars,
         })
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE constraint") {
+                app_err!(AppErrorCode::AgentNameTaken, "agent name already in use")
+            } else {
+                app_err!(StatusCode::BAD_REQUEST, msg)
+            }
+        })?;
     for channel in state
         .store
         .get_auto_join_channels()
-        .map_err(|e| internal_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     {
         let _ = state
             .store
@@ -259,8 +278,8 @@ pub async fn handle_get_agent(
     let agent = state
         .store
         .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
     Ok(Json(AgentDetailResponse {
         agent: AgentInfo::from(&agent),
         env_vars: agent
@@ -283,8 +302,8 @@ pub async fn handle_update_agent(
     let existing = state
         .store
         .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
 
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     let display_name = if req.display_name.trim().is_empty() {
@@ -317,21 +336,22 @@ pub async fn handle_update_agent(
             reasoning_effort: reasoning_effort.as_deref(),
             env_vars: &env_vars,
         })
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if existing.status == AgentStatus::Active && requires_restart {
         state
             .lifecycle
             .stop_agent(&name)
             .await
-            .map_err(|e| internal_err(e.to_string()))?;
+            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         if let Err(err) = state.lifecycle.start_agent(&name, None).await {
             let _ = state
                 .store
                 .update_agent_status(&name, AgentStatus::Inactive);
-            return Err(internal_err(format!(
+            return Err(app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "agent updated but restart failed: {err}"
-            )));
+            ));
         }
     }
     Ok(Json(serde_json::json!({
@@ -349,8 +369,8 @@ pub async fn handle_restart_agent(
     let agent = state
         .store
         .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
     let agents_dir = state.store.agents_dir();
     let workspace = AgentWorkspace::new(&agents_dir);
 
@@ -358,7 +378,7 @@ pub async fn handle_restart_agent(
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     match req.mode {
         RestartMode::Restart => {}
@@ -366,16 +386,19 @@ pub async fn handle_restart_agent(
             state
                 .store
                 .update_agent_session(&name, None)
-                .map_err(|e| internal_err(e.to_string()))?;
+                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         }
         RestartMode::FullReset => {
             state
                 .store
                 .update_agent_session(&name, None)
-                .map_err(|e| internal_err(e.to_string()))?;
-            workspace
-                .delete_if_exists(&name)
-                .map_err(|e| internal_err(format!("failed to delete workspace: {e}")))?;
+                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            workspace.delete_if_exists(&name).map_err(|e| {
+                app_err!(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to delete workspace: {e}"
+                )
+            })?;
         }
     }
 
@@ -383,7 +406,10 @@ pub async fn handle_restart_agent(
         let _ = state
             .store
             .update_agent_status(&name, AgentStatus::Inactive);
-        return Err(internal_err(format!("restart failed: {err}")));
+        return Err(app_err!(
+            AppErrorCode::AgentRestartFailed,
+            "restart failed: {err}"
+        ));
     }
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -401,30 +427,34 @@ pub async fn handle_delete_agent(
     state
         .store
         .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
 
     state
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     state
         .store
         .mark_agent_messages_deleted(&name)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     state
         .store
         .delete_agent_record(&name)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
         let agents_dir = state.store.agents_dir();
         let workspace = AgentWorkspace::new(&agents_dir);
-        workspace.delete_if_exists(&name).map_err(|e| {
-            internal_err(format!("agent deleted but failed to delete workspace: {e}"))
-        })?;
+        if let Err(e) = workspace.delete_if_exists(&name) {
+            return Ok(Json(serde_json::json!({
+                "ok": true,
+                "warning": format!("agent deleted but workspace cleanup failed: {e}"),
+                "code": "AGENT_DELETE_WORKSPACE_CLEANUP_FAILED"
+            })));
+        }
     }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -439,7 +469,7 @@ pub async fn handle_agent_start(
         .lifecycle
         .start_agent(&name, None)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     info!(agent = %name, "agent started");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -454,7 +484,7 @@ pub async fn handle_agent_stop(
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     info!(agent = %name, "agent stopped");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -468,7 +498,7 @@ pub async fn handle_agent_activity(
     let messages = state
         .store
         .get_agent_activity(&name, limit)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
 

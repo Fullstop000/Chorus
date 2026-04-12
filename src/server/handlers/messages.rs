@@ -1,13 +1,15 @@
 use std::sync::LazyLock;
 
 use axum::extract::{Path, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use super::dto::ChannelInfo;
-use super::{api_err, format_anyhow_error, internal_err, ApiResult, AppState};
+use super::{app_err, format_anyhow_error, ApiResult, AppState};
+use crate::server::error::AppErrorCode;
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
 use crate::store::inbox::{InboxConversationNotificationView, ThreadNotificationStateView};
@@ -266,7 +268,7 @@ fn sender_type_for_actor(
 ) -> Result<SenderType, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
     Ok(store
         .lookup_sender_type(actor_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .unwrap_or(SenderType::Human))
 }
 
@@ -279,12 +281,12 @@ fn require_channel_membership(
     if !state
         .store
         .is_member(&channel.name, actor_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        return Err(api_err(format!(
-            "you are not a member of channel {}",
-            denied_label
-        )));
+        return Err(app_err!(
+            AppErrorCode::MessageNotAMember,
+            "you are not a member of channel {}", denied_label
+        ));
     }
     Ok(())
 }
@@ -295,8 +297,8 @@ fn load_channel_by_id(
 ) -> Result<Channel, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
     store
         .get_channel_by_id(channel_id)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("channel not found"))
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -322,7 +324,7 @@ fn history_for_channel(
             before,
             after,
         )
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     Ok(Json(HistoryResponse {
         messages: snapshot.messages,
@@ -342,7 +344,7 @@ fn threads_for_channel(
     let inbox = state
         .store
         .get_channel_thread_inbox(&channel.name, actor_id)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(ThreadsResponse {
         unread_count: inbox.unread_count,
         threads: inbox.threads,
@@ -369,19 +371,19 @@ fn update_read_cursor_for_channel(
             thread_parent_id,
             last_read_seq,
         )
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let notification = state
         .store
         .get_inbox_conversation_notification_for_member(&channel.id, actor_id)
-        .map_err(|e| internal_err(e.to_string()))?
-        .ok_or_else(|| internal_err("inbox notification row missing after read cursor"))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "inbox notification row missing after read cursor"))?;
 
     let thread_snapshot = if let Some(parent_id) = thread_parent_id {
         state
             .store
             .get_thread_notification_state(&channel.name, parent_id, actor_id)
-            .map_err(|e| internal_err(e.to_string()))?
+            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
     } else {
         None
     };
@@ -438,14 +440,14 @@ async fn send_message_to_channel(
             suppress_event,
             run_id: run_id.as_deref(),
         })
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     info!(agent = %actor_id, msg = %message_id, content=%content, "send_message ok");
 
     if !suppress_agent_delivery {
         forward_team_mentions(state, &channel.name, actor_id, sender_type, content)
             .await
-            .map_err(|e| internal_err(e.to_string()))?;
+            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     }
 
     if !suppress_agent_delivery {
@@ -464,8 +466,8 @@ async fn send_message_to_channel(
 
     let message_view = store
         .get_conversation_message_view(&message_id)
-        .map_err(|e| internal_err(e.to_string()))?
-        .ok_or_else(|| internal_err("sent message missing from projection"))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "sent message missing from projection"))?;
 
     Ok(Json(SendResponse {
         message_id,
@@ -527,7 +529,7 @@ pub async fn handle_send(
     let store = &state.store;
     let (channel_id, thread_parent_id) = store
         .resolve_target(&req.target, &agent_id)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let channel = load_channel_by_id(store, &channel_id)?;
     send_message_to_channel(
@@ -554,7 +556,7 @@ pub async fn handle_receive(
 
     let messages = store
         .get_messages_for_agent(&agent_id, true)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if !messages.is_empty() {
         info!(agent = %agent_id, count = messages.len(), "receive_message: got messages immediately");
@@ -585,7 +587,7 @@ pub async fn handle_receive(
             Ok(Ok(_)) => {
                 let messages = store
                     .get_messages_for_agent(&agent_id, true)
-                    .map_err(|e| api_err(e.to_string()))?;
+                    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
                 if !messages.is_empty() {
                     info!(agent = %agent_id, count = messages.len(), "receive_message: woke up with messages");
                     for m in &messages {
@@ -611,7 +613,7 @@ pub async fn handle_history(
 ) -> ApiResult<HistoryResponse> {
     let channel_target = params
         .channel
-        .ok_or_else(|| api_err("missing channel parameter"))?;
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "missing channel parameter"))?;
     if let Some(ref ch) = Some(&channel_target) {
         debug!(agent = %agent_id, channel = %ch, "read_history");
     }
@@ -619,12 +621,12 @@ pub async fn handle_history(
     let store = &state.store;
     let (channel_name, thread_parent_id) =
         resolve_history_target(store, &agent_id, &channel_target)
-            .map_err(|e| api_err(e.to_string()))?;
+            .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     let limit = params.limit.unwrap_or(50);
     let channel = store
         .get_channel_by_name(&channel_name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("channel not found"))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))?;
     history_for_channel(
         &state,
         &agent_id,
@@ -645,7 +647,7 @@ pub async fn handle_resolve_channel(
     let (channel_id, _) = state
         .store
         .resolve_target(&req.target, &agent_id)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(ResolveChannelResponse { channel_id }))
 }
 
@@ -654,16 +656,16 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
     if state
         .store
         .lookup_sender_type(&actor_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(api_err(format!("viewer not found: {}", actor_id)));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", actor_id));
     }
 
     let conversations: Vec<PublicInboxConversationNotification> = state
         .store
         .get_inbox_conversation_notifications(&actor_id)
-        .map_err(|e| internal_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .iter()
         .map(PublicInboxConversationNotification::from)
         .collect();
@@ -679,29 +681,26 @@ pub async fn handle_public_conversation_inbox_notification(
     if state
         .store
         .lookup_sender_type(&actor_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(api_err(format!("viewer not found: {}", actor_id)));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", actor_id));
     }
 
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     if !state
         .store
         .is_member(&channel.name, &actor_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
     {
-        return Err(api_err(format!(
-            "you are not a member of channel {}",
-            conversation_id
-        )));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "you are not a member of channel {}", conversation_id));
     }
 
     let notification = state
         .store
         .get_inbox_conversation_notification_for_member(&channel.id, &actor_id)
-        .map_err(|e| internal_err(e.to_string()))?
-        .ok_or_else(|| api_err("inbox row not found for this member"))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "inbox row not found for this member"))?;
 
     let conversation = PublicInboxConversationNotification::from(&notification);
 
@@ -709,7 +708,7 @@ pub async fn handle_public_conversation_inbox_notification(
         state
             .store
             .get_thread_notification_state(&channel.name, parent_id, &actor_id)
-            .map_err(|e| internal_err(e.to_string()))?
+            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             .map(PublicThreadNotificationRefresh::from)
     } else {
         None
@@ -727,30 +726,30 @@ pub async fn handle_public_ensure_dm(
 ) -> ApiResult<ChannelInfo> {
     let actor_id = public_viewer_name();
     if peer_name == actor_id {
-        return Err(api_err("cannot create a dm with yourself"));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "cannot create a dm with yourself"));
     }
     if state
         .store
         .lookup_sender_type(&actor_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(api_err(format!("viewer not found: {}", actor_id)));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", actor_id));
     }
     if state
         .store
         .lookup_sender_type(&peer_name)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(api_err(format!("peer not found: {}", peer_name)));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "peer not found: {}", peer_name));
     }
 
     let target = format!("dm:@{}", peer_name);
     let (channel_id, _) = state
         .store
         .resolve_target(&target, &actor_id)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     let channel = load_channel_by_id(&state.store, &channel_id)?;
     Ok(Json(ChannelInfo::from((&channel, true))))
 }
@@ -871,26 +870,26 @@ pub async fn handle_trace_events(
     let run_channel_id = state
         .store
         .get_run_channel_id(&run_id)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     match run_channel_id {
         Some(ch_id) => {
             if !state
                 .store
                 .channel_member_exists(&ch_id, &viewer)
-                .map_err(|e| internal_err(e.to_string()))?
+                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
             {
-                return Err(api_err("not a member of the channel for this run"));
+                return Err(app_err!(StatusCode::BAD_REQUEST, "not a member of the channel for this run"));
             }
         }
         None => {
-            return Err(api_err("run not found"));
+            return Err(app_err!(StatusCode::BAD_REQUEST, "run not found"));
         }
     }
 
     let events = state
         .store
         .get_trace_events(&run_id)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(TraceEventsResponse { events }))
 }
 
@@ -909,6 +908,6 @@ pub async fn handle_agent_runs(
     let runs = state
         .store
         .get_agent_runs(&agent_name, &viewer, 20)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(AgentRunsResponse { runs }))
 }

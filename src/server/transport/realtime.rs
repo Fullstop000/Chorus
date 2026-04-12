@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Query, State};
+use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::Deserialize;
@@ -10,7 +11,8 @@ use tokio::sync::broadcast;
 use tracing::{debug, warn};
 
 use crate::agent::trace::TraceEvent;
-use crate::server::handlers::{api_err, AppState, ErrorResponse};
+use crate::server::error::{app_err, ErrorResponse};
+use crate::server::handlers::AppState;
 use crate::store::{Store, StreamEvent};
 
 #[derive(Debug, Deserialize)]
@@ -26,10 +28,10 @@ pub async fn handle_events_ws(
     if state
         .store
         .lookup_sender_type(&params.viewer)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .is_none()
     {
-        return Err(api_err(format!("viewer not found: {}", params.viewer)));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "viewer not found: {}", params.viewer));
     }
 
     Ok(ws.on_upgrade(move |socket| realtime_session(socket, state.store.clone(), params.viewer)))
