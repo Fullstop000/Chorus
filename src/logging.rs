@@ -277,9 +277,10 @@ where
     let Some(scope) = ctx.lookup_current() else {
         return false;
     };
-    scope
-        .scope()
-        .any(|span| span.extensions().get::<AgentScope>().is_some())
+    // Match on the span's metadata name so the filter works even when
+    // AgentLogLayer isn't part of the subscriber (e.g., in isolated tests
+    // or environments that only want the stdout layer).
+    scope.scope().any(|span| span.name() == AGENT_SPAN_NAME)
 }
 
 // ---------------------------------------------------------------------------
@@ -301,4 +302,148 @@ fn build_appender(
         builder = builder.max_log_files(cfg.retention as usize);
     }
     Ok(builder.build(logs_dir)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::filter::LevelFilter;
+
+    /// Build a subscriber isolated to this test (via with_default) so tests
+    /// don't clobber each other or the global registry.
+    fn test_subscriber(layer: AgentLogLayer) -> impl tracing::Subscriber {
+        tracing_subscriber::registry().with(layer.with_filter(LevelFilter::TRACE))
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    #[test]
+    fn writes_event_emitted_inside_agent_span() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "alice");
+            let _g = span.enter();
+            tracing::info!("hello from alice");
+        });
+        let body = read(&tmp.path().join("alice.log"));
+        assert!(body.contains("hello from alice"), "got: {body}");
+        assert!(body.contains("[INFO]"), "level missing: {body}");
+    }
+
+    #[test]
+    fn routes_to_different_files_per_agent_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let a = tracing::info_span!(AGENT_SPAN_NAME, name = "alice");
+            {
+                let _g = a.enter();
+                tracing::info!("for alice");
+            }
+            let b = tracing::info_span!(AGENT_SPAN_NAME, name = "bob");
+            {
+                let _g = b.enter();
+                tracing::info!("for bob");
+            }
+        });
+        let alice = read(&tmp.path().join("alice.log"));
+        let bob = read(&tmp.path().join("bob.log"));
+        assert!(alice.contains("for alice") && !alice.contains("for bob"));
+        assert!(bob.contains("for bob") && !bob.contains("for alice"));
+    }
+
+    #[test]
+    fn skips_events_outside_agent_span() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            tracing::info!("no span");
+            let unrelated = tracing::info_span!("not_an_agent", name = "alice");
+            let _g = unrelated.enter();
+            tracing::info!("wrong span name");
+        });
+        // No files should have been created because no agent span was entered.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().flatten().collect();
+        assert!(entries.is_empty(), "unexpected files: {entries:?}");
+    }
+
+    #[test]
+    fn refuses_path_traversal_in_agent_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            for bad in ["../evil", "/etc/passwd", ".hidden", "", "slash/ok"] {
+                let span = tracing::info_span!(AGENT_SPAN_NAME, name = bad);
+                let _g = span.enter();
+                tracing::info!("should be dropped");
+            }
+        });
+        // Only `<tmp>/...` is our logs dir; there should be NO files created.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().flatten().collect();
+        assert!(entries.is_empty(), "wrote files for bad names: {entries:?}");
+    }
+
+    #[test]
+    fn appends_across_multiple_events_in_same_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "carol");
+            let _g = span.enter();
+            for i in 0..5 {
+                tracing::trace!(i, "tick");
+            }
+        });
+        let body = read(&tmp.path().join("carol.log"));
+        assert_eq!(body.matches("tick").count(), 5, "got: {body}");
+        assert_eq!(body.matches("[TRACE]").count(), 5);
+    }
+
+    #[test]
+    fn captures_raw_field_alongside_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "dave");
+            let _g = span.enter();
+            tracing::trace!(stream = "stdout", raw = "{\"k\":1}");
+        });
+        let body = read(&tmp.path().join("dave.log"));
+        assert!(body.contains("stream=stdout"), "got: {body}");
+        assert!(body.contains("raw={\"k\":1}"), "got: {body}");
+    }
+
+    #[test]
+    fn exclude_agent_spans_filter_matches_scope() {
+        // Compose a registry where ExcludeAgentSpansFilter guards a
+        // visit-counting layer. Inside an agent span, the inner layer
+        // should not see events. Outside, it should.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+
+        struct CountingLayer(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> Layer<S> for CountingLayer {
+            fn on_event(&self, _: &Event<'_>, _: Context<'_, S>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let subscriber = tracing_subscriber::registry()
+            .with(CountingLayer(hits.clone()).with_filter(ExcludeAgentSpansFilter));
+
+        with_default(subscriber, || {
+            tracing::info!("outside — should count");
+            let span = tracing::info_span!(AGENT_SPAN_NAME, name = "x");
+            let _g = span.enter();
+            tracing::info!("inside — should NOT count");
+        });
+
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
+    }
 }
