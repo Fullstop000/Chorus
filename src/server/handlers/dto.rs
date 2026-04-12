@@ -3,7 +3,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::agent::runtime_status::RuntimeAuthStatus;
-use crate::store::agents::{Agent, Human};
+use crate::store::agents::Agent;
+use crate::store::humans::Human;
 use crate::store::channels::Channel;
 
 /// Full agent-scoped workspace snapshot for bridge/CLI discovery.
