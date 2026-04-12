@@ -2,23 +2,47 @@
   --shimmer-base: var(--color-muted-foreground);
   --shimmer-accent: var(--color-foreground);
   display: inline-block;
-  color: transparent;
-  background-image: linear-gradient(
-    96deg,
-    var(--shimmer-base) 0%,
-    var(--shimmer-base) 42%,
-    var(--shimmer-accent) 50%,
-    var(--shimmer-base) 58%,
-    var(--shimmer-base) 100%
-  );
-  background-size: 220% 100%;
-  background-position: 100% 50%;
-  background-repeat: no-repeat;
-  background-clip: text;
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  will-change: background-position;
-  animation: ui-shimmering-text 2.2s linear infinite;
+  color: var(--shimmer-base);
+}
+
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .ui-shimmering-text {
+    color: transparent;
+    background-image: linear-gradient(
+      96deg,
+      var(--shimmer-base) 0%,
+      var(--shimmer-base) 42%,
+      var(--shimmer-accent) 50%,
+      var(--shimmer-base) 58%,
+      var(--shimmer-base) 100%
+    );
+    background-size: 220% 100%;
+    background-position: 100% 50%;
+    background-repeat: no-repeat;
+    background-clip: text;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    will-change: background-position;
+    animation: ui-shimmering-text 2.2s linear infinite;
+  }
+}
+
+@media (forced-colors: active) {
+  .ui-shimmering-text {
+    color: CanvasText;
+    background-image: none;
+    -webkit-text-fill-color: currentColor;
+    animation: none;
+    will-change: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-shimmering-text {
+    animation: none;
+    background-position: 50% 50%;
+    will-change: auto;
+  }
 }
 
 @keyframes ui-shimmering-text {

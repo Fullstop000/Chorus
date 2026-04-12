@@ -11,4 +11,21 @@ describe("traceStore", () => {
       "useTraceStore",
     );
   });
+
+  it("loads when localStorage.getItem throws", async () => {
+    vi.stubGlobal("localStorage", {
+      getItem: vi.fn(() => {
+        throw new Error("localStorage unavailable");
+      }),
+      setItem: vi.fn(),
+      removeItem: vi.fn(),
+      clear: vi.fn(),
+      key: vi.fn(),
+      length: 0,
+    });
+
+    await expect(import("./traceStore")).resolves.toHaveProperty(
+      "useTraceStore",
+    );
+  });
 });
