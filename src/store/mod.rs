@@ -21,9 +21,9 @@ use crate::utils::{derive_data_dir, parse_datetime};
 
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentEnvVar, AgentStatus};
-pub use humans::Human;
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
+pub use humans::Human;
 pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
 pub use messages::{
     ActivityMessage, AttachmentRef, ChannelThreadInbox, ChannelThreadInboxEntry,
