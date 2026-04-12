@@ -28,16 +28,13 @@ enum Commands {
         #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
         template_dir: String,
     },
-    /// First-run setup: check environment, initialize data dir, build UI
+    /// First-run doctor: detect runtimes, ACP adaptors, and templates
     Setup {
         /// Non-interactive mode (skip prompts, accept defaults)
         #[arg(long)]
         yes: bool,
         #[arg(long)]
         data_dir: Option<String>,
-        /// Rebuild ui/dist even if it already has content
-        #[arg(long)]
-        force_ui_build: bool,
         /// Directory containing agent template markdown files.
         #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
         template_dir: String,
@@ -176,9 +173,8 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Setup {
             yes,
             data_dir,
-            force_ui_build,
             template_dir,
-        }) => cmd_setup(yes, data_dir, force_ui_build, template_dir).await,
+        }) => cmd_setup(yes, data_dir, template_dir).await,
 
         Some(Commands::Run {
             port,
@@ -472,7 +468,6 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
 // ---- chorus setup / chorus run -------------------------------------------
 
 use console::{style, Emoji};
-use indicatif::{ProgressBar, ProgressStyle};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::Command;
@@ -526,16 +521,6 @@ fn row_ok(name: &str, detail: &str) {
     );
 }
 
-fn row_missing(name: &str, hint: &str) {
-    println!(
-        "  {}{:<12} {} {}",
-        style(BAD).red(),
-        style(name).bold(),
-        style("not found ·").dim(),
-        style(hint).dim().italic()
-    );
-}
-
 fn row_warn(name: &str, detail: &str) {
     println!(
         "  {}{:<12} {}",
@@ -560,15 +545,8 @@ fn footer(elapsed: Duration, next: &str) {
     println!();
 }
 
-/// Detected CLI tool: name, install hint, extracted version if found.
-struct ToolReport {
-    name: &'static str,
-    hint: &'static str,
-    version: Option<String>,
-}
-
-/// Extract the first dotted version number from a version-output line,
-/// so we show "1.3.12" instead of "bun 1.3.12" or "kimi, version 1.31.0".
+/// Extract the first dotted version number from a tool's `--version` output,
+/// so we show "1.3.12" instead of "kimi, version 1.31.0".
 fn extract_version(s: &str) -> Option<String> {
     static VERSION_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = VERSION_RE
@@ -576,8 +554,10 @@ fn extract_version(s: &str) -> Option<String> {
     re.find(s).map(|m| m.as_str().to_string())
 }
 
-fn check_tool(name: &'static str, hint: &'static str) -> ToolReport {
-    let version = Command::new(name)
+/// Run `<name> --version` and return the extracted dotted version, or `None`
+/// if the binary is missing or the command fails.
+fn check_tool(name: &str) -> Option<String> {
+    Command::new(name)
         .arg("--version")
         .output()
         .ok()
@@ -590,12 +570,7 @@ fn check_tool(name: &'static str, hint: &'static str) -> ToolReport {
                     .map(|l| l.trim().to_string())
                     .filter(|s| !s.is_empty())
             })
-        });
-    ToolReport {
-        name,
-        hint,
-        version,
-    }
+        })
 }
 
 /// What kind of ACP support a runtime has.
@@ -616,7 +591,7 @@ struct RuntimeReport {
 }
 
 fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> RuntimeReport {
-    let version = check_tool(name, hint).version;
+    let version = check_tool(name);
     // If an external adaptor is expected, re-resolve at check time so PATH
     // changes between test runs are reflected.
     let acp = match acp {
@@ -720,7 +695,6 @@ fn check_template_dir(dir: &std::path::Path) -> (usize, usize) {
 async fn cmd_setup(
     yes: bool,
     data_dir: Option<String>,
-    force_ui_build: bool,
     template_dir_raw: String,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
@@ -743,15 +717,7 @@ async fn cmd_setup(
         &style(template_dir.display()).cyan().to_string(),
     );
 
-    // 1. Environment checks — just bun (the only strict prerequisite).
-    section("Environment");
-    let bun = check_tool("bun", "https://bun.sh");
-    match &bun.version {
-        Some(v) => row_ok(bun.name, v),
-        None => row_missing(bun.name, bun.hint),
-    }
-
-    // 2. Runtimes + their ACP adaptor status
+    // Runtimes + their ACP adaptor status
     section("Runtimes");
     let runtimes = [
         check_runtime(
@@ -822,63 +788,14 @@ async fn cmd_setup(
         );
     }
 
-    // 2. Data dir + DB
-    section("Data directory");
+    // Silently ensure the data dir and DB exist — no dedicated section.
     std::fs::create_dir_all(&data_dir)?;
     let db_path = data_dir.join("chorus.db");
-    if db_path.exists() {
-        row_ok(
-            "database",
-            &format!("already initialized at {}", data_dir.display()),
-        );
-    } else {
+    if !db_path.exists() {
         let _ = Store::open(db_path.to_str().unwrap())?;
-        row_ok("database", "SQLite initialized");
     }
 
-    // 3. UI build
-    section("Web UI");
-    let ui_dir = PathBuf::from("ui");
-    let dist = ui_dir.join("dist");
-    let has_real_dist = dist.join("assets").exists() || dist.join("index.js").exists();
-    if bun.version.is_none() {
-        row_warn("ui", "bun missing — binary will serve placeholder UI");
-    } else if !ui_dir.join("package.json").exists() {
-        row_warn("ui", "ui/package.json not found (installed binary?)");
-    } else if has_real_dist && !force_ui_build {
-        let size = dist_size(&dist).unwrap_or(0);
-        row_ok(
-            "ui",
-            &format!(
-                "already built ({}) · --force-ui-build to rebuild",
-                human_bytes(size)
-            ),
-        );
-    } else {
-        run_spinner(
-            "Installing UI packages",
-            Command::new("bun").arg("install").current_dir(&ui_dir),
-        )?;
-        let build_started = Instant::now();
-        run_spinner(
-            "Building ui/dist",
-            Command::new("bun")
-                .args(["run", "build"])
-                .current_dir(&ui_dir),
-        )?;
-        let built_in = build_started.elapsed();
-        let size = dist_size(&dist).unwrap_or(0);
-        row_ok(
-            "ui",
-            &format!(
-                "built ui/dist ({}, {:.1}s)",
-                human_bytes(size),
-                built_in.as_secs_f64()
-            ),
-        );
-    }
-
-    // 4. Interactive seed
+    // Interactive seed
     if interactive {
         use dialoguer::theme::ColorfulTheme;
         use dialoguer::Confirm;
@@ -925,73 +842,6 @@ async fn cmd_setup(
     Ok(())
 }
 
-/// Run an external command with a spinner, swallowing output on success and
-/// replaying it on failure so the user actually sees what broke.
-fn run_spinner(label: &str, cmd: &mut Command) -> anyhow::Result<()> {
-    let pb = ProgressBar::new_spinner();
-    pb.set_style(
-        ProgressStyle::with_template("  {spinner:.cyan} {msg}")
-            .unwrap()
-            .tick_strings(&["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]),
-    );
-    pb.set_message(style(label).dim().to_string());
-    pb.enable_steady_tick(Duration::from_millis(80));
-
-    let program = cmd.get_program().to_string_lossy().into_owned();
-    let output = cmd
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .map_err(|e| {
-            pb.finish_and_clear();
-            anyhow::anyhow!("failed to run `{}`: {e}", program)
-        })?;
-
-    pb.finish_and_clear();
-
-    if !output.status.success() {
-        eprintln!("  {}{} failed\n", style(BAD).red(), style(label).bold());
-        if !output.stdout.is_empty() {
-            eprintln!("{}", String::from_utf8_lossy(&output.stdout));
-        }
-        if !output.stderr.is_empty() {
-            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-        }
-        anyhow::bail!("`{}` exited with status {}", program, output.status);
-    }
-    Ok(())
-}
-
-fn dist_size(dist: &std::path::Path) -> std::io::Result<u64> {
-    fn walk(p: &std::path::Path, total: &mut u64) -> std::io::Result<()> {
-        for entry in std::fs::read_dir(p)? {
-            let entry = entry?;
-            let meta = entry.metadata()?;
-            if meta.is_dir() {
-                walk(&entry.path(), total)?;
-            } else {
-                *total += meta.len();
-            }
-        }
-        Ok(())
-    }
-    let mut total = 0;
-    walk(dist, &mut total)?;
-    Ok(total)
-}
-
-fn human_bytes(bytes: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = KB * 1024;
-    if bytes >= MB {
-        format!("{:.1} MB", bytes as f64 / MB as f64)
-    } else if bytes >= KB {
-        format!("{:.0} kB", bytes as f64 / KB as f64)
-    } else {
-        format!("{} B", bytes)
-    }
-}
-
 async fn cmd_run(
     port: u16,
     data_dir: Option<String>,
@@ -1034,18 +884,20 @@ mod tests {
 
     #[test]
     fn check_tool_returns_none_for_missing_binary() {
-        let r = check_tool("definitely-not-a-real-binary-xyzzy", "n/a");
-        assert!(r.version.is_none());
+        assert!(check_tool("definitely-not-a-real-binary-xyzzy").is_none());
     }
 
     #[test]
-    fn check_tool_captures_version_of_common_binary() {
-        // `sh --version` exists on every POSIX host the CI runs on.
-        let r = check_tool("sh", "n/a");
-        // On some minimal BusyBox shells `sh --version` returns non-zero.
-        // So we only assert: if the command succeeded, we got a non-empty line.
-        if let Some(v) = r.version {
-            assert!(!v.is_empty());
-        }
+    fn extract_version_handles_common_formats() {
+        assert_eq!(extract_version("bun 1.3.12"), Some("1.3.12".to_string()));
+        assert_eq!(
+            extract_version("kimi, version 1.31.0"),
+            Some("1.31.0".to_string())
+        );
+        assert_eq!(
+            extract_version("codex-cli 0.120.0"),
+            Some("0.120.0".to_string())
+        );
+        assert_eq!(extract_version("no version here"), None);
     }
 }
