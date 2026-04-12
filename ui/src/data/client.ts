@@ -1,6 +1,26 @@
-import { ApiError, type ApiErrorCode } from '@/lib/apiError'
-
 const BASE = ''
+
+export type ApiErrorCode =
+  | 'INTERNAL_ERROR'
+  | 'AGENT_NAME_TAKEN'
+  | 'CHANNEL_NAME_TAKEN'
+  | 'TEAM_NAME_TAKEN'
+  | 'AGENT_RESTART_FAILED'
+  | 'AGENT_DELETE_WORKSPACE_CLEANUP_FAILED'
+  | 'CHANNEL_OPERATION_UNSUPPORTED'
+  | 'MESSAGE_NOT_A_MEMBER'
+
+export class ApiError extends Error {
+  readonly status: number
+  readonly code?: ApiErrorCode
+
+  constructor(status: number, message: string, code?: ApiErrorCode) {
+    super(message)
+    this.name = 'ApiError'
+    this.status = status
+    this.code = code
+  }
+}
 
 async function parseResponse<T>(res: Response): Promise<T> {
   if (!res.ok) {
