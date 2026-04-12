@@ -38,6 +38,9 @@ enum Commands {
         /// Rebuild ui/dist even if it already has content
         #[arg(long)]
         force_ui_build: bool,
+        /// Directory containing agent template markdown files.
+        #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
+        template_dir: String,
     },
     /// Start the server and open the web UI in a browser
     Run {
@@ -174,7 +177,8 @@ async fn main() -> anyhow::Result<()> {
             yes,
             data_dir,
             force_ui_build,
-        }) => cmd_setup(yes, data_dir, force_ui_build).await,
+            template_dir,
+        }) => cmd_setup(yes, data_dir, force_ui_build, template_dir).await,
 
         Some(Commands::Run {
             port,
@@ -594,10 +598,130 @@ fn check_tool(name: &'static str, hint: &'static str) -> ToolReport {
     }
 }
 
+/// What kind of ACP support a runtime has.
+enum AcpStatus {
+    /// External adaptor binary is on PATH.
+    AdapterFound(&'static str),
+    /// External adaptor binary is missing; chorus will fall back to raw mode.
+    AdapterMissing(&'static str),
+    /// Runtime provides its own `acp` subcommand; nothing to install.
+    Native,
+}
+
+struct RuntimeReport {
+    name: &'static str,
+    hint: &'static str,
+    version: Option<String>,
+    acp: AcpStatus,
+}
+
+fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> RuntimeReport {
+    let version = check_tool(name, hint).version;
+    // If an external adaptor is expected, re-resolve at check time so PATH
+    // changes between test runs are reflected.
+    let acp = match acp {
+        AcpStatus::AdapterFound(bin) | AcpStatus::AdapterMissing(bin) => {
+            if Command::new(bin)
+                .arg("--version")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+            {
+                AcpStatus::AdapterFound(bin)
+            } else {
+                AcpStatus::AdapterMissing(bin)
+            }
+        }
+        AcpStatus::Native => AcpStatus::Native,
+    };
+    RuntimeReport {
+        name,
+        hint,
+        version,
+        acp,
+    }
+}
+
+fn render_runtime(r: &RuntimeReport) {
+    let (glyph, glyph_style): (Emoji<'_, '_>, _) = match &r.version {
+        Some(_) => (OK, "green"),
+        None => (BAD, "red"),
+    };
+    let glyph_styled = match glyph_style {
+        "green" => style(glyph).green(),
+        _ => style(glyph).red(),
+    };
+    let name = style(format!("{:<12}", r.name)).bold();
+    let version = match &r.version {
+        Some(v) => style(format!("{:<10}", v)).dim().to_string(),
+        None => style(format!("{:<10}", "not found")).dim().to_string(),
+    };
+    let acp_detail = match (&r.version, &r.acp) {
+        (None, _) => style(format!("install: {}", r.hint))
+            .dim()
+            .italic()
+            .to_string(),
+        (Some(_), AcpStatus::AdapterFound(bin)) => {
+            format!(
+                "{} {} {}",
+                style("·").dim(),
+                style(bin).cyan(),
+                style("found").dim()
+            )
+        }
+        (Some(_), AcpStatus::AdapterMissing(bin)) => {
+            format!(
+                "{} {} {} {}",
+                style("·").dim(),
+                style(bin).yellow(),
+                style("missing").yellow(),
+                style("→ raw mode").dim()
+            )
+        }
+        (Some(_), AcpStatus::Native) => {
+            format!("{} {}", style("·").dim(), style("native ACP").dim())
+        }
+    };
+    println!("  {}{} {} {}", glyph_styled, name, version, acp_detail);
+}
+
+fn check_template_dir(dir: &std::path::Path) -> (usize, usize) {
+    if !dir.is_dir() {
+        return (0, 0);
+    }
+    let mut templates = 0usize;
+    let mut categories = 0usize;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return (0, 0),
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let mut has_md = false;
+            if let Ok(sub) = std::fs::read_dir(&path) {
+                for s in sub.flatten() {
+                    if s.path().extension().and_then(|e| e.to_str()) == Some("md") {
+                        templates += 1;
+                        has_md = true;
+                    }
+                }
+            }
+            if has_md {
+                categories += 1;
+            }
+        } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
+            templates += 1;
+        }
+    }
+    (templates, categories)
+}
+
 async fn cmd_setup(
     yes: bool,
     data_dir: Option<String>,
     force_ui_build: bool,
+    template_dir_raw: String,
 ) -> anyhow::Result<()> {
     let started = Instant::now();
     let interactive = !yes && std::io::stdin().is_terminal();
@@ -610,34 +734,93 @@ async fn cmd_setup(
 
     let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
     let data_dir = PathBuf::from(&data_dir_str);
+    let template_dir = chorus::agent::templates::expand_tilde(&template_dir_raw);
 
     banner();
     row_info("Data dir", &style(data_dir.display()).cyan().to_string());
+    row_info(
+        "Templates",
+        &style(template_dir.display()).cyan().to_string(),
+    );
 
-    // 1. Environment checks
+    // 1. Environment checks — just bun (the only strict prerequisite).
     section("Environment");
     let bun = check_tool("bun", "https://bun.sh");
     match &bun.version {
         Some(v) => row_ok(bun.name, v),
         None => row_missing(bun.name, bun.hint),
     }
+
+    // 2. Runtimes + their ACP adaptor status
+    section("Runtimes");
     let runtimes = [
-        check_tool("claude", "https://docs.claude.com/en/docs/claude-code"),
-        check_tool("codex", "https://github.com/openai/codex"),
-        check_tool("kimi", "https://github.com/MoonshotAI/kimi-cli"),
-        check_tool("opencode", "https://opencode.ai"),
+        check_runtime(
+            "claude",
+            "https://docs.claude.com/en/docs/claude-code",
+            AcpStatus::AdapterMissing("claude-agent-acp"),
+        ),
+        check_runtime(
+            "codex",
+            "https://github.com/openai/codex",
+            AcpStatus::AdapterMissing("codex-acp"),
+        ),
+        check_runtime(
+            "kimi",
+            "https://github.com/MoonshotAI/kimi-cli",
+            AcpStatus::Native,
+        ),
+        check_runtime("opencode", "https://opencode.ai", AcpStatus::Native),
     ];
     for r in &runtimes {
-        match &r.version {
-            Some(v) => row_ok(r.name, v),
-            None => row_missing(r.name, r.hint),
-        }
+        render_runtime(r);
+    }
+    let any_adapter_missing = runtimes
+        .iter()
+        .any(|r| r.version.is_some() && matches!(r.acp, AcpStatus::AdapterMissing(_)));
+    if any_adapter_missing {
+        println!(
+            "  {} {} {}",
+            style(" ").dim(),
+            style("ACP adaptors:").dim(),
+            style("https://github.com/openclaw/acpx").dim().italic()
+        );
     }
     let detected_runtimes: Vec<&str> = runtimes
         .iter()
         .filter(|r| r.version.is_some())
         .map(|r| r.name)
         .collect();
+
+    // 3. Templates
+    section("Templates");
+    let (tmpl_count, tmpl_cats) = check_template_dir(&template_dir);
+    if !template_dir.exists() {
+        row_warn(
+            "templates",
+            &format!(
+                "{} not found · starter gallery will be empty",
+                template_dir.display()
+            ),
+        );
+    } else if tmpl_count == 0 {
+        row_warn(
+            "templates",
+            &format!(
+                "{} exists but contains no .md files",
+                template_dir.display()
+            ),
+        );
+    } else {
+        row_ok(
+            "templates",
+            &format!(
+                "{} templates across {} categor{}",
+                tmpl_count,
+                tmpl_cats,
+                if tmpl_cats == 1 { "y" } else { "ies" }
+            ),
+        );
+    }
 
     // 2. Data dir + DB
     section("Data directory");
