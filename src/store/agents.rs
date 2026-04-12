@@ -80,15 +80,6 @@ impl AgentStatus {
     }
 }
 
-/// Registered human user (can post and own channels).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Human {
-    /// Username (typically OS login) used as sender id.
-    pub name: String,
-    /// When the human row was inserted.
-    pub created_at: DateTime<Utc>,
-}
-
 /// Shared persisted agent configuration used by store create/update helpers.
 pub struct AgentRecordUpsert<'a> {
     /// Agent handle (primary key for updates).
@@ -110,45 +101,12 @@ pub struct AgentRecordUpsert<'a> {
 }
 
 impl Store {
-    pub fn create_agent_record(
-        &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        env_vars: &[AgentEnvVar],
-    ) -> Result<String> {
-        self.create_agent_record_with_reasoning(&AgentRecordUpsert {
-            name,
-            display_name,
-            description,
-            system_prompt: None,
-            runtime,
-            model,
-            reasoning_effort: None,
-            env_vars,
-        })
-    }
-
-    pub fn create_agent_record_with_reasoning(
-        &self,
-        record: &AgentRecordUpsert<'_>,
-    ) -> Result<String> {
+    pub fn create_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
             "INSERT INTO agents (id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                id,
-                record.name,
-                record.display_name,
-                record.description,
-                record.system_prompt,
-                record.runtime,
-                record.model,
-                record.reasoning_effort
-            ],
+            params![id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
         if let Some(all_channel) =
@@ -228,28 +186,7 @@ impl Store {
         Ok(agent)
     }
 
-    pub fn update_agent_record(
-        &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        env_vars: &[AgentEnvVar],
-    ) -> Result<()> {
-        self.update_agent_record_with_reasoning(&AgentRecordUpsert {
-            name,
-            display_name,
-            description,
-            system_prompt: None,
-            runtime,
-            model,
-            reasoning_effort: None,
-            env_vars,
-        })
-    }
-
-    pub fn update_agent_record_with_reasoning(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
+    pub fn update_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE agents SET display_name = ?1, description = ?2, system_prompt = ?3, runtime = ?4, model = ?5, reasoning_effort = ?6 WHERE name = ?7",
@@ -326,39 +263,6 @@ impl Store {
             params![session_id, name],
         )?;
         Ok(())
-    }
-
-    pub fn create_human(&self, name: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
-            params![name],
-        )?;
-        if let Some(all_channel) =
-            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
-        {
-            conn.execute(
-                "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
-                 VALUES (?1, ?2, 'human', 0)",
-                params![all_channel.id, name],
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn get_humans(&self) -> Result<Vec<Human>> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .prepare("SELECT name, created_at FROM humans ORDER BY name")?
-            .query_map([], |row| {
-                Ok(Human {
-                    name: row.get(0)?,
-                    created_at: parse_datetime(&row.get::<_, String>(1)?),
-                })
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        Ok(rows)
     }
 
     /// Get all channel IDs where an agent is a member (includes DM channels).

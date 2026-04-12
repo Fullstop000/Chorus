@@ -954,6 +954,7 @@ fn project_backtrace() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::AgentRecordUpsert;
     use serde_json::json;
     use std::process::{Command, Stdio};
     use std::sync::Arc;
@@ -1351,7 +1352,16 @@ mod tests {
         let db_path = dir.path().join("chorus.db");
         let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
         store
-            .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+            .create_agent_record(&AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
             .unwrap();
 
         let manager = AgentManager::new(

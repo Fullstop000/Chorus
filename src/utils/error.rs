@@ -1,6 +1,10 @@
+use std::backtrace::{Backtrace, BacktraceStatus};
+use std::fmt::Write as _;
+
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use tracing::error;
 
 // ── Wire type ──────────────────────────────────────────────────────────────────
 
@@ -111,19 +115,66 @@ pub(crate) fn app_err_inner(
 macro_rules! app_err {
     // Literal format string with optional extra args.
     ($kind:expr, $fmt:literal $($arg:tt)*) => {
-        crate::server::error::app_err_inner($kind, ::std::format!($fmt $($arg)*))
+        crate::utils::error::app_err_inner($kind, ::std::format!($fmt $($arg)*))
     };
     // Owned string or any other expression.
     ($kind:expr, $msg:expr) => {
-        crate::server::error::app_err_inner($kind, $msg)
+        crate::utils::error::app_err_inner($kind, $msg)
     };
 }
 pub(crate) use app_err;
+
+// ── Internal server error helper ─────────────────────────────────────────────
+
+/// Log the underlying error server-side and return a generic 500 to the caller.
+///
+/// Use this instead of `app_err!(INTERNAL_SERVER_ERROR, e.to_string())` to avoid
+/// leaking internal details (SQLite schema, filesystem paths) to API consumers.
+pub fn internal_err(e: impl Into<anyhow::Error>) -> (StatusCode, Json<ErrorResponse>) {
+    let e = e.into();
+    error!("{e:#}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: "internal error".into(),
+            code: None,
+        }),
+    )
+}
+
+// ── Error formatting ───────────────────────────────────────────────────────────
+
+pub fn format_anyhow_error(err: &anyhow::Error) -> String {
+    let mut rendered = String::new();
+    let _ = write!(&mut rendered, "{}", err);
+
+    let mut chain = err.chain();
+    let _ = chain.next();
+    let causes: Vec<String> = chain.map(ToString::to_string).collect();
+    if !causes.is_empty() {
+        rendered.push_str("\ncaused by:");
+        for (index, cause) in causes.iter().enumerate() {
+            let _ = write!(&mut rendered, "\n  {}. {}", index + 1, cause);
+        }
+    }
+
+    let backtrace = err.backtrace();
+    if matches!(backtrace.status(), BacktraceStatus::Captured) {
+        let _ = write!(&mut rendered, "\nbacktrace:\n{backtrace}");
+    } else {
+        let forced_backtrace = Backtrace::force_capture();
+        let _ = write!(&mut rendered, "\nbacktrace:\n{forced_backtrace}");
+    }
+
+    rendered
+}
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
+    use anyhow::anyhow;
+
     use super::*;
 
     // ── AppErrorCode::http_status ──
@@ -259,5 +310,22 @@ mod tests {
                 "round-trip failed for {serialised}",
             );
         }
+    }
+
+    // ── format_anyhow_error ──
+
+    #[test]
+    fn formats_anyhow_error_with_cause_chain() {
+        let err = anyhow!("No such file or directory (os error 2)")
+            .context("failed to spawn codex runtime")
+            .context("failed to start agent");
+
+        let rendered = format_anyhow_error(&err);
+
+        assert!(rendered.contains("failed to start agent"));
+        assert!(rendered.contains("caused by:"));
+        assert!(rendered.contains("failed to spawn codex runtime"));
+        assert!(rendered.contains("No such file or directory (os error 2)"));
+        assert!(rendered.contains("backtrace:"));
     }
 }

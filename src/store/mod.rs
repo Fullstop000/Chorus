@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod attachments;
 pub mod channels;
+pub mod humans;
 pub mod inbox;
 pub mod messages;
 pub mod migrations;
@@ -19,9 +20,10 @@ use tokio::sync::broadcast;
 use crate::utils::{derive_data_dir, parse_datetime};
 
 pub use agents::AgentRecordUpsert;
-pub use agents::{Agent, AgentEnvVar, AgentStatus, Human};
+pub use agents::{Agent, AgentEnvVar, AgentStatus};
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
+pub use humans::Human;
 pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
 pub use messages::{
     ActivityMessage, AttachmentRef, ChannelThreadInbox, ChannelThreadInboxEntry,

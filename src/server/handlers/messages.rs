@@ -8,13 +8,14 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use super::dto::ChannelInfo;
-use super::{app_err, format_anyhow_error, internal_err, ApiResult, AppState};
-use crate::server::error::AppErrorCode;
+use super::{app_err, ApiResult, AppState};
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
 use crate::store::inbox::{InboxConversationNotificationView, ThreadNotificationStateView};
 use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
+use crate::utils::error::internal_err;
+use crate::utils::error::{format_anyhow_error, AppErrorCode};
 
 // ── Inline query structs ──
 

@@ -1,3 +1,5 @@
+pub mod error;
+
 use std::path::{Path, PathBuf};
 
 /// Parse a datetime string in `%Y-%m-%d %H:%M:%S` format, falling back to now.

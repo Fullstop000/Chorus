@@ -135,18 +135,16 @@ pub async fn handle_launch_trio(
         };
 
         // Create the agent record.
-        let agent_id = match state
-            .store
-            .create_agent_record_with_reasoning(&AgentRecordUpsert {
-                name: &agent_name,
-                display_name: &template.name,
-                description: template.description.as_deref(),
-                system_prompt: Some(&template.prompt_body),
-                runtime: &template.suggested_runtime,
-                model: &model,
-                reasoning_effort: None,
-                env_vars: &[],
-            }) {
+        let agent_id = match state.store.create_agent_record(&AgentRecordUpsert {
+            name: &agent_name,
+            display_name: &template.name,
+            description: template.description.as_deref(),
+            system_prompt: Some(&template.prompt_body),
+            runtime: &template.suggested_runtime,
+            model: &model,
+            reasoning_effort: None,
+            env_vars: &[],
+        }) {
             Ok(id) => id,
             Err(e) => {
                 errors.push(LaunchTrioError {

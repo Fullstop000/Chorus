@@ -18,22 +18,20 @@ pub use teams::*;
 pub use templates::*;
 pub use workspace::*;
 
-use std::backtrace::{Backtrace, BacktraceStatus};
 use std::collections::HashSet;
-use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use tracing::{debug, error};
+use tracing::debug;
 
 use crate::agent::drivers::command_exists;
 use crate::agent::runtime::AgentRuntime;
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
-use crate::server::error::{app_err, ApiResult, ErrorResponse};
+use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::store::Store;
 use dto::ServerInfo;
 
@@ -45,47 +43,6 @@ pub struct AppState {
     pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
     pub templates: Arc<Vec<AgentTemplate>>,
-}
-
-/// Log the underlying error server-side and return a generic 500 to the caller.
-///
-/// Use this instead of `app_err!(INTERNAL_SERVER_ERROR, e.to_string())` to avoid
-/// leaking internal details (SQLite schema, filesystem paths) to API consumers.
-pub(super) fn internal_err(e: impl Into<anyhow::Error>) -> (StatusCode, Json<ErrorResponse>) {
-    let e = e.into();
-    error!("{e:#}");
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        Json(ErrorResponse {
-            error: "internal error".into(),
-            code: None,
-        }),
-    )
-}
-
-pub(super) fn format_anyhow_error(err: &anyhow::Error) -> String {
-    let mut rendered = String::new();
-    let _ = write!(&mut rendered, "{}", err);
-
-    let mut chain = err.chain();
-    let _ = chain.next();
-    let causes: Vec<String> = chain.map(ToString::to_string).collect();
-    if !causes.is_empty() {
-        rendered.push_str("\ncaused by:");
-        for (index, cause) in causes.iter().enumerate() {
-            let _ = write!(&mut rendered, "\n  {}. {}", index + 1, cause);
-        }
-    }
-
-    let backtrace = err.backtrace();
-    if matches!(backtrace.status(), BacktraceStatus::Captured) {
-        let _ = write!(&mut rendered, "\nbacktrace:\n{backtrace}");
-    } else {
-        let forced_backtrace = Backtrace::force_capture();
-        let _ = write!(&mut rendered, "\nbacktrace:\n{forced_backtrace}");
-    }
-
-    rendered
 }
 
 pub(super) struct TransitionGuard {
@@ -205,26 +162,4 @@ pub async fn handle_list_runtime_models(
         .list_models(&runtime)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(models))
-}
-
-#[cfg(test)]
-mod tests {
-    use anyhow::anyhow;
-
-    use super::format_anyhow_error;
-
-    #[test]
-    fn formats_anyhow_error_with_cause_chain() {
-        let err = anyhow!("No such file or directory (os error 2)")
-            .context("failed to spawn codex runtime")
-            .context("failed to start agent");
-
-        let rendered = format_anyhow_error(&err);
-
-        assert!(rendered.contains("failed to start agent"));
-        assert!(rendered.contains("caused by:"));
-        assert!(rendered.contains("failed to spawn codex runtime"));
-        assert!(rendered.contains("No such file or directory (os error 2)"));
-        assert!(rendered.contains("backtrace:"));
-    }
 }

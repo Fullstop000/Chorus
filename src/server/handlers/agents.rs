@@ -6,14 +6,15 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use super::{acquire_transition, app_err, format_anyhow_error, internal_err, ApiResult, AppState};
+use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
-use crate::server::error::AppErrorCode;
 use crate::store::agents::{AgentEnvVar, AgentStatus};
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
+use crate::utils::error::internal_err;
+use crate::utils::error::{format_anyhow_error, AppErrorCode};
 
 use super::dto::AgentInfo;
 
@@ -229,7 +230,7 @@ pub async fn handle_create_agent(
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     state
         .store
-        .create_agent_record_with_reasoning(&AgentRecordUpsert {
+        .create_agent_record(&AgentRecordUpsert {
             name: &name,
             display_name: &display_name,
             description,
@@ -322,7 +323,7 @@ pub async fn handle_update_agent(
 
     state
         .store
-        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+        .update_agent_record(&AgentRecordUpsert {
             name: &name,
             display_name: &display_name,
             description,

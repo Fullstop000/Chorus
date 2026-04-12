@@ -38,7 +38,16 @@ fn setup() -> (Arc<Store>, axum::Router) {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -59,7 +68,16 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -219,7 +237,16 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -242,7 +269,16 @@ fn setup_with_runtime_statuses(
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -278,7 +314,16 @@ fn setup_with_lifecycle_and_data_dir() -> (
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -869,7 +914,16 @@ async fn test_channel_members_api_lists_members_and_supports_invite() {
     let (store, app) = setup();
     store.create_human("zoe").unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
@@ -969,7 +1023,16 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
     store.ensure_builtin_channels("alice").unwrap();
     store.create_human("zoe").unwrap();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
 
     let all = store.get_channel_by_name("all").unwrap().unwrap();
@@ -1000,7 +1063,16 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
 async fn test_history_rejects_non_member_agent() {
     let (store, app) = setup();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .create_message(CreateMessage {
@@ -1408,7 +1480,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
     store
-        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+        .update_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
             description: Some("Replies in Chorus"),
@@ -1543,7 +1615,16 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
 async fn test_send_starts_inactive_agent_recipients() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
@@ -1580,7 +1661,16 @@ async fn test_send_persists_message_even_if_agent_delivery_fails() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -1615,7 +1705,16 @@ async fn test_send_persists_message_even_if_agent_delivery_fails() {
 async fn test_thread_send_only_starts_parent_author_agent() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
@@ -1664,13 +1763,31 @@ async fn test_thread_send_only_starts_parent_author_agent() {
 async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
         .unwrap();
     store
-        .create_agent_record("bot3", "Bot 3", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot3",
+            display_name: "Bot 3",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot3", SenderType::Agent)
@@ -1731,7 +1848,16 @@ async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
 async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot2", SenderType::Agent)
@@ -2143,7 +2269,16 @@ async fn test_create_team_endpoint() {
 async fn test_list_and_update_team_endpoints() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4-mini",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     let team_id = store
         .create_team(
@@ -2366,7 +2501,16 @@ async fn test_add_remove_and_delete_team_endpoints() {
 async fn test_at_mention_forwards_to_team_channel() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
-        .create_agent_record("bot2", "Bot 2", None, "codex", "gpt-5.4-mini", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4-mini",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .update_agent_status("bot1", AgentStatus::Active)
@@ -2643,7 +2787,16 @@ async fn test_non_member_history_returns_message_not_a_member() {
     let (store, app, _lifecycle) = setup_with_lifecycle();
     // bot2 exists but is NOT a member of #general
     store
-        .create_agent_record("bot2", "Bot 2", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot2",
+            display_name: "Bot 2",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
 
     let resp = app
@@ -2672,7 +2825,16 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
 
