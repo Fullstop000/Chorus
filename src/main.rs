@@ -639,19 +639,62 @@ fn extract_version(s: &str) -> Option<String> {
 /// Resolve an executable's absolute path by walking `$PATH`, the same way
 /// `which <name>` does. Returns `None` if the binary isn't found.
 fn which_tool(name: &str) -> Option<std::path::PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    which_all(name).into_iter().next()
+}
+
+/// Return every absolute path where `name` is found on `$PATH`, deduped,
+/// in discovery order. Empty vec if nothing found.
+fn which_all(name: &str) -> Vec<std::path::PathBuf> {
+    let Some(path) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    let mut seen = std::collections::HashSet::new();
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
-        .find(|p| p.is_file())
+        .filter(|p| p.is_file())
+        .filter(|p| seen.insert(p.clone()))
+        .collect()
 }
 
 /// Fill `target` with the resolved absolute path for `name` iff `target`
 /// is currently empty. Preserves any user-pinned value across re-runs.
+/// Always uses the first match; intended for ACP adapters where a silent
+/// choice is fine.
 fn fill_resolved_path(target: &mut String, name: &str) {
     if target.is_empty() {
         if let Some(p) = which_tool(name) {
             *target = p.to_string_lossy().into_owned();
         }
+    }
+}
+
+/// Like `fill_resolved_path`, but when multiple matches exist and we're in
+/// interactive mode, ask the user to pick one. Non-interactive mode falls
+/// back to the first match (current behavior).
+fn fill_binary_path(target: &mut String, name: &str, interactive: bool) {
+    if !target.is_empty() {
+        return; // user-pinned, preserve
+    }
+    let candidates = which_all(name);
+    let chosen = match candidates.len() {
+        0 => None,
+        1 => candidates.into_iter().next(),
+        _ if !interactive => candidates.into_iter().next(),
+        _ => {
+            use dialoguer::theme::ColorfulTheme;
+            use dialoguer::Select;
+            let labels: Vec<String> = candidates.iter().map(|p| p.display().to_string()).collect();
+            let idx = Select::with_theme(&ColorfulTheme::default())
+                .with_prompt(format!("Multiple `{name}` binaries on PATH; pick one"))
+                .items(&labels)
+                .default(0)
+                .interact()
+                .unwrap_or(0);
+            candidates.into_iter().nth(idx)
+        }
+    };
+    if let Some(p) = chosen {
+        *target = p.to_string_lossy().into_owned();
     }
 }
 
@@ -951,13 +994,16 @@ async fn cmd_setup(
     cfg.agent_template.dir = Some(template_dir_raw.clone());
 
     // Pin runtime binaries to the exact paths detected on this machine,
-    // but don't overwrite anything the user has already customized.
-    fill_resolved_path(&mut cfg.claude.binary_path, "claude");
+    // but don't overwrite anything the user has already customized. When
+    // a CLI binary shows up in multiple PATH entries (e.g. ~/.local/bin
+    // AND /usr/local/bin), prompt interactively. ACP adapters always use
+    // the first match — they're less likely to ship multiple versions.
+    fill_binary_path(&mut cfg.claude.binary_path, "claude", interactive);
     fill_resolved_path(&mut cfg.claude.acp_adaptor, "claude-agent-acp");
-    fill_resolved_path(&mut cfg.codex.binary_path, "codex");
+    fill_binary_path(&mut cfg.codex.binary_path, "codex", interactive);
     fill_resolved_path(&mut cfg.codex.acp_adaptor, "codex-acp");
-    fill_resolved_path(&mut cfg.kimi.binary_path, "kimi");
-    fill_resolved_path(&mut cfg.opencode.binary_path, "opencode");
+    fill_binary_path(&mut cfg.kimi.binary_path, "kimi", interactive);
+    fill_binary_path(&mut cfg.opencode.binary_path, "opencode", interactive);
 
     let cfg_path = cfg.save(&data_dir)?;
 
@@ -1059,5 +1105,41 @@ mod tests {
             Some("0.120.0".to_string())
         );
         assert_eq!(extract_version("no version here"), None);
+    }
+
+    #[test]
+    fn which_all_finds_every_match_across_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir_a = tmp.path().join("a");
+        let dir_b = tmp.path().join("b");
+        let dir_c = tmp.path().join("c");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::create_dir_all(&dir_c).unwrap();
+        // Two copies of a fake binary, different dirs.
+        for d in [&dir_a, &dir_c] {
+            let p = d.join("myfake-bin");
+            std::fs::write(&p, "#!/bin/sh\ntrue\n").unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&p).unwrap().permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&p, perms).unwrap();
+            }
+        }
+
+        let joined = std::env::join_paths([&dir_a, &dir_b, &dir_c]).unwrap();
+        let prev = std::env::var_os("PATH");
+        // SAFETY: env mutation is not thread-safe, but cargo test runs
+        // each test in its own thread; callers treat PATH as read-only.
+        std::env::set_var("PATH", &joined);
+        let found = which_all("myfake-bin");
+        if let Some(p) = prev {
+            std::env::set_var("PATH", p);
+        }
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0], dir_a.join("myfake-bin"));
+        assert_eq!(found[1], dir_c.join("myfake-bin"));
     }
 }
