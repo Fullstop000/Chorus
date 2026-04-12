@@ -44,6 +44,10 @@ How we write code. Read the relevant doc before touching that subsystem.
 | `[docs/BACKEND.md](docs/BACKEND.md)` | Rust — error handling, enums, logging, schema/views, tests, Axum handlers   | Any backend change |
 | `[docs/DESIGN.md](docs/DESIGN.md)`   | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change      |
 
+For UI work, `docs/DESIGN.md` is authoritative. All font choices, colors,
+spacing, and aesthetic direction are defined there. Do not deviate without
+explicit user approval. In QA mode, flag any code that doesn't match
+`docs/DESIGN.md`.
 
 Cross-cutting rules (apply everywhere):
 
@@ -152,15 +156,6 @@ Follow `docs/DRIVER_GUIDE.md`
 
 ---
 
-## GStack
-
-Use the `/gstack-browse` skill from gstack for all web browsing. Never use `mcp__claude-in-chrome__*` tools.
-
-**Available skills:**
-`/gstack-office-hours`, `/gstack-plan-ceo-review`, `/gstack-plan-eng-review`, `/gstack-plan-design-review`, `/gstack-design-consultation`, `/gstack-design-shotgun`, `/gstack-design-html`, `/gstack-review`, `/gstack-ship`, `/gstack-land-and-deploy`, `/gstack-canary`, `/gstack-benchmark`, `/gstack-browse`, `/gstack-connect-chrome`, `/gstack-qa`, `/gstack-qa-only`, `/gstack-design-review`, `/gstack-setup-browser-cookies`, `/gstack-setup-deploy`, `/gstack-retro`, `/gstack-investigate`, `/gstack-document-release`, `/gstack-codex`, `/gstack-cso`, `/gstack-autoplan`, `/gstack-plan-devex-review`, `/gstack-devex-review`, `/gstack-careful`, `/gstack-freeze`, `/gstack-guard`, `/gstack-unfreeze`, `/gstack-upgrade`, `/gstack-learn`
-
----
-
 ## Completion Checklist
 
 Before stopping, confirm:
@@ -169,29 +164,3 @@ Before stopping, confirm:
 - [ ] Verification matches risk of change
 - [ ] Required e2e/browser QA run for user-facing critical paths, or gap called out
 - [ ] `AGENTS.md` or related docs updated if shipped behavior/workflow changed
-
-## Design System
-Always read DESIGN.md before making any visual or UI decisions.
-All font choices, colors, spacing, and aesthetic direction are defined there.
-Do not deviate without explicit user approval.
-In QA mode, flag any code that doesn't match DESIGN.md.
-
-## Skill routing
-
-When the user's request matches an available skill, ALWAYS invoke it using the Skill
-tool as your FIRST action. Do NOT answer directly, do NOT use other tools first.
-The skill has specialized workflows that produce better results than ad-hoc answers.
-
-Key routing rules:
-- Product ideas, "is this worth building", brainstorming → invoke office-hours
-- Bugs, errors, "why is this broken", 500 errors → invoke investigate
-- Ship, deploy, push, create PR → invoke ship
-- QA, test the site, find bugs → invoke qa
-- Code review, check my diff → invoke review
-- Update docs after shipping → invoke document-release
-- Weekly retro → invoke retro
-- Design system, brand → invoke design-consultation
-- Visual audit, design polish → invoke design-review
-- Architecture review → invoke plan-eng-review
-- Save progress, checkpoint, resume → invoke checkpoint
-- Code quality, health check → invoke health
