@@ -20,11 +20,28 @@ use serde::{Deserialize, Serialize};
 
 pub const FILE_NAME: &str = "config.toml";
 
-/// Per-runtime overrides. Each runtime gets its own `[<runtime>]` section
-/// in `config.toml` so users have a dedicated place to add runtime-specific
-/// settings as they emerge. Currently empty; add fields here when needed.
+/// Runtime whose ACP support comes from a separate adapter binary.
+/// Used for claude (`claude-agent-acp`) and codex (`codex-acp`). Empty
+/// string on either field means "auto-discover via PATH".
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeConfig {}
+pub struct AcpRuntimeConfig {
+    /// Absolute path to the runtime CLI binary. Empty = use PATH.
+    #[serde(default)]
+    pub binary_path: String,
+
+    /// Absolute path to the ACP adapter binary. Empty = use PATH.
+    #[serde(default)]
+    pub acp_adaptor: String,
+}
+
+/// Runtime with a native `acp` subcommand built into the CLI itself.
+/// Used for kimi and opencode. No separate adapter required.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NativeRuntimeConfig {
+    /// Absolute path to the runtime CLI binary. Empty = use PATH.
+    #[serde(default)]
+    pub binary_path: String,
+}
 
 /// Agent-template-related settings. Groups the markdown-template directory
 /// and the default template id under one section so they live together.
@@ -54,13 +71,13 @@ pub struct ChorusConfig {
     pub agent_template: AgentTemplateConfig,
 
     #[serde(default)]
-    pub claude: RuntimeConfig,
+    pub claude: AcpRuntimeConfig,
     #[serde(default)]
-    pub codex: RuntimeConfig,
+    pub codex: AcpRuntimeConfig,
     #[serde(default)]
-    pub kimi: RuntimeConfig,
+    pub kimi: NativeRuntimeConfig,
     #[serde(default)]
-    pub opencode: RuntimeConfig,
+    pub opencode: NativeRuntimeConfig,
 }
 
 impl ChorusConfig {
@@ -176,6 +193,52 @@ mod tests {
                 "missing [{runtime}] section in:\n{raw}"
             );
         }
+        // ACP-adapter runtimes expose `acp_adaptor`; native runtimes don't.
+        let claude_start = raw.find("[claude]").unwrap();
+        let codex_start = raw.find("[codex]").unwrap();
+        let kimi_start = raw.find("[kimi]").unwrap();
+        let opencode_start = raw.find("[opencode]").unwrap();
+        let claude_block = &raw[claude_start..codex_start];
+        let codex_block = &raw[codex_start..kimi_start];
+        let kimi_block = &raw[kimi_start..opencode_start];
+        let opencode_block = &raw[opencode_start..];
+        assert!(claude_block.contains("acp_adaptor"));
+        assert!(codex_block.contains("acp_adaptor"));
+        assert!(!kimi_block.contains("acp_adaptor"));
+        assert!(!opencode_block.contains("acp_adaptor"));
+        // All runtimes expose binary_path.
+        for (name, block) in [
+            ("claude", claude_block),
+            ("codex", codex_block),
+            ("kimi", kimi_block),
+            ("opencode", opencode_block),
+        ] {
+            assert!(
+                block.contains("binary_path"),
+                "[{name}] missing binary_path"
+            );
+        }
+    }
+
+    #[test]
+    fn roundtrip_preserves_runtime_binary_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = ChorusConfig {
+            claude: AcpRuntimeConfig {
+                binary_path: "/opt/claude".into(),
+                acp_adaptor: "/opt/claude-agent-acp".into(),
+            },
+            kimi: NativeRuntimeConfig {
+                binary_path: "/opt/kimi".into(),
+            },
+            ..Default::default()
+        };
+        cfg.save(tmp.path()).unwrap();
+        let loaded = ChorusConfig::load(tmp.path()).unwrap().unwrap();
+        assert_eq!(loaded.claude.binary_path, "/opt/claude");
+        assert_eq!(loaded.claude.acp_adaptor, "/opt/claude-agent-acp");
+        assert_eq!(loaded.kimi.binary_path, "/opt/kimi");
+        assert_eq!(loaded.codex.binary_path, ""); // untouched default
     }
 
     #[test]
