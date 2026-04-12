@@ -28,6 +28,30 @@ enum Commands {
         #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
         template_dir: String,
     },
+    /// First-run setup: check environment, initialize data dir, build UI
+    Setup {
+        /// Non-interactive mode (skip prompts, accept defaults)
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Rebuild ui/dist even if it already has content
+        #[arg(long)]
+        force_ui_build: bool,
+    },
+    /// Start the server and open the web UI in a browser
+    Run {
+        #[arg(long, default_value = "3001")]
+        port: u16,
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Do not open a browser tab
+        #[arg(long)]
+        no_open: bool,
+        /// Directory containing agent template markdown files.
+        #[arg(long, env = "CHORUS_TEMPLATE_DIR", default_value = "~/agency-agents")]
+        template_dir: String,
+    },
     /// Run as MCP chat bridge (spawned by agent processes)
     Bridge {
         #[arg(long)]
@@ -145,6 +169,19 @@ async fn main() -> anyhow::Result<()> {
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
             serve(port, data_dir_str, template_dir).await
         }
+
+        Some(Commands::Setup {
+            yes,
+            data_dir,
+            force_ui_build,
+        }) => cmd_setup(yes, data_dir, force_ui_build).await,
+
+        Some(Commands::Run {
+            port,
+            data_dir,
+            no_open,
+            template_dir,
+        }) => cmd_run(port, data_dir, no_open, template_dir).await,
 
         None => serve(3001, default_data_dir(), "~/agency-agents".to_string()).await,
 
@@ -426,4 +463,221 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
         .with_graceful_shutdown(shutdown)
         .await?;
     Ok(())
+}
+
+// ---- chorus setup / chorus run -------------------------------------------
+
+use std::io::IsTerminal;
+use std::path::PathBuf;
+use std::process::Command;
+
+/// Detected CLI tool: name, install hint, version if found.
+struct ToolReport {
+    name: &'static str,
+    hint: &'static str,
+    version: Option<String>,
+}
+
+fn check_tool(name: &'static str, hint: &'static str) -> ToolReport {
+    let version = Command::new(name)
+        .arg("--version")
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
+        .filter(|v| !v.is_empty());
+    ToolReport {
+        name,
+        hint,
+        version,
+    }
+}
+
+fn print_tool(report: &ToolReport, required: bool) {
+    match &report.version {
+        Some(v) => println!("  [ok] {:<10} {}", report.name, v),
+        None => {
+            let tag = if required { "MISSING" } else { "missing" };
+            println!("  [{}] {:<10} install: {}", tag, report.name, report.hint);
+        }
+    }
+}
+
+async fn cmd_setup(
+    yes: bool,
+    data_dir: Option<String>,
+    force_ui_build: bool,
+) -> anyhow::Result<()> {
+    let interactive = !yes && std::io::stdin().is_terminal();
+    if !yes && !interactive {
+        println!("stdin is not a terminal; running in --yes mode.");
+    }
+
+    let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
+    let data_dir = PathBuf::from(&data_dir_str);
+
+    println!("\nChorus setup");
+    println!("============");
+    println!("Data directory: {}", data_dir.display());
+
+    // 1. Environment checks
+    println!("\nEnvironment:");
+    let bun = check_tool("bun", "https://bun.sh");
+    print_tool(&bun, true);
+    let runtimes = [
+        check_tool("claude", "https://docs.claude.com/en/docs/claude-code"),
+        check_tool("codex", "https://github.com/openai/codex"),
+        check_tool("kimi", "https://github.com/MoonshotAI/kimi-cli"),
+        check_tool("opencode", "https://opencode.ai"),
+    ];
+    for r in &runtimes {
+        print_tool(r, false);
+    }
+    let detected_runtimes: Vec<&str> = runtimes
+        .iter()
+        .filter(|r| r.version.is_some())
+        .map(|r| r.name)
+        .collect();
+    if detected_runtimes.is_empty() {
+        println!("\n  Note: no agent runtimes detected. You can install one later and restart.");
+    }
+
+    // 2. Data dir + DB
+    println!("\nData directory:");
+    std::fs::create_dir_all(&data_dir)?;
+    let db_path = data_dir.join("chorus.db");
+    if db_path.exists() {
+        println!("  [ok] already initialized at {}", data_dir.display());
+    } else {
+        let _ = Store::open(db_path.to_str().unwrap())?;
+        println!("  [ok] initialized SQLite database");
+    }
+
+    // 3. UI build
+    println!("\nUI assets:");
+    let ui_dir = PathBuf::from("ui");
+    let dist = ui_dir.join("dist");
+    let has_real_dist = dist.join("assets").exists() || dist.join("index.js").exists();
+    if bun.version.is_none() {
+        println!("  [skip] bun not installed; binary will serve embedded placeholder UI.");
+    } else if !ui_dir.join("package.json").exists() {
+        println!("  [skip] ui/package.json not found (running from installed binary?).");
+    } else if has_real_dist && !force_ui_build {
+        println!("  [ok] ui/dist already built (use --force-ui-build to rebuild)");
+    } else {
+        println!("  building UI (bun install && bun run build)...");
+        run_cmd(Command::new("bun").arg("install").current_dir(&ui_dir))?;
+        run_cmd(
+            Command::new("bun")
+                .args(["run", "build"])
+                .current_dir(&ui_dir),
+        )?;
+        println!("  [ok] ui/dist built");
+    }
+
+    // 4. Interactive seed
+    if interactive {
+        use dialoguer::Confirm;
+        let seed = Confirm::new()
+            .with_prompt("Create a welcome channel (#general)?")
+            .default(true)
+            .interact()
+            .unwrap_or(false);
+        if seed {
+            let store = Store::open(db_path.to_str().unwrap())?;
+            let username = whoami::username();
+            match store.create_channel("general", Some("General chat"), ChannelType::Channel) {
+                Ok(_) => {
+                    let _ = store.join_channel("general", &username, SenderType::Human);
+                    println!("  [ok] #general created");
+                }
+                Err(e) => println!("  [skip] could not create channel: {e}"),
+            }
+        }
+    }
+
+    println!("\nSetup complete. Next: `chorus run` to start the server and open the UI.");
+    Ok(())
+}
+
+fn run_cmd(cmd: &mut Command) -> anyhow::Result<()> {
+    let status = cmd.status().map_err(|e| {
+        anyhow::anyhow!(
+            "failed to run `{}`: {e}",
+            cmd.get_program().to_string_lossy()
+        )
+    })?;
+    if !status.success() {
+        anyhow::bail!(
+            "`{}` exited with status {}",
+            cmd.get_program().to_string_lossy(),
+            status
+        );
+    }
+    Ok(())
+}
+
+async fn cmd_run(
+    port: u16,
+    data_dir: Option<String>,
+    no_open: bool,
+    template_dir: String,
+) -> anyhow::Result<()> {
+    let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
+
+    if !no_open {
+        let url = format!("http://localhost:{port}");
+        tokio::spawn(async move {
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_millis(400))
+                .build()
+                .unwrap();
+            let health = format!("{url}/health");
+            for _ in 0..10 {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                if let Ok(res) = client.get(&health).send().await {
+                    if res.status().is_success() {
+                        if let Err(e) = open::that(&url) {
+                            tracing::warn!(url = %url, err = %e, "could not open browser");
+                        }
+                        return;
+                    }
+                }
+            }
+            tracing::warn!(
+                "server did not respond to /health within budget; skipping browser open"
+            );
+        });
+    }
+
+    serve(port, data_dir_str, template_dir).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn check_tool_returns_none_for_missing_binary() {
+        let r = check_tool("definitely-not-a-real-binary-xyzzy", "n/a");
+        assert!(r.version.is_none());
+    }
+
+    #[test]
+    fn check_tool_captures_version_of_common_binary() {
+        // `sh --version` exists on every POSIX host the CI runs on.
+        let r = check_tool("sh", "n/a");
+        // On some minimal BusyBox shells `sh --version` returns non-zero.
+        // So we only assert: if the command succeeded, we got a non-empty line.
+        if let Some(v) = r.version {
+            assert!(!v.is_empty());
+        }
+    }
 }
