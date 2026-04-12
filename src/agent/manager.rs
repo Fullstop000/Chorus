@@ -38,6 +38,10 @@ pub struct AgentManager {
     trace_store: Arc<AgentTraceStore>,
     store: Arc<Store>,
     data_dir: PathBuf,
+    /// Optional directory for per-agent log files. When set,
+    /// stdout+stderr from each agent subprocess gets tee'd into
+    /// `<logs_dir>/<agent_name>.log`.
+    logs_dir: Option<PathBuf>,
     bridge_binary: String,
     server_url: String,
     next_instance_id: AtomicU64,
@@ -63,10 +67,40 @@ impl AgentManager {
             trace_store: Arc::new(AgentTraceStore::new()),
             store,
             data_dir,
+            logs_dir: None,
             bridge_binary,
             server_url,
             next_instance_id: AtomicU64::new(1),
         }
+    }
+
+    /// Builder: enable per-agent log files under `<dir>/<agent_name>.log`.
+    /// When unset, agent stdout/stderr only goes through tracing as before.
+    pub fn with_logs_dir(mut self, dir: PathBuf) -> Self {
+        self.logs_dir = Some(dir);
+        self
+    }
+
+    /// Open (or re-open in append mode) the per-agent log file. Returns
+    /// None if logs_dir isn't configured or the file can't be created —
+    /// the caller falls back to tracing-only.
+    fn open_agent_log(&self, agent_name: &str) -> Option<Arc<std::sync::Mutex<std::fs::File>>> {
+        let dir = self.logs_dir.as_ref()?;
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            tracing::warn!(dir = %dir.display(), err = %e, "could not create agent logs dir");
+            return None;
+        }
+        let path = dir.join(format!("{agent_name}.log"));
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| {
+                tracing::warn!(path = %path.display(), err = %e, "could not open agent log file");
+                e
+            })
+            .ok()?;
+        Some(Arc::new(std::sync::Mutex::new(file)))
     }
 
     /// Start an agent process. Creates the workspace, writes `MEMORY.md`, and
@@ -204,9 +238,16 @@ impl AgentManager {
             ActivityEntry::Start { is_resume },
         );
 
-        self.spawn_output_reader(agent_name.to_string(), stdout, driver, instance_id);
+        let log_file = self.open_agent_log(agent_name);
+        self.spawn_output_reader(
+            agent_name.to_string(),
+            stdout,
+            driver,
+            instance_id,
+            log_file.clone(),
+        );
         if let Some(stderr) = stderr {
-            self.spawn_stderr_reader(agent_name.to_string(), stderr, instance_id);
+            self.spawn_stderr_reader(agent_name.to_string(), stderr, instance_id, log_file);
         }
         Ok(())
     }
@@ -359,6 +400,7 @@ impl AgentManager {
         stdout: std::process::ChildStdout,
         driver: Arc<dyn Driver>,
         instance_id: u64,
+        log_file: Option<Arc<std::sync::Mutex<std::fs::File>>>,
     ) {
         let agents = self.agents.clone();
         let activity_logs = self.activity_logs.clone();
@@ -382,6 +424,7 @@ impl AgentManager {
                 if line.trim().is_empty() {
                     continue;
                 }
+                append_agent_log(log_file.as_ref(), "stdout", &line);
 
                 // ACP runtimes log raw stdout at trace level so `RUST_LOG=chorus=trace`
                 // gives a full wire dump without needing temporary code changes.
@@ -478,6 +521,7 @@ impl AgentManager {
         agent_name: String,
         stderr: std::process::ChildStderr,
         instance_id: u64,
+        log_file: Option<Arc<std::sync::Mutex<std::fs::File>>>,
     ) {
         tokio::task::spawn_blocking(move || {
             use std::io::BufRead;
@@ -494,9 +538,25 @@ impl AgentManager {
                 if line.trim().is_empty() {
                     continue;
                 }
+                append_agent_log(log_file.as_ref(), "stderr", &line);
                 warn!(agent = %agent_name, instance_id, raw_stderr = %line, "agent stderr");
             }
         });
+    }
+}
+
+/// Append `<timestamp> [stream] <line>\n` to the per-agent log file.
+/// No-op when logging isn't configured; write errors are traced once and
+/// otherwise swallowed so log-file IO can't kill the reader task.
+fn append_agent_log(file: Option<&Arc<std::sync::Mutex<std::fs::File>>>, stream: &str, line: &str) {
+    let Some(file) = file else { return };
+    use std::io::Write;
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+    let Ok(mut guard) = file.lock() else { return };
+    if let Err(e) = writeln!(&mut *guard, "{ts} [{stream}] {line}") {
+        // Lower than warn to avoid log feedback loops when logging itself
+        // is broken — e.g. filesystem full.
+        tracing::debug!(err = %e, "agent log append failed");
     }
 }
 
@@ -1378,7 +1438,7 @@ mod tests {
                 },
             );
         }
-        manager.spawn_output_reader("bot1".to_string(), first_stdout, driver.clone(), 1);
+        manager.spawn_output_reader("bot1".to_string(), first_stdout, driver.clone(), 1, None);
 
         {
             let mut agents = manager.agents.lock().await;
