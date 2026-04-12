@@ -163,5 +163,3 @@ pub async fn handle_list_runtime_models(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(models))
 }
-
-
