@@ -1,4 +1,4 @@
-pub mod error;
+pub use crate::utils::error;
 mod handlers;
 pub mod transport;
 

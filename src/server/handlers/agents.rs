@@ -6,11 +6,12 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use super::{acquire_transition, app_err, format_anyhow_error, internal_err, ApiResult, AppState};
+use super::{acquire_transition, app_err, ApiResult, AppState};
+use crate::utils::error::internal_err;
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
-use crate::server::error::AppErrorCode;
+use crate::utils::error::{format_anyhow_error, AppErrorCode};
 use crate::store::agents::{AgentEnvVar, AgentStatus};
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
