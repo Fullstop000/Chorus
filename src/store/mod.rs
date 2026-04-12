@@ -42,8 +42,13 @@ pub struct Store {
     stream_tx: broadcast::Sender<StreamEvent>,
     /// Broadcast channel for agent trace events (tool calls, thinking, etc.).
     trace_tx: broadcast::Sender<TraceEvent>,
-    /// Root data directory (db parent, attachments, agents, teams).
+    /// Root data directory (db parent, attachments, teams).
     data_dir: PathBuf,
+    /// Optional override for the per-agent workspace root. When set, takes
+    /// precedence over `data_dir.join("agents")` so the server can keep
+    /// agent workspaces at the chorus-root level while chorus.db sits in
+    /// `<root>/data/`.
+    agents_dir_override: Option<PathBuf>,
 }
 
 impl Store {
@@ -62,7 +67,16 @@ impl Store {
             stream_tx,
             trace_tx,
             data_dir: derive_data_dir(path),
+            agents_dir_override: None,
         })
+    }
+
+    /// Builder: override the per-agent workspace directory. Intended for the
+    /// CLI `serve`/`run` path, which places agent workspaces at the chorus
+    /// root instead of inside `data/`.
+    pub fn with_agents_dir(mut self, dir: PathBuf) -> Self {
+        self.agents_dir_override = Some(dir);
+        self
     }
 
     /// Return the configured server data directory that owns the SQLite file.
@@ -77,7 +91,9 @@ impl Store {
 
     /// Return the directory that contains per-agent workspaces.
     pub fn agents_dir(&self) -> PathBuf {
-        self.data_dir.join("agents")
+        self.agents_dir_override
+            .clone()
+            .unwrap_or_else(|| self.data_dir.join("agents"))
     }
 
     /// Return the directory used to persist per-team workspaces.

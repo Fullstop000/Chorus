@@ -5,10 +5,38 @@ pub mod transport;
 use std::sync::Arc;
 use std::{collections::HashSet, sync::Mutex};
 
+use axum::body::Body;
+use axum::http::{header, StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::Router;
+use rust_embed::RustEmbed;
 use tower_http::cors::{Any, CorsLayer};
-use tower_http::services::{ServeDir, ServeFile};
+
+#[derive(RustEmbed)]
+#[folder = "ui/dist/"]
+struct UiAssets;
+
+async fn serve_ui(uri: Uri) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    let candidate = if path.is_empty() { "index.html" } else { path };
+    let Some(file) = UiAssets::get(candidate).or_else(|| UiAssets::get("index.html")) else {
+        return (StatusCode::NOT_FOUND, "UI assets missing").into_response();
+    };
+    let mime = file.metadata.mimetype();
+    let mut response = Response::new(Body::from(file.data.into_owned()));
+    match header::HeaderValue::from_str(mime) {
+        Ok(value) => {
+            response.headers_mut().insert(header::CONTENT_TYPE, value);
+            response
+        }
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+async fn health() -> &'static str {
+    "ok"
+}
 
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
@@ -166,9 +194,13 @@ pub fn build_router_with_services(
         .route("/agents/{name}/runs", get(handle_agent_runs));
 
     Router::new()
+        .route("/health", get(health))
         .nest("/internal", internal_router)
         .nest("/api", api_router)
         .layer(cors)
-        .fallback_service(ServeDir::new("ui/dist").fallback(ServeFile::new("ui/dist/index.html")))
+        // Only GET falls through to the embedded UI — non-GET requests to
+        // unmatched paths (e.g. removed `/internal/.../remember`) should
+        // return 405/404 rather than silently serving index.html.
+        .fallback_service(get(serve_ui))
         .with_state(state)
 }

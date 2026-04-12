@@ -1,0 +1,449 @@
+//! Tracing / logging initialization for the CLI.
+//!
+//! `serve` / `run` / `setup` / the default (no-subcommand) branch all want
+//! file logging under `<data_dir>/logs/`. Other subcommands (bridge, send,
+//! history, etc.) only need stdout. The entry point `init_tracing` handles
+//! both: when a `data_dir` is given it reads `[logs]` from `config.toml`
+//! and attaches a file layer; otherwise it installs only a stdout layer.
+//!
+//! ## Per-agent log routing
+//!
+//! Events emitted inside a span named `"agent"` with a `name` field get
+//! routed to `<logs_dir>/agents/<name>.log` by [`AgentLogLayer`]. Events
+//! outside any agent span stay in the main `chorus.log`. Agent readers
+//! (see `agent::manager`) enter the span once per process and let the
+//! layer handle file I/O — no explicit file handles passed through.
+
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use tracing::field::{Field, Visit};
+use tracing::span::Attributes;
+use tracing::{Event, Id, Subscriber};
+use tracing_subscriber::layer::{Context, Filter};
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::registry::LookupSpan;
+use tracing_subscriber::Layer;
+
+use crate::agent::templates::expand_tilde;
+use crate::config::{ChorusConfig, LogsConfig};
+
+/// Span name that `AgentLogLayer` watches for. Reader tasks enter a
+/// `tracing::info_span!(AGENT_SPAN_NAME, agent_name = %agent_name)` so every
+/// event inside the scope gets routed to that agent's log file.
+pub const AGENT_SPAN_NAME: &str = "agent";
+
+/// Initialize tracing. Returns a `WorkerGuard` that must live for the
+/// process lifetime so queued file writes flush cleanly on exit.
+pub fn init_tracing(data_dir: Option<&str>) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    let logs_cfg = data_dir
+        .map(expand_tilde)
+        .and_then(|dir| ChorusConfig::load(&dir).ok().flatten())
+        .map(|c| c.logs)
+        .unwrap_or_default();
+
+    // Per-layer filters: the stdout + main-file layers honor the user's
+    // RUST_LOG / [logs].level setting, while the agent layer sees every
+    // event (TRACE) regardless. That's what lets trace-level agent
+    // stdout lines reach the per-agent log file without flooding the
+    // console.
+    let level_filter = || {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(&logs_cfg.level))
+    };
+
+    let stdout_layer = tracing_subscriber::fmt::layer()
+        .with_target(false)
+        .with_file(true)
+        .with_line_number(true)
+        .with_filter(level_filter());
+
+    let Some(dir) = data_dir else {
+        tracing_subscriber::registry().with(stdout_layer).init();
+        return None;
+    };
+
+    let logs_dir = expand_tilde(dir).join("logs");
+    if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+        tracing_subscriber::registry().with(stdout_layer).init();
+        eprintln!(
+            "warning: could not create {}: {e} — file logging disabled",
+            logs_dir.display()
+        );
+        return None;
+    }
+
+    let appender = match build_appender(&logs_dir, &logs_cfg) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing_subscriber::registry().with(stdout_layer).init();
+            eprintln!("warning: file-logger build failed: {e} — file logging disabled");
+            return None;
+        }
+    };
+    let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+    // Main chorus.log: respects RUST_LOG AND excludes events inside an
+    // `agent` span (those get routed to per-agent files below).
+    let main_file_layer = tracing_subscriber::fmt::layer()
+        .with_writer(non_blocking)
+        .with_target(false)
+        .with_file(true)
+        .with_line_number(true)
+        .with_ansi(false)
+        .with_filter(level_filter())
+        .with_filter(ExcludeAgentSpansFilter);
+
+    // Per-agent log: no level filter — captures the whole firehose for
+    // post-hoc debugging. File routing is based on the active `agent`
+    // span's `name` field.
+    let agent_layer = AgentLogLayer::new(logs_dir.join("agents"))
+        .with_filter(tracing_subscriber::filter::LevelFilter::TRACE);
+
+    tracing_subscriber::registry()
+        .with(stdout_layer)
+        .with(main_file_layer)
+        .with(agent_layer)
+        .init();
+    Some(guard)
+}
+
+// ---- per-agent routing ----------------------------------------------------
+
+/// Extension stored on `agent` spans so per-event routing is O(1).
+struct AgentScope {
+    name: String,
+}
+
+/// Visit a span's fields looking for `agent_name = "..."`.
+#[derive(Default)]
+struct AgentNameVisitor {
+    name: Option<String>,
+}
+
+impl Visit for AgentNameVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "agent_name" {
+            self.name = Some(value.to_string());
+        }
+    }
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "agent_name" && self.name.is_none() {
+            // Debug-formatted strings come with surrounding quotes; strip them.
+            let raw = format!("{value:?}");
+            self.name = Some(raw.trim_matches('"').to_string());
+        }
+    }
+}
+
+/// Render an event's fields into a human-readable line. Caller prepends
+/// timestamp and level.
+struct EventFormatter<'a> {
+    out: &'a mut String,
+    wrote_message: bool,
+}
+
+impl<'a> Visit for EventFormatter<'a> {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        use std::fmt::Write;
+        if field.name() == "message" {
+            self.out.push_str(value);
+            self.wrote_message = true;
+        } else {
+            let _ = write!(self.out, " {}={}", field.name(), value);
+        }
+    }
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        use std::fmt::Write;
+        if field.name() == "message" {
+            let _ = write!(self.out, "{value:?}");
+            self.wrote_message = true;
+        } else {
+            let _ = write!(self.out, " {}={:?}", field.name(), value);
+        }
+    }
+}
+
+/// Custom tracing layer: writes each event that occurs inside an `agent`
+/// span to `<base>/<agent_name>.log`. Opens files on demand and keeps
+/// them cached per agent name so we don't re-open on every line.
+pub struct AgentLogLayer {
+    base: PathBuf,
+    files: Mutex<HashMap<String, Arc<Mutex<File>>>>,
+}
+
+impl AgentLogLayer {
+    pub fn new(base: PathBuf) -> Self {
+        let _ = std::fs::create_dir_all(&base);
+        Self {
+            base,
+            files: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn open(&self, name: &str) -> Option<Arc<Mutex<File>>> {
+        // Refuse silly names that could escape the logs dir. Agent names
+        // in chorus are DB-enforced `[a-z0-9_-]+`, but defense in depth.
+        if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
+            return None;
+        }
+        let mut files = match self.files.lock() {
+            Ok(g) => g,
+            Err(_) => return None,
+        };
+        if let Some(existing) = files.get(name) {
+            return Some(existing.clone());
+        }
+        let path = self.base.join(format!("{name}.log"));
+        let f = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .ok()?;
+        let arc = Arc::new(Mutex::new(f));
+        files.insert(name.to_string(), arc.clone());
+        Some(arc)
+    }
+}
+
+impl<S> Layer<S> for AgentLogLayer
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
+        if attrs.metadata().name() != AGENT_SPAN_NAME {
+            return;
+        }
+        let mut v = AgentNameVisitor::default();
+        attrs.record(&mut v);
+        let Some(name) = v.name else { return };
+        if let Some(span) = ctx.span(id) {
+            span.extensions_mut().insert(AgentScope { name });
+        }
+    }
+
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        let Some(scope) = ctx.event_scope(event) else {
+            return;
+        };
+        let agent_name = scope.from_root().find_map(|span| {
+            span.extensions()
+                .get::<AgentScope>()
+                .map(|a| a.name.clone())
+        });
+        let Some(agent_name) = agent_name else {
+            return;
+        };
+        let Some(file) = self.open(&agent_name) else {
+            return;
+        };
+
+        let mut body = String::new();
+        let mut fmt = EventFormatter {
+            out: &mut body,
+            wrote_message: false,
+        };
+        event.record(&mut fmt);
+        let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+        let level = event.metadata().level();
+        let Ok(mut guard) = file.lock() else { return };
+        // Lock-held write keeps stdout/stderr lines from interleaving
+        // mid-line. Errors are swallowed so a full disk can't kill the
+        // reader task.
+        let _ = writeln!(&mut *guard, "{ts} [{level}] {body}");
+    }
+}
+
+/// Filter that excludes events occurring inside an `agent` span. Applied
+/// to the main-file layer so those events land only in the per-agent log,
+/// not double-logged into chorus.log.
+pub struct ExcludeAgentSpansFilter;
+
+impl<S> Filter<S> for ExcludeAgentSpansFilter
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn enabled(&self, _meta: &tracing::Metadata<'_>, ctx: &Context<'_, S>) -> bool {
+        !in_agent_scope(ctx)
+    }
+}
+
+fn in_agent_scope<S>(ctx: &Context<'_, S>) -> bool
+where
+    S: Subscriber + for<'a> LookupSpan<'a>,
+{
+    let Some(scope) = ctx.lookup_current() else {
+        return false;
+    };
+    // Match on the span's metadata name so the filter works even when
+    // AgentLogLayer isn't part of the subscriber (e.g., in isolated tests
+    // or environments that only want the stdout layer).
+    scope.scope().any(|span| span.name() == AGENT_SPAN_NAME)
+}
+
+// ---------------------------------------------------------------------------
+
+fn build_appender(
+    logs_dir: &Path,
+    cfg: &LogsConfig,
+) -> anyhow::Result<tracing_appender::rolling::RollingFileAppender> {
+    let rotation = match cfg.rotation.as_str() {
+        "hourly" => tracing_appender::rolling::Rotation::HOURLY,
+        "daily" => tracing_appender::rolling::Rotation::DAILY,
+        _ => tracing_appender::rolling::Rotation::NEVER,
+    };
+    let mut builder = tracing_appender::rolling::Builder::new()
+        .rotation(rotation)
+        .filename_prefix("chorus")
+        .filename_suffix("log");
+    if cfg.retention > 0 && cfg.rotation != "never" {
+        builder = builder.max_log_files(cfg.retention as usize);
+    }
+    Ok(builder.build(logs_dir)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracing::subscriber::with_default;
+    use tracing_subscriber::filter::LevelFilter;
+
+    /// Build a subscriber isolated to this test (via with_default) so tests
+    /// don't clobber each other or the global registry.
+    fn test_subscriber(layer: AgentLogLayer) -> impl tracing::Subscriber {
+        tracing_subscriber::registry().with(layer.with_filter(LevelFilter::TRACE))
+    }
+
+    fn read(path: &Path) -> String {
+        std::fs::read_to_string(path).unwrap_or_default()
+    }
+
+    #[test]
+    fn writes_event_emitted_inside_agent_span() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "alice");
+            let _g = span.enter();
+            tracing::info!("hello from alice");
+        });
+        let body = read(&tmp.path().join("alice.log"));
+        assert!(body.contains("hello from alice"), "got: {body}");
+        assert!(body.contains("[INFO]"), "level missing: {body}");
+    }
+
+    #[test]
+    fn routes_to_different_files_per_agent_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let a = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "alice");
+            {
+                let _g = a.enter();
+                tracing::info!("for alice");
+            }
+            let b = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "bob");
+            {
+                let _g = b.enter();
+                tracing::info!("for bob");
+            }
+        });
+        let alice = read(&tmp.path().join("alice.log"));
+        let bob = read(&tmp.path().join("bob.log"));
+        assert!(alice.contains("for alice") && !alice.contains("for bob"));
+        assert!(bob.contains("for bob") && !bob.contains("for alice"));
+    }
+
+    #[test]
+    fn skips_events_outside_agent_span() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            tracing::info!("no span");
+            let unrelated = tracing::info_span!("not_an_agent", name = "alice");
+            let _g = unrelated.enter();
+            tracing::info!("wrong span name");
+        });
+        // No files should have been created because no agent span was entered.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().flatten().collect();
+        assert!(entries.is_empty(), "unexpected files: {entries:?}");
+    }
+
+    #[test]
+    fn refuses_path_traversal_in_agent_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            for bad in ["../evil", "/etc/passwd", ".hidden", "", "slash/ok"] {
+                let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = bad);
+                let _g = span.enter();
+                tracing::info!("should be dropped");
+            }
+        });
+        // Only `<tmp>/...` is our logs dir; there should be NO files created.
+        let entries: Vec<_> = std::fs::read_dir(tmp.path()).unwrap().flatten().collect();
+        assert!(entries.is_empty(), "wrote files for bad names: {entries:?}");
+    }
+
+    #[test]
+    fn appends_across_multiple_events_in_same_scope() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "carol");
+            let _g = span.enter();
+            for i in 0..5 {
+                tracing::trace!(i, "tick");
+            }
+        });
+        let body = read(&tmp.path().join("carol.log"));
+        assert_eq!(body.matches("tick").count(), 5, "got: {body}");
+        assert_eq!(body.matches("[TRACE]").count(), 5);
+    }
+
+    #[test]
+    fn captures_raw_field_alongside_message() {
+        let tmp = tempfile::tempdir().unwrap();
+        let layer = AgentLogLayer::new(tmp.path().to_path_buf());
+        with_default(test_subscriber(layer), || {
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "dave");
+            let _g = span.enter();
+            tracing::trace!(stream = "stdout", raw = "{\"k\":1}");
+        });
+        let body = read(&tmp.path().join("dave.log"));
+        assert!(body.contains("stream=stdout"), "got: {body}");
+        assert!(body.contains("raw={\"k\":1}"), "got: {body}");
+    }
+
+    #[test]
+    fn exclude_agent_spans_filter_matches_scope() {
+        // Compose a registry where ExcludeAgentSpansFilter guards a
+        // visit-counting layer. Inside an agent span, the inner layer
+        // should not see events. Outside, it should.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let hits = Arc::new(AtomicUsize::new(0));
+
+        struct CountingLayer(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> Layer<S> for CountingLayer {
+            fn on_event(&self, _: &Event<'_>, _: Context<'_, S>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        let subscriber = tracing_subscriber::registry()
+            .with(CountingLayer(hits.clone()).with_filter(ExcludeAgentSpansFilter));
+
+        with_default(subscriber, || {
+            tracing::info!("outside — should count");
+            let span = tracing::info_span!(AGENT_SPAN_NAME, agent_name = "x");
+            let _g = span.enter();
+            tracing::info!("inside — should NOT count");
+        });
+
+        assert_eq!(hits.load(Ordering::Relaxed), 1);
+    }
+}

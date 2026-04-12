@@ -369,6 +369,16 @@ impl AgentManager {
 
         tokio::task::spawn_blocking(move || {
             use std::io::BufRead;
+            // Enter an `agent` span for the lifetime of the reader. The
+            // AgentLogLayer in crate::logging routes every event in scope
+            // into <logs_dir>/agents/<name>.log — no explicit file
+            // handle plumbing required.
+            let agent_span = tracing::info_span!(
+                crate::logging::AGENT_SPAN_NAME,
+                agent_name = %name,
+                instance_id,
+            );
+            let _span_guard = agent_span.enter();
             let reader = std::io::BufReader::new(stdout);
 
             for line in reader.lines() {
@@ -382,21 +392,10 @@ impl AgentManager {
                 if line.trim().is_empty() {
                     continue;
                 }
-
-                // ACP runtimes log raw stdout at trace level so `RUST_LOG=chorus=trace`
-                // gives a full wire dump without needing temporary code changes.
-                // Skip per-chunk streaming lines to avoid log floods.
-                if (driver.runtime() == AgentRuntime::Kimi
-                    || driver.runtime() == AgentRuntime::Opencode)
-                    && !line.contains("agent_message_chunk")
-                    && !line.contains("agentMessageChunk")
-                    && !line.contains("agent_thought_chunk")
-                    && !line.contains("agentThoughtChunk")
-                    && !line.contains("tool_call_update")
-                    && !line.contains("toolCallUpdate")
-                {
-                    trace!(agent = %name, raw_stdout = %line, "raw agent stdout");
-                }
+                // TRACE-level so default RUST_LOG doesn't flood stdout.
+                // The per-layer TRACE filter on AgentLogLayer captures
+                // this regardless of the user's global log level.
+                tracing::trace!(stream = "stdout", raw = %line);
 
                 for event in driver.parse_line(&line) {
                     let rt = tokio::runtime::Handle::current();
@@ -481,20 +480,29 @@ impl AgentManager {
     ) {
         tokio::task::spawn_blocking(move || {
             use std::io::BufRead;
+            let agent_span = tracing::info_span!(
+                crate::logging::AGENT_SPAN_NAME,
+                agent_name = %agent_name,
+                instance_id,
+            );
+            let _span_guard = agent_span.enter();
             let reader = std::io::BufReader::new(stderr);
 
             for line in reader.lines() {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        error!(agent = %agent_name, err = %e, backtrace = %project_backtrace(), "stderr read error");
+                        error!(err = %e, backtrace = %project_backtrace(), "stderr read error");
                         break;
                     }
                 };
                 if line.trim().is_empty() {
                     continue;
                 }
-                warn!(agent = %agent_name, instance_id, raw_stderr = %line, "agent stderr");
+                // WARN because agent stderr is nearly always a problem.
+                // The AgentLogLayer captures it in the per-agent log file
+                // and the ExcludeAgentSpansFilter keeps it out of chorus.log.
+                warn!(stream = "stderr", raw = %line);
             }
         });
     }
