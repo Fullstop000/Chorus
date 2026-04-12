@@ -8,6 +8,29 @@ When you change a token or break a rule, update this file in the same PR.
 
 ---
 
+## Product context
+
+- **What this is:** AI agent collaboration platform. Agents run as OS
+  processes and communicate through a Slack-like chat interface.
+- **Who it's for:** Developers and teams running multi-agent workflows.
+- **Space:** Developer tools, agent orchestration, team collaboration.
+- **Project type:** Web app (Rust/Axum backend, React/TypeScript frontend).
+
+---
+
+## Aesthetic direction
+
+- **Direction:** Industrial / utilitarian. Function-first, data-dense, warm,
+  and legible.
+- **Decoration level:** Intentional, not expressive. Grid texture, dash-prefix
+  kickers, and square avatars are enough.
+- **Mood:** Engineering notebook. Warm but serious. Infrastructure you can
+  read.
+- **Signature:** Zero border radius and flat surfaces. This is one of the
+  quickest ways Chorus reads as Chorus.
+
+---
+
 ## Philosophy
 
 **Paper and terminal.** A warm cream background with a faint graph-paper grid,
@@ -190,6 +213,21 @@ Other spacing is consistent but not tokenized yet:
 
 When you need a new spacing value, prefer one of the above before inventing a
 new number.
+
+### Panel widths and breakpoints
+
+The layout is grid-disciplined: one fixed primary sidebar, fixed secondary
+panels where needed, and a small set of repeated collapse points.
+
+| Surface | Value | Source |
+|---|---|---|
+| Sidebar | `312px` | `ui/src/App.css` |
+| Thread panel | `360px` | `ui/src/components/chat/ThreadPanel.css`, `ui/src/components/chat/ThreadsTab.css` |
+| Members panel | `min(320px, calc(100% - 36px))` | `ui/src/components/channels/ChannelMembersPanel.css` |
+| Workspace sidebar | `minmax(260px, 28%)` | `ui/src/components/agents/WorkspacePanel.css` |
+| Compact breakpoint | `920px` | `ChatPanel.css`, `ChannelMembersPanel.css` |
+| Medium breakpoint | `1100px` | `WorkspacePanel.css`, `ChannelMembersPanel.css` |
+| Full threads breakpoint | `1120px` | `ThreadsTab.css` |
 
 ---
 
@@ -509,11 +547,29 @@ shares a visual vocabulary; new additions should match.
 
 ---
 
+## Decision log
+
+This section preserves the design decisions from the former top-level
+`DESIGN.md`. When a historical note and the live CSS disagree, the CSS-backed
+sections above are authoritative.
+
+| Date | Decision | Status | Rationale |
+|---|---|---|---|
+| 2026-04-11 | Initial design system created | Landed | Codified the existing visual language from a CSS audit instead of inventing a new aesthetic. |
+| 2026-04-11 | Keep Inter + IBM Plex Mono | Landed | Strong pairing already in use. Sans for framing, mono for chat and system surfaces. |
+| 2026-04-11 | Keep 0px border radius | Landed | Signature element. Makes Chorus visually distinct immediately. |
+| 2026-04-11 | Consolidate the type scale into a small set of recurring sizes | Directional | Reduce one-off font sizes and keep hierarchy legible. |
+| 2026-04-11 | Prefer 4px-derived spacing values | Directional | Normalize 7px/14px drift over time rather than inventing a parallel spacing system. |
+| 2026-04-11 | Tokenize reusable status and semantic colors | Partial | Shared colors belong in theme variables; some legacy usages still need cleanup. |
+| 2026-04-11 | Reduce animation duration drift | Partial | `pulse-dot` is standardized at 1s, but spinner timings are not fully consolidated yet. |
+
+---
+
 ## When you change the design
 
 1. **Update this file in the same PR.** If you add a token, document it here.
-   If you break a rule, explain why here. A stale DESIGN.md is worse than
-   none.
+  If you break a rule, explain why here. A stale `docs/DESIGN.md` is worse
+  than none.
 2. **Add a token before a second use.** The first use can be inline; the
    second use means it should live in `index.css` or `App.css`.
 3. **Match an existing component family.** New components should look like

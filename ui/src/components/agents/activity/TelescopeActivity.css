@@ -110,7 +110,7 @@
 }
 
 .ta-status-error {
-  color: var(--status-error);
+  color: var(--color-destructive);
 }
 
 .ta-run-bottom {
