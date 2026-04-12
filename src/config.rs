@@ -21,16 +21,10 @@ use serde::{Deserialize, Serialize};
 pub const FILE_NAME: &str = "config.toml";
 
 /// Per-runtime overrides. Each runtime gets its own `[<runtime>]` section
-/// in `config.toml` so users can see where to edit without hunting through
-/// docs. Add fields here as new per-runtime settings emerge.
+/// in `config.toml` so users have a dedicated place to add runtime-specific
+/// settings as they emerge. Currently empty; add fields here when needed.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeConfig {
-    /// Default agent template id (e.g. `engineering/backend-architect`) used
-    /// when `chorus agent create --runtime <name>` is invoked without an
-    /// explicit template. Empty string = no default.
-    #[serde(default)]
-    pub agent_template: String,
-}
+pub struct RuntimeConfig {}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChorusConfig {
@@ -43,6 +37,13 @@ pub struct ChorusConfig {
     /// Directory holding agent-template markdown files.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_dir: Option<String>,
+
+    /// Default agent template id (e.g. `engineering/backend-architect`)
+    /// used when `chorus agent create` runs without `--template`. Empty
+    /// string = no default; user is prompted or create fails if nothing
+    /// else resolves.
+    #[serde(default)]
+    pub agent_template: String,
 
     #[serde(default)]
     pub claude: RuntimeConfig,
@@ -166,20 +167,14 @@ mod tests {
     }
 
     #[test]
-    fn roundtrip_preserves_runtime_agent_template() {
+    fn roundtrip_preserves_agent_template() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ChorusConfig {
-            claude: RuntimeConfig {
-                agent_template: "engineering/backend-architect".to_string(),
-            },
+            agent_template: "engineering/backend-architect".to_string(),
             ..Default::default()
         };
         cfg.save(tmp.path()).unwrap();
         let loaded = ChorusConfig::load(tmp.path()).unwrap().unwrap();
-        assert_eq!(
-            loaded.claude.agent_template,
-            "engineering/backend-architect"
-        );
-        assert_eq!(loaded.codex.agent_template, ""); // default
+        assert_eq!(loaded.agent_template, "engineering/backend-architect");
     }
 }
