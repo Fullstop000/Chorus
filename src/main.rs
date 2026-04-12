@@ -300,7 +300,7 @@ async fn main() -> anyhow::Result<()> {
         }) => {
             let username = whoami::username();
             let data_dir = data_dir.unwrap_or_else(default_data_dir);
-            let db_path = format!("{data_dir}/chorus.db");
+            let db_path = db_path_for(&data_dir);
             let store = Store::open(&db_path)?;
             store.create_channel(&name, description.as_deref(), ChannelType::Channel)?;
             store.join_channel(&name, &username, SenderType::Human)?;
@@ -323,7 +323,7 @@ async fn main() -> anyhow::Result<()> {
                         model
                     };
                     let data_dir = data_dir.unwrap_or_else(default_data_dir);
-                    let db_path = format!("{data_dir}/chorus.db");
+                    let db_path = db_path_for(&data_dir);
                     let store = Store::open(&db_path)?;
                     store.create_agent_record(
                         &name,
@@ -344,7 +344,7 @@ async fn main() -> anyhow::Result<()> {
                 AgentCommands::Stop { name, data_dir } => {
                     println!("Stopping agent @{name}...");
                     let data_dir = data_dir.unwrap_or_else(default_data_dir);
-                    let db_path = format!("{data_dir}/chorus.db");
+                    let db_path = db_path_for(&data_dir);
                     let store = Store::open(&db_path)?;
                     store.update_agent_status(&name, AgentStatus::Inactive)?;
                     println!("Agent @{name} marked as inactive.");
@@ -381,8 +381,11 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> anyhow::Result<()> {
     let data_dir = std::path::PathBuf::from(&data_dir_str);
-    std::fs::create_dir_all(&data_dir)?;
-    let db_path = data_dir.join("chorus.db");
+    let data_subdir = data_dir.join("data");
+    let logs_dir = data_dir.join("logs");
+    std::fs::create_dir_all(&data_subdir)?;
+    std::fs::create_dir_all(&logs_dir)?;
+    let db_path = data_subdir.join("chorus.db");
     let store = Arc::new(Store::open(db_path.to_str().unwrap())?);
 
     // Default human = OS username
@@ -396,7 +399,7 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
     let bridge_binary = std::env::current_exe()?.to_string_lossy().into_owned();
     let manager = Arc::new(AgentManager::new(
         store.clone(),
-        data_dir.join("agents"),
+        data_subdir.join("agents"),
         bridge_binary,
         server_url.clone(),
     ));
@@ -485,6 +488,45 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 const DEFAULT_TEMPLATE_DIR: &str = "~/agency-agents";
+
+/// Subdirectory inside the data dir root that holds SQLite + per-agent/team
+/// workspaces. Kept separate from `logs/` and `config.toml`.
+const DATA_SUBDIR: &str = "data";
+
+/// Resolve and prepare `<data_dir_root>/data/chorus.db`, creating the parent
+/// directory as a side effect. Returns the path as a String for `Store::open`.
+fn db_path_for(data_dir_root: &str) -> String {
+    let dir = std::path::PathBuf::from(data_dir_root).join(DATA_SUBDIR);
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("chorus.db").to_string_lossy().into_owned()
+}
+
+/// Move legacy data (chorus.db*, agents/, attachments/, teams/) from the
+/// data-dir root into `<root>/data/` so older installs pick up the new
+/// layout transparently. Only moves when the source exists at the root
+/// AND the target doesn't — idempotent, refuses to clobber.
+fn migrate_legacy_layout(
+    root: &std::path::Path,
+    data_subdir: &std::path::Path,
+) -> anyhow::Result<()> {
+    let candidates = [
+        "chorus.db",
+        "chorus.db-wal",
+        "chorus.db-shm",
+        "agents",
+        "attachments",
+        "teams",
+    ];
+    for name in candidates {
+        let src = root.join(name);
+        let dst = data_subdir.join(name);
+        if src.exists() && !dst.exists() {
+            tracing::info!(from = %src.display(), to = %dst.display(), "migrating legacy layout");
+            std::fs::rename(&src, &dst)?;
+        }
+    }
+    Ok(())
+}
 
 /// Resolve the effective template directory: CLI flag > config file > default.
 /// (The env-var layer is folded into `cli` by clap's `env` attribute.)
@@ -849,11 +891,21 @@ async fn cmd_setup(
         );
     }
 
-    // Silently ensure the data dir and DB exist — no dedicated section.
+    // Ensure the directory layout exists and migrate any old-layout files
+    // that were created before `data/` and `logs/` became first-class.
+    //   <root>/config.toml           (config — stays at root)
+    //   <root>/logs/                 (new: log files)
+    //   <root>/data/                 (new: all data)
+    //       chorus.db*, agents/, attachments/, teams/
+    let data_subdir = data_dir.join(DATA_SUBDIR);
+    let logs_dir = data_dir.join("logs");
+    std::fs::create_dir_all(&data_subdir)?;
+    std::fs::create_dir_all(&logs_dir)?;
+    migrate_legacy_layout(&data_dir, &data_subdir)?;
+
     // Always call Store::open: it runs migrations idempotently, so an
     // existing chorus.db gets schema upgrades as part of setup.
-    std::fs::create_dir_all(&data_dir)?;
-    let db_path = data_dir.join("chorus.db");
+    let db_path = data_subdir.join("chorus.db");
     let _ = Store::open(db_path.to_str().unwrap())?;
 
     // Persist config — machine_id (stable across re-runs) + template_dir,
@@ -864,8 +916,10 @@ async fn cmd_setup(
     cfg.template_dir = Some(template_dir_raw.clone());
     let cfg_path = cfg.save(&data_dir)?;
 
-    section("Config");
+    section("Layout");
     row_ok("config", &format!("wrote {}", cfg_path.display()));
+    row_ok("data", &format!("{}", data_subdir.display()));
+    row_ok("logs", &format!("{}", logs_dir.display()));
     row_ok(
         "machine id",
         &format!("{} (persistent)", style(&machine_id).cyan()),
