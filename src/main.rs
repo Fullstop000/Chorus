@@ -44,7 +44,7 @@ enum Commands {
         template_dir: Option<String>,
     },
     /// Start the server and open the web UI in a browser
-    Run {
+    Start {
         #[arg(long, default_value = "3001")]
         port: u16,
         #[arg(long)]
@@ -158,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
     let log_data_dir: Option<String> = match &cli.command {
         Some(Commands::Serve { data_dir, .. })
         | Some(Commands::Setup { data_dir, .. })
-        | Some(Commands::Run { data_dir, .. }) => {
+        | Some(Commands::Start { data_dir, .. }) => {
             Some(data_dir.clone().unwrap_or_else(default_data_dir))
         }
         None => Some(default_data_dir()),
@@ -188,12 +188,12 @@ async fn main() -> anyhow::Result<()> {
             template_dir,
         }) => cmd_setup(yes, data_dir, template_dir).await,
 
-        Some(Commands::Run {
+        Some(Commands::Start {
             port,
             data_dir,
             no_open,
             template_dir,
-        }) => cmd_run(port, data_dir, no_open, template_dir).await,
+        }) => cmd_start(port, data_dir, no_open, template_dir).await,
 
         None => {
             let data_dir_str = default_data_dir();
@@ -487,7 +487,7 @@ async fn serve(port: u16, data_dir_str: String, template_dir_raw: String) -> any
     Ok(())
 }
 
-// ---- chorus setup / chorus run -------------------------------------------
+// ---- chorus setup / chorus start -----------------------------------------
 
 use chorus::config::ChorusConfig;
 use console::{style, Emoji};
@@ -882,7 +882,7 @@ async fn cmd_setup(
     let data_dir = chorus::agent::templates::expand_tilde(&data_dir_str);
 
     // Template dir precedence: CLI flag > existing config > default.
-    // Setup always writes the result back so `chorus run` picks it up later.
+    // Setup always writes the result back so `chorus start` picks it up later.
     let template_dir_raw = template_dir_cli
         .or_else(|| {
             ChorusConfig::load(&data_dir)
@@ -992,7 +992,7 @@ async fn cmd_setup(
     let _ = Store::open(db_path.to_str().unwrap())?;
 
     // Persist config — machine_id (stable across re-runs) + template_dir,
-    // so `chorus run` can read the chosen paths without the user re-passing
+    // so `chorus start` can read the chosen paths without the user re-passing
     // --template-dir every time.
     let mut cfg = ChorusConfig::load(&data_dir)?.unwrap_or_default();
     let machine_id = cfg.ensure_machine_id().to_string();
@@ -1042,11 +1042,11 @@ async fn cmd_setup(
         );
     }
 
-    footer(started.elapsed(), "chorus run");
+    footer(started.elapsed(), "chorus start");
     Ok(())
 }
 
-async fn cmd_run(
+async fn cmd_start(
     port: u16,
     data_dir: Option<String>,
     no_open: bool,

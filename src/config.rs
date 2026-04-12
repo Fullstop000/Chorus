@@ -1,7 +1,7 @@
 //! On-disk configuration for Chorus.
 //!
 //! Lives at `<data_dir>/config.toml`. Written by `chorus setup` after the
-//! user picks their data and template directories; read by `chorus run`
+//! user picks their data and template directories; read by `chorus start`
 //! and `chorus serve` so a user who chose a non-default location once
 //! doesn't have to keep passing flags forever.
 //!
@@ -59,7 +59,7 @@ pub struct AgentTemplateConfig {
     pub default: String,
 }
 
-/// File-logging settings. Applied by `chorus serve` / `chorus run` to
+/// File-logging settings. Applied by `chorus serve` / `chorus start` to
 /// write structured logs into `<data_dir>/logs/` alongside stdout output.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LogsConfig {
