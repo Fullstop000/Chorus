@@ -323,7 +323,7 @@ pub async fn handle_update_agent(
 
     state
         .store
-        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+        .update_agent_record(&AgentRecordUpsert {
             name: &name,
             display_name: &display_name,
             description,

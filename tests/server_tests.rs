@@ -1480,7 +1480,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
     store
-        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+        .update_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
             description: Some("Replies in Chorus"),

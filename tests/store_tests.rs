@@ -148,7 +148,7 @@ fn test_shell_style_workspace_mutations_persist() {
         .unwrap();
 
     store
-        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+        .update_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Ops Bot",
             description: Some("Updated from shell mutation test"),
@@ -1105,7 +1105,7 @@ fn test_agent_reasoning_effort_persists_in_agent_record() {
     assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
 
     store
-        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+        .update_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
             description: None,

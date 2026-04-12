@@ -195,28 +195,7 @@ impl Store {
         Ok(agent)
     }
 
-    pub fn update_agent_record(
-        &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        env_vars: &[AgentEnvVar],
-    ) -> Result<()> {
-        self.update_agent_record_with_reasoning(&AgentRecordUpsert {
-            name,
-            display_name,
-            description,
-            system_prompt: None,
-            runtime,
-            model,
-            reasoning_effort: None,
-            env_vars,
-        })
-    }
-
-    pub fn update_agent_record_with_reasoning(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
+    pub fn update_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE agents SET display_name = ?1, description = ?2, system_prompt = ?3, runtime = ?4, model = ?5, reasoning_effort = ?6 WHERE name = ?7",
