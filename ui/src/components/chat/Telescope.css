@@ -217,6 +217,7 @@
 .tele-shimmer {
   font-family: var(--font-mono);
   font-size: 12px;
+  font-weight: 500;
   letter-spacing: 0.02em;
   white-space: nowrap;
 }
@@ -224,11 +225,15 @@
 .tele-shimmer[data-phase="thinking"],
 .tele-shimmer[data-phase="doing"],
 .tele-shimmer[data-phase="loading"] {
+  --shimmer-base: var(--color-accent-foreground);
   --shimmer-accent: var(--status-sleeping);
+  --shimmer-bright: var(--color-foreground);
 }
 
 .tele-shimmer[data-phase="reading"] {
+  --shimmer-base: var(--color-muted-foreground);
   --shimmer-accent: var(--color-foreground);
+  --shimmer-bright: var(--color-foreground);
 }
 
 /* ── Category chips ── */

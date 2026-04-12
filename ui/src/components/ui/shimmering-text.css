@@ -1,6 +1,8 @@
 .ui-shimmering-text {
   --shimmer-base: var(--color-muted-foreground);
   --shimmer-accent: var(--color-foreground);
+  --shimmer-bright: var(--color-foreground);
+  --shimmer-duration: 1.45s;
   display: inline-block;
   color: var(--shimmer-base);
 }
@@ -11,19 +13,21 @@
     background-image: linear-gradient(
       96deg,
       var(--shimmer-base) 0%,
-      var(--shimmer-base) 42%,
-      var(--shimmer-accent) 50%,
-      var(--shimmer-base) 58%,
+      var(--shimmer-base) 34%,
+      var(--shimmer-accent) 46%,
+      var(--shimmer-bright) 50%,
+      var(--shimmer-accent) 54%,
+      var(--shimmer-base) 66%,
       var(--shimmer-base) 100%
     );
-    background-size: 220% 100%;
-    background-position: 100% 50%;
+    background-size: 165% 100%;
+    background-position: 120% 50%;
     background-repeat: no-repeat;
     background-clip: text;
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     will-change: background-position;
-    animation: ui-shimmering-text 2.2s linear infinite;
+    animation: ui-shimmering-text var(--shimmer-duration) linear infinite;
   }
 }
 
@@ -47,10 +51,10 @@
 
 @keyframes ui-shimmering-text {
   from {
-    background-position: 100% 50%;
+    background-position: 120% 50%;
   }
 
   to {
-    background-position: -100% 50%;
+    background-position: -20% 50%;
   }
 }
