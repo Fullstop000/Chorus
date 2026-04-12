@@ -252,17 +252,17 @@ pub async fn handle_create_agent(
             .store
             .join_channel(&channel.name, &name, SenderType::Agent);
     }
-    let mut created_status = "active";
+    let mut created_status = AgentStatus::Active;
     let mut start_warning = None;
     if let Err(err) = state.lifecycle.start_agent(&name, None).await {
         let error_detail = format_anyhow_error(&err);
         warn!(agent = %name, error = %error_detail, "agent created but failed to start");
-        created_status = "inactive";
+        created_status = AgentStatus::Inactive;
         start_warning = Some(format!("failed to start agent: {err}"));
     }
     Ok(Json(serde_json::json!({
         "name": name,
-        "status": created_status,
+        "status": created_status.as_str(),
         "warning": start_warning,
     })))
 }

@@ -10,5 +10,4 @@ pub mod trace;
 pub mod workspace;
 
 pub use lifecycle::AgentLifecycle;
-pub(crate) use lifecycle::NoopAgentLifecycle;
 pub use runtime::AgentRuntime;

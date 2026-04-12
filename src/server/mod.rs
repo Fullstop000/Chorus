@@ -10,30 +10,14 @@ use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
-use crate::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
+use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
-use crate::agent::{AgentLifecycle, NoopAgentLifecycle};
+use crate::agent::AgentLifecycle;
 use crate::store::Store;
 
 pub use handlers::dto;
 pub use handlers::server_info::{build_server_info, build_ui_shell_info};
 pub use handlers::{AgentDetailResponse, AppState, HistoryResponse};
-
-pub fn build_router(store: Arc<Store>) -> Router {
-    build_router_with_lifecycle(store, Arc::new(NoopAgentLifecycle))
-}
-
-pub fn build_router_with_lifecycle(
-    store: Arc<Store>,
-    lifecycle: Arc<dyn AgentLifecycle>,
-) -> Router {
-    build_router_with_services(
-        store,
-        lifecycle,
-        Arc::new(SystemRuntimeStatusProvider) as SharedRuntimeStatusProvider,
-        Vec::new(),
-    )
-}
 
 pub fn build_router_with_services(
     store: Arc<Store>,

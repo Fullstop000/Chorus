@@ -8,6 +8,7 @@ import { getTraceEvents } from "../../data/chat";
 import { useTraceStore } from "../../store/traceStore";
 import type { TraceFrame } from "../../transport/types";
 import type { TraceSummary, TraceEventRecord } from "../../data/chat";
+import { ShimmeringText } from "../ui";
 import "./Telescope.css";
 
 // TraceEvent is the canonical live trace event type from the transport layer.
@@ -91,13 +92,17 @@ function CategoryChips({
   );
 }
 
-function phaseText(events: TraceEvent[], isActive: boolean): string | null {
-  if (!isActive) return null;
-  const phase = derivePhase(events);
+function activePhaseText(phase: AgentPhase): string {
   if (phase === "reading") return "reading…";
   if (phase === "thinking") return "thinking…";
+  if (phase === "doing") return "working…";
   if (phase === "responding") return "responding…";
-  return null;
+  return "reading…";
+}
+
+function loadingText(phase: AgentPhase | "loading"): string {
+  if (phase === "loading") return "loading trace…";
+  return activePhaseText(phase);
 }
 
 function findLastIdx<T>(arr: T[], pred: (v: T) => boolean): number {
@@ -361,7 +366,11 @@ export function Telescope({
               <div className="tele-row">
                 <div className="tele-row-header no-expand">
                   <span className="tele-bullet">─</span>
-                  <span className="tele-row-label">loading…</span>
+                  <ShimmeringText
+                    text={loadingText("loading")}
+                    className="tele-row-label tele-shimmer"
+                    data-phase="loading"
+                  />
                 </div>
               </div>
             )}
@@ -380,29 +389,25 @@ export function Telescope({
   // ── Live mode ──
   const phase = derivePhase(events);
   const merged = mergeEvents(events);
-  const isPreContent =
-    phase === "reading" || (phase === "thinking" && merged.length === 0);
+  const categories = deriveCategories(events);
+  const hasCategories = Object.keys(categories).length > 0;
 
-  // Show typing dots when agent is active but has no displayable rows yet
-  if (isActive && isPreContent) {
+  if (merged.length === 0) {
+    if (!isActive) return null;
     return (
       <div className="telescope">
         <div className="tele-header">
           <span className="tele-toggle">▸</span>
-          <span className="tele-phase">
-            {phase === "thinking" ? "thinking" : "reading"}
-          </span>
-          <span className="tele-typing-dots">
-            <span>.</span>
-            <span>.</span>
-            <span>.</span>
-          </span>
+          <ShimmeringText
+            text={loadingText(phase)}
+            className="tele-phase tele-shimmer"
+            data-phase={phase}
+            aria-live="polite"
+          />
         </div>
       </div>
     );
   }
-
-  if (events.length === 0) return null;
 
   const wrapperClass = `telescope${isError ? " error" : ""}${isFlashing ? " completion-flash" : ""}${isExpanded ? " expanded" : ""}`;
 
@@ -416,10 +421,18 @@ export function Telescope({
         onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onToggleExpand?.()}
       >
         <span className="tele-toggle">{isExpanded ? "▾" : "▸"}</span>
-        {phaseText(events, isActive) ? (
-          <span className="tele-phase">{phaseText(events, isActive)}</span>
+        {isActive ? (
+          <>
+            <ShimmeringText
+              text={activePhaseText(phase)}
+              className="tele-phase tele-shimmer"
+              data-phase={phase}
+              aria-live="polite"
+            />
+            {hasCategories && <CategoryChips categories={categories} />}
+          </>
         ) : (
-          <CategoryChips categories={deriveCategories(events)} />
+          <CategoryChips categories={categories} />
         )}
       </div>
       {isExpanded && (

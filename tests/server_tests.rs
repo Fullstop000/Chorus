@@ -1,3 +1,5 @@
+mod harness;
+
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::ActivityLogResponse;
@@ -5,15 +7,13 @@ use chorus::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus, RuntimeSta
 use chorus::agent::AgentLifecycle;
 use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
-use chorus::server::{
-    build_router, build_router_with_lifecycle, build_router_with_services, AgentDetailResponse,
-    HistoryResponse,
-};
+use chorus::server::{build_router_with_services, AgentDetailResponse, HistoryResponse};
 use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
+use harness::{build_router, build_router_with_lifecycle};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;

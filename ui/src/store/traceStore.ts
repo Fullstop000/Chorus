@@ -10,10 +10,22 @@ export interface AgentTrace {
 
 // ── Completion sound (Delight Touch 7) ──
 
-const SOUND_THRESHOLD_MS = Number(localStorage.getItem('TELESCOPE_SOUND_THRESHOLD_MS') ?? 30000)
+const DEFAULT_SOUND_THRESHOLD_MS = 30000
+
+function readLocalStorage(key: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(key) ?? null
+  } catch {
+    return null
+  }
+}
+
+const SOUND_THRESHOLD_MS = Number(
+  readLocalStorage('TELESCOPE_SOUND_THRESHOLD_MS') ?? DEFAULT_SOUND_THRESHOLD_MS,
+)
 
 function isSoundEnabled(): boolean {
-  return localStorage.getItem('TELESCOPE_SOUND_ENABLED') === 'true'
+  return readLocalStorage('TELESCOPE_SOUND_ENABLED') === 'true'
 }
 
 function playCompletionChime() {
