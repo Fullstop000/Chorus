@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
-use super::{app_err, ApiResult, AppState};
+use super::{app_err, internal_err, ApiResult, AppState};
 
 // ── Inline query structs ──
 
@@ -109,10 +109,8 @@ pub async fn handle_agent_workspace_file(
         ));
     }
 
-    let metadata = std::fs::metadata(&file_path)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    let bytes = std::fs::read(&file_path)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let metadata = std::fs::metadata(&file_path).map_err(internal_err)?;
+    let bytes = std::fs::read(&file_path).map_err(internal_err)?;
     let limit = 100_000usize;
     let truncated = bytes.len() > limit;
     let content = if truncated {

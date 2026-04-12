@@ -6,7 +6,7 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use super::{acquire_transition, app_err, format_anyhow_error, ApiResult, AppState};
+use super::{acquire_transition, app_err, format_anyhow_error, internal_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
@@ -247,11 +247,7 @@ pub async fn handle_create_agent(
                 app_err!(StatusCode::BAD_REQUEST, msg)
             }
         })?;
-    for channel in state
-        .store
-        .get_auto_join_channels()
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-    {
+    for channel in state.store.get_auto_join_channels().map_err(internal_err)? {
         let _ = state
             .store
             .join_channel(&channel.name, &name, SenderType::Agent);
@@ -343,7 +339,7 @@ pub async fn handle_update_agent(
             .lifecycle
             .stop_agent(&name)
             .await
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(internal_err)?;
         if let Err(err) = state.lifecycle.start_agent(&name, None).await {
             let _ = state
                 .store
@@ -378,7 +374,7 @@ pub async fn handle_restart_agent(
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
 
     match req.mode {
         RestartMode::Restart => {}
@@ -386,13 +382,13 @@ pub async fn handle_restart_agent(
             state
                 .store
                 .update_agent_session(&name, None)
-                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                .map_err(internal_err)?;
         }
         RestartMode::FullReset => {
             state
                 .store
                 .update_agent_session(&name, None)
-                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                .map_err(internal_err)?;
             workspace.delete_if_exists(&name).map_err(|e| {
                 app_err!(
                     StatusCode::INTERNAL_SERVER_ERROR,
@@ -434,16 +430,16 @@ pub async fn handle_delete_agent(
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
 
     state
         .store
         .mark_agent_messages_deleted(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     state
         .store
         .delete_agent_record(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
 
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
         let agents_dir = state.store.agents_dir();
@@ -469,7 +465,7 @@ pub async fn handle_agent_start(
         .lifecycle
         .start_agent(&name, None)
         .await
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     info!(agent = %name, "agent started");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -484,7 +480,7 @@ pub async fn handle_agent_stop(
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     info!(agent = %name, "agent stopped");
     Ok(Json(serde_json::json!({ "ok": true })))
 }

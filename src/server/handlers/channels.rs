@@ -249,7 +249,7 @@ pub async fn handle_update_channel(
             .is_some()
     {
         return Err(app_err!(
-            StatusCode::BAD_REQUEST,
+            AppErrorCode::ChannelNameTaken,
             "channel already exists: {name}"
         ));
     }

@@ -28,13 +28,28 @@ import { ToastRegion } from "./components/chat/ToastRegion";
 function GlobalToasts() {
   const toasts = useStore((s) => s.toasts);
   const dismissToast = useStore((s) => s.dismissToast);
+  const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
-    if (toasts.length === 0) return;
-    const timers = toasts.map((t: ToastEntry) =>
-      setTimeout(() => dismissToast(t.id), 4000),
-    );
-    return () => timers.forEach(clearTimeout);
+    // Start timers for newly arrived toasts only
+    for (const t of toasts) {
+      if (!timers.current.has(t.id)) {
+        timers.current.set(
+          t.id,
+          setTimeout(() => {
+            dismissToast(t.id);
+            timers.current.delete(t.id);
+          }, 4000),
+        );
+      }
+    }
+    // Cancel timers for toasts that were dismissed early
+    for (const [id, timer] of timers.current) {
+      if (!toasts.find((t: ToastEntry) => t.id === id)) {
+        clearTimeout(timer);
+        timers.current.delete(id);
+      }
+    }
   }, [toasts, dismissToast]);
 
   return <ToastRegion toasts={toasts} onDismiss={dismissToast} />;

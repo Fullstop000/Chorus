@@ -1,7 +1,6 @@
 const BASE = ''
 
 export type ApiErrorCode =
-  | 'INTERNAL_ERROR'
   | 'AGENT_NAME_TAKEN'
   | 'CHANNEL_NAME_TAKEN'
   | 'TEAM_NAME_TAKEN'

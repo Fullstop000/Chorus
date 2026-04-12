@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
-use tracing::debug;
+use tracing::{debug, error};
 
 use crate::agent::drivers::command_exists;
 use crate::agent::runtime::AgentRuntime;
@@ -45,6 +45,22 @@ pub struct AppState {
     pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
     pub templates: Arc<Vec<AgentTemplate>>,
+}
+
+/// Log the underlying error server-side and return a generic 500 to the caller.
+///
+/// Use this instead of `app_err!(INTERNAL_SERVER_ERROR, e.to_string())` to avoid
+/// leaking internal details (SQLite schema, filesystem paths) to API consumers.
+pub(super) fn internal_err(e: impl Into<anyhow::Error>) -> (StatusCode, Json<ErrorResponse>) {
+    let e = e.into();
+    error!("{e:#}");
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(ErrorResponse {
+            error: "internal error".into(),
+            code: None,
+        }),
+    )
 }
 
 pub(super) fn format_anyhow_error(err: &anyhow::Error) -> String {
@@ -156,7 +172,7 @@ pub async fn handle_list_runtime_statuses(
     let statuses = state
         .runtime_status_provider
         .list_statuses()
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .into_iter()
         .map(|status| {
             let driver_mode = AgentRuntime::parse(&status.runtime)

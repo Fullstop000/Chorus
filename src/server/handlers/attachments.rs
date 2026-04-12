@@ -5,7 +5,7 @@ use axum::Json;
 use tracing::info;
 use uuid::Uuid;
 
-use super::{app_err, ApiResult, AppState, ErrorResponse};
+use super::{app_err, internal_err, ApiResult, AppState, ErrorResponse};
 
 async fn store_upload(state: AppState, mut multipart: Multipart) -> ApiResult<serde_json::Value> {
     let field = multipart
@@ -31,12 +31,10 @@ async fn store_upload(state: AppState, mut multipart: Multipart) -> ApiResult<se
 
     let file_id = Uuid::new_v4().to_string();
     let attachments_dir = state.store.attachments_dir();
-    std::fs::create_dir_all(&attachments_dir)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    std::fs::create_dir_all(&attachments_dir).map_err(internal_err)?;
 
     let stored_path = attachments_dir.join(format!("{}{}", file_id, ext));
-    std::fs::write(&stored_path, &data)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    std::fs::write(&stored_path, &data).map_err(internal_err)?;
 
     let size = data.len() as i64;
     let att_id = state
@@ -89,8 +87,7 @@ pub async fn handle_get_attachment(
             )
         })?;
 
-    let data = std::fs::read(&attachment.stored_path)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let data = std::fs::read(&attachment.stored_path).map_err(internal_err)?;
     Ok((
         StatusCode::OK,
         [(header::CONTENT_TYPE, attachment.mime_type)],

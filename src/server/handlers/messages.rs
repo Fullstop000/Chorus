@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use super::dto::ChannelInfo;
-use super::{app_err, format_anyhow_error, ApiResult, AppState};
+use super::{app_err, format_anyhow_error, internal_err, ApiResult, AppState};
 use crate::server::error::AppErrorCode;
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
@@ -345,7 +345,7 @@ fn threads_for_channel(
     let inbox = state
         .store
         .get_channel_thread_inbox(&channel.name, actor_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     Ok(Json(ThreadsResponse {
         unread_count: inbox.unread_count,
         threads: inbox.threads,
@@ -377,7 +377,7 @@ fn update_read_cursor_for_channel(
     let notification = state
         .store
         .get_inbox_conversation_notification_for_member(&channel.id, actor_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -389,7 +389,7 @@ fn update_read_cursor_for_channel(
         state
             .store
             .get_thread_notification_state(&channel.name, parent_id, actor_id)
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(internal_err)?
     } else {
         None
     };
@@ -453,7 +453,7 @@ async fn send_message_to_channel(
     if !suppress_agent_delivery {
         forward_team_mentions(state, &channel.name, actor_id, sender_type, content)
             .await
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(internal_err)?;
     }
 
     if !suppress_agent_delivery {
@@ -472,7 +472,7 @@ async fn send_message_to_channel(
 
     let message_view = store
         .get_conversation_message_view(&message_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -563,7 +563,7 @@ pub async fn handle_receive(
 ) -> ApiResult<ReceiveResponse> {
     let store = &state.store;
     let blocking = params.block.as_deref() != Some("false");
-    let timeout_ms = params.timeout.unwrap_or(30_000);
+    let timeout_ms = params.timeout.unwrap_or(30_000).min(60_000);
 
     let messages = store
         .get_messages_for_agent(&agent_id, true)
@@ -680,7 +680,7 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
     let conversations: Vec<PublicInboxConversationNotification> = state
         .store
         .get_inbox_conversation_notifications(&actor_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .iter()
         .map(PublicInboxConversationNotification::from)
         .collect();
@@ -722,7 +722,7 @@ pub async fn handle_public_conversation_inbox_notification(
     let notification = state
         .store
         .get_inbox_conversation_notification_for_member(&channel.id, &actor_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::BAD_REQUEST,
@@ -736,7 +736,7 @@ pub async fn handle_public_conversation_inbox_notification(
         state
             .store
             .get_thread_notification_state(&channel.name, parent_id, &actor_id)
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .map_err(internal_err)?
             .map(PublicThreadNotificationRefresh::from)
     } else {
         None
@@ -909,13 +909,13 @@ pub async fn handle_trace_events(
     let run_channel_id = state
         .store
         .get_run_channel_id(&run_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     match run_channel_id {
         Some(ch_id) => {
             if !state
                 .store
                 .channel_member_exists(&ch_id, &viewer)
-                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .map_err(internal_err)?
             {
                 return Err(app_err!(
                     StatusCode::BAD_REQUEST,
@@ -931,7 +931,7 @@ pub async fn handle_trace_events(
     let events = state
         .store
         .get_trace_events(&run_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     Ok(Json(TraceEventsResponse { events }))
 }
 
@@ -950,6 +950,6 @@ pub async fn handle_agent_runs(
     let runs = state
         .store
         .get_agent_runs(&agent_name, &viewer, 20)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     Ok(Json(AgentRunsResponse { runs }))
 }

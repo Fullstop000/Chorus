@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use super::{app_err, ApiResult, AppState};
+use super::{app_err, internal_err, ApiResult, AppState};
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
 use crate::server::error::AppErrorCode;
 use crate::server::handlers::channels::normalize_channel_name;
@@ -73,7 +73,7 @@ async fn sync_team_roles_and_agents(
         if member.member_type == "agent" {
             agent_workspace
                 .set_team_role(&member.member_name, &team.name, &member.role)
-                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                .map_err(internal_err)?;
             restart_agent_member(state, &member.member_name).await?;
         }
     }
@@ -90,12 +90,12 @@ async fn restart_agent_member(
         .lifecycle
         .stop_agent(agent_name)
         .await
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     state
         .lifecycle
         .start_agent(agent_name, None)
         .await
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     Ok(())
 }
 
@@ -150,7 +150,7 @@ pub async fn handle_create_team(
         .collect::<Vec<_>>();
     team_workspace
         .init_team(&name, &agent_member_names)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
 
     for member in &req.members {
         let sender_type = parse_member_type(&member.member_type)?;
@@ -172,7 +172,7 @@ pub async fn handle_create_team(
         if sender_type == SenderType::Agent {
             agent_workspace
                 .init_team_memory(&member.member_name, &name, &member.role)
-                .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+                .map_err(internal_err)?;
             restart_agent_member(&state, &member.member_name).await?;
         }
     }
@@ -180,7 +180,7 @@ pub async fn handle_create_team(
     let team = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -190,15 +190,12 @@ pub async fn handle_create_team(
     let members = state
         .store
         .get_team_members(&team_id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     Ok(Json(TeamResponse { team, members }))
 }
 
 pub async fn handle_list_teams(State(state): State<AppState>) -> ApiResult<Vec<Team>> {
-    let teams = state
-        .store
-        .get_teams()
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let teams = state.store.get_teams().map_err(internal_err)?;
     Ok(Json(teams))
 }
 
@@ -209,12 +206,12 @@ pub async fn handle_get_team(
     let team = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
     let members = state
         .store
         .get_team_members(&team.id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     Ok(Json(TeamResponse { team, members }))
 }
 
@@ -226,7 +223,7 @@ pub async fn handle_update_team(
     let team = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
 
     let display_name = req
@@ -249,7 +246,7 @@ pub async fn handle_update_team(
     let updated = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -259,7 +256,7 @@ pub async fn handle_update_team(
     let members = state
         .store
         .get_team_members(&team.id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     sync_team_roles_and_agents(&state, &updated, &members).await?;
     Ok(Json(updated))
 }
@@ -271,45 +268,40 @@ pub async fn handle_delete_team(
     let team = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
     let members = state
         .store
         .get_team_members(&team.id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     let agent_members = members
         .iter()
         .filter(|member| member.member_type == "agent")
         .map(|member| member.member_name.clone())
         .collect::<Vec<_>>();
 
-    state
-        .store
-        .delete_team(&team.id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    state.store.delete_team(&team.id).map_err(internal_err)?;
 
     if let Some(channel) = state
         .store
         .get_channel_by_name(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
     {
         state
             .store
             .archive_channel(&channel.id)
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(internal_err)?;
     }
 
     let team_workspace = TeamWorkspace::new(state.store.teams_dir());
-    team_workspace
-        .delete_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    team_workspace.delete_team(&name).map_err(internal_err)?;
 
     let agents_dir = state.store.agents_dir();
     let agent_workspace = AgentWorkspace::new(&agents_dir);
     for agent_name in &agent_members {
         agent_workspace
             .delete_team_memory(agent_name, &name)
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(internal_err)?;
         restart_agent_member(&state, agent_name).await?;
     }
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -323,7 +315,7 @@ pub async fn handle_add_team_member(
     let team = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
     let sender_type = parse_member_type(&req.member_type)?;
 
@@ -346,18 +338,18 @@ pub async fn handle_add_team_member(
         let team_workspace = TeamWorkspace::new(state.store.teams_dir());
         team_workspace
             .init_member(&name, &req.member_name)
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(internal_err)?;
         let agents_dir = state.store.agents_dir();
         let agent_workspace = AgentWorkspace::new(&agents_dir);
         agent_workspace
             .init_team_memory(&req.member_name, &name, &req.role)
-            .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+            .map_err(internal_err)?;
     }
 
     let updated_team = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -367,7 +359,7 @@ pub async fn handle_add_team_member(
     let members = state
         .store
         .get_team_members(&team.id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     sync_team_roles_and_agents(&state, &updated_team, &members).await?;
 
     Ok(Json(serde_json::json!({ "ok": true })))
@@ -380,13 +372,13 @@ pub async fn handle_remove_team_member(
     let team = state
         .store
         .get_team(&name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        .map_err(internal_err)?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
 
     let members = state
         .store
         .get_team_members(&team.id)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
     let removed_member = members
         .iter()
         .find(|member| member.member_name == member_name)
@@ -405,7 +397,7 @@ pub async fn handle_remove_team_member(
     state
         .store
         .leave_channel(&name, &member_name)
-        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(internal_err)?;
 
     if removed_member.member_type == "agent" {
         restart_agent_member(&state, &member_name).await?;

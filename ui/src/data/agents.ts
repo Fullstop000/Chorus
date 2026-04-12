@@ -135,7 +135,7 @@ export function restartAgent(
 export function deleteAgent(
   agentName: string,
   mode: DeleteMode
-): Promise<void> {
+): Promise<{ ok: boolean; warning?: string; code?: string }> {
   return post(`/api/agents/${encodeURIComponent(agentName)}/delete`, { mode } as DeleteAgentRequest)
 }
 

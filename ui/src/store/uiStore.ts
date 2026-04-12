@@ -176,7 +176,7 @@ export const useStore = create<UIStore>((set) => ({
 export function pushErrorToast(err: unknown) {
   const message = err instanceof Error ? err.message : String(err)
   useStore.getState().pushToast({
-    id: `error-${Date.now()}`,
+    id: crypto.randomUUID(),
     message,
     level: 'error',
   })

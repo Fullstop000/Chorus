@@ -96,8 +96,9 @@ values are warm-leaning cream, near-black, and muted gray.
 | `--color-muted-foreground` | `#817b6f` | Quiet text (captions, timestamps, ambient notices, empty states) |
 | `--color-accent` | `#f1efe9` | Subtle hover tint |
 | `--color-accent-foreground` | `#5d574d` | Medium-emphasis text |
-| `--color-destructive` | `#c67a18` | **Amber, not red.** Warning and destructive actions |
+| `--color-destructive` | `#c67a18` | **Amber, not red.** Fatal errors and destructive actions (error-level toast border) |
 | `--color-destructive-foreground` | `#faf9f6` | Text on destructive fills |
+| `--color-warning` | `#d4a027` | **Golden amber.** Partial success / advisory notices (warning-level toast border). Must be visually distinct from `--color-destructive`. |
 | `--color-border` | `rgba(35, 32, 26, 0.14)` | Default 1px borders |
 | `--color-input` | `rgba(35, 32, 26, 0.28)` | Input borders, app-shell outline |
 | `--color-ring` | `#1f1f1c` | Focus ring color |

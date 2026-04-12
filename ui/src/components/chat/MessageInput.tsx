@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useMemo } from "react";
+import { useState, useRef, useMemo } from "react";
 import { Paperclip, Plus } from "lucide-react";
 import { useStore } from "../../store";
 import {
@@ -12,7 +12,6 @@ import { useHistory } from "../../hooks/useHistory";
 import { sendMessage, createTasks, uploadFile } from "../../data";
 import { MentionTextarea } from "./MentionTextarea";
 import type { MentionMember } from "./MentionTextarea";
-import { ToastRegion } from "./ToastRegion";
 import { FormError } from "@/components/ui/form";
 
 interface Props {
@@ -23,6 +22,7 @@ interface Props {
 
 export function MessageInput({ target, conversationId, history }: Props) {
   const { currentUser, currentChannel } = useStore();
+  const pushToast = useStore((s) => s.pushToast);
   const agents = useAgents();
   const teams = useTeams();
   const humans = useHumans();
@@ -33,18 +33,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
-  const [toasts, setToasts] = useState<Array<{ id: string; message: string }>>(
-    [],
-  );
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (toasts.length === 0) return;
-    const timer = window.setTimeout(() => {
-      setToasts((current) => current.slice(1));
-    }, 4000);
-    return () => window.clearTimeout(timer);
-  }, [toasts]);
 
   const allMembers: MentionMember[] = useMemo(
     () => [
@@ -128,10 +117,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
       console.error("Send failed:", e);
       const message = e instanceof Error ? e.message : String(e);
       setError(message);
-      setToasts((current) => [
-        ...current,
-        { id: `send-failed-${Date.now()}`, message: "Message failed to send" },
-      ]);
+      pushToast({ id: crypto.randomUUID(), message: "Message failed to send", level: "error" });
     } finally {
       setSending(false);
     }
@@ -144,13 +130,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
         const message =
           taskError instanceof Error ? taskError.message : String(taskError);
         setError(message);
-        setToasts((current) => [
-          ...current,
-          {
-            id: `task-create-failed-${Date.now()}`,
-            message: "Task creation failed",
-          },
-        ]);
+        pushToast({ id: crypto.randomUUID(), message: "Task creation failed", level: "error" });
       }
     }
   }
@@ -237,12 +217,6 @@ export function MessageInput({ target, conversationId, history }: Props) {
           </label>
         </div>
       )}
-      <ToastRegion
-        toasts={toasts}
-        onDismiss={(id) =>
-          setToasts((current) => current.filter((toast) => toast.id !== id))
-        }
-      />
     </div>
   );
 }

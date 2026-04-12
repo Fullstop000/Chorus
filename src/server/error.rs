@@ -23,8 +23,6 @@ pub type ApiResult<T> = Result<Json<T>, (StatusCode, Json<ErrorResponse>)>;
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AppErrorCode {
-    /// Generic fatal failure fallback — red toast.
-    InternalError,
     /// Agent name already in use — keep create modal open, inline field error.
     AgentNameTaken,
     /// Channel name already in use — keep create modal open, inline field error.
@@ -44,7 +42,6 @@ pub enum AppErrorCode {
 impl AppErrorCode {
     pub fn http_status(&self) -> StatusCode {
         match self {
-            Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             Self::AgentNameTaken => StatusCode::CONFLICT,
             Self::ChannelNameTaken => StatusCode::CONFLICT,
             Self::TeamNameTaken => StatusCode::CONFLICT,
@@ -130,14 +127,6 @@ mod tests {
     use super::*;
 
     // ── AppErrorCode::http_status ──
-
-    #[test]
-    fn internal_error_maps_to_500() {
-        assert_eq!(
-            AppErrorCode::InternalError.http_status(),
-            StatusCode::INTERNAL_SERVER_ERROR
-        );
-    }
 
     #[test]
     fn name_taken_codes_map_to_409() {
@@ -252,7 +241,6 @@ mod tests {
     #[test]
     fn all_codes_round_trip_through_json() {
         let codes = [
-            AppErrorCode::InternalError,
             AppErrorCode::AgentNameTaken,
             AppErrorCode::ChannelNameTaken,
             AppErrorCode::TeamNameTaken,

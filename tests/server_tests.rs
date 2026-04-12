@@ -820,11 +820,7 @@ async fn test_update_channel_via_api_rejects_duplicate_name() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
-
-#[tokio::test]
-async fn test_create_channel_via_api_only_adds_current_human_member() {
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
     let (store, app) = setup();
 
     let req = serde_json::json!({
@@ -2532,4 +2528,168 @@ async fn test_get_templates_returns_empty_when_no_templates() {
     )
     .unwrap();
     assert_eq!(body["categories"].as_array().unwrap().len(), 0);
+}
+
+// ── AppErrorCode HTTP round-trip tests ────────────────────────────────────────
+
+async fn body_json(resp: axum::response::Response) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn test_duplicate_agent_name_returns_agent_name_taken() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    let req = serde_json::json!({ "name": "bot1", "runtime": "claude", "model": "sonnet" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert_eq!(body["code"], "AGENT_NAME_TAKEN");
+}
+
+#[tokio::test]
+async fn test_duplicate_channel_name_returns_channel_name_taken() {
+    let (_store, app) = setup();
+
+    let req = serde_json::json!({ "name": "general", "description": "" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/channels")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert_eq!(body["code"], "CHANNEL_NAME_TAKEN");
+}
+
+#[tokio::test]
+async fn test_duplicate_team_name_returns_team_name_taken() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store
+        .create_team("eng-team", "Engineering", "leader_operators", None)
+        .unwrap();
+
+    let req = serde_json::json!({
+        "name": "eng-team",
+        "display_name": "Engineering Again",
+        "members": []
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/teams")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    let body = body_json(resp).await;
+    assert_eq!(body["code"], "TEAM_NAME_TAKEN");
+}
+
+#[tokio::test]
+async fn test_patch_system_channel_returns_operation_unsupported() {
+    let (store, app) = setup();
+    let system_channel_id = store
+        .create_channel("all", None, ChannelType::System)
+        .unwrap();
+
+    let req = serde_json::json!({ "name": "all", "description": "everyone" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/channels/{system_channel_id}"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(resp).await;
+    assert_eq!(body["code"], "CHANNEL_OPERATION_UNSUPPORTED");
+}
+
+#[tokio::test]
+async fn test_non_member_history_returns_message_not_a_member() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    // bot2 exists but is NOT a member of #general
+    store
+        .create_agent_record("bot2", "Bot 2", None, "claude", "sonnet", &[])
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/internal/agent/bot2/history?channel=%23general&limit=10")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = body_json(resp).await;
+    assert_eq!(body["code"], "MESSAGE_NOT_A_MEMBER");
+}
+
+#[tokio::test]
+async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("general", "alice", SenderType::Human)
+        .unwrap();
+    store
+        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .unwrap();
+    let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
+
+    let req = serde_json::json!({ "mode": "restart" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents/bot1/restart")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = body_json(resp).await;
+    assert_eq!(body["code"], "AGENT_RESTART_FAILED");
 }

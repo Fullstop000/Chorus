@@ -9,7 +9,7 @@ interface ToastRegionProps {
 
 function levelBorder(level?: 'error' | 'warning' | 'info'): string | undefined {
   if (level === 'error') return '3px solid var(--color-destructive)'
-  if (level === 'warning') return '3px solid var(--color-destructive)'
+  if (level === 'warning') return '3px solid var(--color-warning)'
   return undefined
 }
 
