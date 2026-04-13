@@ -1,3 +1,5 @@
+pub mod v2;
+
 pub mod acp;
 pub mod claude;
 pub mod claude_raw;
