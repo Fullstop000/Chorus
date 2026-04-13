@@ -276,6 +276,21 @@ impl std::fmt::Debug for EventFanOut {
     }
 }
 
+/// Return a static string naming the `DriverEvent` variant for logging.
+///
+/// Used in place of `std::mem::discriminant(&event)` so warn-level log lines
+/// carry a human-readable kind (`"Output"`, `"Completed"`, …) rather than the
+/// opaque `Discriminant(...)` debug print.
+fn event_kind_name(e: &DriverEvent) -> &'static str {
+    match e {
+        DriverEvent::Lifecycle { .. } => "Lifecycle",
+        DriverEvent::SessionAttached { .. } => "SessionAttached",
+        DriverEvent::Output { .. } => "Output",
+        DriverEvent::Completed { .. } => "Completed",
+        DriverEvent::Failed { .. } => "Failed",
+    }
+}
+
 impl EventFanOut {
     /// Construct a fan-out pair: the stream handle that observers subscribe
     /// to, plus the inbound sender that internal transport tasks write to.
@@ -325,15 +340,18 @@ impl EventFanOut {
                                 Ok(()) => {}
                                 Err(mpsc::error::TrySendError::Full(_)) => {
                                     tracing::warn!(
-                                        event_kind = ?std::mem::discriminant(&event),
+                                        event_kind = event_kind_name(&event),
                                         "driver event dropped: observer queue full"
                                     );
                                     metrics::counter!("chorus_driver_events_dropped")
                                         .increment(1);
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
-                                    // Observer dropped its receiver. Pruned
-                                    // after this iteration.
+                                    // Observer dropped its receiver. This is
+                                    // not a dropped event — the subscriber
+                                    // left; we prune below. Do NOT increment
+                                    // the drop metric here; that counter is
+                                    // reserved for Full (slow consumer).
                                 }
                             }
                         }
@@ -385,6 +403,22 @@ impl EventStreamHandle {
     /// enough, overflow events are dropped with a metrics bump and a warn.
     pub fn subscribe(&self) -> mpsc::Receiver<DriverEvent> {
         let (tx, rx) = mpsc::channel(OBSERVER_CAPACITY);
+
+        // Post-exit detection: if the dispatcher has already been spawned and
+        // exited (inbound_rx was taken AND closing was flipped), this
+        // subscribe is too late. Skip the observer push so `tx` is dropped at
+        // end of scope — the returned `rx.recv().await` then observes `None`
+        // promptly instead of hanging forever on a sender that would never
+        // receive events and would never be dropped. `closing + is_none()`
+        // together discriminate the post-exit state from the common "running
+        // dispatcher has taken the rx but not yet exited" state, where
+        // `closing` is still false and a normal push is correct.
+        let dispatcher_exited = self.inner.inbound_rx.lock().unwrap().is_none()
+            && self.inner.closing.load(Ordering::Acquire);
+        if dispatcher_exited {
+            return rx;
+        }
+
         self.inner.observers.write().unwrap().push(tx);
         self.inner.spawn_dispatcher_once();
         rx
@@ -790,5 +824,39 @@ mod tests {
             .await
             .expect("observer channel did not close after drain");
         assert!(end.is_none(), "expected None after drain, got {end:?}");
+    }
+
+    #[tokio::test]
+    async fn subscribe_after_close_returns_none_promptly() {
+        // Regression guard: once close() has fired AND the dispatcher has
+        // exited, a late subscribe() must not register an observer — its
+        // receiver would otherwise hang forever on a sender nothing feeds
+        // and nothing drops. Expected behavior is that the late receiver
+        // sees `None` promptly (tx dropped inside subscribe()).
+        let (stream, tx) = EventFanOut::new();
+
+        // First subscribe spawns the dispatcher (inbound_rx taken).
+        let _rx_original = stream.subscribe();
+
+        // Close + drop inbound sender so the dispatcher's recv() returns None
+        // and the task exits.
+        stream.close();
+        drop(tx);
+
+        // Give the dispatcher a brief moment to actually exit. The test above
+        // (`close_signal_drains_and_exits`) already asserts this happens; we
+        // just need to be past that point here.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Late subscribe — after dispatcher has exited. Must return a
+        // receiver that sees None promptly, not one that hangs forever.
+        let mut rx_late = stream.subscribe();
+        let end = timeout(Duration::from_millis(500), rx_late.recv())
+            .await
+            .expect("late subscribe receiver hung instead of seeing None");
+        assert!(
+            end.is_none(),
+            "late subscribe should observe None after dispatcher exit, got {end:?}",
+        );
     }
 }
