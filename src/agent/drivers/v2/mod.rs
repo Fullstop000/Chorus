@@ -15,8 +15,10 @@
 
 pub mod acp_protocol;
 pub mod claude;
+pub mod codex;
 pub mod fake;
 pub mod kimi;
+pub mod opencode;
 pub mod v1_adapter;
 
 use std::path::PathBuf;
