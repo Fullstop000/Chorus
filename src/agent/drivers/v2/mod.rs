@@ -14,6 +14,7 @@
 //! follow-up tasks.
 
 pub mod acp_protocol;
+pub mod fake;
 pub mod v1_adapter;
 
 use std::path::PathBuf;
