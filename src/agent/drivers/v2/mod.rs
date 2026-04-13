@@ -155,6 +155,9 @@ pub enum AgentState {
 pub enum AgentEventItem {
     Thinking { text: String },
     Text { text: String },
+    /// Transport layers MUST coalesce ACP's deferred `tool_call_update` frames
+    /// into this variant before emitting; callers never see partial tool-call
+    /// input.
     ToolCall {
         name: String,
         input: serde_json::Value,
@@ -235,7 +238,10 @@ pub struct EventFanOut {
 /// lands in Task 2.
 #[derive(Debug, Clone)]
 pub struct EventStreamHandle {
-    pub inner: Arc<EventFanOut>,
+    // Task 2 adds the subscribe API that reads this; until then the field is
+    // only written in constructors.
+    #[allow(dead_code)]
+    pub(crate) inner: Arc<EventFanOut>,
 }
 
 // ---------------------------------------------------------------------------
