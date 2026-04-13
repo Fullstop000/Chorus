@@ -13,9 +13,7 @@ use tracing::{debug, trace, warn};
 use crate::agent::drivers::{command_exists, run_command};
 use crate::agent::AgentRuntime;
 
-use super::acp_protocol::{
-    self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator,
-};
+use super::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -340,9 +338,8 @@ impl AgentHandle for OpencodeHandle {
                                 },
                             });
 
-                            let req = acp_protocol::build_session_prompt_request(
-                                3, &sid, &prompt_text,
-                            );
+                            let req =
+                                acp_protocol::build_session_prompt_request(3, &sid, &prompt_text);
                             let _ = stdin_tx_for_reader.try_send(req);
                         }
                     }
@@ -465,8 +462,14 @@ impl AgentHandle for OpencodeHandle {
                         }
                     }
 
-                    AcpParsed::PermissionRequested { request_id, tool_name } => {
-                        debug!(?tool_name, request_id, "opencode: auto-approving permission");
+                    AcpParsed::PermissionRequested {
+                        request_id,
+                        tool_name,
+                    } => {
+                        debug!(
+                            ?tool_name,
+                            request_id, "opencode: auto-approving permission"
+                        );
                         let response =
                             acp_protocol::build_permission_approval_response(request_id, true);
                         let _ = stdin_tx_for_reader.try_send(response);
@@ -497,7 +500,12 @@ impl AgentHandle for OpencodeHandle {
                 s.run_id
             };
             if let Some(run_id) = run_id {
-                let sid = shared.lock().unwrap().session_id.clone().unwrap_or_default();
+                let sid = shared
+                    .lock()
+                    .unwrap()
+                    .session_id
+                    .clone()
+                    .unwrap_or_default();
                 let _ = event_tx.try_send(DriverEvent::Completed {
                     key: key.clone(),
                     run_id,
@@ -569,9 +577,7 @@ impl AgentHandle for OpencodeHandle {
         let prompt_req =
             acp_protocol::build_session_prompt_request(request_id, &session_id, &req.text);
         if let Some(ref tx) = self.stdin_tx {
-            tx.send(prompt_req)
-                .await
-                .context("stdin channel closed")?;
+            tx.send(prompt_req).await.context("stdin channel closed")?;
         } else {
             bail!("stdin not available — handle not started");
         }
@@ -580,11 +586,7 @@ impl AgentHandle for OpencodeHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        if let AgentState::PromptInFlight {
-            run_id,
-            session_id,
-        } = &self.state
-        {
+        if let AgentState::PromptInFlight { run_id, session_id } = &self.state {
             let run_id = *run_id;
             let session_id = session_id.clone();
 

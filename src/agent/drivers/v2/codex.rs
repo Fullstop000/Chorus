@@ -378,9 +378,8 @@ impl AgentHandle for CodexHandle {
                                 },
                             });
 
-                            let req = acp_protocol::build_session_prompt_request(
-                                3, &sid, &prompt_text,
-                            );
+                            let req =
+                                acp_protocol::build_session_prompt_request(3, &sid, &prompt_text);
                             let _ = stdin_tx_for_reader.try_send(req);
                         }
                     }
@@ -538,7 +537,12 @@ impl AgentHandle for CodexHandle {
                 s.run_id
             };
             if let Some(run_id) = run_id {
-                let sid = shared.lock().unwrap().session_id.clone().unwrap_or_default();
+                let sid = shared
+                    .lock()
+                    .unwrap()
+                    .session_id
+                    .clone()
+                    .unwrap_or_default();
                 let _ = event_tx.try_send(DriverEvent::Completed {
                     key: key.clone(),
                     run_id,
@@ -621,11 +625,7 @@ impl AgentHandle for CodexHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        if let AgentState::PromptInFlight {
-            run_id,
-            session_id,
-        } = &self.state
-        {
+        if let AgentState::PromptInFlight { run_id, session_id } = &self.state {
             let run_id = *run_id;
             let session_id = session_id.clone();
 

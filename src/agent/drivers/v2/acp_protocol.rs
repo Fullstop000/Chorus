@@ -73,7 +73,10 @@ pub fn build_session_new_request(id: u64, params: Value) -> String {
 /// from the response and the transport must fall back to the requested value.
 pub fn build_session_load_request(id: u64, session_id: &str, mut params: Value) -> String {
     if let Some(obj) = params.as_object_mut() {
-        obj.insert("sessionId".to_string(), Value::String(session_id.to_string()));
+        obj.insert(
+            "sessionId".to_string(),
+            Value::String(session_id.to_string()),
+        );
     }
     json_rpc_request(id, "session/load", params)
 }
@@ -86,7 +89,10 @@ pub fn build_session_prompt_request(id: u64, session_id: &str, prompt_text: &str
     });
     if !session_id.is_empty() {
         if let Some(obj) = params.as_object_mut() {
-            obj.insert("sessionId".to_string(), Value::String(session_id.to_string()));
+            obj.insert(
+                "sessionId".to_string(),
+                Value::String(session_id.to_string()),
+            );
         }
     }
     json_rpc_request(id, "session/prompt", params)
@@ -520,9 +526,12 @@ impl ToolCallAccumulator {
     /// the same call collapse correctly even when multiple calls are pending.
     pub fn merge_update(&mut self, id: Option<String>, input: Value) {
         if let Some(ref target_id) = id {
-            if let Some(slot) = self.pending.iter_mut().rev().find(|(pid, _, _)| {
-                pid.as_ref().map(|s| s == target_id).unwrap_or(false)
-            }) {
+            if let Some(slot) = self
+                .pending
+                .iter_mut()
+                .rev()
+                .find(|(pid, _, _)| pid.as_ref().map(|s| s == target_id).unwrap_or(false))
+            {
                 slot.2 = input;
                 return;
             }
@@ -540,7 +549,10 @@ impl ToolCallAccumulator {
                 return;
             }
         }
-        debug!(?id, "acp tool_call_update has no matching pending call — dropped");
+        debug!(
+            ?id,
+            "acp tool_call_update has no matching pending call — dropped"
+        );
     }
 
     /// Return all pending calls in insertion order and reset the buffer.
@@ -581,7 +593,8 @@ mod tests {
 
     #[test]
     fn parse_initialize_response() {
-        let line = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#;
+        let line =
+            r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{}}}"#;
         assert!(matches!(parse_line(line), AcpParsed::InitializeResponse));
     }
 
@@ -589,7 +602,9 @@ mod tests {
     fn parse_session_new_response_with_session_id() {
         let line = r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-abc"}}"#;
         match parse_line(line) {
-            AcpParsed::SessionResponse { session_id: Some(id) } => assert_eq!(id, "sess-abc"),
+            AcpParsed::SessionResponse {
+                session_id: Some(id),
+            } => assert_eq!(id, "sess-abc"),
             other => panic!("expected SessionResponse with id, got {other:?}"),
         }
     }
@@ -607,9 +622,12 @@ mod tests {
     #[test]
     fn parse_session_prompt_response() {
         // id 3 with a session id attached.
-        let line = r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","sessionId":"s1"}}"#;
+        let line =
+            r#"{"jsonrpc":"2.0","id":3,"result":{"stopReason":"end_turn","sessionId":"s1"}}"#;
         match parse_line(line) {
-            AcpParsed::PromptResponse { session_id: Some(id) } => assert_eq!(id, "s1"),
+            AcpParsed::PromptResponse {
+                session_id: Some(id),
+            } => assert_eq!(id, "s1"),
             other => panic!("expected PromptResponse, got {other:?}"),
         }
 
@@ -896,7 +914,10 @@ mod tests {
     #[test]
     fn parse_unknown_line_valid_json_but_not_acp() {
         // Missing both "method" and "id" — not a recognizable frame.
-        assert!(matches!(parse_line(r#"{"hello":"world"}"#), AcpParsed::Unknown));
+        assert!(matches!(
+            parse_line(r#"{"hello":"world"}"#),
+            AcpParsed::Unknown
+        ));
     }
 
     #[test]
@@ -1023,8 +1044,16 @@ mod tests {
     #[test]
     fn tool_call_accumulator_drains_in_order() {
         let mut acc = ToolCallAccumulator::new();
-        acc.record_call(Some("c1".to_string()), "tool_a".to_string(), json!({"a": 1}));
-        acc.record_call(Some("c2".to_string()), "tool_b".to_string(), json!({"b": 2}));
+        acc.record_call(
+            Some("c1".to_string()),
+            "tool_a".to_string(),
+            json!({"a": 1}),
+        );
+        acc.record_call(
+            Some("c2".to_string()),
+            "tool_b".to_string(),
+            json!({"b": 2}),
+        );
         acc.record_call(None, "tool_c".to_string(), json!({"c": 3}));
         let drained = acc.drain();
         assert_eq!(drained.len(), 3);

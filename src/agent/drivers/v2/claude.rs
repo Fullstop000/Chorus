@@ -181,8 +181,14 @@ impl AgentHandle for ClaudeHandle {
             .ok_or_else(|| anyhow::anyhow!("claude v2: child has no stdout"))?;
         let stdout = tokio::process::ChildStdout::from_std(stdout)?;
 
-        let stderr = std_child.stderr.take().map(tokio::process::ChildStderr::from_std);
-        let stdin = std_child.stdin.take().map(tokio::process::ChildStdin::from_std);
+        let stderr = std_child
+            .stderr
+            .take()
+            .map(tokio::process::ChildStderr::from_std);
+        let stdin = std_child
+            .stdin
+            .take()
+            .map(tokio::process::ChildStdin::from_std);
 
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(64);
 
@@ -271,10 +277,7 @@ impl AgentHandle for ClaudeHandle {
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::PromptInFlight {
-                run_id,
-                session_id,
-            },
+            state: AgentState::PromptInFlight { run_id, session_id },
         });
 
         Ok(run_id)
@@ -361,11 +364,7 @@ fn spawn_stdout_reader(
 
                     // Send session/new or session/load
                     let req = if let Some(ref sid) = resume_session_id {
-                        acp_protocol::build_session_load_request(
-                            2,
-                            sid,
-                            session_new_params.clone(),
-                        )
+                        acp_protocol::build_session_load_request(2, sid, session_new_params.clone())
                     } else {
                         acp_protocol::build_session_new_request(2, session_new_params.clone())
                     };
@@ -552,9 +551,7 @@ fn spawn_stdout_reader(
                                 .await;
                         }
 
-                        let resolved_sid = resp_sid
-                            .or(session_id)
-                            .unwrap_or_default();
+                        let resolved_sid = resp_sid.or(session_id).unwrap_or_default();
 
                         let _ = tx
                             .send(DriverEvent::Output {

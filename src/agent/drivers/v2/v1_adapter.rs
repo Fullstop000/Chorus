@@ -18,7 +18,7 @@ use super::{
     AgentError, AgentEventItem, AgentHandle, AgentKey, AgentSpec, AgentState, AttachResult,
     CancelOutcome, CapabilitySet, DriverEvent, EventFanOut, EventStreamHandle, FinishReason,
     LoginOutcome, ModelInfo, ProbeAuth, PromptReq, RunId, RunResult, RuntimeDriver, RuntimeProbe,
-    SessionId, StartOpts, StoredSessionMeta, SlashCommand, TransportKind,
+    SessionId, SlashCommand, StartOpts, StoredSessionMeta, TransportKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -78,8 +78,7 @@ impl RuntimeDriver for V1DriverAdapter {
     }
 
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        let (handle, events) =
-            V1HandleAdapter::new(self.inner.clone(), self.runtime, key, spec);
+        let (handle, events) = V1HandleAdapter::new(self.inner.clone(), self.runtime, key, spec);
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
@@ -216,13 +215,15 @@ impl AgentHandle for V1HandleAdapter {
             .ok_or_else(|| anyhow::anyhow!("v1 adapter: child has no stdout"))?;
         let stdout = tokio::process::ChildStdout::from_std(stdout)?;
 
-        let stderr = std_child.stderr.take().map(|s| {
-            tokio::process::ChildStderr::from_std(s)
-        });
+        let stderr = std_child
+            .stderr
+            .take()
+            .map(tokio::process::ChildStderr::from_std);
 
-        let stdin = std_child.stdin.take().map(|s| {
-            tokio::process::ChildStdin::from_std(s)
-        });
+        let stdin = std_child
+            .stdin
+            .take()
+            .map(tokio::process::ChildStdin::from_std);
 
         // Channel for stdin writes originating from ParsedEvent::WriteStdin.
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(64);
@@ -307,10 +308,7 @@ impl AgentHandle for V1HandleAdapter {
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::PromptInFlight {
-                run_id,
-                session_id,
-            },
+            state: AgentState::PromptInFlight { run_id, session_id },
         });
 
         Ok(run_id)
@@ -394,9 +392,7 @@ fn spawn_stdout_reader(
                         let _ = tx
                             .send(DriverEvent::Lifecycle {
                                 key: key.clone(),
-                                state: AgentState::Active {
-                                    session_id: sid,
-                                },
+                                state: AgentState::Active { session_id: sid },
                             })
                             .await;
                     }
@@ -441,9 +437,7 @@ fn spawn_stdout_reader(
                                     key: key.clone(),
                                     run_id: rid,
                                     item: AgentEventItem::ToolCall {
-                                        name: last_tool_name
-                                            .clone()
-                                            .unwrap_or_default(),
+                                        name: last_tool_name.clone().unwrap_or_default(),
                                         input,
                                     },
                                 })
@@ -465,9 +459,7 @@ fn spawn_stdout_reader(
                         session_id: turn_sid,
                     } => {
                         if let Some(rid) = run_id {
-                            let resolved_sid = turn_sid
-                                .or(session_id)
-                                .unwrap_or_default();
+                            let resolved_sid = turn_sid.or(session_id).unwrap_or_default();
                             let _ = tx
                                 .send(DriverEvent::Output {
                                     key: key.clone(),
@@ -530,10 +522,7 @@ fn spawn_stderr_reader(stderr: tokio::process::ChildStderr) {
     });
 }
 
-fn spawn_stdin_writer(
-    mut stdin: tokio::process::ChildStdin,
-    mut rx: mpsc::Receiver<String>,
-) {
+fn spawn_stdin_writer(mut stdin: tokio::process::ChildStdin, mut rx: mpsc::Receiver<String>) {
     tokio::spawn(async move {
         while let Some(data) = rx.recv().await {
             if let Err(e) = stdin.write_all(data.as_bytes()).await {
@@ -637,11 +626,7 @@ mod tests {
             name.to_string()
         }
 
-        fn summarize_tool_input(
-            &self,
-            _name: &str,
-            _input: &serde_json::Value,
-        ) -> String {
+        fn summarize_tool_input(&self, _name: &str, _input: &serde_json::Value) -> String {
             String::new()
         }
 
@@ -695,19 +680,13 @@ mod tests {
     async fn v1_adapter_attach_returns_idle_handle() {
         let driver = Arc::new(FakeV1Driver::authed(vec![]));
         let adapter = V1DriverAdapter::new(driver);
-        let result = adapter
-            .attach("agent-1".into(), test_spec())
-            .await
-            .unwrap();
+        let result = adapter.attach("agent-1".into(), test_spec()).await.unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
     }
 
     #[tokio::test]
     async fn v1_adapter_list_models_maps_strings_to_model_info() {
-        let driver = Arc::new(FakeV1Driver::authed(vec![
-            "gpt-4".into(),
-            "gpt-3.5".into(),
-        ]));
+        let driver = Arc::new(FakeV1Driver::authed(vec!["gpt-4".into(), "gpt-3.5".into()]));
         let adapter = V1DriverAdapter::new(driver);
         let models = adapter.list_models().await.unwrap();
         assert_eq!(models.len(), 2);
@@ -755,11 +734,9 @@ mod tests {
         let adapter = V1DriverAdapter::new(driver);
         let result = adapter.login().await;
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("does not support login")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("does not support login"));
     }
 }

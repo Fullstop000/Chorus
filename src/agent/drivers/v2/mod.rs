@@ -163,8 +163,12 @@ pub enum AgentState {
 /// to [`DriverEvent`].
 #[derive(Debug, Clone)]
 pub enum AgentEventItem {
-    Thinking { text: String },
-    Text { text: String },
+    Thinking {
+        text: String,
+    },
+    Text {
+        text: String,
+    },
     /// Transport layers MUST coalesce ACP's deferred `tool_call_update` frames
     /// into this variant before emitting; callers never see partial tool-call
     /// input.
@@ -172,7 +176,9 @@ pub enum AgentEventItem {
         name: String,
         input: serde_json::Value,
     },
-    ToolResult { content: String },
+    ToolResult {
+        content: String,
+    },
     TurnEnd,
 }
 
@@ -351,8 +357,7 @@ impl EventFanOut {
                                         event_kind = event_kind_name(&event),
                                         "driver event dropped: observer queue full"
                                     );
-                                    metrics::counter!("chorus_driver_events_dropped")
-                                        .increment(1);
+                                    metrics::counter!("chorus_driver_events_dropped").increment(1);
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
                                     // Observer dropped its receiver. This is
@@ -766,9 +771,7 @@ mod tests {
             match timeout(Duration::from_millis(500), fast.recv()).await {
                 Ok(Some(_)) => fast_count += 1,
                 Ok(None) => panic!("fast observer channel closed early"),
-                Err(_) => panic!(
-                    "fast observer timed out at {fast_count}/{total}",
-                ),
+                Err(_) => panic!("fast observer timed out at {fast_count}/{total}",),
             }
         }
         assert_eq!(fast_count, total);
@@ -776,9 +779,7 @@ mod tests {
         // Slow observer's queue has capacity OBSERVER_CAPACITY; everything
         // past that was dropped. Drain to verify the bound holds.
         let mut slow_count = 0usize;
-        while let Ok(Some(_)) =
-            timeout(Duration::from_millis(50), slow.recv()).await
-        {
+        while let Ok(Some(_)) = timeout(Duration::from_millis(50), slow.recv()).await {
             slow_count += 1;
             if slow_count > OBSERVER_CAPACITY {
                 break;

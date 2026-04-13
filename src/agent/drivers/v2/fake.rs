@@ -297,11 +297,7 @@ impl AgentHandle for FakeHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        if let AgentState::PromptInFlight {
-            run_id,
-            session_id,
-        } = &self.state
-        {
+        if let AgentState::PromptInFlight { run_id, session_id } = &self.state {
             let run_id = *run_id;
             let session_id = session_id.clone();
 
@@ -390,14 +386,24 @@ mod tests {
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result.handle.start(StartOpts::default(), None).await.unwrap();
+        result
+            .handle
+            .start(StartOpts::default(), None)
+            .await
+            .unwrap();
 
         // Starting lifecycle
         let ev = timeout(Duration::from_millis(500), rx.recv())
             .await
             .expect("timeout")
             .expect("closed");
-        assert!(matches!(ev, DriverEvent::Lifecycle { state: AgentState::Starting, .. }));
+        assert!(matches!(
+            ev,
+            DriverEvent::Lifecycle {
+                state: AgentState::Starting,
+                ..
+            }
+        ));
 
         // SessionAttached
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -411,7 +417,13 @@ mod tests {
             .await
             .expect("timeout")
             .expect("closed");
-        assert!(matches!(ev, DriverEvent::Lifecycle { state: AgentState::Active { .. }, .. }));
+        assert!(matches!(
+            ev,
+            DriverEvent::Lifecycle {
+                state: AgentState::Active { .. },
+                ..
+            }
+        ));
 
         assert!(matches!(result.handle.state(), AgentState::Active { .. }));
     }
@@ -420,14 +432,15 @@ mod tests {
     async fn test_fake_handle_prompt_emits_events() {
         let driver = FakeDriver::new(AgentRuntime::Claude).with_handle_factory(
             |key, _spec, events, event_tx| {
-                FakeHandle::new(key, events, event_tx)
-                    .with_prompt_responses(vec![vec![DriverEvent::Output {
+                FakeHandle::new(key, events, event_tx).with_prompt_responses(vec![vec![
+                    DriverEvent::Output {
                         key: "agent-1".to_string(),
                         run_id: RunId::new_v4(),
                         item: AgentEventItem::Text {
                             text: "custom response".to_string(),
                         },
-                    }]])
+                    },
+                ]])
             },
         );
 
@@ -437,7 +450,11 @@ mod tests {
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result.handle.start(StartOpts::default(), None).await.unwrap();
+        result
+            .handle
+            .start(StartOpts::default(), None)
+            .await
+            .unwrap();
 
         // Drain the start lifecycle events (Starting, SessionAttached, Active)
         for _ in 0..3 {
@@ -458,7 +475,13 @@ mod tests {
             .await
             .expect("timeout")
             .expect("closed");
-        assert!(matches!(ev, DriverEvent::Lifecycle { state: AgentState::PromptInFlight { .. }, .. }));
+        assert!(matches!(
+            ev,
+            DriverEvent::Lifecycle {
+                state: AgentState::PromptInFlight { .. },
+                ..
+            }
+        ));
 
         // Custom output event
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -466,7 +489,10 @@ mod tests {
             .expect("timeout")
             .expect("closed");
         match &ev {
-            DriverEvent::Output { item: AgentEventItem::Text { text }, .. } => {
+            DriverEvent::Output {
+                item: AgentEventItem::Text { text },
+                ..
+            } => {
                 assert_eq!(text, "custom response");
             }
             other => panic!("expected Output(Text), got {other:?}"),
@@ -477,7 +503,13 @@ mod tests {
             .await
             .expect("timeout")
             .expect("closed");
-        assert!(matches!(ev, DriverEvent::Lifecycle { state: AgentState::Active { .. }, .. }));
+        assert!(matches!(
+            ev,
+            DriverEvent::Lifecycle {
+                state: AgentState::Active { .. },
+                ..
+            }
+        ));
     }
 
     #[tokio::test]
@@ -505,7 +537,11 @@ mod tests {
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result.handle.start(StartOpts::default(), None).await.unwrap();
+        result
+            .handle
+            .start(StartOpts::default(), None)
+            .await
+            .unwrap();
 
         // Drain start events
         for _ in 0..3 {
@@ -526,7 +562,13 @@ mod tests {
             .await
             .expect("timeout")
             .expect("closed");
-        assert!(matches!(ev, DriverEvent::Lifecycle { state: AgentState::PromptInFlight { .. }, .. }));
+        assert!(matches!(
+            ev,
+            DriverEvent::Lifecycle {
+                state: AgentState::PromptInFlight { .. },
+                ..
+            }
+        ));
 
         // Default Text output
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -534,7 +576,10 @@ mod tests {
             .expect("timeout")
             .expect("closed");
         match &ev {
-            DriverEvent::Output { item: AgentEventItem::Text { text }, .. } => {
+            DriverEvent::Output {
+                item: AgentEventItem::Text { text },
+                ..
+            } => {
                 assert_eq!(text, "fake response");
             }
             other => panic!("expected Output(Text), got {other:?}"),
@@ -545,7 +590,13 @@ mod tests {
             .await
             .expect("timeout")
             .expect("closed");
-        assert!(matches!(ev, DriverEvent::Output { item: AgentEventItem::TurnEnd, .. }));
+        assert!(matches!(
+            ev,
+            DriverEvent::Output {
+                item: AgentEventItem::TurnEnd,
+                ..
+            }
+        ));
 
         // Completed(Natural)
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -564,6 +615,12 @@ mod tests {
             .await
             .expect("timeout")
             .expect("closed");
-        assert!(matches!(ev, DriverEvent::Lifecycle { state: AgentState::Active { .. }, .. }));
+        assert!(matches!(
+            ev,
+            DriverEvent::Lifecycle {
+                state: AgentState::Active { .. },
+                ..
+            }
+        ));
     }
 }

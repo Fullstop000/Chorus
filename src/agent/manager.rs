@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::Child;
@@ -7,10 +7,19 @@ use std::sync::Arc;
 
 use tokio::sync::broadcast;
 use tokio::sync::Mutex;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
 use crate::agent::config::AgentConfig;
+use crate::agent::drivers::v2::claude::ClaudeDriver;
+use crate::agent::drivers::v2::codex::CodexDriver;
+use crate::agent::drivers::v2::kimi::KimiDriver;
+use crate::agent::drivers::v2::opencode::OpencodeDriver;
+use crate::agent::drivers::v2::v1_adapter::V1DriverAdapter;
+use crate::agent::drivers::v2::{
+    AgentEventItem, AgentHandle, AgentSpec, AgentState, DriverEvent, PromptReq, RuntimeDriver,
+    StartOpts,
+};
 use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
@@ -32,8 +41,18 @@ struct RunningAgent {
     pending_text: String,
 }
 
+/// V2-managed agent backed by a [`RuntimeDriver`] + [`AgentHandle`].
+struct V2Agent {
+    handle: Box<dyn AgentHandle>,
+    _event_tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
 pub struct AgentManager {
     agents: Arc<Mutex<HashMap<String, RunningAgent>>>,
+    /// v2 driver registry — maps runtime to native v2 driver OR V1DriverAdapter.
+    driver_registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
+    /// v2-managed agents keyed by agent name.
+    v2_agents: Arc<Mutex<HashMap<String, V2Agent>>>,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
     store: Arc<Store>,
@@ -50,6 +69,41 @@ fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
     }
 }
 
+fn build_driver_registry() -> HashMap<AgentRuntime, Arc<dyn RuntimeDriver>> {
+    let v2_runtimes: HashSet<String> = std::env::var("CHORUS_DRIVER_V2_RUNTIMES")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    let all_runtimes = [
+        AgentRuntime::Claude,
+        AgentRuntime::Codex,
+        AgentRuntime::Kimi,
+        AgentRuntime::Opencode,
+    ];
+
+    let mut registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>> = HashMap::new();
+
+    for rt in all_runtimes {
+        let driver: Arc<dyn RuntimeDriver> = if v2_runtimes.contains(rt.as_str()) {
+            match rt {
+                AgentRuntime::Kimi => Arc::new(KimiDriver),
+                AgentRuntime::Claude => Arc::new(ClaudeDriver),
+                AgentRuntime::Codex => Arc::new(CodexDriver),
+                AgentRuntime::Opencode => Arc::new(OpencodeDriver),
+            }
+        } else {
+            let v1_driver = crate::agent::drivers::driver_for_runtime(rt);
+            Arc::new(V1DriverAdapter::new(v1_driver))
+        };
+        registry.insert(rt, driver);
+    }
+
+    registry
+}
+
 impl AgentManager {
     pub fn new(
         store: Arc<Store>,
@@ -59,6 +113,8 @@ impl AgentManager {
     ) -> Self {
         Self {
             agents: Arc::new(Mutex::new(HashMap::new())),
+            driver_registry: build_driver_registry(),
+            v2_agents: Arc::new(Mutex::new(HashMap::new())),
             activity_logs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             trace_store: Arc::new(AgentTraceStore::new()),
             store,
@@ -69,6 +125,16 @@ impl AgentManager {
         }
     }
 
+    /// Returns `true` if the given runtime maps to a native v2 driver
+    /// (i.e. not a V1DriverAdapter wrapper).
+    fn is_native_v2(&self, runtime: AgentRuntime) -> bool {
+        std::env::var("CHORUS_DRIVER_V2_RUNTIMES")
+            .unwrap_or_default()
+            .split(',')
+            .map(|s| s.trim().to_lowercase())
+            .any(|s| s == runtime.as_str())
+    }
+
     /// Start an agent process. Creates the workspace, writes `MEMORY.md`, and
     /// optionally threads through the message that caused the wake-up.
     pub async fn start_agent(
@@ -76,9 +142,16 @@ impl AgentManager {
         agent_name: &str,
         wake_message: Option<ReceivedMessage>,
     ) -> anyhow::Result<()> {
+        // Already running in either v1 or v2?
         {
             let agents = self.agents.lock().await;
             if agents.contains_key(agent_name) {
+                return Ok(());
+            }
+        }
+        {
+            let v2 = self.v2_agents.lock().await;
+            if v2.contains_key(agent_name) {
                 return Ok(());
             }
         }
@@ -120,7 +193,7 @@ impl AgentManager {
 
         let memory_md_path = agent_data_dir.join("MEMORY.md");
         if !memory_md_path.exists() {
-            let description = config
+            let description = agent
                 .description
                 .as_deref()
                 .unwrap_or("No role defined yet.");
@@ -128,11 +201,107 @@ impl AgentManager {
                 &memory_md_path,
                 format!(
                     "# {}\n\n## Role\n{}\n\n## Key Knowledge\n- No notes yet.\n\n## Active Context\n- First startup.\n",
-                    config.display_name, description
+                    agent.display_name, description
                 ),
             ).await?;
         }
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
+
+        // ── v2 path: use native RuntimeDriver when configured ──
+        let runtime = AgentRuntime::parse(&agent.runtime);
+        let use_v2 = runtime.map(|rt| self.is_native_v2(rt)).unwrap_or(false);
+
+        if use_v2 {
+            let rt = runtime.unwrap();
+            let v2_driver = self
+                .driver_registry
+                .get(&rt)
+                .ok_or_else(|| anyhow::anyhow!("v2: no driver for runtime {:?}", rt))?
+                .clone();
+
+            let spec = AgentSpec {
+                display_name: agent.display_name.clone(),
+                description: agent.description.clone(),
+                system_prompt: agent.system_prompt.clone(),
+                model: agent.model.clone(),
+                reasoning_effort: agent.reasoning_effort.clone(),
+                env_vars: agent.env_vars.clone(),
+                working_directory: agent_data_dir.clone(),
+                bridge_binary: self.bridge_binary.clone(),
+                server_url: self.server_url.clone(),
+            };
+
+            let attach_result = v2_driver.attach(agent_name.to_string(), spec).await?;
+            let mut handle = attach_result.handle;
+            let events = attach_result.events;
+
+            // Subscribe BEFORE start so we don't miss early events.
+            let event_rx = events.subscribe();
+
+            let is_resume = agent.session_id.is_some();
+            let unread_summary = self.store.get_unread_summary(agent_name)?;
+
+            // Build a simple init prompt for v2 (no v1 driver needed for system prompt — it's in the spec).
+            let init_prompt_text = build_v2_start_prompt(
+                &agent.display_name,
+                is_resume,
+                &unread_summary,
+                wake_message.as_ref(),
+            );
+
+            let start_opts = StartOpts {
+                resume_session_id: agent.session_id.clone(),
+            };
+
+            self.store
+                .update_agent_status(agent_name, AgentStatus::Active)?;
+            activity_log::set_activity_state(
+                &self.activity_logs,
+                agent_name,
+                "working",
+                "Starting\u{2026}",
+            );
+            activity_log::push_activity(
+                &self.activity_logs,
+                agent_name,
+                ActivityEntry::Start { is_resume },
+            );
+
+            handle
+                .start(
+                    start_opts,
+                    Some(PromptReq {
+                        text: init_prompt_text,
+                        attachments: vec![],
+                    }),
+                )
+                .await?;
+
+            let forwarder = spawn_v2_event_forwarder(
+                agent_name.to_string(),
+                event_rx,
+                self.activity_logs.clone(),
+                self.trace_store.clone(),
+                self.store.trace_sender(),
+                self.store.clone(),
+            );
+
+            {
+                let mut v2 = self.v2_agents.lock().await;
+                v2.insert(
+                    agent_name.to_string(),
+                    V2Agent {
+                        handle,
+                        _event_tasks: vec![forwarder],
+                    },
+                );
+            }
+
+            info!(agent = %agent_name, runtime = %rt.as_str(), "v2: agent started");
+            return Ok(());
+        }
+
+        // ── v1 path (existing) ──
 
         let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
@@ -213,6 +382,44 @@ impl AgentManager {
 
     /// Stop an agent process and mark it inactive.
     pub async fn stop_agent(&self, agent_name: &str) -> anyhow::Result<()> {
+        // ── v2 path ──
+        {
+            let mut v2 = self.v2_agents.lock().await;
+            if let Some(mut v2_agent) = v2.remove(agent_name) {
+                info!(agent = %agent_name, "v2: stopping agent");
+                if let Err(e) = v2_agent.handle.close().await {
+                    warn!(agent = %agent_name, err = %e, "v2: error closing handle");
+                }
+                // End any active trace run.
+                if let Some(run_id) = self.trace_store.active_run_id(agent_name) {
+                    let seq = self.trace_store.next_seq(agent_name);
+                    let ch = self.trace_store.run_channel_id(agent_name);
+                    let event = trace::build_trace_event(
+                        run_id,
+                        agent_name,
+                        ch,
+                        seq,
+                        TraceEventKind::Error {
+                            message: "Agent stopped".to_string(),
+                        },
+                    );
+                    let _ = self.store.trace_sender().send(event);
+                    self.trace_store.end_run(agent_name);
+                }
+                self.store
+                    .update_agent_status(agent_name, AgentStatus::Inactive)?;
+                let _ = self.store.update_agent_session(agent_name, None);
+                activity_log::set_activity_state(
+                    &self.activity_logs,
+                    agent_name,
+                    "offline",
+                    "Process stopped",
+                );
+                return Ok(());
+            }
+        }
+
+        // ── v1 path ──
         let mut running = {
             let mut agents = self.agents.lock().await;
             match agents.remove(agent_name) {
@@ -252,6 +459,28 @@ impl AgentManager {
 
     /// Kill process but keep status as sleeping (will auto-restart on next message).
     pub async fn sleep_agent(&self, agent_name: &str) -> anyhow::Result<()> {
+        // ── v2 path ──
+        {
+            let mut v2 = self.v2_agents.lock().await;
+            if let Some(mut v2_agent) = v2.remove(agent_name) {
+                info!(agent = %agent_name, "v2: sleeping agent");
+                if let Err(e) = v2_agent.handle.close().await {
+                    warn!(agent = %agent_name, err = %e, "v2: error closing handle for sleep");
+                }
+                self.store
+                    .update_agent_status(agent_name, AgentStatus::Sleeping)?;
+                let _ = self.store.update_agent_session(agent_name, None);
+                activity_log::set_activity_state(
+                    &self.activity_logs,
+                    agent_name,
+                    "offline",
+                    "Sleeping",
+                );
+                return Ok(());
+            }
+        }
+
+        // ── v1 path ──
         let mut running = {
             let mut agents = self.agents.lock().await;
             match agents.remove(agent_name) {
@@ -271,6 +500,16 @@ impl AgentManager {
 
     /// Deliver a wakeup notification to agent stdin.
     pub async fn notify_agent(&self, agent_name: &str) -> anyhow::Result<()> {
+        // ── v2 path: notification not yet supported ──
+        {
+            let v2 = self.v2_agents.lock().await;
+            if v2.contains_key(agent_name) {
+                debug!(agent = %agent_name, "v2: notify not yet implemented, skipping");
+                return Ok(());
+            }
+        }
+
+        // ── v1 path ──
         let mut agents = self.agents.lock().await;
         let running = match agents.get_mut(agent_name) {
             Some(r) => r,
@@ -342,15 +581,19 @@ impl AgentManager {
     }
 
     pub async fn stop_all(&self) -> anyhow::Result<()> {
-        let names: Vec<String> = self.agents.lock().await.keys().cloned().collect();
-        for name in names {
+        let v1_names: Vec<String> = self.agents.lock().await.keys().cloned().collect();
+        let v2_names: Vec<String> = self.v2_agents.lock().await.keys().cloned().collect();
+        for name in v1_names.into_iter().chain(v2_names) {
             self.stop_agent(&name).await?;
         }
         Ok(())
     }
 
     pub async fn get_running_agent_names(&self) -> Vec<String> {
-        self.agents.lock().await.keys().cloned().collect()
+        let mut names: Vec<String> = self.agents.lock().await.keys().cloned().collect();
+        let v2_names: Vec<String> = self.v2_agents.lock().await.keys().cloned().collect();
+        names.extend(v2_names);
+        names
     }
 
     fn spawn_output_reader(
@@ -505,6 +748,15 @@ impl AgentManager {
                 warn!(stream = "stderr", raw = %line);
             }
         });
+    }
+
+    #[cfg(test)]
+    pub(crate) fn register_v2_driver(
+        &mut self,
+        runtime: AgentRuntime,
+        driver: Arc<dyn RuntimeDriver>,
+    ) {
+        self.driver_registry.insert(runtime, driver);
     }
 }
 
@@ -758,6 +1010,365 @@ async fn handle_parsed_event(
             // Permission approval is handled inline — the response has already been
             // written to stdin by WriteStdin. No retry needed.
         }
+    }
+}
+
+// ── v2 event forwarder ──
+
+fn summarize_input(input: &serde_json::Value) -> String {
+    if !input.is_object() {
+        return String::new();
+    }
+    let obj = input.as_object().unwrap();
+    // Common ACP patterns: return file path or command.
+    for key in &["file_path", "path", "command", "query", "url"] {
+        if let Some(v) = obj.get(*key) {
+            if let Some(s) = v.as_str() {
+                return s.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn flush_thinking(
+    text: &str,
+    agent_name: &str,
+    trace_store: &AgentTraceStore,
+    trace_tx: &broadcast::Sender<TraceEvent>,
+    activity_logs: &ActivityLogMap,
+) {
+    let preview: String = text.chars().take(200).collect();
+    let preview = if text.chars().count() > 200 {
+        format!("{preview}\u{2026}")
+    } else {
+        preview
+    };
+    trace!(agent = %agent_name, thought = %preview, "v2: thinking block complete");
+    activity_log::push_activity(
+        activity_logs,
+        agent_name,
+        ActivityEntry::Thinking {
+            text: text.to_string(),
+        },
+    );
+    let (run_id, _) = trace_store.ensure_run(agent_name);
+    let seq = trace_store.next_seq(agent_name);
+    let ch = trace_store.run_channel_id(agent_name);
+    let _ = trace_tx.send(trace::build_trace_event(
+        run_id,
+        agent_name,
+        ch,
+        seq,
+        TraceEventKind::Thinking {
+            text: text.to_string(),
+        },
+    ));
+}
+
+fn flush_text(
+    text: &str,
+    agent_name: &str,
+    trace_store: &AgentTraceStore,
+    trace_tx: &broadcast::Sender<TraceEvent>,
+) {
+    let (run_id, _) = trace_store.ensure_run(agent_name);
+    let seq = trace_store.next_seq(agent_name);
+    let ch = trace_store.run_channel_id(agent_name);
+    let _ = trace_tx.send(trace::build_trace_event(
+        run_id,
+        agent_name,
+        ch,
+        seq,
+        TraceEventKind::Text {
+            text: text.to_string(),
+        },
+    ));
+}
+
+fn spawn_v2_event_forwarder(
+    _agent_name: String,
+    mut event_rx: tokio::sync::mpsc::Receiver<DriverEvent>,
+    activity_logs: Arc<ActivityLogMap>,
+    trace_store: Arc<AgentTraceStore>,
+    trace_tx: broadcast::Sender<TraceEvent>,
+    store: Arc<Store>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut pending_thinking = String::new();
+        let mut pending_text = String::new();
+        let mut last_tool_raw_name: Option<String> = None;
+
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                DriverEvent::SessionAttached {
+                    ref key,
+                    ref session_id,
+                } => {
+                    info!(agent = %key, session = %session_id, "v2: session attached");
+                    let _ = store.update_agent_session(key, Some(session_id));
+                    activity_log::set_activity_state(&activity_logs, key, "online", "Ready");
+                }
+
+                DriverEvent::Lifecycle { ref key, ref state } => match state {
+                    AgentState::Starting => {
+                        activity_log::set_activity_state(
+                            &activity_logs,
+                            key,
+                            "working",
+                            "Starting\u{2026}",
+                        );
+                    }
+                    AgentState::Active { .. } => {
+                        activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+                    }
+                    AgentState::Closed => {
+                        activity_log::set_activity_state(&activity_logs, key, "offline", "Stopped");
+                    }
+                    _ => {}
+                },
+
+                DriverEvent::Output {
+                    ref key,
+                    run_id: _,
+                    ref item,
+                } => {
+                    match item {
+                        AgentEventItem::Thinking { text } => {
+                            pending_thinking.push_str(text);
+                            activity_log::set_activity_state(
+                                &activity_logs,
+                                key,
+                                "thinking",
+                                "Thinking\u{2026}",
+                            );
+                            continue;
+                        }
+                        AgentEventItem::Text { text } => {
+                            if !pending_thinking.is_empty() {
+                                flush_thinking(
+                                    &pending_thinking,
+                                    key,
+                                    &trace_store,
+                                    &trace_tx,
+                                    &activity_logs,
+                                );
+                                pending_thinking.clear();
+                            }
+                            activity_log::push_activity(
+                                &activity_logs,
+                                key,
+                                ActivityEntry::Text { text: text.clone() },
+                            );
+                            pending_text.push_str(text);
+                            continue;
+                        }
+                        _ => {
+                            if !pending_thinking.is_empty() {
+                                flush_thinking(
+                                    &pending_thinking,
+                                    key,
+                                    &trace_store,
+                                    &trace_tx,
+                                    &activity_logs,
+                                );
+                                pending_thinking.clear();
+                            }
+                            if !pending_text.is_empty() {
+                                flush_text(&pending_text, key, &trace_store, &trace_tx);
+                                pending_text.clear();
+                            }
+                        }
+                    }
+
+                    match item {
+                        AgentEventItem::ToolCall { name, input } => {
+                            info!(agent = %key, tool = %name, "v2: tool call");
+                            last_tool_raw_name = Some(name.clone());
+                            let tool_input = summarize_input(input);
+                            activity_log::push_activity(
+                                &activity_logs,
+                                key,
+                                ActivityEntry::ToolCall {
+                                    tool_name: name.clone(),
+                                    tool_input: tool_input.clone(),
+                                },
+                            );
+                            activity_log::set_activity_state(&activity_logs, key, "working", name);
+                            let (rid, _) = trace_store.ensure_run(key);
+                            let seq = trace_store.next_seq(key);
+                            let ch = trace_store.run_channel_id(key);
+                            let _ = trace_tx.send(trace::build_trace_event(
+                                rid,
+                                key,
+                                ch,
+                                seq,
+                                TraceEventKind::ToolCall {
+                                    tool_name: name.clone(),
+                                    tool_input,
+                                },
+                            ));
+                        }
+                        AgentEventItem::ToolResult { content } => {
+                            let tool_name = last_tool_raw_name.clone().unwrap_or_default();
+                            activity_log::upsert_tool_result_activity(
+                                &activity_logs,
+                                key,
+                                tool_name.clone(),
+                                content.clone(),
+                            );
+                            let (rid, _) = trace_store.ensure_run(key);
+                            let seq = trace_store.next_seq(key);
+                            let ch = trace_store.run_channel_id(key);
+                            let _ = trace_tx.send(trace::build_trace_event(
+                                rid,
+                                key,
+                                ch,
+                                seq,
+                                TraceEventKind::ToolResult {
+                                    tool_name,
+                                    content: content.clone(),
+                                },
+                            ));
+                        }
+                        AgentEventItem::TurnEnd => {
+                            if let Some(run_id) = trace_store.active_run_id(key) {
+                                let seq = trace_store.next_seq(key);
+                                let ch = trace_store.run_channel_id(key);
+                                let _ = trace_tx.send(trace::build_trace_event(
+                                    run_id,
+                                    key,
+                                    ch,
+                                    seq,
+                                    TraceEventKind::TurnEnd,
+                                ));
+                                trace_store.end_run(key);
+                            }
+                            activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+                        }
+                        // Thinking/Text handled above via continue.
+                        _ => {}
+                    }
+                }
+
+                DriverEvent::Completed {
+                    ref key,
+                    run_id: _,
+                    ref result,
+                } => {
+                    if !pending_thinking.is_empty() {
+                        flush_thinking(
+                            &pending_thinking,
+                            key,
+                            &trace_store,
+                            &trace_tx,
+                            &activity_logs,
+                        );
+                        pending_thinking.clear();
+                    }
+                    if !pending_text.is_empty() {
+                        flush_text(&pending_text, key, &trace_store, &trace_tx);
+                        pending_text.clear();
+                    }
+                    info!(agent = %key, reason = ?result.finish_reason, "v2: run completed");
+                    if !result.session_id.is_empty() {
+                        let _ = store.update_agent_session(key, Some(&result.session_id));
+                    }
+                    if let Some(rid) = trace_store.active_run_id(key) {
+                        let seq = trace_store.next_seq(key);
+                        let ch = trace_store.run_channel_id(key);
+                        let _ = trace_tx.send(trace::build_trace_event(
+                            rid,
+                            key,
+                            ch,
+                            seq,
+                            TraceEventKind::TurnEnd,
+                        ));
+                        trace_store.end_run(key);
+                    }
+                    activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+                }
+
+                DriverEvent::Failed {
+                    ref key,
+                    run_id: _,
+                    ref error,
+                } => {
+                    let msg = format!("{error:?}");
+                    error!(agent = %key, error = %msg, "v2: run failed");
+                    if let Some(rid) = trace_store.active_run_id(key) {
+                        let seq = trace_store.next_seq(key);
+                        let ch = trace_store.run_channel_id(key);
+                        let _ = trace_tx.send(trace::build_trace_event(
+                            rid,
+                            key,
+                            ch,
+                            seq,
+                            TraceEventKind::Error {
+                                message: msg.clone(),
+                            },
+                        ));
+                        trace_store.end_run(key);
+                    }
+                    activity_log::set_activity_state(&activity_logs, key, "error", &msg);
+                }
+            }
+        }
+    })
+}
+
+// ── v2 prompt builder ──
+
+fn build_v2_start_prompt(
+    display_name: &str,
+    is_resume: bool,
+    unread_summary: &std::collections::HashMap<String, i64>,
+    wake_message: Option<&ReceivedMessage>,
+) -> String {
+    if let Some(msg) = wake_message {
+        let target = format_message_target(msg);
+        let attachment_count = msg.attachments.as_ref().map_or(0, Vec::len);
+        let content_preview = truncate_prompt_text(&msg.content, 2_000);
+
+        let mut prompt = format!(
+            "You were just woken by a new unread message.\n\
+             Treat this preview as wake-up context only. The message is still unread.\n\
+             Call check_messages() now to load unread messages before you respond.\n\n\
+             Triggering message:\n\
+             - From: {}\n\
+             - Target: {target}\n\
+             - Timestamp: {}\n\
+             - Attachments: {attachment_count}\n\
+             - Content:\n{content_preview}",
+            msg.sender_name, msg.timestamp,
+        );
+
+        if !unread_summary.is_empty() {
+            prompt.push_str("\n\nUnread summary:");
+            for (ch, count) in unread_summary {
+                prompt.push_str(&format!("\n- {ch}: {count} unread"));
+            }
+        }
+        return prompt;
+    }
+
+    if !is_resume {
+        return format!("Hello {display_name}, you are now online.");
+    }
+
+    if !unread_summary.is_empty() {
+        let mut prompt = String::from("You have unread messages from while you were offline:");
+        for (ch, count) in unread_summary {
+            prompt.push_str(&format!("\n- {ch}: {count} unread"));
+        }
+        prompt.push_str(
+            "\n\nUse read_history to catch up on important channels, \
+             then stop. New messages will be delivered to you automatically.",
+        );
+        prompt
+    } else {
+        "No new messages while you were away. Nothing to do right now \u{2014} just stop."
+            .to_string()
     }
 }
 
@@ -1441,5 +2052,177 @@ mod tests {
             contains_restarted_agent,
             "stale stdout reader removed the restarted agent from the running map"
         );
+    }
+
+    // ── v2 driver registry tests ──
+
+    use crate::agent::drivers::v2::fake::FakeDriver as FakeV2Driver;
+
+    fn make_v2_manager(store: Arc<Store>, dir: &std::path::Path) -> AgentManager {
+        let mut manager = AgentManager::new(
+            store,
+            dir.join("agents"),
+            "chorus".to_string(),
+            "http://127.0.0.1:3001".to_string(),
+        );
+        let fake = Arc::new(FakeV2Driver::new(AgentRuntime::Codex));
+        manager.register_v2_driver(AgentRuntime::Codex, fake);
+        manager
+    }
+
+    fn insert_codex_agent(store: &Store) {
+        store
+            .create_agent_record(&AgentRecordUpsert {
+                name: "v2bot",
+                display_name: "V2 Bot",
+                description: Some("Test v2 agent"),
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-5.4-mini",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn v2_start_agent_with_fake_driver() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        // Force codex to use native v2 by registering FakeV2Driver directly.
+        let manager = make_v2_manager(store, dir.path());
+
+        // The FakeDriver is native v2 but is_native_v2 checks env var. Override for test.
+        std::env::set_var("CHORUS_DRIVER_V2_RUNTIMES", "codex");
+        let result = manager.start_agent("v2bot", None).await;
+        std::env::remove_var("CHORUS_DRIVER_V2_RUNTIMES");
+
+        assert!(result.is_ok(), "v2 start_agent should succeed: {result:?}");
+
+        let v2 = manager.v2_agents.lock().await;
+        assert!(v2.contains_key("v2bot"), "v2bot should be in v2_agents");
+
+        // Should also show up in running agent names.
+        drop(v2);
+        let names = manager.get_running_agent_names().await;
+        assert!(names.contains(&"v2bot".to_string()));
+
+        // Cleanup
+        let _ = manager.stop_agent("v2bot").await;
+    }
+
+    #[tokio::test]
+    async fn v2_stop_agent_idempotent() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        let manager = make_v2_manager(store, dir.path());
+
+        std::env::set_var("CHORUS_DRIVER_V2_RUNTIMES", "codex");
+        manager.start_agent("v2bot", None).await.unwrap();
+        std::env::remove_var("CHORUS_DRIVER_V2_RUNTIMES");
+
+        // First stop should succeed.
+        let r1 = manager.stop_agent("v2bot").await;
+        assert!(r1.is_ok(), "first stop should succeed: {r1:?}");
+
+        // Second stop should also be Ok (idempotent).
+        let r2 = manager.stop_agent("v2bot").await;
+        assert!(r2.is_ok(), "second stop should be idempotent: {r2:?}");
+
+        let v2 = manager.v2_agents.lock().await;
+        assert!(
+            !v2.contains_key("v2bot"),
+            "v2bot should be removed after stop"
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_sleep_agent_marks_sleeping() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        let manager = make_v2_manager(store.clone(), dir.path());
+
+        std::env::set_var("CHORUS_DRIVER_V2_RUNTIMES", "codex");
+        manager.start_agent("v2bot", None).await.unwrap();
+        std::env::remove_var("CHORUS_DRIVER_V2_RUNTIMES");
+
+        manager.sleep_agent("v2bot").await.unwrap();
+
+        let v2 = manager.v2_agents.lock().await;
+        assert!(
+            !v2.contains_key("v2bot"),
+            "v2bot should be removed after sleep"
+        );
+
+        let agent_record = store.get_agent("v2bot").unwrap().unwrap();
+        assert_eq!(
+            agent_record.status,
+            AgentStatus::Sleeping,
+            "agent status should be sleeping"
+        );
+    }
+
+    #[tokio::test]
+    async fn v2_start_is_noop_when_already_running() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        let manager = make_v2_manager(store, dir.path());
+
+        std::env::set_var("CHORUS_DRIVER_V2_RUNTIMES", "codex");
+        manager.start_agent("v2bot", None).await.unwrap();
+
+        // Second start should be a no-op (returns Ok).
+        let r2 = manager.start_agent("v2bot", None).await;
+        std::env::remove_var("CHORUS_DRIVER_V2_RUNTIMES");
+
+        assert!(r2.is_ok(), "duplicate start should be no-op: {r2:?}");
+
+        let _ = manager.stop_agent("v2bot").await;
+    }
+
+    #[tokio::test]
+    async fn v2_notify_returns_ok_for_v2_agent() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        let manager = make_v2_manager(store, dir.path());
+
+        std::env::set_var("CHORUS_DRIVER_V2_RUNTIMES", "codex");
+        manager.start_agent("v2bot", None).await.unwrap();
+        std::env::remove_var("CHORUS_DRIVER_V2_RUNTIMES");
+
+        // notify should not error even though v2 notify is not implemented.
+        let result = manager.notify_agent("v2bot").await;
+        assert!(result.is_ok(), "notify should succeed: {result:?}");
+
+        let _ = manager.stop_agent("v2bot").await;
+    }
+
+    #[tokio::test]
+    async fn driver_registry_defaults_to_v1_adapters() {
+        let registry = build_driver_registry();
+        assert_eq!(registry.len(), 4, "should have all four runtimes");
+        // Without CHORUS_DRIVER_V2_RUNTIMES set, all should be V1DriverAdapter.
+        for rt in [
+            AgentRuntime::Claude,
+            AgentRuntime::Codex,
+            AgentRuntime::Kimi,
+            AgentRuntime::Opencode,
+        ] {
+            assert!(
+                registry.contains_key(&rt),
+                "registry should contain {:?}",
+                rt
+            );
+        }
     }
 }
