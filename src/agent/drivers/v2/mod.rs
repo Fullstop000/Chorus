@@ -14,9 +14,11 @@
 //! follow-up tasks.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
 
 use async_trait::async_trait;
+use tokio::sync::mpsc;
 
 use crate::agent::AgentRuntime;
 use crate::store::agents::AgentEnvVar;
@@ -218,30 +220,182 @@ pub enum DriverEvent {
 }
 
 // ---------------------------------------------------------------------------
-// Event stream / fan-out (placeholder — filled in Task 2)
+// Event stream / fan-out
 // ---------------------------------------------------------------------------
 
-/// Broadcast dispatcher placeholder.
+/// Inbound channel capacity: transport tasks write here, dispatcher reads.
 ///
-/// The actual channels, subscriber registry, and backpressure policy land in
-/// Task 2. Defined here so [`EventStreamHandle`] and [`AttachResult`] have a
-/// real type to hold. `pub` because it's reachable through the public handle.
-#[derive(Debug, Default)]
+/// Sized generously so bursts of output items (which arrive in tight loops
+/// from a runtime's stdout reader) don't push back on the transport task.
+const INBOUND_CAPACITY: usize = 512;
+
+/// Per-observer channel capacity: dispatcher writes here, each subscriber
+/// drains at its own pace. On overflow we drop + warn + bump a metric rather
+/// than back-pressure the dispatcher (see back-pressure policy in the design
+/// doc).
+const OBSERVER_CAPACITY: usize = 256;
+
+/// Fan-out dispatcher that distributes [`DriverEvent`]s from a single inbound
+/// queue to every registered observer.
+///
+/// Lifecycle:
+///  - Construct via [`EventFanOut::new`], which yields an [`EventStreamHandle`]
+///    and the inbound `mpsc::Sender<DriverEvent>` used by transport tasks.
+///  - The first call to [`EventStreamHandle::subscribe`] spawns the dispatcher
+///    task (exactly once) and returns a bounded per-observer receiver.
+///  - When the agent closes, [`EventStreamHandle::close`] flips the closing
+///    flag; the dispatcher drains any remaining inbound events and exits.
+///
+/// Back-pressure: observers get a bounded 256-deep queue. A full queue results
+/// in `try_send` returning `Full`, which drops the event, logs a warning, and
+/// increments `chorus_driver_events_dropped`. This keeps a single slow
+/// subscriber (e.g. UI client) from stalling the transport reader.
 pub struct EventFanOut {
-    // Intentionally empty. Task 2 adds subscriber channels + dispatch loop.
+    /// Receiver for events emitted by handle transport tasks. Taken by the
+    /// dispatcher task on first `subscribe()`; `Mutex<Option<_>>` so the
+    /// "spawn exactly once" check is a single atomic take.
+    inbound_rx: Mutex<Option<mpsc::Receiver<DriverEvent>>>,
+    /// Observer senders. Guarded by `std::sync::RwLock` so that `subscribe()`
+    /// adds entries without blocking the dispatcher's (read-lock) send loop.
+    /// Never held across `.await`.
+    observers: Arc<RwLock<Vec<mpsc::Sender<DriverEvent>>>>,
+    /// Set by [`EventStreamHandle::close`]. Dispatcher terminates when this
+    /// is true AND the inbound receiver is drained.
+    closing: AtomicBool,
+}
+
+impl std::fmt::Debug for EventFanOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventFanOut")
+            .field(
+                "observers",
+                &self.observers.read().map(|g| g.len()).unwrap_or(0),
+            )
+            .field("closing", &self.closing.load(Ordering::SeqCst))
+            .finish()
+    }
+}
+
+impl EventFanOut {
+    /// Construct a fan-out pair: the stream handle that observers subscribe
+    /// to, plus the inbound sender that internal transport tasks write to.
+    /// Inbound channel capacity is [`INBOUND_CAPACITY`] (512).
+    ///
+    /// `new` returns a pair rather than `Self` because the inbound sender is
+    /// unavoidably the symmetric half of the fan-out: transport tasks need it
+    /// before any observer exists, and the fan-out's internal receiver must
+    /// be owned by the dispatcher we spawn later.
+    #[allow(clippy::new_ret_no_self)]
+    pub fn new() -> (EventStreamHandle, mpsc::Sender<DriverEvent>) {
+        let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
+        let fanout = Arc::new(EventFanOut {
+            inbound_rx: Mutex::new(Some(rx)),
+            observers: Arc::new(RwLock::new(Vec::new())),
+            closing: AtomicBool::new(false),
+        });
+        (EventStreamHandle { inner: fanout }, tx)
+    }
+
+    /// Spawn the dispatcher task exactly once per `EventFanOut`. Subsequent
+    /// calls are a no-op: the `Option::take` on `inbound_rx` returns `None`
+    /// for every call after the first.
+    fn spawn_dispatcher_once(self: &Arc<Self>) {
+        let rx_opt = {
+            let mut guard = self.inbound_rx.lock().unwrap();
+            guard.take()
+        };
+        let Some(mut rx) = rx_opt else {
+            // Dispatcher already spawned.
+            return;
+        };
+        let observers = self.observers.clone();
+        let fanout = self.clone();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Some(event) => {
+                        // Snapshot the senders under a brief read-lock so we
+                        // never hold the RwLock across the try_send loop.
+                        let senders: Vec<mpsc::Sender<DriverEvent>> = {
+                            let guard = observers.read().unwrap();
+                            guard.clone()
+                        };
+                        for sender in &senders {
+                            match sender.try_send(event.clone()) {
+                                Ok(()) => {}
+                                Err(mpsc::error::TrySendError::Full(_)) => {
+                                    tracing::warn!(
+                                        event_kind = ?std::mem::discriminant(&event),
+                                        "driver event dropped: observer queue full"
+                                    );
+                                    metrics::counter!("chorus_driver_events_dropped")
+                                        .increment(1);
+                                }
+                                Err(mpsc::error::TrySendError::Closed(_)) => {
+                                    // Observer dropped its receiver. Pruned
+                                    // after this iteration.
+                                }
+                            }
+                        }
+                        // Best-effort prune once per tick. Keeps the observer
+                        // list bounded without a second pass over senders on
+                        // the hot path.
+                        observers.write().unwrap().retain(|s| !s.is_closed());
+                    }
+                    None => break,
+                }
+                if fanout.closing.load(Ordering::SeqCst) && rx.is_empty() {
+                    break;
+                }
+            }
+            // Dispatcher exiting: drop every observer sender so subscribers'
+            // `recv()` observes `None` promptly instead of waiting on the
+            // `EventStreamHandle` itself to be dropped. This is how callers
+            // detect a clean fan-out shutdown.
+            observers.write().unwrap().clear();
+        });
+    }
+
+    /// Current observer count. Test-only accessor used to verify pruning;
+    /// not part of the public API.
+    #[cfg(test)]
+    fn observer_count(&self) -> usize {
+        self.observers.read().unwrap().len()
+    }
 }
 
 /// Shareable handle to a driver's event fan-out.
 ///
 /// Cheap to clone (`Arc`). Subscribers obtain one of these from
-/// [`AttachResult`] and use it to register listeners once the fan-out API
-/// lands in Task 2.
+/// [`AttachResult`] and call [`EventStreamHandle::subscribe`] to register a
+/// listener; the AgentHandle implementation calls [`EventStreamHandle::close`]
+/// when the runtime shuts down.
 #[derive(Debug, Clone)]
 pub struct EventStreamHandle {
-    // Task 2 adds the subscribe API that reads this; until then the field is
-    // only written in constructors.
-    #[allow(dead_code)]
     pub(crate) inner: Arc<EventFanOut>,
+}
+
+impl EventStreamHandle {
+    /// Subscribe a new observer. Returns a bounded `mpsc::Receiver` (capacity
+    /// [`OBSERVER_CAPACITY`], 256) that will receive every `DriverEvent`
+    /// emitted by the handle's transport tasks from this moment forward.
+    ///
+    /// Spawns the dispatcher task on the first call (exactly once per
+    /// fan-out). Back-pressure policy: if this receiver isn't drained fast
+    /// enough, overflow events are dropped with a metrics bump and a warn.
+    pub fn subscribe(&self) -> mpsc::Receiver<DriverEvent> {
+        let (tx, rx) = mpsc::channel(OBSERVER_CAPACITY);
+        self.inner.observers.write().unwrap().push(tx);
+        self.inner.spawn_dispatcher_once();
+        rx
+    }
+
+    /// Signal the fan-out dispatcher to drain its inbound queue and exit
+    /// after the final event. Call this from `AgentHandle::close()` after
+    /// emitting the terminal `Lifecycle::Closed` event. Idempotent.
+    pub fn close(&self) {
+        self.inner.closing.store(true, Ordering::SeqCst);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -438,4 +592,203 @@ pub trait AgentHandle: Send {
 
     /// Shut the runtime down and release all resources.
     async fn close(&mut self) -> anyhow::Result<()>;
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    /// Minimal `DriverEvent` helper used across tests. Uses `Lifecycle` with
+    /// a cheap-to-clone `Idle` state so the fan-out dispatcher isn't
+    /// sensitive to clone cost.
+    fn test_event(key: &str) -> DriverEvent {
+        DriverEvent::Lifecycle {
+            key: key.to_string(),
+            state: AgentState::Idle,
+        }
+    }
+
+    /// Extract the key out of a `Lifecycle` event for assertion convenience.
+    fn lifecycle_key(ev: &DriverEvent) -> &str {
+        match ev {
+            DriverEvent::Lifecycle { key, .. } => key.as_str(),
+            other => panic!("expected Lifecycle, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn first_subscribe_spawns_dispatcher() {
+        let (stream, tx) = EventFanOut::new();
+        let mut rx = stream.subscribe();
+
+        tx.send(test_event("a1")).await.unwrap();
+
+        let got = timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("dispatcher did not forward event within 500ms")
+            .expect("observer channel closed unexpectedly");
+        assert_eq!(lifecycle_key(&got), "a1");
+    }
+
+    #[tokio::test]
+    async fn second_subscribe_does_not_respawn_dispatcher() {
+        let (stream, tx) = EventFanOut::new();
+        let mut rx1 = stream.subscribe();
+        // If spawn_dispatcher_once misbehaved and tried to take the inbound
+        // receiver again, the second call would race on the Mutex<Option<_>>
+        // and find None — no panic, but also no second dispatcher stealing
+        // events. Both observers getting the same event is the positive
+        // signal that exactly one dispatcher is live.
+        let mut rx2 = stream.subscribe();
+
+        tx.send(test_event("b1")).await.unwrap();
+
+        let got1 = timeout(Duration::from_millis(500), rx1.recv())
+            .await
+            .expect("rx1 timeout")
+            .expect("rx1 closed");
+        let got2 = timeout(Duration::from_millis(500), rx2.recv())
+            .await
+            .expect("rx2 timeout")
+            .expect("rx2 closed");
+        assert_eq!(lifecycle_key(&got1), "b1");
+        assert_eq!(lifecycle_key(&got2), "b1");
+    }
+
+    #[tokio::test]
+    async fn other_observers_still_receive_when_one_is_slow() {
+        // THE key back-pressure invariant: one slow observer must not stall
+        // the dispatcher for everyone else.
+        let (stream, tx) = EventFanOut::new();
+        let mut fast = stream.subscribe();
+        let _slow = stream.subscribe(); // never drained
+
+        // 260 events — 4 more than the observer queue depth.
+        for i in 0..260 {
+            tx.send(test_event(&format!("e{i}"))).await.unwrap();
+        }
+
+        // Fast observer should receive all 260 events.
+        let mut fast_count = 0usize;
+        while let Ok(Some(_)) = timeout(Duration::from_millis(500), fast.recv()).await {
+            fast_count += 1;
+            if fast_count == 260 {
+                break;
+            }
+        }
+        assert_eq!(
+            fast_count, 260,
+            "fast observer should receive every event despite slow peer",
+        );
+    }
+
+    #[tokio::test]
+    async fn observer_queue_full_drops_event() {
+        // Proves drop-on-full behavior by contrast: fill a slow observer's
+        // 256-deep queue and show a fast peer still sees every event past
+        // that point.
+        let (stream, tx) = EventFanOut::new();
+        let mut slow = stream.subscribe();
+        let mut fast = stream.subscribe();
+
+        // Push OBSERVER_CAPACITY + 10 events so the slow queue overflows by
+        // 10; the fast observer drains concurrently via this task.
+        let total = OBSERVER_CAPACITY + 10;
+        for i in 0..total {
+            tx.send(test_event(&format!("x{i}"))).await.unwrap();
+        }
+
+        // Drain fast observer completely. It should see all `total` events:
+        // drop-on-full on the slow observer must not starve the fast one.
+        let mut fast_count = 0usize;
+        while fast_count < total {
+            match timeout(Duration::from_millis(500), fast.recv()).await {
+                Ok(Some(_)) => fast_count += 1,
+                Ok(None) => panic!("fast observer channel closed early"),
+                Err(_) => panic!(
+                    "fast observer timed out at {fast_count}/{total}",
+                ),
+            }
+        }
+        assert_eq!(fast_count, total);
+
+        // Slow observer's queue has capacity OBSERVER_CAPACITY; everything
+        // past that was dropped. Drain to verify the bound holds.
+        let mut slow_count = 0usize;
+        while let Ok(Some(_)) =
+            timeout(Duration::from_millis(50), slow.recv()).await
+        {
+            slow_count += 1;
+            if slow_count > OBSERVER_CAPACITY {
+                break;
+            }
+        }
+        assert!(
+            slow_count <= OBSERVER_CAPACITY,
+            "slow observer received {slow_count} events, exceeds cap {OBSERVER_CAPACITY}",
+        );
+    }
+
+    #[tokio::test]
+    async fn closed_observer_is_pruned() {
+        let (stream, tx) = EventFanOut::new();
+        let fanout = stream.inner.clone();
+
+        // Subscribe, then immediately drop the receiver.
+        drop(stream.subscribe());
+        assert_eq!(fanout.observer_count(), 1);
+
+        // Send an event to drive the dispatcher into its post-send prune.
+        tx.send(test_event("prune-1")).await.unwrap();
+
+        // Give the dispatcher a tick to prune. Poll the accessor rather than
+        // sleeping a fixed amount — keeps the test fast when it's already done.
+        let pruned = timeout(Duration::from_secs(2), async {
+            loop {
+                if fanout.observer_count() == 0 {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(pruned, "closed observer was not pruned from the registry");
+    }
+
+    #[tokio::test]
+    async fn close_signal_drains_and_exits() {
+        let (stream, tx) = EventFanOut::new();
+        let mut rx = stream.subscribe();
+
+        for i in 0..3 {
+            tx.send(test_event(&format!("c{i}"))).await.unwrap();
+        }
+
+        // Flip the closing flag, then drop the sender so recv() returns None.
+        stream.close();
+        drop(tx);
+
+        // We should receive all three events before seeing the stream close.
+        for i in 0..3 {
+            let got = timeout(Duration::from_millis(500), rx.recv())
+                .await
+                .unwrap_or_else(|_| panic!("timeout waiting for event c{i}"))
+                .unwrap_or_else(|| panic!("channel closed before event c{i}"));
+            assert_eq!(lifecycle_key(&got), format!("c{i}"));
+        }
+
+        // After the dispatcher drains and exits, every observer sender is
+        // dropped, so the next recv() observes None.
+        let end = timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("observer channel did not close after drain");
+        assert!(end.is_none(), "expected None after drain, got {end:?}");
+    }
 }
