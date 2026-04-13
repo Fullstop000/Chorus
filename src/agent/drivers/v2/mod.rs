@@ -14,6 +14,7 @@
 //! follow-up tasks.
 
 pub mod acp_protocol;
+pub mod v1_adapter;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -491,6 +492,19 @@ pub struct ModelInfo {
     pub display_name: String,
     pub supports_reasoning_effort: bool,
     pub default_reasoning_effort: Option<String>,
+}
+
+impl ModelInfo {
+    /// Build a minimal `ModelInfo` from a bare model id string.
+    /// Used by the V1 adapter when translating `Driver::list_models()`.
+    pub fn from_id(id: String) -> Self {
+        Self {
+            display_name: id.clone(),
+            id,
+            supports_reasoning_effort: false,
+            default_reasoning_effort: None,
+        }
+    }
 }
 
 /// Slash command description returned by [`RuntimeDriver::list_commands`].
