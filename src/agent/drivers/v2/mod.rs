@@ -13,6 +13,8 @@
 //! drivers or invoking these traits from `AgentManager` will happen in
 //! follow-up tasks.
 
+pub mod acp_protocol;
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
