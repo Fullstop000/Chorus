@@ -1,5 +1,10 @@
-//! v2 Codex driver backed by the `codex-acp` ACP adapter binary.
+//! v2 Codex driver backed by the `codex app-server` native protocol.
+//!
+//! Uses JSONL over stdio with the Codex app-server wire format, which omits
+//! the `"jsonrpc":"2.0"` header present in ACP messages. See the companion
+//! module [`super::codex_app_server`] for all message builders and parsers.
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -13,7 +18,7 @@ use tracing::{debug, trace, warn};
 use crate::agent::drivers::{command_exists, run_command};
 use crate::agent::AgentRuntime;
 
-use super::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator};
+use super::codex_app_server::{self, AppServerEvent, AppServerPhase, TurnStatus};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -29,10 +34,10 @@ impl RuntimeDriver for CodexDriver {
     }
 
     async fn probe(&self) -> anyhow::Result<RuntimeProbe> {
-        if !command_exists("codex-acp") {
+        if !command_exists("codex") {
             return Ok(RuntimeProbe {
                 auth: ProbeAuth::NotInstalled,
-                transport: TransportKind::AcpAdapter,
+                transport: TransportKind::CodexAppServer,
                 capabilities: CapabilitySet::MODEL_LIST,
             });
         }
@@ -51,7 +56,7 @@ impl RuntimeDriver for CodexDriver {
 
         Ok(RuntimeProbe {
             auth,
-            transport: TransportKind::AcpAdapter,
+            transport: TransportKind::CodexAppServer,
             capabilities: CapabilitySet::MODEL_LIST,
         })
     }
@@ -92,14 +97,8 @@ impl RuntimeDriver for CodexDriver {
             spec,
             child: None,
             stdin_tx: None,
-            shared: Arc::new(Mutex::new(SharedReaderState {
-                phase: AcpPhase::AwaitingInitResponse,
-                session_id: None,
-                run_id: None,
-                pending_prompt: None,
-                pending_session_id: None,
-            })),
-            next_request_id: 4,
+            shared: None,
+            next_request_id: 2, // 0 = initialize, 1 = thread, 2+ = turns
             reader_handles: vec![],
         };
         Ok(AttachResult {
@@ -113,12 +112,19 @@ impl RuntimeDriver for CodexDriver {
 // Shared reader state
 // ---------------------------------------------------------------------------
 
+/// State shared between the `CodexHandle` and the stdout reader task.
 struct SharedReaderState {
-    phase: AcpPhase,
-    session_id: Option<String>,
+    phase: AppServerPhase,
+    thread_id: Option<String>,
+    turn_id: Option<String>,
     run_id: Option<RunId>,
     pending_prompt: Option<String>,
-    pending_session_id: Option<String>,
+    /// Set when start() is called with a resume_session_id.
+    pending_thread_id: Option<String>,
+    /// Authoritative agent state — read by `state()` on the handle.
+    agent_state: AgentState,
+    /// Per-item command output buffer, keyed by item_id, capped at 256 KB each.
+    cmd_output_buf: HashMap<String, String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -127,20 +133,23 @@ struct SharedReaderState {
 
 pub struct CodexHandle {
     key: AgentKey,
+    /// Pre-start state only; after start() consult shared.agent_state instead.
     state: AgentState,
     events: EventStreamHandle,
     event_tx: mpsc::Sender<DriverEvent>,
     spec: AgentSpec,
     child: Option<std::process::Child>,
     stdin_tx: Option<mpsc::Sender<String>>,
-    shared: Arc<Mutex<SharedReaderState>>,
+    shared: Option<Arc<Mutex<SharedReaderState>>>,
     next_request_id: u64,
     reader_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl CodexHandle {
     fn emit(&self, event: DriverEvent) {
-        let _ = self.event_tx.try_send(event);
+        if let Err(e) = self.event_tx.try_send(event) {
+            warn!("codex v2: failed to emit event: {e}");
+        }
     }
 
     fn alloc_id(&mut self) -> u64 {
@@ -162,59 +171,22 @@ impl Drop for CodexHandle {
     }
 }
 
-/// Codex requires a git repository in the working directory.
-// fn pre_spawn_setup(working_directory: &std::path::Path) -> anyhow::Result<()> {
-//     let git_dir = working_directory.join(".git");
-//     if git_dir.exists() {
-//         return Ok(());
-//     }
-
-//     Command::new("git")
-//         .args(["init"])
-//         .current_dir(working_directory)
-//         .stdin(Stdio::null())
-//         .stdout(Stdio::null())
-//         .stderr(Stdio::null())
-//         .status()
-//         .context("codex: git init failed")?;
-
-//     Command::new("git")
-//         .args(["add", "-A"])
-//         .current_dir(working_directory)
-//         .stdin(Stdio::null())
-//         .stdout(Stdio::null())
-//         .stderr(Stdio::null())
-//         .status()
-//         .context("codex: git add failed")?;
-
-//     let git_env = [
-//         ("GIT_AUTHOR_NAME", "slock"),
-//         ("GIT_AUTHOR_EMAIL", "slock@local"),
-//         ("GIT_COMMITTER_NAME", "slock"),
-//         ("GIT_COMMITTER_EMAIL", "slock@local"),
-//     ];
-
-//     Command::new("git")
-//         .args(["commit", "--allow-empty", "-m", "init"])
-//         .current_dir(working_directory)
-//         .stdin(Stdio::null())
-//         .stdout(Stdio::null())
-//         .stderr(Stdio::null())
-//         .envs(git_env)
-//         .status()
-//         .context("codex: git commit failed")?;
-
-//     Ok(())
-// }
-
 #[async_trait]
 impl AgentHandle for CodexHandle {
     fn key(&self) -> &AgentKey {
         &self.key
     }
 
+    /// Returns the authoritative agent state.
+    ///
+    /// Once `start()` has been called, reads from `shared.agent_state` so the
+    /// value reflects transitions made by the async reader task.
     fn state(&self) -> AgentState {
-        self.state.clone()
+        if let Some(ref shared) = self.shared {
+            shared.lock().unwrap().agent_state.clone()
+        } else {
+            self.state.clone()
+        }
     }
 
     async fn start(
@@ -232,31 +204,38 @@ impl AgentHandle for CodexHandle {
             state: AgentState::Starting,
         });
 
-        // pre_spawn_setup(&self.spec.working_directory)?;
+        // Build CLI args: `codex app-server [flags]`
+        let mut args: Vec<String> = vec!["app-server".into()];
 
-        // Build CLI args: codex-acp -c key=value ...
-        let mut args: Vec<String> = vec![
-            "-c".into(),
-            r#"approval_policy="never""#.into(),
-            "-c".into(),
-            r#"sandbox_mode="danger-full-access""#.into(),
-        ];
+        args.push("--approval-policy".into());
+        args.push("never".into());
 
-        if let Some(ref effort) = self.spec.reasoning_effort {
-            if let Ok(val) = serde_json::to_string(effort.as_str()) {
-                args.push("-c".into());
-                args.push(format!("model_reasoning_effort={val}"));
-            }
-        }
+        args.push("--sandbox".into());
+        args.push("dangerFullAccess".into());
 
         if !self.spec.model.is_empty() {
-            if let Ok(val) = serde_json::to_string(&self.spec.model) {
-                args.push("-c".into());
-                args.push(format!("model={val}"));
-            }
+            args.push("--model".into());
+            args.push(self.spec.model.clone());
         }
 
-        let mut cmd = Command::new("codex-acp");
+        args.push("--cwd".into());
+        args.push(self.spec.working_directory.to_string_lossy().into_owned());
+
+        // Pass bridge MCP server via --mcp-config
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "chat": {
+                    "command": &self.spec.bridge_binary,
+                    "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url],
+                }
+            }
+        });
+        args.push("--mcp-config".into());
+        args.push(
+            serde_json::to_string(&mcp_config).expect("mcp_config serialization cannot fail"),
+        );
+
+        let mut cmd = Command::new("codex");
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -266,45 +245,37 @@ impl AgentHandle for CodexHandle {
             cmd.env(&ev.key, &ev.value);
         }
 
-        let mut child = cmd.spawn().context("failed to spawn codex-acp")?;
-        let stdout = child.stdout.take().context("codex: missing stdout")?;
-        let stderr = child.stderr.take().context("codex: missing stderr")?;
+        let mut child = cmd.spawn().context("failed to spawn codex")?;
+        let stdout_raw = child.stdout.take().context("codex: missing stdout")?;
+        let stderr_raw = child.stderr.take().context("codex: missing stderr")?;
         let mut stdin = child.stdin.take().context("codex: missing stdin")?;
 
-        // Write handshake synchronously before handing stdin to async writer
-        let init_req = acp_protocol::build_initialize_request(1);
+        // Convert to async before spawning so any error propagates here under ?
+        let stdout_async =
+            tokio::process::ChildStdout::from_std(stdout_raw).context("codex: convert stdout")?;
+        let stderr_async =
+            tokio::process::ChildStderr::from_std(stderr_raw).context("codex: convert stderr")?;
+
+        // Write the initialize request synchronously before handing stdin off
+        let init_req = codex_app_server::build_initialize(0);
         writeln!(stdin, "{init_req}").context("codex: failed to write initialize request")?;
 
-        let session_new_params = serde_json::json!({
-            "cwd": self.spec.working_directory,
-            "mcpServers": [{
-                "name": "chat",
-                "command": &self.spec.bridge_binary,
-                "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url],
-                "env": []
-            }]
-        });
+        // Stash state that the reader task will need
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: AppServerPhase::AwaitingInitResponse,
+            thread_id: None,
+            turn_id: None,
+            run_id: None,
+            pending_prompt: init_prompt.map(|p| p.text),
+            pending_thread_id: opts.resume_session_id.clone(),
+            agent_state: AgentState::Starting,
+            cmd_output_buf: HashMap::new(),
+        }));
+        self.shared = Some(shared.clone());
 
-        let session_req = if let Some(ref sid) = opts.resume_session_id {
-            {
-                let mut shared = self.shared.lock().unwrap();
-                shared.pending_session_id = Some(sid.clone());
-            }
-            acp_protocol::build_session_load_request(2, sid, session_new_params)
-        } else {
-            acp_protocol::build_session_new_request(2, session_new_params)
-        };
-        writeln!(stdin, "{session_req}").context("codex: failed to write session request")?;
-
-        // Stash deferred initial prompt
-        if let Some(ref req) = init_prompt {
-            let mut shared = self.shared.lock().unwrap();
-            shared.pending_prompt = Some(req.text.clone());
-        }
-
-        // Stdin writer task (spawn_blocking — std stdin is not async)
+        // Stdin writer task (spawn_blocking because std::io::Stdin is not async)
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
-        self.stdin_tx = Some(stdin_tx.clone());
+        self.stdin_tx = Some(stdin_tx);
         let stdin_handle = tokio::task::spawn_blocking(move || {
             while let Some(line) = stdin_rx.blocking_recv() {
                 if writeln!(stdin, "{line}").is_err() {
@@ -317,90 +288,134 @@ impl AgentHandle for CodexHandle {
         });
         self.reader_handles.push(stdin_handle);
 
-        // Stdout reader task
+        // Capture fields needed by the reader task
         let key = self.key.clone();
         let event_tx = self.event_tx.clone();
-        let shared = self.shared.clone();
-        let stdin_tx_for_reader = self.stdin_tx.clone().unwrap();
+        let stdin_tx_reader = self.stdin_tx.clone().unwrap();
+        let model_str = self.spec.model.clone();
+        let cwd_str = self.spec.working_directory.to_string_lossy().into_owned();
+        let system_prompt_str = self.spec.system_prompt.clone();
+
+        // Stdout reader task
         let stdout_handle = tokio::spawn(async move {
-            let reader = BufReader::new(tokio::process::ChildStdout::from_std(stdout).unwrap());
+            let reader = BufReader::new(stdout_async);
             let mut lines = reader.lines();
-            let mut accumulator = ToolCallAccumulator::new();
 
             while let Ok(Some(line)) = lines.next_line().await {
                 if line.trim().is_empty() {
                     continue;
                 }
                 trace!(line = %line, "codex stdout");
-                let parsed = acp_protocol::parse_line(&line);
+                let parsed = codex_app_server::parse_line(&line);
 
                 match parsed {
-                    AcpParsed::InitializeResponse => {
-                        let mut s = shared.lock().unwrap();
-                        s.phase = AcpPhase::AwaitingSessionResponse;
-                        debug!("codex: initialize response received");
+                    AppServerEvent::InitializeResponse => {
+                        // Transition phase and build both messages before releasing lock
+                        let (init_notif, thread_req) = {
+                            let mut s = shared.lock().unwrap();
+                            s.phase = AppServerPhase::AwaitingThreadResponse;
+                            let notif = codex_app_server::build_initialized();
+                            let req = if let Some(ref tid) = s.pending_thread_id {
+                                codex_app_server::build_thread_resume(1, tid)
+                            } else {
+                                codex_app_server::build_thread_start(
+                                    1,
+                                    &model_str,
+                                    &cwd_str,
+                                    system_prompt_str.as_deref(),
+                                )
+                            };
+                            (notif, req)
+                        };
+                        let _ = stdin_tx_reader.try_send(init_notif);
+                        let _ = stdin_tx_reader.try_send(thread_req);
+                        debug!("codex: initialize response received; sent initialized + thread request");
                     }
 
-                    AcpParsed::SessionResponse { session_id } => {
-                        let (sid, deferred_prompt) = {
+                    AppServerEvent::ThreadResponse { thread_id } => {
+                        let (pending_prompt, initial_run_id) = {
                             let mut s = shared.lock().unwrap();
-                            s.phase = AcpPhase::Active;
-                            let sid = session_id
-                                .or_else(|| s.pending_session_id.take())
-                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-                            s.session_id = Some(sid.clone());
+                            s.phase = AppServerPhase::Active;
+                            s.thread_id = Some(thread_id.clone());
+                            s.agent_state = AgentState::Active {
+                                session_id: thread_id.clone(),
+                            };
                             let prompt = s.pending_prompt.take();
-                            (sid, prompt)
+                            let run_id = if prompt.is_some() {
+                                let rid = RunId::new_v4();
+                                s.run_id = Some(rid);
+                                s.agent_state = AgentState::PromptInFlight {
+                                    run_id: rid,
+                                    session_id: thread_id.clone(),
+                                };
+                                Some(rid)
+                            } else {
+                                None
+                            };
+                            (prompt, run_id)
                         };
 
+                        // Emit events outside the lock
                         let _ = event_tx.try_send(DriverEvent::SessionAttached {
                             key: key.clone(),
-                            session_id: sid.clone(),
+                            session_id: thread_id.clone(),
                         });
                         let _ = event_tx.try_send(DriverEvent::Lifecycle {
                             key: key.clone(),
                             state: AgentState::Active {
-                                session_id: sid.clone(),
+                                session_id: thread_id.clone(),
                             },
                         });
 
-                        if let Some(prompt_text) = deferred_prompt {
-                            let run_id = RunId::new_v4();
-                            {
-                                let mut s = shared.lock().unwrap();
-                                s.run_id = Some(run_id);
-                            }
+                        if let (Some(prompt_text), Some(run_id)) = (pending_prompt, initial_run_id)
+                        {
                             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                                 key: key.clone(),
                                 state: AgentState::PromptInFlight {
                                     run_id,
-                                    session_id: sid.clone(),
+                                    session_id: thread_id.clone(),
                                 },
                             });
-
-                            let req =
-                                acp_protocol::build_session_prompt_request(3, &sid, &prompt_text);
-                            let _ = stdin_tx_for_reader.try_send(req);
+                            // id=2: the first turn; alloc_id starts at 2 on the handle side
+                            // but the reader uses fixed 2 since turns beyond the deferred
+                            // initial one are tracked by prompt() using alloc_id
+                            let turn_req =
+                                codex_app_server::build_turn_start(2, &thread_id, &prompt_text);
+                            let _ = stdin_tx_reader.try_send(turn_req);
                         }
+                        debug!("codex: thread active; session_id = {}", thread_id);
                     }
 
-                    AcpParsed::PromptResponse { .. } => {
-                        let (run_id, sid) = {
+                    AppServerEvent::TurnResponse { turn_id } => {
+                        let mut s = shared.lock().unwrap();
+                        s.turn_id = Some(turn_id.clone());
+                        debug!("codex: turn started; turn_id = {}", turn_id);
+                    }
+
+                    AppServerEvent::TurnInterruptResponse => {
+                        debug!("codex: turn interrupt acknowledged");
+                    }
+
+                    AppServerEvent::TurnCompleted { turn_id: _, status } => {
+                        let (run_id, thread_id) = {
                             let mut s = shared.lock().unwrap();
                             let rid = s.run_id.take();
-                            let sid = s.session_id.clone().unwrap_or_default();
-                            (rid, sid)
-                        };
-
-                        if let Some(run_id) = run_id {
-                            for (_id, name, input) in accumulator.drain() {
-                                let _ = event_tx.try_send(DriverEvent::Output {
-                                    key: key.clone(),
-                                    run_id,
-                                    item: AgentEventItem::ToolCall { name, input },
-                                });
+                            s.turn_id = None;
+                            let tid = s.thread_id.clone().unwrap_or_default();
+                            if rid.is_some() {
+                                s.agent_state = AgentState::Active {
+                                    session_id: tid.clone(),
+                                };
                             }
-
+                            (rid, tid)
+                        };
+                        if let Some(run_id) = run_id {
+                            let finish_reason = match status {
+                                TurnStatus::Completed => FinishReason::Natural,
+                                TurnStatus::Interrupted => FinishReason::Cancelled,
+                                // No explicit Error variant; treat as natural completion
+                                TurnStatus::Failed { .. } => FinishReason::Natural,
+                            };
                             let _ = event_tx.try_send(DriverEvent::Output {
                                 key: key.clone(),
                                 run_id,
@@ -410,115 +425,78 @@ impl AgentHandle for CodexHandle {
                                 key: key.clone(),
                                 run_id,
                                 result: RunResult {
-                                    session_id: sid.clone(),
-                                    finish_reason: FinishReason::Natural,
+                                    session_id: thread_id.clone(),
+                                    finish_reason,
                                 },
                             });
                             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                                 key: key.clone(),
-                                state: AgentState::Active { session_id: sid },
+                                state: AgentState::Active {
+                                    session_id: thread_id,
+                                },
                             });
                         }
                     }
 
-                    AcpParsed::SessionUpdate { items } => {
-                        let run_id = {
-                            let s = shared.lock().unwrap();
-                            s.run_id
-                        };
-                        let Some(run_id) = run_id else { continue };
-
-                        for item in items {
-                            match item {
-                                AcpUpdateItem::SessionInit { session_id } => {
-                                    let mut s = shared.lock().unwrap();
-                                    s.session_id = Some(session_id);
-                                }
-                                AcpUpdateItem::Thinking { text } => {
-                                    let _ = event_tx.try_send(DriverEvent::Output {
-                                        key: key.clone(),
-                                        run_id,
-                                        item: AgentEventItem::Thinking { text },
-                                    });
-                                }
-                                AcpUpdateItem::Text { text } => {
-                                    let _ = event_tx.try_send(DriverEvent::Output {
-                                        key: key.clone(),
-                                        run_id,
-                                        item: AgentEventItem::Text { text },
-                                    });
-                                }
-                                AcpUpdateItem::ToolCall { id, name, input } => {
-                                    for (_id, n, inp) in accumulator.drain() {
-                                        let _ = event_tx.try_send(DriverEvent::Output {
-                                            key: key.clone(),
-                                            run_id,
-                                            item: AgentEventItem::ToolCall {
-                                                name: n,
-                                                input: inp,
-                                            },
-                                        });
-                                    }
-                                    accumulator.record_call(id, name, input);
-                                }
-                                AcpUpdateItem::ToolCallUpdate { id, input } => {
-                                    accumulator.merge_update(id, input);
-                                }
-                                AcpUpdateItem::ToolResult { content } => {
-                                    for (_id, n, inp) in accumulator.drain() {
-                                        let _ = event_tx.try_send(DriverEvent::Output {
-                                            key: key.clone(),
-                                            run_id,
-                                            item: AgentEventItem::ToolCall {
-                                                name: n,
-                                                input: inp,
-                                            },
-                                        });
-                                    }
-                                    let _ = event_tx.try_send(DriverEvent::Output {
-                                        key: key.clone(),
-                                        run_id,
-                                        item: AgentEventItem::ToolResult { content },
-                                    });
-                                }
-                                AcpUpdateItem::TurnEnd => {
-                                    for (_id, n, inp) in accumulator.drain() {
-                                        let _ = event_tx.try_send(DriverEvent::Output {
-                                            key: key.clone(),
-                                            run_id,
-                                            item: AgentEventItem::ToolCall {
-                                                name: n,
-                                                input: inp,
-                                            },
-                                        });
-                                    }
-                                    let _ = event_tx.try_send(DriverEvent::Output {
-                                        key: key.clone(),
-                                        run_id,
-                                        item: AgentEventItem::TurnEnd,
-                                    });
-                                }
-                            }
+                    AppServerEvent::AgentMessageDelta { item_id: _, text } => {
+                        let run_id = { shared.lock().unwrap().run_id };
+                        if let Some(run_id) = run_id {
+                            let _ = event_tx.try_send(DriverEvent::Output {
+                                key: key.clone(),
+                                run_id,
+                                item: AgentEventItem::Text { text },
+                            });
                         }
                     }
 
-                    AcpParsed::PermissionRequested {
-                        request_id,
-                        tool_name,
-                        options,
-                    } => {
-                        let option_id = acp_protocol::pick_best_option_id(&options);
-                        debug!(
-                            ?tool_name,
-                            request_id, option_id, "codex: auto-approving permission"
-                        );
-                        let response =
-                            acp_protocol::build_permission_response_raw(request_id, option_id);
-                        let _ = stdin_tx_for_reader.try_send(response);
+                    AppServerEvent::ReasoningSummaryDelta { item_id: _, text } => {
+                        let run_id = { shared.lock().unwrap().run_id };
+                        if let Some(run_id) = run_id {
+                            let _ = event_tx.try_send(DriverEvent::Output {
+                                key: key.clone(),
+                                run_id,
+                                item: AgentEventItem::Thinking { text },
+                            });
+                        }
                     }
 
-                    AcpParsed::Error { message } => {
-                        warn!(message = %message, "codex: ACP error");
+                    AppServerEvent::CommandOutputDelta { item_id, text } => {
+                        // Buffer up to 256 KB per command item; still forward each delta
+                        const MAX_BUF: usize = 256 * 1024;
+                        let run_id = {
+                            let mut s = shared.lock().unwrap();
+                            let buf = s.cmd_output_buf.entry(item_id.clone()).or_default();
+                            if buf.len() + text.len() <= MAX_BUF {
+                                buf.push_str(&text);
+                            }
+                            s.run_id
+                        };
+                        if let Some(run_id) = run_id {
+                            let _ = event_tx.try_send(DriverEvent::Output {
+                                key: key.clone(),
+                                run_id,
+                                item: AgentEventItem::Text { text },
+                            });
+                        }
+                    }
+
+                    AppServerEvent::CommandApproval { request_id, .. } => {
+                        // approval_policy=never should prevent these; approve defensively if received
+                        let resp =
+                            codex_app_server::build_approval_response(&request_id, "accept");
+                        let _ = stdin_tx_reader.try_send(resp);
+                        debug!("codex: auto-approved command execution");
+                    }
+
+                    AppServerEvent::FileChangeApproval { request_id, .. } => {
+                        let resp =
+                            codex_app_server::build_approval_response(&request_id, "accept");
+                        let _ = stdin_tx_reader.try_send(resp);
+                        debug!("codex: auto-approved file change");
+                    }
+
+                    AppServerEvent::Error { message, .. } => {
+                        warn!(message = %message, "codex: protocol error");
                         let run_id = {
                             let mut s = shared.lock().unwrap();
                             s.run_id.take()
@@ -532,27 +510,26 @@ impl AgentHandle for CodexHandle {
                         }
                     }
 
-                    AcpParsed::Unknown => {}
+                    // Informational notifications — no action required
+                    AppServerEvent::ThreadStarted { .. }
+                    | AppServerEvent::TurnStarted { .. }
+                    | AppServerEvent::ItemStarted { .. }
+                    | AppServerEvent::ItemCompleted { .. }
+                    | AppServerEvent::Unknown => {}
                 }
             }
 
-            // EOF — runtime exited
-            let run_id = {
+            // EOF — `codex` process exited
+            let (run_id, session_id) = {
                 let s = shared.lock().unwrap();
-                s.run_id
+                (s.run_id, s.thread_id.clone().unwrap_or_default())
             };
             if let Some(run_id) = run_id {
-                let sid = shared
-                    .lock()
-                    .unwrap()
-                    .session_id
-                    .clone()
-                    .unwrap_or_default();
                 let _ = event_tx.try_send(DriverEvent::Completed {
                     key: key.clone(),
                     run_id,
                     result: RunResult {
-                        session_id: sid,
+                        session_id,
                         finish_reason: FinishReason::TransportClosed,
                     },
                 });
@@ -564,10 +541,10 @@ impl AgentHandle for CodexHandle {
         });
         self.reader_handles.push(stdout_handle);
 
-        // Stderr reader task
+        // Stderr reader task — just log for diagnostics
         let key_err = self.key.clone();
         let stderr_handle = tokio::spawn(async move {
-            let reader = BufReader::new(tokio::process::ChildStderr::from_std(stderr).unwrap());
+            let reader = BufReader::new(stderr_async);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
@@ -578,7 +555,6 @@ impl AgentHandle for CodexHandle {
         self.reader_handles.push(stderr_handle);
 
         self.child = Some(child);
-
         Ok(())
     }
 
@@ -591,23 +567,29 @@ impl AgentHandle for CodexHandle {
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
-        let session_id = match &self.state {
-            AgentState::Active { session_id } => session_id.clone(),
-            _ => bail!("codex: cannot prompt in non-active state"),
+        // Read session_id from shared state — self.state may lag the reader task
+        let session_id = if let Some(ref shared) = self.shared {
+            let s = shared.lock().unwrap();
+            match &s.agent_state {
+                AgentState::Active { session_id } => session_id.clone(),
+                _ => bail!("codex: cannot prompt in non-active state"),
+            }
+        } else {
+            bail!("codex: cannot prompt — handle not started");
         };
 
         let run_id = RunId::new_v4();
         let request_id = self.alloc_id();
 
         {
-            let mut s = self.shared.lock().unwrap();
+            let mut s = self.shared.as_ref().unwrap().lock().unwrap();
             s.run_id = Some(run_id);
+            s.agent_state = AgentState::PromptInFlight {
+                run_id,
+                session_id: session_id.clone(),
+            };
         }
 
-        self.state = AgentState::PromptInFlight {
-            run_id,
-            session_id: session_id.clone(),
-        };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
             state: AgentState::PromptInFlight {
@@ -616,10 +598,9 @@ impl AgentHandle for CodexHandle {
             },
         });
 
-        let prompt_req =
-            acp_protocol::build_session_prompt_request(request_id, &session_id, &req.text);
+        let turn_req = codex_app_server::build_turn_start(request_id, &session_id, &req.text);
         if let Some(ref tx) = self.stdin_tx {
-            tx.send(prompt_req)
+            tx.send(turn_req)
                 .await
                 .context("codex: stdin channel closed")?;
         } else {
@@ -630,33 +611,58 @@ impl AgentHandle for CodexHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        if let AgentState::PromptInFlight { run_id, session_id } = &self.state {
-            let run_id = *run_id;
-            let session_id = session_id.clone();
+        let is_in_flight = if let Some(ref shared) = self.shared {
+            matches!(
+                shared.lock().unwrap().agent_state,
+                AgentState::PromptInFlight { .. }
+            )
+        } else {
+            false
+        };
 
-            {
-                let mut s = self.shared.lock().unwrap();
-                s.run_id = None;
+        if !is_in_flight {
+            return Ok(CancelOutcome::NotInFlight);
+        }
+
+        let (run_id, session_id, thread_id, turn_id) = {
+            let mut s = self.shared.as_ref().unwrap().lock().unwrap();
+            let run_id = s.run_id.take();
+            let session_id = s.thread_id.clone().unwrap_or_default();
+            let thread_id = s.thread_id.clone().unwrap_or_default();
+            let turn_id = s.turn_id.take();
+            s.agent_state = AgentState::Active {
+                session_id: session_id.clone(),
+            };
+            (run_id, session_id, thread_id, turn_id)
+        };
+
+        // Send a real turn/interrupt if we have enough context
+        if !thread_id.is_empty() {
+            if let (Some(vid), Some(tx)) = (turn_id, self.stdin_tx.clone()) {
+                let req_id = self.alloc_id();
+                let interrupt =
+                    codex_app_server::build_turn_interrupt(req_id, &thread_id, &vid);
+                let _ = tx.try_send(interrupt);
             }
+        }
 
+        // Emit synthetic completion so callers aren't left waiting
+        if let Some(run_id) = run_id {
             self.emit(DriverEvent::Completed {
                 key: self.key.clone(),
                 run_id,
                 result: RunResult {
-                    session_id: session_id.clone(),
+                    session_id,
                     finish_reason: FinishReason::Cancelled,
                 },
             });
-
-            self.state = AgentState::Active { session_id };
-            Ok(CancelOutcome::Aborted)
-        } else {
-            Ok(CancelOutcome::NotInFlight)
         }
+
+        Ok(CancelOutcome::Aborted)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
-        if matches!(self.state, AgentState::Closed) {
+        if matches!(self.state(), AgentState::Closed) {
             return Ok(());
         }
 
@@ -670,7 +676,11 @@ impl AgentHandle for CodexHandle {
         self.child = None;
         self.stdin_tx = None;
 
+        if let Some(ref shared) = self.shared {
+            shared.lock().unwrap().agent_state = AgentState::Closed;
+        }
         self.state = AgentState::Closed;
+
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
             state: AgentState::Closed,
@@ -712,7 +722,8 @@ mod tests {
     async fn test_codex_driver_probe_not_installed() {
         let driver = CodexDriver;
         let probe = driver.probe().await.unwrap();
-        assert_eq!(probe.transport, TransportKind::AcpAdapter);
+        // When the codex binary is absent the transport must be CodexAppServer
+        assert_eq!(probe.transport, TransportKind::CodexAppServer);
         assert!(probe.capabilities.contains(CapabilitySet::MODEL_LIST));
     }
 
@@ -741,13 +752,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_codex_handle_initial_phase() {
+    async fn test_codex_handle_shared_is_none_before_start() {
+        // Before start(), state() falls back to self.state which is Idle.
+        // Verifies attach() leaves shared=None and state() falls back correctly.
         let driver = CodexDriver;
         let result = driver
-            .attach("agent-codex-2".into(), test_spec())
+            .attach("agent-codex-3".into(), test_spec())
             .await
             .unwrap();
-        // Handle starts Idle
         assert!(matches!(result.handle.state(), AgentState::Idle));
     }
 }
