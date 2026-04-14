@@ -177,14 +177,18 @@ impl AgentHandle for ClaudeHandle {
         let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
         let mut args: Vec<String> = vec![
             "-p".into(),
-            "--input-format".into(), "stream-json".into(),
-            "--output-format".into(), "stream-json".into(),
+            "--input-format".into(),
+            "stream-json".into(),
+            "--output-format".into(),
+            "stream-json".into(),
             "--verbose".into(),
             "--include-partial-messages".into(),
-            "--permission-mode".into(), "acceptEdits".into(),
+            "--permission-mode".into(),
+            "acceptEdits".into(),
             "--allowedTools".into(),
             "Bash,Read,Edit,Write,MultiEdit,Glob,Grep,LS,mcp__chat__*".into(),
-            "--mcp-config".into(), mcp_path_str,
+            "--mcp-config".into(),
+            mcp_path_str,
         ];
         if !self.spec.model.is_empty() {
             args.push("--model".into());
@@ -496,10 +500,10 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                     }
                 }
 
-                HeadlessEvent::ContentBlockStop { index } | HeadlessEvent::ToolUseStop { index } => {
+                HeadlessEvent::ContentBlockStop { index }
+                | HeadlessEvent::ToolUseStop { index } => {
                     // If index matches current tool accumulation, flush it
-                    let should_flush =
-                        pending_tool.as_ref().map_or(false, |t| t.3 == index);
+                    let should_flush = pending_tool.as_ref().map_or(false, |t| t.3 == index);
                     if should_flush {
                         let run_id = shared.lock().unwrap().run_id;
                         if let Some(rid) = run_id {
@@ -714,12 +718,8 @@ mod tests {
         }));
 
         // Spawn the reader
-        let _handle = spawn_stdout_reader(
-            "test-agent".into(),
-            event_tx,
-            mock_stdout,
-            shared.clone(),
-        );
+        let _handle =
+            spawn_stdout_reader("test-agent".into(), event_tx, mock_stdout, shared.clone());
 
         // Write JSONL lines
         for line in &jsonl {
@@ -731,9 +731,7 @@ mod tests {
 
         // Collect events (with timeout)
         let mut events = Vec::new();
-        while let Ok(Some(ev)) =
-            timeout(Duration::from_secs(2), event_rx.recv()).await
-        {
+        while let Ok(Some(ev)) = timeout(Duration::from_secs(2), event_rx.recv()).await {
             events.push(ev);
         }
 
@@ -741,31 +739,45 @@ mod tests {
         // 1. SessionAttached
         assert!(
             matches!(&events[0], DriverEvent::SessionAttached { session_id, .. } if session_id == "sess-test"),
-            "expected SessionAttached, got {:?}", events[0]
+            "expected SessionAttached, got {:?}",
+            events[0]
         );
         // 2. Lifecycle(Active)
         assert!(
             matches!(&events[1], DriverEvent::Lifecycle { state: AgentState::Active { session_id }, .. } if session_id == "sess-test"),
-            "expected Lifecycle(Active), got {:?}", events[1]
+            "expected Lifecycle(Active), got {:?}",
+            events[1]
         );
         // 3. Lifecycle(PromptInFlight) — from deferred prompt
         assert!(
-            matches!(&events[2], DriverEvent::Lifecycle { state: AgentState::PromptInFlight { .. }, .. }),
-            "expected Lifecycle(PromptInFlight), got {:?}", events[2]
+            matches!(
+                &events[2],
+                DriverEvent::Lifecycle {
+                    state: AgentState::PromptInFlight { .. },
+                    ..
+                }
+            ),
+            "expected Lifecycle(PromptInFlight), got {:?}",
+            events[2]
         );
         // 4. Thinking delta
         assert!(
             matches!(&events[3], DriverEvent::Output { item: AgentEventItem::Thinking { text }, .. } if text == "hmm"),
-            "expected Thinking, got {:?}", events[3]
+            "expected Thinking, got {:?}",
+            events[3]
         );
         // 5. Text delta
         assert!(
             matches!(&events[4], DriverEvent::Output { item: AgentEventItem::Text { text }, .. } if text == "Hi"),
-            "expected Text, got {:?}", events[4]
+            "expected Text, got {:?}",
+            events[4]
         );
         // 6. ToolCall (flushed on content_block_stop)
         match &events[5] {
-            DriverEvent::Output { item: AgentEventItem::ToolCall { name, input }, .. } => {
+            DriverEvent::Output {
+                item: AgentEventItem::ToolCall { name, input },
+                ..
+            } => {
                 assert_eq!(name, "Read");
                 assert_eq!(input["file"], "main.rs");
             }
@@ -773,23 +785,54 @@ mod tests {
         }
         // 7. TurnEnd
         assert!(
-            matches!(&events[6], DriverEvent::Output { item: AgentEventItem::TurnEnd, .. }),
-            "expected TurnEnd, got {:?}", events[6]
+            matches!(
+                &events[6],
+                DriverEvent::Output {
+                    item: AgentEventItem::TurnEnd,
+                    ..
+                }
+            ),
+            "expected TurnEnd, got {:?}",
+            events[6]
         );
         // 8. Completed
         assert!(
-            matches!(&events[7], DriverEvent::Completed { result: RunResult { finish_reason: FinishReason::Natural, .. }, .. }),
-            "expected Completed, got {:?}", events[7]
+            matches!(
+                &events[7],
+                DriverEvent::Completed {
+                    result: RunResult {
+                        finish_reason: FinishReason::Natural,
+                        ..
+                    },
+                    ..
+                }
+            ),
+            "expected Completed, got {:?}",
+            events[7]
         );
         // 9. Lifecycle(Active) — reset after completion
         assert!(
-            matches!(&events[8], DriverEvent::Lifecycle { state: AgentState::Active { .. }, .. }),
-            "expected Lifecycle(Active), got {:?}", events[8]
+            matches!(
+                &events[8],
+                DriverEvent::Lifecycle {
+                    state: AgentState::Active { .. },
+                    ..
+                }
+            ),
+            "expected Lifecycle(Active), got {:?}",
+            events[8]
         );
         // 10. Lifecycle(Closed) — EOF
         assert!(
-            matches!(&events[9], DriverEvent::Lifecycle { state: AgentState::Closed, .. }),
-            "expected Lifecycle(Closed), got {:?}", events[9]
+            matches!(
+                &events[9],
+                DriverEvent::Lifecycle {
+                    state: AgentState::Closed,
+                    ..
+                }
+            ),
+            "expected Lifecycle(Closed), got {:?}",
+            events[9]
         );
         assert_eq!(events.len(), 10);
 

@@ -27,7 +27,11 @@ pub enum HeadlessEvent {
     /// Text content delta.
     TextDelta { text: String },
     /// Tool use block started.
-    ToolUseStart { index: u32, id: String, name: String },
+    ToolUseStart {
+        index: u32,
+        id: String,
+        name: String,
+    },
     /// Partial JSON input for a tool use block.
     InputJsonDelta { index: u32, partial_json: String },
     /// Tool use block stopped.
@@ -93,10 +97,7 @@ fn parse_system(v: &Value) -> HeadlessEvent {
             HeadlessEvent::SystemInit { session_id }
         }
         Some("api_retry") => {
-            let attempt = v
-                .get("attempt")
-                .and_then(|a| a.as_u64())
-                .unwrap_or(0) as u32;
+            let attempt = v.get("attempt").and_then(|a| a.as_u64()).unwrap_or(0) as u32;
             let error = v
                 .get("error")
                 .and_then(|e| e.as_str())
@@ -128,10 +129,7 @@ fn parse_stream_event(v: &Value) -> HeadlessEvent {
         Some("content_block_start") => parse_content_block_start(event),
         Some("content_block_delta") => parse_content_block_delta(event),
         Some("content_block_stop") => {
-            let index = event
-                .get("index")
-                .and_then(|i| i.as_u64())
-                .unwrap_or(0) as u32;
+            let index = event.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
             HeadlessEvent::ContentBlockStop { index }
         }
         Some("message_start" | "message_delta" | "message_stop") => HeadlessEvent::Unknown,
@@ -151,10 +149,7 @@ fn parse_content_block_start(event: &Value) -> HeadlessEvent {
 
     match cb.get("type").and_then(|t| t.as_str()) {
         Some("tool_use") => {
-            let index = event
-                .get("index")
-                .and_then(|i| i.as_u64())
-                .unwrap_or(0) as u32;
+            let index = event.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
             let id = cb
                 .get("id")
                 .and_then(|s| s.as_str())
@@ -195,10 +190,7 @@ fn parse_content_block_delta(event: &Value) -> HeadlessEvent {
             HeadlessEvent::TextDelta { text }
         }
         Some("input_json_delta") => {
-            let index = event
-                .get("index")
-                .and_then(|i| i.as_u64())
-                .unwrap_or(0) as u32;
+            let index = event.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
             let partial_json = delta
                 .get("partial_json")
                 .and_then(|s| s.as_str())
@@ -224,10 +216,7 @@ fn parse_result(v: &Value) -> HeadlessEvent {
         .and_then(|s| s.as_str())
         .unwrap_or("")
         .to_string();
-    let is_error = v
-        .get("is_error")
-        .and_then(|b| b.as_bool())
-        .unwrap_or(false);
+    let is_error = v.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false);
     let stop_reason = v
         .get("stop_reason")
         .and_then(|s| s.as_str())
@@ -463,20 +452,32 @@ mod tests {
         let events: Vec<_> = lines.iter().map(|l| parse_line(l)).collect();
 
         // SystemInit
-        assert!(matches!(&events[0], HeadlessEvent::SystemInit { session_id } if session_id == "sess-001"));
+        assert!(
+            matches!(&events[0], HeadlessEvent::SystemInit { session_id } if session_id == "sess-001")
+        );
         // thinking block start → Unknown (we skip non-tool_use starts)
         assert!(matches!(&events[1], HeadlessEvent::Unknown));
         // thinking delta
-        assert!(matches!(&events[2], HeadlessEvent::ThinkingDelta { text } if text == "Thinking..."));
+        assert!(
+            matches!(&events[2], HeadlessEvent::ThinkingDelta { text } if text == "Thinking...")
+        );
         // content block stop index 0
-        assert!(matches!(&events[3], HeadlessEvent::ContentBlockStop { index: 0 }));
+        assert!(matches!(
+            &events[3],
+            HeadlessEvent::ContentBlockStop { index: 0 }
+        ));
         // text block start → Unknown
         assert!(matches!(&events[4], HeadlessEvent::Unknown));
         // text delta
         assert!(matches!(&events[5], HeadlessEvent::TextDelta { text } if text == "Hi there!"));
         // content block stop index 1
-        assert!(matches!(&events[6], HeadlessEvent::ContentBlockStop { index: 1 }));
+        assert!(matches!(
+            &events[6],
+            HeadlessEvent::ContentBlockStop { index: 1 }
+        ));
         // result
-        assert!(matches!(&events[7], HeadlessEvent::TurnResult { session_id, is_error, .. } if session_id == "sess-001" && !is_error));
+        assert!(
+            matches!(&events[7], HeadlessEvent::TurnResult { session_id, is_error, .. } if session_id == "sess-001" && !is_error)
+        );
     }
 }

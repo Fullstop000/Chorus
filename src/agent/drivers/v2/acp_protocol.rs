@@ -20,7 +20,31 @@
 use serde_json::{json, Value};
 use tracing::{debug, trace};
 
-use crate::agent::drivers::acp::strip_mcp_prefix;
+// ---------------------------------------------------------------------------
+// MCP prefix stripping (moved from deleted v1 acp.rs)
+// ---------------------------------------------------------------------------
+
+/// Strips known MCP/chat prefixes from tool names so the activity log shows
+/// short human-readable names like `send_message` instead of
+/// `mcp__chat__send_message`.
+pub(crate) fn strip_mcp_prefix(name: &str) -> &str {
+    // Standard MCP prefix forms: mcp__chat__, mcp_chat_, chat_
+    if let Some(s) = name
+        .strip_prefix("mcp__chat__")
+        .or_else(|| name.strip_prefix("mcp_chat_"))
+        .or_else(|| name.strip_prefix("chat_"))
+    {
+        return s;
+    }
+    // Claude ACP formats tool titles as "Tool: <server>/<tool_name>"
+    // e.g. "Tool: chat/send_message" → "send_message"
+    if name.starts_with("Tool: ") {
+        if let Some(slash) = name.find('/') {
+            return &name[slash + 1..];
+        }
+    }
+    name
+}
 
 // ---------------------------------------------------------------------------
 // Protocol phase state machine

@@ -21,7 +21,6 @@ pub mod codex_app_server;
 pub mod fake;
 pub mod kimi;
 pub mod opencode;
-pub mod v1_adapter;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
