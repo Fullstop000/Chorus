@@ -164,3 +164,34 @@ Before stopping, confirm:
 - [ ] Verification matches risk of change
 - [ ] Required e2e/browser QA run for user-facing critical paths, or gap called out
 - [ ] `AGENTS.md` or related docs updated if shipped behavior/workflow changed
+
+---
+
+## Cursor Cloud specific instructions
+
+### System dependencies
+
+- **Rust stable >=1.83** — the update script runs `rustup default stable` to ensure the latest stable toolchain is active. If a transitive crate requires a newer edition (e.g. `edition2024`), this keeps the toolchain current.
+- **OpenSSL dev headers** (`libssl-dev`, `pkg-config`) — required by `reqwest`/`openssl-sys`. Already installed in the base snapshot; if a fresh VM errors on `openssl-sys`, run `sudo apt-get install -y libssl-dev pkg-config`.
+- **Node.js >=18** and **npm** — pre-installed; used for the Vite dev server and vitest.
+- **SQLite** — bundled via `rusqlite`, no system install needed.
+
+### Running services
+
+Commands are documented in `docs/DEV.md` and the top of this file. Key non-obvious notes:
+
+- **Backend**: `RUST_LOG=chorus=info cargo run -- serve --port 3001`. First run compiles from scratch (~35s). The server auto-creates `~/.chorus/chorus.db`.
+- **Frontend**: `cd ui && npm run dev`. Proxies `/api/*` and `/internal/*` to the backend on port 3001 by default. Override with `CHORUS_API_PORT=<N>`.
+- The backend must be fully ready (responding on `/api/whoami`) before the frontend proxy will work. Wait or poll before testing.
+
+### Testing caveats
+
+- `cargo test` (51 tests) passes cleanly — uses real SQLite in tempdirs.
+- `cd ui && npm run test` (vitest) has 2 pre-existing failures in `Telescope.test.tsx` — the shimmer component wraps each character in individual `<span>` elements, so `toContain("reading…")` no longer matches the innerHTML. These are not caused by environment issues.
+- Pre-commit hooks (`.hooks/pre-commit`) run `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
+
+### Lint
+
+- `cargo fmt --check` — Rust formatting
+- `cargo clippy --all-targets -- -D warnings` — Rust lints
+- `cd ui && npx tsc --noEmit` — TypeScript type checking
