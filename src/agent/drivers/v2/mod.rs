@@ -102,7 +102,7 @@ pub enum LoginOutcome {
 /// - `AcpNative`: runtime speaks ACP natively (e.g. Kimi CLI).
 /// - `StreamJson`: bespoke streaming-JSON protocol (e.g. Claude raw).
 /// - `HttpAppServer`: app server model (e.g. OpenCode daemon).
-/// - `StdioAppServer`: native app-server protocol over stdio (JSONL, no `jsonrpc` header on wire).
+/// - `CodexAppServer`: native app-server protocol over stdio (JSONL, no `jsonrpc` header on wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportKind {
     AcpAdapter,
@@ -111,7 +111,7 @@ pub enum TransportKind {
     HttpAppServer,
     /// Codex app-server protocol — JSONL over stdio. Wire format omits the
     /// `"jsonrpc":"2.0"` header present in ACP messages.
-    StdioAppServer,
+    CodexAppServer,
 }
 
 // ---------------------------------------------------------------------------
