@@ -163,49 +163,49 @@ impl Drop for CodexHandle {
 }
 
 /// Codex requires a git repository in the working directory.
-fn pre_spawn_setup(working_directory: &std::path::Path) -> anyhow::Result<()> {
-    let git_dir = working_directory.join(".git");
-    if git_dir.exists() {
-        return Ok(());
-    }
+// fn pre_spawn_setup(working_directory: &std::path::Path) -> anyhow::Result<()> {
+//     let git_dir = working_directory.join(".git");
+//     if git_dir.exists() {
+//         return Ok(());
+//     }
 
-    Command::new("git")
-        .args(["init"])
-        .current_dir(working_directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("codex: git init failed")?;
+//     Command::new("git")
+//         .args(["init"])
+//         .current_dir(working_directory)
+//         .stdin(Stdio::null())
+//         .stdout(Stdio::null())
+//         .stderr(Stdio::null())
+//         .status()
+//         .context("codex: git init failed")?;
 
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(working_directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .context("codex: git add failed")?;
+//     Command::new("git")
+//         .args(["add", "-A"])
+//         .current_dir(working_directory)
+//         .stdin(Stdio::null())
+//         .stdout(Stdio::null())
+//         .stderr(Stdio::null())
+//         .status()
+//         .context("codex: git add failed")?;
 
-    let git_env = [
-        ("GIT_AUTHOR_NAME", "slock"),
-        ("GIT_AUTHOR_EMAIL", "slock@local"),
-        ("GIT_COMMITTER_NAME", "slock"),
-        ("GIT_COMMITTER_EMAIL", "slock@local"),
-    ];
+//     let git_env = [
+//         ("GIT_AUTHOR_NAME", "slock"),
+//         ("GIT_AUTHOR_EMAIL", "slock@local"),
+//         ("GIT_COMMITTER_NAME", "slock"),
+//         ("GIT_COMMITTER_EMAIL", "slock@local"),
+//     ];
 
-    Command::new("git")
-        .args(["commit", "--allow-empty", "-m", "init"])
-        .current_dir(working_directory)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .envs(git_env)
-        .status()
-        .context("codex: git commit failed")?;
+//     Command::new("git")
+//         .args(["commit", "--allow-empty", "-m", "init"])
+//         .current_dir(working_directory)
+//         .stdin(Stdio::null())
+//         .stdout(Stdio::null())
+//         .stderr(Stdio::null())
+//         .envs(git_env)
+//         .status()
+//         .context("codex: git commit failed")?;
 
-    Ok(())
-}
+//     Ok(())
+// }
 
 #[async_trait]
 impl AgentHandle for CodexHandle {
@@ -232,7 +232,7 @@ impl AgentHandle for CodexHandle {
             state: AgentState::Starting,
         });
 
-        pre_spawn_setup(&self.spec.working_directory)?;
+        // pre_spawn_setup(&self.spec.working_directory)?;
 
         // Build CLI args: codex-acp -c key=value ...
         let mut args: Vec<String> = vec![
@@ -737,6 +737,17 @@ mod tests {
             .attach("agent-codex-1".into(), test_spec())
             .await
             .unwrap();
+        assert!(matches!(result.handle.state(), AgentState::Idle));
+    }
+
+    #[tokio::test]
+    async fn test_codex_handle_initial_phase() {
+        let driver = CodexDriver;
+        let result = driver
+            .attach("agent-codex-2".into(), test_spec())
+            .await
+            .unwrap();
+        // Handle starts Idle
         assert!(matches!(result.handle.state(), AgentState::Idle));
     }
 }
