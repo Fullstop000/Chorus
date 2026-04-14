@@ -15,6 +15,7 @@
 
 pub mod acp_protocol;
 pub mod claude;
+pub mod claude_headless;
 pub mod codex;
 pub mod codex_app_server;
 pub mod fake;
