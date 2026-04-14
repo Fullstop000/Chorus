@@ -16,6 +16,7 @@
 pub mod acp_protocol;
 pub mod claude;
 pub mod codex;
+pub mod codex_app_server;
 pub mod fake;
 pub mod kimi;
 pub mod opencode;
