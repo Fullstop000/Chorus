@@ -39,7 +39,10 @@ pub enum HeadlessEvent {
         session_id: String,
         result: String,
         is_error: bool,
+        /// Why the turn ended: `"end_turn"`, `"tool_use"`, `"max_tokens"`, etc.
         stop_reason: String,
+        /// Result status: `"success"` or `"error"`.
+        subtype: String,
     },
     /// Unrecognized or irrelevant line.
     Unknown,
@@ -221,6 +224,11 @@ fn parse_result(v: &Value) -> HeadlessEvent {
         .and_then(|b| b.as_bool())
         .unwrap_or(false);
     let stop_reason = v
+        .get("stop_reason")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    let subtype = v
         .get("subtype")
         .and_then(|s| s.as_str())
         .unwrap_or("")
@@ -231,6 +239,7 @@ fn parse_result(v: &Value) -> HeadlessEvent {
         result,
         is_error,
         stop_reason,
+        subtype,
     }
 }
 
@@ -352,11 +361,13 @@ mod tests {
                 result,
                 is_error,
                 stop_reason,
+                subtype,
             } => {
                 assert_eq!(session_id, "abc123");
                 assert_eq!(result, "Hello!");
                 assert!(!is_error);
-                assert_eq!(stop_reason, "success");
+                assert_eq!(stop_reason, "end_turn");
+                assert_eq!(subtype, "success");
             }
             other => panic!("expected TurnResult, got {other:?}"),
         }
@@ -371,11 +382,13 @@ mod tests {
                 result,
                 is_error,
                 stop_reason,
+                subtype,
             } => {
                 assert_eq!(session_id, "err456");
                 assert_eq!(result, "Something went wrong");
                 assert!(is_error);
                 assert_eq!(stop_reason, "error");
+                assert_eq!(subtype, "error");
             }
             other => panic!("expected TurnResult, got {other:?}"),
         }

@@ -363,10 +363,10 @@ impl Drop for ClaudeHandle {
 // Background tasks
 // ---------------------------------------------------------------------------
 
-fn spawn_stdout_reader(
+fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     key: AgentKey,
     tx: mpsc::Sender<DriverEvent>,
-    stdout: tokio::process::ChildStdout,
+    stdout: R,
     shared: Arc<std::sync::Mutex<SharedReaderState>>,
     stdin_tx: mpsc::Sender<String>,
 ) -> tokio::task::JoinHandle<()> {
@@ -680,5 +680,130 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
+    }
+
+    /// Feed captured JSONL through spawn_stdout_reader via a mock pipe and
+    /// verify the DriverEvent sequence matches expectations.
+    #[tokio::test]
+    async fn test_stdout_reader_full_turn() {
+        use tokio::io::AsyncWriteExt;
+        use tokio::time::{timeout, Duration};
+
+        // Captured JSONL: system init → thinking → text → tool_use → result
+        let jsonl = [
+            r#"{"type":"system","subtype":"init","session_id":"sess-test","tools":["Bash"],"mcp_servers":[],"model":"claude-sonnet-4-6"}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Hi"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"Read","input":{}}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"file\":"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"main.rs\"}"}}}"#,
+            r#"{"type":"stream_event","event":{"type":"content_block_stop","index":2}}"#,
+            r#"{"type":"result","subtype":"success","is_error":false,"result":"Hi","stop_reason":"end_turn","session_id":"sess-test","duration_ms":500}"#,
+        ];
+
+        // Create a duplex stream as mock stdout
+        let (mock_stdout, mut writer) = tokio::io::duplex(4096);
+
+        // Set up shared state and channels
+        let (event_tx, mut event_rx) = mpsc::channel::<DriverEvent>(64);
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
+        let shared = Arc::new(std::sync::Mutex::new(SharedReaderState {
+            session_id: None,
+            run_id: None,
+            pending_prompt: Some("test prompt".into()),
+            agent_state: AgentState::Starting,
+        }));
+
+        // Spawn the reader
+        let _handle = spawn_stdout_reader(
+            "test-agent".into(),
+            event_tx,
+            mock_stdout,
+            shared.clone(),
+            stdin_tx,
+        );
+
+        // Write JSONL lines
+        for line in &jsonl {
+            writer.write_all(line.as_bytes()).await.unwrap();
+            writer.write_all(b"\n").await.unwrap();
+        }
+        // Close writer to trigger EOF
+        drop(writer);
+
+        // Collect events (with timeout)
+        let mut events = Vec::new();
+        while let Ok(Some(ev)) =
+            timeout(Duration::from_secs(2), event_rx.recv()).await
+        {
+            events.push(ev);
+        }
+
+        // Verify event sequence
+        // 1. SessionAttached
+        assert!(
+            matches!(&events[0], DriverEvent::SessionAttached { session_id, .. } if session_id == "sess-test"),
+            "expected SessionAttached, got {:?}", events[0]
+        );
+        // 2. Lifecycle(Active)
+        assert!(
+            matches!(&events[1], DriverEvent::Lifecycle { state: AgentState::Active { session_id }, .. } if session_id == "sess-test"),
+            "expected Lifecycle(Active), got {:?}", events[1]
+        );
+        // 3. Lifecycle(PromptInFlight) — from deferred prompt
+        assert!(
+            matches!(&events[2], DriverEvent::Lifecycle { state: AgentState::PromptInFlight { .. }, .. }),
+            "expected Lifecycle(PromptInFlight), got {:?}", events[2]
+        );
+        // 4. Thinking delta
+        assert!(
+            matches!(&events[3], DriverEvent::Output { item: AgentEventItem::Thinking { text }, .. } if text == "hmm"),
+            "expected Thinking, got {:?}", events[3]
+        );
+        // 5. Text delta
+        assert!(
+            matches!(&events[4], DriverEvent::Output { item: AgentEventItem::Text { text }, .. } if text == "Hi"),
+            "expected Text, got {:?}", events[4]
+        );
+        // 6. ToolCall (flushed on content_block_stop)
+        match &events[5] {
+            DriverEvent::Output { item: AgentEventItem::ToolCall { name, input }, .. } => {
+                assert_eq!(name, "Read");
+                assert_eq!(input["file"], "main.rs");
+            }
+            other => panic!("expected ToolCall, got {other:?}"),
+        }
+        // 7. TurnEnd
+        assert!(
+            matches!(&events[6], DriverEvent::Output { item: AgentEventItem::TurnEnd, .. }),
+            "expected TurnEnd, got {:?}", events[6]
+        );
+        // 8. Completed
+        assert!(
+            matches!(&events[7], DriverEvent::Completed { result: RunResult { finish_reason: FinishReason::Natural, .. }, .. }),
+            "expected Completed, got {:?}", events[7]
+        );
+        // 9. Lifecycle(Active) — reset after completion
+        assert!(
+            matches!(&events[8], DriverEvent::Lifecycle { state: AgentState::Active { .. }, .. }),
+            "expected Lifecycle(Active), got {:?}", events[8]
+        );
+        // 10. Lifecycle(Closed) — EOF
+        assert!(
+            matches!(&events[9], DriverEvent::Lifecycle { state: AgentState::Closed, .. }),
+            "expected Lifecycle(Closed), got {:?}", events[9]
+        );
+        assert_eq!(events.len(), 10);
+
+        // Verify deferred prompt was sent on stdin
+        let sent_msg = timeout(Duration::from_secs(1), stdin_rx.recv())
+            .await
+            .expect("stdin message timeout")
+            .expect("stdin message missing");
+        assert!(sent_msg.contains("test prompt"));
+
+        // Verify shared state ended as Closed
+        let final_state = shared.lock().unwrap().agent_state.clone();
+        assert!(matches!(final_state, AgentState::Closed));
     }
 }
