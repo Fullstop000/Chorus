@@ -562,9 +562,12 @@ impl AgentHandle for OpencodeHandle {
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
-        let session_id = match &self.state {
-            AgentState::Active { session_id } => session_id.clone(),
-            _ => bail!("cannot prompt: handle not in Active state"),
+        let session_id = {
+            let s = self.shared.lock().unwrap();
+            match &s.agent_state {
+                AgentState::Active { session_id } => session_id.clone(),
+                _ => bail!("cannot prompt: handle not in Active state"),
+            }
         };
 
         let run_id = RunId::new_v4();
@@ -600,9 +603,16 @@ impl AgentHandle for OpencodeHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        if let AgentState::PromptInFlight { run_id, session_id } = &self.state {
-            let run_id = *run_id;
-            let session_id = session_id.clone();
+        let cancel_info = {
+            let s = self.shared.lock().unwrap();
+            match &s.agent_state {
+                AgentState::PromptInFlight { run_id, session_id } => {
+                    Some((*run_id, session_id.clone()))
+                }
+                _ => None,
+            }
+        };
+        if let Some((run_id, session_id)) = cancel_info {
 
             {
                 let mut s = self.shared.lock().unwrap();
