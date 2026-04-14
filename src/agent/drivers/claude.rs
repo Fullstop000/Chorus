@@ -28,8 +28,7 @@ impl AcpRuntime for ClaudeAcpRuntime {
             "mcpServers": [{
                 "name": "chat",
                 "command": ctx.bridge_binary,
-                "args": ["bridge", "--agent-id", &ctx.agent_id, "--server-url", &ctx.server_url],
-                "env": []
+                "args": ["bridge", "--agent-id", &ctx.agent_id, "--server-url", &ctx.server_url]
             }]
         })
     }

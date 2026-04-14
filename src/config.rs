@@ -20,27 +20,24 @@ use serde::{Deserialize, Serialize};
 
 pub const FILE_NAME: &str = "config.toml";
 
-/// Runtime whose ACP support comes from a separate adapter binary.
-/// Used for claude (`claude-agent-acp`) and codex (`codex-acp`). Empty
-/// string on either field means "auto-discover via PATH".
+/// Per-runtime configuration. All fields are optional:
+/// - `None` = not configured / not applicable (use PATH / not available).
+///
+/// `acp_adaptor` is `Some` only for runtimes that ship a separate ACP
+/// adapter binary (claude → `claude-agent-acp`, codex → `codex-acp`).
+/// Native-ACP runtimes (kimi, opencode) leave it `None`.
+/// Empty strings (`Some("")`) from legacy configs are normalized to `None`
+/// by `ChorusConfig::load`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AcpRuntimeConfig {
-    /// Absolute path to the runtime CLI binary. Empty = use PATH.
-    #[serde(default)]
-    pub binary_path: String,
+pub struct AgentRuntimeConfig {
+    /// Absolute path to the runtime CLI binary. `None` = discover via PATH.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
 
-    /// Absolute path to the ACP adapter binary. Empty = use PATH.
-    #[serde(default)]
-    pub acp_adaptor: String,
-}
-
-/// Runtime with a native `acp` subcommand built into the CLI itself.
-/// Used for kimi and opencode. No separate adapter required.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct NativeRuntimeConfig {
-    /// Absolute path to the runtime CLI binary. Empty = use PATH.
-    #[serde(default)]
-    pub binary_path: String,
+    /// Absolute path to the ACP adapter binary. `None` = not applicable or
+    /// discover via PATH. Only set for ACP-adapter runtimes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acp_adaptor: Option<String>,
 }
 
 /// Agent-template-related settings. Groups the markdown-template directory
@@ -118,13 +115,13 @@ pub struct ChorusConfig {
     pub logs: LogsConfig,
 
     #[serde(default)]
-    pub claude: AcpRuntimeConfig,
+    pub claude: AgentRuntimeConfig,
     #[serde(default)]
-    pub codex: AcpRuntimeConfig,
+    pub codex: AgentRuntimeConfig,
     #[serde(default)]
-    pub kimi: NativeRuntimeConfig,
+    pub kimi: AgentRuntimeConfig,
     #[serde(default)]
-    pub opencode: NativeRuntimeConfig,
+    pub opencode: AgentRuntimeConfig,
 }
 
 impl ChorusConfig {
@@ -150,8 +147,22 @@ impl ChorusConfig {
         }
         let raw = std::fs::read_to_string(&path)
             .map_err(|e| anyhow::anyhow!("failed to read {}: {e}", path.display()))?;
-        let cfg: Self = toml::from_str(&raw)
+        let mut cfg: Self = toml::from_str(&raw)
             .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?;
+        // Normalize legacy empty strings to None so callers can use Option semantics.
+        for runtime in [
+            &mut cfg.claude,
+            &mut cfg.codex,
+            &mut cfg.kimi,
+            &mut cfg.opencode,
+        ] {
+            if runtime.binary_path.as_deref() == Some("") {
+                runtime.binary_path = None;
+            }
+            if runtime.acp_adaptor.as_deref() == Some("") {
+                runtime.acp_adaptor = None;
+            }
+        }
         Ok(Some(cfg))
     }
 
@@ -234,35 +245,15 @@ mod tests {
         let cfg = ChorusConfig::default();
         cfg.save(tmp.path()).unwrap();
         let raw = std::fs::read_to_string(ChorusConfig::path_for(tmp.path())).unwrap();
+        // All four runtime sections are present.
         for runtime in ["claude", "codex", "kimi", "opencode"] {
+            // With all-None fields, toml serializes empty tables as `[runtime]`
+            // only when the section is non-empty. The sections are emitted because
+            // the struct fields themselves are always present in ChorusConfig.
+            // Verify the section key exists in any form.
             assert!(
                 raw.contains(&format!("[{runtime}]")),
                 "missing [{runtime}] section in:\n{raw}"
-            );
-        }
-        // ACP-adapter runtimes expose `acp_adaptor`; native runtimes don't.
-        let claude_start = raw.find("[claude]").unwrap();
-        let codex_start = raw.find("[codex]").unwrap();
-        let kimi_start = raw.find("[kimi]").unwrap();
-        let opencode_start = raw.find("[opencode]").unwrap();
-        let claude_block = &raw[claude_start..codex_start];
-        let codex_block = &raw[codex_start..kimi_start];
-        let kimi_block = &raw[kimi_start..opencode_start];
-        let opencode_block = &raw[opencode_start..];
-        assert!(claude_block.contains("acp_adaptor"));
-        assert!(codex_block.contains("acp_adaptor"));
-        assert!(!kimi_block.contains("acp_adaptor"));
-        assert!(!opencode_block.contains("acp_adaptor"));
-        // All runtimes expose binary_path.
-        for (name, block) in [
-            ("claude", claude_block),
-            ("codex", codex_block),
-            ("kimi", kimi_block),
-            ("opencode", opencode_block),
-        ] {
-            assert!(
-                block.contains("binary_path"),
-                "[{name}] missing binary_path"
             );
         }
     }
@@ -271,21 +262,25 @@ mod tests {
     fn roundtrip_preserves_runtime_binary_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let cfg = ChorusConfig {
-            claude: AcpRuntimeConfig {
-                binary_path: "/opt/claude".into(),
-                acp_adaptor: "/opt/claude-agent-acp".into(),
+            claude: AgentRuntimeConfig {
+                binary_path: Some("/opt/claude".into()),
+                acp_adaptor: Some("/opt/claude-agent-acp".into()),
             },
-            kimi: NativeRuntimeConfig {
-                binary_path: "/opt/kimi".into(),
+            kimi: AgentRuntimeConfig {
+                binary_path: Some("/opt/kimi".into()),
+                ..Default::default()
             },
             ..Default::default()
         };
         cfg.save(tmp.path()).unwrap();
         let loaded = ChorusConfig::load(tmp.path()).unwrap().unwrap();
-        assert_eq!(loaded.claude.binary_path, "/opt/claude");
-        assert_eq!(loaded.claude.acp_adaptor, "/opt/claude-agent-acp");
-        assert_eq!(loaded.kimi.binary_path, "/opt/kimi");
-        assert_eq!(loaded.codex.binary_path, ""); // untouched default
+        assert_eq!(loaded.claude.binary_path.as_deref(), Some("/opt/claude"));
+        assert_eq!(
+            loaded.claude.acp_adaptor.as_deref(),
+            Some("/opt/claude-agent-acp")
+        );
+        assert_eq!(loaded.kimi.binary_path.as_deref(), Some("/opt/kimi"));
+        assert_eq!(loaded.codex.binary_path, None); // untouched default
     }
 
     #[test]
@@ -304,5 +299,19 @@ mod tests {
             loaded.agent_template.default,
             "engineering/backend-architect"
         );
+    }
+
+    #[test]
+    fn load_normalizes_legacy_empty_string_paths_to_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Write config as it would look from the old String-based schema.
+        let toml_body = "[claude]\nbinary_path = \"\"\nacp_adaptor = \"\"\n\n[codex]\nbinary_path = \"/opt/codex\"\n";
+        std::fs::write(ChorusConfig::path_for(tmp.path()), toml_body).unwrap();
+        let loaded = ChorusConfig::load(tmp.path()).unwrap().unwrap();
+        // Empty strings must be normalized to None.
+        assert_eq!(loaded.claude.binary_path, None);
+        assert_eq!(loaded.claude.acp_adaptor, None);
+        // Non-empty values are preserved.
+        assert_eq!(loaded.codex.binary_path.as_deref(), Some("/opt/codex"));
     }
 }

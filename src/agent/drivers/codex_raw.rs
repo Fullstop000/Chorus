@@ -10,13 +10,13 @@ pub struct CodexRawDriver;
 
 fn build_codex_args(ctx: &SpawnContext) -> anyhow::Result<Vec<String>> {
     let bridge_binary_json = serde_json::to_string(&ctx.bridge_binary)?;
-    let bridge_args_json = serde_json::to_string(&vec![
+    let bridge_args_json = serde_json::to_string(&serde_json::json!([
         "bridge",
         "--agent-id",
-        &ctx.agent_id,
+        ctx.agent_id.as_str(),
         "--server-url",
-        &ctx.server_url,
-    ])?;
+        ctx.server_url.as_str(),
+    ]))?;
 
     let mut args = vec!["exec".to_string()];
 
