@@ -492,7 +492,7 @@ async fn test_send_notifies_active_agent_without_restart() {
 
 #[tokio::test]
 async fn test_server_info() {
-    let (_store, app) = setup();
+    let (store, app) = setup();
     let resp = app
         .oneshot(
             Request::builder()
@@ -507,9 +507,34 @@ async fn test_server_info() {
         .await
         .unwrap();
     let info: ServerInfo = serde_json::from_slice(&body).unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     assert_eq!(info.channels.len(), 1);
     assert_eq!(info.agents.len(), 1);
+    assert_eq!(info.agents[0].id, bot1.id);
     assert_eq!(info.humans.len(), 1);
+}
+
+#[tokio::test]
+async fn test_list_agents_via_public_api_includes_ids() {
+    let (store, app) = setup();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let agents: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(agents.as_array().unwrap().len(), 1);
+    assert_eq!(agents[0]["id"], bot1.id);
 }
 
 #[tokio::test]

@@ -138,20 +138,7 @@ impl Store {
                 "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents ORDER BY name",
             )?
             .query_map([], |row| {
-                Ok(Agent {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    display_name: row.get(2)?,
-                    description: row.get(3)?,
-                    system_prompt: row.get(4)?,
-                    runtime: row.get(5)?,
-                    model: row.get(6)?,
-                    reasoning_effort: row.get(7)?,
-                    env_vars: Vec::new(),
-                    status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
-                    session_id: row.get(9)?,
-                    created_at: parse_datetime(&row.get::<_, String>(10)?),
-                })
+                Self::agent_from_row(row)
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -164,24 +151,11 @@ impl Store {
             "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], |row| {
-            Ok(Agent {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                display_name: row.get(2)?,
-                description: row.get(3)?,
-                system_prompt: row.get(4)?,
-                runtime: row.get(5)?,
-                model: row.get(6)?,
-                reasoning_effort: row.get(7)?,
-                env_vars: Vec::new(),
-                status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
-                session_id: row.get(9)?,
-                created_at: parse_datetime(&row.get::<_, String>(10)?),
-            })
+            Self::agent_from_row(row)
         })?;
         let mut agent = rows.next().transpose()?;
         if let Some(ref mut agent) = agent {
-            agent.env_vars = Self::list_agent_env_vars_inner(&conn, &agent.name)?;
+            Self::hydrate_agent_env_vars_inner(&conn, agent)?;
         }
         Ok(agent)
     }
@@ -192,24 +166,11 @@ impl Store {
             "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Agent {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                display_name: row.get(2)?,
-                description: row.get(3)?,
-                system_prompt: row.get(4)?,
-                runtime: row.get(5)?,
-                model: row.get(6)?,
-                reasoning_effort: row.get(7)?,
-                env_vars: Vec::new(),
-                status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
-                session_id: row.get(9)?,
-                created_at: parse_datetime(&row.get::<_, String>(10)?),
-            })
+            Self::agent_from_row(row)
         })?;
         let mut agent = rows.next().transpose()?;
         if let Some(ref mut agent) = agent {
-            agent.env_vars = Self::list_agent_env_vars_inner(&conn, &agent.name)?;
+            Self::hydrate_agent_env_vars_inner(&conn, agent)?;
         }
         Ok(agent)
     }
@@ -260,10 +221,36 @@ impl Store {
                     value: row.get(1)?,
                     position: row.get(2)?,
                 })
-            })?
+        })?
             .filter_map(|row| row.ok())
             .collect();
         Ok(rows)
+    }
+
+    fn hydrate_agent_env_vars_inner(
+        conn: &rusqlite::Connection,
+        agent: &mut Agent,
+    ) -> Result<()> {
+        agent.env_vars = Self::list_agent_env_vars_inner(conn, &agent.name)?;
+        Ok(())
+    }
+
+    fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Agent> {
+        let created_at = row.get::<_, String>(10)?;
+        Ok(Agent {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            display_name: row.get(2)?,
+            description: row.get(3)?,
+            system_prompt: row.get(4)?,
+            runtime: row.get(5)?,
+            model: row.get(6)?,
+            reasoning_effort: row.get(7)?,
+            env_vars: Vec::new(),
+            status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
+            session_id: row.get(9)?,
+            created_at: parse_datetime(&created_at),
+        })
     }
 
     fn replace_agent_env_vars_inner(
