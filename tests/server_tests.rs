@@ -1406,10 +1406,20 @@ async fn test_create_kimi_agent_via_api() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    let payload: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
     let agent = store
         .get_agent("kimi-bot")
         .unwrap()
         .expect("agent should exist");
+    assert_eq!(payload["id"], agent.id);
+    assert_eq!(payload["name"], "kimi-bot");
+    assert_eq!(payload["status"], "active");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
@@ -1438,6 +1448,8 @@ async fn test_get_and_update_agent_via_api() {
         .await
         .unwrap();
     let detail: AgentDetailResponse = serde_json::from_slice(&detail_body).unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(detail.agent.id, bot1.id);
     assert_eq!(detail.agent.reasoning_effort, None);
 
     let update_req = serde_json::json!({

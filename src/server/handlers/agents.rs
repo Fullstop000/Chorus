@@ -228,7 +228,7 @@ pub async fn handle_create_agent(
     let reasoning_effort =
         normalize_reasoning_effort(&req.runtime, req.reasoning_effort.as_deref())?;
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
-    state
+    let id = state
         .store
         .create_agent_record(&AgentRecordUpsert {
             name: &name,
@@ -262,6 +262,7 @@ pub async fn handle_create_agent(
         start_warning = Some(format!("failed to start agent: {err}"));
     }
     Ok(Json(serde_json::json!({
+        "id": id,
         "name": name,
         "status": created_status.as_str(),
         "warning": start_warning,
