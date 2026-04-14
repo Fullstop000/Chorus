@@ -1,4 +1,4 @@
-//! v2 Claude driver backed by the `claude-agent-acp` ACP adapter binary.
+//! v2 Claude driver backed by Claude headless CLI.
 
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
-use crate::agent::drivers::v2::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem};
+use super::claude_headless::{self, HeadlessEvent};
 use crate::agent::drivers::{command_exists, run_command};
 use crate::agent::AgentRuntime;
 
@@ -30,7 +30,7 @@ impl RuntimeDriver for ClaudeDriver {
         if !command_exists("claude") {
             return Ok(RuntimeProbe {
                 auth: ProbeAuth::NotInstalled,
-                transport: TransportKind::AcpAdapter,
+                transport: TransportKind::StreamJson,
                 capabilities: CapabilitySet::MODEL_LIST | CapabilitySet::LOGIN,
             });
         }
@@ -52,7 +52,7 @@ impl RuntimeDriver for ClaudeDriver {
 
         Ok(RuntimeProbe {
             auth,
-            transport: TransportKind::AcpAdapter,
+            transport: TransportKind::StreamJson,
             capabilities: CapabilitySet::MODEL_LIST | CapabilitySet::LOGIN,
         })
     }
@@ -90,7 +90,6 @@ impl RuntimeDriver for ClaudeDriver {
             child: None,
             stdin_tx: None,
             shared: None,
-            next_request_id: 4,
             reader_handles: Vec::new(),
         };
         Ok(AttachResult {
@@ -113,18 +112,14 @@ pub struct ClaudeHandle {
     child: Option<std::process::Child>,
     stdin_tx: Option<mpsc::Sender<String>>,
     shared: Option<Arc<std::sync::Mutex<SharedReaderState>>>,
-    next_request_id: u64,
     reader_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
 /// Mutable state shared between the handle and the stdout reader task.
 struct SharedReaderState {
-    phase: AcpPhase,
     session_id: Option<String>,
     run_id: Option<RunId>,
     pending_prompt: Option<String>,
-    #[allow(dead_code)]
-    pending_session_id: Option<String>,
     agent_state: AgentState,
 }
 
@@ -152,7 +147,7 @@ impl AgentHandle for ClaudeHandle {
 
     async fn start(
         &mut self,
-        opts: StartOpts,
+        _opts: StartOpts,
         init_prompt: Option<PromptReq>,
     ) -> anyhow::Result<()> {
         if !matches!(self.state, AgentState::Idle) {
@@ -165,8 +160,45 @@ impl AgentHandle for ClaudeHandle {
             state: AgentState::Starting,
         });
 
-        let mut cmd = Command::new("claude-agent-acp");
-        cmd.stdin(Stdio::piped())
+        // Write MCP config file
+        let wd = &self.spec.working_directory;
+        let mcp_config_path = wd.join(".chorus-claude-mcp.json");
+        let mcp_config = serde_json::json!({
+            "mcpServers": {
+                "chat": {
+                    "command": &self.spec.bridge_binary,
+                    "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url]
+                }
+            }
+        });
+        std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
+            .context("failed to write MCP config")?;
+
+        // Build CLI args
+        let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
+        let mut args: Vec<String> = vec![
+            "-p".into(),
+            "--input-format".into(), "stream-json".into(),
+            "--output-format".into(), "stream-json".into(),
+            "--verbose".into(),
+            "--include-partial-messages".into(),
+            "--permission-mode".into(), "acceptEdits".into(),
+            "--allowedTools".into(),
+            "Bash,Read,Edit,Write,MultiEdit,Glob,Grep,LS,mcp__chat__*".into(),
+            "--mcp-config".into(), mcp_path_str,
+        ];
+        if !self.spec.model.is_empty() {
+            args.push("--model".into());
+            args.push(self.spec.model.clone());
+        }
+        if let Some(ref prompt) = self.spec.system_prompt {
+            args.push("--append-system-prompt".into());
+            args.push(prompt.clone());
+        }
+
+        let mut cmd = Command::new("claude");
+        cmd.args(&args)
+            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
@@ -177,7 +209,7 @@ impl AgentHandle for ClaudeHandle {
             cmd.env(&ev.key, &ev.value);
         }
 
-        let mut std_child = cmd.spawn().context("failed to spawn claude-agent-acp")?;
+        let mut std_child = cmd.spawn().context("failed to spawn claude")?;
 
         let stdout = std_child
             .stdout
@@ -201,33 +233,16 @@ impl AgentHandle for ClaudeHandle {
                 .push(spawn_stdin_writer(child_stdin, stdin_rx));
         }
 
-        // Build session/new params with MCP server config
-        let session_new_params = serde_json::json!({
-            "cwd": self.spec.working_directory.to_string_lossy(),
-            "mcpServers": [{
-                "name": "chat",
-                "command": self.spec.bridge_binary,
-                "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url],
-                "env": []
-            }]
-        });
-
         // Prepare deferred prompt if provided
         let pending_prompt = init_prompt.map(|req| req.text);
 
         let shared = Arc::new(std::sync::Mutex::new(SharedReaderState {
-            phase: AcpPhase::AwaitingInitResponse,
             session_id: None,
             run_id: None,
             pending_prompt,
-            pending_session_id: opts.resume_session_id.clone(),
             agent_state: AgentState::Starting,
         }));
         self.shared = Some(shared.clone());
-
-        // Send initialize request
-        let init_req = acp_protocol::build_initialize_request(1);
-        let _ = stdin_tx.send(format!("{init_req}\n")).await;
 
         self.reader_handles.push(spawn_stdout_reader(
             self.key.clone(),
@@ -235,8 +250,6 @@ impl AgentHandle for ClaudeHandle {
             stdout,
             shared,
             stdin_tx.clone(),
-            session_new_params,
-            opts.resume_session_id,
         ));
 
         if let Some(Ok(child_stderr)) = stderr {
@@ -272,15 +285,12 @@ impl AgentHandle for ClaudeHandle {
         };
 
         let run_id = RunId::new_v4();
-        let request_id = self.next_request_id;
-        self.next_request_id += 1;
 
-        let encoded =
-            acp_protocol::build_session_prompt_request(request_id, &session_id, &req.text);
+        let msg = claude_headless::build_user_message(&req.text);
 
         if let Some(ref stdin_tx) = self.stdin_tx {
             stdin_tx
-                .send(format!("{encoded}\n"))
+                .send(format!("{msg}\n"))
                 .await
                 .map_err(|e| anyhow::anyhow!("claude v2: stdin write failed: {e}"))?;
         }
@@ -353,79 +363,48 @@ impl Drop for ClaudeHandle {
 // Background tasks
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_stdout_reader(
     key: AgentKey,
     tx: mpsc::Sender<DriverEvent>,
     stdout: tokio::process::ChildStdout,
     shared: Arc<std::sync::Mutex<SharedReaderState>>,
     stdin_tx: mpsc::Sender<String>,
-    session_new_params: serde_json::Value,
-    resume_session_id: Option<String>,
 ) -> tokio::task::JoinHandle<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     tokio::spawn(async move {
         let reader = BufReader::new(stdout);
         let mut lines = reader.lines();
-        let mut tool_acc = acp_protocol::ToolCallAccumulator::new();
+
+        // Tool call accumulator: (tool_id, tool_name, json_buffer, start_index)
+        let mut pending_tool: Option<(String, String, String, u32)> = None;
 
         while let Ok(Some(line)) = lines.next_line().await {
-            let parsed = acp_protocol::parse_line(&line);
-            trace!(key = %key, ?parsed, "claude acp line");
-
-            let (phase, run_id, session_id) = {
-                let guard = shared.lock().unwrap();
-                (guard.phase, guard.run_id, guard.session_id.clone())
-            };
+            let parsed = claude_headless::parse_line(&line);
+            trace!(key = %key, ?parsed, "claude headless line");
 
             match parsed {
-                AcpParsed::InitializeResponse => {
-                    debug!(key = %key, "claude acp: initialize response received");
+                HeadlessEvent::SystemInit { session_id } => {
+                    debug!(key = %key, session_id = %session_id, "claude headless: system init");
                     {
                         let mut guard = shared.lock().unwrap();
-                        guard.phase = AcpPhase::AwaitingSessionResponse;
-                    }
-
-                    // Send session/new or session/load
-                    let req = if let Some(ref sid) = resume_session_id {
-                        acp_protocol::build_session_load_request(2, sid, session_new_params.clone())
-                    } else {
-                        acp_protocol::build_session_new_request(2, session_new_params.clone())
-                    };
-                    let _ = stdin_tx.send(format!("{req}\n")).await;
-                }
-
-                AcpParsed::SessionResponse { session_id: sid } => {
-                    let resolved_sid = sid
-                        .or_else(|| resume_session_id.clone())
-                        .unwrap_or_default();
-                    debug!(key = %key, session_id = %resolved_sid, "claude acp: session established");
-
-                    {
-                        let mut guard = shared.lock().unwrap();
-                        guard.phase = AcpPhase::Active;
-                        guard.session_id = Some(resolved_sid.clone());
+                        guard.session_id = Some(session_id.clone());
+                        guard.agent_state = AgentState::Active {
+                            session_id: session_id.clone(),
+                        };
                     }
 
                     let _ = tx
                         .send(DriverEvent::SessionAttached {
                             key: key.clone(),
-                            session_id: resolved_sid.clone(),
+                            session_id: session_id.clone(),
                         })
                         .await;
-                    {
-                        let mut guard = shared.lock().unwrap();
-                        guard.agent_state = AgentState::Active {
-                            session_id: resolved_sid.clone(),
-                        };
-                    }
-
                     let _ = tx
                         .send(DriverEvent::Lifecycle {
                             key: key.clone(),
                             state: AgentState::Active {
-                                session_id: resolved_sid.clone(),
+                                session_id: session_id.clone(),
                             },
                         })
                         .await;
@@ -442,7 +421,7 @@ fn spawn_stdout_reader(
                             guard.run_id = Some(run_id);
                             guard.agent_state = AgentState::PromptInFlight {
                                 run_id,
-                                session_id: resolved_sid.clone(),
+                                session_id: session_id.clone(),
                             };
                         }
 
@@ -451,143 +430,120 @@ fn spawn_stdout_reader(
                                 key: key.clone(),
                                 state: AgentState::PromptInFlight {
                                     run_id,
-                                    session_id: resolved_sid.clone(),
+                                    session_id: session_id.clone(),
                                 },
                             })
                             .await;
 
-                        // session_id in prompt required for claude
-                        let req = acp_protocol::build_session_prompt_request(
-                            3,
-                            &resolved_sid,
-                            &prompt_text,
-                        );
-                        let _ = stdin_tx.send(format!("{req}\n")).await;
+                        let msg = claude_headless::build_user_message(&prompt_text);
+                        let _ = stdin_tx.send(format!("{msg}\n")).await;
                     }
                 }
 
-                AcpParsed::SessionUpdate { items } => {
-                    if phase != AcpPhase::Active {
-                        continue;
-                    }
-
-                    for item in items {
-                        match item {
-                            AcpUpdateItem::SessionInit {
-                                session_id: new_sid,
-                            } => {
-                                {
-                                    let mut guard = shared.lock().unwrap();
-                                    guard.session_id = Some(new_sid.clone());
-                                }
-                                let _ = tx
-                                    .send(DriverEvent::SessionAttached {
-                                        key: key.clone(),
-                                        session_id: new_sid,
-                                    })
-                                    .await;
-                            }
-                            AcpUpdateItem::Thinking { text } => {
-                                if let Some(rid) = run_id {
-                                    let _ = tx
-                                        .send(DriverEvent::Output {
-                                            key: key.clone(),
-                                            run_id: rid,
-                                            item: AgentEventItem::Thinking { text },
-                                        })
-                                        .await;
-                                }
-                            }
-                            AcpUpdateItem::Text { text } => {
-                                if let Some(rid) = run_id {
-                                    let _ = tx
-                                        .send(DriverEvent::Output {
-                                            key: key.clone(),
-                                            run_id: rid,
-                                            item: AgentEventItem::Text { text },
-                                        })
-                                        .await;
-                                }
-                            }
-                            AcpUpdateItem::ToolCall { id, name, input } => {
-                                // Flush any pending calls before recording the new one
-                                if let Some(rid) = run_id {
-                                    for (_tid, tname, tinput) in tool_acc.drain() {
-                                        let _ = tx
-                                            .send(DriverEvent::Output {
-                                                key: key.clone(),
-                                                run_id: rid,
-                                                item: AgentEventItem::ToolCall {
-                                                    name: tname,
-                                                    input: tinput,
-                                                },
-                                            })
-                                            .await;
-                                    }
-                                }
-                                tool_acc.record_call(id, name, input);
-                            }
-                            AcpUpdateItem::ToolCallUpdate { id, input } => {
-                                tool_acc.merge_update(id, input);
-                            }
-                            AcpUpdateItem::ToolResult { content } => {
-                                // Flush pending tool calls before emitting result
-                                if let Some(rid) = run_id {
-                                    for (_tid, tname, tinput) in tool_acc.drain() {
-                                        let _ = tx
-                                            .send(DriverEvent::Output {
-                                                key: key.clone(),
-                                                run_id: rid,
-                                                item: AgentEventItem::ToolCall {
-                                                    name: tname,
-                                                    input: tinput,
-                                                },
-                                            })
-                                            .await;
-                                    }
-                                    let _ = tx
-                                        .send(DriverEvent::Output {
-                                            key: key.clone(),
-                                            run_id: rid,
-                                            item: AgentEventItem::ToolResult { content },
-                                        })
-                                        .await;
-                                }
-                            }
-                            AcpUpdateItem::TurnEnd => {
-                                if let Some(rid) = run_id {
-                                    let _ = tx
-                                        .send(DriverEvent::Output {
-                                            key: key.clone(),
-                                            run_id: rid,
-                                            item: AgentEventItem::TurnEnd,
-                                        })
-                                        .await;
-                                }
-                            }
-                        }
-                    }
+                HeadlessEvent::ApiRetry { attempt, error } => {
+                    trace!(key = %key, attempt, %error, "claude headless: api retry");
                 }
 
-                AcpParsed::PromptResponse {
-                    session_id: resp_sid,
-                } => {
+                HeadlessEvent::ThinkingDelta { text } => {
+                    let run_id = shared.lock().unwrap().run_id;
                     if let Some(rid) = run_id {
-                        // Flush remaining tool calls
-                        for (_tid, tname, tinput) in tool_acc.drain() {
+                        let _ = tx
+                            .send(DriverEvent::Output {
+                                key: key.clone(),
+                                run_id: rid,
+                                item: AgentEventItem::Thinking { text },
+                            })
+                            .await;
+                    }
+                }
+
+                HeadlessEvent::TextDelta { text } => {
+                    let run_id = shared.lock().unwrap().run_id;
+                    if let Some(rid) = run_id {
+                        let _ = tx
+                            .send(DriverEvent::Output {
+                                key: key.clone(),
+                                run_id: rid,
+                                item: AgentEventItem::Text { text },
+                            })
+                            .await;
+                    }
+                }
+
+                HeadlessEvent::ToolUseStart { index, id, name } => {
+                    // Flush any pending tool call
+                    let run_id = shared.lock().unwrap().run_id;
+                    if let Some(rid) = run_id {
+                        if let Some((_tid, tname, tbuf, _idx)) = pending_tool.take() {
+                            let input: serde_json::Value =
+                                serde_json::from_str(&tbuf).unwrap_or(serde_json::Value::Null);
                             let _ = tx
                                 .send(DriverEvent::Output {
                                     key: key.clone(),
                                     run_id: rid,
-                                    item: AgentEventItem::ToolCall {
-                                        name: tname,
-                                        input: tinput,
-                                    },
+                                    item: AgentEventItem::ToolCall { name: tname, input },
+                                })
+                                .await;
+                        }
+                    }
+                    // Start new accumulation
+                    pending_tool = Some((id, name, String::new(), index));
+                }
+
+                HeadlessEvent::InputJsonDelta { partial_json, .. } => {
+                    if let Some(ref mut tool) = pending_tool {
+                        tool.2.push_str(&partial_json);
+                    }
+                }
+
+                HeadlessEvent::ContentBlockStop { index } | HeadlessEvent::ToolUseStop { index } => {
+                    // If index matches current tool accumulation, flush it
+                    let should_flush =
+                        pending_tool.as_ref().map_or(false, |t| t.3 == index);
+                    if should_flush {
+                        let run_id = shared.lock().unwrap().run_id;
+                        if let Some(rid) = run_id {
+                            if let Some((_tid, tname, tbuf, _idx)) = pending_tool.take() {
+                                let input: serde_json::Value =
+                                    serde_json::from_str(&tbuf).unwrap_or(serde_json::Value::Null);
+                                let _ = tx
+                                    .send(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id: rid,
+                                        item: AgentEventItem::ToolCall { name: tname, input },
+                                    })
+                                    .await;
+                            }
+                        }
+                    }
+                }
+
+                HeadlessEvent::TurnResult { session_id, .. } => {
+                    let run_id = shared.lock().unwrap().run_id;
+                    if let Some(rid) = run_id {
+                        // Flush remaining tool calls
+                        if let Some((_tid, tname, tbuf, _idx)) = pending_tool.take() {
+                            let input: serde_json::Value =
+                                serde_json::from_str(&tbuf).unwrap_or(serde_json::Value::Null);
+                            let _ = tx
+                                .send(DriverEvent::Output {
+                                    key: key.clone(),
+                                    run_id: rid,
+                                    item: AgentEventItem::ToolCall { name: tname, input },
                                 })
                                 .await;
                         }
 
-                        let resolved_sid = resp_sid.or(session_id).unwrap_or_default();
+                        let resolved_sid = if session_id.is_empty() {
+                            shared
+                                .lock()
+                                .unwrap()
+                                .session_id
+                                .clone()
+                                .unwrap_or_default()
+                        } else {
+                            session_id
+                        };
 
                         let _ = tx
                             .send(DriverEvent::Output {
@@ -625,40 +581,7 @@ fn spawn_stdout_reader(
                     }
                 }
 
-                AcpParsed::PermissionRequested {
-                    request_id,
-                    tool_name,
-                    options,
-                } => {
-                    // Pick the most permissive option offered by the runtime.
-                    // V1 bug: hardcoding "approve" caused claude-agent-acp to
-                    // reject the response ("User refused permission") because
-                    // the optionId didn't match any offered option.
-                    let option_id = acp_protocol::pick_best_option_id(&options);
-                    debug!(
-                        key = %key,
-                        ?tool_name,
-                        option_id,
-                        "claude acp: auto-approving permission request"
-                    );
-                    let resp = acp_protocol::build_permission_response_raw(request_id, option_id);
-                    let _ = stdin_tx.send(format!("{resp}\n")).await;
-                }
-
-                AcpParsed::Error { message } => {
-                    warn!(key = %key, %message, "claude acp: error response");
-                    if let Some(rid) = run_id {
-                        let _ = tx
-                            .send(DriverEvent::Failed {
-                                key: key.clone(),
-                                run_id: rid,
-                                error: AgentError::RuntimeReported(message),
-                            })
-                            .await;
-                    }
-                }
-
-                AcpParsed::Unknown => {}
+                HeadlessEvent::Unknown => {}
             }
         }
 
@@ -734,7 +657,7 @@ mod tests {
         let probe = driver.probe().await.unwrap();
         // Either NotInstalled or Unauthed depending on host — both are valid.
         // The key invariant: transport and capabilities are always set.
-        assert_eq!(probe.transport, TransportKind::AcpAdapter);
+        assert_eq!(probe.transport, TransportKind::StreamJson);
         assert!(probe.capabilities.contains(CapabilitySet::MODEL_LIST));
         assert!(probe.capabilities.contains(CapabilitySet::LOGIN));
     }
