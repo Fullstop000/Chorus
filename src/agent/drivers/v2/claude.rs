@@ -119,7 +119,6 @@ pub struct ClaudeHandle {
 struct SharedReaderState {
     session_id: Option<String>,
     run_id: Option<RunId>,
-    pending_prompt: Option<String>,
     agent_state: AgentState,
 }
 
@@ -233,13 +232,21 @@ impl AgentHandle for ClaudeHandle {
                 .push(spawn_stdin_writer(child_stdin, stdin_rx));
         }
 
-        // Prepare deferred prompt if provided
-        let pending_prompt = init_prompt.map(|req| req.text);
+        // Claude CLI in stream-json mode requires stdin input before emitting
+        // the system/init event. Send the initial prompt immediately so the
+        // init event (and subsequent stream events) flow without deadlock.
+        let initial_run_id = if let Some(ref req) = init_prompt {
+            let rid = RunId::new_v4();
+            let msg = claude_headless::build_user_message(&req.text);
+            let _ = stdin_tx.send(format!("{msg}\n")).await;
+            Some(rid)
+        } else {
+            None
+        };
 
         let shared = Arc::new(std::sync::Mutex::new(SharedReaderState {
             session_id: None,
-            run_id: None,
-            pending_prompt,
+            run_id: initial_run_id,
             agent_state: AgentState::Starting,
         }));
         self.shared = Some(shared.clone());
@@ -249,7 +256,6 @@ impl AgentHandle for ClaudeHandle {
             self.event_tx.clone(),
             stdout,
             shared,
-            stdin_tx.clone(),
         ));
 
         if let Some(Ok(child_stderr)) = stderr {
@@ -368,7 +374,6 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
     tx: mpsc::Sender<DriverEvent>,
     stdout: R,
     shared: Arc<std::sync::Mutex<SharedReaderState>>,
-    stdin_tx: mpsc::Sender<String>,
 ) -> tokio::task::JoinHandle<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -386,13 +391,17 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
             match parsed {
                 HeadlessEvent::SystemInit { session_id } => {
                     debug!(key = %key, session_id = %session_id, "claude headless: system init");
-                    {
+
+                    // Capture whether there's already a run in flight (initial
+                    // prompt was sent on stdin before init arrived).
+                    let pre_existing_run_id = {
                         let mut guard = shared.lock().unwrap();
                         guard.session_id = Some(session_id.clone());
                         guard.agent_state = AgentState::Active {
                             session_id: session_id.clone(),
                         };
-                    }
+                        guard.run_id
+                    };
 
                     let _ = tx
                         .send(DriverEvent::SessionAttached {
@@ -409,22 +418,16 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                         })
                         .await;
 
-                    // Send deferred prompt if one was queued
-                    let deferred = {
-                        let mut guard = shared.lock().unwrap();
-                        guard.pending_prompt.take()
-                    };
-                    if let Some(prompt_text) = deferred {
-                        let run_id = RunId::new_v4();
+                    // If a prompt was already sent before init, emit
+                    // PromptInFlight so the manager knows we're working.
+                    if let Some(run_id) = pre_existing_run_id {
                         {
                             let mut guard = shared.lock().unwrap();
-                            guard.run_id = Some(run_id);
                             guard.agent_state = AgentState::PromptInFlight {
                                 run_id,
                                 session_id: session_id.clone(),
                             };
                         }
-
                         let _ = tx
                             .send(DriverEvent::Lifecycle {
                                 key: key.clone(),
@@ -434,9 +437,6 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                                 },
                             })
                             .await;
-
-                        let msg = claude_headless::build_user_message(&prompt_text);
-                        let _ = stdin_tx.send(format!("{msg}\n")).await;
                     }
                 }
 
@@ -706,11 +706,10 @@ mod tests {
 
         // Set up shared state and channels
         let (event_tx, mut event_rx) = mpsc::channel::<DriverEvent>(64);
-        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
+        let initial_run_id = RunId::new_v4();
         let shared = Arc::new(std::sync::Mutex::new(SharedReaderState {
             session_id: None,
-            run_id: None,
-            pending_prompt: Some("test prompt".into()),
+            run_id: Some(initial_run_id),
             agent_state: AgentState::Starting,
         }));
 
@@ -720,7 +719,6 @@ mod tests {
             event_tx,
             mock_stdout,
             shared.clone(),
-            stdin_tx,
         );
 
         // Write JSONL lines
@@ -794,13 +792,6 @@ mod tests {
             "expected Lifecycle(Closed), got {:?}", events[9]
         );
         assert_eq!(events.len(), 10);
-
-        // Verify deferred prompt was sent on stdin
-        let sent_msg = timeout(Duration::from_secs(1), stdin_rx.recv())
-            .await
-            .expect("stdin message timeout")
-            .expect("stdin message missing");
-        assert!(sent_msg.contains("test prompt"));
 
         // Verify shared state ended as Closed
         let final_state = shared.lock().unwrap().agent_state.clone();

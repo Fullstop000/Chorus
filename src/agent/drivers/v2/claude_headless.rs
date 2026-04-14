@@ -67,7 +67,9 @@ pub fn parse_line(line: &str) -> HeadlessEvent {
     match v.get("type").and_then(|t| t.as_str()) {
         Some("system") => parse_system(&v),
         Some("stream_event") => parse_stream_event(&v),
-        Some("assistant") => HeadlessEvent::Unknown,
+        // "assistant" and "user" are partial-message echoes emitted by
+        // --include-partial-messages. We don't need them.
+        Some("assistant" | "user") => HeadlessEvent::Unknown,
         Some("result") => parse_result(&v),
         Some(other) => {
             warn!("claude headless: unknown event type: {other}");
@@ -102,6 +104,9 @@ fn parse_system(v: &Value) -> HeadlessEvent {
                 .to_string();
             HeadlessEvent::ApiRetry { attempt, error }
         }
+        // hook_started / hook_response are emitted during session
+        // initialization hooks (e.g. superpowers plugin). Safe to ignore.
+        Some("hook_started" | "hook_response") => HeadlessEvent::Unknown,
         Some(other) => {
             warn!("claude headless: unknown system subtype: {other}");
             HeadlessEvent::Unknown
