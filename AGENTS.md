@@ -12,7 +12,7 @@ AI agent collaboration platform. Agents run as OS processes and communicate thro
 
 ---
 
-## Part I — Getting Started
+## Getting Started
 
 ```bash
 # Run
@@ -30,19 +30,26 @@ cargo build                            # backend
 cd ui && npm run build                 # frontend production build
 ```
 
-Full setup, prerequisites, and dev workflow: `[docs/DEV.md](docs/DEV.md)`
+Use this doc index before touching a subsystem or workflow:
+
+| Doc | Covers | Read Before |
+| --- | --- | --- |
+| `[docs/DEV.md](docs/DEV.md)` | Setup, prerequisites, run/test/build loops, and local troubleshooting | First local run, environment setup, or when local tooling is acting up |
+| `[qa/README.md](qa/README.md)` | Authoritative QA SOP: run modes, Playwright workflow, failure classification, evidence handling | Running QA, debugging QA failures, or updating QA process |
+| `[qa/QA_CASES.md](qa/QA_CASES.md)` | Static case catalog index and area-by-area case map | Choosing coverage for a change or mapping a failure to an existing case |
+| `[docs/BACKEND.md](docs/BACKEND.md)` | Rust — error handling, enums, logging, schema/views, tests, Axum handlers | Any backend change |
+| `[docs/DESIGN.md](docs/DESIGN.md)` | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change |
+| `[docs/INBOX.md](docs/INBOX.md)` | Inbox delivery mechanism — how messages reach agents | Modifying message delivery |
+| `[docs/ACP.md](docs/ACP.md)` | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver |
+| `[docs/DRIVERS.md](docs/DRIVERS.md)` | Runtime drivers and template types | Adding or changing a runtime driver or template type |
+| `[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)` | Decisions, bug postmortems, project facts, patterns | Debugging non-obvious behavior or revisiting architecture choices |
+| `[docs/DRIVER_GUIDE.md](docs/DRIVER_GUIDE.md)` | Step-by-step guide for implementing a new driver | Adding a new driver |
 
 ---
 
-## Part II — Conventions
+## Conventions
 
-How we write code. Read the relevant doc before touching that subsystem.
-
-
-| Doc                                  | Covers                                                                      | Read before        |
-| ------------------------------------ | --------------------------------------------------------------------------- | ------------------ |
-| `[docs/BACKEND.md](docs/BACKEND.md)` | Rust — error handling, enums, logging, schema/views, tests, Axum handlers   | Any backend change |
-| `[docs/DESIGN.md](docs/DESIGN.md)`   | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change      |
+How we write code. Read the relevant doc from the index above before touching that subsystem.
 
 For UI work, `docs/DESIGN.md` is authoritative. All font choices, colors,
 spacing, and aesthetic direction are defined there. Do not deviate without
@@ -61,22 +68,7 @@ Cross-cutting rules (apply everywhere):
 
 ---
 
-## Part III — Architecture
-
-Deep knowledge for modifying subsystems.
-
-
-| Doc                                  | Covers                                                        | Read when                   |
-| ------------------------------------ | ------------------------------------------------------------- | --------------------------- |
-| `[docs/INBOX.md](docs/INBOX.md)`     | Inbox delivery mechanism — how messages reach agents          | Modifying message delivery  |
-| `[docs/ACP.md](docs/ACP.md)`         | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver        |
-| `[docs/DRIVERS.md](docs/DRIVERS.md)` | Adding a new runtime driver or template type                  | Adding a new runtime        |
-| `[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)` | Decisions, bug postmortems, project facts, patterns      | Debugging non-obvious behavior, architecture choices |
-
-
----
-
-## Part IV — Chorus Workflows
+## Chorus Workflows
 
 All skills prefixed with `/gstack-` (`SKILL_PREFIX=true`).
 When a request matches a skill, ALWAYS invoke it using the Skill tool as the FIRST action.
@@ -145,14 +137,6 @@ Run `/gstack-upgrade` to update skill inventory.
 3. **Update in the same PR that made you wish it said something.**
 4. **Annual audit.** Read every rule, every doc pointer. Delete what's stale. If you didn't delete anything, you didn't audit.
 
-
----
-
-## Extension Points
-
-**Adding A New Driver:**
-
-Follow `docs/DRIVER_GUIDE.md`
 
 ---
 
