@@ -89,7 +89,7 @@ impl RuntimeDriver for ClaudeDriver {
             spec,
             child: None,
             stdin_tx: None,
-            session_id: None,
+            shared: None,
             next_request_id: 4,
             reader_handles: Vec::new(),
         };
@@ -112,8 +112,7 @@ pub struct ClaudeHandle {
     spec: AgentSpec,
     child: Option<std::process::Child>,
     stdin_tx: Option<mpsc::Sender<String>>,
-    #[allow(dead_code)]
-    session_id: Option<String>,
+    shared: Option<Arc<std::sync::Mutex<SharedReaderState>>>,
     next_request_id: u64,
     reader_handles: Vec<tokio::task::JoinHandle<()>>,
 }
@@ -126,6 +125,7 @@ struct SharedReaderState {
     pending_prompt: Option<String>,
     #[allow(dead_code)]
     pending_session_id: Option<String>,
+    agent_state: AgentState,
 }
 
 impl ClaudeHandle {
@@ -143,7 +143,11 @@ impl AgentHandle for ClaudeHandle {
     }
 
     fn state(&self) -> AgentState {
-        self.state.clone()
+        if let Some(ref shared) = self.shared {
+            shared.lock().unwrap().agent_state.clone()
+        } else {
+            self.state.clone()
+        }
     }
 
     async fn start(
@@ -217,7 +221,9 @@ impl AgentHandle for ClaudeHandle {
             run_id: None,
             pending_prompt,
             pending_session_id: opts.resume_session_id.clone(),
+            agent_state: AgentState::Starting,
         }));
+        self.shared = Some(shared.clone());
 
         // Send initialize request
         let init_req = acp_protocol::build_initialize_request(1);
@@ -252,9 +258,17 @@ impl AgentHandle for ClaudeHandle {
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
-        let session_id = match &self.state {
-            AgentState::Active { session_id } => session_id.clone(),
-            _ => bail!("claude v2: prompt called in non-active state"),
+        let session_id = if let Some(ref shared) = self.shared {
+            let guard = shared.lock().unwrap();
+            match &guard.agent_state {
+                AgentState::Active { session_id } => session_id.clone(),
+                _ => bail!("claude v2: prompt called in non-active state"),
+            }
+        } else {
+            match &self.state {
+                AgentState::Active { session_id } => session_id.clone(),
+                _ => bail!("claude v2: prompt called in non-active state"),
+            }
         };
 
         let run_id = RunId::new_v4();
@@ -271,6 +285,14 @@ impl AgentHandle for ClaudeHandle {
                 .map_err(|e| anyhow::anyhow!("claude v2: stdin write failed: {e}"))?;
         }
 
+        if let Some(ref shared) = self.shared {
+            let mut guard = shared.lock().unwrap();
+            guard.run_id = Some(run_id);
+            guard.agent_state = AgentState::PromptInFlight {
+                run_id,
+                session_id: session_id.clone(),
+            };
+        }
         self.state = AgentState::PromptInFlight {
             run_id,
             session_id: session_id.clone(),
@@ -302,6 +324,9 @@ impl AgentHandle for ClaudeHandle {
             handle.abort();
         }
 
+        if let Some(ref shared) = self.shared {
+            shared.lock().unwrap().agent_state = AgentState::Closed;
+        }
         self.state = AgentState::Closed;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
@@ -389,6 +414,13 @@ fn spawn_stdout_reader(
                             session_id: resolved_sid.clone(),
                         })
                         .await;
+                    {
+                        let mut guard = shared.lock().unwrap();
+                        guard.agent_state = AgentState::Active {
+                            session_id: resolved_sid.clone(),
+                        };
+                    }
+
                     let _ = tx
                         .send(DriverEvent::Lifecycle {
                             key: key.clone(),
@@ -408,6 +440,10 @@ fn spawn_stdout_reader(
                         {
                             let mut guard = shared.lock().unwrap();
                             guard.run_id = Some(run_id);
+                            guard.agent_state = AgentState::PromptInFlight {
+                                run_id,
+                                session_id: resolved_sid.clone(),
+                            };
                         }
 
                         let _ = tx
@@ -570,6 +606,14 @@ fn spawn_stdout_reader(
                                 },
                             })
                             .await;
+                        {
+                            let mut guard = shared.lock().unwrap();
+                            guard.run_id = None;
+                            guard.agent_state = AgentState::Active {
+                                session_id: resolved_sid.clone(),
+                            };
+                        }
+
                         let _ = tx
                             .send(DriverEvent::Lifecycle {
                                 key: key.clone(),
@@ -578,11 +622,6 @@ fn spawn_stdout_reader(
                                 },
                             })
                             .await;
-
-                        {
-                            let mut guard = shared.lock().unwrap();
-                            guard.run_id = None;
-                        }
                     }
                 }
 
@@ -617,6 +656,10 @@ fn spawn_stdout_reader(
         }
 
         // stdout EOF
+        {
+            let mut guard = shared.lock().unwrap();
+            guard.agent_state = AgentState::Closed;
+        }
         let _ = tx
             .send(DriverEvent::Lifecycle {
                 key: key.clone(),

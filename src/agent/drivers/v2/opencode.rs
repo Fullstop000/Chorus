@@ -110,6 +110,7 @@ impl RuntimeDriver for OpencodeDriver {
                 run_id: None,
                 pending_prompt: None,
                 pending_session_id: None,
+                agent_state: AgentState::Idle,
             })),
             next_request_id: 4,
             reader_handles: vec![],
@@ -131,6 +132,7 @@ struct SharedReaderState {
     run_id: Option<RunId>,
     pending_prompt: Option<String>,
     pending_session_id: Option<String>,
+    agent_state: AgentState,
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +183,7 @@ impl AgentHandle for OpencodeHandle {
     }
 
     fn state(&self) -> AgentState {
-        self.state.clone()
+        self.shared.lock().unwrap().agent_state.clone()
     }
 
     async fn start(
@@ -190,6 +192,10 @@ impl AgentHandle for OpencodeHandle {
         init_prompt: Option<PromptReq>,
     ) -> anyhow::Result<()> {
         self.state = AgentState::Starting;
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.agent_state = AgentState::Starting;
+        }
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
             state: AgentState::Starting,
@@ -309,6 +315,7 @@ impl AgentHandle for OpencodeHandle {
                                 .or_else(|| s.pending_session_id.take())
                                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                             s.session_id = Some(sid.clone());
+                            s.agent_state = AgentState::Active { session_id: sid.clone() };
                             let prompt = s.pending_prompt.take();
                             (sid, prompt)
                         };
@@ -329,6 +336,7 @@ impl AgentHandle for OpencodeHandle {
                             {
                                 let mut s = shared.lock().unwrap();
                                 s.run_id = Some(run_id);
+                                s.agent_state = AgentState::PromptInFlight { run_id, session_id: sid.clone() };
                             }
                             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                                 key: key.clone(),
@@ -349,6 +357,7 @@ impl AgentHandle for OpencodeHandle {
                             let mut s = shared.lock().unwrap();
                             let rid = s.run_id.take();
                             let sid = s.session_id.clone().unwrap_or_default();
+                            s.agent_state = AgentState::Active { session_id: sid.clone() };
                             (rid, sid)
                         };
 
@@ -515,6 +524,10 @@ impl AgentHandle for OpencodeHandle {
                     },
                 });
             }
+            {
+                let mut s = shared.lock().unwrap();
+                s.agent_state = AgentState::Closed;
+            }
             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                 key: key.clone(),
                 state: AgentState::Closed,
@@ -560,6 +573,7 @@ impl AgentHandle for OpencodeHandle {
         {
             let mut s = self.shared.lock().unwrap();
             s.run_id = Some(run_id);
+            s.agent_state = AgentState::PromptInFlight { run_id, session_id: session_id.clone() };
         }
 
         self.state = AgentState::PromptInFlight {
@@ -593,6 +607,7 @@ impl AgentHandle for OpencodeHandle {
             {
                 let mut s = self.shared.lock().unwrap();
                 s.run_id = None;
+                s.agent_state = AgentState::Active { session_id: session_id.clone() };
             }
 
             self.emit(DriverEvent::Completed {
@@ -627,6 +642,10 @@ impl AgentHandle for OpencodeHandle {
         self.stdin_tx = None;
 
         self.state = AgentState::Closed;
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.agent_state = AgentState::Closed;
+        }
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
             state: AgentState::Closed,
