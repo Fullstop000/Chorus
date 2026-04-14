@@ -19,7 +19,7 @@
 //! `id → method` map. (TODO: implement `parse_line_with_registry`)
 
 use serde_json::{json, Value};
-use tracing::warn;
+use tracing::{debug, warn};
 
 // ---------------------------------------------------------------------------
 // Phase state machine
@@ -88,8 +88,16 @@ pub enum ItemEvent {
 pub enum AppServerEvent {
     // Responses (have an `id`)
     InitializeResponse,
+    /// Fires when the server responds to `thread/start` (id 1).
+    /// Contains `thread_id` which the caller **must cache** — it is required
+    /// for all subsequent `turn/start` and `turn/interrupt` requests.
     ThreadResponse { thread_id: String },
+    /// Fires when the server responds to `turn/start` (id >= 2).
+    /// Contains `turn_id` which the caller **must cache** — it is required
+    /// to interrupt the turn via `turn/interrupt`.
     TurnResponse { turn_id: String },
+    /// Fires when the `turn/interrupt` response arrives (id >= 2, empty result).
+    /// The turn is now cancelled; caller should stop forwarding deltas.
     TurnInterruptResponse,
 
     // Notifications (no `id`)
@@ -107,12 +115,18 @@ pub enum AppServerEvent {
     CommandOutputDelta { item_id: String, text: String },
 
     // Approvals (server requests — have both `method` and `id`)
+    /// Server requests approval before executing a shell command.
+    /// Caller must respond with [`build_approval_response`] echoing `request_id`.
+    /// Pass `"accept"` to allow or `"decline"` / `"cancel"` to deny.
     CommandApproval {
         request_id: Value,
         item_id: String,
         thread_id: String,
         turn_id: String,
     },
+    /// Server requests approval before writing a file.
+    /// Caller must respond with [`build_approval_response`] echoing `request_id`.
+    /// Pass `"accept"` to allow or `"decline"` / `"cancel"` to deny.
     FileChangeApproval {
         request_id: Value,
         item_id: String,
@@ -341,7 +355,7 @@ fn parse_response(msg: &Value) -> AppServerEvent {
                 None => AppServerEvent::TurnInterruptResponse,
             }
         }
-        _ => AppServerEvent::Unknown,
+        _ => unreachable!("u64 arms 0, 1, and n>=2 are exhaustive"),
     }
 }
 
@@ -458,12 +472,18 @@ fn parse_notification(method: &str, msg: &Value) -> AppServerEvent {
                 .to_string();
             AppServerEvent::CommandOutputDelta { item_id, text }
         }
-        _ => AppServerEvent::Unknown,
+        _ => {
+            debug!(method = method, "codex app-server: unknown notification dropped");
+            AppServerEvent::Unknown
+        }
     }
 }
 
 fn parse_server_request(method: &str, msg: &Value) -> AppServerEvent {
-    let request_id = msg.get("id").cloned().unwrap_or(Value::Null);
+    // Invariant: parse_line only calls this function when has_id is true.
+    let Some(request_id) = msg.get("id").cloned() else {
+        return AppServerEvent::Unknown;
+    };
     let params = msg.get("params").unwrap_or(&Value::Null);
 
     let item_id = params
@@ -1010,6 +1030,32 @@ mod tests {
                 assert_eq!(item_type, "collabToolCall");
             }
             other => panic!("expected ItemCompleted(Other), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_parse_agent_message_delta_string_form() {
+        // "delta" can be a plain string instead of {"value": ...}
+        let line = r#"{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"hello text"}}"#;
+        match parse_line(line) {
+            AppServerEvent::AgentMessageDelta { item_id, text } => {
+                assert_eq!(item_id, "m1");
+                assert_eq!(text, "hello text");
+            }
+            other => panic!("expected AgentMessageDelta, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parse_command_output_delta_fallback() {
+        // falls back to "delta" field when "output" is absent
+        let line = r#"{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd1","delta":"output text"}}"#;
+        match parse_line(line) {
+            AppServerEvent::CommandOutputDelta { item_id, text } => {
+                assert_eq!(item_id, "cmd1");
+                assert_eq!(text, "output text");
+            }
+            other => panic!("expected CommandOutputDelta, got {:?}", other),
         }
     }
 }
