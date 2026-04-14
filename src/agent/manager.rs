@@ -45,6 +45,8 @@ struct RunningAgent {
 struct V2Agent {
     handle: Box<dyn AgentHandle>,
     _event_tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Debounce counter for stdin-style notification batching.
+    pending_notification_count: u32,
 }
 
 pub struct AgentManager {
@@ -293,6 +295,7 @@ impl AgentManager {
                     V2Agent {
                         handle,
                         _event_tasks: vec![forwarder],
+                        pending_notification_count: 0,
                     },
                 );
             }
@@ -500,11 +503,74 @@ impl AgentManager {
 
     /// Deliver a wakeup notification to agent stdin.
     pub async fn notify_agent(&self, agent_name: &str) -> anyhow::Result<()> {
-        // ── v2 path: notification not yet supported ──
+        // ── v2 path ──
         {
-            let v2 = self.v2_agents.lock().await;
-            if v2.contains_key(agent_name) {
-                debug!(agent = %agent_name, "v2: notify not yet implemented, skipping");
+            let mut v2 = self.v2_agents.lock().await;
+            if let Some(agent) = v2.get_mut(agent_name) {
+                agent.pending_notification_count += 1;
+                let count = agent.pending_notification_count;
+
+                // If the agent isn't Active (e.g. PromptInFlight), just
+                // record the count — the next notify_agent() call after the
+                // current run completes will deliver.
+                if !matches!(agent.handle.state(), AgentState::Active { .. }) {
+                    debug!(agent = %agent_name, "v2: agent not Active, deferring notification");
+                    return Ok(());
+                }
+
+                let v2_agents = self.v2_agents.clone();
+                let trace_store = self.trace_store.clone();
+                let trace_tx = self.store.trace_sender();
+                let name = agent_name.to_string();
+
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let mut v2 = v2_agents.lock().await;
+                    if let Some(agent) = v2.get_mut(&name) {
+                        let current_count = agent.pending_notification_count;
+                        if current_count == 0 || current_count != count {
+                            agent.pending_notification_count = 0;
+                            return;
+                        }
+                        agent.pending_notification_count = 0;
+
+                        if !matches!(agent.handle.state(), AgentState::Active { .. }) {
+                            debug!(agent = %name, "v2: agent no longer Active after debounce, skipping");
+                            return;
+                        }
+
+                        // Emit a Reading trace so the frontend shows "reading…"
+                        let (run_id, _) = trace_store.ensure_run(&name);
+                        let seq = trace_store.next_seq(&name);
+                        let ch = trace_store.run_channel_id(&name);
+                        let _ = trace_tx.send(trace::build_trace_event(
+                            run_id,
+                            &name,
+                            ch,
+                            seq,
+                            TraceEventKind::Reading,
+                        ));
+
+                        let plural = if current_count > 1 { "s" } else { "" };
+                        let them = if current_count > 1 { "them" } else { "it" };
+                        let notification = format!(
+                            "[System notification: You have {current_count} new message{plural} \
+                             waiting. Call check_messages to read {them} when you're ready.]"
+                        );
+                        info!(agent = %name, count = current_count, "v2: sending prompt notification");
+                        if let Err(e) = agent
+                            .handle
+                            .prompt(PromptReq {
+                                text: notification,
+                                attachments: vec![],
+                            })
+                            .await
+                        {
+                            warn!(agent = %name, error = %e, "v2: failed to deliver notification prompt");
+                        }
+                    }
+                });
+
                 return Ok(());
             }
         }
