@@ -36,8 +36,8 @@ enum Commands {
         #[arg(long)]
         data_dir: Option<String>,
         /// Directory containing agent template markdown files.
-        /// Falls back to `<data_dir>/config.toml` then CHORUS_TEMPLATE_DIR
-        /// then `~/agency-agents`.
+        /// Precedence: CLI flag > `CHORUS_TEMPLATE_DIR` env var >
+        /// `<data_dir>/config.toml` > `~/agency-agents`.
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
     },
@@ -52,8 +52,8 @@ enum Commands {
         #[arg(long)]
         no_open: bool,
         /// Directory containing agent template markdown files.
-        /// Falls back to `<data_dir>/config.toml` then CHORUS_TEMPLATE_DIR
-        /// then `~/agency-agents`.
+        /// Precedence: CLI flag > `CHORUS_TEMPLATE_DIR` env var >
+        /// `<data_dir>/config.toml` > `~/agency-agents`.
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
     },
@@ -100,6 +100,16 @@ enum Commands {
         agent_id: String,
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
+    },
+    /// Alias for `start --no-open` (kept for backward compatibility)
+    #[command(hide = true)]
+    Serve {
+        #[arg(long, default_value = "3001")]
+        port: u16,
+        #[arg(long)]
+        data_dir: Option<String>,
+        #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
+        template_dir: Option<String>,
     },
 }
 
@@ -184,7 +194,9 @@ pub async fn run() -> anyhow::Result<()> {
     // Only serve/start and the default server case persist data → want file logging.
     // CLI-only subcommands (send, history, status, channel, agent) and bridge log to stdout only.
     let log_data_dir: Option<String> = match &cli.command {
-        Some(Commands::Setup { data_dir, .. }) | Some(Commands::Start { data_dir, .. }) => {
+        Some(Commands::Setup { data_dir, .. })
+        | Some(Commands::Start { data_dir, .. })
+        | Some(Commands::Serve { data_dir, .. }) => {
             Some(data_dir.clone().unwrap_or_else(default_data_dir))
         }
         None => Some(default_data_dir()),
@@ -238,5 +250,11 @@ pub async fn run() -> anyhow::Result<()> {
         }) => channel::run(name, description, data_dir),
 
         Some(Commands::Agent { cmd }) => agent::run(cmd).await,
+
+        Some(Commands::Serve {
+            port,
+            data_dir,
+            template_dir,
+        }) => start::run(port, data_dir, true, template_dir).await,
     }
 }

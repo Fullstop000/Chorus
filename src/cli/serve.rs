@@ -1,4 +1,4 @@
-//! `chorus serve` — start the HTTP server and agent manager.
+//! `chorus start --no-open` (or `chorus serve`) — start the HTTP server and agent manager.
 //!
 //! Initialises the data directory layout, opens the SQLite store, spawns the
 //! [`AgentManager`] (which auto-restarts previously-active agents), loads

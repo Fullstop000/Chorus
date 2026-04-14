@@ -2,7 +2,7 @@
 //!
 //! Subcommands:
 //! - `create <name>` — register a new agent record in the store and join it to
-//!   all existing channels. The agent is picked up on the next `chorus serve`.
+//!   all existing channels. The agent is picked up on the next `chorus start`.
 //! - `stop <name>`   — mark an agent inactive so the manager stops it on the
 //!   next heartbeat (or immediately if the server is running).
 //! - `list`          — list all agents with their status and runtime.
@@ -45,7 +45,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 let _ = store.join_channel(&ch.name, &name, SenderType::Agent);
             }
             tracing::info!("Agent @{name} created (runtime: {runtime}, model: {model}).");
-            tracing::info!("Start it by running the server: `chorus serve`");
+            tracing::info!("Start it by running the server: `chorus start`");
             Ok(())
         }
         AgentCommands::Stop { name, data_dir } => {

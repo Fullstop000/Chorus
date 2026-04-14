@@ -39,14 +39,14 @@ impl AcpRuntime for KimiAcpRuntime {
 
     fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
         // Kimi's session/new requires `cwd` and `mcpServers` as a list of typed server objects.
-        // Stdio servers need `name`, `command`, `args`, and `env`.
+        // Stdio servers need `name`, `command`, and `args`; `env` is optional.
         serde_json::json!({
             "cwd": ctx.working_directory,
             "mcpServers": [
                 {
                     "name": "chat",
                     "command": ctx.bridge_binary,
-                    "args": ["bridge", "--agent-id", ctx.agent_id, "--server-url", ctx.server_url]
+                    "args": ["bridge", "--agent-id", &ctx.agent_id, "--server-url", &ctx.server_url]
                 }
             ]
         })

@@ -104,11 +104,19 @@ fn which_tool(name: &str) -> Option<std::path::PathBuf> {
 /// Return every absolute path where `name` is found on `$PATH`, deduped,
 /// in discovery order. Empty vec if nothing found.
 fn which_all(name: &str) -> Vec<std::path::PathBuf> {
-    let Some(path) = std::env::var_os("PATH") else {
+    which_all_in(name, std::env::var_os("PATH").as_deref())
+}
+
+/// Like `which_all` but searches an explicit PATH value (an `OsStr` in
+/// standard PATH format). Accepts `None` and returns an empty vec.
+/// Separated from `which_all` so tests can inject a controlled PATH without
+/// mutating the process-wide environment variable.
+fn which_all_in(name: &str, path_var: Option<&std::ffi::OsStr>) -> Vec<std::path::PathBuf> {
+    let Some(path) = path_var else {
         return Vec::new();
     };
     let mut seen = std::collections::HashSet::new();
-    std::env::split_paths(&path)
+    std::env::split_paths(path)
         .map(|dir| dir.join(name))
         .filter(|p| p.is_file())
         .filter(|p| seen.insert(p.clone()))
@@ -116,11 +124,13 @@ fn which_all(name: &str) -> Vec<std::path::PathBuf> {
 }
 
 /// Fill `target` with the resolved absolute path for `name` iff `target`
-/// is currently empty. Preserves any user-pinned value across re-runs.
+/// is currently unset or empty. Preserves any non-empty user-pinned value
+/// across re-runs. `Some("")` is treated as unset to handle legacy configs
+/// that stored an empty string instead of omitting the field.
 /// Always uses the first match; intended for ACP adapters where a silent
 /// choice is fine.
 fn fill_resolved_path(target: &mut Option<String>, name: &str) {
-    if target.is_none() {
+    if target.as_deref().unwrap_or("").is_empty() {
         if let Some(p) = which_tool(name) {
             *target = Some(p.to_string_lossy().into_owned());
         }
@@ -131,7 +141,8 @@ fn fill_resolved_path(target: &mut Option<String>, name: &str) {
 /// interactive mode, ask the user to pick one. Non-interactive mode falls
 /// back to the first match (current behavior).
 fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) {
-    if target.is_some() {
+    // Treat Some("") as unset — normalizes legacy String-based configs.
+    if !target.as_deref().unwrap_or("").is_empty() {
         return; // user-pinned, preserve
     }
     let candidates = which_all(name);
@@ -580,15 +591,9 @@ mod tests {
             }
         }
 
+        // Inject PATH directly — no global env mutation, no flakiness.
         let joined = std::env::join_paths([&dir_a, &dir_b, &dir_c]).unwrap();
-        let prev = std::env::var_os("PATH");
-        // SAFETY: env mutation is not thread-safe, but cargo test runs
-        // each test in its own thread; callers treat PATH as read-only.
-        std::env::set_var("PATH", &joined);
-        let found = which_all("myfake-bin");
-        if let Some(p) = prev {
-            std::env::set_var("PATH", p);
-        }
+        let found = which_all_in("myfake-bin", Some(&joined));
         assert_eq!(found.len(), 2);
         assert_eq!(found[0], dir_a.join("myfake-bin"));
         assert_eq!(found[1], dir_c.join("myfake-bin"));

@@ -54,7 +54,7 @@ impl AcpRuntime for CodexAcpRuntime {
             "mcpServers": [{
                 "name": "chat",
                 "command": ctx.bridge_binary,
-                "args": ["bridge", "--agent-id", ctx.agent_id, "--server-url", ctx.server_url]
+                "args": ["bridge", "--agent-id", &ctx.agent_id, "--server-url", &ctx.server_url]
             }]
         })
     }
