@@ -315,7 +315,9 @@ impl AgentHandle for OpencodeHandle {
                                 .or_else(|| s.pending_session_id.take())
                                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
                             s.session_id = Some(sid.clone());
-                            s.agent_state = AgentState::Active { session_id: sid.clone() };
+                            s.agent_state = AgentState::Active {
+                                session_id: sid.clone(),
+                            };
                             let prompt = s.pending_prompt.take();
                             (sid, prompt)
                         };
@@ -336,7 +338,10 @@ impl AgentHandle for OpencodeHandle {
                             {
                                 let mut s = shared.lock().unwrap();
                                 s.run_id = Some(run_id);
-                                s.agent_state = AgentState::PromptInFlight { run_id, session_id: sid.clone() };
+                                s.agent_state = AgentState::PromptInFlight {
+                                    run_id,
+                                    session_id: sid.clone(),
+                                };
                             }
                             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                                 key: key.clone(),
@@ -357,7 +362,9 @@ impl AgentHandle for OpencodeHandle {
                             let mut s = shared.lock().unwrap();
                             let rid = s.run_id.take();
                             let sid = s.session_id.clone().unwrap_or_default();
-                            s.agent_state = AgentState::Active { session_id: sid.clone() };
+                            s.agent_state = AgentState::Active {
+                                session_id: sid.clone(),
+                            };
                             (rid, sid)
                         };
 
@@ -474,13 +481,17 @@ impl AgentHandle for OpencodeHandle {
                     AcpParsed::PermissionRequested {
                         request_id,
                         tool_name,
+                        options,
                     } => {
+                        // Pick the most permissive option from the runtime's
+                        // offered choices (allow_always > allow_once > first).
+                        let option_id = acp_protocol::pick_best_option_id(&options);
                         debug!(
                             ?tool_name,
-                            request_id, "opencode: auto-approving permission"
+                            request_id, option_id, "opencode: auto-approving permission"
                         );
                         let response =
-                            acp_protocol::build_permission_approval_response(request_id, true);
+                            acp_protocol::build_permission_response_raw(request_id, option_id);
                         let _ = stdin_tx_for_reader.try_send(response);
                     }
 
@@ -576,7 +587,10 @@ impl AgentHandle for OpencodeHandle {
         {
             let mut s = self.shared.lock().unwrap();
             s.run_id = Some(run_id);
-            s.agent_state = AgentState::PromptInFlight { run_id, session_id: session_id.clone() };
+            s.agent_state = AgentState::PromptInFlight {
+                run_id,
+                session_id: session_id.clone(),
+            };
         }
 
         self.state = AgentState::PromptInFlight {
@@ -613,11 +627,12 @@ impl AgentHandle for OpencodeHandle {
             }
         };
         if let Some((run_id, session_id)) = cancel_info {
-
             {
                 let mut s = self.shared.lock().unwrap();
                 s.run_id = None;
-                s.agent_state = AgentState::Active { session_id: session_id.clone() };
+                s.agent_state = AgentState::Active {
+                    session_id: session_id.clone(),
+                };
             }
 
             self.emit(DriverEvent::Completed {

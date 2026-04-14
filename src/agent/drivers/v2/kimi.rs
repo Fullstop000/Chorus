@@ -485,10 +485,17 @@ impl AgentHandle for KimiHandle {
                     AcpParsed::PermissionRequested {
                         request_id,
                         tool_name,
+                        options,
                     } => {
-                        debug!(?tool_name, request_id, "kimi: auto-approving permission");
+                        // Pick the most permissive option from the runtime's
+                        // offered choices (allow_always > allow_once > first).
+                        let option_id = acp_protocol::pick_best_option_id(&options);
+                        debug!(
+                            ?tool_name,
+                            request_id, option_id, "kimi: auto-approving permission"
+                        );
                         let response =
-                            acp_protocol::build_permission_approval_response(request_id, true);
+                            acp_protocol::build_permission_response_raw(request_id, option_id);
                         let _ = stdin_tx_for_reader.try_send(response);
                     }
 

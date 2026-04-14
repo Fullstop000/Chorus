@@ -628,13 +628,20 @@ fn spawn_stdout_reader(
                 AcpParsed::PermissionRequested {
                     request_id,
                     tool_name,
+                    options,
                 } => {
+                    // Pick the most permissive option offered by the runtime.
+                    // V1 bug: hardcoding "approve" caused claude-agent-acp to
+                    // reject the response ("User refused permission") because
+                    // the optionId didn't match any offered option.
+                    let option_id = acp_protocol::pick_best_option_id(&options);
                     debug!(
                         key = %key,
                         ?tool_name,
+                        option_id,
                         "claude acp: auto-approving permission request"
                     );
-                    let resp = acp_protocol::build_permission_approval_response(request_id, true);
+                    let resp = acp_protocol::build_permission_response_raw(request_id, option_id);
                     let _ = stdin_tx.send(format!("{resp}\n")).await;
                 }
 

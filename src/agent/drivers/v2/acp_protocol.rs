@@ -173,15 +173,51 @@ pub enum AcpParsed {
     SessionUpdate { items: Vec<AcpUpdateItem> },
     /// `session/request_permission` incoming request. `request_id` is the
     /// JSON-RPC id the transport must echo in its response.
+    ///
+    /// `options` carries the approval choices offered by the runtime (e.g.
+    /// `allow_always`, `allow_once`). Transports should call
+    /// [`pick_best_option_id`] to select the most permissive option and
+    /// respond with [`build_permission_response_raw`] using that id.
     PermissionRequested {
         request_id: u64,
         tool_name: Option<String>,
+        /// The approval options the runtime is willing to accept. Empty when
+        /// the runtime omits the field (some kimi versions do this).
+        options: Vec<PermissionOption>,
     },
     /// JSON-RPC error response (any id). Surfaces to the transport; v1
     /// policy is to emit it and let the caller decide whether to tear down.
     Error { message: String },
     /// The line parsed as JSON but was not a recognizable ACP frame — skip it.
     Unknown,
+}
+
+/// A single approval option from a `session/request_permission` request.
+///
+/// Each option has a `kind` (e.g. `"allow_always"`, `"allow_once"`) and an
+/// `optionId` that must be echoed back verbatim in the response. Runtimes
+/// reject responses whose `optionId` doesn't match any offered option — this
+/// was the root cause of claude-agent-acp's "User refused permission" bug.
+#[derive(Debug, Clone)]
+pub struct PermissionOption {
+    pub kind: String,
+    pub option_id: String,
+}
+
+/// Pick the best option id from a list of permission options.
+///
+/// Mirrors v1's policy: prefer `allow_always` (session-wide approval) →
+/// `allow_once` → first available option → fallback `"approve"`. The last
+/// fallback covers runtimes that omit `options[]` entirely (some kimi
+/// versions), where the hardcoded `"approve"` happens to work.
+pub fn pick_best_option_id(options: &[PermissionOption]) -> &str {
+    options
+        .iter()
+        .find(|o| o.kind == "allow_always")
+        .or_else(|| options.iter().find(|o| o.kind == "allow_once"))
+        .map(|o| o.option_id.as_str())
+        .or_else(|| options.first().map(|o| o.option_id.as_str()))
+        .unwrap_or("approve")
 }
 
 /// An item extracted from a `session/update` notification.
@@ -315,9 +351,28 @@ fn parse_server_request(method: &str, msg: &Value) -> AcpParsed {
         .and_then(|t| t.as_str())
         .map(|t| t.split(':').next().unwrap_or(t).trim().to_string());
 
+    // Extract approval options so transports can echo the correct optionId.
+    // Without this, hardcoding "approve" causes claude-agent-acp to reject
+    // the response as unrecognized ("User refused permission to run tool").
+    let options = msg
+        .get("params")
+        .and_then(|p| p.get("options"))
+        .and_then(|o| o.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|opt| {
+                    let kind = opt.get("kind")?.as_str()?.to_string();
+                    let option_id = opt.get("optionId")?.as_str()?.to_string();
+                    Some(PermissionOption { kind, option_id })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
     AcpParsed::PermissionRequested {
         request_id,
         tool_name,
+        options,
     }
 }
 
@@ -860,9 +915,13 @@ mod tests {
             AcpParsed::PermissionRequested {
                 request_id,
                 tool_name,
+                options,
             } => {
                 assert_eq!(request_id, 42);
                 assert_eq!(tool_name.as_deref(), Some("send_message"));
+                assert_eq!(options.len(), 1);
+                assert_eq!(options[0].kind, "allow_always");
+                assert_eq!(options[0].option_id, "approve");
             }
             other => panic!("expected PermissionRequested, got {other:?}"),
         }
@@ -876,9 +935,12 @@ mod tests {
             AcpParsed::PermissionRequested {
                 request_id,
                 tool_name,
+                options,
             } => {
                 assert_eq!(request_id, 7);
                 assert_eq!(tool_name.as_deref(), Some("Write"));
+                // No options array in this request — defaults to empty.
+                assert!(options.is_empty());
             }
             other => panic!("expected PermissionRequested, got {other:?}"),
         }
@@ -1000,6 +1062,54 @@ mod tests {
         let v: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["id"], 99);
         assert_eq!(v["result"]["outcome"]["optionId"], "allow_always_option");
+    }
+
+    // ── pick_best_option_id ──────────────────────────────────────────────
+
+    #[test]
+    fn pick_best_option_prefers_allow_always() {
+        let options = vec![
+            PermissionOption { kind: "allow_once".into(), option_id: "once-id".into() },
+            PermissionOption { kind: "allow_always".into(), option_id: "always-id".into() },
+        ];
+        assert_eq!(pick_best_option_id(&options), "always-id");
+    }
+
+    #[test]
+    fn pick_best_option_falls_back_to_allow_once() {
+        let options = vec![
+            PermissionOption { kind: "deny".into(), option_id: "deny-id".into() },
+            PermissionOption { kind: "allow_once".into(), option_id: "once-id".into() },
+        ];
+        assert_eq!(pick_best_option_id(&options), "once-id");
+    }
+
+    #[test]
+    fn pick_best_option_falls_back_to_first() {
+        let options = vec![
+            PermissionOption { kind: "custom".into(), option_id: "custom-id".into() },
+        ];
+        assert_eq!(pick_best_option_id(&options), "custom-id");
+    }
+
+    #[test]
+    fn pick_best_option_empty_returns_approve() {
+        // Some runtimes (kimi) omit options entirely — fallback to "approve".
+        assert_eq!(pick_best_option_id(&[]), "approve");
+    }
+
+    #[test]
+    fn parse_permission_request_with_multiple_options() {
+        // claude-agent-acp sends both allow_once and allow_always with
+        // runtime-generated optionIds — we must pick the right one.
+        let line = r#"{"jsonrpc":"2.0","id":10,"method":"session/request_permission","params":{"toolCall":{"title":"check_messages"},"options":[{"kind":"allow_once","optionId":"oid-once"},{"kind":"allow_always","optionId":"oid-always"}]}}"#;
+        match parse_line(line) {
+            AcpParsed::PermissionRequested { options, .. } => {
+                assert_eq!(options.len(), 2);
+                assert_eq!(pick_best_option_id(&options), "oid-always");
+            }
+            other => panic!("expected PermissionRequested, got {other:?}"),
+        }
     }
 
     // ── ToolCallAccumulator ──────────────────────────────────────────────
