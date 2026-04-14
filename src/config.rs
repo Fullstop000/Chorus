@@ -150,7 +150,12 @@ impl ChorusConfig {
         let mut cfg: Self = toml::from_str(&raw)
             .map_err(|e| anyhow::anyhow!("failed to parse {}: {e}", path.display()))?;
         // Normalize legacy empty strings to None so callers can use Option semantics.
-        for runtime in [&mut cfg.claude, &mut cfg.codex, &mut cfg.kimi, &mut cfg.opencode] {
+        for runtime in [
+            &mut cfg.claude,
+            &mut cfg.codex,
+            &mut cfg.kimi,
+            &mut cfg.opencode,
+        ] {
             if runtime.binary_path.as_deref() == Some("") {
                 runtime.binary_path = None;
             }
