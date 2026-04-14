@@ -288,6 +288,7 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
             env_vars: &[],
         })
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
@@ -311,7 +312,7 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
     .unwrap();
 
     let workspace: serde_json::Value = client
-        .get(format!("{url}/api/agents/bot1/workspace"))
+        .get(format!("{url}/api/agents/{}/workspace", bot1.id))
         .send()
         .await
         .unwrap()
@@ -330,7 +331,8 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
 
     let preview: serde_json::Value = client
         .get(format!(
-            "{url}/api/agents/bot1/workspace/file?path=notes%2Fwork-log.md"
+            "{url}/api/agents/{}/workspace/file?path=notes%2Fwork-log.md",
+            bot1.id
         ))
         .send()
         .await

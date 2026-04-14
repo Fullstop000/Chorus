@@ -87,7 +87,7 @@ export function ProfilePanel() {
       return;
     }
     setDetailLoading(true);
-    getAgentDetail(selectedAgent.name)
+    getAgentDetail(selectedAgent.id)
       .then(setDetail)
       .catch((err) => setError(String(err)))
       .finally(() => setDetailLoading(false));
@@ -118,9 +118,9 @@ export function ProfilePanel() {
     setError(null);
     try {
       if (isActive) {
-        await stopAgent(agent.name);
+        await stopAgent(agent.id);
       } else {
-        await startAgent(agent.name);
+        await startAgent(agent.id);
       }
       refreshAgents();
     } catch (e) {
@@ -131,7 +131,7 @@ export function ProfilePanel() {
   }
 
   async function reloadDetail() {
-    const nextDetail = await getAgentDetail(agent.name);
+    const nextDetail = await getAgentDetail(agent.id);
     setDetail(nextDetail);
     refreshAgents();
   }
@@ -280,6 +280,7 @@ export function ProfilePanel() {
       {detail && (
         <EditAgentModal
           open={showEdit}
+          agentId={agent.id}
           agentName={agent.name}
           initialState={{
             name: agent.name,
@@ -306,6 +307,7 @@ export function ProfilePanel() {
 
       <RestartAgentModal
         open={showRestart}
+        agentId={agent.id}
         agentName={agent.name}
         onOpenChange={setShowRestart}
         onRestarted={async () => {
@@ -316,6 +318,7 @@ export function ProfilePanel() {
 
       <DeleteAgentModal
         open={showDelete}
+        agentId={agent.id}
         agentName={agent.name}
         onOpenChange={setShowDelete}
         onDeleted={async () => {
@@ -330,6 +333,7 @@ export function ProfilePanel() {
 
 function EditAgentModal({
   open,
+  agentId,
   agentName,
   initialState,
   runtimeStatuses,
@@ -338,6 +342,7 @@ function EditAgentModal({
   onSaved,
 }: {
   open: boolean;
+  agentId: string;
   agentName: string;
   initialState: AgentConfigState;
   runtimeStatuses: RuntimeStatusInfo[];
@@ -356,7 +361,7 @@ function EditAgentModal({
       if (!state.model.trim()) {
         throw new Error("Model is required");
       }
-      await updateAgent(agentName, {
+      await updateAgent(agentId, {
         display_name: state.display_name,
         description: state.description,
         runtime: state.runtime,
@@ -411,11 +416,13 @@ function EditAgentModal({
 
 function RestartAgentModal({
   open,
+  agentId,
   agentName,
   onOpenChange,
   onRestarted,
 }: {
   open: boolean;
+  agentId: string;
   agentName: string;
   onOpenChange: (open: boolean) => void;
   onRestarted: () => Promise<void>;
@@ -449,7 +456,7 @@ function RestartAgentModal({
     setSubmitting(true);
     setError(null);
     try {
-      await restartAgent(agentName, mode);
+      await restartAgent(agentId, mode);
       await onRestarted();
     } catch (e) {
       setError(String(e));
@@ -496,11 +503,13 @@ function RestartAgentModal({
 
 function DeleteAgentModal({
   open,
+  agentId,
   agentName,
   onOpenChange,
   onDeleted,
 }: {
   open: boolean;
+  agentId: string;
   agentName: string;
   onOpenChange: (open: boolean) => void;
   onDeleted: () => Promise<void>;
@@ -514,7 +523,7 @@ function DeleteAgentModal({
     setSubmitting(true);
     setError(null);
     try {
-      const result = await deleteAgent(agentName, mode);
+      const result = await deleteAgent(agentId, mode);
       if (result.code === "AGENT_DELETE_WORKSPACE_CLEANUP_FAILED") {
         pushToast({
           id: crypto.randomUUID(),

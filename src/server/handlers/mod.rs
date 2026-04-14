@@ -3,6 +3,7 @@ pub mod attachments;
 pub mod channels;
 pub mod dto;
 pub mod messages;
+pub mod path_params;
 pub mod server_info;
 pub mod tasks;
 pub mod teams;

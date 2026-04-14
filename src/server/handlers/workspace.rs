@@ -5,6 +5,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
+use super::path_params::{resolve_public_agent, PublicResourceIdPath};
 use super::{app_err, internal_err, ApiResult, AppState};
 
 // ── Inline query structs ──
@@ -76,9 +77,10 @@ fn collect_workspace_files(
 
 pub async fn handle_agent_workspace(
     State(state): State<AppState>,
-    AxumPath(name): AxumPath<String>,
+    AxumPath(PublicResourceIdPath { id }): AxumPath<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
-    let workspace_dir = state.store.agents_dir().join(&name);
+    let agent = resolve_public_agent(&state, &id)?;
+    let workspace_dir = state.store.agents_dir().join(&agent.name);
     if !workspace_dir.exists() {
         return Ok(Json(serde_json::json!({
             "path": workspace_dir.to_string_lossy(),
@@ -95,10 +97,11 @@ pub async fn handle_agent_workspace(
 
 pub async fn handle_agent_workspace_file(
     State(state): State<AppState>,
-    AxumPath(name): AxumPath<String>,
+    AxumPath(PublicResourceIdPath { id }): AxumPath<PublicResourceIdPath>,
     Query(params): Query<WorkspaceFileParams>,
 ) -> ApiResult<serde_json::Value> {
-    let workspace_dir = state.store.agents_dir().join(&name);
+    let agent = resolve_public_agent(&state, &id)?;
+    let workspace_dir = state.store.agents_dir().join(&agent.name);
     let relative = sanitize_workspace_path(&params.path)?;
     let file_path = workspace_dir.join(&relative);
 

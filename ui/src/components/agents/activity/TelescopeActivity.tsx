@@ -33,6 +33,7 @@ import type { TraceFrame } from "../../../transport/types";
 import "./TelescopeActivity.css";
 
 interface Props {
+  agentId: string;
   agentName: string;
 }
 
@@ -513,7 +514,7 @@ function RunItem({
 
 // ── Main component ──
 
-export function TelescopeActivity({ agentName }: Props) {
+export function TelescopeActivity({ agentId, agentName }: Props) {
   const trace = useTraceStore((s) => s.traces[agentName]);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -532,7 +533,7 @@ export function TelescopeActivity({ agentName }: Props) {
   useEffect(() => {
     let cancelled = false;
     setRunsLoading(true);
-    getAgentRuns(agentName)
+    getAgentRuns(agentId)
       .then((res) => {
         if (cancelled) return;
         setRuns(res.runs);
@@ -544,7 +545,7 @@ export function TelescopeActivity({ agentName }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [agentName]);
+  }, [agentId]);
 
   // Auto-select: live run first, else most recent
   const liveRunId = trace?.isActive ? trace.runId : null;

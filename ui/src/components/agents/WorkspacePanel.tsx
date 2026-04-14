@@ -17,7 +17,7 @@ import { getAgentWorkspace, getAgentWorkspaceFile } from '../../data'
 import './WorkspacePanel.css'
 
 interface Props {
-  agentName: string
+  agentId: string
 }
 
 interface WorkspaceNode {
@@ -29,7 +29,7 @@ interface WorkspaceNode {
 
 type PreviewMode = 'raw' | 'preview'
 
-export function WorkspacePanel({ agentName }: Props) {
+export function WorkspacePanel({ agentId }: Props) {
   const [files, setFiles] = useState<string[]>([])
   const [workspacePath, setWorkspacePath] = useState('')
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -46,7 +46,7 @@ export function WorkspacePanel({ agentName }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const res = await getAgentWorkspace(agentName)
+      const res = await getAgentWorkspace(agentId)
       setFiles(res.files)
       setWorkspacePath(res.path)
       setExpandedPaths((current) => {
@@ -65,12 +65,12 @@ export function WorkspacePanel({ agentName }: Props) {
     } finally {
       setLoading(false)
     }
-  }, [agentName])
+  }, [agentId])
 
   const loadPreview = useCallback(async (path: string) => {
     setPreviewLoading(true)
     try {
-      const res = await getAgentWorkspaceFile(agentName, path)
+      const res = await getAgentWorkspaceFile(agentId, path)
       setPreviewContent(res.content)
       setPreviewTruncated(res.truncated)
       setPreviewSizeBytes(res.sizeBytes)
@@ -85,7 +85,7 @@ export function WorkspacePanel({ agentName }: Props) {
     } finally {
       setPreviewLoading(false)
     }
-  }, [agentName])
+  }, [agentId])
 
   useEffect(() => {
     setLoading(true)

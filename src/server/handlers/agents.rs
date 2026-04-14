@@ -6,6 +6,7 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
+use super::path_params::{resolve_public_agent, PublicResourceIdPath};
 use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
@@ -271,13 +272,9 @@ pub async fn handle_create_agent(
 
 pub async fn handle_get_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentDetailResponse> {
-    let agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
+    let agent = resolve_public_agent(&state, &id)?;
     Ok(Json(AgentDetailResponse {
         agent: AgentInfo::from(&agent),
         env_vars: agent
@@ -293,15 +290,12 @@ pub async fn handle_get_agent(
 
 pub async fn handle_update_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
+    let existing = resolve_public_agent(&state, &id)?;
+    let name = existing.name.clone();
     let _transition = acquire_transition(&state, &name)?;
-    let existing = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
 
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     let display_name = if req.display_name.trim().is_empty() {
@@ -360,15 +354,12 @@ pub async fn handle_update_agent(
 
 pub async fn handle_restart_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<RestartAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name.clone();
     let _transition = acquire_transition(&state, &name)?;
-    let agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
     let agents_dir = state.store.agents_dir();
     let workspace = AgentWorkspace::new(&agents_dir);
 
@@ -418,15 +409,12 @@ pub async fn handle_restart_agent(
 
 pub async fn handle_delete_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<DeleteAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
-    state
-        .store
-        .get_agent(&name)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))?;
 
     state
         .lifecycle
@@ -459,8 +447,10 @@ pub async fn handle_delete_agent(
 
 pub async fn handle_agent_start(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
     info!(agent = %name, "starting agent");
     state
@@ -474,8 +464,10 @@ pub async fn handle_agent_start(
 
 pub async fn handle_agent_stop(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
     info!(agent = %name, "stopping agent");
     state
@@ -489,22 +481,26 @@ pub async fn handle_agent_stop(
 
 pub async fn handle_agent_activity(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Query(params): Query<ActivityParams>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
     let limit = params.limit.unwrap_or(50).min(200);
     let messages = state
         .store
-        .get_agent_activity(&name, limit)
+        .get_agent_activity(&agent.name, limit)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
 
 pub async fn handle_agent_activity_log(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Query(params): Query<ActivityLogParams>,
 ) -> ApiResult<ActivityLogResponse> {
-    let resp = state.lifecycle.get_activity_log_data(&name, params.after);
+    let agent = resolve_public_agent(&state, &id)?;
+    let resp = state
+        .lifecycle
+        .get_activity_log_data(&agent.name, params.after);
     Ok(Json(resp))
 }

@@ -211,10 +211,13 @@ export function MainPanel() {
           {activeTab === "tasks" && <TasksPanel />}
           {activeTab === "profile" && <ProfilePanel />}
           {activeTab === "activity" && currentAgent && (
-            <TelescopeActivity agentName={currentAgent.name} />
+            <TelescopeActivity
+              agentId={currentAgent.id}
+              agentName={currentAgent.name}
+            />
           )}
           {activeTab === "workspace" && currentAgent && (
-            <WorkspacePanel agentName={currentAgent.name} />
+            <WorkspacePanel agentId={currentAgent.id} />
           )}
           {!showHeader && (
             <div

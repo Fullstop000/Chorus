@@ -1457,12 +1457,13 @@ async fn test_get_and_update_agent_via_api() {
     store
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     let detail_resp = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/agents/bot1")
+                .uri(format!("/api/agents/{}", bot1.id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1490,7 +1491,7 @@ async fn test_get_and_update_agent_via_api() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/agents/bot1")
+                .uri(format!("/api/agents/{}", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
                 .unwrap(),
@@ -1528,6 +1529,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
             env_vars: &[],
         })
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     let update_req = serde_json::json!({
         "display_name": "Kimi Bot",
@@ -1542,7 +1544,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/agents/bot1")
+                .uri(format!("/api/agents/{}", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
                 .unwrap(),
@@ -1568,6 +1570,7 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
     store
         .update_agent_session("bot1", Some("thread-123"))
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
@@ -1577,7 +1580,7 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/agents/bot1/restart")
+                .uri(format!("/api/agents/{}/restart", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({ "mode": "reset_session" })).unwrap(),
@@ -1595,6 +1598,7 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
 #[tokio::test]
 async fn test_delete_agent_marks_history_and_preserves_workspace() {
     let (store, _app, dir) = setup_with_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
@@ -1617,7 +1621,7 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/agents/bot1/delete")
+                .uri(format!("/api/agents/{}/delete", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({ "mode": "preserve_workspace" }))
@@ -2149,7 +2153,8 @@ async fn test_upload_uses_configured_data_dir() {
 
 #[tokio::test]
 async fn test_workspace_lists_files_from_configured_data_dir() {
-    let (_store, app, dir) = setup_with_data_dir();
+    let (store, app, dir) = setup_with_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "# test\n").unwrap();
@@ -2157,7 +2162,7 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/agents/bot1/workspace")
+                .uri(format!("/api/agents/{}/workspace", bot1.id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2186,7 +2191,8 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
 
 #[tokio::test]
 async fn test_workspace_file_returns_content_from_configured_data_dir() {
-    let (_store, app, dir) = setup_with_data_dir();
+    let (store, app, dir) = setup_with_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "# plan\nship it\n").unwrap();
@@ -2194,7 +2200,10 @@ async fn test_workspace_file_returns_content_from_configured_data_dir() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/agents/bot1/workspace/file?path=notes%2Fplan.md")
+                .uri(format!(
+                    "/api/agents/{}/workspace/file?path=notes%2Fplan.md",
+                    bot1.id
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2873,14 +2882,14 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
             env_vars: &[],
         })
         .unwrap();
-    let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
-
     let req = serde_json::json!({ "mode": "restart" });
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/agents/bot1/restart")
+                .uri(format!("/api/agents/{}/restart", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&req).unwrap()))
                 .unwrap(),
