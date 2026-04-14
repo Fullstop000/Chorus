@@ -18,7 +18,7 @@ use tracing::{debug, trace, warn};
 use crate::agent::drivers::{command_exists, run_command};
 use crate::agent::AgentRuntime;
 
-use super::codex_app_server::{self, AppServerEvent, AppServerPhase, TurnStatus};
+use super::codex_app_server::{self, AppServerEvent, AppServerPhase, ItemEvent, TurnStatus};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -205,35 +205,33 @@ impl AgentHandle for CodexHandle {
         });
 
         // Build CLI args: `codex app-server [flags]`
+        // NOTE: codex app-server only accepts `-c key=value` overrides plus
+        // transport flags. Model, cwd, approvalPolicy, and sandbox are all
+        // passed in the `thread/start` JSON-RPC params instead.
         let mut args: Vec<String> = vec!["app-server".into()];
 
-        args.push("--approval-policy".into());
-        args.push("never".into());
-
-        args.push("--sandbox".into());
-        args.push("dangerFullAccess".into());
-
-        if !self.spec.model.is_empty() {
-            args.push("--model".into());
-            args.push(self.spec.model.clone());
-        }
-
-        args.push("--cwd".into());
-        args.push(self.spec.working_directory.to_string_lossy().into_owned());
-
-        // Pass bridge MCP server via --mcp-config
-        let mcp_config = serde_json::json!({
-            "mcpServers": {
-                "chat": {
-                    "command": &self.spec.bridge_binary,
-                    "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url],
-                }
-            }
-        });
-        args.push("--mcp-config".into());
-        args.push(
-            serde_json::to_string(&mcp_config).expect("mcp_config serialization cannot fail"),
-        );
+        // Register the bridge MCP server so Codex can call back into Chorus.
+        // Uses the same `mcp_servers.*` config key format as ~/.codex/config.toml.
+        let bridge_binary_json = serde_json::to_string(&self.spec.bridge_binary)
+            .expect("bridge_binary serialization cannot fail");
+        let bridge_args_json = serde_json::to_string(&[
+            "bridge",
+            "--agent-id",
+            &self.key,
+            "--server-url",
+            &self.spec.server_url,
+        ])
+        .expect("bridge_args serialization cannot fail");
+        args.push("-c".into());
+        args.push(format!("mcp_servers.chat.command={bridge_binary_json}"));
+        args.push("-c".into());
+        args.push(format!("mcp_servers.chat.args={bridge_args_json}"));
+        args.push("-c".into());
+        args.push("mcp_servers.chat.type=\"stdio\"".into());
+        args.push("-c".into());
+        args.push("mcp_servers.chat.enabled=true".into());
+        args.push("-c".into());
+        args.push("mcp_servers.chat.required=true".into());
 
         let mut cmd = Command::new("codex");
         cmd.args(&args)
@@ -424,11 +422,20 @@ impl AgentHandle for CodexHandle {
                             (rid, tid)
                         };
                         if let Some(run_id) = run_id {
-                            let finish_reason = match status {
+                            let finish_reason = match &status {
                                 TurnStatus::Completed => FinishReason::Natural,
                                 TurnStatus::Interrupted => FinishReason::Cancelled,
-                                // No explicit Error variant; treat as natural completion
-                                TurnStatus::Failed { .. } => FinishReason::Natural,
+                                // Emit the error text so it appears in the channel.
+                                TurnStatus::Failed { message } => {
+                                    emit(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::Text {
+                                            text: format!("⚠️ {message}"),
+                                        },
+                                    });
+                                    FinishReason::Natural
+                                }
                             };
                             emit(DriverEvent::Output {
                                 key: key.clone(),
@@ -497,15 +504,13 @@ impl AgentHandle for CodexHandle {
 
                     AppServerEvent::CommandApproval { request_id, .. } => {
                         // approval_policy=never should prevent these; approve defensively if received
-                        let resp =
-                            codex_app_server::build_approval_response(&request_id, "accept");
+                        let resp = codex_app_server::build_approval_response(&request_id, "accept");
                         let _ = stdin_tx_reader.try_send(resp);
                         debug!("codex: auto-approved command execution");
                     }
 
                     AppServerEvent::FileChangeApproval { request_id, .. } => {
-                        let resp =
-                            codex_app_server::build_approval_response(&request_id, "accept");
+                        let resp = codex_app_server::build_approval_response(&request_id, "accept");
                         let _ = stdin_tx_reader.try_send(resp);
                         debug!("codex: auto-approved file change");
                     }
@@ -525,11 +530,67 @@ impl AgentHandle for CodexHandle {
                         }
                     }
 
+                    // ItemCompleted: emit ToolCall/ToolResult trace events so the
+                    // Telescope can show what tools the agent used.
+                    AppServerEvent::ItemCompleted { item } => {
+                        let run_id = { shared.lock().unwrap().run_id };
+                        if let Some(run_id) = run_id {
+                            match item {
+                                ItemEvent::CommandExecution {
+                                    id,
+                                    command,
+                                    exit_code,
+                                    ..
+                                } => {
+                                    let output = {
+                                        let s = shared.lock().unwrap();
+                                        s.cmd_output_buf.get(&id).cloned().unwrap_or_default()
+                                    };
+                                    emit(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::ToolCall {
+                                            name: "shell".to_string(),
+                                            input: serde_json::json!({ "command": command }),
+                                        },
+                                    });
+                                    let result = match exit_code {
+                                        Some(code) if !output.is_empty() => {
+                                            format!("(exit {code}) {output}")
+                                        }
+                                        Some(code) => format!("exit_code={code}"),
+                                        None => output,
+                                    };
+                                    emit(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::ToolResult { content: result },
+                                    });
+                                }
+                                ItemEvent::McpToolCall {
+                                    server,
+                                    tool,
+                                    arguments,
+                                    ..
+                                } => {
+                                    emit(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::ToolCall {
+                                            name: format!("{server}/{tool}"),
+                                            input: arguments,
+                                        },
+                                    });
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
                     // Informational notifications — no action required
                     AppServerEvent::ThreadStarted { .. }
                     | AppServerEvent::TurnStarted { .. }
                     | AppServerEvent::ItemStarted { .. }
-                    | AppServerEvent::ItemCompleted { .. }
                     | AppServerEvent::Unknown => {}
                 }
             }
@@ -655,8 +716,7 @@ impl AgentHandle for CodexHandle {
         if !thread_id.is_empty() {
             if let (Some(vid), Some(tx)) = (turn_id, self.stdin_tx.clone()) {
                 let req_id = self.alloc_id();
-                let interrupt =
-                    codex_app_server::build_turn_interrupt(req_id, &thread_id, &vid);
+                let interrupt = codex_app_server::build_turn_interrupt(req_id, &thread_id, &vid);
                 let _ = tx.try_send(interrupt);
             }
         }

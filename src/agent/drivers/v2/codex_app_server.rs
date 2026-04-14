@@ -57,8 +57,14 @@ pub struct FileChangeInfo {
 
 #[derive(Debug, Clone)]
 pub enum ItemEvent {
-    AgentMessage { id: String, text: String },
-    Reasoning { id: String, summary: String },
+    AgentMessage {
+        id: String,
+        text: String,
+    },
+    Reasoning {
+        id: String,
+        summary: String,
+    },
     CommandExecution {
         id: String,
         command: String,
@@ -91,28 +97,52 @@ pub enum AppServerEvent {
     /// Fires when the server responds to `thread/start` (id 1).
     /// Contains `thread_id` which the caller **must cache** — it is required
     /// for all subsequent `turn/start` and `turn/interrupt` requests.
-    ThreadResponse { thread_id: String },
+    ThreadResponse {
+        thread_id: String,
+    },
     /// Fires when the server responds to `turn/start` (id >= 2).
     /// Contains `turn_id` which the caller **must cache** — it is required
     /// to interrupt the turn via `turn/interrupt`.
-    TurnResponse { turn_id: String },
+    TurnResponse {
+        turn_id: String,
+    },
     /// Fires when the `turn/interrupt` response arrives (id >= 2, empty result).
     /// The turn is now cancelled; caller should stop forwarding deltas.
     TurnInterruptResponse,
 
     // Notifications (no `id`)
-    ThreadStarted { thread_id: String },
-    TurnStarted { turn_id: String },
-    TurnCompleted { turn_id: String, status: TurnStatus },
+    ThreadStarted {
+        thread_id: String,
+    },
+    TurnStarted {
+        turn_id: String,
+    },
+    TurnCompleted {
+        turn_id: String,
+        status: TurnStatus,
+    },
 
     // Item lifecycle
-    ItemStarted { item: ItemEvent },
-    ItemCompleted { item: ItemEvent },
+    ItemStarted {
+        item: ItemEvent,
+    },
+    ItemCompleted {
+        item: ItemEvent,
+    },
 
     // Deltas (streaming)
-    AgentMessageDelta { item_id: String, text: String },
-    ReasoningSummaryDelta { item_id: String, text: String },
-    CommandOutputDelta { item_id: String, text: String },
+    AgentMessageDelta {
+        item_id: String,
+        text: String,
+    },
+    ReasoningSummaryDelta {
+        item_id: String,
+        text: String,
+    },
+    CommandOutputDelta {
+        item_id: String,
+        text: String,
+    },
 
     // Approvals (server requests — have both `method` and `id`)
     /// Server requests approval before executing a shell command.
@@ -135,7 +165,10 @@ pub enum AppServerEvent {
     },
 
     // Error
-    Error { id: Option<Value>, message: String },
+    Error {
+        id: Option<Value>,
+        message: String,
+    },
 
     // Unknown / unrecognized
     Unknown,
@@ -195,14 +228,14 @@ pub fn build_initialized() -> String {
 }
 
 /// Build a `thread/start` request.
-/// Sets `approvalPolicy="never"`, `sandboxPolicy={"type":"dangerFullAccess"}`,
+/// Sets `approvalPolicy="never"`, `sandbox="danger-full-access"`,
 /// model, cwd. `system_prompt` maps to the `personality` field when present.
 pub fn build_thread_start(id: u64, model: &str, cwd: &str, system_prompt: Option<&str>) -> String {
     let mut params = json!({
         "model": model,
         "cwd": cwd,
         "approvalPolicy": "never",
-        "sandboxPolicy": { "type": "dangerFullAccess" },
+        "sandbox": "danger-full-access",
     });
     if let Some(prompt) = system_prompt {
         params["personality"] = json!(prompt);
@@ -212,11 +245,7 @@ pub fn build_thread_start(id: u64, model: &str, cwd: &str, system_prompt: Option
 
 /// Build a `thread/resume` request.
 pub fn build_thread_resume(id: u64, thread_id: &str) -> String {
-    app_server_request(
-        id,
-        "thread/resume",
-        json!({ "threadId": thread_id }),
-    )
+    app_server_request(id, "thread/resume", json!({ "threadId": thread_id }))
 }
 
 /// Build a `turn/start` request.
@@ -312,9 +341,13 @@ fn parse_response(msg: &Value) -> AppServerEvent {
 
     // Error response takes priority.
     if let Some(err) = msg.get("error") {
+        // Prefer `data.message` (codex-specific detail, e.g. usage_limit_exceeded) over
+        // the generic JSON-RPC `message` field which is often just "Internal error".
         let message = err
-            .get("message")
+            .get("data")
+            .and_then(|d| d.get("message"))
             .and_then(|v| v.as_str())
+            .or_else(|| err.get("message").and_then(|v| v.as_str()))
             .unwrap_or("unknown error")
             .to_string();
         return AppServerEvent::Error {
@@ -438,7 +471,9 @@ fn parse_notification(method: &str, msg: &Value) -> AppServerEvent {
                     if let Some(s) = d.as_str() {
                         Some(s.to_string())
                     } else {
-                        d.get("value").and_then(|v| v.as_str()).map(|s| s.to_string())
+                        d.get("value")
+                            .and_then(|v| v.as_str())
+                            .map(|s| s.to_string())
                     }
                 })
                 .unwrap_or_default();
@@ -473,7 +508,10 @@ fn parse_notification(method: &str, msg: &Value) -> AppServerEvent {
             AppServerEvent::CommandOutputDelta { item_id, text }
         }
         _ => {
-            debug!(method = method, "codex app-server: unknown notification dropped");
+            debug!(
+                method = method,
+                "codex app-server: unknown notification dropped"
+            );
             AppServerEvent::Unknown
         }
     }
@@ -607,10 +645,7 @@ fn parse_item(item: &Value) -> ItemEvent {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
-            let arguments = item
-                .get("arguments")
-                .cloned()
-                .unwrap_or_else(|| json!({}));
+            let arguments = item.get("arguments").cloned().unwrap_or_else(|| json!({}));
             ItemEvent::McpToolCall {
                 id,
                 server,
@@ -663,7 +698,7 @@ mod tests {
         assert!(v.get("jsonrpc").is_none());
         assert_eq!(v["method"], "thread/start");
         assert_eq!(v["params"]["approvalPolicy"], "never");
-        assert_eq!(v["params"]["sandboxPolicy"]["type"], "dangerFullAccess");
+        assert_eq!(v["params"]["sandbox"], "danger-full-access");
         assert_eq!(v["params"]["model"], "o4-mini");
         assert_eq!(v["params"]["cwd"], "/tmp");
     }
@@ -858,7 +893,9 @@ mod tests {
         let ev = parse_line(line);
         match ev {
             AppServerEvent::TurnCompleted { status, .. } => {
-                assert!(matches!(status, TurnStatus::Failed { message } if message == "out of context"));
+                assert!(
+                    matches!(status, TurnStatus::Failed { message } if message == "out of context")
+                );
             }
             other => panic!("expected TurnCompleted, got {other:?}"),
         }
@@ -869,7 +906,9 @@ mod tests {
         let line = r#"{"method":"item/started","params":{"item":{"type":"agentMessage","id":"item_1","text":""}}}"#;
         let ev = parse_line(line);
         match ev {
-            AppServerEvent::ItemStarted { item: ItemEvent::AgentMessage { id, .. } } => {
+            AppServerEvent::ItemStarted {
+                item: ItemEvent::AgentMessage { id, .. },
+            } => {
                 assert_eq!(id, "item_1");
             }
             other => panic!("expected ItemStarted(AgentMessage), got {other:?}"),
@@ -1036,7 +1075,8 @@ mod tests {
     #[test]
     fn test_parse_agent_message_delta_string_form() {
         // "delta" can be a plain string instead of {"value": ...}
-        let line = r#"{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"hello text"}}"#;
+        let line =
+            r#"{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"hello text"}}"#;
         match parse_line(line) {
             AppServerEvent::AgentMessageDelta { item_id, text } => {
                 assert_eq!(item_id, "m1");
