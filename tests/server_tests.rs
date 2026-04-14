@@ -2354,7 +2354,41 @@ async fn test_list_and_update_team_endpoints() {
     )
     .unwrap();
     assert_eq!(teams.as_array().unwrap().len(), 1);
+    let listed_team_id = teams[0]["id"]
+        .as_str()
+        .expect("team list payload should expose public id")
+        .to_string();
+    assert_eq!(listed_team_id, team_id);
     assert_eq!(teams[0]["name"], "eng-team");
+    assert_eq!(teams[0]["display_name"], "Engineering Team");
+
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/teams/{listed_team_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let team_payload: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(team_payload["team"]["id"], team_id);
+    assert_eq!(team_payload["team"]["name"], "eng-team");
+    assert_eq!(team_payload["team"]["display_name"], "Engineering Team");
+    assert_eq!(
+        team_payload["team"]["collaboration_model"],
+        "leader_operators"
+    );
+    assert_eq!(team_payload["team"]["leader_agent_name"], "bot1");
+    assert!(team_payload["members"].as_array().unwrap().is_empty());
 
     let patch_body = serde_json::json!({
         "display_name": "Applied Science"
@@ -2364,7 +2398,7 @@ async fn test_list_and_update_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/teams/eng-team")
+                .uri(format!("/api/teams/{team_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&patch_body).unwrap()))
                 .unwrap(),
@@ -2384,15 +2418,14 @@ async fn test_list_and_update_team_endpoints() {
         .unwrap();
 
     let leader_patch_body = serde_json::json!({
-        "collaboration_model": "leader_operators",
-        "leader_agent_name": "bot2"
+        "display_name": "Applied Science Platform"
     });
     let leader_patch_resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/teams/eng-team")
+                .uri(format!("/api/teams/{team_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&leader_patch_body).unwrap()))
                 .unwrap(),
@@ -2402,6 +2435,7 @@ async fn test_list_and_update_team_endpoints() {
     assert_eq!(leader_patch_resp.status(), StatusCode::OK);
 
     let updated_members = store.get_team_members(&team_id).unwrap();
+    let updated_team = store.get_team_by_id(&team_id).unwrap().unwrap();
     let bot1_member = updated_members
         .iter()
         .find(|member| member.member_name == "bot1")
@@ -2410,6 +2444,7 @@ async fn test_list_and_update_team_endpoints() {
         .iter()
         .find(|member| member.member_name == "bot2")
         .unwrap();
+    assert_eq!(updated_team.display_name, "Applied Science Platform");
     assert_eq!(bot1_member.role, "leader");
     assert_eq!(bot2_member.role, "operator");
     assert_eq!(lifecycle.started_names().len(), 2);
@@ -2482,7 +2517,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/teams/eng-team/members")
+                .uri(format!("/api/teams/{team_id}/members"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&add_body).unwrap()))
                 .unwrap(),
@@ -2508,7 +2543,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/teams/eng-team/members/bot1")
+                .uri(format!("/api/teams/{team_id}/members/bot1"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2528,7 +2563,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/teams/eng-team")
+                .uri(format!("/api/teams/{team_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )

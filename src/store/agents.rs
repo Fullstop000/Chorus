@@ -150,9 +150,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
         )?;
-        let mut rows = stmt.query_map(params![name], |row| {
-            Self::agent_from_row(row)
-        })?;
+        let mut rows = stmt.query_map(params![name], |row| Self::agent_from_row(row))?;
         let mut agent = rows.next().transpose()?;
         if let Some(ref mut agent) = agent {
             Self::hydrate_agent_env_vars_inner(&conn, agent)?;
@@ -165,9 +163,7 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE id = ?1",
         )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Self::agent_from_row(row)
-        })?;
+        let mut rows = stmt.query_map(params![id], |row| Self::agent_from_row(row))?;
         let mut agent = rows.next().transpose()?;
         if let Some(ref mut agent) = agent {
             Self::hydrate_agent_env_vars_inner(&conn, agent)?;
@@ -227,10 +223,7 @@ impl Store {
         Ok(rows)
     }
 
-    fn hydrate_agent_env_vars_inner(
-        conn: &rusqlite::Connection,
-        agent: &mut Agent,
-    ) -> Result<()> {
+    fn hydrate_agent_env_vars_inner(conn: &rusqlite::Connection, agent: &mut Agent) -> Result<()> {
         agent.env_vars = Self::list_agent_env_vars_inner(conn, &agent.name)?;
         Ok(())
     }

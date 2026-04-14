@@ -146,14 +146,14 @@ pub fn build_router_with_services(
         )
         .route("/teams", get(handle_list_teams).post(handle_create_team))
         .route(
-            "/teams/{name}",
+            "/teams/{id}",
             get(handle_get_team)
                 .patch(handle_update_team)
                 .delete(handle_delete_team),
         )
-        .route("/teams/{name}/members", post(handle_add_team_member))
+        .route("/teams/{id}/members", post(handle_add_team_member))
         .route(
-            "/teams/{name}/members/{member}",
+            "/teams/{id}/members/{member}",
             axum::routing::delete(handle_remove_team_member),
         )
         .route(
@@ -168,16 +168,16 @@ pub fn build_router_with_services(
             "/channels/{channel_id}/archive",
             post(handle_archive_channel),
         )
-        .route("/agents/{id}", get(handle_get_agent).patch(handle_update_agent))
+        .route(
+            "/agents/{id}",
+            get(handle_get_agent).patch(handle_update_agent),
+        )
         .route("/agents/{id}/start", post(handle_agent_start))
         .route("/agents/{id}/stop", post(handle_agent_stop))
         .route("/agents/{id}/restart", post(handle_restart_agent))
         .route("/agents/{id}/delete", post(handle_delete_agent))
         .route("/agents/{id}/activity", get(handle_agent_activity))
-        .route(
-            "/agents/{id}/activity-log",
-            get(handle_agent_activity_log),
-        )
+        .route("/agents/{id}/activity-log", get(handle_agent_activity_log))
         .route("/agents/{id}/workspace", get(handle_agent_workspace))
         .route(
             "/agents/{id}/workspace/file",

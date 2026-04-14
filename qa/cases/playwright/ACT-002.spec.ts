@@ -4,6 +4,7 @@ import {
   getAgentDetail,
   getWhoami,
   historyForUser,
+  stopAgentApi,
 } from './helpers/api'
 import { openAgentChat, openAgentTab, sendChatMessage , gotoApp } from './helpers/ui'
 
@@ -24,7 +25,7 @@ test.describe('ACT-002', () => {
     await gotoApp(page)
 
     await test.step('Precondition: stop bot-a, then wake it via DM', async () => {
-      await request.post('/api/agents/bot-a/stop')
+      await stopAgentApi(request, 'bot-a')
       await openAgentChat(page, 'bot-a')
       await sendChatMessage(page, `Reply with exact token ${token}`)
       const deadline = Date.now() + 120_000

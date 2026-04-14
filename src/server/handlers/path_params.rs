@@ -10,6 +10,12 @@ pub struct PublicResourceIdPath {
     pub id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct TeamMemberPath {
+    pub id: String,
+    pub member: String,
+}
+
 pub fn resolve_public_agent(
     state: &AppState,
     id: &str,

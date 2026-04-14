@@ -63,7 +63,7 @@ export function TeamSettings({
     ...agents.map((agent) => ({
       member_name: agent.name,
       member_type: "agent" as const,
-      member_id: agent.id ?? agent.name,
+      member_id: agent.id,
       label: `${agent.display_name ?? agent.name} · agent`,
     })),
     ...humans.map((human) => ({
@@ -82,7 +82,7 @@ export function TeamSettings({
     setSaving(true);
     setError(null);
     try {
-      await updateTeam(team.name, {
+      await updateTeam(team.id, {
         display_name: displayName.trim(),
       });
       await onRefresh();
@@ -101,7 +101,7 @@ export function TeamSettings({
     setSaving(true);
     setError(null);
     try {
-      await addTeamMember(team.name, {
+      await addTeamMember(team.id, {
         member_name: selected.member_name,
         member_type: selected.member_type,
         member_id: selected.member_id,
@@ -123,7 +123,7 @@ export function TeamSettings({
     setSaving(true);
     setError(null);
     try {
-      await removeTeamMember(team.name, member.member_name);
+      await removeTeamMember(team.id, member.member_name);
       await onRefresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -143,7 +143,7 @@ export function TeamSettings({
     setSaving(true);
     setError(null);
     try {
-      await deleteTeam(team.name);
+      await deleteTeam(team.id);
       setCurrentChannel(null);
       await onDeleted();
       onOpenChange(false);

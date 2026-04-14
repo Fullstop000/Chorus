@@ -3,6 +3,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use super::path_params::{PublicResourceIdPath, TeamMemberPath};
 use super::{app_err, internal_err, ApiResult, AppState};
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
 use crate::server::error::AppErrorCode;
@@ -46,6 +47,17 @@ pub struct AddMemberRequest {
 pub struct TeamResponse {
     pub team: Team,
     pub members: Vec<TeamMember>,
+}
+
+fn load_team_by_public_id(
+    state: &AppState,
+    id: &str,
+) -> Result<Team, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    state
+        .store
+        .get_team_by_id(id)
+        .map_err(internal_err)?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found"))
 }
 
 fn parse_member_type(
@@ -201,13 +213,9 @@ pub async fn handle_list_teams(State(state): State<AppState>) -> ApiResult<Vec<T
 
 pub async fn handle_get_team(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<TeamResponse> {
-    let team = state
-        .store
-        .get_team(&name)
-        .map_err(internal_err)?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
+    let team = load_team_by_public_id(&state, &id)?;
     let members = state
         .store
         .get_team_members(&team.id)
@@ -217,14 +225,10 @@ pub async fn handle_get_team(
 
 pub async fn handle_update_team(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<UpdateTeamRequest>,
 ) -> ApiResult<Team> {
-    let team = state
-        .store
-        .get_team(&name)
-        .map_err(internal_err)?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
+    let team = load_team_by_public_id(&state, &id)?;
 
     let display_name = req
         .display_name
@@ -245,12 +249,13 @@ pub async fn handle_update_team(
 
     let updated = state
         .store
-        .get_team(&name)
+        .get_team_by_id(&team.id)
         .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "team not found after update: {name}"
+                "team not found after update: {}",
+                team.id
             )
         })?;
     let members = state
@@ -263,13 +268,9 @@ pub async fn handle_update_team(
 
 pub async fn handle_delete_team(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
-    let team = state
-        .store
-        .get_team(&name)
-        .map_err(internal_err)?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
+    let team = load_team_by_public_id(&state, &id)?;
     let members = state
         .store
         .get_team_members(&team.id)
@@ -284,7 +285,7 @@ pub async fn handle_delete_team(
 
     if let Some(channel) = state
         .store
-        .get_channel_by_name(&name)
+        .get_channel_by_name(&team.name)
         .map_err(internal_err)?
     {
         state
@@ -294,13 +295,15 @@ pub async fn handle_delete_team(
     }
 
     let team_workspace = TeamWorkspace::new(state.store.teams_dir());
-    team_workspace.delete_team(&name).map_err(internal_err)?;
+    team_workspace
+        .delete_team(&team.name)
+        .map_err(internal_err)?;
 
     let agents_dir = state.store.agents_dir();
     let agent_workspace = AgentWorkspace::new(&agents_dir);
     for agent_name in &agent_members {
         agent_workspace
-            .delete_team_memory(agent_name, &name)
+            .delete_team_memory(agent_name, &team.name)
             .map_err(internal_err)?;
         restart_agent_member(&state, agent_name).await?;
     }
@@ -309,14 +312,10 @@ pub async fn handle_delete_team(
 
 pub async fn handle_add_team_member(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<AddMemberRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let team = state
-        .store
-        .get_team(&name)
-        .map_err(internal_err)?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
+    let team = load_team_by_public_id(&state, &id)?;
     let sender_type = parse_member_type(&req.member_type)?;
 
     state
@@ -331,29 +330,30 @@ pub async fn handle_add_team_member(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .store
-        .join_channel(&name, &req.member_name, sender_type)
+        .join_channel(&team.name, &req.member_name, sender_type)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if sender_type == SenderType::Agent {
         let team_workspace = TeamWorkspace::new(state.store.teams_dir());
         team_workspace
-            .init_member(&name, &req.member_name)
+            .init_member(&team.name, &req.member_name)
             .map_err(internal_err)?;
         let agents_dir = state.store.agents_dir();
         let agent_workspace = AgentWorkspace::new(&agents_dir);
         agent_workspace
-            .init_team_memory(&req.member_name, &name, &req.role)
+            .init_team_memory(&req.member_name, &team.name, &req.role)
             .map_err(internal_err)?;
     }
 
     let updated_team = state
         .store
-        .get_team(&name)
+        .get_team_by_id(&team.id)
         .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "team not found after add member: {name}"
+                "team not found after add member: {}",
+                team.id
             )
         })?;
     let members = state
@@ -367,13 +367,9 @@ pub async fn handle_add_team_member(
 
 pub async fn handle_remove_team_member(
     State(state): State<AppState>,
-    Path((name, member_name)): Path<(String, String)>,
+    Path(TeamMemberPath { id, member }): Path<TeamMemberPath>,
 ) -> ApiResult<serde_json::Value> {
-    let team = state
-        .store
-        .get_team(&name)
-        .map_err(internal_err)?
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team not found: {name}"))?;
+    let team = load_team_by_public_id(&state, &id)?;
 
     let members = state
         .store
@@ -381,26 +377,21 @@ pub async fn handle_remove_team_member(
         .map_err(internal_err)?;
     let removed_member = members
         .iter()
-        .find(|member| member.member_name == member_name)
+        .find(|member_item| member_item.member_name == member)
         .cloned()
-        .ok_or_else(|| {
-            app_err!(
-                StatusCode::BAD_REQUEST,
-                "team member not found: {member_name}"
-            )
-        })?;
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team member not found: {member}"))?;
 
     state
         .store
-        .delete_team_member(&team.id, &member_name)
+        .delete_team_member(&team.id, &member)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .store
-        .leave_channel(&name, &member_name)
+        .leave_channel(&team.name, &member)
         .map_err(internal_err)?;
 
     if removed_member.member_type == "agent" {
-        restart_agent_member(&state, &member_name).await?;
+        restart_agent_member(&state, &member).await?;
     }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
