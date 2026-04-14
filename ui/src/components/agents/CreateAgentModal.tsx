@@ -116,7 +116,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
       if (!config.model.trim()) {
         throw new Error('Model is required')
       }
-      await post<{ id: string; name: string; status: string; warning?: string }>('/api/agents', {
+      await post<{ name: string; status: string; warning?: string }>('/api/agents', {
           name: config.name.trim(),
           display_name: config.display_name.trim(),
           description: config.description,
