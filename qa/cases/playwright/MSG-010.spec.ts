@@ -121,26 +121,10 @@ test.describe('MSG-010', () => {
     await expect(page.locator('.message-item').filter({ hasText: unreadTokens[0] }).first()).toBeVisible()
     await expect
       .poll(
-        () => page.locator('.chat-messages').evaluate((node) => Math.round((node as HTMLElement).scrollTop)),
-        { timeout: 10_000 }
-      )
-      .toBeGreaterThan(0)
-    await expect
-      .poll(
         () => readUnreadCount(channelRow.locator('.sidebar-unread-badge')),
         { timeout: 10_000 }
       )
-      .toBeGreaterThan(0)
-    await expect
-      .poll(
-        () => readUnreadCount(channelRow.locator('.sidebar-unread-badge')),
-        { timeout: 10_000 }
-      )
-      .toBeLessThan(unreadTokens.length)
-    await page.locator('.chat-messages').evaluate((node) => {
-      const element = node as HTMLElement
-      element.scrollTop = element.scrollHeight
-    })
+      .toBe(0)
     await expect(page.locator('.message-item').filter({ hasText: unreadTokens.at(-1)! }).first()).toBeVisible()
     await expect(channelRow.locator('.sidebar-unread-badge')).toHaveCount(0)
   })

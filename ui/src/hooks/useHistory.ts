@@ -58,7 +58,7 @@ export function useHistory(
   // Instead of refetching the full history, fetch only messages after the cache's max seq.
   const isFetchingGapRef = useRef(false)
   useEffect(() => {
-    if (!response || isLoading || !conversationId) return
+    if (!targetKey || !response || isLoading || !conversationId) return
     const cacheMaxSeq = maxHistorySeq(response.messages)
     if (storeLatestSeq <= cacheMaxSeq) return
     if (isFetchingGapRef.current) return
@@ -78,7 +78,7 @@ export function useHistory(
       .finally(() => {
         isFetchingGapRef.current = false
       })
-  }, [storeLatestSeq, response, isLoading, conversationId, queryClient, queryKey, options?.threadParentId])
+  }, [targetKey, storeLatestSeq, response, isLoading, conversationId, queryClient, queryKey, options?.threadParentId])
 
   const commitMessages = useCallback(
     (updater: (current: HistoryMessage[]) => HistoryMessage[]) => {

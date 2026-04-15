@@ -6,6 +6,7 @@ import {
   useHumans,
   useInbox,
   useRefresh,
+  useTeams,
   useTarget,
 } from "../hooks/data";
 import { useHistory } from "../hooks/useHistory";
@@ -42,6 +43,7 @@ export function MainPanel() {
   } = useStore();
   const agents = useAgents();
   const humans = useHumans();
+  const teams = useTeams();
   const { getAgentConversationId } = useInbox();
   const { refreshChannels, refreshAgents, refreshTeams } = useRefresh();
   const chatTarget = useTarget();
@@ -69,6 +71,10 @@ export function MainPanel() {
     currentChannel?.id && !isTeamChannel && !isSystemChannel,
   );
   const channelId = currentChannel?.id;
+  const selectedTeam =
+    isTeamChannel && channelId
+      ? teams.find((team) => team.channel_id === channelId) ?? null
+      : null;
 
   useEffect(() => {
     setShowMembersPanel(false);
@@ -120,10 +126,17 @@ export function MainPanel() {
 
   async function openTeamSettings() {
     if (!currentChannel || !isTeamChannel) return;
+    if (!selectedTeam) {
+      console.error("Failed to resolve team for current channel", {
+        channelId: currentChannel.id,
+        channelName: currentChannel.name,
+      });
+      return;
+    }
     setTeamSettingsLoading(true);
     setShowTeamSettings(true);
     try {
-      setTeamDetails(await getTeam(currentChannel.name));
+      setTeamDetails(await getTeam(selectedTeam.id));
     } catch (error) {
       console.error("Failed to load team settings", error);
       setShowTeamSettings(false);
@@ -133,8 +146,8 @@ export function MainPanel() {
   }
 
   async function refreshSelectedTeam() {
-    if (!currentChannel || !isTeamChannel) return;
-    setTeamDetails(await getTeam(currentChannel.name));
+    if (!teamDetails) return;
+    setTeamDetails(await getTeam(teamDetails.team.id));
   }
 
   async function refreshCurrentChannelMembers() {
@@ -211,10 +224,13 @@ export function MainPanel() {
           {activeTab === "tasks" && <TasksPanel />}
           {activeTab === "profile" && <ProfilePanel />}
           {activeTab === "activity" && currentAgent && (
-            <TelescopeActivity agentName={currentAgent.name} />
+            <TelescopeActivity
+              agentId={currentAgent.id}
+              agentName={currentAgent.name}
+            />
           )}
           {activeTab === "workspace" && currentAgent && (
-            <WorkspacePanel agentName={currentAgent.name} />
+            <WorkspacePanel agentId={currentAgent.id} />
           )}
           {!showHeader && (
             <div

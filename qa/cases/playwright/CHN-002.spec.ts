@@ -38,7 +38,8 @@ test.describe('CHN-002', () => {
       })
       expect(dup.ok()).toBeFalsy()
       const body = await dup.json()
-      expect(String(body.error ?? '')).toMatch(/exists|unique constraint/i)
+      expect(body.code).toBe('CHANNEL_NAME_TAKEN')
+      expect(String(body.error ?? '')).toMatch(/channel name already in use/i)
     })
 
     await test.step('Step 4: Invalid or empty name rejected', async () => {

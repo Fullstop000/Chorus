@@ -2,7 +2,7 @@ import type { APIRequestContext } from '@playwright/test'
 import { expect } from '@playwright/test'
 
 export interface AgentRow {
-  id?: string
+  id: string
   name: string
   status: string
   display_name?: string
@@ -37,6 +37,11 @@ export interface ChannelMembersResponse {
   }>
 }
 
+interface TeamRow {
+  id: string
+  name: string
+}
+
 export async function getWhoami(request: APIRequestContext): Promise<{ username: string }> {
   const res = await request.get('/api/whoami')
   expect(res.ok()).toBeTruthy()
@@ -49,8 +54,26 @@ export async function listAgents(request: APIRequestContext): Promise<AgentRow[]
   return res.json()
 }
 
+async function requireAgentId(
+  request: APIRequestContext,
+  agentName: string
+): Promise<string> {
+  const agent = (await listAgents(request)).find((entry) => entry.name === agentName)
+  if (!agent) {
+    throw new Error(`Agent not found: ${agentName}`)
+  }
+  return agent.id
+}
+
+async function listTeams(request: APIRequestContext): Promise<TeamRow[]> {
+  const res = await request.get('/api/teams')
+  expect(res.ok(), await res.text()).toBeTruthy()
+  return res.json()
+}
+
 export async function getAgentDetail(request: APIRequestContext, name: string): Promise<AgentDetail> {
-  const res = await request.get(`/api/agents/${encodeURIComponent(name)}`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.get(`/api/agents/${encodeURIComponent(agentId)}`)
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
@@ -65,6 +88,9 @@ export async function createAgentApi(
     description?: string
     reasoningEffort?: string | null
     envVars?: Array<{ key: string; value: string }>
+  },
+  options?: {
+    allowNameTaken?: boolean
   }
 ): Promise<void> {
   const res = await request.post('/api/agents', {
@@ -78,7 +104,20 @@ export async function createAgentApi(
       envVars: body.envVars ?? [],
     },
   })
-  expect(res.ok(), await res.text()).toBeTruthy()
+  if (res.ok()) return
+
+  const text = await res.text()
+  if (options?.allowNameTaken) {
+    const parsed = JSON.parse(text) as { error?: string; code?: string }
+    if (
+      parsed.code === 'AGENT_NAME_TAKEN' ||
+      /agent name already in use/i.test(parsed.error ?? text)
+    ) {
+      return
+    }
+  }
+
+  expect(res.ok(), text).toBeTruthy()
 }
 
 /** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case. */
@@ -86,13 +125,25 @@ export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promis
   const agents = await listAgents(request)
   const names = new Set(agents.map((a) => a.name))
   if (!names.has('bot-a')) {
-    await createAgentApi(request, { name: 'bot-a', runtime: 'claude', model: 'sonnet' })
+    await createAgentApi(
+      request,
+      { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
+      { allowNameTaken: true }
+    )
   }
   if (!names.has('bot-b')) {
-    await createAgentApi(request, { name: 'bot-b', runtime: 'claude', model: 'opus' })
+    await createAgentApi(
+      request,
+      { name: 'bot-b', runtime: 'claude', model: 'opus' },
+      { allowNameTaken: true }
+    )
   }
   if (!names.has('bot-c')) {
-    await createAgentApi(request, { name: 'bot-c', runtime: 'codex', model: 'gpt-5.4-mini' })
+    await createAgentApi(
+      request,
+      { name: 'bot-c', runtime: 'codex', model: 'gpt-5.4-mini' },
+      { allowNameTaken: true }
+    )
   }
 }
 
@@ -128,12 +179,14 @@ export async function waitForAgentStatus(
 }
 
 export async function startAgentApi(request: APIRequestContext, name: string): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/start`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/start`)
   expect(res.ok(), await res.text()).toBeTruthy()
 }
 
 export async function stopAgentApi(request: APIRequestContext, name: string): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/stop`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/stop`)
   expect(res.ok(), await res.text()).toBeTruthy()
 }
 
@@ -142,7 +195,8 @@ export async function restartAgentApi(
   name: string,
   mode: 'restart' | 'reset_session' | 'full_reset'
 ): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/restart`, {
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/restart`, {
     data: { mode },
   })
   expect(res.ok(), await res.text()).toBeTruthy()
@@ -160,7 +214,8 @@ export async function updateAgentApi(
     envVars: Array<{ key: string; value: string }>
   }
 ): Promise<void> {
-  const res = await request.patch(`/api/agents/${encodeURIComponent(name)}`, {
+  const agentId = await requireAgentId(request, name)
+  const res = await request.patch(`/api/agents/${encodeURIComponent(agentId)}`, {
     data: payload,
   })
   expect(res.ok(), await res.text()).toBeTruthy()
@@ -171,7 +226,8 @@ export async function deleteAgentApi(
   name: string,
   mode: 'preserve_workspace' | 'delete_workspace'
 ): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/delete`, {
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/delete`, {
     data: { mode },
   })
   expect(res.ok(), await res.text()).toBeTruthy()
@@ -241,7 +297,8 @@ export async function getAgentActivityLogApi(
   request: APIRequestContext,
   name: string
 ): Promise<AgentActivityLogResponse> {
-  const res = await request.get(`/api/agents/${encodeURIComponent(name)}/activity-log`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.get(`/api/agents/${encodeURIComponent(agentId)}/activity-log`)
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
@@ -329,7 +386,8 @@ export async function getWorkspaceApi(
   request: APIRequestContext,
   agentName: string
 ): Promise<{ path: string; files: string[] }> {
-  const res = await request.get(`/api/agents/${encodeURIComponent(agentName)}/workspace`)
+  const agentId = await requireAgentId(request, agentName)
+  const res = await request.get(`/api/agents/${encodeURIComponent(agentId)}/workspace`)
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
@@ -345,16 +403,19 @@ export async function getWorkspaceFileApi(
   sizeBytes: number
   modifiedMs?: number
 }> {
+  const agentId = await requireAgentId(request, agentName)
   const params = new URLSearchParams({ path })
   const res = await request.get(
-    `/api/agents/${encodeURIComponent(agentName)}/workspace/file?${params.toString()}`
+    `/api/agents/${encodeURIComponent(agentId)}/workspace/file?${params.toString()}`
   )
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
 
 export async function teamExists(request: APIRequestContext, name: string): Promise<boolean> {
-  const res = await request.get(`/api/teams/${encodeURIComponent(name)}`)
+  const team = (await listTeams(request)).find((entry) => entry.name === name)
+  if (!team) return false
+  const res = await request.get(`/api/teams/${encodeURIComponent(team.id)}`)
   return res.ok()
 }
 

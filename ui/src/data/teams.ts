@@ -36,8 +36,8 @@ export function listTeams(): Promise<Team[]> {
   return get('/api/teams')
 }
 
-export function getTeam(name: string): Promise<TeamResponse> {
-  return get(`/api/teams/${encodeURIComponent(name)}`)
+export function getTeam(teamId: string): Promise<TeamResponse> {
+  return get(`/api/teams/${encodeURIComponent(teamId)}`)
 }
 
 export function createTeam(payload: CreateTeamRequest): Promise<TeamResponse> {
@@ -45,20 +45,20 @@ export function createTeam(payload: CreateTeamRequest): Promise<TeamResponse> {
 }
 
 export function updateTeam(
-  name: string,
+  teamId: string,
   payload: {
     display_name?: string
   }
 ): Promise<Team> {
-  return patch(`/api/teams/${encodeURIComponent(name)}`, payload as UpdateTeamRequest)
+  return patch(`/api/teams/${encodeURIComponent(teamId)}`, payload as UpdateTeamRequest)
 }
 
-export function deleteTeam(name: string): Promise<void> {
-  return del(`/api/teams/${encodeURIComponent(name)}`)
+export function deleteTeam(teamId: string): Promise<void> {
+  return del(`/api/teams/${encodeURIComponent(teamId)}`)
 }
 
 export function addTeamMember(
-  teamName: string,
+  teamId: string,
   member: {
     member_name: string
     member_type: 'agent' | 'human'
@@ -66,11 +66,11 @@ export function addTeamMember(
     role: string
   }
 ): Promise<void> {
-  return post(`/api/teams/${encodeURIComponent(teamName)}/members`, member as AddTeamMemberRequest)
+  return post(`/api/teams/${encodeURIComponent(teamId)}/members`, member as AddTeamMemberRequest)
 }
 
-export function removeTeamMember(teamName: string, memberName: string): Promise<void> {
-  return del(`/api/teams/${encodeURIComponent(teamName)}/members/${encodeURIComponent(memberName)}`)
+export function removeTeamMember(teamId: string, memberName: string): Promise<void> {
+  return del(`/api/teams/${encodeURIComponent(teamId)}/members/${encodeURIComponent(memberName)}`)
 }
 
 // ── Query definitions ──

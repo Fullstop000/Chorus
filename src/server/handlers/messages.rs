@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use super::dto::ChannelInfo;
+use super::path_params::{resolve_public_agent, PublicResourceIdPath};
 use super::{app_err, ApiResult, AppState};
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
@@ -945,12 +946,13 @@ pub struct AgentRunsResponse {
 
 pub async fn handle_agent_runs(
     State(state): State<AppState>,
-    Path(agent_name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentRunsResponse> {
+    let agent = resolve_public_agent(&state, &id)?;
     let viewer = public_viewer_name();
     let runs = state
         .store
-        .get_agent_runs(&agent_name, &viewer, 20)
+        .get_agent_runs(&agent.name, &viewer, 20)
         .map_err(internal_err)?;
     Ok(Json(AgentRunsResponse { runs }))
 }

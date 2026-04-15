@@ -29,6 +29,7 @@ import type { ActivityLogEntry } from "../../../data";
 import "./ActivityPanel.css";
 
 interface Props {
+  agentId: string;
   agentName: string;
 }
 
@@ -337,7 +338,7 @@ function coalesceEntries(entries: ActivityLogEntry[]): ActivityLogEntry[] {
 
 // ── Main panel ────────────────────────────────────────────────────
 
-export function ActivityPanel({ agentName }: Props) {
+export function ActivityPanel({ agentId, agentName }: Props) {
   const [entries, setEntries] = useState<ActivityLogEntry[]>([]);
   const [agentActivity, setAgentActivity] = useState("offline");
   const [agentDetail, setAgentDetail] = useState("");
@@ -348,7 +349,7 @@ export function ActivityPanel({ agentName }: Props) {
 
   const load = useCallback(async () => {
     try {
-      const res = await getAgentActivityLog(agentName, lastSeqRef.current);
+      const res = await getAgentActivityLog(agentId, lastSeqRef.current);
       if (res.entries.length > 0) {
         setEntries((prev) => {
           const combined = [...prev, ...res.entries];
@@ -364,7 +365,7 @@ export function ActivityPanel({ agentName }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [agentName]);
+  }, [agentId]);
 
   useEffect(() => {
     setEntries([]);

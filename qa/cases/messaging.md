@@ -111,29 +111,29 @@
   - agent does not start from DM
   - reply appears in wrong target
 
-### MSG-005 Optimistic Send Rendering
+### MSG-005 Websocket-Driven Chat After Initial History Bootstrap
 
 - Tier: 1
 - Release-sensitive: yes when touching composer, message list, or send pipeline
 - Goal:
-  - verify messages appear immediately with optimistic styling before server confirmation
+  - verify the chat view boots from one history fetch, then stays websocket-driven for local and remote messages
 - Script:
-  - [`playwright/MSG-005.spec.ts`](./playwright/MSG-005.spec.ts) (optimistic row + final row lifecycle)
+  - [`playwright/MSG-005.spec.ts`](./playwright/MSG-005.spec.ts) (history bootstrap + websocket append contract)
 - Preconditions:
   - any channel or DM is open
 - Steps:
-  1. Type a message and send.
-  2. Before the server responds, verify the message appears immediately with a "sending" indicator.
-  3. Once the server confirms, verify the "sending" indicator disappears.
-  4. Verify the message content remains stable (no flicker or duplication).
+  1. Open a channel and wait for the initial history bootstrap window to settle.
+  2. Send one local message and verify it appears without triggering another history fetch.
+  3. Inject one remote message and verify it appears without triggering another history fetch.
+  4. Confirm realtime traffic is still visible and no background polling resumes.
 - Expected:
-  - optimistic row appears instantly
-  - transition to confirmed row is smooth
-  - no duplicate entries at any point
+  - initial history bootstrap may include immediate gap-fill requests, but later message delivery stays websocket-driven
+  - later message delivery stays websocket-driven
+  - no duplicate history polling resumes after bootstrap
 - Common failure signals:
-  - message does not appear until server response
-  - sending indicator stuck or missing
-  - duplicate rows after confirmation
+  - additional history GETs after local or remote sends
+  - message appears only after a refetch
+  - background polling resumes after the conversation is open
 
 ### MSG-006 Inline Attachment Rendering
 
@@ -164,24 +164,24 @@
 - Tier: 1
 - Release-sensitive: yes when touching composer, message list, or send pipeline
 - Goal:
-  - verify optimistic UI transitions correctly through success and failure
+  - verify the shipped ack-first composer surfaces success and failure coherently
 - Script:
-  - [`playwright/MSG-007.spec.ts`](./playwright/MSG-007.spec.ts) (placeholder: needs network failure simulation)
+  - [`playwright/MSG-007.spec.ts`](./playwright/MSG-007.spec.ts) (network delay/failure simulation for main chat and threads)
 - Preconditions:
   - any channel or DM is open
 - Steps:
   1. Type a message and send.
-  2. Verify optimistic row appears with sending state.
-  3. If send succeeds: verify final row replaces optimistic row cleanly.
-  4. If send fails: verify failure state appears with retry option.
-  5. Retry a failed send and verify it succeeds.
+  2. While the request is in flight, verify the composer exposes a pending state.
+  3. If send succeeds: verify the confirmed message appears once and the composer returns to idle.
+  4. If send fails: verify a visible error toast appears and the unsent text remains in the composer.
+  5. Repeat the same checks inside a thread composer.
 - Expected:
-  - success path: smooth transition to confirmed message
-  - failure path: clear error indication with retry mechanism
+  - success path shows one confirmed message and no phantom failure state
+  - failure path is visible and recoverable from the composer
 - Common failure signals:
-  - optimistic row stuck in sending state
-  - failed send shows no error
-  - retry does not work
+  - successful send duplicates a message row
+  - failed send disappears with no visible error
+  - failed send clears the draft unexpectedly
 
 ### MSG-008 Conversation Read Cursor Advances On Visibility
 
@@ -353,14 +353,14 @@
   - reply routes to the wrong target (DM routing bug)
   - activity log shows only raw text output instead of a `send_message` tool call
 
-### HIS-001 Message History Pagination
+### HIS-001 History Reload And Selection Stability
 
 - Tier: 1
 - Release-sensitive: no
 - Goal:
   - verify scrolling loads older messages correctly without duplication
 - Script:
-  - [`playwright/HIS-001.spec.ts`](./playwright/HIS-001.spec.ts) (scroll + pagination)
+  - [`playwright/HIS-001.spec.ts`](./playwright/HIS-001.spec.ts) (channel + DM + thread reload stability)
 - Preconditions:
   - a channel with many messages (more than one page)
 - Steps:

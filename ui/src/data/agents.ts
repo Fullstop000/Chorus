@@ -9,7 +9,7 @@ import type {
 // ── Types (source of truth) ──
 
 export interface AgentInfo {
-  id?: string
+  id: string
   name: string
   display_name?: string
   status: 'active' | 'sleeping' | 'inactive'
@@ -106,37 +106,37 @@ export function listAgents(): Promise<AgentInfo[]> {
   return get('/api/agents')
 }
 
-export function getAgentDetail(agentName: string): Promise<AgentDetailResponse> {
-  return get(`/api/agents/${encodeURIComponent(agentName)}`)
+export function getAgentDetail(agentId: string): Promise<AgentDetailResponse> {
+  return get(`/api/agents/${encodeURIComponent(agentId)}`)
 }
 
 export function updateAgent(
-  agentName: string,
+  agentId: string,
   payload: UpdateAgentRequest
 ): Promise<{ ok: boolean; restarted: boolean }> {
-  return patch(`/api/agents/${encodeURIComponent(agentName)}`, payload)
+  return patch(`/api/agents/${encodeURIComponent(agentId)}`, payload)
 }
 
-export function startAgent(agentName: string): Promise<void> {
-  return post(`/api/agents/${encodeURIComponent(agentName)}/start`)
+export function startAgent(agentId: string): Promise<void> {
+  return post(`/api/agents/${encodeURIComponent(agentId)}/start`)
 }
 
-export function stopAgent(agentName: string): Promise<void> {
-  return post(`/api/agents/${encodeURIComponent(agentName)}/stop`)
+export function stopAgent(agentId: string): Promise<void> {
+  return post(`/api/agents/${encodeURIComponent(agentId)}/stop`)
 }
 
 export function restartAgent(
-  agentName: string,
+  agentId: string,
   mode: RestartMode
 ): Promise<void> {
-  return post(`/api/agents/${encodeURIComponent(agentName)}/restart`, { mode } as RestartAgentRequest)
+  return post(`/api/agents/${encodeURIComponent(agentId)}/restart`, { mode } as RestartAgentRequest)
 }
 
 export function deleteAgent(
-  agentName: string,
+  agentId: string,
   mode: DeleteMode
 ): Promise<{ ok: boolean; warning?: string; code?: string }> {
-  return post(`/api/agents/${encodeURIComponent(agentName)}/delete`, { mode } as DeleteAgentRequest)
+  return post(`/api/agents/${encodeURIComponent(agentId)}/delete`, { mode } as DeleteAgentRequest)
 }
 
 export function listRuntimeStatuses(): Promise<RuntimeStatusInfo[]> {
@@ -147,21 +147,21 @@ export function listRuntimeModels(runtime: string): Promise<string[]> {
   return get(`/api/runtimes/${encodeURIComponent(runtime)}/models`)
 }
 
-export function getAgentActivity(agentName: string, limit = 50): Promise<ActivityResponse> {
-  return get(`/api/agents/${encodeURIComponent(agentName)}/activity?limit=${limit}`)
+export function getAgentActivity(agentId: string, limit = 50): Promise<ActivityResponse> {
+  return get(`/api/agents/${encodeURIComponent(agentId)}/activity?limit=${limit}`)
 }
 
-export function getAgentActivityLog(agentName: string, afterSeq?: number): Promise<ActivityLogResponse> {
+export function getAgentActivityLog(agentId: string, afterSeq?: number): Promise<ActivityLogResponse> {
   const params = afterSeq != null ? `?after=${afterSeq}` : ''
-  return get(`/api/agents/${encodeURIComponent(agentName)}/activity-log${params}`)
+  return get(`/api/agents/${encodeURIComponent(agentId)}/activity-log${params}`)
 }
 
-export function getAgentWorkspace(agentName: string): Promise<WorkspaceResponse> {
-  return get(`/api/agents/${encodeURIComponent(agentName)}/workspace`)
+export function getAgentWorkspace(agentId: string): Promise<WorkspaceResponse> {
+  return get(`/api/agents/${encodeURIComponent(agentId)}/workspace`)
 }
 
-export function getAgentWorkspaceFile(agentName: string, path: string): Promise<WorkspaceFileResponse> {
-  return get(`/api/agents/${encodeURIComponent(agentName)}/workspace/file?path=${encodeURIComponent(path)}`)
+export function getAgentWorkspaceFile(agentId: string, path: string): Promise<WorkspaceFileResponse> {
+  return get(`/api/agents/${encodeURIComponent(agentId)}/workspace/file?path=${encodeURIComponent(path)}`)
 }
 
 // ── Agent runs (trace history) ──
@@ -182,8 +182,8 @@ export interface AgentRunsResponse {
   runs: AgentRunInfo[]
 }
 
-export function getAgentRuns(agentName: string): Promise<AgentRunsResponse> {
-  return get(`/api/agents/${encodeURIComponent(agentName)}/runs`)
+export function getAgentRuns(agentId: string): Promise<AgentRunsResponse> {
+  return get(`/api/agents/${encodeURIComponent(agentId)}/runs`)
 }
 
 // ── Transforms ──

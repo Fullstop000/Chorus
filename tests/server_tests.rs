@@ -492,7 +492,7 @@ async fn test_send_notifies_active_agent_without_restart() {
 
 #[tokio::test]
 async fn test_server_info() {
-    let (_store, app) = setup();
+    let (store, app) = setup();
     let resp = app
         .oneshot(
             Request::builder()
@@ -507,9 +507,34 @@ async fn test_server_info() {
         .await
         .unwrap();
     let info: ServerInfo = serde_json::from_slice(&body).unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     assert_eq!(info.channels.len(), 1);
     assert_eq!(info.agents.len(), 1);
+    assert_eq!(info.agents[0].id, bot1.id);
     assert_eq!(info.humans.len(), 1);
+}
+
+#[tokio::test]
+async fn test_list_agents_via_public_api_includes_ids() {
+    let (store, app) = setup();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let agents: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(agents.as_array().unwrap().len(), 1);
+    assert_eq!(agents[0]["id"], bot1.id);
 }
 
 #[tokio::test]
@@ -1406,10 +1431,20 @@ async fn test_create_kimi_agent_via_api() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    let payload: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(resp.into_body(), 1_000_000)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+
     let agent = store
         .get_agent("kimi-bot")
         .unwrap()
         .expect("agent should exist");
+    assert_eq!(payload["id"], agent.id);
+    assert_eq!(payload["name"], "kimi-bot");
+    assert_eq!(payload["status"], "active");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
@@ -1422,12 +1457,13 @@ async fn test_get_and_update_agent_via_api() {
     store
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     let detail_resp = app
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/api/agents/bot1")
+                .uri(format!("/api/agents/{}", bot1.id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -1438,6 +1474,8 @@ async fn test_get_and_update_agent_via_api() {
         .await
         .unwrap();
     let detail: AgentDetailResponse = serde_json::from_slice(&detail_body).unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    assert_eq!(detail.agent.id, bot1.id);
     assert_eq!(detail.agent.reasoning_effort, None);
 
     let update_req = serde_json::json!({
@@ -1453,7 +1491,7 @@ async fn test_get_and_update_agent_via_api() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/agents/bot1")
+                .uri(format!("/api/agents/{}", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
                 .unwrap(),
@@ -1491,6 +1529,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
             env_vars: &[],
         })
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     let update_req = serde_json::json!({
         "display_name": "Kimi Bot",
@@ -1505,7 +1544,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/agents/bot1")
+                .uri(format!("/api/agents/{}", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
                 .unwrap(),
@@ -1531,6 +1570,7 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
     store
         .update_agent_session("bot1", Some("thread-123"))
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
@@ -1540,7 +1580,7 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/agents/bot1/restart")
+                .uri(format!("/api/agents/{}/restart", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({ "mode": "reset_session" })).unwrap(),
@@ -1558,6 +1598,7 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
 #[tokio::test]
 async fn test_delete_agent_marks_history_and_preserves_workspace() {
     let (store, _app, dir) = setup_with_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
@@ -1580,7 +1621,7 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/agents/bot1/delete")
+                .uri(format!("/api/agents/{}/delete", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({ "mode": "preserve_workspace" }))
@@ -2112,7 +2153,8 @@ async fn test_upload_uses_configured_data_dir() {
 
 #[tokio::test]
 async fn test_workspace_lists_files_from_configured_data_dir() {
-    let (_store, app, dir) = setup_with_data_dir();
+    let (store, app, dir) = setup_with_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "# test\n").unwrap();
@@ -2120,7 +2162,7 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/agents/bot1/workspace")
+                .uri(format!("/api/agents/{}/workspace", bot1.id))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2149,7 +2191,8 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
 
 #[tokio::test]
 async fn test_workspace_file_returns_content_from_configured_data_dir() {
-    let (_store, app, dir) = setup_with_data_dir();
+    let (store, app, dir) = setup_with_data_dir();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "# plan\nship it\n").unwrap();
@@ -2157,7 +2200,10 @@ async fn test_workspace_file_returns_content_from_configured_data_dir() {
     let resp = app
         .oneshot(
             Request::builder()
-                .uri("/api/agents/bot1/workspace/file?path=notes%2Fplan.md")
+                .uri(format!(
+                    "/api/agents/{}/workspace/file?path=notes%2Fplan.md",
+                    bot1.id
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2308,7 +2354,41 @@ async fn test_list_and_update_team_endpoints() {
     )
     .unwrap();
     assert_eq!(teams.as_array().unwrap().len(), 1);
+    let listed_team_id = teams[0]["id"]
+        .as_str()
+        .expect("team list payload should expose public id")
+        .to_string();
+    assert_eq!(listed_team_id, team_id);
     assert_eq!(teams[0]["name"], "eng-team");
+    assert_eq!(teams[0]["display_name"], "Engineering Team");
+
+    let get_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/teams/{listed_team_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), StatusCode::OK);
+    let team_payload: serde_json::Value = serde_json::from_slice(
+        &axum::body::to_bytes(get_resp.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(team_payload["team"]["id"], team_id);
+    assert_eq!(team_payload["team"]["name"], "eng-team");
+    assert_eq!(team_payload["team"]["display_name"], "Engineering Team");
+    assert_eq!(
+        team_payload["team"]["collaboration_model"],
+        "leader_operators"
+    );
+    assert_eq!(team_payload["team"]["leader_agent_name"], "bot1");
+    assert!(team_payload["members"].as_array().unwrap().is_empty());
 
     let patch_body = serde_json::json!({
         "display_name": "Applied Science"
@@ -2318,7 +2398,7 @@ async fn test_list_and_update_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/teams/eng-team")
+                .uri(format!("/api/teams/{team_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&patch_body).unwrap()))
                 .unwrap(),
@@ -2338,15 +2418,14 @@ async fn test_list_and_update_team_endpoints() {
         .unwrap();
 
     let leader_patch_body = serde_json::json!({
-        "collaboration_model": "leader_operators",
-        "leader_agent_name": "bot2"
+        "display_name": "Applied Science Platform"
     });
     let leader_patch_resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("PATCH")
-                .uri("/api/teams/eng-team")
+                .uri(format!("/api/teams/{team_id}"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&leader_patch_body).unwrap()))
                 .unwrap(),
@@ -2356,6 +2435,7 @@ async fn test_list_and_update_team_endpoints() {
     assert_eq!(leader_patch_resp.status(), StatusCode::OK);
 
     let updated_members = store.get_team_members(&team_id).unwrap();
+    let updated_team = store.get_team_by_id(&team_id).unwrap().unwrap();
     let bot1_member = updated_members
         .iter()
         .find(|member| member.member_name == "bot1")
@@ -2364,6 +2444,7 @@ async fn test_list_and_update_team_endpoints() {
         .iter()
         .find(|member| member.member_name == "bot2")
         .unwrap();
+    assert_eq!(updated_team.display_name, "Applied Science Platform");
     assert_eq!(bot1_member.role, "leader");
     assert_eq!(bot2_member.role, "operator");
     assert_eq!(lifecycle.started_names().len(), 2);
@@ -2436,7 +2517,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/teams/eng-team/members")
+                .uri(format!("/api/teams/{team_id}/members"))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&add_body).unwrap()))
                 .unwrap(),
@@ -2462,7 +2543,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/teams/eng-team/members/bot1")
+                .uri(format!("/api/teams/{team_id}/members/bot1"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2482,7 +2563,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/teams/eng-team")
+                .uri(format!("/api/teams/{team_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -2836,14 +2917,14 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
             env_vars: &[],
         })
         .unwrap();
-    let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
-
     let req = serde_json::json!({ "mode": "restart" });
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/agents/bot1/restart")
+                .uri(format!("/api/agents/{}/restart", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(serde_json::to_vec(&req).unwrap()))
                 .unwrap(),

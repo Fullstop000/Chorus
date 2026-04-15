@@ -10,7 +10,7 @@ import {
 import "./RunComparison.css";
 
 interface Props {
-  agentName: string;
+  agentId: string;
 }
 
 // ── Category chips ──
@@ -340,7 +340,7 @@ function ComparisonView({
 
 // ── Main component ──
 
-export function RunComparison({ agentName }: Props) {
+export function RunComparison({ agentId }: Props) {
   const [runs, setRuns] = useState<AgentRunInfo[]>([]);
   const [runsLoading, setRunsLoading] = useState(true);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -353,11 +353,11 @@ export function RunComparison({ agentName }: Props) {
     setRunsLoading(true);
     setSelected(new Set());
     setComparing(false);
-    getAgentRuns(agentName)
+    getAgentRuns(agentId)
       .then((res) => setRuns(res.runs))
       .catch(() => setRuns([]))
       .finally(() => setRunsLoading(false));
-  }, [agentName]);
+  }, [agentId]);
 
   const handleToggle = useCallback((runId: string) => {
     setSelected((prev) => {

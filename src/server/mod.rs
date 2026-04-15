@@ -146,14 +146,14 @@ pub fn build_router_with_services(
         )
         .route("/teams", get(handle_list_teams).post(handle_create_team))
         .route(
-            "/teams/{name}",
+            "/teams/{id}",
             get(handle_get_team)
                 .patch(handle_update_team)
                 .delete(handle_delete_team),
         )
-        .route("/teams/{name}/members", post(handle_add_team_member))
+        .route("/teams/{id}/members", post(handle_add_team_member))
         .route(
-            "/teams/{name}/members/{member}",
+            "/teams/{id}/members/{member}",
             axum::routing::delete(handle_remove_team_member),
         )
         .route(
@@ -169,21 +169,18 @@ pub fn build_router_with_services(
             post(handle_archive_channel),
         )
         .route(
-            "/agents/{name}",
+            "/agents/{id}",
             get(handle_get_agent).patch(handle_update_agent),
         )
-        .route("/agents/{name}/start", post(handle_agent_start))
-        .route("/agents/{name}/stop", post(handle_agent_stop))
-        .route("/agents/{name}/restart", post(handle_restart_agent))
-        .route("/agents/{name}/delete", post(handle_delete_agent))
-        .route("/agents/{name}/activity", get(handle_agent_activity))
+        .route("/agents/{id}/start", post(handle_agent_start))
+        .route("/agents/{id}/stop", post(handle_agent_stop))
+        .route("/agents/{id}/restart", post(handle_restart_agent))
+        .route("/agents/{id}/delete", post(handle_delete_agent))
+        .route("/agents/{id}/activity", get(handle_agent_activity))
+        .route("/agents/{id}/activity-log", get(handle_agent_activity_log))
+        .route("/agents/{id}/workspace", get(handle_agent_workspace))
         .route(
-            "/agents/{name}/activity-log",
-            get(handle_agent_activity_log),
-        )
-        .route("/agents/{name}/workspace", get(handle_agent_workspace))
-        .route(
-            "/agents/{name}/workspace/file",
+            "/agents/{id}/workspace/file",
             get(handle_agent_workspace_file),
         )
         .route("/templates", get(handle_list_templates))
@@ -191,7 +188,7 @@ pub fn build_router_with_services(
         .route("/server-info", get(handle_ui_server_info))
         .route("/events/ws", get(handle_events_ws))
         .route("/traces/{run_id}", get(handle_trace_events))
-        .route("/agents/{name}/runs", get(handle_agent_runs));
+        .route("/agents/{id}/runs", get(handle_agent_runs));
 
     Router::new()
         .route("/health", get(health))

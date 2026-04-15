@@ -55,6 +55,8 @@ pub struct ChannelInfo {
 /// Agent summary for lists and agent detail header (before env vars).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentInfo {
+    /// Persisted UUID primary key.
+    pub id: String,
     /// Unique agent login name.
     pub name: String,
     /// Persisted lifecycle: `active`, `sleeping`, or `inactive`.
@@ -128,6 +130,7 @@ impl From<&Agent> for AgentInfo {
     /// Base agent row for list/detail; activity fields are filled by handlers when needed.
     fn from(agent: &Agent) -> Self {
         Self {
+            id: agent.id.clone(),
             name: agent.name.clone(),
             status: agent.status.as_str().to_string(),
             display_name: Some(agent.display_name.clone()),

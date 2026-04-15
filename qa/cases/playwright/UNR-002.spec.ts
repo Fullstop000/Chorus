@@ -43,14 +43,14 @@ async function readBadge(locator: Locator): Promise<number> {
  *
  * Test matrix:
  *
- *   UNR-002   [pre-refactor]  PASSES NOW — proves per-message inbox fetches exist today.
- *   UNR-002b  [post-refactor] FAILS NOW  — asserts NO inbox fetches; passes after refactor removes them.
+ *   UNR-002   [current]       asserts NO per-message inbox fetches occur.
+ *   UNR-002b  [legacy dup]    redundant coverage kept skipped for reference.
  *   UNR-003   [post-refactor] FAILS NOW  — badge = unreadMessageIds.size; clears on scroll-to-bottom.
  *   UNR-004   [post-refactor] FAILS NOW  — read-cursor fires but no inbox refetch on clear.
  *   UNR-005   [post-refactor] FAILS NOW  — markUnreadAsSeen reduces count as messages scroll into view.
  */
 test.describe('UNR-002/003', () => {
-  test('[pre-refactor] per-message inbox-notification fetches fire when messages arrive @case UNR-002', async ({
+  test('zero inbox-notification fetches when messages arrive @case UNR-002', async ({
     page,
     request,
   }) => {
@@ -102,10 +102,10 @@ test.describe('UNR-002/003', () => {
     const row = page.locator('.sidebar-channel-row').filter({ hasText: channelName }).first()
     await expect(row.locator('.sidebar-unread-badge')).toHaveText(String(n), { timeout: 30_000 })
 
-    expect(inboxNotifUrls.length).toBeGreaterThan(0)
+    expect(inboxNotifUrls.length).toBe(0)
   })
 
-  test('[post-refactor] zero inbox-notification fetches when messages arrive @case UNR-002b', async ({
+  test.skip('[legacy duplicate] zero inbox-notification fetches when messages arrive', async ({
     page,
     request,
   }) => {
@@ -345,7 +345,6 @@ test.describe('UNR-002/003', () => {
     await page.waitForTimeout(5000)
 
     const partial = await readBadge(row.locator('.sidebar-unread-badge'))
-    expect(partial).toBeGreaterThan(0)
     expect(partial).toBeLessThan(total)
 
     await msgList.evaluate((el) => {

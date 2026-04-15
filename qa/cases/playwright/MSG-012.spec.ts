@@ -24,7 +24,11 @@ import { clickSidebarChannel , gotoApp } from './helpers/ui'
  */
 test.describe('MSG-012', () => {
   test.beforeAll(async ({ request }) => {
-    await createAgentApi(request, { name: 'bot-a', runtime: 'claude', model: 'sonnet' })
+    await createAgentApi(
+      request,
+      { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
+      { allowNameTaken: true }
+    )
   })
 
   test('Clickable Mention Opens Agent Profile @case MSG-012', async ({ page, request }) => {

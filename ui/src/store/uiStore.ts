@@ -74,10 +74,22 @@ export const useStore = create<UIStore>((set) => ({
   setCurrentUser: (currentUser: string) => set({ currentUser }),
 
   setCurrentAgent: (agent: AgentInfo | null) =>
-    set({
-      currentAgent: agent,
-      openThreadMsg: null,
-      ...(agent ? { currentChannel: null, activeTab: 'chat' as const } : {}),
+    set((state) => {
+      const isSameAgent =
+        !!agent &&
+        !!state.currentAgent &&
+        (state.currentAgent.id === agent.id || state.currentAgent.name === agent.name)
+
+      return {
+        currentAgent: agent,
+        openThreadMsg: isSameAgent ? state.openThreadMsg : null,
+        ...(agent
+          ? {
+              currentChannel: null,
+              activeTab: isSameAgent ? state.activeTab : ('chat' as const),
+            }
+          : {}),
+      }
     }),
 
   setCurrentChannel: (channel: ChannelInfo | null) =>
@@ -141,13 +153,32 @@ export const useStore = create<UIStore>((set) => ({
       const key = threadNotificationKey(conversationId, threadParentId)
       const thread = state.inboxState.threads[key]
       if (!thread || seq <= thread.lastReadSeq) return state
+      const nextThreads = {
+        ...state.inboxState.threads,
+        [key]: {
+          ...thread,
+          lastReadSeq: seq,
+          unreadCount: Math.max(thread.latestSeq - seq, 0),
+        },
+      }
+      const conversation = state.inboxState.conversations[conversationId]
+      const nextConversations = conversation
+        ? {
+            ...state.inboxState.conversations,
+            [conversationId]: {
+              ...conversation,
+              threadUnreadCount: Object.values(nextThreads)
+                .filter((entry) => entry.conversationId === conversationId)
+                .reduce((sum, entry) => sum + entry.unreadCount, 0),
+            },
+          }
+        : state.inboxState.conversations
+
       return {
         inboxState: {
           ...state.inboxState,
-          threads: {
-            ...state.inboxState.threads,
-            [key]: { ...thread, lastReadSeq: seq },
-          },
+          conversations: nextConversations,
+          threads: nextThreads,
         },
       }
     }),

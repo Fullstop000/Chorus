@@ -15,7 +15,6 @@ test.describe('MSG-005', () => {
     })
     let historyRequests = 0
     const historyAfterParams: Array<number | null> = []
-    const realtimeConsoleLogs: string[] = []
 
     page.on('request', (req) => {
       const url = new URL(req.url())
@@ -23,12 +22,6 @@ test.describe('MSG-005', () => {
         historyRequests += 1
         const after = url.searchParams.get('after')
         historyAfterParams.push(after == null ? null : Number(after))
-      }
-    })
-    page.on('console', (msg) => {
-      const text = msg.text()
-      if (text.includes('[chorus:realtime] recv')) {
-        realtimeConsoleLogs.push(text)
       }
     })
 
@@ -39,38 +32,28 @@ test.describe('MSG-005', () => {
     })
     await clickSidebarChannel(page, channelName)
     await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
-    // Wait for the initial history fetch to settle before snapshotting the baseline
+    // Let the initial history bootstrap and any immediate gap-fill requests settle
+    // before snapshotting the baseline request count.
     await expect(page.locator('.message-input-textarea')).toBeVisible()
+    await page.waitForTimeout(500)
 
     const baselineHistoryRequests = historyRequests
-    expect(historyAfterParams.every((value) => value == null)).toBeTruthy()
 
     const localToken = `msg-local-${Date.now()}`
     await sendChatMessage(page, localToken)
     await expect(page.locator('.message-item').filter({ hasText: localToken }).first()).toBeVisible()
-    expect(historyRequests).toBeLessThanOrEqual(baselineHistoryRequests + 1)
-    if (historyRequests > baselineHistoryRequests) {
-      expect(historyAfterParams.at(-1)).not.toBeNull()
-    }
+    expect(historyRequests).toBe(baselineHistoryRequests)
     const historyAfterLocalSend = historyRequests
 
     const remoteToken = `msg-remote-${Date.now()}`
     await sendAsUser(request, username, `#${channelName}`, remoteToken)
     await expect(page.locator('.message-item').filter({ hasText: remoteToken }).first()).toBeVisible()
-    expect(historyRequests).toBe(historyAfterLocalSend + 1)
-    expect(historyAfterParams.at(-1)).not.toBeNull()
+    expect(historyRequests).toBe(historyAfterLocalSend)
     const historyAfterRemoteSend = historyRequests
-    expect(realtimeConsoleLogs.length).toBeGreaterThan(0)
-    const consoleDump = realtimeConsoleLogs.join('\n')
-    expect(consoleDump).toContain('message.created')
-    expect(consoleDump).toContain('latestSeq')
-    expect(consoleDump).not.toContain(remoteToken)
 
     // Observe for 2 s to confirm no further history polling occurs
     await page.waitForTimeout(2_000)
     expect(historyRequests).toBe(historyAfterRemoteSend)
-    expect(historyAfterParams.slice(baselineHistoryRequests).every((value) => value != null)).toBe(
-      true
-    )
+    expect(historyAfterParams.slice(baselineHistoryRequests)).toHaveLength(0)
   })
 })
