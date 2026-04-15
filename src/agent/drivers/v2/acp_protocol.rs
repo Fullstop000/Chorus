@@ -1093,8 +1093,14 @@ mod tests {
     #[test]
     fn pick_best_option_prefers_allow_always() {
         let options = vec![
-            PermissionOption { kind: "allow_once".into(), option_id: "once-id".into() },
-            PermissionOption { kind: "allow_always".into(), option_id: "always-id".into() },
+            PermissionOption {
+                kind: "allow_once".into(),
+                option_id: "once-id".into(),
+            },
+            PermissionOption {
+                kind: "allow_always".into(),
+                option_id: "always-id".into(),
+            },
         ];
         assert_eq!(pick_best_option_id(&options), "always-id");
     }
@@ -1102,17 +1108,24 @@ mod tests {
     #[test]
     fn pick_best_option_falls_back_to_allow_once() {
         let options = vec![
-            PermissionOption { kind: "deny".into(), option_id: "deny-id".into() },
-            PermissionOption { kind: "allow_once".into(), option_id: "once-id".into() },
+            PermissionOption {
+                kind: "deny".into(),
+                option_id: "deny-id".into(),
+            },
+            PermissionOption {
+                kind: "allow_once".into(),
+                option_id: "once-id".into(),
+            },
         ];
         assert_eq!(pick_best_option_id(&options), "once-id");
     }
 
     #[test]
     fn pick_best_option_falls_back_to_first() {
-        let options = vec![
-            PermissionOption { kind: "custom".into(), option_id: "custom-id".into() },
-        ];
+        let options = vec![PermissionOption {
+            kind: "custom".into(),
+            option_id: "custom-id".into(),
+        }];
         assert_eq!(pick_best_option_id(&options), "custom-id");
     }
 
