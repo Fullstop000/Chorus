@@ -60,8 +60,8 @@ export function runtimeOptionLabel(
           : "Kimi CLI";
   const status = runtimeStatuses.find((entry) => entry.runtime === runtime);
   if (!status) return `${baseLabel} · status unavailable`;
-  if (!status.installed) return `${baseLabel} · not installed`;
-  if (status.authStatus === "authed") return `${baseLabel} · signed in`;
+  if (status.auth === 'not_installed') return `${baseLabel} · not installed`;
+  if (status.auth === 'authed') return `${baseLabel} · signed in`;
   return `${baseLabel} · not signed in`;
 }
 
@@ -70,7 +70,7 @@ export function isRuntimeAvailable(
   runtimeStatuses: RuntimeStatusInfo[] = [],
 ): boolean {
   const status = runtimeStatuses.find((entry) => entry.runtime === runtime);
-  return status?.installed === true;
+  return status?.auth !== 'not_installed' && status?.auth !== undefined;
 }
 
 export function runtimeStatusSummary(
@@ -85,14 +85,14 @@ export function runtimeStatusSummary(
       detail: "The local runtime probe did not return a status for this CLI.",
     };
   }
-  if (!status.installed) {
+  if (status.auth === 'not_installed') {
     return {
       tone: "warn",
       title: "Not installed",
       detail: "This runtime is not available on the local machine yet.",
     };
   }
-  if (status.authStatus === "authed") {
+  if (status.auth === 'authed') {
     return {
       tone: "ok",
       title: "Signed in",
@@ -300,14 +300,6 @@ export function AgentConfigForm({
               <strong>{runtimeSummary.title}</strong>
               <span>{runtimeSummary.detail}</span>
             </div>
-            {runtimeStatuses.length > 0 && (
-              <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-                Driver:{" "}
-                <span className="badge">
-                  {runtimeStatuses.find((s) => s.runtime === state.runtime)?.driverMode ?? "raw"}
-                </span>
-              </p>
-            )}
             {runtimeStatusError && (
               <p className="text-xs text-muted-foreground leading-relaxed mt-1">
                 {runtimeStatusError}

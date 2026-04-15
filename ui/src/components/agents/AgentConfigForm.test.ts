@@ -5,7 +5,7 @@ describe('runtimeOptionLabel', () => {
   it('shows not installed copy when the runtime is missing', () => {
     expect(
       runtimeOptionLabel('kimi', [
-        { runtime: 'kimi', installed: false, driverMode: 'raw' as const },
+        { runtime: 'kimi', auth: 'not_installed' as const },
       ])
     ).toContain('not installed')
   })
@@ -13,7 +13,7 @@ describe('runtimeOptionLabel', () => {
   it('shows signed in copy for authenticated runtimes', () => {
     expect(
       runtimeOptionLabel('claude', [
-        { runtime: 'claude', installed: true, authStatus: 'authed' as const, driverMode: 'acp' as const },
+        { runtime: 'claude', auth: 'authed' as const },
       ])
     ).toContain('signed in')
   })
@@ -27,7 +27,7 @@ describe('isRuntimeAvailable', () => {
   it('returns false for runtimes that are not installed', () => {
     expect(
       isRuntimeAvailable('kimi', [
-        { runtime: 'kimi', installed: false, driverMode: 'raw' as const },
+        { runtime: 'kimi', auth: 'not_installed' as const },
       ])
     ).toBe(false)
   })
@@ -35,7 +35,7 @@ describe('isRuntimeAvailable', () => {
   it('returns true for installed runtimes', () => {
     expect(
       isRuntimeAvailable('codex', [
-        { runtime: 'codex', installed: true, authStatus: 'unauthed' as const, driverMode: 'raw' as const },
+        { runtime: 'codex', auth: 'unauthed' as const },
       ])
     ).toBe(true)
   })
@@ -45,7 +45,7 @@ describe('runtimeStatusSummary', () => {
   it('warns when a runtime is installed but not signed in', () => {
     expect(
       runtimeStatusSummary('codex', [
-        { runtime: 'codex', installed: true, authStatus: 'unauthed' as const, driverMode: 'raw' as const },
+        { runtime: 'codex', auth: 'unauthed' as const },
       ])
     ).toEqual({
       tone: 'warn',

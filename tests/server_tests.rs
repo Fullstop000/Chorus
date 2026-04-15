@@ -3,8 +3,10 @@ mod harness;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::ActivityLogResponse;
-use chorus::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus, RuntimeStatusProvider};
+use chorus::agent::drivers::v2::ProbeAuth;
+use chorus::agent::runtime_status::{RuntimeStatusInfo, RuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
+use chorus::agent::AgentRuntime;
 use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
 use chorus::server::{build_router_with_services, AgentDetailResponse, HistoryResponse};
@@ -95,22 +97,24 @@ struct MockLifecycle {
 }
 
 struct MockRuntimeStatusProvider {
-    statuses: Vec<RuntimeStatus>,
+    statuses: Vec<RuntimeStatusInfo>,
     models_by_runtime: Vec<(String, Vec<String>)>,
 }
 
 struct FailStartLifecycle;
 
+#[async_trait::async_trait]
 impl RuntimeStatusProvider for MockRuntimeStatusProvider {
-    fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatus>> {
+    async fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatusInfo>> {
         Ok(self.statuses.clone())
     }
 
-    fn list_models(&self, runtime: &str) -> anyhow::Result<Vec<String>> {
+    async fn list_models(&self, runtime: AgentRuntime) -> anyhow::Result<Vec<String>> {
+        let key = runtime.as_str().to_string();
         Ok(self
             .models_by_runtime
             .iter()
-            .find(|(name, _)| name == runtime)
+            .find(|(name, _)| *name == key)
             .map(|(_, models)| models.clone())
             .unwrap_or_default())
     }
@@ -257,7 +261,7 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
 }
 
 fn setup_with_runtime_statuses(
-    statuses: Vec<RuntimeStatus>,
+    statuses: Vec<RuntimeStatusInfo>,
     models_by_runtime: Vec<(String, Vec<String>)>,
 ) -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
@@ -1288,20 +1292,17 @@ async fn test_whoami() {
 async fn test_list_runtime_statuses() {
     let (_store, app, _lifecycle) = setup_with_runtime_statuses(
         vec![
-            RuntimeStatus {
+            RuntimeStatusInfo {
                 runtime: "claude".to_string(),
-                installed: true,
-                auth_status: Some(RuntimeAuthStatus::Authed),
+                auth: ProbeAuth::Authed,
             },
-            RuntimeStatus {
+            RuntimeStatusInfo {
                 runtime: "codex".to_string(),
-                installed: true,
-                auth_status: Some(RuntimeAuthStatus::Unauthed),
+                auth: ProbeAuth::Unauthed,
             },
-            RuntimeStatus {
+            RuntimeStatusInfo {
                 runtime: "kimi".to_string(),
-                installed: false,
-                auth_status: None,
+                auth: ProbeAuth::NotInstalled,
             },
         ],
         vec![],
@@ -1327,13 +1328,11 @@ async fn test_list_runtime_statuses() {
         .expect("runtimes payload should be an array");
     assert_eq!(runtimes.len(), 3);
     assert_eq!(runtimes[0]["runtime"], "claude");
-    assert_eq!(runtimes[0]["installed"], true);
-    assert_eq!(runtimes[0]["authStatus"], "authed");
+    assert_eq!(runtimes[0]["auth"], "authed");
     assert_eq!(runtimes[1]["runtime"], "codex");
-    assert_eq!(runtimes[1]["authStatus"], "unauthed");
+    assert_eq!(runtimes[1]["auth"], "unauthed");
     assert_eq!(runtimes[2]["runtime"], "kimi");
-    assert_eq!(runtimes[2]["installed"], false);
-    assert!(runtimes[2].get("authStatus").is_none());
+    assert_eq!(runtimes[2]["auth"], "not_installed");
 }
 
 #[tokio::test]

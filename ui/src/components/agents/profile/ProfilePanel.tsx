@@ -207,9 +207,9 @@ export function ProfilePanel() {
           <span className={`badge badge-${agent.runtime ?? "claude"}`}>
             {agent.runtime ?? "claude"}
           </span>
-          <span className="profile-config-key">Driver</span>
+          <span className="profile-config-key">Auth</span>
           <span className="badge">
-            {runtimeStatuses.find((s) => s.runtime === (agent.runtime ?? "claude"))?.driverMode ?? "raw"}
+            {runtimeStatuses.find((s) => s.runtime === (agent.runtime ?? "claude"))?.auth ?? "unknown"}
           </span>
           <span className="profile-config-key">Model</span>
           <span className="badge">{agent.model ?? "sonnet"}</span>

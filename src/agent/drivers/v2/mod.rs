@@ -76,7 +76,8 @@ bitflags::bitflags! {
 // ---------------------------------------------------------------------------
 
 /// Outcome of probing a runtime's installed authentication state.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProbeAuth {
     /// CLI or adapter binary is missing on this host.
     NotInstalled,

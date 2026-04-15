@@ -30,6 +30,7 @@ use tracing::debug;
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
+use crate::agent::AgentRuntime;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::store::Store;
 use dto::ServerInfo;
@@ -128,15 +129,8 @@ pub async fn handle_list_runtime_statuses(
     let statuses = state
         .runtime_status_provider
         .list_statuses()
-        .map_err(internal_err)?
-        .into_iter()
-        .map(|status| dto::RuntimeStatusInfo {
-            runtime: status.runtime,
-            installed: status.installed,
-            auth_status: status.auth_status,
-            driver_mode: "v2".to_string(),
-        })
-        .collect();
+        .await
+        .map_err(internal_err)?;
     Ok(Json(statuses))
 }
 
@@ -144,9 +138,12 @@ pub async fn handle_list_runtime_models(
     State(state): State<AppState>,
     Path(runtime): Path<String>,
 ) -> ApiResult<Vec<String>> {
+    let rt = AgentRuntime::parse(&runtime)
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "unknown runtime: {runtime}"))?;
     let models = state
         .runtime_status_provider
-        .list_models(&runtime)
+        .list_models(rt)
+        .await
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(models))
 }

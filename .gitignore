@@ -43,6 +43,7 @@ TODOS.md
 test-results/
 ui/test-results/
 **/.last-run.json
+.vite/
 
 # UI build artifacts
 ui/dist/

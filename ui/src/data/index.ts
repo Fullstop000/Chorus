@@ -81,7 +81,7 @@ export {
   type AgentEnvVar,
   type AgentRunInfo,
   type AgentRunsResponse,
-  type RuntimeAuthStatus,
+  type ProbeAuth,
   type RuntimeStatusInfo,
   type AgentDetailResponse,
   type ActivityMessage,
