@@ -82,7 +82,7 @@ export const useStore = create<UIStore>((set) => ({
 
       return {
         currentAgent: agent,
-        openThreadMsg: null,
+        openThreadMsg: isSameAgent ? state.openThreadMsg : null,
         ...(agent
           ? {
               currentChannel: null,
