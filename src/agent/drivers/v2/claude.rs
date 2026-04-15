@@ -503,7 +503,7 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 HeadlessEvent::ContentBlockStop { index }
                 | HeadlessEvent::ToolUseStop { index } => {
                     // If index matches current tool accumulation, flush it
-                    let should_flush = pending_tool.as_ref().map_or(false, |t| t.3 == index);
+                    let should_flush = pending_tool.as_ref().is_some_and(|t| t.3 == index);
                     if should_flush {
                         let run_id = shared.lock().unwrap().run_id;
                         if let Some(rid) = run_id {
