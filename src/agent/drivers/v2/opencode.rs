@@ -229,6 +229,7 @@ impl AgentHandle for OpencodeHandle {
 
         let mut cmd = Command::new("opencode");
         cmd.args(&args)
+            .current_dir(&self.spec.working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -289,7 +290,14 @@ impl AgentHandle for OpencodeHandle {
         let shared = self.shared.clone();
         let stdin_tx_for_reader = self.stdin_tx.clone().unwrap();
         let stdout_handle = tokio::spawn(async move {
-            let reader = BufReader::new(tokio::process::ChildStdout::from_std(stdout).unwrap());
+            let stdout_async = match tokio::process::ChildStdout::from_std(stdout) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(key = %key, error = %e, "opencode: failed to convert stdout to async");
+                    return;
+                }
+            };
+            let reader = BufReader::new(stdout_async);
             let mut lines = reader.lines();
             let mut accumulator = ToolCallAccumulator::new();
 
@@ -549,7 +557,14 @@ impl AgentHandle for OpencodeHandle {
         // Stderr reader task
         let key_err = self.key.clone();
         let stderr_handle = tokio::spawn(async move {
-            let reader = BufReader::new(tokio::process::ChildStderr::from_std(stderr).unwrap());
+            let stderr_async = match tokio::process::ChildStderr::from_std(stderr) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(key = %key_err, error = %e, "opencode: failed to convert stderr to async");
+                    return;
+                }
+            };
+            let reader = BufReader::new(stderr_async);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {

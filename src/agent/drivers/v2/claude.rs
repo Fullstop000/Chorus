@@ -224,17 +224,16 @@ impl AgentHandle for ClaudeHandle {
             .stderr
             .take()
             .map(tokio::process::ChildStderr::from_std);
-        let stdin = std_child
+        let stdin_raw = std_child
             .stdin
             .take()
-            .map(tokio::process::ChildStdin::from_std);
+            .ok_or_else(|| anyhow::anyhow!("claude v2: child has no stdin"))?;
+        let child_stdin = tokio::process::ChildStdin::from_std(stdin_raw)
+            .context("claude v2: failed to convert stdin to async")?;
 
         let (stdin_tx, stdin_rx) = mpsc::channel::<String>(64);
-
-        if let Some(Ok(child_stdin)) = stdin {
-            self.reader_handles
-                .push(spawn_stdin_writer(child_stdin, stdin_rx));
-        }
+        self.reader_handles
+            .push(spawn_stdin_writer(child_stdin, stdin_rx));
 
         // Claude CLI in stream-json mode requires stdin input before emitting
         // the system/init event. Send the initial prompt immediately so the
@@ -298,12 +297,14 @@ impl AgentHandle for ClaudeHandle {
 
         let msg = claude_headless::build_user_message(&req.text);
 
-        if let Some(ref stdin_tx) = self.stdin_tx {
-            stdin_tx
-                .send(format!("{msg}\n"))
-                .await
-                .map_err(|e| anyhow::anyhow!("claude v2: stdin write failed: {e}"))?;
-        }
+        let stdin_tx = self
+            .stdin_tx
+            .as_ref()
+            .context("claude v2: stdin not available — handle not started")?;
+        stdin_tx
+            .send(format!("{msg}\n"))
+            .await
+            .map_err(|e| anyhow::anyhow!("claude v2: stdin write failed: {e}"))?;
 
         if let Some(ref shared) = self.shared {
             let mut guard = shared.lock().unwrap();
@@ -326,9 +327,10 @@ impl AgentHandle for ClaudeHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        Ok(CancelOutcome::SessionReplaced {
-            new_session_id: String::new(),
-        })
+        // Claude v2 headless does not support in-flight cancellation; the
+        // session must be closed and restarted. Return NotInFlight so the
+        // caller receives a no-op rather than invalid session data.
+        Ok(CancelOutcome::NotInFlight)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {

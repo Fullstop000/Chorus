@@ -114,7 +114,7 @@ impl RuntimeStatusProvider for MockRuntimeStatusProvider {
         Ok(self
             .models_by_runtime
             .iter()
-            .find(|(name, _)| *name == key)
+            .find(|(name, _)| name == &key)
             .map(|(_, models)| models.clone())
             .unwrap_or_default())
     }

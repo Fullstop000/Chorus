@@ -553,7 +553,14 @@ impl AgentHandle for KimiHandle {
         // Stderr reader task
         let key_err = self.key.clone();
         let stderr_handle = tokio::spawn(async move {
-            let reader = BufReader::new(tokio::process::ChildStderr::from_std(stderr).unwrap());
+            let stderr_async = match tokio::process::ChildStderr::from_std(stderr) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(key = %key_err, error = %e, "kimi: failed to convert stderr to async");
+                    return;
+                }
+            };
+            let reader = BufReader::new(stderr_async);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
@@ -621,32 +628,34 @@ impl AgentHandle for KimiHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        if let AgentState::PromptInFlight { run_id, session_id } = &self.state {
-            let run_id = *run_id;
-            let session_id = session_id.clone();
-
-            {
-                let mut s = self.shared.lock().unwrap();
-                s.run_id = None;
-                s.agent_state = AgentState::Active {
-                    session_id: session_id.clone(),
-                };
+        // Read authoritative state from shared — self.state can lag the reader task.
+        let (run_id, session_id) = {
+            let s = self.shared.lock().unwrap();
+            match &s.agent_state {
+                AgentState::PromptInFlight { run_id, session_id } => (*run_id, session_id.clone()),
+                _ => return Ok(CancelOutcome::NotInFlight),
             }
+        };
 
-            self.emit(DriverEvent::Completed {
-                key: self.key.clone(),
-                run_id,
-                result: RunResult {
-                    session_id: session_id.clone(),
-                    finish_reason: FinishReason::Cancelled,
-                },
-            });
-
-            self.state = AgentState::Active { session_id };
-            Ok(CancelOutcome::Aborted)
-        } else {
-            Ok(CancelOutcome::NotInFlight)
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.run_id = None;
+            s.agent_state = AgentState::Active {
+                session_id: session_id.clone(),
+            };
         }
+
+        self.emit(DriverEvent::Completed {
+            key: self.key.clone(),
+            run_id,
+            result: RunResult {
+                session_id: session_id.clone(),
+                finish_reason: FinishReason::Cancelled,
+            },
+        });
+
+        self.state = AgentState::Active { session_id };
+        Ok(CancelOutcome::Aborted)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {

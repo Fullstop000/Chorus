@@ -271,6 +271,13 @@ impl AgentHandle for CodexHandle {
         }));
         self.shared = Some(shared.clone());
 
+        // The reader task will issue build_turn_start(2, ...) for any deferred
+        // initial prompt. Advance next_request_id past 2 so subsequent prompt()
+        // calls (which use alloc_id()) don't collide with that hardcoded id.
+        if shared.lock().unwrap().pending_prompt.is_some() {
+            self.next_request_id = 3;
+        }
+
         // Stdin writer task (spawn_blocking because std::io::Stdin is not async)
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
         self.stdin_tx = Some(stdin_tx);

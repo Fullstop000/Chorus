@@ -459,8 +459,8 @@ export async function pollUntil<T>(
 }
 
 /**
- * Ensure a dedicated isolated channel exists and contains exactly the given
- * agent members. Idempotent: if the channel already exists it is left as-is.
+ * Ensure a dedicated isolated channel exists and all listed agents are
+ * members. Idempotent: if the channel already exists it is left as-is.
  * The calling user is automatically a member as the channel creator.
  */
 export async function ensureIsolatedChannel(
