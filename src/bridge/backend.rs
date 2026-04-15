@@ -11,6 +11,14 @@ use std::time::Duration;
 ///
 /// `agent_key` is the first parameter on every method because the backend
 /// is shared across agents — the caller specifies which agent is acting.
+///
+/// ## Known simplifications (Phase 1)
+///
+/// - **Error type:** Methods return `rmcp::ErrorData` directly. A future iteration
+///   should return `BridgeError` (from `crate::bridge::error`) and convert to
+///   `rmcp::ErrorData` at the MCP handler boundary.
+/// - **Return type:** Most methods return pre-formatted `String`. A future iteration
+///   will introduce typed response structs to decouple backends from MCP presentation.
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// Send a message to a channel or DM target.

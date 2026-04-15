@@ -19,6 +19,7 @@ pub enum RegistryError {
 
 struct SessionEntry {
     agent_key: String,
+    #[allow(dead_code)] // Retained for future session-age metrics and diagnostics
     created_at: Instant,
     last_active: Instant,
 }

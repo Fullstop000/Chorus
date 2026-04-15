@@ -4,6 +4,9 @@ use std::fmt;
 /// Each variant includes a human-readable message with cause and suggested fix.
 #[derive(Debug, Clone)]
 pub enum BridgeError {
+// Note: std::error::Error is not derived because the variants use named fields
+// incompatible with thiserror's #[error] derive. Manual Display impl below.
+// Add `impl std::error::Error for BridgeError {}` if needed for anyhow compatibility.
     /// Platform (Chorus server) is unreachable — server not running or network failure.
     PlatformUnreachable { url: String, cause: String },
 
@@ -67,6 +70,8 @@ impl fmt::Display for BridgeError {
         }
     }
 }
+
+impl std::error::Error for BridgeError {}
 
 impl From<BridgeError> for rmcp::ErrorData {
     fn from(err: BridgeError) -> rmcp::ErrorData {
