@@ -129,6 +129,7 @@ impl AgentManager {
             working_directory: agent_data_dir.clone(),
             bridge_binary: self.bridge_binary.clone(),
             server_url: self.server_url.clone(),
+            bridge_endpoint: None,
         };
 
         let attach_result = v2_driver.attach(agent_name.to_string(), spec).await?;

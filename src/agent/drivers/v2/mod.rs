@@ -566,6 +566,10 @@ pub struct AgentSpec {
     pub working_directory: PathBuf,
     pub bridge_binary: String,
     pub server_url: String,
+    /// Optional shared bridge HTTP endpoint. When `Some`, the driver connects
+    /// to this endpoint instead of spawning a per-agent stdio bridge process.
+    /// Format: `http://127.0.0.1:4321` (port from bridge discovery or config).
+    pub bridge_endpoint: Option<String>,
 }
 
 /// Return value of [`RuntimeDriver::attach`].

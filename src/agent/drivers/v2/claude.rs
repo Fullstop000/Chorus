@@ -653,6 +653,7 @@ mod tests {
             working_directory: PathBuf::from("/fake"),
             bridge_binary: "bridge".into(),
             server_url: "http://localhost:3001".into(),
+            bridge_endpoint: None,
         }
     }
 
