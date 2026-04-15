@@ -98,7 +98,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   useEffect(() => {
     if (runtimeStatuses.length === 0 || config.name !== '') return
     const acpRuntime = RUNTIME_ORDER.find((rt) =>
-      runtimeStatuses.find((s) => s.runtime === rt && s.installed && s.driverMode === 'acp'),
+      runtimeStatuses.find((s) => s.runtime === rt && s.auth === 'authed'),
     )
     if (acpRuntime && acpRuntime !== config.runtime) {
       setConfig((prev) => ({ ...prev, runtime: acpRuntime, model: '' }))

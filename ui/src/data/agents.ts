@@ -28,13 +28,11 @@ export interface AgentEnvVar {
   value: string
 }
 
-export type RuntimeAuthStatus = 'authed' | 'unauthed'
+export type ProbeAuth = 'not_installed' | 'unauthed' | 'authed'
 
 export interface RuntimeStatusInfo {
   runtime: 'claude' | 'codex' | 'kimi' | 'opencode' | string
-  installed: boolean
-  authStatus?: RuntimeAuthStatus
-  driverMode: 'acp' | 'raw'
+  auth: ProbeAuth
 }
 
 export interface AgentDetailResponse {

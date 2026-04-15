@@ -27,11 +27,10 @@ use axum::http::StatusCode;
 use axum::Json;
 use tracing::debug;
 
-use crate::agent::drivers::command_exists;
-use crate::agent::runtime::AgentRuntime;
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
+use crate::agent::AgentRuntime;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::store::Store;
 use dto::ServerInfo;
@@ -130,27 +129,8 @@ pub async fn handle_list_runtime_statuses(
     let statuses = state
         .runtime_status_provider
         .list_statuses()
-        .map_err(internal_err)?
-        .into_iter()
-        .map(|status| {
-            let driver_mode = AgentRuntime::parse(&status.runtime)
-                .map(|rt| {
-                    if command_exists(rt.acp_adaptor_binary()) {
-                        "acp"
-                    } else {
-                        "raw"
-                    }
-                })
-                .unwrap_or("raw")
-                .to_string();
-            dto::RuntimeStatusInfo {
-                runtime: status.runtime,
-                installed: status.installed,
-                auth_status: status.auth_status,
-                driver_mode,
-            }
-        })
-        .collect();
+        .await
+        .map_err(internal_err)?;
     Ok(Json(statuses))
 }
 
@@ -158,9 +138,12 @@ pub async fn handle_list_runtime_models(
     State(state): State<AppState>,
     Path(runtime): Path<String>,
 ) -> ApiResult<Vec<String>> {
+    let rt = AgentRuntime::parse(&runtime)
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "unknown runtime: {runtime}"))?;
     let models = state
         .runtime_status_provider
-        .list_models(&runtime)
+        .list_models(rt)
+        .await
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(models))
 }

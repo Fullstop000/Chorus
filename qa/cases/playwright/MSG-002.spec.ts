@@ -88,7 +88,7 @@ test.describe('MSG-002', () => {
         await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
       } else {
         await openThreadFromMessage(page, token)
-        await expect(page.locator('.thread-replies')).toContainText(token, { timeout: 15_000 })
+        await expect(page.locator('.thread-body')).toContainText(token, { timeout: 15_000 })
       }
     })
 
@@ -99,7 +99,7 @@ test.describe('MSG-002', () => {
         await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
       } else {
         await openThreadFromMessage(page, token)
-        await expect(page.locator('.thread-replies')).toContainText(token, { timeout: 15_000 })
+        await expect(page.locator('.thread-body')).toContainText(token, { timeout: 15_000 })
       }
     })
   })

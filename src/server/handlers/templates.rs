@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use crate::agent::templates::group_by_category;
+use crate::agent::AgentRuntime;
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
 
@@ -120,7 +121,7 @@ pub async fn handle_launch_trio(
         let agent_name = find_available_name(&state, &base_name);
 
         // Resolve default model for the runtime.
-        let model = match resolve_default_model(&state, &template.suggested_runtime) {
+        let model = match resolve_default_model(&state, &template.suggested_runtime).await {
             Some(m) => m,
             None => {
                 errors.push(LaunchTrioError {
@@ -232,10 +233,12 @@ fn find_available_name(state: &AppState, base_name: &str) -> String {
 }
 
 /// Pick the first available model for a runtime.
-fn resolve_default_model(state: &AppState, runtime: &str) -> Option<String> {
+async fn resolve_default_model(state: &AppState, runtime: &str) -> Option<String> {
+    let rt = AgentRuntime::parse(runtime)?;
     state
         .runtime_status_provider
-        .list_models(runtime)
+        .list_models(rt)
+        .await
         .ok()
         .and_then(|models| models.into_iter().next())
 }

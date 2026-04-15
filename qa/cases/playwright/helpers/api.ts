@@ -120,7 +120,9 @@ export async function createAgentApi(
   expect(res.ok(), text).toBeTruthy()
 }
 
-/** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case. */
+/** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case.
+ * Trio: bot-a=claude/sonnet, bot-b=kimi/kimi-code/kimi-for-coding, bot-c=opencode/opencode/gpt-5-nano
+ */
 export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<void> {
   const agents = await listAgents(request)
   const names = new Set(agents.map((a) => a.name))
@@ -134,14 +136,14 @@ export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promis
   if (!names.has('bot-b')) {
     await createAgentApi(
       request,
-      { name: 'bot-b', runtime: 'claude', model: 'opus' },
+      { name: 'bot-b', runtime: 'kimi', model: 'kimi-code/kimi-for-coding' },
       { allowNameTaken: true }
     )
   }
   if (!names.has('bot-c')) {
     await createAgentApi(
       request,
-      { name: 'bot-c', runtime: 'codex', model: 'gpt-5.4-mini' },
+      { name: 'bot-c', runtime: 'opencode', model: 'opencode/gpt-5-nano' },
       { allowNameTaken: true }
     )
   }
@@ -436,4 +438,43 @@ export async function createTeamApi(
 ): Promise<void> {
   const res = await request.post('/api/teams', { data: body })
   expect(res.ok(), await res.text()).toBeTruthy()
+}
+
+/**
+ * Generic polling helper. `fn` returns a resolved value when the condition is
+ * met, or `undefined` to keep waiting. Rejects with a timeout error on expiry.
+ */
+export async function pollUntil<T>(
+  fn: () => Promise<T | undefined>,
+  timeoutMs: number,
+  intervalMs = 4_000
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await fn()
+    if (result !== undefined) return result
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+  throw new Error(`pollUntil: timed out after ${timeoutMs}ms`)
+}
+
+/**
+ * Ensure a dedicated isolated channel exists and all listed agents are
+ * members. Idempotent: if the channel already exists it is left as-is.
+ * The calling user is automatically a member as the channel creator.
+ */
+export async function ensureIsolatedChannel(
+  request: APIRequestContext,
+  channelName: string,
+  agentNames: string[]
+): Promise<void> {
+  const channels = await listChannelsApi(request)
+  if (channels.some((c) => c.name === channelName)) return
+
+  const { id } = await createChannelApi(request, { name: channelName })
+  for (const agentName of agentNames) {
+    await inviteChannelMemberApi(request, id, agentName).catch(() => {
+      // member already present — safe to ignore
+    })
+  }
 }

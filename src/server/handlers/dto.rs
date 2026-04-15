@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::agent::runtime_status::RuntimeAuthStatus;
+pub use crate::agent::runtime_status::RuntimeStatusInfo;
 use crate::store::agents::Agent;
 use crate::store::channels::Channel;
 use crate::store::humans::Human;
@@ -88,21 +88,6 @@ pub struct AgentInfo {
     /// Longer activity text for tooltips / panels.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity_detail: Option<String>,
-}
-
-/// Local machine status for a supported CLI runtime.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeStatusInfo {
-    /// Driver key, e.g. `claude`, `codex`, `kimi`.
-    pub runtime: String,
-    /// Whether the executable is present on the local machine.
-    pub installed: bool,
-    /// Authentication state when the runtime is installed.
-    #[serde(rename = "authStatus", skip_serializing_if = "Option::is_none")]
-    pub auth_status: Option<RuntimeAuthStatus>,
-    /// Active driver mode: `"acp"` when the ACP adapter binary is installed, otherwise `"raw"`.
-    #[serde(rename = "driverMode")]
-    pub driver_mode: String,
 }
 
 /// Human user row for agent workspace snapshots and the UI shell.

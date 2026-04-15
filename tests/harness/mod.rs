@@ -66,7 +66,9 @@ pub fn build_router_with_lifecycle(
     build_router_with_services(
         store,
         lifecycle,
-        Arc::new(SystemRuntimeStatusProvider) as SharedRuntimeStatusProvider,
+        Arc::new(SystemRuntimeStatusProvider::new(
+            chorus::agent::manager::build_driver_registry(),
+        )) as SharedRuntimeStatusProvider,
         vec![],
     )
 }

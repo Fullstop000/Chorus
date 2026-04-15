@@ -88,8 +88,11 @@ pub async fn run(port: u16, data_dir_str: String, template_dir_raw: String) -> a
     let router = chorus::server::build_router_with_services(
         store.clone(),
         manager.clone(),
-        Arc::new(chorus::agent::runtime_status::SystemRuntimeStatusProvider)
-            as chorus::agent::runtime_status::SharedRuntimeStatusProvider,
+        Arc::new(
+            chorus::agent::runtime_status::SystemRuntimeStatusProvider::new(
+                chorus::agent::manager::build_driver_registry(),
+            ),
+        ) as chorus::agent::runtime_status::SharedRuntimeStatusProvider,
         templates,
     );
 
