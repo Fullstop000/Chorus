@@ -62,6 +62,15 @@ impl ChatBridge {
                 rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
             })?;
 
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
+
         let data: Value = res
             .json()
             .await
@@ -130,6 +139,15 @@ impl ChatBridge {
             .send()
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
 
         let data: Value = res
             .json()
@@ -210,6 +228,15 @@ impl ChatBridge {
             self.client.get(&url).send().await.map_err(|e| {
                 rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
             })?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
 
         let data: Value = res
             .json()
@@ -331,6 +358,15 @@ impl ChatBridge {
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
 
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
+
         let data: Value = res
             .json()
             .await
@@ -421,6 +457,15 @@ impl ChatBridge {
                 rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
             })?;
 
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
+
         let data: Value = res
             .json()
             .await
@@ -494,6 +539,15 @@ impl ChatBridge {
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
 
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
+
         let data: Value = res
             .json()
             .await
@@ -542,6 +596,15 @@ impl ChatBridge {
             .send()
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
 
         let data: Value = res
             .json()
@@ -607,6 +670,15 @@ impl ChatBridge {
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
 
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
+
         let data: Value = res
             .json()
             .await
@@ -641,6 +713,15 @@ impl ChatBridge {
             .send()
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
 
         let data: Value = res
             .json()
@@ -688,9 +769,11 @@ impl ChatBridge {
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
 
         if !resolve_res.status().is_success() {
-            return Ok(format!(
-                "Error: Could not resolve channel: {}",
-                params.channel
+            let status = resolve_res.status();
+            let body = resolve_res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
             ));
         }
 
@@ -745,6 +828,15 @@ impl ChatBridge {
             .await
             .map_err(|e| rmcp::ErrorData::internal_error(format!("Upload failed: {}", e), None))?;
 
+        if !res.status().is_success() {
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
+            ));
+        }
+
         let data: Value = res
             .json()
             .await
@@ -779,6 +871,21 @@ impl ChatBridge {
         &self,
         Parameters(params): Parameters<ViewFileParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        // Validate attachment_id to prevent path traversal. Only allow characters
+        // that appear in UUID strings (hex digits and dashes) plus underscores.
+        // This must happen before any filesystem operation.
+        if params.attachment_id.is_empty()
+            || !params
+                .attachment_id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(rmcp::ErrorData::invalid_params(
+                "Invalid attachment_id: must contain only alphanumeric characters, dashes, and underscores",
+                None,
+            ));
+        }
+
         // Cache attachments inside the agent workspace so sandboxed agents can read them.
         let cache_dir = std::env::current_dir()
             .unwrap_or_else(|_| std::path::PathBuf::from("."))
@@ -812,9 +919,11 @@ impl ChatBridge {
         })?;
 
         if !res.status().is_success() {
-            return Ok(format!(
-                "Error: Failed to download attachment ({})",
-                res.status().as_u16()
+            let status = res.status();
+            let body = res.text().await.unwrap_or_default();
+            return Err(rmcp::ErrorData::internal_error(
+                format!("Server returned {}: {}", status, body),
+                None,
             ));
         }
 
@@ -872,4 +981,74 @@ pub async fn run_bridge(agent_id: String, server_url: String) -> anyhow::Result<
     let service = bridge.serve(rmcp::transport::io::stdio()).await?;
     service.waiting().await?;
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    /// Returns true if the given attachment_id passes the view_file validation rules.
+    fn is_valid_attachment_id(id: &str) -> bool {
+        !id.is_empty()
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    }
+
+    #[test]
+    fn valid_uuid_passes() {
+        // Standard UUID format used by Chorus attachments
+        assert!(is_valid_attachment_id(
+            "550e8400-e29b-41d4-a716-446655440000"
+        ));
+    }
+
+    #[test]
+    fn alphanumeric_with_dashes_and_underscores_passes() {
+        assert!(is_valid_attachment_id("abc123"));
+        assert!(is_valid_attachment_id("abc-123"));
+        assert!(is_valid_attachment_id("abc_123"));
+        assert!(is_valid_attachment_id("ABC-DEF_001"));
+    }
+
+    #[test]
+    fn path_traversal_dotdot_slash_rejected() {
+        assert!(!is_valid_attachment_id("../etc/passwd"));
+        assert!(!is_valid_attachment_id("..%2Fetc%2Fpasswd"));
+    }
+
+    #[test]
+    fn forward_slash_rejected() {
+        assert!(!is_valid_attachment_id("foo/bar"));
+    }
+
+    #[test]
+    fn backslash_rejected() {
+        assert!(!is_valid_attachment_id("foo\\bar"));
+    }
+
+    #[test]
+    fn dot_alone_rejected() {
+        assert!(!is_valid_attachment_id(".hidden"));
+        assert!(!is_valid_attachment_id("some.file"));
+    }
+
+    #[test]
+    fn empty_string_rejected() {
+        assert!(!is_valid_attachment_id(""));
+    }
+
+    #[test]
+    fn whitespace_rejected() {
+        assert!(!is_valid_attachment_id("foo bar"));
+        assert!(!is_valid_attachment_id("foo\tbar"));
+        assert!(!is_valid_attachment_id("foo\nbar"));
+    }
+
+    #[test]
+    fn null_byte_rejected() {
+        assert!(!is_valid_attachment_id("foo\0bar"));
+    }
 }
