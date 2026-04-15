@@ -61,7 +61,7 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
     currentChannel?.id ??
     (currentAgent ? getAgentConversationId(currentAgent.name) : null);
 
-  const { messages, loading, lastReadSeq, appendMessage } = useHistory(
+  const { messages, loading, lastReadSeq, appendMessage, refresh } = useHistory(
     currentUser,
     threadTarget,
     threadConversationId,
@@ -78,6 +78,11 @@ export function ThreadPanel({ variant = "drawer" }: ThreadPanelProps) {
   useEffect(() => {
     setContent("");
   }, [openThreadMsg?.id]);
+
+  useEffect(() => {
+    if (!openThreadMsg) return;
+    void refresh();
+  }, [openThreadMsg?.id, refresh]);
 
   useEffect(() => {
     if (toasts.length === 0) return;

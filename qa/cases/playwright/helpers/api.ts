@@ -88,6 +88,9 @@ export async function createAgentApi(
     description?: string
     reasoningEffort?: string | null
     envVars?: Array<{ key: string; value: string }>
+  },
+  options?: {
+    allowNameTaken?: boolean
   }
 ): Promise<void> {
   const res = await request.post('/api/agents', {
@@ -101,7 +104,20 @@ export async function createAgentApi(
       envVars: body.envVars ?? [],
     },
   })
-  expect(res.ok(), await res.text()).toBeTruthy()
+  if (res.ok()) return
+
+  const text = await res.text()
+  if (options?.allowNameTaken) {
+    const parsed = JSON.parse(text) as { error?: string; code?: string }
+    if (
+      parsed.code === 'AGENT_NAME_TAKEN' ||
+      /agent name already in use/i.test(parsed.error ?? text)
+    ) {
+      return
+    }
+  }
+
+  expect(res.ok(), text).toBeTruthy()
 }
 
 /** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case. */
@@ -109,13 +125,25 @@ export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promis
   const agents = await listAgents(request)
   const names = new Set(agents.map((a) => a.name))
   if (!names.has('bot-a')) {
-    await createAgentApi(request, { name: 'bot-a', runtime: 'claude', model: 'sonnet' })
+    await createAgentApi(
+      request,
+      { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
+      { allowNameTaken: true }
+    )
   }
   if (!names.has('bot-b')) {
-    await createAgentApi(request, { name: 'bot-b', runtime: 'claude', model: 'opus' })
+    await createAgentApi(
+      request,
+      { name: 'bot-b', runtime: 'claude', model: 'opus' },
+      { allowNameTaken: true }
+    )
   }
   if (!names.has('bot-c')) {
-    await createAgentApi(request, { name: 'bot-c', runtime: 'codex', model: 'gpt-5.4-mini' })
+    await createAgentApi(
+      request,
+      { name: 'bot-c', runtime: 'codex', model: 'gpt-5.4-mini' },
+      { allowNameTaken: true }
+    )
   }
 }
 

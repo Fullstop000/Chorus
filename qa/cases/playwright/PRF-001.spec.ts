@@ -31,7 +31,7 @@ test.describe('PRF-001', () => {
 
     await test.step('Step 1: Open bot-a profile', async () => {
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
-      await page.getByRole('button', { name: 'Profile' }).click()
+      await page.getByRole('button', { name: 'Profile', exact: true }).click()
     })
 
     await test.step('Step 2: Visible status / activity (profile panel loaded)', async () => {

@@ -23,7 +23,9 @@ test.describe('HIS-001', () => {
       await clickSidebarChannel(page, 'all')
       await openThreadFromMessage(page, `Channel history ${mark}`)
       await sendThreadMessage(page, `Thread history ${mark}`)
-      await expect(page.locator('.thread-replies').filter({ hasText: `Thread history ${mark}` })).toBeVisible()
+      await expect(
+        page.locator('.thread-panel .message-item').filter({ hasText: `Thread history ${mark}` }).first()
+      ).toBeVisible()
     })
 
     await test.step('Steps 1–5: Refresh and verify channel, DM, and thread history remain stable', async () => {
@@ -34,7 +36,9 @@ test.describe('HIS-001', () => {
       await expect(page.locator('.message-item').filter({ hasText: `DM history ${mark}` }).first()).toBeVisible()
       await clickSidebarChannel(page, 'all')
       await openThreadFromMessage(page, `Channel history ${mark}`)
-      await expect(page.locator('.thread-replies').filter({ hasText: `Thread history ${mark}` })).toBeVisible()
+      await expect(
+        page.locator('.thread-panel .message-item').filter({ hasText: `Thread history ${mark}` }).first()
+      ).toBeVisible()
       const threadHistory = await historyForUser(request, username, `#all`, 50)
       expect(threadHistory.some((m) => (m.content ?? '').includes(`Channel history ${mark}`))).toBe(true)
     })

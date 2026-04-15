@@ -32,16 +32,31 @@ async function parseResponse<T>(res: Response): Promise<T> {
 }
 
 export async function get<T>(path: string, init?: RequestInit): Promise<T> {
-  return parseResponse<T>(await fetch(`${BASE}${path}`, init))
+  return parseResponse<T>(
+    await fetch(`${BASE}${path}`, {
+      cache: 'no-store',
+      ...init,
+    })
+  )
 }
 
 export async function post<T>(path: string, body?: unknown, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers)
+  let requestBody: BodyInit | undefined = init?.body ?? undefined
+
+  if (body instanceof FormData) {
+    requestBody = body
+  } else if (body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+    requestBody = JSON.stringify(body)
+  }
+
   return parseResponse<T>(
     await fetch(`${BASE}${path}`, {
       method: 'POST',
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
-      body: body ? JSON.stringify(body) : undefined,
       ...init,
+      headers: Array.from(headers.keys()).length > 0 ? headers : undefined,
+      body: requestBody,
     })
   )
 }

@@ -6,7 +6,9 @@ use axum::Json;
 use serde::Deserialize;
 use tracing::{info, warn};
 
-use super::path_params::{resolve_public_agent, PublicResourceIdPath};
+use super::path_params::{
+    resolve_public_agent, resolve_public_agent_with_env, PublicResourceIdPath,
+};
 use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
@@ -274,7 +276,7 @@ pub async fn handle_get_agent(
     State(state): State<AppState>,
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentDetailResponse> {
-    let agent = resolve_public_agent(&state, &id)?;
+    let agent = resolve_public_agent_with_env(&state, &id)?;
     Ok(Json(AgentDetailResponse {
         agent: AgentInfo::from(&agent),
         env_vars: agent

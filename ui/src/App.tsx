@@ -4,6 +4,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { useStore } from "./store/uiStore";
 import type { ToastEntry } from "./store/uiStore";
 import {
+  agentsQuery,
   whoamiQuery,
   channelsQuery,
   teamsQuery,
@@ -24,6 +25,7 @@ import { queryClient as appQueryClient } from "./lib/queryClient";
 import { MainPanel } from "./pages/MainPanel";
 import { Sidebar } from "./pages/Sidebar";
 import { ToastRegion } from "./components/chat/ToastRegion";
+import type { AgentInfo } from "./data";
 
 function GlobalToasts() {
   const toasts = useStore((s) => s.toasts);
@@ -61,6 +63,7 @@ function loadAppData(
   channelsData?: import("./data").ChannelInfo[],
 ) {
   const whoamiResult = useQuery(whoamiQuery);
+  const agentsResult = useQuery(agentsQuery(currentUser));
   const channelsResult = useQuery(channelsQuery(currentUser));
   const teamsResult = useQuery(teamsQuery(currentUser));
   const humansResult = useQuery(humansQuery(currentUser));
@@ -70,6 +73,7 @@ function loadAppData(
 
   return {
     whoamiQuery: whoamiResult,
+    agentsQuery: agentsResult,
     channelsQuery: channelsResult,
     teamsQuery: teamsResult,
     humansQuery: humansResult,
@@ -102,6 +106,30 @@ function mirrorChannels(
       ensureInboxConversations(current, allChannels),
     );
   }, [allChannels, updateInboxState]);
+}
+
+function syncSelectedAgent(
+  agents: AgentInfo[],
+  setCurrentAgent: (agent: AgentInfo | null) => void,
+): void {
+  const currentAgent = useStore((s) => s.currentAgent);
+
+  useEffect(() => {
+    if (!currentAgent) return;
+    const freshAgent =
+      agents.find(
+        (agent) =>
+          agent.id === currentAgent.id || agent.name === currentAgent.name,
+      ) ?? null;
+
+    if (!freshAgent) {
+      setCurrentAgent(null);
+      return;
+    }
+
+    if (freshAgent === currentAgent) return;
+    setCurrentAgent(freshAgent);
+  }, [agents, currentAgent, setCurrentAgent]);
 }
 
 /** Pick the first joined channel on initial load when no channel or agent is already selected. */
@@ -226,6 +254,7 @@ export default function App() {
   const setCurrentUser = useStore((s) => s.setCurrentUser);
   const resetUserSession = useStore((s) => s.resetUserSession);
   const setCurrentChannel = useStore((s) => s.setCurrentChannel);
+  const setCurrentAgent = useStore((s) => s.setCurrentAgent);
   const setShellBootstrapped = useStore((s) => s.setShellBootstrapped);
   const updateInboxState = useStore((s) => s.updateInboxState);
 
@@ -236,9 +265,10 @@ export default function App() {
     shellBootstrapped,
     prevAllChannelsRef.current,
   );
-  const { whoamiQuery, channelsQuery, inboxQuery } = queries;
+  const { whoamiQuery, agentsQuery, channelsQuery, inboxQuery } = queries;
 
   const channelsData = channelsQuery.data;
+  const agents = agentsQuery.data ?? [];
   prevAllChannelsRef.current = channelsData?.allChannels;
   const allChannels = channelsData?.allChannels ?? [];
   const channels = channelsData?.channels ?? [];
@@ -246,6 +276,7 @@ export default function App() {
   const dmChannels = channelsData?.dmChannels ?? [];
 
   syncWhoami(whoamiQuery.data, currentUser, setCurrentUser, resetUserSession);
+  syncSelectedAgent(agents, setCurrentAgent);
 
   mirrorChannels(allChannels, updateInboxState);
 

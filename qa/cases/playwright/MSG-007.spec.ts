@@ -3,7 +3,7 @@ import { createChannelApi, getWhoami } from './helpers/api'
 import { clickSidebarChannel, openThreadFromMessage, sendChatMessage, sendThreadMessage } from './helpers/ui'
 
 test.describe('MSG-007', () => {
-  test('main chat keeps optimistic rows through success and failure @case MSG-007', async ({
+  test('main chat keeps send lifecycle visible through success and failure @case MSG-007', async ({
     page,
     request,
   }) => {
@@ -41,21 +41,20 @@ test.describe('MSG-007', () => {
 
     const successToken = `optimistic-main-ok-${Date.now()}`
     await sendChatMessage(page, successToken)
+    await expect(page.locator('.message-input-send')).toHaveText('...', { timeout: 5_000 })
     const successMessage = page.locator('.message-item').filter({ hasText: successToken }).first()
     await expect(successMessage).toBeVisible()
-    await expect(successMessage.locator('.message-status-sending')).toBeVisible()
-    await expect(successMessage.locator('.message-status-sending')).toBeHidden({ timeout: 10_000 })
-    await expect(successMessage).toBeVisible()
+    await expect(page.locator('.message-input-send')).toHaveText('Send')
+    await expect(successMessage.locator('.message-status-failed')).toHaveCount(0)
 
     const failureToken = `optimistic-main-fail-${Date.now()}`
     await sendChatMessage(page, failureToken)
-    const failedMessage = page.locator('.message-item').filter({ hasText: failureToken }).first()
-    await expect(failedMessage).toBeVisible()
-    await expect(failedMessage.locator('.message-status-failed')).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('.message-item').filter({ hasText: failureToken })).toHaveCount(0)
     await expect(page.locator('.toast-card')).toContainText('Message failed to send')
+    await expect(page.locator('.message-input-textarea')).toHaveValue(failureToken)
   })
 
-  test('thread composer keeps optimistic rows through success and failure', async ({
+  test('thread composer keeps send lifecycle visible through success and failure', async ({
     page,
     request,
   }) => {
@@ -101,17 +100,16 @@ test.describe('MSG-007', () => {
 
     const successToken = `optimistic-thread-ok-${Date.now()}`
     await sendThreadMessage(page, successToken)
+    await expect(page.locator('.thread-send-btn')).toBeDisabled()
     const successMessage = page.locator('.thread-panel .message-item').filter({ hasText: successToken }).first()
     await expect(successMessage).toBeVisible()
-    await expect(successMessage.locator('.message-status-sending')).toBeVisible()
-    await expect(successMessage.locator('.message-status-sending')).toBeHidden({ timeout: 10_000 })
-    await expect(successMessage).toBeVisible()
+    await expect(page.locator('.thread-input-textarea')).toHaveValue('')
+    await expect(successMessage.locator('.message-status-failed')).toHaveCount(0)
 
     const failureToken = `optimistic-thread-fail-${Date.now()}`
     await sendThreadMessage(page, failureToken)
-    const failedMessage = page.locator('.thread-panel .message-item').filter({ hasText: failureToken }).first()
-    await expect(failedMessage).toBeVisible()
-    await expect(failedMessage.locator('.message-status-failed')).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('.thread-panel .message-item').filter({ hasText: failureToken })).toHaveCount(0)
     await expect(page.locator('.toast-card')).toContainText('Message failed to send')
+    await expect(page.locator('.thread-input-textarea')).toHaveValue(failureToken)
   })
 })

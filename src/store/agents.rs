@@ -158,15 +158,17 @@ impl Store {
         Ok(agent)
     }
 
-    pub fn get_agent_by_id(&self, id: &str) -> Result<Option<Agent>> {
+    pub fn get_agent_by_id(&self, id: &str, hydrate_env: bool) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], |row| Self::agent_from_row(row))?;
         let mut agent = rows.next().transpose()?;
-        if let Some(ref mut agent) = agent {
-            Self::hydrate_agent_env_vars_inner(&conn, agent)?;
+        if hydrate_env {
+            if let Some(ref mut agent) = agent {
+                Self::hydrate_agent_env_vars_inner(&conn, agent)?;
+            }
         }
         Ok(agent)
     }

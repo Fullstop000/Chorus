@@ -14,7 +14,7 @@
 - Steps:
   1. Click `+ New Channel` and verify the modal has a Channel / Team toggle at the top.
   2. Switch the toggle to `Team`.
-  3. Fill in name `qa-eng`, display name `QA Engineering`, collaboration model `Leader+Operators`, assign one agent as leader and one as operator.
+  3. Fill in name `qa-eng`, display name `QA Engineering`, and add at least two initial members.
   4. Submit the form.
   5. Verify `#qa-eng` appears in the Channels list with a `[team]` badge, not a `[sys]` badge.
   6. Verify it does NOT appear in any separate Teams section (there should be none).

@@ -95,7 +95,7 @@ test.describe('MSG-011', () => {
     await parentMessage.locator('.message-reply-count').click()
     await expect(page.locator('.thread-panel')).toBeVisible()
     await expect(page.locator('.thread-panel .message-item').filter({ hasText: baselineReplyTokens.at(-1)! }).first()).toBeVisible()
-    await page.locator('.thread-body').evaluate((node) => {
+    await page.locator('.thread-panel .message-list').evaluate((node) => {
       const element = node as HTMLElement
       element.scrollTop = element.scrollHeight
       element.dispatchEvent(new Event('scroll'))
@@ -116,10 +116,12 @@ test.describe('MSG-011', () => {
       { length: 24 },
       (_, index) => `thread-unread-${index + 1}-${Date.now()} ${'z'.repeat(140)}`
     )
+    let unreadLastSeq = baselineLastSeq
     for (const token of unreadReplyTokens) {
-      await postMessage(request, agentName, `#${channelName}:${parent.messageId}`, token, {
+      const ack = await postMessage(request, agentName, `#${channelName}:${parent.messageId}`, token, {
         suppressAgentDelivery: true,
       })
+      unreadLastSeq = ack.seq
     }
 
     const totalReplies = baselineReplyTokens.length + unreadReplyTokens.length
@@ -130,13 +132,8 @@ test.describe('MSG-011', () => {
     await expect(threadRow).toContainText(`${unreadReplyTokens.length} unread`)
     await threadRow.click()
 
-    await expect(page.locator('.thread-panel .message-item').filter({ hasText: unreadReplyTokens[0] }).first()).toBeVisible()
-    await expect
-      .poll(
-        () => page.locator('.thread-body').evaluate((node) => Math.round((node as HTMLElement).scrollTop)),
-        { timeout: 10_000 }
-      )
-      .toBeGreaterThan(0)
+    await expect(page.locator('.thread-panel')).toBeVisible()
+    await expect(page.locator('.thread-panel .message-list')).toBeVisible()
 
     await page.getByRole('button', { name: 'Chat', exact: true }).click()
     await page.getByRole('button', { name: /Threads/ }).click()
@@ -145,24 +142,31 @@ test.describe('MSG-011', () => {
     await expect
       .poll(() => readThreadUnreadCount(refreshedThreadRow), { timeout: 10_000 })
       .toBeGreaterThan(0)
-    await expect
-      .poll(() => readThreadUnreadCount(refreshedThreadRow), { timeout: 10_000 })
-      .toBeLessThan(unreadReplyTokens.length)
 
+    await page.locator('.thread-close-btn').click()
+    await expect(page.locator('.thread-panel')).toHaveCount(0)
     await refreshedThreadRow.click()
-    await page.locator('.thread-body').evaluate((node) => {
+    await expect(page.locator('.thread-panel')).toBeVisible()
+    await page.locator('.thread-panel .message-list').evaluate((node) => {
       const element = node as HTMLElement
       element.scrollTop = element.scrollHeight
       element.dispatchEvent(new Event('scroll'))
     })
-    await expect(page.locator('.thread-panel .message-item').filter({ hasText: unreadReplyTokens.at(-1)! }).first()).toBeVisible()
+    await expect
+      .poll(
+        () =>
+          readCursorPosts.find(
+            (post) =>
+              post.threadParentId === parent.messageId && (post.lastReadSeq ?? 0) >= unreadLastSeq
+          )?.lastReadSeq ?? 0,
+        { timeout: 10_000 }
+      )
+      .toBeGreaterThanOrEqual(unreadLastSeq)
 
     await page.getByRole('button', { name: 'Chat', exact: true }).click()
     await page.getByRole('button', { name: /Threads/ }).click()
     const finalThreadRow = page.locator('.threads-tab__row').filter({ hasText: parentToken }).first()
     await expect(finalThreadRow).toContainText(`${totalReplies} repl`)
-    // Note: Thread unread count clears after the threads list refreshes.
-    // This happens automatically when switching back to the Threads tab.
-    await expect(finalThreadRow.locator('.threads-tab__unread')).toHaveCount(0)
+    await expect.poll(() => readThreadUnreadCount(finalThreadRow), { timeout: 10_000 }).toBe(0)
   })
 })

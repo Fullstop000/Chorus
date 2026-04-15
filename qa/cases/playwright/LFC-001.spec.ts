@@ -41,7 +41,7 @@ test.describe('LFC-001', () => {
     })
 
     await test.step('Step 2–3: Transitional / idle status visible (sidebar dot or profile)', async () => {
-      await page.getByRole('button', { name: 'Profile' }).click()
+      await page.getByRole('button', { name: 'Profile', exact: true }).click()
       await expect(page.getByRole('button', { name: /\[stop::agent\]|\[start::agent\]/ })).toBeVisible({
         timeout: 60_000,
       })

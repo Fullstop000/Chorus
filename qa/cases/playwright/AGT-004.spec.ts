@@ -9,7 +9,6 @@ import {
   createAgentApi,
   getAgentDetail,
   getWhoami,
-  sendAsUser,
   historyForUser,
 } from './helpers/api'
 import { openAgentTab, clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
@@ -49,7 +48,8 @@ test.describe('AGT-004', () => {
       await row.locator('input').nth(0).fill('QA_FLAG')
       await row.locator('input').nth(1).fill('on')
       await dialog.locator('button:has-text("Save")').click()
-      await expect(page.locator('.profile-role-text')).toContainText('updated role text')
+      const roleSection = page.locator('.profile-section').filter({ hasText: '[role::brief]' }).first()
+      await expect(roleSection.locator('.profile-role-text')).toContainText('updated role text')
       await expect(page.locator('.profile-config-grid')).toContainText('high')
       await expect(page.locator('.env-var-row')).toContainText('QA_FLAG')
       const detail = await getAgentDetail(request, name)
@@ -69,7 +69,14 @@ test.describe('AGT-004', () => {
 
     await test.step('Steps 8–12: Delete with keep-workspace preserves deleted history styling', async () => {
       await clickSidebarChannel(page, 'all')
-      await sendAsUser(request, username, '#all', `@${name} reply once before delete`)
+      const seeded = await request.post(`/internal/agent/${encodeURIComponent(name)}/send`, {
+        data: {
+          target: '#all',
+          content: `agent history ${Date.now()}`,
+          suppressAgentDelivery: true,
+        },
+      })
+      expect(seeded.ok(), await seeded.text()).toBeTruthy()
       await reloadApp(page)
       await deleteAgentApi(request, name, 'preserve_workspace')
       const oldHistory = await historyForUser(request, username, '#all', 50)

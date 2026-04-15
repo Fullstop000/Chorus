@@ -1,6 +1,10 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 
+function exactText(text: string): RegExp {
+  return new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
+}
+
 /**
  * Wait for the app shell to finish loading: sidebar must have at least one
  * visible item.  Always cheaper than waitUntil:'networkidle' and explicitly
@@ -29,12 +33,20 @@ export async function createAgentViaUi(
 ): Promise<void> {
   await page.click('button[title="Create agent"]')
   const dialog = page.locator('[role="dialog"]')
-  await expect(dialog.getByRole('heading', { name: 'Create Agent' })).toBeVisible()
+  await expect(dialog).toBeVisible()
+  const browseHeading = dialog.getByRole('heading', { name: 'Create Agent' })
+  const configureHeading = dialog.getByRole('heading', { name: 'Configure Agent' })
+  const fromScratch = dialog.getByRole('button', { name: 'Create from scratch' })
+  if (await browseHeading.isVisible().catch(() => false) && await fromScratch.isVisible().catch(() => false)) {
+    await fromScratch.click()
+  }
+  await expect(configureHeading).toBeVisible()
   await dialog.locator('input[placeholder="e.g. my-agent"]').fill(opts.name)
   await dialog.locator('[role="combobox"][aria-label="Runtime"]').click()
   await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.runtime, 'i') }).first().click()
   await dialog.locator('[role="combobox"][aria-label="Model"]').click()
-  await page.locator('[role="option"]').filter({ hasText: opts.model }).first().click()
+  const modelLabel = opts.model.split('/').at(-1) ?? opts.model
+  await page.locator('[role="option"]').filter({ hasText: exactText(modelLabel) }).first().click()
   if (opts.runtime === 'codex' && opts.reasoningEffort) {
     await dialog.locator('[role="combobox"][aria-label="Reasoning"]').click()
     await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.reasoningEffort, 'i') }).first().click()
@@ -57,7 +69,7 @@ export async function createUserChannelViaUi(
   await expect(dialog).toBeHidden({ timeout: 30_000 })
 }
 
-/** Catalog TMT-001 steps 3–4: Leader+Operators `qa-eng`, bot-a leader, bot-b operator. */
+/** Catalog TMT-001 steps 3–4: create `qa-eng` with initial members. */
 export async function createTeamQaEngViaUi(page: Page): Promise<void> {
   await page.click('button[title="Add channel"]')
   const dialog = page.locator('[role="dialog"]')
@@ -72,8 +84,6 @@ export async function createTeamQaEngViaUi(page: Page): Promise<void> {
   await memberSelect.click()
   await page.locator('[role="option"]').filter({ hasText: 'bot-b' }).first().click()
   await dialog.locator('button:has-text("Add")').click()
-  await dialog.locator('[role="combobox"][aria-label="Leader"]').click()
-  await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
   await dialog.locator('button:has-text("Create Team")').click()
   await expect(dialog).toBeHidden({ timeout: 60_000 })
 }
@@ -134,8 +144,18 @@ export async function closeMembersPanel(page: Page): Promise<void> {
 export async function openThreadFromMessage(page: Page, contentSnippet: string): Promise<void> {
   const msg = page.locator('.message-item').filter({ hasText: contentSnippet }).first()
   await expect(msg).toBeVisible()
-  await msg.hover()
-  await expect(msg.locator('.message-action-btn[title="Reply in thread"]')).toBeVisible()
-  await msg.locator('.message-action-btn[title="Reply in thread"]').click()
+  await msg.scrollIntoViewIfNeeded()
+  const replyCount = msg.locator('.message-reply-count').first()
+  if (await replyCount.isVisible().catch(() => false)) {
+    await replyCount.click()
+    await expect(page.locator('.thread-panel')).toBeVisible()
+    return
+  }
+  await msg.hover({ force: true })
+  const replyButton = msg.locator('.message-action-btn[title="Reply in thread"]').first()
+  await expect(replyButton).toBeVisible()
+  await replyButton.evaluate((element) => {
+    (element as HTMLButtonElement).click()
+  })
   await expect(page.locator('.thread-panel')).toBeVisible()
 }

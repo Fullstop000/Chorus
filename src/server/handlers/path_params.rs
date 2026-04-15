@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
-use super::{app_err, AppState, ErrorResponse};
+use super::{app_err, internal_err, AppState, ErrorResponse};
 use crate::store::agents::Agent;
 
 #[derive(Debug, Deserialize)]
@@ -22,7 +22,18 @@ pub fn resolve_public_agent(
 ) -> Result<Agent, (StatusCode, Json<ErrorResponse>)> {
     state
         .store
-        .get_agent_by_id(id)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .get_agent_by_id(id, false)
+        .map_err(internal_err)?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))
+}
+
+pub fn resolve_public_agent_with_env(
+    state: &AppState,
+    id: &str,
+) -> Result<Agent, (StatusCode, Json<ErrorResponse>)> {
+    state
+        .store
+        .get_agent_by_id(id, true)
+        .map_err(internal_err)?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found"))
 }

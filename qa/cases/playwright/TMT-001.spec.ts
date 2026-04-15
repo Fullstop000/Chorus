@@ -34,7 +34,7 @@ async function expectSingleRightAlignedTeamRow(page: Page) {
  * Steps:
  * 1. Click `+ New Channel` and verify the modal has a Channel / Team toggle at the top.
  * 2. Switch the toggle to `Team`.
- * 3. Fill in name `qa-eng`, display name `QA Engineering`, model Leader+Operators, leader + operator agents.
+ * 3. Fill in name `qa-eng`, display name `QA Engineering`, and initial members.
  * 4. Submit the form.
  * 5. Verify `#qa-eng` appears with `[team]` badge, not `[sys]`.
  * 6. Verify no separate Teams-only section (sidebar structure).
