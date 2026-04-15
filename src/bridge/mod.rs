@@ -7,6 +7,7 @@ use std::time::Duration;
 
 pub mod backend;
 mod format;
+pub mod session;
 mod types;
 
 use format::{format_attachments, format_target, to_local_time};
