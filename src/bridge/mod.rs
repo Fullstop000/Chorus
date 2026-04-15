@@ -5,6 +5,7 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
 use serde_json::Value;
 use std::time::Duration;
 
+pub mod backend;
 mod format;
 mod types;
 
