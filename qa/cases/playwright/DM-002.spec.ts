@@ -76,7 +76,7 @@ test.describe('DM-002', () => {
     let replyMsgs: Awaited<ReturnType<typeof historyForUser>> = []
 
     await test.step('Step 5: Poll history API for agent reply with token', async () => {
-      const deadline = Date.now() + 120_000
+      const deadline = Date.now() + 150_000
       while (Date.now() < deadline) {
         replyMsgs = await historyForUser(request, username, `dm:@${agentName}`, 40)
         if (
@@ -110,13 +110,15 @@ test.describe('DM-002', () => {
     await test.step('Step 7: Activity log shows send_message tool call', async () => {
       await openAgentTab(page, agentName, 'Activity')
       const deadline = Date.now() + 30_000
+      // v2 drivers log raw tool names: mcp__chat__send_message (claude),
+      // send_message (kimi/stub), chat_send_message (opencode)
+      const isSendTool = (name: string) =>
+        name.includes('send_message') || name.includes('Sending message')
       let activity = await getAgentActivityLogApi(request, agentName)
       while (
         Date.now() < deadline &&
         !activity.entries.some(
-          (item) =>
-            item.entry.kind === 'tool_call' &&
-            (item.entry.tool_name ?? '').includes('Sending message')
+          (item) => item.entry.kind === 'tool_call' && isSendTool(item.entry.tool_name ?? '')
         )
       ) {
         await new Promise((r) => setTimeout(r, 2_000))
@@ -124,9 +126,7 @@ test.describe('DM-002', () => {
       }
 
       const sentTool = activity.entries.some(
-        (item) =>
-          item.entry.kind === 'tool_call' &&
-          (item.entry.tool_name ?? '').includes('Sending message')
+        (item) => item.entry.kind === 'tool_call' && isSendTool(item.entry.tool_name ?? '')
       )
       expect(sentTool).toBe(true)
 

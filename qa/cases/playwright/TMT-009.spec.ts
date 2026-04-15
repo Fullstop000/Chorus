@@ -13,7 +13,7 @@ import { clickSidebarChannel, openThreadFromMessage, sendChatMessage, sendThread
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 const runtimeMatrix = [
   { agentName: 'bot-a', runtimeLabel: 'claude', channelName: 'qa-thread-wake-claude' },
-  { agentName: 'bot-c', runtimeLabel: 'codex', channelName: 'qa-thread-wake-codex' },
+  { agentName: 'bot-c', runtimeLabel: 'opencode', channelName: 'qa-thread-wake-opencode' },
 ]
 
 /**

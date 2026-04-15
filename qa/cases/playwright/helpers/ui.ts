@@ -119,7 +119,8 @@ export async function openAgentTab(
 export async function sendChatMessage(page: Page, text: string): Promise<void> {
   const ta = page.locator('.message-input-textarea')
   await ta.fill(text)
-  await page.locator('.message-input-send').click()
+  // Use keyboard Enter to bypass any unread-badge overlay on the send button
+  await ta.press('Enter')
 }
 
 export async function sendThreadMessage(page: Page, text: string): Promise<void> {
