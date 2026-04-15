@@ -190,6 +190,21 @@ Commands are documented in `docs/DEV.md` and the top of this file. Key non-obvio
 - `cd ui && npm run test` (vitest) has 2 pre-existing failures in `Telescope.test.tsx` — the shimmer component wraps each character in individual `<span>` elements, so `toContain("reading…")` no longer matches the innerHTML. These are not caused by environment issues.
 - Pre-commit hooks (`.hooks/pre-commit`) run `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings`.
 
+### Agent runtimes
+
+All four runtimes and their ACP adapters are pre-installed in the snapshot:
+
+| Runtime | Binary | Install | ACP adapter |
+|---------|--------|---------|-------------|
+| Claude | `claude` | `npm i -g @anthropic-ai/claude-code` | `claude-agent-acp` (`npm i -g @zed-industries/claude-agent-acp`) |
+| Codex | `codex` | `npm i -g @openai/codex` | `codex-acp` (`npm i -g @zed-industries/codex-acp`) |
+| Kimi | `kimi` | `uv tool install --python 3.13 kimi-cli` (requires `uv` at `~/.local/bin/uv`) | Native (`kimi acp` subcommand) |
+| OpenCode | `opencode` | `npm i -g opencode-ai` | Native (`opencode acp` subcommand) |
+
+- `uv` is installed at `~/.local/bin` — ensure `$HOME/.local/bin` is on PATH for `kimi` to resolve.
+- Runtimes require their own API keys/auth (not part of Chorus itself). Check `GET /api/runtimes` for auth status.
+- Chorus detects all four in ACP driver mode when the adapter binary (or native binary) is on PATH.
+
 ### Lint
 
 - `cargo fmt --check` — Rust formatting
