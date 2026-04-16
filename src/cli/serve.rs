@@ -4,16 +4,29 @@
 //! [`AgentManager`] (which auto-restarts previously-active agents), loads
 //! agent templates, and starts the Axum HTTP server on `0.0.0.0:<port>`.
 //! Shuts down cleanly on Ctrl-C.
+//!
+//! When `shared_bridge` is `true`, also starts the shared MCP HTTP bridge on
+//! `127.0.0.1:<bridge_port>` in the same process.  Both the main server and
+//! the bridge share a single Ctrl-C handler via a `CancellationToken` — when
+//! the user hits Ctrl-C the token is cancelled and both listeners drain
+//! gracefully.
 
 use std::sync::Arc;
 
 use chorus::agent::manager::AgentManager;
 use chorus::store::agents::AgentStatus;
 use chorus::store::Store;
+use tokio_util::sync::CancellationToken;
 
 use super::DATA_SUBDIR;
 
-pub async fn run(port: u16, data_dir_str: String, template_dir_raw: String) -> anyhow::Result<()> {
+pub async fn run(
+    port: u16,
+    data_dir_str: String,
+    template_dir_raw: String,
+    shared_bridge: bool,
+    bridge_port: u16,
+) -> anyhow::Result<()> {
     let data_dir = std::path::PathBuf::from(&data_dir_str);
     let data_subdir = data_dir.join(DATA_SUBDIR);
     let logs_dir = data_dir.join("logs");
@@ -108,10 +121,74 @@ pub async fn run(port: u16, data_dir_str: String, template_dir_raw: String) -> a
     tracing::info!("Use `chorus send '#all' 'hello'` to send messages");
     tracing::info!("Use `chorus agent create <name>` to create an agent");
 
-    // Graceful shutdown on Ctrl+C
-    let shutdown = async {
+    // Shared cancellation token — cancelled on Ctrl-C and used to shut down
+    // both the main server and the optional bridge together.
+    let shutdown_token = CancellationToken::new();
+
+    // Start the shared bridge in the same process when requested.
+    if shared_bridge {
+        let bridge_listen = format!("127.0.0.1:{bridge_port}");
+        match tokio::net::TcpListener::bind(&bridge_listen).await {
+            Ok(bridge_listener) => {
+                let local_addr = bridge_listener.local_addr().expect("bridge listener has a local addr");
+                // Phase 1 bridge only supports loopback — guard in case the
+                // resolved address is somehow non-loopback (shouldn't happen
+                // with 127.0.0.1, but be defensive).
+                if !local_addr.ip().is_loopback() {
+                    tracing::warn!(
+                        addr = %local_addr,
+                        "shared bridge: refusing non-loopback bind; bridge will not start"
+                    );
+                } else {
+                    let actual_port = local_addr.port();
+
+                    // Write discovery info so drivers can find the bridge.
+                    if let Err(e) = chorus::bridge::discovery::write_bridge_info(
+                        &chorus::bridge::discovery::BridgeInfo {
+                            port: actual_port,
+                            pid: std::process::id(),
+                            started_at: chrono::Utc::now().to_rfc3339(),
+                        },
+                    ) {
+                        tracing::warn!(err = %e, "shared bridge: failed to write discovery file; bridge will still run");
+                    }
+
+                    tracing::info!(port = actual_port, "shared bridge listening");
+
+                    let (bridge_app, _bridge_ct) =
+                        chorus::bridge::serve::build_bridge_router(&server_url);
+                    let bridge_shutdown = shutdown_token.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = axum::serve(bridge_listener, bridge_app)
+                            .with_graceful_shutdown(async move { bridge_shutdown.cancelled().await })
+                            .await
+                        {
+                            tracing::error!(err = %e, "shared bridge exited with error");
+                        }
+                        // Clean up discovery file when bridge shuts down.
+                        chorus::bridge::discovery::remove_bridge_info();
+                        tracing::info!("shared bridge stopped");
+                    });
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    addr = %bridge_listen,
+                    err = %e,
+                    "shared bridge: failed to bind port; bridge will not start — \
+                     agents will fall back to per-agent stdio bridge"
+                );
+            }
+        }
+    }
+
+    // Graceful shutdown on Ctrl+C — cancel the shared token so both the main
+    // server and any co-hosted bridge drain together.
+    let shutdown_token_ctrlc = shutdown_token.clone();
+    let shutdown = async move {
         tokio::signal::ctrl_c().await.ok();
         tracing::info!("\nShutting down...");
+        shutdown_token_ctrlc.cancel();
     };
     axum::serve(listener, router)
         .with_graceful_shutdown(shutdown)

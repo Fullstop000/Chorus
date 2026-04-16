@@ -130,6 +130,14 @@ enum Commands {
         data_dir: Option<String>,
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
+        /// Also start the shared MCP bridge on 127.0.0.1:<bridge_port> in the
+        /// same process. Agents started while this is running will auto-connect
+        /// via HTTP MCP instead of spawning per-agent stdio bridges.
+        #[arg(long)]
+        shared_bridge: bool,
+        /// Port for the shared bridge (only used when --shared-bridge is set).
+        #[arg(long, default_value = "4321")]
+        bridge_port: u16,
     },
 }
 
@@ -241,7 +249,7 @@ pub async fn run() -> anyhow::Result<()> {
         None => {
             let data_dir_str = default_data_dir();
             let template_dir_str = resolve_template_dir(&data_dir_str, None);
-            serve::run(3001, data_dir_str, template_dir_str).await
+            serve::run(3001, data_dir_str, template_dir_str, false, 4321).await
         }
 
         Some(Commands::Bridge {
@@ -285,6 +293,12 @@ pub async fn run() -> anyhow::Result<()> {
             port,
             data_dir,
             template_dir,
-        }) => start::run(port, data_dir, true, template_dir).await,
+            shared_bridge,
+            bridge_port,
+        }) => {
+            let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
+            let template_dir_str = resolve_template_dir(&data_dir_str, template_dir);
+            serve::run(port, data_dir_str, template_dir_str, shared_bridge, bridge_port).await
+        }
     }
 }
