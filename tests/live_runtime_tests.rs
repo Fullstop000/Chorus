@@ -195,6 +195,152 @@ fn binary_on_path(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Return the path of the newest `.log` file in `dir`, or `None` if the
+/// directory does not exist or contains no log files.
+fn newest_log_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && e.path().extension().map_or(false, |x| x == "log")
+        })
+        .max_by_key(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        })
+        .map(|e| e.path())
+}
+
+/// Return the well-known log path for a given runtime, or `None` if the path
+/// does not exist on this machine.
+fn runtime_log_path(runtime_name: &str) -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    match runtime_name {
+        "claude" => {
+            // Claude Code log directory — newest file.
+            let log_dir = home.join(".claude").join("logs");
+            newest_log_in(&log_dir)
+        }
+        "codex" => {
+            // Codex TUI log (may or may not apply to app-server mode).
+            let path = home.join(".codex").join("log").join("codex-tui.log");
+            if path.exists() { Some(path) } else { None }
+        }
+        "kimi" => {
+            // Kimi writes to ~/.kimi/logs/kimi.log — the most common signal source.
+            let path = home.join(".kimi").join("logs").join("kimi.log");
+            if path.exists() { Some(path) } else { None }
+        }
+        "opencode" => {
+            let log_dir = home.join(".opencode").join("logs");
+            newest_log_in(&log_dir)
+        }
+        _ => None,
+    }
+}
+
+/// Dump all available diagnostic signals before an `Err` is returned from a
+/// live runtime test.  Returns a `String` suitable for appending to the
+/// anyhow error message.
+///
+/// Collects (best-effort, never panics):
+/// 1. Last 200 lines of the runtime's log file (if path provided and readable)
+/// 2. Contents of any MCP config files the driver wrote in `working_dir`
+/// 3. Observable state (channel history, captured by caller)
+/// 4. Hint for surfacing runtime stderr via RUST_LOG on re-run
+///
+/// Note on runtime stderr: the drivers spawn async tasks that consume stderr
+/// and re-emit it via `tracing::warn!`.  Re-capturing it here would require
+/// invasive driver changes.  The RUST_LOG hint below is the lowest-friction
+/// workaround — it surfaces the stderr on the next explicit re-run.
+fn collect_failure_diagnostics(
+    runtime_name: &str,
+    runtime_log_path: Option<&std::path::Path>,
+    working_dir: &std::path::Path,
+    channel_history: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("\n\n=== FAILURE DIAGNOSTICS ===\n");
+
+    // 1. Runtime log file (last 200 lines).
+    out.push_str(&format!("\n--- {} log file ---\n", runtime_name));
+    if let Some(log_path) = runtime_log_path {
+        out.push_str(&format!("Path: {}\n", log_path.display()));
+        match std::fs::read_to_string(log_path) {
+            Ok(contents) => {
+                let lines: Vec<&str> = contents.lines().collect();
+                let start = lines.len().saturating_sub(200);
+                for line in &lines[start..] {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            Err(e) => {
+                out.push_str(&format!("(not readable: {})\n", e));
+            }
+        }
+    } else {
+        out.push_str("(no log path documented for this runtime)\n");
+    }
+
+    // 2. MCP config files in working_dir.
+    out.push_str(&format!(
+        "\n--- MCP config files in {} ---\n",
+        working_dir.display()
+    ));
+    if let Ok(entries) = std::fs::read_dir(working_dir) {
+        let mut found = false;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // MCP config files follow known naming patterns used by the drivers.
+            if name_str.contains("mcp") || name_str.ends_with(".json") {
+                found = true;
+                out.push_str(&format!("\n  {}:\n", entry.path().display()));
+                match std::fs::read_to_string(entry.path()) {
+                    Ok(contents) => {
+                        for line in contents.lines() {
+                            out.push_str("    ");
+                            out.push_str(line);
+                            out.push('\n');
+                        }
+                    }
+                    Err(e) => {
+                        out.push_str(&format!("    (not readable: {})\n", e));
+                    }
+                }
+            }
+        }
+        if !found {
+            out.push_str("(no MCP config files found)\n");
+        }
+    } else {
+        out.push_str("(working dir not readable)\n");
+    }
+
+    // 3. Observable channel state.
+    out.push_str("\n--- Channel state at failure ---\n");
+    out.push_str(channel_history);
+
+    // 4. Hint for surfacing runtime stderr on re-run.
+    out.push_str("\n\n--- Runtime stderr ---\n");
+    out.push_str(
+        "Not captured directly by this helper (captured by driver's internal tokio task \
+        and emitted via tracing::warn!). To see runtime stderr, re-run with:\n",
+    );
+    out.push_str(&format!(
+        "  RUST_LOG=chorus::agent::drivers::v2::{}=debug \
+        cargo test --test live_runtime_tests {}_agent_replies_through_shared_bridge \
+        -- --ignored --nocapture\n",
+        runtime_name, runtime_name
+    ));
+
+    out.push_str("\n=== END DIAGNOSTICS ===\n");
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -312,15 +458,23 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     bridge_ct.cancel();
 
     if !found {
-        // Print the final history so the failure message is actionable.
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics(
+            "opencode",
+            runtime_log_path("opencode").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
+            diagnostics
         );
     }
 
@@ -436,13 +590,22 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     if !found {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics(
+            "claude",
+            runtime_log_path("claude").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
+            diagnostics
         );
     }
 
@@ -564,13 +727,22 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     if !found {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics(
+            "codex",
+            runtime_log_path("codex").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
+            diagnostics
         );
     }
 
@@ -690,13 +862,22 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     if !found {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics(
+            "kimi",
+            runtime_log_path("kimi").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
+            diagnostics
         );
     }
 
