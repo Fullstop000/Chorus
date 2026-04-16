@@ -139,5 +139,8 @@ pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::R
         .with_graceful_shutdown(async move { ct.cancelled().await })
         .await?;
 
+    // Clean up discovery file on shutdown
+    crate::bridge::discovery::remove_bridge_info();
+
     Ok(())
 }

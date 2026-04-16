@@ -53,6 +53,16 @@ pub fn read_bridge_info_from(path: &std::path::Path) -> Option<BridgeInfo> {
     Some(info)
 }
 
+/// Remove the discovery file (called on graceful shutdown).
+pub fn remove_bridge_info() {
+    let _ = std::fs::remove_file(default_discovery_path());
+}
+
+/// Remove a specific discovery file.
+pub fn remove_bridge_info_from(path: &std::path::Path) {
+    let _ = std::fs::remove_file(path);
+}
+
 /// Check if a PID is alive by sending signal 0.
 ///
 /// On Unix, `kill(pid, 0)` does not deliver any signal but performs the
@@ -167,5 +177,18 @@ mod tests {
         assert!(path.exists(), "file should have been created");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn remove_cleans_up_file() {
+        // Write to temp path, verify file exists, remove, verify gone.
+        let path = tmp_path("remove_test.json");
+        let info = sample_info();
+
+        write_bridge_info_to(&path, &info).expect("write should succeed");
+        assert!(path.exists(), "file should exist after write");
+
+        remove_bridge_info_from(&path);
+        assert!(!path.exists(), "file should be removed after cleanup");
     }
 }
