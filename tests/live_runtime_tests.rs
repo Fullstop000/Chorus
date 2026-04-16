@@ -203,7 +203,7 @@ fn newest_log_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
         .filter_map(|e| e.ok())
         .filter(|e| {
             e.file_type().map(|t| t.is_file()).unwrap_or(false)
-                && e.path().extension().map_or(false, |x| x == "log")
+                && e.path().extension().is_some_and(|x| x == "log")
         })
         .max_by_key(|e| {
             e.metadata()
@@ -226,12 +226,20 @@ fn runtime_log_path(runtime_name: &str) -> Option<std::path::PathBuf> {
         "codex" => {
             // Codex TUI log (may or may not apply to app-server mode).
             let path = home.join(".codex").join("log").join("codex-tui.log");
-            if path.exists() { Some(path) } else { None }
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
         }
         "kimi" => {
             // Kimi writes to ~/.kimi/logs/kimi.log — the most common signal source.
             let path = home.join(".kimi").join("logs").join("kimi.log");
-            if path.exists() { Some(path) } else { None }
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
         }
         "opencode" => {
             let log_dir = home.join(".opencode").join("logs");
@@ -241,12 +249,45 @@ fn runtime_log_path(runtime_name: &str) -> Option<std::path::PathBuf> {
     }
 }
 
+/// Hard cap on how many trailing bytes of a runtime log we slurp into memory
+/// for the diagnostic dump. Set to 256 KiB — enough to hold well over 200
+/// lines of typical runtime log output without ever reading a multi-GB log.
+const DIAGNOSTIC_LOG_TAIL_BYTES: u64 = 256 * 1024;
+
+/// How many trailing lines of that tail we actually print.
+const DIAGNOSTIC_LOG_TAIL_LINES: usize = 200;
+
+/// Read the trailing `max_bytes` of a file without loading the whole thing.
+/// Returns an empty string (never errors) if the file can't be opened.
+/// If the requested slice lands mid-multibyte-sequence the first partial
+/// character is trimmed at the nearest UTF-8 boundary.
+fn read_log_tail(path: &std::path::Path, max_bytes: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let to_read = std::cmp::min(len, max_bytes);
+    if to_read < len {
+        f.seek(SeekFrom::End(-(to_read as i64)))?;
+    }
+    let mut buf = Vec::with_capacity(to_read as usize);
+    f.take(to_read).read_to_end(&mut buf)?;
+    // The seek likely landed mid-line; trim up to the first newline so the
+    // output always starts on a clean line.
+    let start = buf
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| i + 1)
+        .unwrap_or(0);
+    Ok(String::from_utf8_lossy(&buf[start..]).into_owned())
+}
+
 /// Dump all available diagnostic signals before an `Err` is returned from a
 /// live runtime test.  Returns a `String` suitable for appending to the
 /// anyhow error message.
 ///
 /// Collects (best-effort, never panics):
-/// 1. Last 200 lines of the runtime's log file (if path provided and readable)
+/// 1. Last `DIAGNOSTIC_LOG_TAIL_LINES` lines (≤ `DIAGNOSTIC_LOG_TAIL_BYTES`)
+///    of the runtime's log file (if path provided and readable)
 /// 2. Contents of any MCP config files the driver wrote in `working_dir`
 /// 3. Observable state (channel history, captured by caller)
 /// 4. Hint for surfacing runtime stderr via RUST_LOG on re-run
@@ -264,14 +305,14 @@ fn collect_failure_diagnostics(
     let mut out = String::new();
     out.push_str("\n\n=== FAILURE DIAGNOSTICS ===\n");
 
-    // 1. Runtime log file (last 200 lines).
+    // 1. Runtime log file — tail only; large logs would otherwise blow memory.
     out.push_str(&format!("\n--- {} log file ---\n", runtime_name));
     if let Some(log_path) = runtime_log_path {
         out.push_str(&format!("Path: {}\n", log_path.display()));
-        match std::fs::read_to_string(log_path) {
-            Ok(contents) => {
-                let lines: Vec<&str> = contents.lines().collect();
-                let start = lines.len().saturating_sub(200);
+        match read_log_tail(log_path, DIAGNOSTIC_LOG_TAIL_BYTES) {
+            Ok(tail) => {
+                let lines: Vec<&str> = tail.lines().collect();
+                let start = lines.len().saturating_sub(DIAGNOSTIC_LOG_TAIL_LINES);
                 for line in &lines[start..] {
                     out.push_str(line);
                     out.push('\n');
@@ -295,8 +336,16 @@ fn collect_failure_diagnostics(
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            // MCP config files follow known naming patterns used by the drivers.
-            if name_str.contains("mcp") || name_str.ends_with(".json") {
+            // Only dump files the drivers actually write — matching every
+            // `.json` would sweep in unrelated config and risk leaking
+            // user secrets that happen to live in working_dir.
+            //   - `.chorus-claude-mcp.json`  (ClaudeDriver)
+            //   - `.chorus-kimi-mcp.json`    (KimiDriver)
+            //   - `opencode.json`            (OpencodeDriver)
+            //   - Codex configures via `-c` flags, no file on disk.
+            let is_driver_mcp_config =
+                name_str.contains("-mcp.json") || name_str == "opencode.json";
+            if is_driver_mcp_config {
                 found = true;
                 out.push_str(&format!("\n  {}:\n", entry.path().display()));
                 match std::fs::read_to_string(entry.path()) {

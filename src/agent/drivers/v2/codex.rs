@@ -36,7 +36,11 @@ use super::*;
 fn build_codex_mcp_args(bridge_endpoint: &str, token: &str) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
-    let url = format!("{}/token/{}/mcp", bridge_endpoint.trim_end_matches('/'), token);
+    let url = format!(
+        "{}/token/{}/mcp",
+        bridge_endpoint.trim_end_matches('/'),
+        token
+    );
     let url_json = serde_json::to_string(&url).expect("url serialization cannot fail");
     args.push("-c".into());
     args.push(format!("mcp_servers.chat.url={url_json}"));

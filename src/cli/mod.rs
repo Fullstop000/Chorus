@@ -128,6 +128,11 @@ enum Commands {
         /// Port for the shared MCP bridge, started in-process by `chorus serve`.
         #[arg(long, default_value = "4321")]
         bridge_port: u16,
+        /// Deprecated: the shared bridge is now always started by
+        /// `chorus serve` (there is no longer an opt-in). Accepted so existing
+        /// scripts continue to work; emits a warning and is otherwise ignored.
+        #[arg(long, hide = true)]
+        shared_bridge: bool,
     },
 }
 
@@ -279,7 +284,14 @@ pub async fn run() -> anyhow::Result<()> {
             data_dir,
             template_dir,
             bridge_port,
+            shared_bridge,
         }) => {
+            if shared_bridge {
+                eprintln!(
+                    "warning: --shared-bridge is deprecated and has no effect. The \
+                     shared MCP bridge is always started by `chorus serve`."
+                );
+            }
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
             let template_dir_str = resolve_template_dir(&data_dir_str, template_dir);
             serve::run(port, data_dir_str, template_dir_str, bridge_port).await

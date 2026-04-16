@@ -76,20 +76,41 @@ pub async fn run(
     let actual_bridge_port = bridge_local_addr.port();
 
     // Write discovery info so drivers can find the bridge.
-    if let Err(e) = chorus::bridge::discovery::write_bridge_info(
-        &chorus::bridge::discovery::BridgeInfo {
-            port: actual_bridge_port,
-            pid: std::process::id(),
-            started_at: chrono::Utc::now().to_rfc3339(),
-        },
-    ) {
-        tracing::warn!(err = %e, "shared bridge: failed to write discovery file; bridge will still run");
+    // `AlreadyExists` means another live `chorus serve` owns the discovery
+    // file — abort hard so we don't silently steal its agents' routing.
+    // Other errors (permissions, disk) warn-and-continue so the bridge still
+    // runs for same-process agents.
+    match chorus::bridge::discovery::write_bridge_info(&chorus::bridge::discovery::BridgeInfo {
+        port: actual_bridge_port,
+        pid: std::process::id(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+    }) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            anyhow::bail!(
+                "shared bridge: {e}. Stop the other chorus server (or wait for it to exit) \
+                 before starting a new one."
+            );
+        }
+        Err(e) => {
+            tracing::warn!(err = %e, "shared bridge: failed to write discovery file; bridge will still run");
+        }
     }
 
     tracing::info!(port = actual_bridge_port, "shared bridge listening");
 
-    let (bridge_app, _bridge_ct) = chorus::bridge::serve::build_bridge_router(&server_url);
+    let (bridge_app, bridge_ct) = chorus::bridge::serve::build_bridge_router(&server_url);
+    // Cascade the shared shutdown token into the bridge's internal CT so any
+    // in-flight MCP sessions (child tokens spawned per request) drain when
+    // Ctrl-C fires. Without this, axum stops accepting connections but active
+    // sessions hang until their own timeouts.
     let bridge_shutdown = shutdown_token.clone();
+    let bridge_cascade_trigger = shutdown_token.clone();
+    let bridge_ct_for_cascade = bridge_ct.clone();
+    tokio::spawn(async move {
+        bridge_cascade_trigger.cancelled().await;
+        bridge_ct_for_cascade.cancel();
+    });
     tokio::spawn(async move {
         if let Err(e) = axum::serve(bridge_listener, bridge_app)
             .with_graceful_shutdown(async move { bridge_shutdown.cancelled().await })

@@ -28,7 +28,11 @@ use super::*;
 /// connect. Verified against the format emitted by `kimi mcp add --transport
 /// http`.
 fn build_mcp_config_file(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = format!("{}/token/{}/mcp", bridge_endpoint.trim_end_matches('/'), token);
+    let url = format!(
+        "{}/token/{}/mcp",
+        bridge_endpoint.trim_end_matches('/'),
+        token
+    );
     serde_json::json!({
         "mcpServers": {
             "chat": {
@@ -49,7 +53,11 @@ fn build_mcp_config_file(bridge_endpoint: &str, token: &str) -> serde_json::Valu
 /// See <https://agentclientprotocol.com/protocol/session-setup> — sending the
 /// wrong shape produces ACP "Invalid params" errors.
 fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = format!("{}/token/{}/mcp", bridge_endpoint.trim_end_matches('/'), token);
+    let url = format!(
+        "{}/token/{}/mcp",
+        bridge_endpoint.trim_end_matches('/'),
+        token
+    );
     serde_json::json!([{
         "type": "http",
         "name": "chat",
