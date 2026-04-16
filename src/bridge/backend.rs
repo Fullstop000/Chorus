@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use std::time::Duration;
 
+use super::error::BridgeError;
 use super::format::{format_attachments, format_target, to_local_time};
 
 // ---------------------------------------------------------------------------
@@ -14,11 +15,14 @@ use super::format::{format_attachments, format_target, to_local_time};
 /// `agent_key` is the first parameter on every method because the backend
 /// is shared across agents — the caller specifies which agent is acting.
 ///
-/// ## Known simplifications (Phase 1)
+/// ## Error model
 ///
-/// - **Error type:** Methods return `rmcp::ErrorData` directly. A future iteration
-///   should return `BridgeError` (from `crate::bridge::error`) and convert to
-///   `rmcp::ErrorData` at the MCP handler boundary.
+/// Methods return [`BridgeError`] (structured CHORUS-XXXX codes). `ChatBridge`
+/// converts to `rmcp::ErrorData` at the MCP handler boundary via the existing
+/// `From<BridgeError>` impl.
+///
+/// ## Known simplifications
+///
 /// - **Return type:** Most methods return pre-formatted `String`. A future iteration
 ///   will introduce typed response structs to decouple backends from MCP presentation.
 #[async_trait]
@@ -30,7 +34,7 @@ pub trait Backend: Send + Sync {
         target: &str,
         content: &str,
         attachment_ids: Option<Vec<String>>,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// Receive new messages for this agent (blocking or non-blocking).
     async fn receive_messages(
@@ -38,10 +42,10 @@ pub trait Backend: Send + Sync {
         agent_key: &str,
         block: bool,
         timeout_ms: u64,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// Check for new messages (non-blocking convenience).
-    async fn check_messages(&self, agent_key: &str) -> Result<String, rmcp::ErrorData>;
+    async fn check_messages(&self, agent_key: &str) -> Result<String, BridgeError>;
 
     /// Read message history from a channel.
     async fn read_history(
@@ -51,13 +55,13 @@ pub trait Backend: Send + Sync {
         limit: Option<u32>,
         before: Option<i64>,
         after: Option<i64>,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// List available channels.
-    async fn list_channels(&self, agent_key: &str) -> Result<String, rmcp::ErrorData>;
+    async fn list_channels(&self, agent_key: &str) -> Result<String, BridgeError>;
 
     /// Get server info.
-    async fn server_info(&self, agent_key: &str) -> Result<Value, rmcp::ErrorData>;
+    async fn server_info(&self, agent_key: &str) -> Result<Value, BridgeError>;
 
     /// List tasks in a channel.
     async fn list_tasks(
@@ -65,7 +69,7 @@ pub trait Backend: Send + Sync {
         agent_key: &str,
         channel: &str,
         status: Option<String>,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// Create tasks in a channel.
     async fn create_tasks(
@@ -73,7 +77,7 @@ pub trait Backend: Send + Sync {
         agent_key: &str,
         channel: &str,
         tasks: Vec<String>,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// Claim tasks.
     async fn claim_tasks(
@@ -81,7 +85,7 @@ pub trait Backend: Send + Sync {
         agent_key: &str,
         channel: &str,
         task_numbers: Vec<i64>,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// Unclaim a task.
     async fn unclaim_task(
@@ -89,7 +93,7 @@ pub trait Backend: Send + Sync {
         agent_key: &str,
         channel: &str,
         task_number: i64,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// Update task status.
     async fn update_task_status(
@@ -98,7 +102,7 @@ pub trait Backend: Send + Sync {
         channel: &str,
         task_number: i64,
         status: &str,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// Upload a file.
     async fn upload_file(
@@ -106,14 +110,14 @@ pub trait Backend: Send + Sync {
         agent_key: &str,
         file_path: &str,
         channel: &str,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 
     /// View/download a file attachment.
     async fn view_file(
         &self,
         agent_key: &str,
         attachment_id: &str,
-    ) -> Result<String, rmcp::ErrorData>;
+    ) -> Result<String, BridgeError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,33 +161,41 @@ impl Backend for ChorusBackend {
         target: &str,
         content: &str,
         attachment_ids: Option<Vec<String>>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
+        if target.is_empty() {
+            return Err(BridgeError::InvalidTarget {
+                target: target.to_string(),
+                hint: "use '#channel' for channels or 'dm:@peer' for DMs".to_string(),
+            });
+        }
+
         let mut body = serde_json::json!({ "target": target, "content": content });
         if let Some(ids) = &attachment_ids {
             body["attachmentIds"] = serde_json::json!(ids);
         }
 
+        let url = format!("{}/send", self.base_url(agent_key));
         let res = self
             .client
-            .post(format!("{}/send", self.base_url(agent_key)))
+            .post(&url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -226,30 +238,33 @@ impl Backend for ChorusBackend {
         agent_key: &str,
         block: bool,
         timeout_ms: u64,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let url = format!(
             "{}/receive?block={}&timeout={}",
             self.base_url(agent_key),
             block,
             timeout_ms
         );
-        let res = self.client.get(&url).send().await.map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
-        })?;
+        let res = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         let messages = match data.get("messages").and_then(|v| v.as_array()) {
             Some(arr) if !arr.is_empty() => arr,
@@ -293,7 +308,7 @@ impl Backend for ChorusBackend {
         ))
     }
 
-    async fn check_messages(&self, agent_key: &str) -> Result<String, rmcp::ErrorData> {
+    async fn check_messages(&self, agent_key: &str) -> Result<String, BridgeError> {
         self.receive_messages(agent_key, false, 0).await
     }
 
@@ -304,7 +319,7 @@ impl Backend for ChorusBackend {
         limit: Option<u32>,
         before: Option<i64>,
         after: Option<i64>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let limit = limit.unwrap_or(50).min(100);
         let mut url = format!(
             "{}/history?channel={}&limit={}",
@@ -319,23 +334,26 @@ impl Backend for ChorusBackend {
             url.push_str(&format!("&after={}", a));
         }
 
-        let res = self.client.get(&url).send().await.map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
-        })?;
+        let res = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -440,7 +458,7 @@ impl Backend for ChorusBackend {
         Ok(format!("{}\n\n{}{}", header, formatted.join("\n"), footer))
     }
 
-    async fn list_channels(&self, agent_key: &str) -> Result<String, rmcp::ErrorData> {
+    async fn list_channels(&self, agent_key: &str) -> Result<String, BridgeError> {
         let data = self.server_info(agent_key).await?;
 
         let mut text = "## Server\n\n".to_string();
@@ -506,26 +524,28 @@ impl Backend for ChorusBackend {
         Ok(text)
     }
 
-    async fn server_info(&self, agent_key: &str) -> Result<Value, rmcp::ErrorData> {
+    async fn server_info(&self, agent_key: &str) -> Result<Value, BridgeError> {
+        let url = format!("{}/server", self.base_url(agent_key));
         let res = self
             .client
-            .get(format!("{}/server", self.base_url(agent_key)))
+            .get(&url)
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        res.json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))
+        res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })
     }
 
     async fn list_tasks(
@@ -533,7 +553,7 @@ impl Backend for ChorusBackend {
         agent_key: &str,
         channel: &str,
         status: Option<String>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let status_str = status.as_deref().unwrap_or("all");
         let mut url = format!(
             "{}/tasks?channel={}",
@@ -544,23 +564,26 @@ impl Backend for ChorusBackend {
             url.push_str(&format!("&status={}", urlencoding::encode(status_str)));
         }
 
-        let res = self.client.get(&url).send().await.map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None)
-        })?;
+        let res = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let http_status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", http_status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -614,34 +637,35 @@ impl Backend for ChorusBackend {
         agent_key: &str,
         channel: &str,
         tasks: Vec<String>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let tasks_json: Vec<Value> = tasks
             .iter()
             .map(|t| serde_json::json!({ "title": t }))
             .collect();
         let body = serde_json::json!({ "channel": channel, "tasks": tasks_json });
 
+        let url = format!("{}/tasks", self.base_url(agent_key));
         let res = self
             .client
-            .post(format!("{}/tasks", self.base_url(agent_key)))
+            .post(&url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -675,30 +699,31 @@ impl Backend for ChorusBackend {
         agent_key: &str,
         channel: &str,
         task_numbers: Vec<i64>,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let body = serde_json::json!({ "channel": channel, "task_numbers": task_numbers });
 
+        let url = format!("{}/tasks/claim", self.base_url(agent_key));
         let res = self
             .client
-            .post(format!("{}/tasks/claim", self.base_url(agent_key)))
+            .post(&url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -749,30 +774,31 @@ impl Backend for ChorusBackend {
         agent_key: &str,
         channel: &str,
         task_number: i64,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let body = serde_json::json!({ "channel": channel, "task_number": task_number });
 
+        let url = format!("{}/tasks/unclaim", self.base_url(agent_key));
         let res = self
             .client
-            .post(format!("{}/tasks/unclaim", self.base_url(agent_key)))
+            .post(&url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -787,37 +813,35 @@ impl Backend for ChorusBackend {
         channel: &str,
         task_number: i64,
         status: &str,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let body = serde_json::json!({
             "channel": channel,
             "task_number": task_number,
             "status": status
         });
 
+        let url = format!("{}/tasks/update-status", self.base_url(agent_key));
         let res = self
             .client
-            .post(format!(
-                "{}/tasks/update-status",
-                self.base_url(agent_key)
-            ))
+            .post(&url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let http_status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", http_status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -831,13 +855,13 @@ impl Backend for ChorusBackend {
         agent_key: &str,
         file_path: &str,
         channel: &str,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         let path = std::path::Path::new(file_path);
         if !path.exists() {
             return Ok(format!("Error: File not found: {}", file_path));
         }
-        let metadata = std::fs::metadata(file_path).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Cannot read file: {}", e), None)
+        let metadata = std::fs::metadata(file_path).map_err(|e| BridgeError::UploadFailed {
+            cause: format!("cannot read file metadata: {}", e),
         })?;
         if metadata.len() > 5 * 1024 * 1024 {
             return Ok(format!(
@@ -847,39 +871,42 @@ impl Backend for ChorusBackend {
         }
 
         // Resolve channel
+        let resolve_url = format!("{}/resolve-channel", self.base_url(agent_key));
         let resolve_res = self
             .client
-            .post(format!("{}/resolve-channel", self.base_url(agent_key)))
+            .post(&resolve_url)
             .json(&serde_json::json!({ "target": channel }))
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Request failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: resolve_url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !resolve_res.status().is_success() {
-            let status = resolve_res.status();
+            let status = resolve_res.status().as_u16();
             let body = resolve_res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let resolve_data: Value = resolve_res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let resolve_data: Value =
+            resolve_res.json().await.map_err(|_| BridgeError::ServerError {
+                status: 0,
+                body: "invalid JSON from server".to_string(),
+            })?;
 
         let channel_id = resolve_data
             .get("channelId")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                rmcp::ErrorData::internal_error("No channelId in response".to_string(), None)
+            .ok_or_else(|| BridgeError::ServerError {
+                status: 0,
+                body: "no channelId in resolve-channel response".to_string(),
             })?
             .to_string();
 
         // Read file
-        let file_bytes = std::fs::read(file_path).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Cannot read file: {}", e), None)
+        let file_bytes = std::fs::read(file_path).map_err(|e| BridgeError::UploadFailed {
+            cause: format!("cannot read file: {}", e),
         })?;
         let filename = path
             .file_name()
@@ -901,33 +928,36 @@ impl Backend for ChorusBackend {
         let part = reqwest::multipart::Part::bytes(file_bytes)
             .file_name(filename.clone())
             .mime_str(mime_type)
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("MIME error: {}", e), None))?;
+            .map_err(|e| BridgeError::UploadFailed {
+                cause: format!("MIME error: {}", e),
+            })?;
 
         let form = reqwest::multipart::Form::new()
             .part("file", part)
             .text("channelId", channel_id);
 
+        let upload_url = format!("{}/upload", self.base_url(agent_key));
         let res = self
             .client
-            .post(format!("{}/upload", self.base_url(agent_key)))
+            .post(&upload_url)
             .multipart(form)
             .send()
             .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Upload failed: {}", e), None))?;
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: upload_url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res
-            .json()
-            .await
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Invalid JSON: {}", e), None))?;
+        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
+            status: 0,
+            body: "invalid JSON from server".to_string(),
+        })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
             return Ok(format!("Error: {}", err));
@@ -955,7 +985,7 @@ impl Backend for ChorusBackend {
         &self,
         _agent_key: &str,
         attachment_id: &str,
-    ) -> Result<String, rmcp::ErrorData> {
+    ) -> Result<String, BridgeError> {
         // Validate attachment_id to prevent path traversal. Only allow characters
         // that appear in UUID strings (hex digits and dashes) plus underscores.
         if attachment_id.is_empty()
@@ -963,10 +993,11 @@ impl Backend for ChorusBackend {
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
-            return Err(rmcp::ErrorData::invalid_params(
-                "Invalid attachment_id: must contain only alphanumeric characters, dashes, and underscores",
-                None,
-            ));
+            return Err(BridgeError::InvalidParam {
+                param: "attachment_id".to_string(),
+                reason: "must contain only alphanumeric characters, dashes, and underscores"
+                    .to_string(),
+            });
         }
 
         // Cache attachments at an absolute, machine-stable path so agents can
@@ -979,8 +1010,8 @@ impl Backend for ChorusBackend {
             .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
             .join(".chorus")
             .join("attachments");
-        std::fs::create_dir_all(&cache_dir).map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Cannot create cache dir: {}", e), None)
+        std::fs::create_dir_all(&cache_dir).map_err(|e| BridgeError::UploadFailed {
+            cause: format!("cannot create cache dir: {e}"),
         })?;
 
         // Check for cached file. We require an exact `{id}{ext}` match rather
@@ -1005,17 +1036,25 @@ impl Backend for ChorusBackend {
             self.server_url.trim_end_matches('/'),
             attachment_id
         );
-        let res = self.client.get(&url).send().await.map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Download failed: {}", e), None)
-        })?;
+        let res = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
 
         if !res.status().is_success() {
-            let status = res.status();
+            let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(rmcp::ErrorData::internal_error(
-                format!("Server returned {}: {}", status, body),
-                None,
-            ));
+            if status == 404 {
+                return Err(BridgeError::AttachmentNotFound {
+                    attachment_id: attachment_id.to_string(),
+                });
+            }
+            return Err(BridgeError::ServerError { status, body });
         }
 
         let content_type = res
@@ -1034,12 +1073,14 @@ impl Backend for ChorusBackend {
         };
 
         let file_path = cache_dir.join(format!("{}{}", attachment_id, ext));
-        let bytes = res.bytes().await.map_err(|e| {
-            rmcp::ErrorData::internal_error(format!("Download failed: {}", e), None)
+        let bytes = res.bytes().await.map_err(|e| BridgeError::ServerError {
+            status: 0,
+            body: format!("download failed: {e}"),
         })?;
 
-        std::fs::write(&file_path, &bytes)
-            .map_err(|e| rmcp::ErrorData::internal_error(format!("Write failed: {}", e), None))?;
+        std::fs::write(&file_path, &bytes).map_err(|e| BridgeError::UploadFailed {
+            cause: format!("write failed: {e}"),
+        })?;
 
         Ok(format!(
             "Downloaded to: {}\n\nUse your Read tool to view this image.",

@@ -7,6 +7,7 @@ pub mod backend;
 pub mod discovery;
 pub mod error;
 mod format;
+pub mod pairing;
 pub mod serve;
 pub mod session;
 pub mod smoke_test;
@@ -53,6 +54,7 @@ impl ChatBridge {
                 params.attachment_ids.clone(),
             )
             .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -62,7 +64,10 @@ impl ChatBridge {
         &self,
         _params: Parameters<EmptyParams>,
     ) -> Result<String, rmcp::ErrorData> {
-        self.backend.check_messages(&self.agent_id).await
+        self.backend
+            .check_messages(&self.agent_id)
+            .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -81,13 +86,17 @@ impl ChatBridge {
                 params.after,
             )
             .await
+            .map_err(Into::into)
     }
 
     #[tool(
         description = "List all channels in this server, including which ones you have joined, plus all agents and humans. Use this to discover who and where you can message."
     )]
     async fn list_server(&self) -> Result<String, rmcp::ErrorData> {
-        self.backend.list_channels(&self.agent_id).await
+        self.backend
+            .list_channels(&self.agent_id)
+            .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -100,6 +109,7 @@ impl ChatBridge {
         self.backend
             .list_tasks(&self.agent_id, &params.channel, params.status.clone())
             .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -113,6 +123,7 @@ impl ChatBridge {
         self.backend
             .create_tasks(&self.agent_id, &params.channel, task_titles)
             .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -125,6 +136,7 @@ impl ChatBridge {
         self.backend
             .claim_tasks(&self.agent_id, &params.channel, params.task_numbers.clone())
             .await
+            .map_err(Into::into)
     }
 
     #[tool(description = "Release your claim on a task, setting it back to open.")]
@@ -135,6 +147,7 @@ impl ChatBridge {
         self.backend
             .unclaim_task(&self.agent_id, &params.channel, params.task_number)
             .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -152,6 +165,7 @@ impl ChatBridge {
                 &params.status,
             )
             .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -164,6 +178,7 @@ impl ChatBridge {
         self.backend
             .upload_file(&self.agent_id, &params.file_path, &params.channel)
             .await
+            .map_err(Into::into)
     }
 
     #[tool(
@@ -176,6 +191,7 @@ impl ChatBridge {
         self.backend
             .view_file(&self.agent_id, &params.attachment_id)
             .await
+            .map_err(Into::into)
     }
 }
 
