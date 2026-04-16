@@ -1,0 +1,300 @@
+//! Live runtime integration tests for the shared MCP bridge.
+//!
+//! These tests exercise the full Phase 1+2 stack end-to-end against a **real**
+//! runtime binary (not a mock or in-process MCP client). They prove that:
+//!
+//!   1. A v2 driver, given `AgentSpec.bridge_endpoint = Some(url)`, pairs with
+//!      the shared bridge via `/admin/pair` and wires its config to
+//!      `{bridge_url}/token/{token}/mcp`.
+//!   2. The runtime process connects to the bridge over native HTTP MCP.
+//!   3. When the runtime calls the `send_message` tool, the bridge routes it
+//!      through `ChatBridge` → `ChorusBackend` → Chorus server → SQLite.
+//!   4. The resulting message is observable via the Chorus store's history.
+//!
+//! # Running
+//!
+//! All tests are `#[ignore]` by default — `cargo test` will skip them. Run
+//! them explicitly:
+//!
+//! ```bash
+//! cargo test --test live_runtime_tests -- --ignored --nocapture
+//! ```
+//!
+//! Tests take 10–60 seconds each due to real runtime latency. If the required
+//! binary is missing on `PATH` or required auth env vars are unset, the test
+//! prints a skip message and returns `Ok(())` rather than failing.
+//!
+//! # Required environment
+//!
+//! | Test                                          | Binary    | Env vars required                    |
+//! |-----------------------------------------------|-----------|--------------------------------------|
+//! | `opencode_agent_replies_through_shared_bridge`| `opencode`| `OPENCODE_MODEL` (optional, defaults to `opencode/gpt-5-nano`); runtime must already be authed via `opencode auth login` |
+//!
+//! # Debugging
+//!
+//! Use `--nocapture` to see runtime stderr piped through our tracing setup.
+//! If a test hangs, check whether `opencode` has valid auth in `~/.opencode/`.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use chorus::agent::drivers::v2::opencode::OpencodeDriver;
+use chorus::agent::drivers::v2::{
+    AgentSpec, PromptReq, RuntimeDriver, StartOpts,
+};
+use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
+use chorus::agent::AgentLifecycle;
+use chorus::bridge::serve::build_bridge_router;
+use chorus::server::build_router_with_services;
+use chorus::store::channels::ChannelType;
+use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
+use chorus::store::{AgentRecordUpsert, Store};
+
+// ---------------------------------------------------------------------------
+// Helpers (duplicated from bridge_serve_tests.rs; cargo integration tests
+// don't share modules across files without extra wiring — keeping each test
+// file self-contained is the existing convention).
+// ---------------------------------------------------------------------------
+
+/// No-op lifecycle used when running the Chorus server in-process for tests.
+struct NoopLifecycle;
+
+impl AgentLifecycle for NoopLifecycle {
+    fn start_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+        _wake_message: Option<ReceivedMessage>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn notify_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_activity_log_data(
+        &self,
+        _agent_name: &str,
+        _after_seq: Option<u64>,
+    ) -> chorus::agent::activity_log::ActivityLogResponse {
+        chorus::agent::activity_log::ActivityLogResponse {
+            entries: vec![],
+            agent_activity: "offline".to_string(),
+            agent_detail: String::new(),
+        }
+    }
+
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
+        vec![]
+    }
+}
+
+/// Start a Chorus server in-process with an in-memory SQLite store. Returns
+/// the server's base URL and the shared `Store`.
+async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>)> {
+    let store = Arc::new(Store::open(":memory:")?);
+    store.create_human("tester")?;
+    store.create_channel("general", Some("General"), ChannelType::Channel)?;
+    store.join_channel("general", "tester", SenderType::Human)?;
+
+    let router = build_router_with_services(
+        store.clone(),
+        Arc::new(NoopLifecycle),
+        Arc::new(SystemRuntimeStatusProvider::new(
+            chorus::agent::manager::build_driver_registry(),
+        )) as SharedRuntimeStatusProvider,
+        vec![],
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let url = format!("http://{addr}");
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    Ok((url, store))
+}
+
+/// Start the shared bridge pointing at the given Chorus server URL. Returns
+/// the bridge base URL and a cancellation token for shutdown.
+async fn start_bridge_with_server(
+    server_url: &str,
+) -> anyhow::Result<(String, tokio_util::sync::CancellationToken)> {
+    let (app, ct) = build_bridge_router(server_url);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let port = listener.local_addr()?.port();
+    let addr = format!("http://127.0.0.1:{}", port);
+
+    let shutdown_ct = ct.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown_ct.cancelled().await })
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    Ok((addr, ct))
+}
+
+/// Check whether a binary exists on `PATH` by invoking it with `--version`.
+///
+/// Intentionally simple: we don't want a `which` dev-dep just for this one
+/// check, and `command_exists` in `src/agent/drivers/mod.rs` is `pub(crate)`.
+fn binary_on_path(name: &str) -> bool {
+    std::process::Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+/// Live round-trip: spawn a real `opencode` runtime, send it a prompt, verify
+/// its reply lands in the Chorus store via the shared bridge.
+///
+/// Requires:
+///   - `opencode` binary on PATH (tested with 1.3.13)
+///   - `opencode` must already be logged in (`opencode auth login`)
+///   - Optional: `OPENCODE_MODEL` env var (defaults to `opencode/gpt-5-nano`)
+///
+/// What it proves:
+///   - `OpencodeDriver::attach` + `AgentHandle::start` with
+///     `bridge_endpoint = Some(bridge_url)` configures the runtime's MCP
+///     client to use the token URL.
+///   - The runtime's `send_message` tool call routes through the shared
+///     bridge into the Chorus store under the agent's identity.
+#[tokio::test]
+#[ignore = "requires opencode binary + login; run with --ignored"]
+async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
+    // 1. Skip if opencode binary not on PATH.
+    if !binary_on_path("opencode") {
+        eprintln!("SKIP: `opencode` binary not found on PATH");
+        return Ok(());
+    }
+
+    let model = std::env::var("OPENCODE_MODEL")
+        .unwrap_or_else(|_| "opencode/gpt-5-nano".to_string());
+
+    // 2. Start Chorus server + shared bridge.
+    let (server_url, store) = start_chorus_server().await?;
+    let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
+
+    // 3. Seed agent record and channel membership. The agent's `sender_name`
+    //    must match the key we pass to the driver so messages posted via the
+    //    bridge are attributed to it.
+    let agent_key = "opencode-live-bot";
+    store.create_agent_record(&AgentRecordUpsert {
+        name: agent_key,
+        display_name: "OpenCode Live Bot",
+        description: None,
+        system_prompt: None,
+        runtime: "opencode",
+        model: &model,
+        reasoning_effort: None,
+        env_vars: &[],
+    })?;
+    store.join_channel("general", agent_key, SenderType::Agent)?;
+
+    // 4. Seed a user message in #general so the agent has context to reply to.
+    //    The prompt we send directly via the handle instructs the runtime
+    //    what to do; this message exists mostly to give the conversation
+    //    shape and to have a thread for replies to land in.
+    store.create_message(CreateMessage {
+        channel_name: "general",
+        thread_parent_id: None,
+        sender_name: "tester",
+        sender_type: SenderType::Human,
+        content: "@opencode-live-bot please reply to everyone",
+        attachment_ids: &[],
+        suppress_event: false,
+        run_id: None,
+    })?;
+
+    // 5. Build AgentSpec with bridge_endpoint set — this is the code path
+    //    we're validating. bridge_binary/server_url are unused when
+    //    bridge_endpoint is Some.
+    let tmpdir = tempfile::tempdir()?;
+    let spec = AgentSpec {
+        display_name: "OpenCode Live Bot".to_string(),
+        description: None,
+        system_prompt: None,
+        model: model.clone(),
+        reasoning_effort: None,
+        env_vars: vec![],
+        working_directory: tmpdir.path().to_path_buf(),
+        bridge_binary: "chorus".to_string(),
+        server_url: server_url.clone(),
+        bridge_endpoint: Some(bridge_url.clone()),
+    };
+
+    // 6. Attach + start the runtime, deferring the first prompt so it's
+    //    delivered once the ACP session is active.
+    let driver = OpencodeDriver;
+    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let mut handle = attach_result.handle;
+
+    let prompt = PromptReq {
+        text: format!(
+            "You are an agent named `{agent_key}` in a chat channel. \
+             Use the `send_message` tool to post the exact text \
+             `hello world` to the channel `#general`. Do not include any \
+             other commentary — just call the tool once and stop."
+        ),
+        attachments: vec![],
+    };
+
+    handle
+        .start(StartOpts::default(), Some(prompt))
+        .await?;
+
+    // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        if messages.iter().any(|m| {
+            m.sender_name == agent_key
+                && m.content.to_lowercase().contains("hello world")
+        }) {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // 8. Clean up the runtime process regardless of outcome.
+    let _ = handle.close().await;
+    bridge_ct.cancel();
+
+    if !found {
+        // Print the final history so the failure message is actionable.
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s; \
+             channel history was: {:?}",
+            messages
+                .iter()
+                .map(|m| (&m.sender_name, &m.content))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    Ok(())
+}
