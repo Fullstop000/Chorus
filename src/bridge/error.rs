@@ -14,11 +14,11 @@ use std::fmt;
 
 /// Structured error codes for the MCP bridge.
 /// Each variant includes a human-readable message with cause and suggested fix.
+// Note: `thiserror` is not used here because these variants carry named fields
+// in a shape that doesn't map cleanly onto its #[error] derive. `Display` and
+// `std::error::Error` are implemented manually below.
 #[derive(Debug, Clone)]
 pub enum BridgeError {
-// Note: std::error::Error is not derived because the variants use named fields
-// incompatible with thiserror's #[error] derive. Manual Display impl below.
-// Add `impl std::error::Error for BridgeError {}` if needed for anyhow compatibility.
     /// Platform (Chorus server) is unreachable — server not running or network failure.
     PlatformUnreachable { url: String, cause: String },
 

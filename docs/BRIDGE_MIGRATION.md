@@ -4,8 +4,8 @@ Chorus is migrating from per-agent stdio bridge processes to a single shared HTT
 bridge. This guide covers what changed, how to use the new bridge, how to convert a
 driver, and what comes next.
 
-For deep architectural context, see the design doc:
-`~/.gstack/projects/Fullstop000-Chorus/bytedance-main-design-20260416-013721.md`
+For deep architectural context, see the design rationale in this guide
+(Section 4, "For Architects") and the phased migration plan below.
 
 ---
 
