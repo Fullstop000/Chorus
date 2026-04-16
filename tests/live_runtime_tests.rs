@@ -45,6 +45,27 @@
 //!
 //! Use `--nocapture` to see runtime stderr piped through our tracing setup.
 //! If a test hangs, check whether the runtime has valid auth in its config dir.
+//!
+//! # Coverage matrix: `chorus serve --shared-bridge` (A1 + A2)
+//!
+//! The full `chorus serve --shared-bridge` flow is covered by the combination
+//! of three test layers — a dedicated A3 end-to-end test would be redundant:
+//!
+//! | Layer | Test location | What it proves |
+//! |-------|--------------|----------------|
+//! | Bridge HTTP layer (A1) | `tests/bridge_serve_tests.rs` | In-process bridge starts, health, sessions, token pairing, `send_message` → store |
+//! | Discovery file I/O | `src/bridge/discovery.rs` (unit tests) | `write_bridge_info_to` / `read_bridge_info_from` roundtrip, stale PID, corrupt file |
+//! | A2 URL formatting | `src/agent/manager.rs` (`bridge_endpoint_from_info_formats_url`, `bridge_endpoint_from_none_is_none`) | `BridgeInfo { port }` → `"http://127.0.0.1:{port}"` |
+//! | Driver + bridge round-trip | This file (4 `#[ignore]` live tests) | Real runtime binary with `bridge_endpoint: Some(url)` → message lands in store |
+//!
+//! The one composition NOT tested by automation: `AgentManager::start_agent`
+//! calling `read_bridge_info()` when a discovery file is present (the `Some`
+//! branch of the auto-discover block in manager.rs). This is three mechanical
+//! lines that wire the above individually-tested functions together. The risk
+//! of a silent bug here is low, and exercising it requires either writing to
+//! `~/.chorus/bridge.json` (global, unsafe in CI) or adding a path-override
+//! seam to `AgentManager`. The trade-off favors trusting the unit tests over
+//! introducing test-only indirection into production code.
 
 use std::sync::Arc;
 use std::time::Duration;
