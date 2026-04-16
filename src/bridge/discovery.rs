@@ -44,13 +44,24 @@ pub fn write_bridge_info_to(path: &std::path::Path, info: &BridgeInfo) -> std::i
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
     let tmp_path = path.with_extension("json.tmp");
-    std::fs::write(&tmp_path, json)?;
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        // Set perms on the temp file before rename so the final file is
-        // never world-readable, even momentarily.
-        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Create the temp file with 0600 from the start so it is never
+        // world-readable, even momentarily.
+        let mut tmp_file = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(0o600)
+            .open(&tmp_path)?;
+        tmp_file.write_all(json.as_bytes())?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(&tmp_path, json)?;
     }
     std::fs::rename(&tmp_path, path)?;
     Ok(())
