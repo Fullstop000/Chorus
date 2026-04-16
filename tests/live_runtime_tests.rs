@@ -690,6 +690,8 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     // 6. Attach + start the runtime with initial prompt.
     //    Codex uses the `app-server` native protocol; the driver passes
     //    `-c mcp_servers.chat.url=…` flags to wire up the HTTP bridge.
+    //    (Codex app-server doesn't write a log file — its only signal is
+    //    stdout JSON-RPC. The Iron Rule helper will note this on failure.)
     let driver = CodexDriver;
     let attach_result = driver.attach(agent_key.to_string(), spec).await?;
     let mut handle = attach_result.handle;
@@ -706,8 +708,11 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     handle.start(StartOpts::default(), Some(prompt)).await?;
 
-    // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    // 7. Poll the store for up to 120s waiting for the agent's reply.
+    //    Codex on gpt-5.4 via WebSocket + MCP tool round-trip can exceed 60s
+    //    on a cold cache — extending keeps this test reliable.
+    let codex_deadline_secs = 120u64;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(codex_deadline_secs);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
@@ -741,7 +746,8 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
             &history_str,
         );
         anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s{}",
+            "agent did not send a reply containing 'hello world' within {}s{}",
+            codex_deadline_secs,
             diagnostics
         );
     }
