@@ -60,6 +60,13 @@ struct BridgeServer {
     /// mapping after consume, the second request would 401. Memory grows
     /// without bound until bridge restart, which is acceptable for Phase 2;
     /// Phase 3 plans a proper session-scoped store.
+    ///
+    // TODO(Phase 3): token_to_agent grows without bound — every successful
+    // pairing adds an entry that is never removed. Acceptable for a local
+    // daemon that restarts periodically (restart drops the map), but needs
+    // real session-lifecycle eviction before multi-machine / long-running
+    // deployments. Likely fix: tie entries to rmcp session lifetime and
+    // drop them when the session closes.
     token_to_agent: RwLock<HashMap<String, String>>,
 }
 
@@ -91,22 +98,14 @@ impl BridgeServer {
         &self,
         agent_key: &str,
     ) -> StreamableHttpService<ChatBridge, LocalSessionManager> {
-        // Fast path — check under a read lock first so existing entries do
-        // not contend on the write lock unless we need to refresh the access
-        // timestamp. Drop the read lock before taking the write lock.
-        let existing = {
-            let guard = self.services.read().await;
-            guard.get(agent_key).map(|entry| entry.service.clone())
-        };
-
+        // At ≤128 agents on localhost, write-lock contention is negligible, so
+        // we take the write lock unconditionally. If per-request access becomes
+        // a contention hotspot later, switch last_accessed to an AtomicU64 so
+        // cache hits can stay on a read lock.
         let mut guard = self.services.write().await;
-        if let Some(service) = existing {
-            if let Some(entry) = guard.get_mut(agent_key) {
-                entry.last_accessed = Instant::now();
-                return service;
-            }
-            // Entry was evicted between the read lock and write lock (unlikely).
-            // Fall through to the create-or-insert path below.
+        if let Some(entry) = guard.get_mut(agent_key) {
+            entry.last_accessed = Instant::now();
+            return entry.service.clone();
         }
 
         // Cache miss. Evict LRU entry if at capacity.

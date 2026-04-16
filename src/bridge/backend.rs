@@ -195,13 +195,20 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        // Capture the status before consuming the body so we can attribute
+        // JSON-parse failures and server-reported errors to the real HTTP
+        // status rather than a zero sentinel.
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
         }
 
         let message_id = data.get("messageId").and_then(|v| v.as_str()).unwrap_or("");
@@ -264,9 +271,10 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         let messages = match data.get("messages").and_then(|v| v.as_array()) {
@@ -353,13 +361,17 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
         }
 
         let messages = match data.get("messages").and_then(|v| v.as_array()) {
@@ -545,9 +557,10 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })
     }
 
@@ -583,13 +596,17 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
         }
 
         let tasks = match data.get("tasks").and_then(|v| v.as_array()) {
@@ -665,13 +682,17 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
         }
 
         let created_tasks = data
@@ -723,13 +744,17 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
         }
 
         let results = data
@@ -798,13 +823,17 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
         }
 
         Ok(format!("#t{} unclaimed \u{2014} now open.", task_number))
@@ -836,18 +865,25 @@ impl Backend for ChorusBackend {
             })?;
 
         if !res.status().is_success() {
-            let status = res.status().as_u16();
+            let status_code = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
+            return Err(BridgeError::ServerError {
+                status: status_code,
+                body,
+            });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status_code = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status: status_code,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status: status_code,
+                body: err.to_string(),
+            });
         }
 
         Ok(format!("#t{} moved to {}.", task_number, status))
@@ -861,16 +897,20 @@ impl Backend for ChorusBackend {
     ) -> Result<String, BridgeError> {
         let path = std::path::Path::new(file_path);
         if !path.exists() {
-            return Ok(format!("Error: File not found: {}", file_path));
+            return Err(BridgeError::UploadFailed {
+                cause: format!("file not found: {}", file_path),
+            });
         }
         let metadata = std::fs::metadata(file_path).map_err(|e| BridgeError::UploadFailed {
             cause: format!("cannot read file metadata: {}", e),
         })?;
         if metadata.len() > 5 * 1024 * 1024 {
-            return Ok(format!(
-                "Error: File too large ({:.1}MB). Max 5MB.",
-                metadata.len() as f64 / 1024.0 / 1024.0
-            ));
+            return Err(BridgeError::UploadFailed {
+                cause: format!(
+                    "file too large ({:.1}MB, max 5MB)",
+                    metadata.len() as f64 / 1024.0 / 1024.0,
+                ),
+            });
         }
 
         // Resolve channel
@@ -892,17 +932,18 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
+        let resolve_status = resolve_res.status().as_u16();
         let resolve_data: Value =
-            resolve_res.json().await.map_err(|_| BridgeError::ServerError {
-                status: 0,
-                body: "invalid JSON from server".to_string(),
+            resolve_res.json().await.map_err(|e| BridgeError::ServerError {
+                status: resolve_status,
+                body: format!("invalid JSON from server: {}", e),
             })?;
 
         let channel_id = resolve_data
             .get("channelId")
             .and_then(|v| v.as_str())
             .ok_or_else(|| BridgeError::ServerError {
-                status: 0,
+                status: resolve_status,
                 body: "no channelId in resolve-channel response".to_string(),
             })?
             .to_string();
@@ -957,13 +998,17 @@ impl Backend for ChorusBackend {
             return Err(BridgeError::ServerError { status, body });
         }
 
-        let data: Value = res.json().await.map_err(|_| BridgeError::ServerError {
-            status: 0,
-            body: "invalid JSON from server".to_string(),
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
         })?;
 
         if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Ok(format!("Error: {}", err));
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
         }
 
         let uploaded_filename = data
@@ -1081,8 +1126,9 @@ impl Backend for ChorusBackend {
         };
 
         let file_path = cache_dir.join(format!("{}{}", attachment_id, ext));
+        let status = res.status().as_u16();
         let bytes = res.bytes().await.map_err(|e| BridgeError::ServerError {
-            status: 0,
+            status,
             body: format!("download failed: {e}"),
         })?;
 
