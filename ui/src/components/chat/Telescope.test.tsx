@@ -29,7 +29,7 @@ describe("Telescope loading state", () => {
     );
 
     expect(html).toContain("tele-shimmer");
-    expect(html).toContain("reading…");
+    expect(html).toContain('data-phase="reading"');
     expect(html).not.toContain("tele-typing-dots");
   });
 
@@ -52,7 +52,7 @@ describe("Telescope loading state", () => {
     );
 
     expect(html).toContain("tele-shimmer");
-    expect(html).toContain("working…");
+    expect(html).toContain('data-phase="doing"');
     expect(html).toContain("tele-cats");
   });
 });
