@@ -197,6 +197,7 @@ impl AgentManager {
             self.trace_store.clone(),
             self.store.trace_sender(),
             self.store.clone(),
+            self.agents.clone(),
         );
 
         {
@@ -282,80 +283,10 @@ impl AgentManager {
 
             let is_active = matches!(agent.handle.state(), AgentState::Active { .. });
             if !is_active {
-                // Agent is mid-run (e.g. processing its init prompt). Spawn a
-                // watchdog that polls for Active state, then fires the debounced
-                // notification. Without this, a single-message DM sent during
-                // the init turn would be permanently lost.
-                debug!(agent = %agent_name, "agent not Active, spawning deferred notification watchdog");
-                let agents_ref = self.agents.clone();
-                let trace_store = self.trace_store.clone();
-                let trace_tx = self.store.trace_sender();
-                let name = agent_name.to_string();
-                tokio::spawn(async move {
-                    // Poll until Active or timeout (generous: init prompts can
-                    // take up to ~60s for real LLMs on slow connections).
-                    let ready_deadline =
-                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(120);
-                    loop {
-                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-                        if tokio::time::Instant::now() >= ready_deadline {
-                            warn!(agent = %name, "notify_agent watchdog: timed out waiting for Active state");
-                            return;
-                        }
-                        let is_now_active = {
-                            let agents = agents_ref.lock().await;
-                            agents
-                                .get(&name)
-                                .map(|a| matches!(a.handle.state(), AgentState::Active { .. }))
-                                .unwrap_or(false)
-                        };
-                        if is_now_active {
-                            break;
-                        }
-                    }
-                    // Agent is Active — apply the normal 3-second debounce then deliver.
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    let mut agents = agents_ref.lock().await;
-                    if let Some(agent) = agents.get_mut(&name) {
-                        let current_count = agent.pending_notification_count;
-                        if current_count == 0 || current_count != count {
-                            agent.pending_notification_count = 0;
-                            return;
-                        }
-                        agent.pending_notification_count = 0;
-                        if !matches!(agent.handle.state(), AgentState::Active { .. }) {
-                            debug!(agent = %name, "agent no longer Active after deferred debounce, skipping");
-                            return;
-                        }
-                        let (run_id, _) = trace_store.ensure_run(&name);
-                        let seq = trace_store.next_seq(&name);
-                        let ch = trace_store.run_channel_id(&name);
-                        let _ = trace_tx.send(trace::build_trace_event(
-                            run_id,
-                            &name,
-                            ch,
-                            seq,
-                            TraceEventKind::Reading,
-                        ));
-                        let plural = if current_count > 1 { "s" } else { "" };
-                        let them = if current_count > 1 { "them" } else { "it" };
-                        let notification = format!(
-                            "[System notification: You have {current_count} new message{plural} \
-                             waiting. Call check_messages to read {them} when you're ready.]"
-                        );
-                        info!(agent = %name, count = current_count, "sending deferred prompt notification");
-                        if let Err(e) = agent
-                            .handle
-                            .prompt(PromptReq {
-                                text: notification,
-                                attachments: vec![],
-                            })
-                            .await
-                        {
-                            warn!(agent = %name, error = %e, "failed to deliver deferred notification prompt");
-                        }
-                    }
-                });
+                // Agent is mid-run (e.g. init turn or processing another message).
+                // The event forwarder will deliver the notification immediately
+                // when the current turn's Completed event fires — no polling needed.
+                debug!(agent = %agent_name, "agent not Active, notification queued for post-turn delivery");
                 return Ok(());
             }
 
@@ -518,6 +449,7 @@ fn spawn_v2_event_forwarder(
     trace_store: Arc<AgentTraceStore>,
     trace_tx: broadcast::Sender<TraceEvent>,
     store: Arc<Store>,
+    agents: Arc<Mutex<HashMap<String, V2Agent>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut pending_thinking = String::new();
@@ -712,6 +644,45 @@ fn spawn_v2_event_forwarder(
                         trace_store.end_run(key);
                     }
                     activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+
+                    // If messages arrived while we were busy (init turn or any turn),
+                    // deliver the notification immediately now that the turn is done.
+                    {
+                        let mut agents_guard = agents.lock().await;
+                        if let Some(agent) = agents_guard.get_mut(key) {
+                            let count = agent.pending_notification_count;
+                            if count > 0 {
+                                agent.pending_notification_count = 0;
+                                let plural = if count > 1 { "s" } else { "" };
+                                let them = if count > 1 { "them" } else { "it" };
+                                let notification = format!(
+                                    "[System notification: You have {count} new message{plural} \
+                                     waiting. Call check_messages to read {them} when you're ready.]"
+                                );
+                                let (run_id, _) = trace_store.ensure_run(key);
+                                let seq = trace_store.next_seq(key);
+                                let ch = trace_store.run_channel_id(key);
+                                let _ = trace_tx.send(trace::build_trace_event(
+                                    run_id,
+                                    key,
+                                    ch,
+                                    seq,
+                                    TraceEventKind::Reading,
+                                ));
+                                info!(agent = %key, count = count, "delivering deferred notification after turn completion");
+                                if let Err(e) = agent
+                                    .handle
+                                    .prompt(PromptReq {
+                                        text: notification,
+                                        attachments: vec![],
+                                    })
+                                    .await
+                                {
+                                    warn!(agent = %key, error = %e, "failed to deliver deferred notification");
+                                }
+                            }
+                        }
+                    }
                 }
 
                 DriverEvent::Failed {
@@ -779,11 +750,6 @@ fn build_v2_start_prompt(
 
     if !is_resume {
         return format!(
-            "Hello {display_name}, you are now online. \
-             There are no messages or tasks right now. \
-             Do not use any tools. \
-             Simply reply with a short acknowledgement and stop."
-        
             "Hello {display_name}, you are now online. \
              There are no messages or tasks right now. \
              Do not use any tools. \
