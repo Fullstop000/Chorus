@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use anyhow::Context;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -89,17 +91,22 @@ impl BridgeServer {
         &self,
         agent_key: &str,
     ) -> StreamableHttpService<ChatBridge, LocalSessionManager> {
-        // Fast path — try a read lock first, but we still need to bump
-        // `last_accessed`, which requires a write lock. A hit on the read
-        // lock tells us we don't need to create, but we fall through to
-        // update the timestamp under write lock. In practice the extra
-        // contention is negligible; if it ever matters, switch to atomic
-        // timestamps on the entry.
-        let mut guard = self.services.write().await;
+        // Fast path — check under a read lock first so existing entries do
+        // not contend on the write lock unless we need to refresh the access
+        // timestamp. Drop the read lock before taking the write lock.
+        let existing = {
+            let guard = self.services.read().await;
+            guard.get(agent_key).map(|entry| entry.service.clone())
+        };
 
-        if let Some(entry) = guard.get_mut(agent_key) {
-            entry.last_accessed = Instant::now();
-            return entry.service.clone();
+        let mut guard = self.services.write().await;
+        if let Some(service) = existing {
+            if let Some(entry) = guard.get_mut(agent_key) {
+                entry.last_accessed = Instant::now();
+                return service;
+            }
+            // Entry was evicted between the read lock and write lock (unlikely).
+            // Fall through to the create-or-insert path below.
         }
 
         // Cache miss. Evict LRU entry if at capacity.
@@ -257,6 +264,22 @@ async fn handle_pair(
 }
 
 // ---------------------------------------------------------------------------
+// Discovery cleanup guard
+// ---------------------------------------------------------------------------
+
+/// Removes the bridge discovery file when dropped.
+///
+/// Placed in `run_bridge_server` after `write_bridge_info` so that the file is
+/// cleaned up on every exit path — normal shutdown, error return, or panic.
+struct DiscoveryGuard;
+
+impl Drop for DiscoveryGuard {
+    fn drop(&mut self) {
+        crate::bridge::discovery::remove_bridge_info();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -298,21 +321,30 @@ pub fn build_bridge_router_with_token_ttl(
 pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::Result<()> {
     let (app, ct) = build_bridge_router(server_url);
 
-    let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    let local_addr = listener.local_addr()?;
-
+    // Resolve listen_addr before binding so we can reject non-loopback addresses
+    // without ever opening a listening socket on them.
+    let resolved: Vec<std::net::SocketAddr> = listen_addr
+        .to_socket_addrs()
+        .with_context(|| format!("invalid listen address: {}", listen_addr))?
+        .collect();
+    if resolved.is_empty() {
+        anyhow::bail!("listen address {} resolved to no sockets", listen_addr);
+    }
     // Phase 1 has no authentication — refuse to expose the bridge beyond
     // loopback. A user passing `--listen 0.0.0.0:4321` would otherwise silently
     // accept unauthenticated network traffic.
-    if !local_addr.ip().is_loopback() {
-        anyhow::bail!(
-            "Bridge refuses to bind to non-loopback address {}. Phase 1 bridge has no authentication; \
-             only localhost binds are supported. If you need non-loopback binding, wait for Phase 2 pairing tokens.",
-            local_addr
-        );
+    for addr in &resolved {
+        if !addr.ip().is_loopback() {
+            anyhow::bail!(
+                "Bridge refuses to bind to non-loopback address {}. Phase 1 bridge has no authentication; \
+                 only localhost binds are supported. If you need non-loopback binding, wait for Phase 2 pairing tokens.",
+                addr
+            );
+        }
     }
 
-    let port = local_addr.port();
+    let listener = tokio::net::TcpListener::bind(&resolved[..]).await?;
+    let port = listener.local_addr()?.port();
 
     // Write discovery info so drivers can find this bridge.
     crate::bridge::discovery::write_bridge_info(&crate::bridge::discovery::BridgeInfo {
@@ -320,6 +352,9 @@ pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::R
         pid: std::process::id(),
         started_at: chrono::Utc::now().to_rfc3339(),
     })?;
+    // Guard ensures the discovery file is removed on every exit path —
+    // normal shutdown, early error return, or panic.
+    let _discovery_guard = DiscoveryGuard;
 
     tracing::info!(port, "bridge server listening");
 
@@ -333,9 +368,6 @@ pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::R
     axum::serve(listener, app)
         .with_graceful_shutdown(async move { ct.cancelled().await })
         .await?;
-
-    // Clean up discovery file on shutdown
-    crate::bridge::discovery::remove_bridge_info();
 
     Ok(())
 }
