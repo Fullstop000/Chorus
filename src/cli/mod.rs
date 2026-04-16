@@ -111,6 +111,9 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
+    /// Run a smoke test against a temporary bridge server.
+    #[command(name = "bridge-smoke-test")]
+    BridgeSmokeTest,
     /// Alias for `start --no-open` (kept for backward compatibility)
     #[command(hide = true)]
     Serve {
@@ -242,6 +245,8 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::BridgeServe { listen, server_url }) => {
             chorus::bridge::serve::run_bridge_server(&listen, &server_url).await
         }
+
+        Some(Commands::BridgeSmokeTest) => chorus::bridge::smoke_test::run_smoke_test().await,
 
         Some(Commands::Send {
             target,
