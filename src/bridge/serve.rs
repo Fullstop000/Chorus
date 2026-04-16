@@ -94,21 +94,27 @@ async fn handle_mcp(
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Start the shared bridge HTTP server.
+/// Build the bridge Axum router without binding or writing discovery info.
 ///
-/// Agents connect via `http://<listen_addr>/<agent_key>/mcp`. Each agent_key
-/// gets its own `StreamableHttpService` (and thus its own MCP session pool).
-pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::Result<()> {
+/// Useful for tests that want to plug the router into their own listener.
+pub fn build_bridge_router(server_url: &str) -> (Router, CancellationToken) {
     let ct = CancellationToken::new();
     let server = Arc::new(BridgeServer::new(server_url.to_string(), ct.clone()));
 
     let app = Router::new()
         .route("/{agent_key}/mcp", axum::routing::any(handle_mcp))
-        .route(
-            "/health",
-            axum::routing::get(|| async { "ok" }),
-        )
+        .route("/health", axum::routing::get(|| async { "ok" }))
         .with_state(server);
+
+    (app, ct)
+}
+
+/// Start the shared bridge HTTP server.
+///
+/// Agents connect via `http://<listen_addr>/<agent_key>/mcp`. Each agent_key
+/// gets its own `StreamableHttpService` (and thus its own MCP session pool).
+pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::Result<()> {
+    let (app, ct) = build_bridge_router(server_url);
 
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     let port = listener.local_addr()?.port();
