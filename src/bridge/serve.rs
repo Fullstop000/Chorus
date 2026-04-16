@@ -1,9 +1,10 @@
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use axum::extract::{Path, Request, State};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Router;
 use rmcp::transport::streamable_http_server::{
@@ -11,6 +12,21 @@ use rmcp::transport::streamable_http_server::{
 };
 
 use super::ChatBridge;
+
+/// Max number of per-agent services the bridge will cache simultaneously.
+///
+/// Each entry corresponds to a `StreamableHttpService<ChatBridge>` plus its
+/// MCP session pool. Capping protects against unbounded memory growth when a
+/// misbehaving client cycles through fresh agent_keys.
+const MAX_SERVICES: usize = 128;
+
+/// Allowed shape for `agent_key` path segments.
+///
+/// The key is interpolated into internal URLs (`/internal/agent/{key}`) so it
+/// must not carry path separators, query fragments, dot-segments, or any
+/// characters that would let an attacker pivot to a different endpoint.
+static AGENT_KEY_REGEX: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_-]{1,64}$").expect("valid regex"));
 
 // ---------------------------------------------------------------------------
 // BridgeServer — shared state for all per-agent services
@@ -36,15 +52,19 @@ impl BridgeServer {
     }
 
     /// Get an existing service for `agent_key`, or create one on the fly.
+    ///
+    /// Returns `None` when the services map is at `MAX_SERVICES` capacity and
+    /// the requested key isn't already cached. Callers should surface this as
+    /// a 503 so the client can retry later.
     async fn get_or_create_service(
         &self,
         agent_key: &str,
-    ) -> StreamableHttpService<ChatBridge, LocalSessionManager> {
+    ) -> Option<StreamableHttpService<ChatBridge, LocalSessionManager>> {
         // Fast path — read lock only.
         {
             let guard = self.services.read().await;
             if let Some(svc) = guard.get(agent_key) {
-                return svc.clone();
+                return Some(svc.clone());
             }
         }
 
@@ -52,7 +72,19 @@ impl BridgeServer {
         let mut guard = self.services.write().await;
         // Double-check after acquiring the write lock.
         if let Some(svc) = guard.get(agent_key) {
-            return svc.clone();
+            return Some(svc.clone());
+        }
+
+        // Enforce the cap on new entries only; existing entries above the cap
+        // (if the limit were ever lowered) continue to serve.
+        if guard.len() >= MAX_SERVICES {
+            tracing::warn!(
+                agent_key,
+                cached = guard.len(),
+                max = MAX_SERVICES,
+                "refusing to create MCP service: services map at capacity"
+            );
+            return None;
         }
 
         let key = agent_key.to_owned();
@@ -70,7 +102,7 @@ impl BridgeServer {
 
         guard.insert(agent_key.to_owned(), svc.clone());
         tracing::info!(agent_key, "created MCP service for agent");
-        svc
+        Some(svc)
     }
 }
 
@@ -85,7 +117,25 @@ async fn handle_mcp(
     State(server): State<Arc<BridgeServer>>,
     request: Request<axum::body::Body>,
 ) -> Response {
-    let service = server.get_or_create_service(&agent_key).await;
+    // Reject keys that could be used to pivot to other Chorus endpoints.
+    // The key is interpolated into `/internal/agent/{key}` downstream.
+    if !AGENT_KEY_REGEX.is_match(&agent_key) {
+        return Response::builder()
+            .status(StatusCode::BAD_REQUEST)
+            .body(axum::body::Body::from(
+                "Invalid agent_key: must match [A-Za-z0-9_-]{1,64}",
+            ))
+            .expect("valid response");
+    }
+
+    let Some(service) = server.get_or_create_service(&agent_key).await else {
+        return Response::builder()
+            .status(StatusCode::SERVICE_UNAVAILABLE)
+            .body(axum::body::Body::from(
+                "Bridge service capacity exhausted; try again later",
+            ))
+            .expect("valid response");
+    };
     let response = service.handle(request).await;
     response.into_response()
 }
@@ -117,7 +167,20 @@ pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::R
     let (app, ct) = build_bridge_router(server_url);
 
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    let port = listener.local_addr()?.port();
+    let local_addr = listener.local_addr()?;
+
+    // Phase 1 has no authentication — refuse to expose the bridge beyond
+    // loopback. A user passing `--listen 0.0.0.0:4321` would otherwise silently
+    // accept unauthenticated network traffic.
+    if !local_addr.ip().is_loopback() {
+        anyhow::bail!(
+            "Bridge refuses to bind to non-loopback address {}. Phase 1 bridge has no authentication; \
+             only localhost binds are supported. If you need non-loopback binding, wait for Phase 2 pairing tokens.",
+            local_addr
+        );
+    }
+
+    let port = local_addr.port();
 
     // Write discovery info so drivers can find this bridge.
     crate::bridge::discovery::write_bridge_info(&crate::bridge::discovery::BridgeInfo {

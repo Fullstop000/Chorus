@@ -23,13 +23,37 @@ pub fn write_bridge_info(info: &BridgeInfo) -> std::io::Result<()> {
 }
 
 /// Write bridge info to a specific path. Creates parent directories if needed.
+///
+/// The write is atomic: we write to a sibling `.tmp` file and rename on top of
+/// the target, so a driver reading mid-write never observes a truncated file.
+/// On Unix the parent directory is tightened to 0700 and the file to 0600 to
+/// prevent other local users from reading the bridge port.
 pub fn write_bridge_info_to(path: &std::path::Path, info: &BridgeInfo) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Best-effort: if the dir pre-exists with laxer perms we tighten
+            // them; failures are non-fatal since the file mode below is the
+            // primary gate.
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
+        }
     }
     let json = serde_json::to_string_pretty(info)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    std::fs::write(path, json)
+
+    let tmp_path = path.with_extension("json.tmp");
+    std::fs::write(&tmp_path, json)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // Set perms on the temp file before rename so the final file is
+        // never world-readable, even momentarily.
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 /// Read bridge info from the default discovery file. Returns None if:

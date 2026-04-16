@@ -978,17 +978,17 @@ impl Backend for ChorusBackend {
             rmcp::ErrorData::internal_error(format!("Cannot create cache dir: {}", e), None)
         })?;
 
-        // Check for cached file
-        if let Ok(entries) = std::fs::read_dir(&cache_dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with(attachment_id) {
-                    let cached_path = entry.path().to_string_lossy().to_string();
-                    return Ok(format!(
-                        "File already cached at: {}\n\nUse your Read tool to view this image.",
-                        cached_path
-                    ));
-                }
+        // Check for cached file. We require an exact `{id}{ext}` match rather
+        // than a `starts_with(id)` scan so that e.g. attachment_id "abc" does
+        // not accidentally collide with a cached "abc123.png".
+        const KNOWN_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".bin"];
+        for ext in KNOWN_EXTENSIONS {
+            let candidate = cache_dir.join(format!("{}{}", attachment_id, ext));
+            if candidate.exists() {
+                return Ok(format!(
+                    "File already cached at: {}\n\nUse your Read tool to view this image.",
+                    candidate.to_string_lossy()
+                ));
             }
         }
 
