@@ -20,24 +20,38 @@
 //! cargo test --test live_runtime_tests -- --ignored --nocapture
 //! ```
 //!
+//! To run a single runtime's test:
+//!
+//! ```bash
+//! cargo test --test live_runtime_tests claude_agent_replies -- --ignored --nocapture
+//! cargo test --test live_runtime_tests codex_agent_replies -- --ignored --nocapture
+//! cargo test --test live_runtime_tests kimi_agent_replies  -- --ignored --nocapture
+//! ```
+//!
 //! Tests take 10–60 seconds each due to real runtime latency. If the required
-//! binary is missing on `PATH` or required auth env vars are unset, the test
-//! prints a skip message and returns `Ok(())` rather than failing.
+//! binary is missing on `PATH`, the test prints a skip message and returns
+//! `Ok(())` rather than failing.
 //!
 //! # Required environment
 //!
-//! | Test                                          | Binary    | Env vars required                    |
-//! |-----------------------------------------------|-----------|--------------------------------------|
-//! | `opencode_agent_replies_through_shared_bridge`| `opencode`| `OPENCODE_MODEL` (optional, defaults to `opencode/gpt-5-nano`); runtime must already be authed via `opencode auth login` |
+//! | Test                                          | Binary    | Auth / env vars                                                                   | Model env var               |
+//! |-----------------------------------------------|-----------|-----------------------------------------------------------------------------------|-----------------------------|
+//! | `opencode_agent_replies_through_shared_bridge`| `opencode`| `opencode auth login` (OAuth); no API key needed                                  | `OPENCODE_MODEL` (optional, default `opencode/gpt-5-nano`) |
+//! | `claude_agent_replies_through_shared_bridge`  | `claude`  | `ANTHROPIC_API_KEY` env var **or** OAuth via `claude login`                       | `CHORUS_TEST_CLAUDE_MODEL`  (optional, default `sonnet`) |
+//! | `codex_agent_replies_through_shared_bridge`   | `codex`   | `OPENAI_API_KEY` env var **or** `codex login`; note: HTTP MCP may be unstable in some Codex versions (see RUNTIME_MCP_SUPPORT.md) | `CHORUS_TEST_CODEX_MODEL` (optional, default `gpt-5.4`) |
+//! | `kimi_agent_replies_through_shared_bridge`    | `kimi`    | Moonshot credentials in `~/.kimi/credentials/kimi-code.json`                     | `CHORUS_TEST_KIMI_MODEL` (optional, default `kimi-code/kimi-for-coding`) |
 //!
 //! # Debugging
 //!
 //! Use `--nocapture` to see runtime stderr piped through our tracing setup.
-//! If a test hangs, check whether `opencode` has valid auth in `~/.opencode/`.
+//! If a test hangs, check whether the runtime has valid auth in its config dir.
 
 use std::sync::Arc;
 use std::time::Duration;
 
+use chorus::agent::drivers::v2::claude::ClaudeDriver;
+use chorus::agent::drivers::v2::codex::CodexDriver;
+use chorus::agent::drivers::v2::kimi::KimiDriver;
 use chorus::agent::drivers::v2::opencode::OpencodeDriver;
 use chorus::agent::drivers::v2::{
     AgentSpec, PromptReq, RuntimeDriver, StartOpts,
@@ -285,6 +299,387 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     if !found {
         // Print the final history so the failure message is actionable.
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s; \
+             channel history was: {:?}",
+            messages
+                .iter()
+                .map(|m| (&m.sender_name, &m.content))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    Ok(())
+}
+
+/// Live round-trip: spawn a real `claude` (Claude Code CLI) runtime, send it a
+/// prompt, verify its reply lands in the Chorus store via the shared bridge.
+///
+/// Requires:
+///   - `claude` binary on PATH
+///   - Auth: either `ANTHROPIC_API_KEY` env var set, or already logged in via
+///     `claude login`. The runtime handles auth itself; we do NOT skip if the
+///     key is absent — a missing key produces a clear auth error from Claude.
+///   - Optional: `CHORUS_TEST_CLAUDE_MODEL` env var (defaults to `sonnet`)
+///
+/// What it proves:
+///   - `ClaudeDriver::attach` + `AgentHandle::start` with
+///     `bridge_endpoint = Some(bridge_url)` writes a `.chorus-claude-mcp.json`
+///     config with `"type": "http"` and the token URL, then spawns `claude -p`
+///     in stream-json mode wired to the shared bridge.
+///   - The runtime's `send_message` MCP tool call routes through the bridge
+///     into the Chorus store under the agent's identity.
+#[tokio::test]
+#[ignore = "requires claude binary + Anthropic auth (ANTHROPIC_API_KEY or claude login)"]
+async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
+    // 1. Skip if claude binary not on PATH.
+    if !binary_on_path("claude") {
+        eprintln!("SKIP: `claude` binary not found on PATH");
+        return Ok(());
+    }
+
+    let model = std::env::var("CHORUS_TEST_CLAUDE_MODEL")
+        .unwrap_or_else(|_| "sonnet".to_string());
+
+    // 2. Start Chorus server + shared bridge.
+    let (server_url, store) = start_chorus_server().await?;
+    let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
+
+    // 3. Seed agent record and channel membership.
+    let agent_key = "claude-live-bot";
+    store.create_agent_record(&AgentRecordUpsert {
+        name: agent_key,
+        display_name: "Claude Live Bot",
+        description: None,
+        system_prompt: None,
+        runtime: "claude",
+        model: &model,
+        reasoning_effort: None,
+        env_vars: &[],
+    })?;
+    store.join_channel("general", agent_key, SenderType::Agent)?;
+
+    // 4. Seed a user message in #general for conversation shape.
+    store.create_message(CreateMessage {
+        channel_name: "general",
+        thread_parent_id: None,
+        sender_name: "tester",
+        sender_type: SenderType::Human,
+        content: "@claude-live-bot please reply to everyone",
+        attachment_ids: &[],
+        suppress_event: false,
+        run_id: None,
+    })?;
+
+    // 5. Build AgentSpec with bridge_endpoint set.
+    let tmpdir = tempfile::tempdir()?;
+    let spec = AgentSpec {
+        display_name: "Claude Live Bot".to_string(),
+        description: None,
+        system_prompt: None,
+        model: model.clone(),
+        reasoning_effort: None,
+        env_vars: vec![],
+        working_directory: tmpdir.path().to_path_buf(),
+        bridge_binary: "chorus".to_string(),
+        server_url: server_url.clone(),
+        bridge_endpoint: Some(bridge_url.clone()),
+    };
+
+    // 6. Attach + start the runtime with initial prompt.
+    let driver = ClaudeDriver;
+    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let mut handle = attach_result.handle;
+
+    let prompt = PromptReq {
+        text: format!(
+            "You are an agent named `{agent_key}` in a chat channel. \
+             Use the `send_message` tool to post the exact text \
+             `hello world` to the channel `#general`. Do not include any \
+             other commentary — just call the tool once and stop."
+        ),
+        attachments: vec![],
+    };
+
+    handle.start(StartOpts::default(), Some(prompt)).await?;
+
+    // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        if messages.iter().any(|m| {
+            m.sender_name == agent_key && m.content.to_lowercase().contains("hello world")
+        }) {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // 8. Clean up.
+    let _ = handle.close().await;
+    bridge_ct.cancel();
+
+    if !found {
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s; \
+             channel history was: {:?}",
+            messages
+                .iter()
+                .map(|m| (&m.sender_name, &m.content))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    Ok(())
+}
+
+/// Live round-trip: spawn a real `codex` (OpenAI Codex CLI) runtime, send it a
+/// prompt, verify its reply lands in the Chorus store via the shared bridge.
+///
+/// Requires:
+///   - `codex` binary on PATH (uses `codex app-server` native protocol)
+///   - `OPENAI_API_KEY` env var set, or already logged in via `codex login`
+///   - Optional: `CHORUS_TEST_CODEX_MODEL` env var (defaults to `gpt-5.4`)
+///
+/// **Note on HTTP MCP stability**: Several GitHub issues (openai/codex #4707,
+/// #5208, #11284) report instability with streamable HTTP in certain Codex
+/// versions. If this test fails with MCP transport errors rather than auth or
+/// logic errors, that is consistent with the known issue documented in
+/// `docs/RUNTIME_MCP_SUPPORT.md`. The test remains in place for verification
+/// once a stable Codex version is available.
+///
+/// What it proves:
+///   - `CodexDriver::attach` + `AgentHandle::start` with
+///     `bridge_endpoint = Some(bridge_url)` passes `-c mcp_servers.chat.url=…`
+///     flags to `codex app-server`, wiring it to the shared bridge.
+///   - The runtime's `send_message` MCP tool call routes through the bridge
+///     into the Chorus store under the agent's identity.
+#[tokio::test]
+#[ignore = "requires codex binary + OpenAI auth (OPENAI_API_KEY or codex login)"]
+async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
+    // 1. Skip if codex binary not on PATH.
+    if !binary_on_path("codex") {
+        eprintln!("SKIP: `codex` binary not found on PATH");
+        return Ok(());
+    }
+
+    let model = std::env::var("CHORUS_TEST_CODEX_MODEL")
+        .unwrap_or_else(|_| "gpt-5.4".to_string());
+
+    // 2. Start Chorus server + shared bridge.
+    let (server_url, store) = start_chorus_server().await?;
+    let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
+
+    // 3. Seed agent record and channel membership.
+    let agent_key = "codex-live-bot";
+    store.create_agent_record(&AgentRecordUpsert {
+        name: agent_key,
+        display_name: "Codex Live Bot",
+        description: None,
+        system_prompt: None,
+        runtime: "codex",
+        model: &model,
+        reasoning_effort: None,
+        env_vars: &[],
+    })?;
+    store.join_channel("general", agent_key, SenderType::Agent)?;
+
+    // 4. Seed a user message in #general for conversation shape.
+    store.create_message(CreateMessage {
+        channel_name: "general",
+        thread_parent_id: None,
+        sender_name: "tester",
+        sender_type: SenderType::Human,
+        content: "@codex-live-bot please reply to everyone",
+        attachment_ids: &[],
+        suppress_event: false,
+        run_id: None,
+    })?;
+
+    // 5. Build AgentSpec with bridge_endpoint set.
+    let tmpdir = tempfile::tempdir()?;
+    let spec = AgentSpec {
+        display_name: "Codex Live Bot".to_string(),
+        description: None,
+        system_prompt: None,
+        model: model.clone(),
+        reasoning_effort: None,
+        env_vars: vec![],
+        working_directory: tmpdir.path().to_path_buf(),
+        bridge_binary: "chorus".to_string(),
+        server_url: server_url.clone(),
+        bridge_endpoint: Some(bridge_url.clone()),
+    };
+
+    // 6. Attach + start the runtime with initial prompt.
+    //    Codex uses the `app-server` native protocol; the driver passes
+    //    `-c mcp_servers.chat.url=…` flags to wire up the HTTP bridge.
+    let driver = CodexDriver;
+    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let mut handle = attach_result.handle;
+
+    let prompt = PromptReq {
+        text: format!(
+            "You are an agent named `{agent_key}` in a chat channel. \
+             Use the `send_message` tool to post the exact text \
+             `hello world` to the channel `#general`. Do not include any \
+             other commentary — just call the tool once and stop."
+        ),
+        attachments: vec![],
+    };
+
+    handle.start(StartOpts::default(), Some(prompt)).await?;
+
+    // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        if messages.iter().any(|m| {
+            m.sender_name == agent_key && m.content.to_lowercase().contains("hello world")
+        }) {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // 8. Clean up.
+    let _ = handle.close().await;
+    bridge_ct.cancel();
+
+    if !found {
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s; \
+             channel history was: {:?}",
+            messages
+                .iter()
+                .map(|m| (&m.sender_name, &m.content))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    Ok(())
+}
+
+/// Live round-trip: spawn a real `kimi` (Moonshot Kimi CLI) runtime, send it a
+/// prompt, verify its reply lands in the Chorus store via the shared bridge.
+///
+/// Requires:
+///   - `kimi` binary on PATH
+///   - Moonshot credentials in `~/.kimi/credentials/kimi-code.json` (populated
+///     by the Kimi CLI login flow; Chorus does not manage Kimi auth)
+///   - Optional: `CHORUS_TEST_KIMI_MODEL` env var (defaults to
+///     `kimi-code/kimi-for-coding`)
+///
+/// What it proves:
+///   - `KimiDriver::attach` + `AgentHandle::start` with
+///     `bridge_endpoint = Some(bridge_url)` writes a `.chorus-kimi-mcp.json`
+///     config with a `"url"` field and passes the same URL inline in the ACP
+///     `session/new` params, wiring the Kimi process to the shared bridge.
+///   - The runtime's `send_message` MCP tool call routes through the bridge
+///     into the Chorus store under the agent's identity.
+#[tokio::test]
+#[ignore = "requires kimi binary + Moonshot auth (~/.kimi/credentials/kimi-code.json)"]
+async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
+    // 1. Skip if kimi binary not on PATH.
+    if !binary_on_path("kimi") {
+        eprintln!("SKIP: `kimi` binary not found on PATH");
+        return Ok(());
+    }
+
+    let model = std::env::var("CHORUS_TEST_KIMI_MODEL")
+        .unwrap_or_else(|_| "kimi-code/kimi-for-coding".to_string());
+
+    // 2. Start Chorus server + shared bridge.
+    let (server_url, store) = start_chorus_server().await?;
+    let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
+
+    // 3. Seed agent record and channel membership.
+    let agent_key = "kimi-live-bot";
+    store.create_agent_record(&AgentRecordUpsert {
+        name: agent_key,
+        display_name: "Kimi Live Bot",
+        description: None,
+        system_prompt: None,
+        runtime: "kimi",
+        model: &model,
+        reasoning_effort: None,
+        env_vars: &[],
+    })?;
+    store.join_channel("general", agent_key, SenderType::Agent)?;
+
+    // 4. Seed a user message in #general for conversation shape.
+    store.create_message(CreateMessage {
+        channel_name: "general",
+        thread_parent_id: None,
+        sender_name: "tester",
+        sender_type: SenderType::Human,
+        content: "@kimi-live-bot please reply to everyone",
+        attachment_ids: &[],
+        suppress_event: false,
+        run_id: None,
+    })?;
+
+    // 5. Build AgentSpec with bridge_endpoint set.
+    let tmpdir = tempfile::tempdir()?;
+    let spec = AgentSpec {
+        display_name: "Kimi Live Bot".to_string(),
+        description: None,
+        system_prompt: None,
+        model: model.clone(),
+        reasoning_effort: None,
+        env_vars: vec![],
+        working_directory: tmpdir.path().to_path_buf(),
+        bridge_binary: "chorus".to_string(),
+        server_url: server_url.clone(),
+        bridge_endpoint: Some(bridge_url.clone()),
+    };
+
+    // 6. Attach + start the runtime with initial prompt.
+    //    Kimi uses ACP over stdio (`kimi acp`). The driver writes a
+    //    `.chorus-kimi-mcp.json` config file AND embeds the bridge URL in the
+    //    ACP `session/new` params — both touch points are exercised here.
+    let driver = KimiDriver;
+    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let mut handle = attach_result.handle;
+
+    let prompt = PromptReq {
+        text: format!(
+            "You are an agent named `{agent_key}` in a chat channel. \
+             Use the `send_message` tool to post the exact text \
+             `hello world` to the channel `#general`. Do not include any \
+             other commentary — just call the tool once and stop."
+        ),
+        attachments: vec![],
+    };
+
+    handle.start(StartOpts::default(), Some(prompt)).await?;
+
+    // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        if messages.iter().any(|m| {
+            m.sender_name == agent_key && m.content.to_lowercase().contains("hello world")
+        }) {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    // 8. Clean up.
+    let _ = handle.close().await;
+    bridge_ct.cancel();
+
+    if !found {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
         anyhow::bail!(
             "agent did not send a reply containing 'hello world' within 60s; \
