@@ -113,8 +113,8 @@ fn is_pid_alive(pid: u32) -> bool {
 
     match kill(Pid::from_raw(pid as i32), None) {
         Ok(_) => true,
-        Err(Errno::EPERM) => true,  // process exists, we just lack permission
-        Err(_) => false,            // ESRCH or anything else → treat as dead
+        Err(Errno::EPERM) => true, // process exists, we just lack permission
+        Err(_) => false,           // ESRCH or anything else → treat as dead
     }
 }
 

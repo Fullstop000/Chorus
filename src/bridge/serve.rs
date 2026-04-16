@@ -1,8 +1,8 @@
+use anyhow::Context;
 use std::collections::HashMap;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use anyhow::Context;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -232,9 +232,7 @@ async fn handle_mcp_token(
 fn unauthorized_response() -> Response {
     Response::builder()
         .status(StatusCode::UNAUTHORIZED)
-        .body(axum::body::Body::from(
-            "Invalid or expired pairing token",
-        ))
+        .body(axum::body::Body::from("Invalid or expired pairing token"))
         .expect("valid response")
 }
 

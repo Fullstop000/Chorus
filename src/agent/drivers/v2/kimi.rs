@@ -297,7 +297,6 @@ impl AgentHandle for KimiHandle {
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
             .context("failed to write MCP config")?;
 
-
         // Build CLI args
         let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
         let wd_str = wd.to_string_lossy().into_owned();
@@ -939,10 +938,7 @@ mod tests {
 
         let servers = build_acp_mcp_servers("agent-abc", &spec, Some("tok-xyz"));
         let arr = servers.as_array().expect("array");
-        assert_eq!(
-            arr[0]["url"],
-            "http://127.0.0.1:4321/token/tok-xyz/mcp"
-        );
+        assert_eq!(arr[0]["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
     }
 
     #[test]

@@ -299,7 +299,11 @@ mod tests {
             cause: "timeout".to_string(),
         }
         .into();
-        assert!(data.message.contains("CHORUS-4001"), "got: {}", data.message);
+        assert!(
+            data.message.contains("CHORUS-4001"),
+            "got: {}",
+            data.message
+        );
         assert!(data.message.contains("timeout"), "got: {}", data.message);
     }
 }

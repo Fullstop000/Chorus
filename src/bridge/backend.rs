@@ -113,11 +113,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<String, BridgeError>;
 
     /// View/download a file attachment.
-    async fn view_file(
-        &self,
-        agent_key: &str,
-        attachment_id: &str,
-    ) -> Result<String, BridgeError>;
+    async fn view_file(&self, agent_key: &str, attachment_id: &str) -> Result<String, BridgeError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,15 +251,15 @@ impl Backend for ChorusBackend {
             block,
             timeout_ms
         );
-        let res = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
+        let res =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| BridgeError::PlatformUnreachable {
+                    url: url.clone(),
+                    cause: e.to_string(),
+                })?;
 
         if !res.status().is_success() {
             let status = res.status().as_u16();
@@ -345,15 +341,15 @@ impl Backend for ChorusBackend {
             url.push_str(&format!("&after={}", a));
         }
 
-        let res = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
+        let res =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| BridgeError::PlatformUnreachable {
+                    url: url.clone(),
+                    cause: e.to_string(),
+                })?;
 
         if !res.status().is_success() {
             let status = res.status().as_u16();
@@ -541,15 +537,15 @@ impl Backend for ChorusBackend {
 
     async fn server_info(&self, agent_key: &str) -> Result<Value, BridgeError> {
         let url = format!("{}/server", self.base_url(agent_key));
-        let res = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
+        let res =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| BridgeError::PlatformUnreachable {
+                    url: url.clone(),
+                    cause: e.to_string(),
+                })?;
 
         if !res.status().is_success() {
             let status = res.status().as_u16();
@@ -580,15 +576,15 @@ impl Backend for ChorusBackend {
             url.push_str(&format!("&status={}", urlencoding::encode(status_str)));
         }
 
-        let res = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
+        let res =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| BridgeError::PlatformUnreachable {
+                    url: url.clone(),
+                    cause: e.to_string(),
+                })?;
 
         if !res.status().is_success() {
             let status = res.status().as_u16();
@@ -934,10 +930,13 @@ impl Backend for ChorusBackend {
 
         let resolve_status = resolve_res.status().as_u16();
         let resolve_data: Value =
-            resolve_res.json().await.map_err(|e| BridgeError::ServerError {
-                status: resolve_status,
-                body: format!("invalid JSON from server: {}", e),
-            })?;
+            resolve_res
+                .json()
+                .await
+                .map_err(|e| BridgeError::ServerError {
+                    status: resolve_status,
+                    body: format!("invalid JSON from server: {}", e),
+                })?;
 
         let channel_id = resolve_data
             .get("channelId")
@@ -1065,7 +1064,8 @@ impl Backend for ChorusBackend {
         // Check for cached file. We require an exact `{id}{ext}` match rather
         // than a `starts_with(id)` scan so that e.g. attachment_id "abc" does
         // not accidentally collide with a cached "abc123.png".
-        const KNOWN_EXTENSIONS: &[&str] = &[".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".bin"];
+        const KNOWN_EXTENSIONS: &[&str] =
+            &[".jpg", ".jpeg", ".png", ".gif", ".webp", ".pdf", ".bin"];
         for ext in KNOWN_EXTENSIONS {
             let candidate = cache_dir.join(format!("{}{}", attachment_id, ext));
             if candidate.exists() {
@@ -1084,15 +1084,15 @@ impl Backend for ChorusBackend {
             self.server_url.trim_end_matches('/'),
             attachment_id
         );
-        let res = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
+        let res =
+            self.client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| BridgeError::PlatformUnreachable {
+                    url: url.clone(),
+                    cause: e.to_string(),
+                })?;
 
         if !res.status().is_success() {
             let status = res.status().as_u16();

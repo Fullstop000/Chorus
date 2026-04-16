@@ -681,10 +681,7 @@ pub async fn request_pairing_token(
     agent_key: &str,
 ) -> anyhow::Result<String> {
     use anyhow::Context;
-    let url = format!(
-        "{}/admin/pair",
-        bridge_endpoint.trim_end_matches('/')
-    );
+    let url = format!("{}/admin/pair", bridge_endpoint.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
@@ -700,10 +697,7 @@ pub async fn request_pairing_token(
         let body = res.text().await.unwrap_or_default();
         anyhow::bail!("bridge-pair failed: {} {}", status, body);
     }
-    let json: serde_json::Value = res
-        .json()
-        .await
-        .context("invalid JSON from bridge")?;
+    let json: serde_json::Value = res.json().await.context("invalid JSON from bridge")?;
     json["token"]
         .as_str()
         .map(|s| s.to_string())
@@ -966,8 +960,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let url = format!("http://127.0.0.1:{port}");
-        let handle =
-            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         // Give the listener a tick to be ready.
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         (url, handle)

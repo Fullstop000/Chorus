@@ -998,9 +998,7 @@ mod tests {
 
     // ── bridge endpoint helper ──
 
-    fn bridge_endpoint_from(
-        info: Option<crate::bridge::discovery::BridgeInfo>,
-    ) -> Option<String> {
+    fn bridge_endpoint_from(info: Option<crate::bridge::discovery::BridgeInfo>) -> Option<String> {
         info.map(|i| format!("http://127.0.0.1:{}", i.port))
     }
 

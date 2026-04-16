@@ -301,7 +301,14 @@ pub async fn run() -> anyhow::Result<()> {
         }) => {
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
             let template_dir_str = resolve_template_dir(&data_dir_str, template_dir);
-            serve::run(port, data_dir_str, template_dir_str, shared_bridge, bridge_port).await
+            serve::run(
+                port,
+                data_dir_str,
+                template_dir_str,
+                shared_bridge,
+                bridge_port,
+            )
+            .await
         }
     }
 }

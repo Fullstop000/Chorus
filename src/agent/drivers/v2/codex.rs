@@ -929,7 +929,10 @@ mod tests {
             "unexpected url override in stdio path: {joined}"
         );
         // Each config value must be preceded by -c
-        let pairs: Vec<&str> = args.chunks(2).flat_map(|c| c.iter().map(|s| s.as_str())).collect();
+        let pairs: Vec<&str> = args
+            .chunks(2)
+            .flat_map(|c| c.iter().map(|s| s.as_str()))
+            .collect();
         for i in (0..args.len()).step_by(2) {
             assert_eq!(args[i], "-c", "expected -c at index {i}, got: {}", args[i]);
         }
@@ -977,7 +980,8 @@ mod tests {
             .expect("url arg not found");
         // JSON-decoded value inside the arg
         let json_val = url_arg.trim_start_matches("mcp_servers.chat.url=");
-        let decoded: String = serde_json::from_str(json_val).expect("url value should be JSON string");
+        let decoded: String =
+            serde_json::from_str(json_val).expect("url value should be JSON string");
         assert_eq!(decoded, "http://127.0.0.1:4321/token/tok-xyz/mcp");
     }
 
@@ -994,9 +998,13 @@ mod tests {
             .find(|a| a.starts_with("mcp_servers.chat.url="))
             .expect("url arg not found");
         let json_val = url_arg.trim_start_matches("mcp_servers.chat.url=");
-        let decoded: String = serde_json::from_str(json_val).expect("url value should be JSON string");
+        let decoded: String =
+            serde_json::from_str(json_val).expect("url value should be JSON string");
         assert_eq!(decoded, "http://127.0.0.1:4321/token/tok-xyz/mcp");
-        assert!(!decoded.contains("//token/"), "double-slash in URL: {decoded}");
+        assert!(
+            !decoded.contains("//token/"),
+            "double-slash in URL: {decoded}"
+        );
     }
 
     #[test]

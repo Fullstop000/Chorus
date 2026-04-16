@@ -1,10 +1,10 @@
 //! Native v2 driver for the OpenCode runtime using ACP protocol.
 
+use anyhow::{bail, Context};
+use async_trait::async_trait;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-use anyhow::{bail, Context};
-use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
@@ -253,9 +253,16 @@ impl AgentHandle for OpencodeHandle {
         // fails we surface the error — no silent fallback to stdio, so
         // misconfiguration is loud.
         let pairing_token = if let Some(endpoint) = &self.spec.bridge_endpoint {
-            Some(super::request_pairing_token(endpoint, &self.key).await.with_context(
-                || format!("failed to pair with bridge at {endpoint} for agent {}", self.key),
-            )?)
+            Some(
+                super::request_pairing_token(endpoint, &self.key)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to pair with bridge at {endpoint} for agent {}",
+                            self.key
+                        )
+                    })?,
+            )
         } else {
             None
         };
@@ -269,8 +276,11 @@ impl AgentHandle for OpencodeHandle {
                 "chat": mcp_chat,
             }
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&opencode_config)?)
-            .context("failed to write opencode.json")?;
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&opencode_config)?,
+        )
+        .context("failed to write opencode.json")?;
 
         // Build CLI args
         let args = vec!["acp".to_string()];
@@ -829,10 +839,7 @@ mod tests {
 
         let config = build_mcp_chat_config("agent-abc", &spec, Some("tok-xyz"));
         assert_eq!(config["type"], "remote");
-        assert_eq!(
-            config["url"],
-            "http://127.0.0.1:4321/token/tok-xyz/mcp"
-        );
+        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
         assert!(config.get("command").is_none());
     }
 
@@ -843,10 +850,7 @@ mod tests {
         spec.bridge_endpoint = Some("http://127.0.0.1:4321/".to_string());
 
         let config = build_mcp_chat_config("agent-abc", &spec, Some("tok-xyz"));
-        assert_eq!(
-            config["url"],
-            "http://127.0.0.1:4321/token/tok-xyz/mcp"
-        );
+        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
     }
 
     #[test]
@@ -861,5 +865,4 @@ mod tests {
         let config = build_mcp_chat_config("agent-abc", &spec, None);
         assert_eq!(config["type"], "local");
     }
-
 }

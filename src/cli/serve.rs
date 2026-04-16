@@ -130,7 +130,9 @@ pub async fn run(
         let bridge_listen = format!("127.0.0.1:{bridge_port}");
         match tokio::net::TcpListener::bind(&bridge_listen).await {
             Ok(bridge_listener) => {
-                let local_addr = bridge_listener.local_addr().expect("bridge listener has a local addr");
+                let local_addr = bridge_listener
+                    .local_addr()
+                    .expect("bridge listener has a local addr");
                 // Phase 1 bridge only supports loopback — guard in case the
                 // resolved address is somehow non-loopback (shouldn't happen
                 // with 127.0.0.1, but be defensive).
@@ -160,7 +162,9 @@ pub async fn run(
                     let bridge_shutdown = shutdown_token.clone();
                     tokio::spawn(async move {
                         if let Err(e) = axum::serve(bridge_listener, bridge_app)
-                            .with_graceful_shutdown(async move { bridge_shutdown.cancelled().await })
+                            .with_graceful_shutdown(
+                                async move { bridge_shutdown.cancelled().await },
+                            )
                             .await
                         {
                             tracing::error!(err = %e, "shared bridge exited with error");

@@ -74,9 +74,7 @@ use chorus::agent::drivers::v2::claude::ClaudeDriver;
 use chorus::agent::drivers::v2::codex::CodexDriver;
 use chorus::agent::drivers::v2::kimi::KimiDriver;
 use chorus::agent::drivers::v2::opencode::OpencodeDriver;
-use chorus::agent::drivers::v2::{
-    AgentSpec, PromptReq, RuntimeDriver, StartOpts,
-};
+use chorus::agent::drivers::v2::{AgentSpec, PromptReq, RuntimeDriver, StartOpts};
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
@@ -224,8 +222,8 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let model = std::env::var("OPENCODE_MODEL")
-        .unwrap_or_else(|_| "opencode/gpt-5-nano".to_string());
+    let model =
+        std::env::var("OPENCODE_MODEL").unwrap_or_else(|_| "opencode/gpt-5-nano".to_string());
 
     // 2. Start Chorus server + shared bridge.
     let (server_url, store) = start_chorus_server().await?;
@@ -295,19 +293,17 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         attachments: vec![],
     };
 
-    handle
-        .start(StartOpts::default(), Some(prompt))
-        .await?;
+    handle.start(StartOpts::default(), Some(prompt)).await?;
 
     // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        if messages.iter().any(|m| {
-            m.sender_name == agent_key
-                && m.content.to_lowercase().contains("hello world")
-        }) {
+        if messages
+            .iter()
+            .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
+        {
             found = true;
             break;
         }
@@ -360,8 +356,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let model = std::env::var("CHORUS_TEST_CLAUDE_MODEL")
-        .unwrap_or_else(|_| "sonnet".to_string());
+    let model = std::env::var("CHORUS_TEST_CLAUDE_MODEL").unwrap_or_else(|_| "sonnet".to_string());
 
     // 2. Start Chorus server + shared bridge.
     let (server_url, store) = start_chorus_server().await?;
@@ -430,9 +425,10 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        if messages.iter().any(|m| {
-            m.sender_name == agent_key && m.content.to_lowercase().contains("hello world")
-        }) {
+        if messages
+            .iter()
+            .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
+        {
             found = true;
             break;
         }
@@ -488,8 +484,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let model = std::env::var("CHORUS_TEST_CODEX_MODEL")
-        .unwrap_or_else(|_| "gpt-5.4".to_string());
+    let model = std::env::var("CHORUS_TEST_CODEX_MODEL").unwrap_or_else(|_| "gpt-5.4".to_string());
 
     // 2. Start Chorus server + shared bridge.
     let (server_url, store) = start_chorus_server().await?;
@@ -560,9 +555,10 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        if messages.iter().any(|m| {
-            m.sender_name == agent_key && m.content.to_lowercase().contains("hello world")
-        }) {
+        if messages
+            .iter()
+            .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
+        {
             found = true;
             break;
         }
@@ -687,9 +683,10 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        if messages.iter().any(|m| {
-            m.sender_name == agent_key && m.content.to_lowercase().contains("hello world")
-        }) {
+        if messages
+            .iter()
+            .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
+        {
             found = true;
             break;
         }

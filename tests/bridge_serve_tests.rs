@@ -22,9 +22,7 @@ async fn start_bridge_with_server(
 ) -> (String, tokio_util::sync::CancellationToken) {
     let (app, ct) = build_bridge_router(server_url);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let addr = format!("http://127.0.0.1:{}", port);
 
@@ -48,9 +46,7 @@ async fn start_bridge_with_token_ttl(
 ) -> (String, tokio_util::sync::CancellationToken) {
     let (app, ct) = build_bridge_router_with_token_ttl("http://localhost:1", Some(token_ttl));
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
     let addr = format!("http://127.0.0.1:{}", port);
 
@@ -237,7 +233,10 @@ async fn two_agents_get_separate_sessions() {
         .to_owned();
     let body_a = resp_a.text().await.unwrap();
     let json_a = extract_jsonrpc_from_sse(&body_a);
-    assert_eq!(json_a["jsonrpc"], "2.0", "agent-a should return valid JSON-RPC");
+    assert_eq!(
+        json_a["jsonrpc"], "2.0",
+        "agent-a should return valid JSON-RPC"
+    );
 
     let resp_b = send_initialize(&client, &format!("{}/agent-b/mcp", addr)).await;
     assert_eq!(resp_b.status(), 200, "agent-b initialize should return 200");
@@ -250,7 +249,10 @@ async fn two_agents_get_separate_sessions() {
         .to_owned();
     let body_b = resp_b.text().await.unwrap();
     let json_b = extract_jsonrpc_from_sse(&body_b);
-    assert_eq!(json_b["jsonrpc"], "2.0", "agent-b should return valid JSON-RPC");
+    assert_eq!(
+        json_b["jsonrpc"], "2.0",
+        "agent-b should return valid JSON-RPC"
+    );
 
     assert_ne!(
         session_a, session_b,
@@ -411,8 +413,7 @@ async fn bridge_sends_message_to_chorus_server() {
     assert!(
         messages
             .iter()
-            .any(|m| m.content.contains("Hello from bridge test!")
-                && m.sender_name == "bot1"),
+            .any(|m| m.content.contains("Hello from bridge test!") && m.sender_name == "bot1"),
         "expected bridge-sent message in store, got: {:?}",
         messages
             .iter()
@@ -441,7 +442,9 @@ async fn bridge_pair_issues_token() {
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
-    let token = body["token"].as_str().expect("response should include token");
+    let token = body["token"]
+        .as_str()
+        .expect("response should include token");
     assert!(!token.is_empty(), "token should be non-empty");
     // URL-safe base64 uses only these chars.
     assert!(
@@ -482,7 +485,11 @@ async fn token_connects_to_agent_mcp() {
     // 2. Initialize against the token URL — should succeed.
     let token_url = format!("{}/token/{}/mcp", addr, token);
     let resp = send_initialize(&client, &token_url).await;
-    assert_eq!(resp.status(), 200, "token-based initialize should return 200");
+    assert_eq!(
+        resp.status(),
+        200,
+        "token-based initialize should return 200"
+    );
 
     let session_id = resp
         .headers()
@@ -525,11 +532,7 @@ async fn invalid_token_returns_unauthorized() {
     let (addr, ct) = start_bridge().await;
     let client = reqwest::Client::new();
 
-    let resp = send_initialize(
-        &client,
-        &format!("{}/token/not-a-real-token/mcp", addr),
-    )
-    .await;
+    let resp = send_initialize(&client, &format!("{}/token/not-a-real-token/mcp", addr)).await;
     assert_eq!(
         resp.status(),
         401,

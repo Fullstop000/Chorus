@@ -123,9 +123,7 @@ fn generate_token() -> String {
 /// connect URL.
 pub async fn run_bridge_pair(agent_key: &str) -> anyhow::Result<()> {
     let info = crate::bridge::discovery::read_bridge_info().ok_or_else(|| {
-        anyhow::anyhow!(
-            "no running bridge found — start one with `chorus bridge-serve` first"
-        )
+        anyhow::anyhow!("no running bridge found — start one with `chorus bridge-serve` first")
     })?;
 
     let url = format!("http://127.0.0.1:{}/admin/pair", info.port);
