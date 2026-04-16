@@ -170,35 +170,21 @@ If a case changes, update the markdown case and its Playwright spec in the same 
 
 ## Subprocess and External Runtime Tests
 
-Chorus has tests that spawn real external processes: agent runtimes (Claude, Codex, Kimi, OpenCode), the shared MCP bridge daemon, and future per-backend adapters. These tests live outside the Playwright QA flow but follow the same evidence discipline.
+Chorus has tests that spawn real external processes: agent runtimes (Claude, Codex, Kimi, OpenCode), the shared MCP bridge daemon, and future per-backend adapters. These tests follow the same case-catalog discipline as browser QA: each scenario gets a numbered case, each case links to its executable.
 
-Current home: `tests/live_runtime_tests.rs`.
+Case module: [`cases/bridge.md`](./cases/bridge.md). Case IDs: `BRG-NNN` (bridge HTTP layer), `LRT-NNN` (live runtime round-trips), `INT-NNN` (full `chorus serve --shared-bridge` integration).
 
 ### The Iron Rule
 
 **When a subprocess-spawning test fails, its failure message MUST include the subprocess's diagnostic output.**
 
-This is not optional. A test that prints "agent did not reply in 60s" without also printing the agent's stderr, its log file contents, and the config we wrote has shipped a timeout, not a bug report. Every minute of hand-debugging a silent subprocess failure is a signal that the test didn't do its job.
+A test that prints "agent did not reply in 60s" without also dumping the subprocess's stderr, log file contents, and config files has shipped a timeout, not a bug report. Each case's "Failure evidence" field in the catalog lists the specific artifacts it must emit.
 
-The reason: subprocesses report errors through stderr, structured log files, and exit codes — not through the test's observation channel. If the test only watches for the expected success state, a failure mode that prevents the subprocess from reaching that state produces no signal.
-
-### Required Failure Artifacts
-
-A subprocess-spawning test that fails must dump:
-
-1. **Subprocess stderr**, buffered to at least the last 200 lines. Applies to every subprocess the test started.
-2. **The subprocess's own log file contents** when the binary writes logs. Document the file path in the test so future readers know where to look.
-3. **Any configuration files the test wrote** (MCP config, pairing token, session state). Include the file path and content.
-4. **Observable state at the moment of failure**:
-   - For runtime tests: the Chorus channel history, the agent's last known state, any received events
-   - For bridge tests: the session registry contents, active agent keys, pairing token ledger
-5. **Exit code and signal** if the subprocess has already exited when the test assertion runs.
-
-A failure message that lacks any of items 1-4 should be treated as a test-quality bug and fixed before the test is shipped.
+This rule exists because one class of bug — protocol-shape mismatches between our emitter and a downstream consumer — is invisible from the test's happy-path observation channel. The only signal lives in the subprocess's own logs.
 
 ### Runtime Log File Reference
 
-Each runtime writes its own logs. Document these here so debugging cycles stay short.
+Each runtime writes its own logs. Debugging cycles are short only when we know where to look.
 
 | Runtime | Log location | Enable extra logging |
 |---------|--------------|----------------------|
@@ -207,37 +193,21 @@ Each runtime writes its own logs. Document these here so debugging cycles stay s
 | Kimi | `~/.kimi/logs/kimi.log` | `--debug` CLI flag or `KIMI_LOG_LEVEL=debug` |
 | OpenCode | `~/.opencode/logs/` | `--log-level debug` (verify) |
 
-Chorus's own driver tracing: `RUST_LOG=chorus::agent::drivers=debug`. The bridge: `RUST_LOG=chorus::bridge=debug`.
+Chorus tracing: `RUST_LOG=chorus::agent::drivers=debug` for drivers, `RUST_LOG=chorus::bridge=debug` for the bridge. Entries marked `(verify)` need confirmation.
 
-Entries marked `(verify)` were not confirmed during the last audit — confirm before relying on them.
+### Execution
 
-### Execution Policy
+Subprocess tests are `#[ignore]` by default (require installed binaries + valid auth). Run them explicitly:
 
-Subprocess tests are `#[ignore]` by default because they require installed binaries and valid auth. Run them explicitly:
-
-```
+```bash
 cargo test --test live_runtime_tests -- --ignored --nocapture
 ```
 
-Each test must:
-
-- skip cleanly when the required binary is missing on `PATH`
-- skip cleanly when the required auth env var or credential file is not present
-- document its required binary, auth, and env vars in the test's doc comment
-
-If a test passes on one machine and fails on another because of an environment gap, the test's skip logic was incomplete. Fix the skip logic before blaming flakiness.
+Each test must skip cleanly when its required binary or credentials are missing. A test that fails on a different machine because of an environment gap is a skip-logic bug, not flakiness.
 
 ### Protocol Conformance
 
-Tests that cross a protocol boundary (ACP, MCP, JSON-RPC wire format) should validate conformance at the unit level, not only at the end-to-end level. A unit test that asserts `entry["transport"] == "http"` verifies only "we emit what we expect" — it does not catch "we emit something the consumer rejects."
-
-When a live test fails because of a wire-format mismatch that unit tests missed, that is a signal to add a schema-level contract test for the protocol in question. Do not rely on live tests alone to catch protocol drift.
-
-### Why This Section Exists
-
-This policy is the direct output of one debugging session that cost about an hour because the test said "agent did not reply in 60s" and nothing else. The runtime's own log file contained `acp.exceptions.RequestError: Invalid params` on the first request. The fix was one-line. The cost was the time to find that signal.
-
-Every subprocess test written under this policy should make that class of debug session take seconds, not hours.
+Tests that cross a protocol boundary (ACP, MCP, JSON-RPC wire format) should validate conformance at the unit level. Asserting `entry["transport"] == "http"` only proves "we emit what we expect" — it does not catch "we emit something the consumer rejects." When a live test fails because of a wire-format mismatch that unit tests missed, that's a signal to add a schema-level contract test.
 
 ## Debug Failures
 
