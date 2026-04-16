@@ -1,17 +1,20 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
 use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Router;
+use axum::{Json, Router};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
+use serde::Deserialize;
+use serde_json::json;
 
+use super::pairing::PairingTokenStore;
 use super::ChatBridge;
 
 /// Max number of per-agent services the bridge will cache simultaneously.
@@ -45,14 +48,35 @@ struct BridgeServer {
     server_url: String,
     cancellation_token: CancellationToken,
     services: RwLock<HashMap<String, ServiceEntry>>,
+    /// One-time pairing tokens minted via `/admin/pair`.
+    pairing_tokens: PairingTokenStore,
+    /// Cached token -> agent_key mapping kept alive for the session lifetime.
+    ///
+    /// Once a token is consumed on the first MCP request, we memoize it here
+    /// because rmcp's `StreamableHttpService` keeps routing subsequent
+    /// requests for that session to the same URL path — if we dropped the
+    /// mapping after consume, the second request would 401. Memory grows
+    /// without bound until bridge restart, which is acceptable for Phase 2;
+    /// Phase 3 plans a proper session-scoped store.
+    token_to_agent: RwLock<HashMap<String, String>>,
 }
 
 impl BridgeServer {
-    fn new(server_url: String, cancellation_token: CancellationToken) -> Self {
+    fn with_token_ttl(
+        server_url: String,
+        cancellation_token: CancellationToken,
+        token_ttl: Option<Duration>,
+    ) -> Self {
+        let pairing_tokens = match token_ttl {
+            Some(ttl) => PairingTokenStore::with_ttl(ttl),
+            None => PairingTokenStore::new(),
+        };
         Self {
             server_url,
             cancellation_token,
             services: RwLock::default(),
+            pairing_tokens,
+            token_to_agent: RwLock::default(),
         }
     }
 
@@ -161,6 +185,77 @@ async fn handle_mcp(
     response.into_response()
 }
 
+/// Axum handler: resolve a pairing token to its bound agent_key, then delegate
+/// to that agent's `StreamableHttpService`.
+///
+/// The first request on a token *consumes* it and caches the mapping in
+/// `token_to_agent`. Subsequent requests on the same URL reuse the cached
+/// mapping — necessary because MCP clients keep POSTing to the init URL for
+/// the lifetime of the session.
+async fn handle_mcp_token(
+    Path(token): Path<String>,
+    State(server): State<Arc<BridgeServer>>,
+    request: Request<axum::body::Body>,
+) -> Response {
+    // Check the session-lifetime cache first — avoids the consume roundtrip
+    // on every subsequent request for the same session.
+    let cached = server.token_to_agent.read().await.get(&token).cloned();
+
+    let agent_key = if let Some(key) = cached {
+        key
+    } else {
+        // First request on this token — try to consume it.
+        match server.pairing_tokens.consume(&token).await {
+            Some(key) => {
+                server
+                    .token_to_agent
+                    .write()
+                    .await
+                    .insert(token.clone(), key.clone());
+                key
+            }
+            None => return unauthorized_response(),
+        }
+    };
+
+    let service = server.get_or_create_service(&agent_key).await;
+    let response = service.handle(request).await;
+    response.into_response()
+}
+
+fn unauthorized_response() -> Response {
+    Response::builder()
+        .status(StatusCode::UNAUTHORIZED)
+        .body(axum::body::Body::from(
+            "Invalid or expired pairing token",
+        ))
+        .expect("valid response")
+}
+
+#[derive(Deserialize)]
+struct PairRequest {
+    agent_key: String,
+}
+
+/// Admin endpoint: mint a one-time pairing token bound to `agent_key`.
+///
+/// Protected by the loopback bind check in `run_bridge_server` — Phase 2
+/// does not support remote callers, so there is no auth beyond that.
+async fn handle_pair(
+    State(server): State<Arc<BridgeServer>>,
+    Json(req): Json<PairRequest>,
+) -> Response {
+    if !agent_key_is_safe(&req.agent_key) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "invalid agent_key"})),
+        )
+            .into_response();
+    }
+    let token = server.pairing_tokens.issue(req.agent_key).await;
+    Json(json!({"token": token})).into_response()
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -169,11 +264,27 @@ async fn handle_mcp(
 ///
 /// Useful for tests that want to plug the router into their own listener.
 pub fn build_bridge_router(server_url: &str) -> (Router, CancellationToken) {
+    build_bridge_router_with_token_ttl(server_url, None)
+}
+
+/// Same as [`build_bridge_router`] but with an override for the pairing-token
+/// TTL. Tests use this to exercise the expired-token path without sleeping
+/// for the 5-minute default.
+pub fn build_bridge_router_with_token_ttl(
+    server_url: &str,
+    token_ttl: Option<Duration>,
+) -> (Router, CancellationToken) {
     let ct = CancellationToken::new();
-    let server = Arc::new(BridgeServer::new(server_url.to_string(), ct.clone()));
+    let server = Arc::new(BridgeServer::with_token_ttl(
+        server_url.to_string(),
+        ct.clone(),
+        token_ttl,
+    ));
 
     let app = Router::new()
         .route("/{agent_key}/mcp", axum::routing::any(handle_mcp))
+        .route("/token/{token}/mcp", axum::routing::any(handle_mcp_token))
+        .route("/admin/pair", axum::routing::post(handle_pair))
         .route("/health", axum::routing::get(|| async { "ok" }))
         .with_state(server);
 

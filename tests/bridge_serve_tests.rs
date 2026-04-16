@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
-use chorus::bridge::serve::build_bridge_router;
+use chorus::bridge::serve::{build_bridge_router, build_bridge_router_with_token_ttl};
 use chorus::server::build_router_with_services;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{ReceivedMessage, SenderType};
@@ -39,6 +40,51 @@ async fn start_bridge_with_server(
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     (addr, ct)
+}
+
+/// Helper: start the bridge with a custom pairing-token TTL (for expiry tests).
+async fn start_bridge_with_token_ttl(
+    token_ttl: Duration,
+) -> (String, tokio_util::sync::CancellationToken) {
+    let (app, ct) = build_bridge_router_with_token_ttl("http://localhost:1", Some(token_ttl));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let addr = format!("http://127.0.0.1:{}", port);
+
+    let shutdown_ct = ct.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move { shutdown_ct.cancelled().await })
+            .await
+            .unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    (addr, ct)
+}
+
+/// Helper: POST `/admin/pair` and return the issued token.
+async fn issue_pairing_token(
+    client: &reqwest::Client,
+    bridge_addr: &str,
+    agent_key: &str,
+) -> String {
+    let resp = client
+        .post(format!("{}/admin/pair", bridge_addr))
+        .json(&serde_json::json!({ "agent_key": agent_key }))
+        .send()
+        .await
+        .expect("pair request should succeed");
+    assert_eq!(resp.status(), 200, "pair should return 200");
+    let body: serde_json::Value = resp.json().await.expect("pair body should be JSON");
+    body["token"]
+        .as_str()
+        .expect("pair response should contain 'token'")
+        .to_string()
 }
 
 /// No-op lifecycle used when running the Chorus server in-process for tests.
@@ -372,6 +418,242 @@ async fn bridge_sends_message_to_chorus_server() {
             .iter()
             .map(|m| (&m.sender_name, &m.content))
             .collect::<Vec<_>>()
+    );
+
+    bridge_ct.cancel();
+}
+
+// ---------------------------------------------------------------------------
+// Pairing token tests (Phase 2)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn bridge_pair_issues_token() {
+    let (addr, ct) = start_bridge().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/admin/pair", addr))
+        .json(&serde_json::json!({ "agent_key": "bot1" }))
+        .send()
+        .await
+        .expect("pair should succeed");
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let token = body["token"].as_str().expect("response should include token");
+    assert!(!token.is_empty(), "token should be non-empty");
+    // URL-safe base64 uses only these chars.
+    assert!(
+        token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "token should be URL-safe: {}",
+        token
+    );
+
+    ct.cancel();
+}
+
+#[tokio::test]
+async fn bridge_pair_rejects_invalid_agent_key() {
+    let (addr, ct) = start_bridge().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{}/admin/pair", addr))
+        .json(&serde_json::json!({ "agent_key": "../etc/passwd" }))
+        .send()
+        .await
+        .expect("pair should respond");
+    assert_eq!(resp.status(), 400);
+
+    ct.cancel();
+}
+
+#[tokio::test]
+async fn token_connects_to_agent_mcp() {
+    let (addr, ct) = start_bridge().await;
+    let client = reqwest::Client::new();
+
+    // 1. Mint a token for bot1.
+    let token = issue_pairing_token(&client, &addr, "bot1").await;
+
+    // 2. Initialize against the token URL — should succeed.
+    let token_url = format!("{}/token/{}/mcp", addr, token);
+    let resp = send_initialize(&client, &token_url).await;
+    assert_eq!(resp.status(), 200, "token-based initialize should return 200");
+
+    let session_id = resp
+        .headers()
+        .get("Mcp-Session-Id")
+        .expect("token init should return a session ID")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    assert!(!session_id.is_empty(), "session ID must be non-empty");
+
+    // 3. Second request on the same URL must still work (token-to-agent cache
+    //    keeps the mapping alive for the session).
+    let body = resp.text().await.unwrap();
+    let json = extract_jsonrpc_from_sse(&body);
+    assert_eq!(json["jsonrpc"], "2.0");
+
+    let follow_up = client
+        .post(&token_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .send()
+        .await
+        .expect("follow-up should succeed");
+    assert!(
+        follow_up.status().is_success(),
+        "second request on same token URL should succeed, got {}",
+        follow_up.status()
+    );
+
+    ct.cancel();
+}
+
+#[tokio::test]
+async fn invalid_token_returns_unauthorized() {
+    let (addr, ct) = start_bridge().await;
+    let client = reqwest::Client::new();
+
+    let resp = send_initialize(
+        &client,
+        &format!("{}/token/not-a-real-token/mcp", addr),
+    )
+    .await;
+    assert_eq!(
+        resp.status(),
+        401,
+        "unknown token must 401, got {}",
+        resp.status()
+    );
+
+    ct.cancel();
+}
+
+#[tokio::test]
+async fn expired_token_rejected() {
+    // Use a very short TTL so the test doesn't have to wait 5 minutes.
+    let (addr, ct) = start_bridge_with_token_ttl(Duration::from_millis(100)).await;
+    let client = reqwest::Client::new();
+
+    let token = issue_pairing_token(&client, &addr, "bot1").await;
+
+    // Wait past the TTL.
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let resp = send_initialize(&client, &format!("{}/token/{}/mcp", addr, token)).await;
+    assert_eq!(
+        resp.status(),
+        401,
+        "expired token must 401, got {}",
+        resp.status()
+    );
+
+    ct.cancel();
+}
+
+#[tokio::test]
+async fn pairing_token_end_to_end_sends_message() {
+    // 1. Start Chorus server with bot1 joined to #general.
+    let (server_url, store) = start_chorus_server().await;
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    // 2. Start bridge pointed at Chorus.
+    let (bridge_addr, bridge_ct) = start_bridge_with_server(&server_url).await;
+    let client = reqwest::Client::new();
+
+    // 3. Mint token and use it for full MCP handshake.
+    let token = issue_pairing_token(&client, &bridge_addr, "bot1").await;
+    let mcp_url = format!("{}/token/{}/mcp", bridge_addr, token);
+
+    let init_resp = send_initialize(&client, &mcp_url).await;
+    assert_eq!(init_resp.status(), 200);
+    let session_id = init_resp
+        .headers()
+        .get("Mcp-Session-Id")
+        .expect("init should return session ID")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let _ = init_resp.text().await.unwrap();
+
+    let initialized_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .send()
+        .await
+        .expect("initialized should succeed");
+    assert!(initialized_resp.status().is_success());
+    let _ = initialized_resp.text().await.unwrap();
+
+    // 4. send_message via tools/call using the token URL.
+    let call_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "send_message",
+                "arguments": {
+                    "target": "#general",
+                    "content": "Hello from token-paired bridge!"
+                }
+            }
+        }))
+        .send()
+        .await
+        .expect("tools/call should succeed");
+    assert_eq!(call_resp.status(), 200);
+    let call_body = call_resp.text().await.unwrap();
+    let call_json = extract_jsonrpc_from_sse(&call_body);
+    assert!(
+        call_json.get("error").is_none(),
+        "tools/call should not error, got: {}",
+        call_json
+    );
+
+    // 5. Verify it landed in the store.
+    let (messages, _) = store.get_history("general", None, 100, None, None).unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.content.contains("Hello from token-paired bridge!")
+                && m.sender_name == "bot1"),
+        "expected token-routed message in store"
     );
 
     bridge_ct.cancel();

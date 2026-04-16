@@ -114,6 +114,13 @@ enum Commands {
     /// Run a smoke test against a temporary bridge server.
     #[command(name = "bridge-smoke-test")]
     BridgeSmokeTest,
+    /// Mint a one-time pairing token for an agent to connect to the running bridge.
+    #[command(name = "bridge-pair")]
+    BridgePair {
+        /// Agent key to pair (matches the Chorus agent name).
+        #[arg(long)]
+        agent: String,
+    },
     /// Alias for `start --no-open` (kept for backward compatibility)
     #[command(hide = true)]
     Serve {
@@ -247,6 +254,10 @@ pub async fn run() -> anyhow::Result<()> {
         }
 
         Some(Commands::BridgeSmokeTest) => chorus::bridge::smoke_test::run_smoke_test().await,
+
+        Some(Commands::BridgePair { agent }) => {
+            chorus::bridge::pairing::run_bridge_pair(&agent).await
+        }
 
         Some(Commands::Send {
             target,
