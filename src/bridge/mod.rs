@@ -9,7 +9,6 @@ pub mod error;
 mod format;
 pub mod pairing;
 pub mod serve;
-pub mod session;
 pub mod smoke_test;
 mod types;
 

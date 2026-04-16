@@ -1,11 +1,14 @@
 //! Structured error codes for the MCP bridge.
 //!
-//! `ChorusBackend` returns `Result<_, BridgeError>`; `ChatBridge` converts to
-//! `rmcp::ErrorData` at the MCP handler boundary via `From<BridgeError>`.
-//! This gives agents structured error codes (CHORUS-XXXX) for programmatic
-//! handling while preserving the JSON-RPC error contract toward MCP clients.
-//!
-//! See `docs/BRIDGE_MIGRATION.md` for the full phased migration.
+//! Error flow through the system:
+//! - `ChorusBackend` methods return `Result<_, BridgeError>` for all
+//!   operations (messaging, history, tasks, file transfers).
+//! - `ChatBridge` tool handlers convert `BridgeError` to `rmcp::ErrorData`
+//!   at the MCP boundary via `From<BridgeError>`, preserving the JSON-RPC
+//!   error contract toward MCP clients.
+//! - Agents receive structured CHORUS-XXXX codes in the error message,
+//!   enabling programmatic handling (e.g. retry on CHORUS-4003 session
+//!   expiry, surface CHORUS-4001 platform-unreachable to the user).
 
 use std::fmt;
 
