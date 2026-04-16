@@ -119,6 +119,19 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("no driver for runtime {:?}", rt))?
             .clone();
 
+        // Auto-discover the shared bridge — when `chorus serve --shared-bridge`
+        // is running, this populates bridge_endpoint so agents connect via HTTP
+        // MCP instead of spawning per-agent stdio processes. When no bridge is
+        // running, this is None and the legacy stdio path works unchanged.
+        let bridge_endpoint = crate::bridge::discovery::read_bridge_info()
+            .map(|info| format!("http://127.0.0.1:{}", info.port));
+
+        if let Some(ref endpoint) = bridge_endpoint {
+            info!(agent = %agent_name, %endpoint, "starting agent via shared bridge");
+        } else {
+            debug!(agent = %agent_name, "starting agent via per-agent stdio bridge");
+        }
+
         let spec = AgentSpec {
             display_name: agent.display_name.clone(),
             description: agent.description.clone(),
@@ -129,6 +142,7 @@ impl AgentManager {
             working_directory: agent_data_dir.clone(),
             bridge_binary: self.bridge_binary.clone(),
             server_url: self.server_url.clone(),
+            bridge_endpoint,
         };
 
         let attach_result = v2_driver.attach(agent_name.to_string(), spec).await?;
@@ -183,6 +197,7 @@ impl AgentManager {
             self.trace_store.clone(),
             self.store.trace_sender(),
             self.store.clone(),
+            self.agents.clone(),
         );
 
         {
@@ -266,11 +281,12 @@ impl AgentManager {
             agent.pending_notification_count += 1;
             let count = agent.pending_notification_count;
 
-            // If the agent isn't Active (e.g. PromptInFlight), just
-            // record the count — the next notify_agent() call after the
-            // current run completes will deliver.
-            if !matches!(agent.handle.state(), AgentState::Active { .. }) {
-                debug!(agent = %agent_name, "agent not Active, deferring notification");
+            let is_active = matches!(agent.handle.state(), AgentState::Active { .. });
+            if !is_active {
+                // Agent is mid-run (e.g. init turn or processing another message).
+                // The event forwarder will deliver the notification immediately
+                // when the current turn's Completed event fires — no polling needed.
+                debug!(agent = %agent_name, "agent not Active, notification queued for post-turn delivery");
                 return Ok(());
             }
 
@@ -433,6 +449,7 @@ fn spawn_v2_event_forwarder(
     trace_store: Arc<AgentTraceStore>,
     trace_tx: broadcast::Sender<TraceEvent>,
     store: Arc<Store>,
+    agents: Arc<Mutex<HashMap<String, V2Agent>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut pending_thinking = String::new();
@@ -627,6 +644,45 @@ fn spawn_v2_event_forwarder(
                         trace_store.end_run(key);
                     }
                     activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+
+                    // If messages arrived while we were busy (init turn or any turn),
+                    // deliver the notification immediately now that the turn is done.
+                    {
+                        let mut agents_guard = agents.lock().await;
+                        if let Some(agent) = agents_guard.get_mut(key) {
+                            let count = agent.pending_notification_count;
+                            if count > 0 {
+                                agent.pending_notification_count = 0;
+                                let plural = if count > 1 { "s" } else { "" };
+                                let them = if count > 1 { "them" } else { "it" };
+                                let notification = format!(
+                                    "[System notification: You have {count} new message{plural} \
+                                     waiting. Call check_messages to read {them} when you're ready.]"
+                                );
+                                let (run_id, _) = trace_store.ensure_run(key);
+                                let seq = trace_store.next_seq(key);
+                                let ch = trace_store.run_channel_id(key);
+                                let _ = trace_tx.send(trace::build_trace_event(
+                                    run_id,
+                                    key,
+                                    ch,
+                                    seq,
+                                    TraceEventKind::Reading,
+                                ));
+                                info!(agent = %key, count = count, "delivering deferred notification after turn completion");
+                                if let Err(e) = agent
+                                    .handle
+                                    .prompt(PromptReq {
+                                        text: notification,
+                                        attachments: vec![],
+                                    })
+                                    .await
+                                {
+                                    warn!(agent = %key, error = %e, "failed to deliver deferred notification");
+                                }
+                            }
+                        }
+                    }
                 }
 
                 DriverEvent::Failed {
@@ -693,7 +749,12 @@ fn build_v2_start_prompt(
     }
 
     if !is_resume {
-        return format!("Hello {display_name}, you are now online.");
+        return format!(
+            "Hello {display_name}, you are now online. \
+             There are no messages or tasks right now. \
+             Do not use any tools. \
+             Simply reply with a short acknowledgement and stop."
+        );
     }
 
     if !unread_summary.is_empty() {
@@ -933,6 +994,28 @@ mod tests {
         assert!(result.is_ok(), "notify should succeed: {result:?}");
 
         let _ = manager.stop_agent("v2bot").await;
+    }
+
+    // ── bridge endpoint helper ──
+
+    fn bridge_endpoint_from(info: Option<crate::bridge::discovery::BridgeInfo>) -> Option<String> {
+        info.map(|i| format!("http://127.0.0.1:{}", i.port))
+    }
+
+    #[test]
+    fn bridge_endpoint_from_info_formats_url() {
+        let info = crate::bridge::discovery::BridgeInfo {
+            port: 4321,
+            pid: 12345,
+            started_at: "2026-04-16T00:00:00Z".to_string(),
+        };
+        let result = bridge_endpoint_from(Some(info));
+        assert_eq!(result, Some("http://127.0.0.1:4321".to_string()));
+    }
+
+    #[test]
+    fn bridge_endpoint_from_none_is_none() {
+        assert_eq!(bridge_endpoint_from(None), None);
     }
 
     #[tokio::test]

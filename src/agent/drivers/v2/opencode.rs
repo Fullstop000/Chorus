@@ -1,11 +1,10 @@
 //! Native v2 driver for the OpenCode runtime using ACP protocol.
 
+use anyhow::{bail, Context};
+use async_trait::async_trait;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
-
-use anyhow::{bail, Context};
-use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
@@ -15,6 +14,45 @@ use crate::agent::AgentRuntime;
 
 use super::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator};
 use super::*;
+
+// ---------------------------------------------------------------------------
+// MCP config construction
+// ---------------------------------------------------------------------------
+
+/// Build the `mcp.chat` config block for `opencode.json`.
+///
+/// Two shapes, branching on whether a shared HTTP bridge is available:
+/// - `spec.bridge_endpoint = Some(_)` + `token = Some(_)`: remote HTTP MCP,
+///   connecting to `{endpoint}/token/{token}/mcp`.
+/// - otherwise: per-agent stdio bridge spawned by OpenCode (`type = "local"`).
+///
+/// Factored out so config-shape tests don't need a live bridge.
+fn build_mcp_chat_config(
+    agent_key: &str,
+    spec: &AgentSpec,
+    token: Option<&str>,
+) -> serde_json::Value {
+    match (&spec.bridge_endpoint, token) {
+        (Some(endpoint), Some(tok)) => {
+            let base = endpoint.trim_end_matches('/');
+            serde_json::json!({
+                "type": "remote",
+                "url": format!("{base}/token/{tok}/mcp"),
+            })
+        }
+        _ => serde_json::json!({
+            "type": "local",
+            "command": [
+                &spec.bridge_binary,
+                "bridge",
+                "--agent-id",
+                agent_key,
+                "--server-url",
+                &spec.server_url,
+            ],
+        }),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // OpencodeDriver
@@ -210,19 +248,39 @@ impl AgentHandle for OpencodeHandle {
             _ => self.spec.model.clone(),
         };
 
+        // Resolve MCP transport: shared HTTP bridge (when `bridge_endpoint`
+        // is configured) or per-agent stdio bridge (legacy). If pairing
+        // fails we surface the error — no silent fallback to stdio, so
+        // misconfiguration is loud.
+        let pairing_token = if let Some(endpoint) = &self.spec.bridge_endpoint {
+            Some(
+                super::request_pairing_token(endpoint, &self.key)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "failed to pair with bridge at {endpoint} for agent {}",
+                            self.key
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+
         // Write opencode.json to the working directory
         let config_path = wd.join("opencode.json");
-        let mcp_config = serde_json::json!({
+        let mcp_chat = build_mcp_chat_config(&self.key, &self.spec, pairing_token.as_deref());
+        let opencode_config = serde_json::json!({
             "model": model_id,
             "mcp": {
-                "chat": {
-                    "type": "local",
-                    "command": [&self.spec.bridge_binary, "bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url]
-                }
+                "chat": mcp_chat,
             }
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&mcp_config)?)
-            .context("failed to write opencode.json")?;
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&opencode_config)?,
+        )
+        .context("failed to write opencode.json")?;
 
         // Build CLI args
         let args = vec!["acp".to_string()];
@@ -720,6 +778,7 @@ mod tests {
             working_directory: PathBuf::from("/fake"),
             bridge_binary: String::new(),
             server_url: String::new(),
+            bridge_endpoint: None,
         }
     }
 
@@ -750,5 +809,60 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
+    }
+
+    #[test]
+    fn build_mcp_chat_config_stdio_when_no_endpoint() {
+        // No bridge_endpoint configured → fall back to stdio `type: "local"`.
+        let mut spec = test_spec();
+        spec.bridge_binary = "/opt/chorus/bridge".to_string();
+        spec.server_url = "http://127.0.0.1:3001".to_string();
+        assert!(spec.bridge_endpoint.is_none());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, None);
+        assert_eq!(config["type"], "local");
+        let command = config["command"].as_array().expect("command is array");
+        assert_eq!(command[0], "/opt/chorus/bridge");
+        assert_eq!(command[1], "bridge");
+        assert_eq!(command[2], "--agent-id");
+        assert_eq!(command[3], "agent-abc");
+        assert_eq!(command[4], "--server-url");
+        assert_eq!(command[5], "http://127.0.0.1:3001");
+        assert!(config.get("url").is_none());
+    }
+
+    #[test]
+    fn build_mcp_chat_config_http_when_endpoint_and_token() {
+        // With bridge_endpoint + token → remote HTTP MCP.
+        let mut spec = test_spec();
+        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, Some("tok-xyz"));
+        assert_eq!(config["type"], "remote");
+        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert!(config.get("command").is_none());
+    }
+
+    #[test]
+    fn build_mcp_chat_config_trims_trailing_slash() {
+        // Endpoint with trailing slash must not produce `//token/` in the URL.
+        let mut spec = test_spec();
+        spec.bridge_endpoint = Some("http://127.0.0.1:4321/".to_string());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, Some("tok-xyz"));
+        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+    }
+
+    #[test]
+    fn build_mcp_chat_config_falls_back_when_endpoint_but_no_token() {
+        // Defensive: if caller forgot to request a token, we use stdio rather
+        // than writing a broken URL. In production flow, `start()` always
+        // fetches a token when `bridge_endpoint` is Some, but this keeps the
+        // helper sound if its preconditions are violated.
+        let mut spec = test_spec();
+        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, None);
+        assert_eq!(config["type"], "local");
     }
 }

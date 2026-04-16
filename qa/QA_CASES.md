@@ -10,6 +10,8 @@ It is intentionally:
 All cases below are browser-first cases unless explicitly marked otherwise.
 The explicit `Tier:` field on each case is authoritative. Nearby placement in the file is for related-domain readability.
 
+**Non-browser case modules:** [`cases/bridge.md`](./cases/bridge.md) covers subprocess and live-runtime tests (IDs `BRG-NNN`, `LRT-NNN`, `INT-NNN`). Those run through `cargo test`, not Playwright. See [`README.md`](./README.md) → "Subprocess and External Runtime Tests" for the evidence rules that apply to them.
+
 ## Case record template (authoring)
 
 Each executable case under `cases/*.md` should use this shape (fields may omit `Execution mode` when default is browser-first):
@@ -76,6 +78,7 @@ Cases are split into focused modules under [`cases/`](./cases/):
 | [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, MSG-005, MSG-006, MSG-007, MSG-008, MSG-009, MSG-010, MSG-011, MSG-012, DM-002, HIS-001, ATT-001, ERR-001 |
 | [`cases/tasks.md`](./cases/tasks.md) | TSK-001, TSK-002 |
 | [`cases/teams.md`](./cases/teams.md) | TMT-001, TMT-002, TMT-005, TMT-007, TMT-009 |
+| [`cases/bridge.md`](./cases/bridge.md) | BRG-001, BRG-002, BRG-003, BRG-004, LRT-001, LRT-002, LRT-003, LRT-004, INT-001 |
 
 ## Maintenance Notes
 

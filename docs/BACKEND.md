@@ -203,6 +203,7 @@ tracing::info!(agent = %name, channel = %channel_name, "joined channel");
 | `tests/server_tests.rs` | HTTP handlers (test router) | Handler logic changes |
 | `tests/driver_tests.rs` | Agent runtime drivers | New driver or driver fix |
 | `tests/check_impl.rs` | Type-level / trait checks | Generic constraints |
+| `tests/bridge_serve_tests.rs` | Shared bridge HTTP + per-agent isolation | Bridge serve or `Backend` trait changes |
 | `#[cfg(test)]` modules | Pure function unit tests | Module-local utilities |
 
 ### Test Conventions
@@ -237,6 +238,9 @@ tracing::info!(agent = %name, channel = %channel_name, "joined channel");
 | **Agent drivers** | `src/agent/drivers/` | ACP trait + raw implementations |
 | **Driver selection** | `src/agent/drivers/mod.rs` | `driver_for_runtime()` |
 | **Agent lifecycle** | `src/agent/manager.rs` | Spawn, session, event dispatch |
+| **MCP bridge (shared)** | `src/bridge/serve.rs` | `chorus bridge-serve` HTTP daemon |
+| **MCP bridge (backend)** | `src/bridge/backend.rs` | `Backend` trait + `ChorusBackend` impl |
+| **Bridge discovery** | `src/bridge/discovery.rs` | `read_bridge_info()` — PID-validated `~/.chorus/bridge.json` |
 
 ### Type Definitions
 
@@ -282,3 +286,4 @@ See `docs/DRIVERS.md` for the full guide. Key principle: capture a wire trace fr
 - `docs/ACP.md` — ACP driver SOP and debugging
 - `docs/DRIVERS.md` — Adding new agent runtimes
 - `docs/INBOX.md` — Unread and read cursor mechanics
+- `docs/BRIDGE_MIGRATION.md` — Shared MCP bridge architecture, `bridge-serve`, driver conversion guide

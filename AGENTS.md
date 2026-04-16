@@ -42,6 +42,7 @@ Use this doc index before touching a subsystem or workflow:
 | `[docs/INBOX.md](docs/INBOX.md)` | Inbox delivery mechanism — how messages reach agents | Modifying message delivery |
 | `[docs/ACP.md](docs/ACP.md)` | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver |
 | `[docs/DRIVERS.md](docs/DRIVERS.md)` | Runtime drivers and template types | Adding or changing a runtime driver or template type |
+| `[docs/BRIDGE_MIGRATION.md](docs/BRIDGE_MIGRATION.md)` | Shared MCP bridge — architecture, `bridge-serve`, driver conversion, phased migration plan | Running `bridge-serve`, converting a driver to the shared bridge, or debugging bridge failures |
 | `[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)` | Decisions, bug postmortems, project facts, patterns | Debugging non-obvious behavior or revisiting architecture choices |
 | `[docs/DRIVER_GUIDE.md](docs/DRIVER_GUIDE.md)` | Step-by-step guide for implementing a new driver | Adding a new driver |
 

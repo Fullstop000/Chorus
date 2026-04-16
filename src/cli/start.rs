@@ -46,5 +46,6 @@ pub async fn run(
         });
     }
 
-    serve::run(port, data_dir_str, template_dir).await
+    // `start` never activates the shared bridge — that is opt-in via `serve --shared-bridge`.
+    serve::run(port, data_dir_str, template_dir, false, 4321).await
 }

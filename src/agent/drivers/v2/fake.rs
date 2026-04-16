@@ -355,6 +355,7 @@ mod tests {
             working_directory: PathBuf::from("/fake"),
             bridge_binary: String::new(),
             server_url: String::new(),
+            bridge_endpoint: None,
         }
     }
 
