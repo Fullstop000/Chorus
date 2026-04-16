@@ -1,7 +1,7 @@
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
+use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 
 pub mod backend;
 pub mod discovery;
@@ -207,17 +207,6 @@ impl ServerHandler for ChatBridge {
             ..Default::default()
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-pub async fn run_bridge(agent_id: String, server_url: String) -> anyhow::Result<()> {
-    let bridge = ChatBridge::new(agent_id, server_url);
-    let service = bridge.serve(rmcp::transport::io::stdio()).await?;
-    service.waiting().await?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

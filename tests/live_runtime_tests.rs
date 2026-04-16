@@ -260,9 +260,8 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         run_id: None,
     })?;
 
-    // 5. Build AgentSpec with bridge_endpoint set — this is the code path
-    //    we're validating. bridge_binary/server_url are unused when
-    //    bridge_endpoint is Some.
+    // 5. Build AgentSpec pointing at the shared bridge — the code path we're
+    //    validating.
     let tmpdir = tempfile::tempdir()?;
     let spec = AgentSpec {
         display_name: "OpenCode Live Bot".to_string(),
@@ -272,9 +271,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime, deferring the first prompt so it's
@@ -398,9 +395,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime with initial prompt.
@@ -526,9 +521,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime with initial prompt.
@@ -653,9 +646,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime with initial prompt.

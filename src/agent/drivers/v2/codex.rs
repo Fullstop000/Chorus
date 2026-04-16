@@ -27,54 +27,23 @@ use super::*;
 
 /// Build the `-c mcp_servers.chat.*` override flags for `codex app-server`.
 ///
-/// Two shapes, branching on whether a shared HTTP bridge is available:
-/// - `spec.bridge_endpoint = Some(_)` + `token = Some(_)`: native HTTP MCP,
-///   connecting to `{endpoint}/token/{token}/mcp`.
-/// - otherwise: per-agent stdio bridge spawned by Codex (`command` shape).
-///
-/// Returns a flat `Vec<String>` ready to be extended onto the args list.
-/// Each config override is already preceded by its own `-c` flag.
+/// Produces the native HTTP MCP shape, connecting the runtime to the shared
+/// bridge at `{endpoint}/token/{token}/mcp`. Returns a flat `Vec<String>`
+/// ready to be extended onto the args list; each config override is already
+/// preceded by its own `-c` flag.
 ///
 /// Factored out so config-shape tests don't need a live bridge.
-fn build_codex_mcp_args(agent_key: &str, spec: &AgentSpec, token: Option<&str>) -> Vec<String> {
+fn build_codex_mcp_args(bridge_endpoint: &str, token: &str) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
-    match (&spec.bridge_endpoint, token) {
-        (Some(endpoint), Some(tok)) => {
-            // Shared HTTP bridge path
-            let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
-            let url_json = serde_json::to_string(&url).expect("url serialization cannot fail");
-            args.push("-c".into());
-            args.push(format!("mcp_servers.chat.url={url_json}"));
-            args.push("-c".into());
-            args.push("mcp_servers.chat.enabled=true".into());
-            args.push("-c".into());
-            args.push("mcp_servers.chat.required=true".into());
-        }
-        _ => {
-            // Legacy stdio path — unchanged
-            let bridge_binary_json = serde_json::to_string(&spec.bridge_binary)
-                .expect("bridge_binary serialization cannot fail");
-            let bridge_args_json = serde_json::to_string(&[
-                "bridge",
-                "--agent-id",
-                agent_key,
-                "--server-url",
-                &spec.server_url,
-            ])
-            .expect("bridge_args serialization cannot fail");
-            args.push("-c".into());
-            args.push(format!("mcp_servers.chat.command={bridge_binary_json}"));
-            args.push("-c".into());
-            args.push(format!("mcp_servers.chat.args={bridge_args_json}"));
-            args.push("-c".into());
-            args.push("mcp_servers.chat.type=\"stdio\"".into());
-            args.push("-c".into());
-            args.push("mcp_servers.chat.enabled=true".into());
-            args.push("-c".into());
-            args.push("mcp_servers.chat.required=true".into());
-        }
-    }
+    let url = format!("{}/token/{}/mcp", bridge_endpoint.trim_end_matches('/'), token);
+    let url_json = serde_json::to_string(&url).expect("url serialization cannot fail");
+    args.push("-c".into());
+    args.push(format!("mcp_servers.chat.url={url_json}"));
+    args.push("-c".into());
+    args.push("mcp_servers.chat.enabled=true".into());
+    args.push("-c".into());
+    args.push("mcp_servers.chat.required=true".into());
 
     args
 }
@@ -268,21 +237,14 @@ impl AgentHandle for CodexHandle {
         // passed in the `thread/start` JSON-RPC params instead.
         let mut args: Vec<String> = vec!["app-server".into()];
 
-        // Obtain a pairing token when the shared HTTP bridge is configured.
-        // If bridge_endpoint is None, skip the request and use the stdio path.
-        let token = if let Some(endpoint) = &self.spec.bridge_endpoint {
-            Some(
-                super::request_pairing_token(endpoint, &self.key)
-                    .await
-                    .context("failed to pair with shared bridge")?,
-            )
-        } else {
-            None
-        };
+        // Obtain a pairing token from the shared HTTP bridge.
+        let token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+            .await
+            .context("failed to pair with shared bridge")?;
 
         // Register the bridge MCP server so Codex can call back into Chorus.
         // Uses the same `mcp_servers.*` config key format as ~/.codex/config.toml.
-        let mcp_args = build_codex_mcp_args(&self.key, &self.spec, token.as_deref());
+        let mcp_args = build_codex_mcp_args(&self.spec.bridge_endpoint, &token);
         args.extend(mcp_args);
 
         let mut cmd = Command::new("codex");
@@ -847,9 +809,7 @@ mod tests {
             reasoning_effort: None,
             env_vars: vec![],
             working_directory: PathBuf::from("/fake"),
-            bridge_binary: "bridge".into(),
-            server_url: "http://localhost:3001".into(),
-            bridge_endpoint: None,
+            bridge_endpoint: "http://127.0.0.1:1".into(),
         }
     }
 
@@ -901,54 +861,9 @@ mod tests {
     // ---- build_codex_mcp_args tests ----
 
     #[test]
-    fn build_codex_mcp_args_stdio_when_no_endpoint() {
-        // No bridge_endpoint → legacy stdio command shape.
-        let mut spec = test_spec();
-        spec.bridge_binary = "/opt/chorus/bridge".to_string();
-        spec.server_url = "http://127.0.0.1:3001".to_string();
-        assert!(spec.bridge_endpoint.is_none());
-
-        let args = build_codex_mcp_args("agent-abc", &spec, None);
-
-        // Should contain command and args overrides, not url
-        let joined = args.join(" ");
-        assert!(
-            joined.contains("mcp_servers.chat.command="),
-            "expected command override, got: {joined}"
-        );
-        assert!(
-            joined.contains("mcp_servers.chat.args="),
-            "expected args override, got: {joined}"
-        );
-        assert!(
-            joined.contains("mcp_servers.chat.type="),
-            "expected type override, got: {joined}"
-        );
-        assert!(
-            !joined.contains("mcp_servers.chat.url="),
-            "unexpected url override in stdio path: {joined}"
-        );
-        // Each config value must be preceded by -c
-        let pairs: Vec<&str> = args
-            .chunks(2)
-            .flat_map(|c| c.iter().map(|s| s.as_str()))
-            .collect();
-        for i in (0..args.len()).step_by(2) {
-            assert_eq!(args[i], "-c", "expected -c at index {i}, got: {}", args[i]);
-        }
-        // enabled and required present
-        assert!(joined.contains("mcp_servers.chat.enabled=true"));
-        assert!(joined.contains("mcp_servers.chat.required=true"));
-        let _ = pairs; // suppress unused warning
-    }
-
-    #[test]
-    fn build_codex_mcp_args_http_when_endpoint_and_token() {
-        // With bridge_endpoint + token → native HTTP MCP url shape.
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-
-        let args = build_codex_mcp_args("agent-abc", &spec, Some("tok-xyz"));
+    fn build_codex_mcp_args_http_shape() {
+        // Native HTTP MCP url shape — the only shape we produce.
+        let args = build_codex_mcp_args("http://127.0.0.1:4321", "tok-xyz");
 
         let joined = args.join(" ");
         assert!(
@@ -973,12 +888,15 @@ mod tests {
         );
         assert!(joined.contains("mcp_servers.chat.enabled=true"));
         assert!(joined.contains("mcp_servers.chat.required=true"));
+        // Each config value must be preceded by -c
+        for i in (0..args.len()).step_by(2) {
+            assert_eq!(args[i], "-c", "expected -c at index {i}, got: {}", args[i]);
+        }
         // Verify the URL value itself (it's JSON-encoded in the arg)
         let url_arg = args
             .iter()
             .find(|a| a.starts_with("mcp_servers.chat.url="))
             .expect("url arg not found");
-        // JSON-decoded value inside the arg
         let json_val = url_arg.trim_start_matches("mcp_servers.chat.url=");
         let decoded: String =
             serde_json::from_str(json_val).expect("url value should be JSON string");
@@ -988,10 +906,7 @@ mod tests {
     #[test]
     fn build_codex_mcp_args_trims_trailing_slash() {
         // Endpoint with trailing slash must not produce `//token/` in the URL.
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321/".to_string());
-
-        let args = build_codex_mcp_args("agent-abc", &spec, Some("tok-xyz"));
+        let args = build_codex_mcp_args("http://127.0.0.1:4321/", "tok-xyz");
 
         let url_arg = args
             .iter()
@@ -1004,25 +919,6 @@ mod tests {
         assert!(
             !decoded.contains("//token/"),
             "double-slash in URL: {decoded}"
-        );
-    }
-
-    #[test]
-    fn build_codex_mcp_args_falls_back_when_endpoint_but_no_token() {
-        // If token is None even though endpoint is Some, fall back to stdio.
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-
-        let args = build_codex_mcp_args("agent-abc", &spec, None);
-
-        let joined = args.join(" ");
-        assert!(
-            joined.contains("mcp_servers.chat.command="),
-            "expected stdio fallback shape, got: {joined}"
-        );
-        assert!(
-            !joined.contains("mcp_servers.chat.url="),
-            "unexpected url in stdio fallback: {joined}"
         );
     }
 }

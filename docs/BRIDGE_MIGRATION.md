@@ -1,8 +1,7 @@
 # Bridge Migration Guide
 
-Chorus is migrating from per-agent stdio bridge processes to a single shared HTTP
-bridge. This guide covers what changed, how to use the new bridge, how to convert a
-driver, and what comes next.
+Chorus runs a single shared HTTP bridge that serves all agents. This guide covers how
+it works, how to use it, how to implement a driver against it, and what comes next.
 
 For deep architectural context, see the design rationale in this guide
 (Section 4, "For Architects") and the phased migration plan below.
@@ -11,18 +10,13 @@ For deep architectural context, see the design rationale in this guide
 
 ## 1. Overview
 
-### What changed and why
+### Architecture
 
-**Before:** Each agent spawned its own `chorus bridge --agent-id <key> --server-url
-<url>` stdio process. The bridge process held a hardcoded agent identity and handled
-all MCP tool calls for that one agent. N agents = N bridge processes, each with its
-own OS event loop and HTTP connection pool. Every driver duplicated the same
-boilerplate to construct the MCP config.
-
-**After:** One `chorus bridge-serve` daemon runs on localhost and serves all agents.
-Each agent connects to a unique URL path (`/<agent_key>/mcp`) over Streamable HTTP.
-The bridge routes tool calls to the correct agent based on the URL path. Session
-management is handled per-agent inside the same process.
+One shared HTTP MCP bridge runs alongside the Chorus server and serves all agents.
+Each agent pairs with the bridge to obtain a per-agent opaque token, then connects via
+Streamable HTTP to `{bridge_url}/token/{token}/mcp`. The bridge routes tool calls to
+the correct agent based on the token. Session management is handled per-agent inside
+the same process.
 
 The long-term goal is for the bridge to become a **local agent control plane**: a
 durable daemon that decouples agent identity (inbox, history, tasks, permissions) from
@@ -31,32 +25,33 @@ do their work, and can crash or be swapped without losing agent state. The same 
 will eventually talk to Chorus local, Chorus cloud, Slack, Discord, or any other IM
 backend — one bridge, all agents, any platform.
 
-### Which architecture is active
-
-Both paths are active simultaneously:
-
-| Path | Status | How it works |
-|---|---|---|
-| Old stdio bridge | Default (unchanged) | Driver spawns `chorus bridge --agent-id <key>` per agent |
-| New shared HTTP bridge | Opt-in per driver | Driver sets `bridge_endpoint`, bridge-serve must be running |
-
-Migration is per-driver. When a driver is converted, all agents of that runtime use the
-shared bridge. Other runtimes continue using the stdio bridge until their driver is
-converted.
+Drivers never fall back to stdio — the shared HTTP bridge is the only transport. If
+the bridge is not running when an agent starts, the agent start fails loudly rather
+than silently spawning a per-agent process.
 
 ---
 
 ## 2. For Users (running Chorus)
 
-### Starting the shared bridge
+### Starting the bridge
 
-Run `chorus bridge-serve` alongside `chorus serve`:
+`chorus serve` starts the shared bridge in the same process automatically:
 
 ```bash
-# Terminal 1 — Chorus backend
 chorus serve --port 3001
+```
 
-# Terminal 2 — Shared bridge (connects to the backend)
+By default the bridge listens on `127.0.0.1:4321`. Override with `--bridge-port`:
+
+```bash
+chorus serve --port 3001 --bridge-port 4400
+```
+
+The standalone `chorus bridge-serve` command is still available for users who want to
+run the bridge in a separate process (for example, to share one bridge across multiple
+chorus instances):
+
+```bash
 chorus bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
 ```
 
@@ -84,112 +79,58 @@ chorus bridge-smoke-test
 `bridge-smoke-test` starts a temporary bridge, sends a real MCP `initialize` request,
 verifies the session ID comes back, then shuts down. Passes = the MCP layer is working.
 
-### When to use the shared bridge vs the old stdio bridge
-
-**Shared bridge (`chorus bridge-serve`):**
-- Running multiple agents and want fewer OS processes
-- Driver for your runtime has been converted to `bridge_endpoint`
-- Debugging the bridge itself
-
-**Old stdio bridge (default, no action needed):**
-- Single-agent setups
-- Using a runtime whose driver has not yet been converted
-- Backward-compatibility requirement — the stdio path is stable and unchanged
-
-You do not need to change anything to keep using the old stdio bridge. It remains the
-default until `bridge_endpoint` is explicitly set.
-
 ---
 
-## 3. For Driver Authors (converting a driver)
+## 3. For Driver Authors (implementing a driver)
 
-### The change in one sentence
+### The contract
 
-Replace the hardcoded stdio MCP config with a branch: if `bridge_endpoint` is set,
-point at the shared HTTP bridge; otherwise fall back to the old stdio spawn.
+`AgentSpec::bridge_endpoint` is always set to a live bridge URL before the driver is
+attached. The driver:
 
-### Before (current pattern — all four drivers look like this)
+1. Requests a per-agent pairing token via `request_pairing_token(endpoint, agent_key)`
+   (defined in `src/agent/drivers/v2/mod.rs`). This `POST`s to `{endpoint}/admin/pair`
+   and returns an opaque token that is consumed on the first MCP `initialize`.
+2. Constructs the runtime's MCP config using
+   `{endpoint}/token/{token}/mcp` as the URL.
+3. Spawns the runtime with that config.
+
+### Pattern
 
 ```rust
-// claude.rs, kimi.rs, opencode.rs, codex.rs — same idea in each
+let token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+    .await
+    .context("failed to pair with shared bridge")?;
+
 let mcp_config = serde_json::json!({
     "mcpServers": {
         "chat": {
-            "command": &self.spec.bridge_binary,
-            "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url]
+            "type": "http",   // exact key depends on the runtime's config format
+            "url": format!(
+                "{}/token/{}/mcp",
+                self.spec.bridge_endpoint.trim_end_matches('/'),
+                token
+            )
         }
     }
 });
 ```
 
-Codex (app-server) does this via `-c` flags instead of a config file, but it is the
-same conceptual pattern: stdio transport, per-agent binary, hardcoded agent identity
-in the spawn args.
+Codex (app-server) passes this via `-c` overrides instead of a config file, but the
+shape is the same — see `src/agent/drivers/v2/codex.rs`.
 
-### After (shared bridge path)
+### Per-runtime config format
 
-```rust
-let mcp_config = if let Some(endpoint) = &self.spec.bridge_endpoint {
-    // Shared HTTP bridge — agent identity lives in the URL path, not the spawn args.
-    serde_json::json!({
-        "mcpServers": {
-            "chat": {
-                "url": format!("{}/{}/mcp", endpoint, self.key),
-                "type": "http"   // exact key depends on the runtime's config format
-            }
-        }
-    })
-} else {
-    // Legacy stdio bridge — unchanged from before.
-    serde_json::json!({
-        "mcpServers": {
-            "chat": {
-                "command": &self.spec.bridge_binary,
-                "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url]
-            }
-        }
-    })
-};
-```
+Each runtime expresses HTTP MCP transport differently. Matching the right shape is
+load-bearing — sending the wrong keys produces confusing "invalid params" errors:
 
-The `bridge_endpoint` field is already present on `AgentSpec` as
-`pub bridge_endpoint: Option<String>`. It defaults to `None` in all constructors. No
-schema or database changes are needed to add the field to a driver — it's already
-there.
-
-### What `bridge_endpoint` looks like at runtime
-
-When `bridge-serve` is running on the default port:
-
-```
-bridge_endpoint = Some("http://127.0.0.1:4321")
-```
-
-For an agent with `key = "bot-1"`, the driver constructs:
-
-```
-http://127.0.0.1:4321/bot-1/mcp
-```
-
-The bridge lazily creates a `StreamableHttpService<ChatBridge>` for each new
-`agent_key` it sees. If the key has never connected before, the session is created on
-the first `initialize` request.
-
-### Per-runtime notes
-
-Not all runtimes support Streamable HTTP MCP natively. Check the MCP config format for
-each runtime before converting its driver:
-
-| Runtime | MCP config key | HTTP support | Notes |
-|---|---|---|---|
-| Claude Code | `"type": "http"` (in `mcpServers`) | Needs verification | Uses `stream-json` over stdio by default |
-| Codex (app-server) | `-c mcp_servers.chat.type="http"` | Needs verification | Config passed via `-c` flags, not a file |
-| Kimi | `"type"` field in `mcpServers` | Needs verification | — |
-| OpenCode | `"type": "local"` or `"http"` | Needs verification | Config written to `opencode.json` |
-
-If a runtime does not support HTTP MCP natively, a stdio-to-HTTP adapter is needed
-(see Phase 2 in section 4). Do not convert that driver until the adapter exists or
-native HTTP support is confirmed.
+| Runtime | Config shape |
+|---|---|
+| Claude Code | `{"type": "http", "url": "…"}` in `mcpServers.chat` (config file) |
+| Codex (app-server) | `-c mcp_servers.chat.url="…"` plus `enabled=true` / `required=true` |
+| Kimi (file) | `{"transport": "http", "url": "…"}` in `mcpServers.chat` |
+| Kimi (ACP inline) | `{"type": "http", "name": "chat", "url": "…", "headers": []}` in `session/new` params |
+| OpenCode | `{"type": "remote", "url": "…"}` in `mcp.chat` |
 
 ### Driver connection failures
 
@@ -198,77 +139,51 @@ The bridge can crash or be restarted. When that happens:
 - The session registry (in-memory) is lost
 - Runtimes that hold a live MCP session will see a connection error
 
-Drivers should handle this with exponential backoff retry. The stdio bridge has the
-same failure mode — the bridge process crashes, the runtime sees a broken pipe. The
-error surface is identical; only the transport changes.
+Drivers should handle this with exponential backoff retry.
 
-### Wiring `bridge_endpoint` from the manager
+### `bridge_endpoint` at runtime
 
-The manager constructs `AgentSpec` and currently always sets `bridge_endpoint: None`.
-To enable the shared bridge for an agent, populate this field before passing the spec
-to the driver:
-
-```rust
-// In AgentManager or wherever the spec is built:
-let bridge_endpoint = chorus::bridge::discovery::read_bridge_info()
-    .map(|info| format!("http://127.0.0.1:{}", info.port));
-
-let spec = AgentSpec {
-    // ... other fields ...
-    bridge_binary: self.bridge_binary.clone(),
-    server_url: self.server_url.clone(),
-    bridge_endpoint,
-};
-```
-
-`read_bridge_info()` returns `None` if the file does not exist or if the recorded PID
-is not alive (stale file). In that case the driver falls back to stdio automatically.
+`AgentManager::start_agent` reads `~/.chorus/bridge.json` via
+`chorus::bridge::discovery::read_bridge_info()` and fails loudly if no bridge is
+running. `chorus serve` starts the bridge in-process on startup, so under normal
+operation the discovery file is always present. If it's missing, start the bridge
+explicitly via `chorus bridge-serve` or restart `chorus serve`.
 
 ---
 
 ## 4. For Architects (phased migration plan)
 
-### Phase 1 — Shared HTTP transport (current)
+### Phase 1 — Shared HTTP transport
 
 **Status:** Shipped.
 
 What is in place:
-- `chorus bridge-serve --listen <addr> --server-url <url>` starts the daemon
-- Routes: `/{agent_key}/mcp` (MCP Streamable HTTP), `/health` (plain text)
-- Each `agent_key` gets its own `StreamableHttpService<ChatBridge>` created on first
-  request — no pre-registration required
+- `chorus serve` starts the bridge in-process; standalone `chorus bridge-serve` also
+  available for users who want to run the bridge separately
+- Routes: `/token/{token}/mcp` (MCP Streamable HTTP), `/admin/pair` (token issue),
+  `/health` (plain text)
+- Per-agent `StreamableHttpService<ChatBridge>` created lazily on first request after
+  a successful pairing — no pre-registration of agent keys required
 - `~/.chorus/bridge.json` written on startup (port, PID, timestamp); removed on clean
   shutdown
 - `read_bridge_info()` in `src/bridge/discovery.rs` validates the PID is alive before
   returning the info, preventing stale-file confusion
 - `chorus bridge-smoke-test` for "it works" confirmation
-- Old stdio `chorus bridge --agent-id <key>` remains as fallback — unchanged
-
-Identity model: `agent_key` is visible in the URL path. Any local process that can
-read the MCP config file can connect to any agent's endpoint. This is acceptable for
-Phase 1 (same attack surface as the old stdio bridge).
-
-Security: localhost-only (`127.0.0.1`). No authentication. Single-user, single-machine
-threat model.
+- No stdio fallback — drivers fail loudly if the bridge is unavailable
 
 ### Phase 2 — Pairing tokens and opaque identity
 
-What changes:
-- `chorus bridge-pair --agent <key>` generates a one-time opaque token
-- Token has a TTL (default 5 minutes); `bridge-pair` can regenerate if it expires
-- Driver passes the token in the MCP `initialize` request (custom header or init params)
-- Bridge maps token → agent persona at session setup time; token is consumed after a
-  successful `InitializeResult`
-- `agent_key` is no longer visible in the transport layer — the URL path carries the
-  opaque token instead
-- Agent personas survive runtime crash. A new runtime re-pairs to the same persona
-- Convert remaining drivers (Codex, Kimi, OpenCode)
-- Remove old stdio bridge
+**Status:** Shipped.
 
-Open question: how does the token get from `chorus bridge-pair` output into the driver
-config? Options: (a) environment variable injected by the driver at spawn time, (b)
-driver reads a well-known file written by `bridge-pair`, (c) driver config references
-a shell command that calls `bridge-pair`.
+What is in place:
+- Driver `start()` calls `request_pairing_token(endpoint, agent_key)` which hits
+  `/admin/pair` and receives an opaque token
+- Token has a TTL; expires unused after a short grace period
+- Bridge maps token → agent persona at session setup time; consumed on the first
+  successful `InitializeResult`
+- `agent_key` is not visible in the transport layer — the URL path carries the
+  opaque token
+- Legacy per-agent stdio bridge code path removed
 
 ### Phase 3 — Bidirectional Platform connection
 
@@ -299,22 +214,9 @@ What changes:
 
 ## 5. Rollback
 
-If the shared bridge has issues and you need to revert a driver to the stdio path:
-
-1. **Revert the driver code** — either `git revert` the commit that added the
-   `bridge_endpoint` branch, or manually change the driver back to always use the stdio
-   config and remove the `bridge_endpoint` check.
-
-2. **Ensure `bridge_endpoint: None` in the spec** — the default is already `None` in
-   all `AgentSpec` constructors. If you wired auto-discovery into the manager, revert
-   that too.
-
-3. **No data migration needed** — agent records in `chorus.db` do not store
-   `bridge_endpoint`. The field lives only in the in-memory `AgentSpec` built at
-   runtime. Reverting the code is sufficient.
-
-4. **Stop `chorus bridge-serve`** — once no drivers reference the shared bridge, the
-   daemon can be shut down.
+There is no stdio bridge to fall back to. If the shared bridge fails to start, fix
+the underlying cause (port conflict, permissions on `~/.chorus/bridge.json`, etc.);
+drivers will not silently spawn per-agent bridges.
 
 ---
 
@@ -350,14 +252,15 @@ affected agent runtime, which will send a fresh `initialize` request.
 
 The bridge crashed without running its cleanup hook, leaving `~/.chorus/bridge.json`
 pointing at a dead PID. The `read_bridge_info()` helper detects this (it sends signal 0
-to the PID and returns `None` if the process is gone), so drivers will fall back to
-stdio automatically. To clean up manually:
+to the PID and returns `None` if the process is gone) and `AgentManager::start_agent`
+will fail loudly. To clean up manually:
 
 ```bash
 rm ~/.chorus/bridge.json
 ```
 
-Then start `chorus bridge-serve` fresh.
+Then restart `chorus serve` (which will start a fresh bridge) or start
+`chorus bridge-serve` standalone.
 
 ### Debug commands
 

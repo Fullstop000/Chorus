@@ -69,34 +69,26 @@ New driver work usually touches these files:
 - `qa/cases/playwright/<RUNTIME-CASE>.spec.ts`
   - runtime-specific DM reply verification
 
-## Shared Bridge vs Stdio Bridge
+## Shared Bridge
 
-Every driver gets an `AgentSpec` when it is spawned. `AgentSpec` carries an optional
-`bridge_endpoint: Option<String>` field:
+Every driver gets an `AgentSpec` when it is spawned. `AgentSpec.bridge_endpoint` is a
+required `String` pointing at the shared HTTP bridge (for example
+`"http://127.0.0.1:4321"`); populated by `AgentManager::start_agent` from
+`~/.chorus/bridge.json`. If the bridge is not running the manager fails loudly —
+there is no stdio fallback.
 
-- `None` (default) — driver spawns a per-agent `chorus bridge --agent-id <key>` stdio
-  process as the MCP server. This is the stable default path.
-- `Some("http://127.0.0.1:4321")` — driver points the runtime's MCP config at the
-  shared `chorus bridge-serve` daemon using Streamable HTTP. The URL path
-  (`/<agent_key>/mcp`) identifies the agent; no per-agent process is needed.
+In each driver's `start()`:
 
-The field is populated by auto-discovery (`src/bridge/discovery.rs`). If
-`~/.chorus/bridge.json` exists and the recorded PID is alive, the manager fills in the
-endpoint automatically. Otherwise it stays `None` and the stdio path is used unchanged.
-
-When implementing a new driver's MCP config, branch on `bridge_endpoint`:
-
-```rust
-let mcp_config = if let Some(endpoint) = &self.spec.bridge_endpoint {
-    json!({ "mcpServers": { "chat": { "url": format!("{}/{}/mcp", endpoint, self.key), "type": "http" } } })
-} else {
-    json!({ "mcpServers": { "chat": { "command": &self.spec.bridge_binary,
-        "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url] } } })
-};
-```
+1. Request a per-agent pairing token:
+   ```rust
+   let token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key).await?;
+   ```
+2. Point the runtime's MCP config at `{bridge_endpoint}/token/{token}/mcp` using the
+   runtime-specific config shape (see `docs/BRIDGE_MIGRATION.md` for a per-runtime
+   table).
 
 See `docs/BRIDGE_MIGRATION.md` for per-runtime MCP config format details and the full
-conversion guide.
+implementation guide.
 
 ---
 
@@ -126,8 +118,9 @@ Before writing much code, answer these questions from the real runtime:
 
 Use a tiny one-off probe before integrating fully:
 
-1. Create a temporary MCP config that points at:
-   - `chorus bridge --agent-id <test-agent> --server-url <local-server>`
+1. Start `chorus bridge-serve` pointed at a local chorus server, then pair an agent
+   with `chorus bridge-pair --agent <test-agent>` and point the runtime's MCP config
+   at `http://127.0.0.1:4321/token/<token>/mcp`.
 2. Run the runtime directly in its print/JSON mode
 3. Send one minimal prompt that asks it to call `send_message`
 4. Capture raw stdout and stderr
