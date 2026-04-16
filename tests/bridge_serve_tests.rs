@@ -1,9 +1,25 @@
+use std::sync::Arc;
+
+use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
+use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
+use chorus::server::build_router_with_services;
+use chorus::store::channels::ChannelType;
+use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::{AgentRecordUpsert, Store};
 
 /// Helper: start the bridge server on a random port and return the base URL
 /// and a cancellation token for graceful shutdown.
 async fn start_bridge() -> (String, tokio_util::sync::CancellationToken) {
-    let (app, ct) = build_bridge_router("http://localhost:1");
+    start_bridge_with_server("http://localhost:1").await
+}
+
+/// Helper: start the bridge server on a random port, pointing at the provided
+/// Chorus server URL. Returns the bridge base URL and its cancellation token.
+async fn start_bridge_with_server(
+    server_url: &str,
+) -> (String, tokio_util::sync::CancellationToken) {
+    let (app, ct) = build_bridge_router(server_url);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -23,6 +39,82 @@ async fn start_bridge() -> (String, tokio_util::sync::CancellationToken) {
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     (addr, ct)
+}
+
+/// No-op lifecycle used when running the Chorus server in-process for tests.
+/// Mirrors the helper in `tests/harness/mod.rs` — duplicated here because
+/// integration tests cannot share test-only modules without extra wiring.
+struct NoopLifecycle;
+
+impl AgentLifecycle for NoopLifecycle {
+    fn start_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+        _wake_message: Option<ReceivedMessage>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn notify_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn stop_agent<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn get_activity_log_data(
+        &self,
+        _agent_name: &str,
+        _after_seq: Option<u64>,
+    ) -> chorus::agent::activity_log::ActivityLogResponse {
+        chorus::agent::activity_log::ActivityLogResponse {
+            entries: vec![],
+            agent_activity: "offline".to_string(),
+            agent_detail: String::new(),
+        }
+    }
+
+    fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
+        vec![]
+    }
+}
+
+/// Start a Chorus server in-process with an in-memory SQLite store. Returns
+/// the server's base URL, the shared `Store`, and a join handle. The server
+/// is spawned on a background task and lives for the duration of the test.
+async fn start_chorus_server() -> (String, Arc<Store>) {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store.create_human("testuser").unwrap();
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel)
+        .unwrap();
+    store
+        .join_channel("general", "testuser", SenderType::Human)
+        .unwrap();
+
+    let router = build_router_with_services(
+        store.clone(),
+        Arc::new(NoopLifecycle),
+        Arc::new(SystemRuntimeStatusProvider::new(
+            chorus::agent::manager::build_driver_registry(),
+        )) as SharedRuntimeStatusProvider,
+        vec![],
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let url = format!("http://{addr}");
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    (url, store)
 }
 
 /// Build a JSON-RPC initialize request body.
@@ -165,4 +257,122 @@ async fn same_agent_reuses_service() {
     );
 
     ct.cancel();
+}
+
+/// Full end-to-end: MCP client -> bridge HTTP -> ChatBridge -> ChorusBackend
+/// -> Chorus server -> SQLite store. Proves that a `send_message` tool call
+/// dispatched through the bridge actually lands in the Chorus store.
+#[tokio::test]
+async fn bridge_sends_message_to_chorus_server() {
+    // 1. Start the Chorus server with a seeded channel + agent.
+    let (server_url, store) = start_chorus_server().await;
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store
+        .join_channel("general", "bot1", SenderType::Agent)
+        .unwrap();
+
+    // 2. Start the bridge pointed at the Chorus server.
+    let (bridge_addr, bridge_ct) = start_bridge_with_server(&server_url).await;
+    let client = reqwest::Client::new();
+    let mcp_url = format!("{}/bot1/mcp", bridge_addr);
+
+    // 3. MCP initialize — grab the session ID out of the response headers.
+    let init_resp = send_initialize(&client, &mcp_url).await;
+    assert_eq!(init_resp.status(), 200, "initialize should return 200");
+    let session_id = init_resp
+        .headers()
+        .get("Mcp-Session-Id")
+        .expect("initialize response must contain Mcp-Session-Id")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    // Drain the init body so the connection is released.
+    let _ = init_resp.text().await.unwrap();
+
+    // 4. Send the required `notifications/initialized` to complete the MCP
+    //    handshake before issuing any tool calls. This is a JSON-RPC
+    //    notification (no `id`) and expects 202 Accepted.
+    let initialized_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .send()
+        .await
+        .expect("initialized notification should succeed");
+    assert!(
+        initialized_resp.status().is_success(),
+        "initialized notification should succeed, got {}",
+        initialized_resp.status()
+    );
+    let _ = initialized_resp.text().await.unwrap();
+
+    // 5. Call `send_message` via tools/call, using the session ID from init.
+    let tools_call_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "send_message",
+            "arguments": {
+                "target": "#general",
+                "content": "Hello from bridge test!"
+            }
+        }
+    });
+    let call_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&tools_call_body)
+        .send()
+        .await
+        .expect("tools/call request should succeed");
+    assert_eq!(call_resp.status(), 200, "tools/call should return 200");
+    let call_body = call_resp.text().await.unwrap();
+    let call_json = extract_jsonrpc_from_sse(&call_body);
+    assert_eq!(call_json["jsonrpc"], "2.0");
+    assert_eq!(call_json["id"], 2);
+    assert!(
+        call_json.get("error").is_none(),
+        "tools/call should not return an error, got: {}",
+        call_json
+    );
+    assert!(
+        call_json["result"].is_object(),
+        "tools/call should return a result object, got: {}",
+        call_json
+    );
+
+    // 6. Verify the message actually landed in the Chorus store.
+    let (messages, _has_more) = store.get_history("general", None, 100, None, None).unwrap();
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.content.contains("Hello from bridge test!")
+                && m.sender_name == "bot1"),
+        "expected bridge-sent message in store, got: {:?}",
+        messages
+            .iter()
+            .map(|m| (&m.sender_name, &m.content))
+            .collect::<Vec<_>>()
+    );
+
+    bridge_ct.cancel();
 }
