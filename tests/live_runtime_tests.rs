@@ -570,6 +570,13 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 /// Live round-trip: spawn a real `kimi` (Moonshot Kimi CLI) runtime, send it a
 /// prompt, verify its reply lands in the Chorus store via the shared bridge.
 ///
+/// KNOWN ISSUE: As of kimi 1.33.0, this test fails — the agent starts but
+/// never invokes `send_message`. The file config has the correct shape
+/// (`{"url": "...", "transport": "http"}` — verified against `kimi mcp add
+/// --transport http`) but kimi ACP mode does not appear to make the MCP
+/// server available inside the session. The 3 other runtimes (Claude, Codex,
+/// OpenCode) pass the same test. This is logged as a known Phase 2 follow-up.
+///
 /// Requires:
 ///   - `kimi` binary on PATH
 ///   - Moonshot credentials in `~/.kimi/credentials/kimi-code.json` (populated

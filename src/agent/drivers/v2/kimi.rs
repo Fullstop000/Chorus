@@ -35,10 +35,16 @@ fn build_mcp_config_file(
 ) -> serde_json::Value {
     match (&spec.bridge_endpoint, token) {
         (Some(endpoint), Some(tok)) => {
+            // Kimi requires `transport: "http"` alongside `url` — without it,
+            // the runtime defaults to stdio and fails to connect. Verified
+            // against the format emitted by `kimi mcp add --transport http`.
             let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
             serde_json::json!({
                 "mcpServers": {
-                    "chat": { "url": url }
+                    "chat": {
+                        "url": url,
+                        "transport": "http"
+                    }
                 }
             })
         }
@@ -70,10 +76,13 @@ fn build_acp_mcp_servers(
 ) -> serde_json::Value {
     match (&spec.bridge_endpoint, token) {
         (Some(endpoint), Some(tok)) => {
+            // Kimi requires `transport: "http"` alongside `url` in ACP
+            // session/new params too — same reason as the file config.
             let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
             serde_json::json!([{
                 "name": "chat",
-                "url": url
+                "url": url,
+                "transport": "http"
             }])
         }
         _ => {
@@ -848,6 +857,7 @@ mod tests {
         let config = build_mcp_config_file("agent-abc", &spec, Some("tok-xyz"));
         let chat = &config["mcpServers"]["chat"];
         assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(chat["transport"], "http");
         assert!(chat.get("command").is_none());
     }
 
@@ -910,6 +920,7 @@ mod tests {
         let entry = &arr[0];
         assert_eq!(entry["name"], "chat");
         assert_eq!(entry["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(entry["transport"], "http");
         assert!(entry.get("command").is_none());
     }
 
