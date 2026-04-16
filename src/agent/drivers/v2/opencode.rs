@@ -3,6 +3,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
@@ -15,6 +16,79 @@ use crate::agent::AgentRuntime;
 
 use super::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator};
 use super::*;
+
+// ---------------------------------------------------------------------------
+// MCP config construction
+// ---------------------------------------------------------------------------
+
+/// Build the `mcp.chat` config block for `opencode.json`.
+///
+/// Two shapes, branching on whether a shared HTTP bridge is available:
+/// - `spec.bridge_endpoint = Some(_)` + `token = Some(_)`: remote HTTP MCP,
+///   connecting to `{endpoint}/token/{token}/mcp`.
+/// - otherwise: per-agent stdio bridge spawned by OpenCode (`type = "local"`).
+///
+/// Factored out so config-shape tests don't need a live bridge.
+fn build_mcp_chat_config(
+    agent_key: &str,
+    spec: &AgentSpec,
+    token: Option<&str>,
+) -> serde_json::Value {
+    match (&spec.bridge_endpoint, token) {
+        (Some(endpoint), Some(tok)) => {
+            let base = endpoint.trim_end_matches('/');
+            serde_json::json!({
+                "type": "remote",
+                "url": format!("{base}/token/{tok}/mcp"),
+            })
+        }
+        _ => serde_json::json!({
+            "type": "local",
+            "command": [
+                &spec.bridge_binary,
+                "bridge",
+                "--agent-id",
+                agent_key,
+                "--server-url",
+                &spec.server_url,
+            ],
+        }),
+    }
+}
+
+/// Request a one-time pairing token from the shared bridge's admin endpoint.
+///
+/// The bridge mints the token, binds it to `agent_key`, and we embed it in
+/// the MCP URL written to `opencode.json`. On any failure (network, non-2xx,
+/// malformed response) this bubbles up — the driver surfaces the error to
+/// the caller rather than silently falling back to the stdio path.
+async fn request_pairing_token(bridge_endpoint: &str, agent_key: &str) -> anyhow::Result<String> {
+    let base = bridge_endpoint.trim_end_matches('/');
+    let url = format!("{base}/admin/pair");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .context("failed to build HTTP client for bridge pairing")?;
+    let res = client
+        .post(&url)
+        .json(&serde_json::json!({ "agent_key": agent_key }))
+        .send()
+        .await
+        .with_context(|| format!("bridge unreachable at {url}"))?;
+    if !res.status().is_success() {
+        let status = res.status();
+        let body = res.text().await.unwrap_or_default();
+        anyhow::bail!("bridge-pair failed: {status} {body}");
+    }
+    let json: serde_json::Value = res
+        .json()
+        .await
+        .context("invalid bridge pairing response (not JSON)")?;
+    json["token"]
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow::anyhow!("missing 'token' in bridge response: {json}"))
+}
 
 // ---------------------------------------------------------------------------
 // OpencodeDriver
@@ -210,18 +284,28 @@ impl AgentHandle for OpencodeHandle {
             _ => self.spec.model.clone(),
         };
 
+        // Resolve MCP transport: shared HTTP bridge (when `bridge_endpoint`
+        // is configured) or per-agent stdio bridge (legacy). If pairing
+        // fails we surface the error — no silent fallback to stdio, so
+        // misconfiguration is loud.
+        let pairing_token = if let Some(endpoint) = &self.spec.bridge_endpoint {
+            Some(request_pairing_token(endpoint, &self.key).await.with_context(
+                || format!("failed to pair with bridge at {endpoint} for agent {}", self.key),
+            )?)
+        } else {
+            None
+        };
+
         // Write opencode.json to the working directory
         let config_path = wd.join("opencode.json");
-        let mcp_config = serde_json::json!({
+        let mcp_chat = build_mcp_chat_config(&self.key, &self.spec, pairing_token.as_deref());
+        let opencode_config = serde_json::json!({
             "model": model_id,
             "mcp": {
-                "chat": {
-                    "type": "local",
-                    "command": [&self.spec.bridge_binary, "bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url]
-                }
+                "chat": mcp_chat,
             }
         });
-        std::fs::write(&config_path, serde_json::to_string_pretty(&mcp_config)?)
+        std::fs::write(&config_path, serde_json::to_string_pretty(&opencode_config)?)
             .context("failed to write opencode.json")?;
 
         // Build CLI args
@@ -751,5 +835,151 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
+    }
+
+    #[test]
+    fn build_mcp_chat_config_stdio_when_no_endpoint() {
+        // No bridge_endpoint configured → fall back to stdio `type: "local"`.
+        let mut spec = test_spec();
+        spec.bridge_binary = "/opt/chorus/bridge".to_string();
+        spec.server_url = "http://127.0.0.1:3001".to_string();
+        assert!(spec.bridge_endpoint.is_none());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, None);
+        assert_eq!(config["type"], "local");
+        let command = config["command"].as_array().expect("command is array");
+        assert_eq!(command[0], "/opt/chorus/bridge");
+        assert_eq!(command[1], "bridge");
+        assert_eq!(command[2], "--agent-id");
+        assert_eq!(command[3], "agent-abc");
+        assert_eq!(command[4], "--server-url");
+        assert_eq!(command[5], "http://127.0.0.1:3001");
+        assert!(config.get("url").is_none());
+    }
+
+    #[test]
+    fn build_mcp_chat_config_http_when_endpoint_and_token() {
+        // With bridge_endpoint + token → remote HTTP MCP.
+        let mut spec = test_spec();
+        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, Some("tok-xyz"));
+        assert_eq!(config["type"], "remote");
+        assert_eq!(
+            config["url"],
+            "http://127.0.0.1:4321/token/tok-xyz/mcp"
+        );
+        assert!(config.get("command").is_none());
+    }
+
+    #[test]
+    fn build_mcp_chat_config_trims_trailing_slash() {
+        // Endpoint with trailing slash must not produce `//token/` in the URL.
+        let mut spec = test_spec();
+        spec.bridge_endpoint = Some("http://127.0.0.1:4321/".to_string());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, Some("tok-xyz"));
+        assert_eq!(
+            config["url"],
+            "http://127.0.0.1:4321/token/tok-xyz/mcp"
+        );
+    }
+
+    #[test]
+    fn build_mcp_chat_config_falls_back_when_endpoint_but_no_token() {
+        // Defensive: if caller forgot to request a token, we use stdio rather
+        // than writing a broken URL. In production flow, `start()` always
+        // fetches a token when `bridge_endpoint` is Some, but this keeps the
+        // helper sound if its preconditions are violated.
+        let mut spec = test_spec();
+        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
+
+        let config = build_mcp_chat_config("agent-abc", &spec, None);
+        assert_eq!(config["type"], "local");
+    }
+
+    // ---- request_pairing_token HTTP integration ----
+
+    async fn spawn_mock_bridge(
+        response: axum::response::Response,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use axum::routing::post;
+        use axum::Router;
+        use std::sync::Mutex as StdMutex;
+
+        let shared = Arc::new(StdMutex::new(Some(response)));
+        let app = Router::new().route(
+            "/admin/pair",
+            post(move || {
+                let shared = shared.clone();
+                async move {
+                    shared
+                        .lock()
+                        .unwrap()
+                        .take()
+                        .expect("mock bridge only answers once")
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let url = format!("http://127.0.0.1:{port}");
+        let handle =
+            tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        // Give the listener a tick to be ready.
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        (url, handle)
+    }
+
+    #[tokio::test]
+    async fn request_pairing_token_parses_success_response() {
+        let response = axum::response::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({"token": "tok-123"}).to_string(),
+            ))
+            .unwrap();
+        let (url, handle) = spawn_mock_bridge(response).await;
+
+        let token = request_pairing_token(&url, "agent-abc").await.unwrap();
+        assert_eq!(token, "tok-123");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn request_pairing_token_surfaces_non_2xx() {
+        let response = axum::response::Response::builder()
+            .status(500)
+            .body(axum::body::Body::from("boom"))
+            .unwrap();
+        let (url, handle) = spawn_mock_bridge(response).await;
+
+        let err = request_pairing_token(&url, "agent-abc")
+            .await
+            .expect_err("non-2xx should bubble up");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("bridge-pair failed"), "got: {msg}");
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn request_pairing_token_errors_on_missing_field() {
+        let response = axum::response::Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(
+                serde_json::json!({"wrong_field": "x"}).to_string(),
+            ))
+            .unwrap();
+        let (url, handle) = spawn_mock_bridge(response).await;
+
+        let err = request_pairing_token(&url, "agent-abc")
+            .await
+            .expect_err("missing token field should fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("missing 'token'"), "got: {msg}");
+        handle.abort();
     }
 }
