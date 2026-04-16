@@ -280,11 +280,82 @@ impl AgentManager {
             agent.pending_notification_count += 1;
             let count = agent.pending_notification_count;
 
-            // If the agent isn't Active (e.g. PromptInFlight), just
-            // record the count — the next notify_agent() call after the
-            // current run completes will deliver.
-            if !matches!(agent.handle.state(), AgentState::Active { .. }) {
-                debug!(agent = %agent_name, "agent not Active, deferring notification");
+            let is_active = matches!(agent.handle.state(), AgentState::Active { .. });
+            if !is_active {
+                // Agent is mid-run (e.g. processing its init prompt). Spawn a
+                // watchdog that polls for Active state, then fires the debounced
+                // notification. Without this, a single-message DM sent during
+                // the init turn would be permanently lost.
+                debug!(agent = %agent_name, "agent not Active, spawning deferred notification watchdog");
+                let agents_ref = self.agents.clone();
+                let trace_store = self.trace_store.clone();
+                let trace_tx = self.store.trace_sender();
+                let name = agent_name.to_string();
+                tokio::spawn(async move {
+                    // Poll until Active or timeout (generous: init prompts can
+                    // take up to ~60s for real LLMs on slow connections).
+                    let ready_deadline =
+                        tokio::time::Instant::now() + tokio::time::Duration::from_secs(120);
+                    loop {
+                        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                        if tokio::time::Instant::now() >= ready_deadline {
+                            warn!(agent = %name, "notify_agent watchdog: timed out waiting for Active state");
+                            return;
+                        }
+                        let is_now_active = {
+                            let agents = agents_ref.lock().await;
+                            agents
+                                .get(&name)
+                                .map(|a| matches!(a.handle.state(), AgentState::Active { .. }))
+                                .unwrap_or(false)
+                        };
+                        if is_now_active {
+                            break;
+                        }
+                    }
+                    // Agent is Active — apply the normal 3-second debounce then deliver.
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let mut agents = agents_ref.lock().await;
+                    if let Some(agent) = agents.get_mut(&name) {
+                        let current_count = agent.pending_notification_count;
+                        if current_count == 0 || current_count != count {
+                            agent.pending_notification_count = 0;
+                            return;
+                        }
+                        agent.pending_notification_count = 0;
+                        if !matches!(agent.handle.state(), AgentState::Active { .. }) {
+                            debug!(agent = %name, "agent no longer Active after deferred debounce, skipping");
+                            return;
+                        }
+                        let (run_id, _) = trace_store.ensure_run(&name);
+                        let seq = trace_store.next_seq(&name);
+                        let ch = trace_store.run_channel_id(&name);
+                        let _ = trace_tx.send(trace::build_trace_event(
+                            run_id,
+                            &name,
+                            ch,
+                            seq,
+                            TraceEventKind::Reading,
+                        ));
+                        let plural = if current_count > 1 { "s" } else { "" };
+                        let them = if current_count > 1 { "them" } else { "it" };
+                        let notification = format!(
+                            "[System notification: You have {current_count} new message{plural} \
+                             waiting. Call check_messages to read {them} when you're ready.]"
+                        );
+                        info!(agent = %name, count = current_count, "sending deferred prompt notification");
+                        if let Err(e) = agent
+                            .handle
+                            .prompt(PromptReq {
+                                text: notification,
+                                attachments: vec![],
+                            })
+                            .await
+                        {
+                            warn!(agent = %name, error = %e, "failed to deliver deferred notification prompt");
+                        }
+                    }
+                });
                 return Ok(());
             }
 
