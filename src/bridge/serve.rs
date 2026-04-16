@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::RwLock;
 use tokio_util::sync::CancellationToken;
 
@@ -18,19 +19,23 @@ use super::ChatBridge;
 /// Each entry corresponds to a `StreamableHttpService<ChatBridge>` plus its
 /// MCP session pool. Capping protects against unbounded memory growth when a
 /// misbehaving client cycles through fresh agent_keys.
-const MAX_SERVICES: usize = 128;
-
-/// Allowed shape for `agent_key` path segments.
 ///
-/// The key is interpolated into internal URLs (`/internal/agent/{key}`) so it
-/// must not carry path separators, query fragments, dot-segments, or any
-/// characters that would let an attacker pivot to a different endpoint.
-static AGENT_KEY_REGEX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_-]{1,64}$").expect("valid regex"));
+/// When the cap is reached, the least-recently-used entry is evicted to make
+/// room for new agents. In-flight MCP sessions on the evicted entry are
+/// dropped — acceptable because eviction only happens when 128+ distinct
+/// agent_keys are active, which is unusual for a single host.
+const MAX_SERVICES: usize = 128;
 
 // ---------------------------------------------------------------------------
 // BridgeServer — shared state for all per-agent services
 // ---------------------------------------------------------------------------
+
+/// One entry in the services map. Tracks last-access time for LRU eviction
+/// when the map reaches `MAX_SERVICES`.
+struct ServiceEntry {
+    service: StreamableHttpService<ChatBridge, LocalSessionManager>,
+    last_accessed: Instant,
+}
 
 /// Shared state for the bridge HTTP server.
 ///
@@ -39,7 +44,7 @@ static AGENT_KEY_REGEX: LazyLock<regex::Regex> =
 struct BridgeServer {
     server_url: String,
     cancellation_token: CancellationToken,
-    services: RwLock<HashMap<String, StreamableHttpService<ChatBridge, LocalSessionManager>>>,
+    services: RwLock<HashMap<String, ServiceEntry>>,
 }
 
 impl BridgeServer {
@@ -53,38 +58,40 @@ impl BridgeServer {
 
     /// Get an existing service for `agent_key`, or create one on the fly.
     ///
-    /// Returns `None` when the services map is at `MAX_SERVICES` capacity and
-    /// the requested key isn't already cached. Callers should surface this as
-    /// a 503 so the client can retry later.
+    /// Uses LRU eviction when the services map is at `MAX_SERVICES` capacity:
+    /// the entry with the oldest `last_accessed` is dropped to make room.
+    /// Every access (hit or miss) refreshes `last_accessed`.
     async fn get_or_create_service(
         &self,
         agent_key: &str,
-    ) -> Option<StreamableHttpService<ChatBridge, LocalSessionManager>> {
-        // Fast path — read lock only.
-        {
-            let guard = self.services.read().await;
-            if let Some(svc) = guard.get(agent_key) {
-                return Some(svc.clone());
-            }
-        }
-
-        // Slow path — upgrade to write lock and insert.
+    ) -> StreamableHttpService<ChatBridge, LocalSessionManager> {
+        // Fast path — try a read lock first, but we still need to bump
+        // `last_accessed`, which requires a write lock. A hit on the read
+        // lock tells us we don't need to create, but we fall through to
+        // update the timestamp under write lock. In practice the extra
+        // contention is negligible; if it ever matters, switch to atomic
+        // timestamps on the entry.
         let mut guard = self.services.write().await;
-        // Double-check after acquiring the write lock.
-        if let Some(svc) = guard.get(agent_key) {
-            return Some(svc.clone());
+
+        if let Some(entry) = guard.get_mut(agent_key) {
+            entry.last_accessed = Instant::now();
+            return entry.service.clone();
         }
 
-        // Enforce the cap on new entries only; existing entries above the cap
-        // (if the limit were ever lowered) continue to serve.
+        // Cache miss. Evict LRU entry if at capacity.
         if guard.len() >= MAX_SERVICES {
-            tracing::warn!(
-                agent_key,
-                cached = guard.len(),
-                max = MAX_SERVICES,
-                "refusing to create MCP service: services map at capacity"
-            );
-            return None;
+            if let Some(evicted_key) = guard
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_accessed)
+                .map(|(k, _)| k.clone())
+            {
+                guard.remove(&evicted_key);
+                tracing::info!(
+                    evicted_key,
+                    new_key = agent_key,
+                    "evicted LRU MCP service to make room"
+                );
+            }
         }
 
         let key = agent_key.to_owned();
@@ -100,15 +107,38 @@ impl BridgeServer {
             config,
         );
 
-        guard.insert(agent_key.to_owned(), svc.clone());
+        guard.insert(
+            agent_key.to_owned(),
+            ServiceEntry {
+                service: svc.clone(),
+                last_accessed: Instant::now(),
+            },
+        );
         tracing::info!(agent_key, "created MCP service for agent");
-        Some(svc)
+        svc
     }
 }
 
 // ---------------------------------------------------------------------------
 // Axum handler — forwards requests to the per-agent StreamableHttpService
 // ---------------------------------------------------------------------------
+
+/// Reject agent_keys that could pivot to other endpoints or traverse the
+/// filesystem, but accept the full set of names Chorus allows elsewhere.
+///
+/// Chorus only enforces `!name.is_empty()` at create time (see
+/// `handle_create_agent` in `src/server/handlers/agents.rs`), so existing
+/// agents may have spaces, dots, or Unicode in their names. Axum URL-decodes
+/// the path segment before we see it, so drivers that URL-encode names get
+/// the original back here.
+fn agent_key_is_safe(key: &str) -> bool {
+    !(key.is_empty()
+        || key.len() > 256
+        || key.contains('/')
+        || key.contains('\\')
+        || key.contains("..")
+        || key.chars().any(|c| c.is_control()))
+}
 
 /// Axum handler: extract agent_key from the path, look up (or create) the
 /// corresponding `StreamableHttpService`, and delegate the HTTP request to it.
@@ -117,25 +147,16 @@ async fn handle_mcp(
     State(server): State<Arc<BridgeServer>>,
     request: Request<axum::body::Body>,
 ) -> Response {
-    // Reject keys that could be used to pivot to other Chorus endpoints.
-    // The key is interpolated into `/internal/agent/{key}` downstream.
-    if !AGENT_KEY_REGEX.is_match(&agent_key) {
+    if !agent_key_is_safe(&agent_key) {
         return Response::builder()
             .status(StatusCode::BAD_REQUEST)
             .body(axum::body::Body::from(
-                "Invalid agent_key: must match [A-Za-z0-9_-]{1,64}",
+                "Invalid agent_key: must be non-empty, <=256 chars, no path separators or control characters",
             ))
             .expect("valid response");
     }
 
-    let Some(service) = server.get_or_create_service(&agent_key).await else {
-        return Response::builder()
-            .status(StatusCode::SERVICE_UNAVAILABLE)
-            .body(axum::body::Body::from(
-                "Bridge service capacity exhausted; try again later",
-            ))
-            .expect("valid response");
-    };
+    let service = server.get_or_create_service(&agent_key).await;
     let response = service.handle(request).await;
     response.into_response()
 }
@@ -206,4 +227,32 @@ pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::R
     crate::bridge::discovery::remove_bridge_info();
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_key_accepts_chorus_names() {
+        // Names Chorus currently allows through handle_create_agent.
+        assert!(agent_key_is_safe("bot1"));
+        assert!(agent_key_is_safe("Agent Smith"));
+        assert!(agent_key_is_safe("bot.with.dots"));
+        assert!(agent_key_is_safe("unicode-名字"));
+        assert!(agent_key_is_safe("a"));
+        assert!(agent_key_is_safe(&"x".repeat(256)));
+    }
+
+    #[test]
+    fn agent_key_rejects_dangerous_input() {
+        assert!(!agent_key_is_safe(""));
+        assert!(!agent_key_is_safe(&"x".repeat(257)));
+        assert!(!agent_key_is_safe("../etc/passwd"));
+        assert!(!agent_key_is_safe("a/b"));
+        assert!(!agent_key_is_safe("a\\b"));
+        assert!(!agent_key_is_safe("with\0null"));
+        assert!(!agent_key_is_safe("with\nnewline"));
+        assert!(!agent_key_is_safe(".."));
+    }
 }

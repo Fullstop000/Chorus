@@ -969,9 +969,14 @@ impl Backend for ChorusBackend {
             ));
         }
 
-        // Cache attachments inside the agent workspace so sandboxed agents can read them.
-        let cache_dir = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        // Cache attachments at an absolute, machine-stable path so agents can
+        // read them regardless of the bridge daemon's working directory. The
+        // shared bridge runs from wherever `chorus bridge` was launched, which
+        // is not the agent's workspace. `~/.chorus/attachments` sits next to
+        // `bridge.json` (see `bridge::discovery::default_discovery_path`) and
+        // is reachable by all agents on the same host.
+        let cache_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
             .join(".chorus")
             .join("attachments");
         std::fs::create_dir_all(&cache_dir).map_err(|e| {
