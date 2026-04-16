@@ -1,3 +1,16 @@
+//! Session registry for the shared MCP bridge.
+//!
+//! **Phase 1 status:** Scaffolding. Not yet wired into `BridgeServer` — the
+//! current serve path uses `rmcp::LocalSessionManager` for session management.
+//!
+//! **Phase 2 plan:** When pairing tokens replace URL-path identity, this
+//! registry will map `pairing_token -> agent_key` with TTL-based eviction
+//! so that bridge restarts don't keep stale tokens valid indefinitely.
+//!
+//! See `docs/BRIDGE_MIGRATION.md` for the full phased migration.
+
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
