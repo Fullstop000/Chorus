@@ -69,6 +69,37 @@ New driver work usually touches these files:
 - `qa/cases/playwright/<RUNTIME-CASE>.spec.ts`
   - runtime-specific DM reply verification
 
+## Shared Bridge vs Stdio Bridge
+
+Every driver gets an `AgentSpec` when it is spawned. `AgentSpec` carries an optional
+`bridge_endpoint: Option<String>` field:
+
+- `None` (default) — driver spawns a per-agent `chorus bridge --agent-id <key>` stdio
+  process as the MCP server. This is the stable default path.
+- `Some("http://127.0.0.1:4321")` — driver points the runtime's MCP config at the
+  shared `chorus bridge-serve` daemon using Streamable HTTP. The URL path
+  (`/<agent_key>/mcp`) identifies the agent; no per-agent process is needed.
+
+The field is populated by auto-discovery (`src/bridge/discovery.rs`). If
+`~/.chorus/bridge.json` exists and the recorded PID is alive, the manager fills in the
+endpoint automatically. Otherwise it stays `None` and the stdio path is used unchanged.
+
+When implementing a new driver's MCP config, branch on `bridge_endpoint`:
+
+```rust
+let mcp_config = if let Some(endpoint) = &self.spec.bridge_endpoint {
+    json!({ "mcpServers": { "chat": { "url": format!("{}/{}/mcp", endpoint, self.key), "type": "http" } } })
+} else {
+    json!({ "mcpServers": { "chat": { "command": &self.spec.bridge_binary,
+        "args": ["bridge", "--agent-id", &self.key, "--server-url", &self.spec.server_url] } } })
+};
+```
+
+See `docs/BRIDGE_MIGRATION.md` for per-runtime MCP config format details and the full
+conversion guide.
+
+---
+
 ## Phase 1: Discover The Runtime Protocol First
 
 Do not start by copying Claude or Codex behavior and hoping it matches.
