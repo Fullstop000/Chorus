@@ -29,11 +29,7 @@ use super::*;
 fn build_mcp_config(agent_key: &str, spec: &AgentSpec, token: Option<&str>) -> serde_json::Value {
     match (&spec.bridge_endpoint, token) {
         (Some(endpoint), Some(tok)) => {
-            let url = format!(
-                "{}/token/{}/mcp",
-                endpoint.trim_end_matches('/'),
-                tok
-            );
+            let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
             serde_json::json!({
                 "mcpServers": {
                     "chat": {
@@ -793,7 +789,10 @@ mod tests {
 
         let config = build_mcp_config("agent-abc", &spec, None);
         let chat = &config["mcpServers"]["chat"];
-        assert!(chat.get("command").is_some(), "expected stdio fallback shape");
+        assert!(
+            chat.get("command").is_some(),
+            "expected stdio fallback shape"
+        );
         assert!(chat.get("url").is_none());
     }
 

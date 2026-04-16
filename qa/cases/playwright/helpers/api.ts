@@ -121,7 +121,7 @@ export async function createAgentApi(
 }
 
 /** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case.
- * Trio: bot-a=claude/sonnet, bot-b=kimi/kimi-code/kimi-for-coding, bot-c=opencode/opencode/gpt-5-nano
+ * Trio: bot-a=codex/gpt-5.4, bot-b=kimi/kimi-code/kimi-for-coding, bot-c=opencode/opencode/gpt-5-nano
  */
 export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<void> {
   const agents = await listAgents(request)
@@ -129,7 +129,7 @@ export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promis
   if (!names.has('bot-a')) {
     await createAgentApi(
       request,
-      { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
+      { name: 'bot-a', runtime: 'codex', model: 'gpt-5.4' },
       { allowNameTaken: true }
     )
   }
