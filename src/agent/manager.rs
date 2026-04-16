@@ -119,6 +119,19 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("no driver for runtime {:?}", rt))?
             .clone();
 
+        // Auto-discover the shared bridge — when `chorus serve --shared-bridge`
+        // is running, this populates bridge_endpoint so agents connect via HTTP
+        // MCP instead of spawning per-agent stdio processes. When no bridge is
+        // running, this is None and the legacy stdio path works unchanged.
+        let bridge_endpoint = crate::bridge::discovery::read_bridge_info()
+            .map(|info| format!("http://127.0.0.1:{}", info.port));
+
+        if let Some(ref endpoint) = bridge_endpoint {
+            info!(agent = %agent_name, %endpoint, "starting agent via shared bridge");
+        } else {
+            debug!(agent = %agent_name, "starting agent via per-agent stdio bridge");
+        }
+
         let spec = AgentSpec {
             display_name: agent.display_name.clone(),
             description: agent.description.clone(),
@@ -129,7 +142,7 @@ impl AgentManager {
             working_directory: agent_data_dir.clone(),
             bridge_binary: self.bridge_binary.clone(),
             server_url: self.server_url.clone(),
-            bridge_endpoint: None,
+            bridge_endpoint,
         };
 
         let attach_result = v2_driver.attach(agent_name.to_string(), spec).await?;
@@ -934,6 +947,30 @@ mod tests {
         assert!(result.is_ok(), "notify should succeed: {result:?}");
 
         let _ = manager.stop_agent("v2bot").await;
+    }
+
+    // ── bridge endpoint helper ──
+
+    fn bridge_endpoint_from(
+        info: Option<crate::bridge::discovery::BridgeInfo>,
+    ) -> Option<String> {
+        info.map(|i| format!("http://127.0.0.1:{}", i.port))
+    }
+
+    #[test]
+    fn bridge_endpoint_from_info_formats_url() {
+        let info = crate::bridge::discovery::BridgeInfo {
+            port: 4321,
+            pid: 12345,
+            started_at: "2026-04-16T00:00:00Z".to_string(),
+        };
+        let result = bridge_endpoint_from(Some(info));
+        assert_eq!(result, Some("http://127.0.0.1:4321".to_string()));
+    }
+
+    #[test]
+    fn bridge_endpoint_from_none_is_none() {
+        assert_eq!(bridge_endpoint_from(None), None);
     }
 
     #[tokio::test]
