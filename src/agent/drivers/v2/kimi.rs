@@ -76,13 +76,18 @@ fn build_acp_mcp_servers(
 ) -> serde_json::Value {
     match (&spec.bridge_endpoint, token) {
         (Some(endpoint), Some(tok)) => {
-            // Kimi requires `transport: "http"` alongside `url` in ACP
-            // session/new params too — same reason as the file config.
+            // ACP spec for HTTP MCP servers in session/new params requires:
+            //   - `type: "http"` (NOT `transport: "http"` like Kimi's file
+            //     config format)
+            //   - `headers` array (required, can be empty)
+            // See https://agentclientprotocol.com/protocol/session-setup
+            // Sending the wrong shape produces ACP "Invalid params" errors.
             let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
             serde_json::json!([{
+                "type": "http",
                 "name": "chat",
                 "url": url,
-                "transport": "http"
+                "headers": []
             }])
         }
         _ => {
@@ -291,6 +296,7 @@ impl AgentHandle for KimiHandle {
         let mcp_config = build_mcp_config_file(&self.key, &self.spec, pairing_token.as_deref());
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
             .context("failed to write MCP config")?;
+
 
         // Build CLI args
         let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
@@ -918,9 +924,11 @@ mod tests {
         let arr = servers.as_array().expect("array");
         assert_eq!(arr.len(), 1);
         let entry = &arr[0];
+        assert_eq!(entry["type"], "http");
         assert_eq!(entry["name"], "chat");
         assert_eq!(entry["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
-        assert_eq!(entry["transport"], "http");
+        // Headers array is required by ACP spec (can be empty)
+        assert!(entry["headers"].is_array());
         assert!(entry.get("command").is_none());
     }
 
