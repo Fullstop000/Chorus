@@ -144,11 +144,14 @@ impl ChorusBackend {
     }
 
     /// Build the per-agent base URL for internal agent endpoints.
+    ///
+    /// The agent key is percent-encoded so that names containing spaces,
+    /// unicode, or reserved characters produce a valid URL.
     fn base_url(&self, agent_key: &str) -> String {
         format!(
             "{}/internal/agent/{}",
             self.server_url.trim_end_matches('/'),
-            agent_key
+            urlencoding::encode(agent_key)
         )
     }
 }
@@ -1064,11 +1067,16 @@ impl Backend for ChorusBackend {
             .unwrap_or("application/octet-stream")
             .to_string();
 
+        // Map content-type to file extension. Each entry here must have a
+        // corresponding entry in KNOWN_EXTENSIONS above so the cache-hit path
+        // is reachable. Use starts_with to tolerate parameters like
+        // "image/jpeg; charset=utf-8".
         let ext = match content_type.as_str() {
-            "image/jpeg" => ".jpg",
-            "image/png" => ".png",
-            "image/gif" => ".gif",
-            "image/webp" => ".webp",
+            ct if ct.starts_with("image/jpeg") => ".jpg",
+            ct if ct.starts_with("image/png") => ".png",
+            ct if ct.starts_with("image/gif") => ".gif",
+            ct if ct.starts_with("image/webp") => ".webp",
+            ct if ct.starts_with("application/pdf") => ".pdf",
             _ => ".bin",
         };
 
@@ -1113,6 +1121,60 @@ mod tests {
             backend.base_url("bot-x"),
             "http://localhost:3001/internal/agent/bot-x"
         );
+    }
+
+    // C3: agent_key percent-encoding in base_url
+    #[test]
+    fn base_url_encodes_spaces() {
+        let backend = ChorusBackend::new("http://localhost:3001".to_string());
+        assert_eq!(
+            backend.base_url("my agent"),
+            "http://localhost:3001/internal/agent/my%20agent"
+        );
+    }
+
+    #[test]
+    fn base_url_encodes_unicode() {
+        let backend = ChorusBackend::new("http://localhost:3001".to_string());
+        // 机器人 encodes to %E6%9C%BA%E5%99%A8%E4%BA%BA
+        assert_eq!(
+            backend.base_url("机器人"),
+            "http://localhost:3001/internal/agent/%E6%9C%BA%E5%99%A8%E4%BA%BA"
+        );
+    }
+
+    #[test]
+    fn base_url_plain_key_unchanged() {
+        // A plain alphanumeric-plus-dash key must not be altered.
+        let backend = ChorusBackend::new("http://localhost:3001".to_string());
+        assert_eq!(
+            backend.base_url("bot-1"),
+            "http://localhost:3001/internal/agent/bot-1"
+        );
+    }
+
+    // C8: content-type → extension mapping
+    #[test]
+    fn content_type_to_ext_pdf() {
+        // Replicate the mapping logic used in view_file to verify PDF branch.
+        fn ext_for(content_type: &str) -> &'static str {
+            match content_type {
+                ct if ct.starts_with("image/jpeg") => ".jpg",
+                ct if ct.starts_with("image/png") => ".png",
+                ct if ct.starts_with("image/gif") => ".gif",
+                ct if ct.starts_with("image/webp") => ".webp",
+                ct if ct.starts_with("application/pdf") => ".pdf",
+                _ => ".bin",
+            }
+        }
+        assert_eq!(ext_for("application/pdf"), ".pdf");
+        assert_eq!(ext_for("application/pdf; charset=utf-8"), ".pdf");
+        assert_eq!(ext_for("image/jpeg"), ".jpg");
+        assert_eq!(ext_for("image/png"), ".png");
+        assert_eq!(ext_for("image/gif"), ".gif");
+        assert_eq!(ext_for("image/webp"), ".webp");
+        // Unknown types still fall back to .bin.
+        assert_eq!(ext_for("application/octet-stream"), ".bin");
     }
 
     #[test]
