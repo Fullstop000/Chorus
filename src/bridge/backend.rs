@@ -124,6 +124,7 @@ pub trait Backend: Send + Sync {
 ///
 /// Delegates each operation to the Chorus HTTP API using the same request
 /// logic that `ChatBridge` uses today.
+#[derive(Clone)]
 pub struct ChorusBackend {
     server_url: String,
     client: reqwest::Client,
