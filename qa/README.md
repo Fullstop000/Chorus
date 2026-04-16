@@ -168,6 +168,77 @@ When a case is not fully automated yet:
 
 If a case changes, update the markdown case and its Playwright spec in the same behavior change. The case steps, expected results, spec header, and `test.step(...)` labels should continue to describe the same flow.
 
+## Subprocess and External Runtime Tests
+
+Chorus has tests that spawn real external processes: agent runtimes (Claude, Codex, Kimi, OpenCode), the shared MCP bridge daemon, and future per-backend adapters. These tests live outside the Playwright QA flow but follow the same evidence discipline.
+
+Current home: `tests/live_runtime_tests.rs`.
+
+### The Iron Rule
+
+**When a subprocess-spawning test fails, its failure message MUST include the subprocess's diagnostic output.**
+
+This is not optional. A test that prints "agent did not reply in 60s" without also printing the agent's stderr, its log file contents, and the config we wrote has shipped a timeout, not a bug report. Every minute of hand-debugging a silent subprocess failure is a signal that the test didn't do its job.
+
+The reason: subprocesses report errors through stderr, structured log files, and exit codes — not through the test's observation channel. If the test only watches for the expected success state, a failure mode that prevents the subprocess from reaching that state produces no signal.
+
+### Required Failure Artifacts
+
+A subprocess-spawning test that fails must dump:
+
+1. **Subprocess stderr**, buffered to at least the last 200 lines. Applies to every subprocess the test started.
+2. **The subprocess's own log file contents** when the binary writes logs. Document the file path in the test so future readers know where to look.
+3. **Any configuration files the test wrote** (MCP config, pairing token, session state). Include the file path and content.
+4. **Observable state at the moment of failure**:
+   - For runtime tests: the Chorus channel history, the agent's last known state, any received events
+   - For bridge tests: the session registry contents, active agent keys, pairing token ledger
+5. **Exit code and signal** if the subprocess has already exited when the test assertion runs.
+
+A failure message that lacks any of items 1-4 should be treated as a test-quality bug and fixed before the test is shipped.
+
+### Runtime Log File Reference
+
+Each runtime writes its own logs. Document these here so debugging cycles stay short.
+
+| Runtime | Log location | Enable extra logging |
+|---------|--------------|----------------------|
+| Claude Code | `~/.claude/logs/` | `CLAUDE_LOG_LEVEL=debug` (verify) |
+| Codex | `~/.codex/log/` | `--log-level debug` or `RUST_LOG` (verify) |
+| Kimi | `~/.kimi/logs/kimi.log` | `--debug` CLI flag or `KIMI_LOG_LEVEL=debug` |
+| OpenCode | `~/.opencode/logs/` | `--log-level debug` (verify) |
+
+Chorus's own driver tracing: `RUST_LOG=chorus::agent::drivers=debug`. The bridge: `RUST_LOG=chorus::bridge=debug`.
+
+Entries marked `(verify)` were not confirmed during the last audit — confirm before relying on them.
+
+### Execution Policy
+
+Subprocess tests are `#[ignore]` by default because they require installed binaries and valid auth. Run them explicitly:
+
+```
+cargo test --test live_runtime_tests -- --ignored --nocapture
+```
+
+Each test must:
+
+- skip cleanly when the required binary is missing on `PATH`
+- skip cleanly when the required auth env var or credential file is not present
+- document its required binary, auth, and env vars in the test's doc comment
+
+If a test passes on one machine and fails on another because of an environment gap, the test's skip logic was incomplete. Fix the skip logic before blaming flakiness.
+
+### Protocol Conformance
+
+Tests that cross a protocol boundary (ACP, MCP, JSON-RPC wire format) should validate conformance at the unit level, not only at the end-to-end level. A unit test that asserts `entry["transport"] == "http"` verifies only "we emit what we expect" — it does not catch "we emit something the consumer rejects."
+
+When a live test fails because of a wire-format mismatch that unit tests missed, that is a signal to add a schema-level contract test for the protocol in question. Do not rely on live tests alone to catch protocol drift.
+
+### Why This Section Exists
+
+This policy is the direct output of one debugging session that cost about an hour because the test said "agent did not reply in 60s" and nothing else. The runtime's own log file contained `acp.exceptions.RequestError: Invalid params` on the first request. The fix was one-line. The cost was the time to find that signal.
+
+Every subprocess test written under this policy should make that class of debug session take seconds, not hours.
+
 ## Debug Failures
 
 When a scripted QA case fails, do not write a vague report entry like "Playwright failed." Record the exact failing step, exact repro command, and concrete artifacts that prove the failure.
