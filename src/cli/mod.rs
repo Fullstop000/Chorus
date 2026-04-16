@@ -112,7 +112,10 @@ enum Commands {
         server_url: String,
     },
     /// Run a smoke test against a temporary bridge server.
-    #[command(name = "bridge-smoke-test")]
+    ///
+    /// Internal diagnostic — hidden from `chorus --help`. Still invokable as
+    /// `chorus bridge-smoke-test` for developers debugging the bridge layer.
+    #[command(name = "bridge-smoke-test", hide = true)]
     BridgeSmokeTest,
     /// Mint a one-time pairing token for an agent to connect to the running bridge.
     #[command(name = "bridge-pair")]
