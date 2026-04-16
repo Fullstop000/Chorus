@@ -101,6 +101,16 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
+    /// Start the shared HTTP MCP bridge server (multi-agent)
+    #[command(name = "bridge-serve")]
+    BridgeServe {
+        /// Address to listen on (e.g. 127.0.0.1:4321)
+        #[arg(long, default_value = "127.0.0.1:4321")]
+        listen: String,
+        /// Chorus backend server URL
+        #[arg(long, default_value = "http://localhost:3001")]
+        server_url: String,
+    },
     /// Alias for `start --no-open` (kept for backward compatibility)
     #[command(hide = true)]
     Serve {
@@ -228,6 +238,10 @@ pub async fn run() -> anyhow::Result<()> {
             agent_id,
             server_url,
         }) => chorus::bridge::run_bridge(agent_id, server_url).await,
+
+        Some(Commands::BridgeServe { listen, server_url }) => {
+            chorus::bridge::serve::run_bridge_server(&listen, &server_url).await
+        }
 
         Some(Commands::Send {
             target,

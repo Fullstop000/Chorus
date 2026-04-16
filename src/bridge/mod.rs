@@ -9,6 +9,7 @@ pub mod backend;
 pub mod discovery;
 pub mod error;
 mod format;
+pub mod serve;
 pub mod session;
 mod types;
 
