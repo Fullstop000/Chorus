@@ -778,7 +778,17 @@ fn build_v2_start_prompt(
     }
 
     if !is_resume {
-        return format!("Hello {display_name}, you are now online.");
+        return format!(
+            "Hello {display_name}, you are now online. \
+             There are no messages or tasks right now. \
+             Do not use any tools. \
+             Simply reply with a short acknowledgement and stop."
+        
+            "Hello {display_name}, you are now online. \
+             There are no messages or tasks right now. \
+             Do not use any tools. \
+             Simply reply with a short acknowledgement and stop."
+        );
     }
 
     if !unread_summary.is_empty() {
