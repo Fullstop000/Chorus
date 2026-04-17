@@ -149,3 +149,11 @@ Before stopping, confirm:
 - [ ] Verification matches risk of change
 - [ ] Required e2e/browser QA run for user-facing critical paths, or gap called out
 - [ ] `AGENTS.md` or related docs updated if shipped behavior/workflow changed
+
+## Health Stack
+
+- typecheck: cd ui && tsc --noEmit
+- lint: cargo clippy -- -D warnings
+- test: cargo test
+- test-ui: cd ui && npm run test
+- shell: shellcheck dev.sh

@@ -56,6 +56,9 @@ enum Commands {
         /// `<data_dir>/config.toml` > `~/agency-agents`.
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
+        /// Port for the shared MCP bridge, started in-process.
+        #[arg(long, default_value_t = chorus::bridge::DEFAULT_BRIDGE_PORT)]
+        bridge_port: u16,
     },
     /// Create and manage agents
     Agent {
@@ -93,19 +96,11 @@ enum Commands {
         #[arg(long)]
         data_dir: Option<String>,
     },
-    /// Run as an MCP stdio bridge for a specific agent (internal use by agent manager)
-    #[command(hide = true)]
-    Bridge {
-        #[arg(long)]
-        agent_id: String,
-        #[arg(long, default_value = "http://localhost:3001")]
-        server_url: String,
-    },
     /// Start the shared HTTP MCP bridge server (multi-agent)
     #[command(name = "bridge-serve")]
     BridgeServe {
         /// Address to listen on (e.g. 127.0.0.1:4321)
-        #[arg(long, default_value = "127.0.0.1:4321")]
+        #[arg(long, default_value_t = format!("127.0.0.1:{}", chorus::bridge::DEFAULT_BRIDGE_PORT))]
         listen: String,
         /// Chorus backend server URL
         #[arg(long, default_value = "http://localhost:3001")]
@@ -133,14 +128,14 @@ enum Commands {
         data_dir: Option<String>,
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
-        /// Also start the shared MCP bridge on 127.0.0.1:<bridge_port> in the
-        /// same process. Agents started while this is running will auto-connect
-        /// via HTTP MCP instead of spawning per-agent stdio bridges.
-        #[arg(long)]
-        shared_bridge: bool,
-        /// Port for the shared bridge (only used when --shared-bridge is set).
-        #[arg(long, default_value = "4321")]
+        /// Port for the shared MCP bridge, started in-process by `chorus serve`.
+        #[arg(long, default_value_t = chorus::bridge::DEFAULT_BRIDGE_PORT)]
         bridge_port: u16,
+        /// Deprecated: the shared bridge is now always started by
+        /// `chorus serve` (there is no longer an opt-in). Accepted so existing
+        /// scripts continue to work; emits a warning and is otherwise ignored.
+        #[arg(long, hide = true)]
+        shared_bridge: bool,
     },
 }
 
@@ -247,18 +242,14 @@ pub async fn run() -> anyhow::Result<()> {
             data_dir,
             no_open,
             template_dir,
-        }) => start::run(port, data_dir, no_open, template_dir).await,
+            bridge_port,
+        }) => start::run(port, data_dir, no_open, template_dir, bridge_port).await,
 
         None => {
             let data_dir_str = default_data_dir();
             let template_dir_str = resolve_template_dir(&data_dir_str, None);
-            serve::run(3001, data_dir_str, template_dir_str, false, 4321).await
+            serve::run(3001, data_dir_str, template_dir_str, 4321).await
         }
-
-        Some(Commands::Bridge {
-            agent_id,
-            server_url,
-        }) => chorus::bridge::run_bridge(agent_id, server_url).await,
 
         Some(Commands::BridgeServe { listen, server_url }) => {
             chorus::bridge::serve::run_bridge_server(&listen, &server_url).await
@@ -296,19 +287,19 @@ pub async fn run() -> anyhow::Result<()> {
             port,
             data_dir,
             template_dir,
-            shared_bridge,
             bridge_port,
+            shared_bridge,
         }) => {
+            if shared_bridge {
+                tracing::warn!(
+                    "--shared-bridge is deprecated and has no effect. The shared MCP \
+                     bridge is always started by `chorus serve`. Remove the flag from \
+                     your scripts."
+                );
+            }
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
             let template_dir_str = resolve_template_dir(&data_dir_str, template_dir);
-            serve::run(
-                port,
-                data_dir_str,
-                template_dir_str,
-                shared_bridge,
-                bridge_port,
-            )
-            .await
+            serve::run(port, data_dir_str, template_dir_str, bridge_port).await
         }
     }
 }

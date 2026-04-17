@@ -564,12 +564,10 @@ pub struct AgentSpec {
     pub reasoning_effort: Option<String>,
     pub env_vars: Vec<AgentEnvVar>,
     pub working_directory: PathBuf,
-    pub bridge_binary: String,
-    pub server_url: String,
-    /// Optional shared bridge HTTP endpoint. When `Some`, the driver connects
-    /// to this endpoint instead of spawning a per-agent stdio bridge process.
+    /// Shared bridge HTTP endpoint. All drivers connect to this endpoint for
+    /// MCP transport — the per-agent stdio bridge is no longer supported.
     /// Format: `http://127.0.0.1:4321` (port from bridge discovery or config).
-    pub bridge_endpoint: Option<String>,
+    pub bridge_endpoint: String,
 }
 
 /// Return value of [`RuntimeDriver::attach`].

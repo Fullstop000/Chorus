@@ -22,83 +22,40 @@ use super::*;
 
 /// Build the `.chorus-kimi-mcp.json` config file contents.
 ///
-/// Two shapes, branching on whether a shared HTTP bridge is available:
-/// - `spec.bridge_endpoint = Some(_)` + `token = Some(_)`: remote HTTP MCP,
-///   connecting to `{endpoint}/token/{token}/mcp`.
-/// - otherwise: per-agent stdio bridge spawned by Kimi.
-///
-/// Factored out so config-shape tests don't need a live bridge.
-fn build_mcp_config_file(
-    agent_key: &str,
-    spec: &AgentSpec,
-    token: Option<&str>,
-) -> serde_json::Value {
-    match (&spec.bridge_endpoint, token) {
-        (Some(endpoint), Some(tok)) => {
-            // Kimi requires `transport: "http"` alongside `url` — without it,
-            // the runtime defaults to stdio and fails to connect. Verified
-            // against the format emitted by `kimi mcp add --transport http`.
-            let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
-            serde_json::json!({
-                "mcpServers": {
-                    "chat": {
-                        "url": url,
-                        "transport": "http"
-                    }
-                }
-            })
+/// Produces the remote HTTP MCP shape, connecting the runtime to the shared
+/// bridge at `{endpoint}/token/{token}/mcp`. Kimi requires `transport: "http"`
+/// alongside `url` — without it, the runtime defaults to stdio and fails to
+/// connect. Verified against the format emitted by `kimi mcp add --transport
+/// http`.
+fn build_mcp_config_file(bridge_endpoint: &str, token: &str) -> serde_json::Value {
+    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+    serde_json::json!({
+        "mcpServers": {
+            "chat": {
+                "url": url,
+                "transport": "http"
+            }
         }
-        _ => {
-            serde_json::json!({
-                "mcpServers": {
-                    "chat": {
-                        "command": &spec.bridge_binary,
-                        "args": ["bridge", "--agent-id", agent_key, "--server-url", &spec.server_url]
-                    }
-                }
-            })
-        }
-    }
+    })
 }
 
 /// Build the `mcpServers` array for the ACP `session/new` inline params.
 ///
-/// Two shapes, branching on whether a shared HTTP bridge is available:
-/// - `spec.bridge_endpoint = Some(_)` + `token = Some(_)`: remote HTTP MCP,
-///   connecting to `{endpoint}/token/{token}/mcp`.
-/// - otherwise: per-agent stdio bridge with command + args + env.
+/// Produces the remote HTTP MCP shape. ACP spec for HTTP MCP servers in
+/// session/new params requires:
+///   - `type: "http"` (NOT `transport: "http"` like Kimi's file config format)
+///   - `headers` array (required, can be empty)
 ///
-/// Factored out so config-shape tests don't need a live bridge.
-fn build_acp_mcp_servers(
-    agent_key: &str,
-    spec: &AgentSpec,
-    token: Option<&str>,
-) -> serde_json::Value {
-    match (&spec.bridge_endpoint, token) {
-        (Some(endpoint), Some(tok)) => {
-            // ACP spec for HTTP MCP servers in session/new params requires:
-            //   - `type: "http"` (NOT `transport: "http"` like Kimi's file
-            //     config format)
-            //   - `headers` array (required, can be empty)
-            // See https://agentclientprotocol.com/protocol/session-setup
-            // Sending the wrong shape produces ACP "Invalid params" errors.
-            let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
-            serde_json::json!([{
-                "type": "http",
-                "name": "chat",
-                "url": url,
-                "headers": []
-            }])
-        }
-        _ => {
-            serde_json::json!([{
-                "name": "chat",
-                "command": &spec.bridge_binary,
-                "args": ["bridge", "--agent-id", agent_key, "--server-url", &spec.server_url],
-                "env": []
-            }])
-        }
-    }
+/// See <https://agentclientprotocol.com/protocol/session-setup> — sending the
+/// wrong shape produces ACP "Invalid params" errors.
+fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Value {
+    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+    serde_json::json!([{
+        "type": "http",
+        "name": "chat",
+        "url": url,
+        "headers": []
+    }])
 }
 
 // ---------------------------------------------------------------------------
@@ -276,24 +233,16 @@ impl AgentHandle for KimiHandle {
             state: AgentState::Starting,
         });
 
-        // Resolve MCP transport: shared HTTP bridge (when `bridge_endpoint`
-        // is configured) or per-agent stdio bridge (legacy). If pairing
-        // fails we surface the error — no silent fallback to stdio, so
-        // misconfiguration is loud.
-        let pairing_token = if let Some(endpoint) = &self.spec.bridge_endpoint {
-            Some(
-                super::request_pairing_token(endpoint, &self.key)
-                    .await
-                    .context("failed to pair with shared bridge")?,
-            )
-        } else {
-            None
-        };
+        // Pair with the shared HTTP bridge. If pairing fails we surface the
+        // error — misconfiguration is loud.
+        let pairing_token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+            .await
+            .context("failed to pair with shared bridge")?;
 
         // Write MCP config file
         let wd = &self.spec.working_directory;
         let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
-        let mcp_config = build_mcp_config_file(&self.key, &self.spec, pairing_token.as_deref());
+        let mcp_config = build_mcp_config_file(&self.spec.bridge_endpoint, &pairing_token);
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
             .context("failed to write MCP config")?;
 
@@ -333,7 +282,7 @@ impl AgentHandle for KimiHandle {
         let init_req = acp_protocol::build_initialize_request(1);
         writeln!(stdin, "{init_req}").context("failed to write initialize request")?;
 
-        let mcp_servers = build_acp_mcp_servers(&self.key, &self.spec, pairing_token.as_deref());
+        let mcp_servers = build_acp_mcp_servers(&self.spec.bridge_endpoint, &pairing_token);
         let session_new_params = serde_json::json!({
             "cwd": self.spec.working_directory,
             "mcpServers": mcp_servers
@@ -798,9 +747,7 @@ mod tests {
             reasoning_effort: None,
             env_vars: vec![],
             working_directory: PathBuf::from("/fake"),
-            bridge_binary: String::new(),
-            server_url: String::new(),
-            bridge_endpoint: None,
+            bridge_endpoint: "http://127.0.0.1:1".to_string(),
         }
     }
 
@@ -836,30 +783,8 @@ mod tests {
     // ---- build_mcp_config_file tests ----
 
     #[test]
-    fn build_mcp_config_file_stdio_when_no_endpoint() {
-        let mut spec = test_spec();
-        spec.bridge_binary = "/opt/chorus/bridge".to_string();
-        spec.server_url = "http://127.0.0.1:3001".to_string();
-        assert!(spec.bridge_endpoint.is_none());
-
-        let config = build_mcp_config_file("agent-abc", &spec, None);
-        let chat = &config["mcpServers"]["chat"];
-        assert_eq!(chat["command"], "/opt/chorus/bridge");
-        let args = chat["args"].as_array().expect("args is array");
-        assert_eq!(args[0], "bridge");
-        assert_eq!(args[1], "--agent-id");
-        assert_eq!(args[2], "agent-abc");
-        assert_eq!(args[3], "--server-url");
-        assert_eq!(args[4], "http://127.0.0.1:3001");
-        assert!(chat.get("url").is_none());
-    }
-
-    #[test]
-    fn build_mcp_config_file_http_when_endpoint_and_token() {
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-
-        let config = build_mcp_config_file("agent-abc", &spec, Some("tok-xyz"));
+    fn build_mcp_config_file_http_shape() {
+        let config = build_mcp_config_file("http://127.0.0.1:4321", "tok-xyz");
         let chat = &config["mcpServers"]["chat"];
         assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
         assert_eq!(chat["transport"], "http");
@@ -868,58 +793,18 @@ mod tests {
 
     #[test]
     fn build_mcp_config_file_trims_trailing_slash() {
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321/".to_string());
-
-        let config = build_mcp_config_file("agent-abc", &spec, Some("tok-xyz"));
+        let config = build_mcp_config_file("http://127.0.0.1:4321/", "tok-xyz");
         assert_eq!(
             config["mcpServers"]["chat"]["url"],
             "http://127.0.0.1:4321/token/tok-xyz/mcp"
         );
     }
 
-    #[test]
-    fn build_mcp_config_file_falls_back_to_stdio_when_endpoint_but_no_token() {
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-        spec.bridge_binary = "/opt/chorus/bridge".to_string();
-
-        let config = build_mcp_config_file("agent-abc", &spec, None);
-        let chat = &config["mcpServers"]["chat"];
-        assert!(chat.get("url").is_none());
-        assert!(chat.get("command").is_some());
-    }
-
     // ---- build_acp_mcp_servers tests ----
 
     #[test]
-    fn build_acp_mcp_servers_stdio_when_no_endpoint() {
-        let mut spec = test_spec();
-        spec.bridge_binary = "/opt/chorus/bridge".to_string();
-        spec.server_url = "http://127.0.0.1:3001".to_string();
-        assert!(spec.bridge_endpoint.is_none());
-
-        let servers = build_acp_mcp_servers("agent-abc", &spec, None);
-        let arr = servers.as_array().expect("array");
-        assert_eq!(arr.len(), 1);
-        let entry = &arr[0];
-        assert_eq!(entry["name"], "chat");
-        assert_eq!(entry["command"], "/opt/chorus/bridge");
-        let args = entry["args"].as_array().expect("args is array");
-        assert_eq!(args[0], "bridge");
-        assert_eq!(args[1], "--agent-id");
-        assert_eq!(args[2], "agent-abc");
-        assert_eq!(args[3], "--server-url");
-        assert_eq!(args[4], "http://127.0.0.1:3001");
-        assert!(entry.get("url").is_none());
-    }
-
-    #[test]
-    fn build_acp_mcp_servers_http_when_endpoint_and_token() {
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-
-        let servers = build_acp_mcp_servers("agent-abc", &spec, Some("tok-xyz"));
+    fn build_acp_mcp_servers_http_shape() {
+        let servers = build_acp_mcp_servers("http://127.0.0.1:4321", "tok-xyz");
         let arr = servers.as_array().expect("array");
         assert_eq!(arr.len(), 1);
         let entry = &arr[0];
@@ -933,25 +818,8 @@ mod tests {
 
     #[test]
     fn build_acp_mcp_servers_trims_trailing_slash() {
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321/".to_string());
-
-        let servers = build_acp_mcp_servers("agent-abc", &spec, Some("tok-xyz"));
+        let servers = build_acp_mcp_servers("http://127.0.0.1:4321/", "tok-xyz");
         let arr = servers.as_array().expect("array");
         assert_eq!(arr[0]["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
-    }
-
-    #[test]
-    fn build_acp_mcp_servers_falls_back_to_stdio_when_endpoint_but_no_token() {
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-        spec.bridge_binary = "/opt/chorus/bridge".to_string();
-
-        let servers = build_acp_mcp_servers("agent-abc", &spec, None);
-        let arr = servers.as_array().expect("array");
-        assert_eq!(arr.len(), 1);
-        let entry = &arr[0];
-        assert!(entry.get("url").is_none());
-        assert!(entry.get("command").is_some());
     }
 }

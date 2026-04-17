@@ -1,7 +1,7 @@
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
-use rmcp::{tool, tool_handler, tool_router, ServerHandler, ServiceExt};
+use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 
 pub mod backend;
 pub mod discovery;
@@ -14,6 +14,18 @@ mod types;
 
 use backend::{Backend, ChorusBackend};
 use types::*;
+
+/// Default TCP port for the shared MCP bridge. Canonical across CLI defaults
+/// (`chorus start --bridge-port`, `chorus serve --bridge-port`,
+/// `chorus bridge-serve --listen`) so changing it touches one place.
+pub const DEFAULT_BRIDGE_PORT: u16 = 4321;
+
+/// Build the token-pair URL a runtime uses to reach the shared bridge:
+/// `{endpoint}/token/{token}/mcp`. Trimming the trailing slash on `endpoint`
+/// is a defensive chore the five drivers used to duplicate; put it here once.
+pub fn token_mcp_url(endpoint: &str, token: &str) -> String {
+    format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), token)
+}
 
 // ---------------------------------------------------------------------------
 // ChatBridge
@@ -207,17 +219,6 @@ impl ServerHandler for ChatBridge {
             ..Default::default()
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Entry point
-// ---------------------------------------------------------------------------
-
-pub async fn run_bridge(agent_id: String, server_url: String) -> anyhow::Result<()> {
-    let bridge = ChatBridge::new(agent_id, server_url);
-    let service = bridge.serve(rmcp::transport::io::stdio()).await?;
-    service.waiting().await?;
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

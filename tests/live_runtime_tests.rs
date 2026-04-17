@@ -46,26 +46,23 @@
 //! Use `--nocapture` to see runtime stderr piped through our tracing setup.
 //! If a test hangs, check whether the runtime has valid auth in its config dir.
 //!
-//! # Coverage matrix: `chorus serve --shared-bridge` (A1 + A2)
+//! # Coverage matrix
 //!
-//! The full `chorus serve --shared-bridge` flow is covered by the combination
-//! of three test layers — a dedicated A3 end-to-end test would be redundant:
+//! The shared-bridge runtime path is covered by four test layers:
 //!
 //! | Layer | Test location | What it proves |
 //! |-------|--------------|----------------|
-//! | Bridge HTTP layer (A1) | `tests/bridge_serve_tests.rs` | In-process bridge starts, health, sessions, token pairing, `send_message` → store |
-//! | Discovery file I/O | `src/bridge/discovery.rs` (unit tests) | `write_bridge_info_to` / `read_bridge_info_from` roundtrip, stale PID, corrupt file |
-//! | A2 URL formatting | `src/agent/manager.rs` (`bridge_endpoint_from_info_formats_url`, `bridge_endpoint_from_none_is_none`) | `BridgeInfo { port }` → `"http://127.0.0.1:{port}"` |
-//! | Driver + bridge round-trip | This file (4 `#[ignore]` live tests) | Real runtime binary with `bridge_endpoint: Some(url)` → message lands in store |
+//! | Bridge HTTP layer | `tests/bridge_serve_tests.rs` | In-process bridge starts, health, sessions, token pairing, `send_message` → store |
+//! | Discovery file I/O | `src/bridge/discovery.rs` (unit tests) | `write_bridge_info_to` / `read_bridge_info_from` roundtrip, stale PID, corrupt file, live-PID stomp guard |
+//! | `resolve_bridge_endpoint` | `src/agent/manager.rs` (`resolve_bridge_endpoint_returns_override_when_set`, `resolve_bridge_endpoint_fails_loudly_without_bridge`) | Override path Ok, no-bridge path Err with user-visible message |
+//! | Driver + bridge round-trip | This file (4 `#[ignore]` live tests) | Real runtime binary wired to `bridge_endpoint: String` → message lands in store |
 //!
-//! The one composition NOT tested by automation: `AgentManager::start_agent`
-//! calling `read_bridge_info()` when a discovery file is present (the `Some`
-//! branch of the auto-discover block in manager.rs). This is three mechanical
-//! lines that wire the above individually-tested functions together. The risk
-//! of a silent bug here is low, and exercising it requires either writing to
-//! `~/.chorus/bridge.json` (global, unsafe in CI) or adding a path-override
-//! seam to `AgentManager`. The trade-off favors trusting the unit tests over
-//! introducing test-only indirection into production code.
+//! The one composition that is not tested by automation is the
+//! `AgentManager::start_agent` → `read_bridge_info()` path when a real
+//! discovery file is present on the developer's machine. That path would
+//! require writing to `~/.chorus/bridge.json` (global, unsafe in CI); the
+//! combination of discovery unit tests + `resolve_bridge_endpoint` override
+//! tests covers everything that doesn't require a real bridge process.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -195,6 +192,230 @@ fn binary_on_path(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Return the path of the newest `.log` file in `dir`, or `None` if the
+/// directory does not exist or contains no log files.
+fn newest_log_in(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    entries
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.file_type().map(|t| t.is_file()).unwrap_or(false)
+                && e.path().extension().is_some_and(|x| x == "log")
+        })
+        .max_by_key(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
+        })
+        .map(|e| e.path())
+}
+
+/// Return the well-known log path for a given runtime, or `None` if the path
+/// does not exist on this machine.
+fn runtime_log_path(runtime_name: &str) -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    match runtime_name {
+        "claude" => {
+            // Claude Code log directory — newest file.
+            let log_dir = home.join(".claude").join("logs");
+            newest_log_in(&log_dir)
+        }
+        "codex" => {
+            // Codex TUI log (may or may not apply to app-server mode).
+            let path = home.join(".codex").join("log").join("codex-tui.log");
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
+        }
+        "kimi" => {
+            // Kimi writes to ~/.kimi/logs/kimi.log — the most common signal source.
+            let path = home.join(".kimi").join("logs").join("kimi.log");
+            if path.exists() {
+                Some(path)
+            } else {
+                None
+            }
+        }
+        "opencode" => {
+            let log_dir = home.join(".opencode").join("logs");
+            newest_log_in(&log_dir)
+        }
+        _ => None,
+    }
+}
+
+/// Hard cap on how many trailing bytes of a runtime log we slurp into memory
+/// for the diagnostic dump. Set to 256 KiB — enough to hold well over 200
+/// lines of typical runtime log output without ever reading a multi-GB log.
+const DIAGNOSTIC_LOG_TAIL_BYTES: u64 = 256 * 1024;
+
+/// How many trailing lines of that tail we actually print.
+const DIAGNOSTIC_LOG_TAIL_LINES: usize = 200;
+
+/// Redact `/token/{token}/mcp` URL segments so pairing bearer tokens don't
+/// leak into CI-archived test logs. Replaces the `{token}` with `[REDACTED]`
+/// while leaving the surrounding URL visible so operators can still see the
+/// port / path shape when debugging. Non-URL occurrences of `token` are left
+/// alone.
+fn redact_pairing_tokens(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(idx) = rest.find("/token/") {
+        out.push_str(&rest[..idx]);
+        out.push_str("/token/[REDACTED]");
+        rest = &rest[idx + "/token/".len()..];
+        // Skip past the token itself up to the next `/` or line terminator.
+        let end = rest.find(['/', '\n', '"']).unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Read the trailing `max_bytes` of a file without loading the whole thing.
+/// Returns `io::Error` if the file can't be opened or read.
+/// If a seek was performed (file larger than cap), trims up to the first
+/// newline so the output starts on a clean line. Files smaller than the cap
+/// are returned in full — trimming them would silently drop the first line.
+/// Any invalid UTF-8 bytes are replaced via lossy conversion.
+fn read_log_tail(path: &std::path::Path, max_bytes: u64) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path)?;
+    let len = f.metadata()?.len();
+    let to_read = std::cmp::min(len, max_bytes);
+    let seeked = to_read < len;
+    if seeked {
+        f.seek(SeekFrom::End(-(to_read as i64)))?;
+    }
+    let mut buf = Vec::with_capacity(to_read as usize);
+    f.take(to_read).read_to_end(&mut buf)?;
+    let start = if seeked {
+        // Seek likely landed mid-line; trim up to the first newline.
+        buf.iter()
+            .position(|&b| b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    Ok(String::from_utf8_lossy(&buf[start..]).into_owned())
+}
+
+/// Dump all available diagnostic signals before an `Err` is returned from a
+/// live runtime test.  Returns a `String` suitable for appending to the
+/// anyhow error message.
+///
+/// Collects (best-effort, never panics):
+/// 1. Last `DIAGNOSTIC_LOG_TAIL_LINES` lines (≤ `DIAGNOSTIC_LOG_TAIL_BYTES`)
+///    of the runtime's log file (if path provided and readable)
+/// 2. Contents of any MCP config files the driver wrote in `working_dir`
+/// 3. Observable state (channel history, captured by caller)
+/// 4. Hint for surfacing runtime stderr via RUST_LOG on re-run
+///
+/// Note on runtime stderr: the drivers spawn async tasks that consume stderr
+/// and re-emit it via `tracing::warn!`.  Re-capturing it here would require
+/// invasive driver changes.  The RUST_LOG hint below is the lowest-friction
+/// workaround — it surfaces the stderr on the next explicit re-run.
+fn collect_failure_diagnostics(
+    runtime_name: &str,
+    runtime_log_path: Option<&std::path::Path>,
+    working_dir: &std::path::Path,
+    channel_history: &str,
+) -> String {
+    let mut out = String::new();
+    out.push_str("\n\n=== FAILURE DIAGNOSTICS ===\n");
+
+    // 1. Runtime log file — tail only; large logs would otherwise blow memory.
+    out.push_str(&format!("\n--- {} log file ---\n", runtime_name));
+    if let Some(log_path) = runtime_log_path {
+        out.push_str(&format!("Path: {}\n", log_path.display()));
+        match read_log_tail(log_path, DIAGNOSTIC_LOG_TAIL_BYTES) {
+            Ok(tail) => {
+                let lines: Vec<&str> = tail.lines().collect();
+                let start = lines.len().saturating_sub(DIAGNOSTIC_LOG_TAIL_LINES);
+                for line in &lines[start..] {
+                    out.push_str(line);
+                    out.push('\n');
+                }
+            }
+            Err(e) => {
+                out.push_str(&format!("(not readable: {})\n", e));
+            }
+        }
+    } else {
+        out.push_str("(no log path documented for this runtime)\n");
+    }
+
+    // 2. MCP config files in working_dir.
+    out.push_str(&format!(
+        "\n--- MCP config files in {} ---\n",
+        working_dir.display()
+    ));
+    if let Ok(entries) = std::fs::read_dir(working_dir) {
+        let mut found = false;
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            // Only dump files the drivers actually write — matching every
+            // `.json` would sweep in unrelated config and risk leaking
+            // user secrets that happen to live in working_dir.
+            //   - `.chorus-claude-mcp.json`  (ClaudeDriver)
+            //   - `.chorus-kimi-mcp.json`    (KimiDriver)
+            //   - `opencode.json`            (OpencodeDriver)
+            //   - Codex configures via `-c` flags, no file on disk.
+            let is_driver_mcp_config =
+                name_str.contains("-mcp.json") || name_str == "opencode.json";
+            if is_driver_mcp_config {
+                found = true;
+                out.push_str(&format!("\n  {}:\n", entry.path().display()));
+                match std::fs::read_to_string(entry.path()) {
+                    Ok(contents) => {
+                        // Redact the pairing token in MCP URLs. These are
+                        // bearer credentials — even with a 5-min TTL, dumping
+                        // them into CI-archived logs is sloppy.
+                        let redacted = redact_pairing_tokens(&contents);
+                        for line in redacted.lines() {
+                            out.push_str("    ");
+                            out.push_str(line);
+                            out.push('\n');
+                        }
+                    }
+                    Err(e) => {
+                        out.push_str(&format!("    (not readable: {})\n", e));
+                    }
+                }
+            }
+        }
+        if !found {
+            out.push_str("(no MCP config files found)\n");
+        }
+    } else {
+        out.push_str("(working dir not readable)\n");
+    }
+
+    // 3. Observable channel state.
+    out.push_str("\n--- Channel state at failure ---\n");
+    out.push_str(channel_history);
+
+    // 4. Hint for surfacing runtime stderr on re-run.
+    out.push_str("\n\n--- Runtime stderr ---\n");
+    out.push_str(
+        "Not captured directly by this helper (captured by driver's internal tokio task \
+        and emitted via tracing::warn!). To see runtime stderr, re-run with:\n",
+    );
+    out.push_str(&format!(
+        "  RUST_LOG=chorus::agent::drivers::v2::{}=debug \
+        cargo test --test live_runtime_tests {}_agent_replies_through_shared_bridge \
+        -- --ignored --nocapture\n",
+        runtime_name, runtime_name
+    ));
+
+    out.push_str("\n=== END DIAGNOSTICS ===\n");
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -260,9 +481,8 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         run_id: None,
     })?;
 
-    // 5. Build AgentSpec with bridge_endpoint set — this is the code path
-    //    we're validating. bridge_binary/server_url are unused when
-    //    bridge_endpoint is Some.
+    // 5. Build AgentSpec pointing at the shared bridge — the code path we're
+    //    validating.
     let tmpdir = tempfile::tempdir()?;
     let spec = AgentSpec {
         display_name: "OpenCode Live Bot".to_string(),
@@ -272,9 +492,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime, deferring the first prompt so it's
@@ -315,15 +533,23 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     bridge_ct.cancel();
 
     if !found {
-        // Print the final history so the failure message is actionable.
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics(
+            "opencode",
+            runtime_log_path("opencode").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
+            diagnostics
         );
     }
 
@@ -398,9 +624,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime with initial prompt.
@@ -441,13 +665,22 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     if !found {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics(
+            "claude",
+            runtime_log_path("claude").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
+            diagnostics
         );
     }
 
@@ -526,14 +759,14 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime with initial prompt.
     //    Codex uses the `app-server` native protocol; the driver passes
     //    `-c mcp_servers.chat.url=…` flags to wire up the HTTP bridge.
+    //    (Codex app-server doesn't write a log file — its only signal is
+    //    stdout JSON-RPC. The Iron Rule helper will note this on failure.)
     let driver = CodexDriver;
     let attach_result = driver.attach(agent_key.to_string(), spec).await?;
     let mut handle = attach_result.handle;
@@ -550,8 +783,11 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     handle.start(StartOpts::default(), Some(prompt)).await?;
 
-    // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    // 7. Poll the store for up to 120s waiting for the agent's reply.
+    //    Codex on gpt-5.4 via WebSocket + MCP tool round-trip can exceed 60s
+    //    on a cold cache — extending keeps this test reliable.
+    let codex_deadline_secs = 120u64;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(codex_deadline_secs);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
@@ -571,13 +807,23 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     if !found {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics(
+            "codex",
+            runtime_log_path("codex").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within {}s{}",
+            codex_deadline_secs,
+            diagnostics
         );
     }
 
@@ -653,9 +899,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: vec![],
         working_directory: tmpdir.path().to_path_buf(),
-        bridge_binary: "chorus".to_string(),
-        server_url: server_url.clone(),
-        bridge_endpoint: Some(bridge_url.clone()),
+        bridge_endpoint: bridge_url.clone(),
     };
 
     // 6. Attach + start the runtime with initial prompt.
@@ -699,15 +943,84 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
 
     if !found {
         let (messages, _) = store.get_history("general", None, 100, None, None)?;
-        anyhow::bail!(
-            "agent did not send a reply containing 'hello world' within 60s; \
-             channel history was: {:?}",
+        let history_str = format!(
+            "{:#?}",
             messages
                 .iter()
                 .map(|m| (&m.sender_name, &m.content))
                 .collect::<Vec<_>>()
         );
+        let diagnostics = collect_failure_diagnostics(
+            "kimi",
+            runtime_log_path("kimi").as_deref(),
+            tmpdir.path(),
+            &history_str,
+        );
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
+            diagnostics
+        );
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic-helper unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod diagnostic_helper_tests {
+    use super::*;
+
+    #[test]
+    fn redact_pairing_tokens_masks_token_segment() {
+        let input = r#"{"url": "http://127.0.0.1:4321/token/abc123xyz/mcp"}"#;
+        let out = redact_pairing_tokens(input);
+        assert!(out.contains("/token/[REDACTED]/mcp"));
+        assert!(!out.contains("abc123xyz"));
+    }
+
+    #[test]
+    fn redact_pairing_tokens_leaves_non_url_text_alone() {
+        let input = "normal text with no URL";
+        assert_eq!(redact_pairing_tokens(input), input);
+    }
+
+    #[test]
+    fn redact_pairing_tokens_handles_multiple_tokens() {
+        let input = "A=/token/tok1/mcp B=/token/tok2/mcp";
+        let out = redact_pairing_tokens(input);
+        assert_eq!(out, "A=/token/[REDACTED]/mcp B=/token/[REDACTED]/mcp");
+    }
+
+    #[test]
+    fn read_log_tail_returns_full_file_when_smaller_than_cap() {
+        let tmp =
+            std::env::temp_dir().join(format!("chorus_log_tail_small_{}.log", std::process::id()));
+        std::fs::write(&tmp, b"line one\nline two\n").unwrap();
+        let got = read_log_tail(&tmp, 1024).unwrap();
+        assert_eq!(got, "line one\nline two\n");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn read_log_tail_trims_to_newline_when_seeking() {
+        let tmp =
+            std::env::temp_dir().join(format!("chorus_log_tail_big_{}.log", std::process::id()));
+        let mut contents = String::new();
+        for i in 0..500 {
+            contents.push_str(&format!("line number {i:04}\n"));
+        }
+        std::fs::write(&tmp, contents.as_bytes()).unwrap();
+        let got = read_log_tail(&tmp, 128).unwrap();
+        assert!(got.len() <= 128);
+        // First char must be the start of a line (either the original line
+        // we landed on, or the start of the next).
+        assert!(
+            !got.starts_with("umber"),
+            "must not start mid-line: {got:?}"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
 }

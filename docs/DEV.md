@@ -59,23 +59,23 @@ CHORUS_API_PORT=3002 npm run dev
 
 See `ui/vite.config.ts` for the proxy configuration.
 
-**Shared MCP bridge** (optional, terminal 3):
+**Shared MCP bridge:**
+
+`chorus serve` starts the shared bridge in-process automatically (default port 4321,
+configurable via `--bridge-port`). You don't need to run anything extra. If you want
+to run the bridge standalone:
 
 ```bash
 chorus bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
 ```
-
-The shared bridge is an optional daemon that routes MCP tool calls for all agents over
-one HTTP server instead of one stdio process per agent. It is not required — agents fall
-back to the per-agent stdio bridge automatically when `bridge-serve` is not running.
 
 ```bash
 # Verify the bridge layer works (no Chorus server required)
 chorus bridge-smoke-test
 ```
 
-See `docs/BRIDGE_MIGRATION.md` for the full architecture, driver conversion guide, and
-phased migration plan.
+See `docs/BRIDGE_MIGRATION.md` for the full architecture and driver implementation
+guide.
 
 ---
 

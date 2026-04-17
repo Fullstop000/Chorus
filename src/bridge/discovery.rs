@@ -28,7 +28,35 @@ pub fn write_bridge_info(info: &BridgeInfo) -> std::io::Result<()> {
 /// the target, so a driver reading mid-write never observes a truncated file.
 /// On Unix the parent directory is tightened to 0700 and the file to 0600 to
 /// prevent other local users from reading the bridge port.
+///
+/// Refuses to overwrite a discovery file that still points to a live PID
+/// belonging to a different process. This guards against two concurrent
+/// `chorus serve` instances silently stomping each other's routing: without
+/// the check, agents started by instance A could be handed instance B's
+/// bridge port. Stale PIDs (from a crashed prior run) and the caller's own
+/// PID are allowed to overwrite.
 pub fn write_bridge_info_to(path: &std::path::Path, info: &BridgeInfo) -> std::io::Result<()> {
+    // Guard against live-PID stomp. Check before creating parent dirs so we
+    // don't even touch the filesystem when another chorus is already there.
+    if let Ok(existing_raw) = std::fs::read_to_string(path) {
+        if let Ok(existing) = serde_json::from_str::<BridgeInfo>(&existing_raw) {
+            let own_pid = std::process::id();
+            if existing.pid != own_pid && is_pid_alive(existing.pid) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "another chorus bridge is already running (pid={}, port={}); \
+                         refusing to overwrite {}",
+                        existing.pid,
+                        existing.port,
+                        path.display()
+                    ),
+                ));
+            }
+            // Otherwise (stale PID or our own PID) fall through and overwrite.
+        }
+    }
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
         #[cfg(unix)]
@@ -93,6 +121,23 @@ pub fn remove_bridge_info() {
     let _ = std::fs::remove_file(default_discovery_path());
 }
 
+/// RAII guard that removes the default discovery file on drop. Instantiate
+/// immediately after a successful `write_bridge_info` so every exit path —
+/// normal shutdown, early `?` return, or a panic during a long-running
+/// startup (e.g. `chorus serve` auto-restarting many agents) — cleans up.
+///
+/// Without this, a panic between `write_bridge_info` and the point where
+/// the bridge actually answers HTTP would leave a stale file that the
+/// live-PID stomp guard then treats as "another chorus is alive," blocking
+/// the next startup until a human runs `rm ~/.chorus/bridge.json`.
+pub struct DiscoveryGuard;
+
+impl Drop for DiscoveryGuard {
+    fn drop(&mut self) {
+        remove_bridge_info();
+    }
+}
+
 /// Remove a specific discovery file.
 pub fn remove_bridge_info_from(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
@@ -118,11 +163,16 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
-/// On non-Unix platforms we cannot check process existence — assume alive to
-/// avoid silently dropping valid bridge info.
+/// On non-Unix platforms we cannot cheaply check process existence without
+/// pulling in a `windows`/`sysinfo` dependency. Return `false` so the
+/// stomp-guard becomes a no-op: stale discovery files are allowed to be
+/// overwritten, matching pre-guard behavior. If two live `chorus serve`
+/// instances race on Windows the last writer wins silently (same risk the
+/// Unix guard defends against). Revisit when Windows support is a first-class
+/// target.
 #[cfg(not(unix))]
 fn is_pid_alive(_pid: u32) -> bool {
-    true
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -225,5 +275,101 @@ mod tests {
 
         remove_bridge_info_from(&path);
         assert!(!path.exists(), "file should be removed after cleanup");
+    }
+
+    #[test]
+    fn refuses_to_stomp_live_pid() {
+        // A second `chorus serve` must not silently take over routing from an
+        // already-running one. We simulate by writing a discovery file with
+        // a live PID (our own) but the *caller* pretends to be a different
+        // process by using a PID that is definitely not us.
+        let path = tmp_path("live_stomp.json");
+        let existing = BridgeInfo {
+            port: 9100,
+            pid: std::process::id(), // live — ourselves
+            started_at: "2026-04-16T00:00:00Z".to_string(),
+        };
+        // Write directly (bypass the guard since this is test setup).
+        std::fs::write(&path, serde_json::to_string(&existing).unwrap()).expect("setup write");
+
+        // Attempting to overwrite from a hypothetical other process.
+        // write_bridge_info_to checks `existing.pid != own_pid` — our own PID
+        // is allowed through, so we can't directly trigger the guard from
+        // this same process. Instead, write a record whose pid is a neighbour
+        // we know is alive (ourselves) but fake the caller identity by having
+        // the caller `info` argument differ. The guard looks at EXISTING pid,
+        // not info.pid, so this is the correct shape.
+        let incoming = BridgeInfo {
+            port: 9200,
+            pid: std::process::id(), // caller identifies as us
+            started_at: "2026-04-16T00:00:01Z".to_string(),
+        };
+        // Since existing.pid == own_pid, the guard allows overwrite (same
+        // process restart case). Confirm.
+        write_bridge_info_to(&path, &incoming).expect("same-pid overwrite ok");
+
+        // Now the tough case: existing points to a live *other* PID.
+        // Spawn a short-lived child whose PID is guaranteed != ours, then
+        // use that PID while it's still alive. Wrap in a Drop guard so an
+        // assertion panic below doesn't leave the child alive for 10s.
+        #[cfg(unix)]
+        {
+            struct ChildGuard(std::process::Child);
+            impl Drop for ChildGuard {
+                fn drop(&mut self) {
+                    let _ = self.0.kill();
+                    let _ = self.0.wait();
+                }
+            }
+
+            let child = std::process::Command::new("sleep")
+                .arg("10")
+                .spawn()
+                .expect("can spawn sleep");
+            let child_pid = child.id();
+            let _child_guard = ChildGuard(child);
+            assert_ne!(child_pid, std::process::id(), "child PID must differ");
+
+            let other_live = BridgeInfo {
+                port: 9300,
+                pid: child_pid,
+                started_at: "2026-04-16T00:00:02Z".to_string(),
+            };
+            std::fs::write(&path, serde_json::to_string(&other_live).unwrap())
+                .expect("setup re-write");
+
+            let err = write_bridge_info_to(&path, &incoming)
+                .expect_err("guard must refuse live-PID stomp");
+            assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+            assert!(
+                err.to_string().contains("already running"),
+                "error should name the conflict: {err}"
+            );
+            // _child_guard's Drop impl kills the sleep as we leave scope.
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn overwrites_stale_pid() {
+        // A crashed prior `chorus serve` leaves a discovery file pointing to
+        // a dead PID. The next start must be allowed to overwrite it.
+        let path = tmp_path("stale_overwrite.json");
+        let stale = BridgeInfo {
+            port: 9400,
+            pid: 999_999_999, // not alive
+            started_at: "2026-04-16T00:00:00Z".to_string(),
+        };
+        std::fs::write(&path, serde_json::to_string(&stale).unwrap()).expect("setup stale write");
+
+        let fresh = sample_info();
+        write_bridge_info_to(&path, &fresh).expect("stale overwrite must succeed");
+
+        let read_back = read_bridge_info_from(&path).expect("new record readable");
+        assert_eq!(read_back.port, fresh.port);
+        assert_eq!(read_back.pid, fresh.pid);
+
+        let _ = std::fs::remove_file(&path);
     }
 }

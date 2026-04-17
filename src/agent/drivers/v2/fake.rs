@@ -353,9 +353,7 @@ mod tests {
             reasoning_effort: None,
             env_vars: vec![],
             working_directory: PathBuf::from("/fake"),
-            bridge_binary: String::new(),
-            server_url: String::new(),
-            bridge_endpoint: None,
+            bridge_endpoint: "http://127.0.0.1:1".to_string(),
         }
     }
 

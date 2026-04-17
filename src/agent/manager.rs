@@ -39,8 +39,11 @@ pub struct AgentManager {
     trace_store: Arc<AgentTraceStore>,
     store: Arc<Store>,
     data_dir: PathBuf,
-    bridge_binary: String,
-    server_url: String,
+    /// Test-only override for the bridge endpoint. Production code leaves this
+    /// `None` and discovery reads `~/.chorus/bridge.json`; tests set it to a
+    /// synthetic URL so they don't depend on a real bridge being up.
+    #[cfg(test)]
+    bridge_endpoint_override: Option<String>,
 }
 
 pub fn build_driver_registry() -> HashMap<AgentRuntime, Arc<dyn RuntimeDriver>> {
@@ -53,12 +56,7 @@ pub fn build_driver_registry() -> HashMap<AgentRuntime, Arc<dyn RuntimeDriver>> 
 }
 
 impl AgentManager {
-    pub fn new(
-        store: Arc<Store>,
-        data_dir: PathBuf,
-        bridge_binary: String,
-        server_url: String,
-    ) -> Self {
+    pub fn new(store: Arc<Store>, data_dir: PathBuf) -> Self {
         Self {
             driver_registry: build_driver_registry(),
             agents: Arc::new(Mutex::new(HashMap::new())),
@@ -66,8 +64,8 @@ impl AgentManager {
             trace_store: Arc::new(AgentTraceStore::new()),
             store,
             data_dir,
-            bridge_binary,
-            server_url,
+            #[cfg(test)]
+            bridge_endpoint_override: None,
         }
     }
 
@@ -119,18 +117,12 @@ impl AgentManager {
             .ok_or_else(|| anyhow::anyhow!("no driver for runtime {:?}", rt))?
             .clone();
 
-        // Auto-discover the shared bridge — when `chorus serve --shared-bridge`
-        // is running, this populates bridge_endpoint so agents connect via HTTP
-        // MCP instead of spawning per-agent stdio processes. When no bridge is
-        // running, this is None and the legacy stdio path works unchanged.
-        let bridge_endpoint = crate::bridge::discovery::read_bridge_info()
-            .map(|info| format!("http://127.0.0.1:{}", info.port));
+        // Discover the shared bridge. `chorus serve` starts it in-process, so
+        // if it's missing the server didn't boot correctly — fail loudly
+        // rather than silently falling back to a (now-deleted) stdio path.
+        let bridge_endpoint = self.resolve_bridge_endpoint()?;
 
-        if let Some(ref endpoint) = bridge_endpoint {
-            info!(agent = %agent_name, %endpoint, "starting agent via shared bridge");
-        } else {
-            debug!(agent = %agent_name, "starting agent via per-agent stdio bridge");
-        }
+        info!(agent = %agent_name, endpoint = %bridge_endpoint, "starting agent via shared bridge");
 
         let spec = AgentSpec {
             display_name: agent.display_name.clone(),
@@ -140,8 +132,6 @@ impl AgentManager {
             reasoning_effort: agent.reasoning_effort.clone(),
             env_vars: agent.env_vars.clone(),
             working_directory: agent_data_dir.clone(),
-            bridge_binary: self.bridge_binary.clone(),
-            server_url: self.server_url.clone(),
             bridge_endpoint,
         };
 
@@ -359,6 +349,24 @@ impl AgentManager {
         self.agents.lock().await.keys().cloned().collect()
     }
 
+    /// Resolve the shared bridge endpoint. Fails loudly if no bridge is
+    /// running — there is no stdio fallback anymore.
+    fn resolve_bridge_endpoint(&self) -> anyhow::Result<String> {
+        #[cfg(test)]
+        if let Some(override_url) = &self.bridge_endpoint_override {
+            return Ok(override_url.clone());
+        }
+        crate::bridge::discovery::read_bridge_info()
+            .map(|info| format!("http://127.0.0.1:{}", info.port))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Shared MCP bridge is not running. This usually means `chorus serve` \
+                     didn't start it — this shouldn't happen. Check server logs for \
+                     bridge startup errors."
+                )
+            })
+    }
+
     #[cfg(test)]
     pub(crate) fn register_v2_driver(
         &mut self,
@@ -366,6 +374,11 @@ impl AgentManager {
         driver: Arc<dyn RuntimeDriver>,
     ) {
         self.driver_registry.insert(runtime, driver);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
+        self.bridge_endpoint_override = Some(url.into());
     }
 }
 
@@ -861,14 +874,12 @@ mod tests {
     use tempfile::tempdir;
 
     fn make_test_manager(store: Arc<Store>, dir: &std::path::Path) -> AgentManager {
-        let mut manager = AgentManager::new(
-            store,
-            dir.join("agents"),
-            "chorus".to_string(),
-            "http://127.0.0.1:3001".to_string(),
-        );
+        let mut manager = AgentManager::new(store, dir.join("agents"));
         let fake = Arc::new(FakeV2Driver::new(AgentRuntime::Codex));
         manager.register_v2_driver(AgentRuntime::Codex, fake);
+        // Tests use a synthetic endpoint — the FakeDriver ignores it, but the
+        // manager now insists on one since there's no stdio fallback.
+        manager.set_bridge_endpoint_override("http://127.0.0.1:1");
         manager
     }
 
@@ -996,26 +1007,43 @@ mod tests {
         let _ = manager.stop_agent("v2bot").await;
     }
 
-    // ── bridge endpoint helper ──
+    // ── resolve_bridge_endpoint ──
 
-    fn bridge_endpoint_from(info: Option<crate::bridge::discovery::BridgeInfo>) -> Option<String> {
-        info.map(|i| format!("http://127.0.0.1:{}", i.port))
+    #[test]
+    fn resolve_bridge_endpoint_returns_override_when_set() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let mut manager = AgentManager::new(store, dir.path().join("agents"));
+        manager.set_bridge_endpoint_override("http://127.0.0.1:9999");
+        let got = manager.resolve_bridge_endpoint().unwrap();
+        assert_eq!(got, "http://127.0.0.1:9999");
     }
 
     #[test]
-    fn bridge_endpoint_from_info_formats_url() {
-        let info = crate::bridge::discovery::BridgeInfo {
-            port: 4321,
-            pid: 12345,
-            started_at: "2026-04-16T00:00:00Z".to_string(),
-        };
-        let result = bridge_endpoint_from(Some(info));
-        assert_eq!(result, Some("http://127.0.0.1:4321".to_string()));
-    }
-
-    #[test]
-    fn bridge_endpoint_from_none_is_none() {
-        assert_eq!(bridge_endpoint_from(None), None);
+    fn resolve_bridge_endpoint_fails_loudly_without_bridge() {
+        // No override set and (in this test harness) no bridge running on
+        // the local machine at the default discovery path — even if one
+        // were, `read_bridge_info` returns None for stale/dead PIDs, and
+        // the default path is unlikely to point at a live chorus in CI.
+        // Skip the assertion if a live discovery file happens to exist.
+        if crate::bridge::discovery::read_bridge_info().is_some() {
+            eprintln!(
+                "skipping resolve_bridge_endpoint_fails_loudly_without_bridge: \
+                 live bridge detected on this machine"
+            );
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let manager = AgentManager::new(store, dir.path().join("agents"));
+        let err = manager
+            .resolve_bridge_endpoint()
+            .expect_err("must fail when no override and no bridge");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Shared MCP bridge is not running"),
+            "error should name the condition: {msg}"
+        );
     }
 
     #[tokio::test]

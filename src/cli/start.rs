@@ -11,6 +11,7 @@ pub async fn run(
     data_dir: Option<String>,
     no_open: bool,
     template_dir: Option<String>,
+    bridge_port: u16,
 ) -> anyhow::Result<()> {
     let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
     let template_dir = resolve_template_dir(&data_dir_str, template_dir);
@@ -46,6 +47,5 @@ pub async fn run(
         });
     }
 
-    // `start` never activates the shared bridge — that is opt-in via `serve --shared-bridge`.
-    serve::run(port, data_dir_str, template_dir, false, 4321).await
+    serve::run(port, data_dir_str, template_dir, bridge_port).await
 }

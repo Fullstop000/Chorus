@@ -20,37 +20,19 @@ use super::*;
 
 /// Build the `mcpServers.chat` config block for `.chorus-claude-mcp.json`.
 ///
-/// Two shapes, branching on whether a shared HTTP bridge is available:
-/// - `spec.bridge_endpoint = Some(_)` + `token = Some(_)`: native HTTP MCP,
-///   connecting to `{endpoint}/token/{token}/mcp`.
-/// - otherwise: per-agent stdio bridge spawned by Claude (`command` shape).
-///
-/// Factored out so config-shape tests don't need a live bridge.
-fn build_mcp_config(agent_key: &str, spec: &AgentSpec, token: Option<&str>) -> serde_json::Value {
-    match (&spec.bridge_endpoint, token) {
-        (Some(endpoint), Some(tok)) => {
-            let url = format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), tok);
-            serde_json::json!({
-                "mcpServers": {
-                    "chat": {
-                        "type": "http",
-                        "url": url
-                    }
-                }
-            })
+/// Produces the native HTTP MCP shape, connecting the runtime to the shared
+/// bridge at `{endpoint}/token/{token}/mcp`. Factored out so config-shape
+/// tests don't need a live bridge.
+fn build_mcp_config(bridge_endpoint: &str, token: &str) -> serde_json::Value {
+    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+    serde_json::json!({
+        "mcpServers": {
+            "chat": {
+                "type": "http",
+                "url": url
+            }
         }
-        _ => {
-            // Legacy stdio path — unchanged
-            serde_json::json!({
-                "mcpServers": {
-                    "chat": {
-                        "command": &spec.bridge_binary,
-                        "args": ["bridge", "--agent-id", agent_key, "--server-url", &spec.server_url]
-                    }
-                }
-            })
-        }
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -201,16 +183,10 @@ impl AgentHandle for ClaudeHandle {
         // Write MCP config file
         let wd = &self.spec.working_directory;
         let mcp_config_path = wd.join(".chorus-claude-mcp.json");
-        let token = if let Some(endpoint) = &self.spec.bridge_endpoint {
-            Some(
-                super::request_pairing_token(endpoint, &self.key)
-                    .await
-                    .context("failed to pair with shared bridge")?,
-            )
-        } else {
-            None
-        };
-        let mcp_config = build_mcp_config(&self.key, &self.spec, token.as_deref());
+        let token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+            .await
+            .context("failed to pair with shared bridge")?;
+        let mcp_config = build_mcp_config(&self.spec.bridge_endpoint, &token);
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
             .context("failed to write MCP config")?;
 
@@ -692,9 +668,7 @@ mod tests {
             reasoning_effort: None,
             env_vars: vec![],
             working_directory: PathBuf::from("/fake"),
-            bridge_binary: "bridge".into(),
-            server_url: "http://localhost:3001".into(),
-            bridge_endpoint: None,
+            bridge_endpoint: "http://127.0.0.1:1".into(),
         }
     }
 
@@ -733,33 +707,9 @@ mod tests {
     // ---- build_mcp_config tests ----
 
     #[test]
-    fn build_mcp_config_stdio_when_no_endpoint() {
-        // No bridge_endpoint → legacy stdio command shape.
-        let mut spec = test_spec();
-        spec.bridge_binary = "/opt/chorus/bridge".to_string();
-        spec.server_url = "http://127.0.0.1:3001".to_string();
-        assert!(spec.bridge_endpoint.is_none());
-
-        let config = build_mcp_config("agent-abc", &spec, None);
-        let chat = &config["mcpServers"]["chat"];
-        assert_eq!(chat["command"], "/opt/chorus/bridge");
-        let args = chat["args"].as_array().expect("args is array");
-        assert_eq!(args[0], "bridge");
-        assert_eq!(args[1], "--agent-id");
-        assert_eq!(args[2], "agent-abc");
-        assert_eq!(args[3], "--server-url");
-        assert_eq!(args[4], "http://127.0.0.1:3001");
-        assert!(chat.get("type").is_none());
-        assert!(chat.get("url").is_none());
-    }
-
-    #[test]
-    fn build_mcp_config_http_when_endpoint_and_token() {
-        // With bridge_endpoint + token → native HTTP MCP shape.
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-
-        let config = build_mcp_config("agent-abc", &spec, Some("tok-xyz"));
+    fn build_mcp_config_http_shape() {
+        // Native HTTP MCP shape — the only shape we produce.
+        let config = build_mcp_config("http://127.0.0.1:4321", "tok-xyz");
         let chat = &config["mcpServers"]["chat"];
         assert_eq!(chat["type"], "http");
         assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
@@ -770,30 +720,9 @@ mod tests {
     #[test]
     fn build_mcp_config_trims_trailing_slash() {
         // Endpoint with trailing slash must not produce `//token/` in the URL.
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321/".to_string());
-
-        let config = build_mcp_config("agent-abc", &spec, Some("tok-xyz"));
+        let config = build_mcp_config("http://127.0.0.1:4321/", "tok-xyz");
         let chat = &config["mcpServers"]["chat"];
         assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
-    }
-
-    #[test]
-    fn build_mcp_config_falls_back_when_endpoint_but_no_token() {
-        // If token is None even though endpoint is Some, fall back to stdio.
-        // In production flow, start() always fetches a token when
-        // bridge_endpoint is Some, but this keeps the helper sound if its
-        // preconditions are violated.
-        let mut spec = test_spec();
-        spec.bridge_endpoint = Some("http://127.0.0.1:4321".to_string());
-
-        let config = build_mcp_config("agent-abc", &spec, None);
-        let chat = &config["mcpServers"]["chat"];
-        assert!(
-            chat.get("command").is_some(),
-            "expected stdio fallback shape"
-        );
-        assert!(chat.get("url").is_none());
     }
 
     /// Feed captured JSONL through spawn_stdout_reader via a mock pipe and
