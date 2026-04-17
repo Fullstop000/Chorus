@@ -261,22 +261,6 @@ async fn handle_pair(
 }
 
 // ---------------------------------------------------------------------------
-// Discovery cleanup guard
-// ---------------------------------------------------------------------------
-
-/// Removes the bridge discovery file when dropped.
-///
-/// Placed in `run_bridge_server` after `write_bridge_info` so that the file is
-/// cleaned up on every exit path — normal shutdown, error return, or panic.
-struct DiscoveryGuard;
-
-impl Drop for DiscoveryGuard {
-    fn drop(&mut self) {
-        crate::bridge::discovery::remove_bridge_info();
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -351,7 +335,7 @@ pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::R
     })?;
     // Guard ensures the discovery file is removed on every exit path —
     // normal shutdown, early error return, or panic.
-    let _discovery_guard = DiscoveryGuard;
+    let _discovery_guard = crate::bridge::discovery::DiscoveryGuard;
 
     tracing::info!(port, "bridge server listening");
 

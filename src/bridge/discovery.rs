@@ -121,6 +121,23 @@ pub fn remove_bridge_info() {
     let _ = std::fs::remove_file(default_discovery_path());
 }
 
+/// RAII guard that removes the default discovery file on drop. Instantiate
+/// immediately after a successful `write_bridge_info` so every exit path —
+/// normal shutdown, early `?` return, or a panic during a long-running
+/// startup (e.g. `chorus serve` auto-restarting many agents) — cleans up.
+///
+/// Without this, a panic between `write_bridge_info` and the point where
+/// the bridge actually answers HTTP would leave a stale file that the
+/// live-PID stomp guard then treats as "another chorus is alive," blocking
+/// the next startup until a human runs `rm ~/.chorus/bridge.json`.
+pub struct DiscoveryGuard;
+
+impl Drop for DiscoveryGuard {
+    fn drop(&mut self) {
+        remove_bridge_info();
+    }
+}
+
 /// Remove a specific discovery file.
 pub fn remove_bridge_info_from(path: &std::path::Path) {
     let _ = std::fs::remove_file(path);
@@ -146,11 +163,16 @@ fn is_pid_alive(pid: u32) -> bool {
     }
 }
 
-/// On non-Unix platforms we cannot check process existence — assume alive to
-/// avoid silently dropping valid bridge info.
+/// On non-Unix platforms we cannot cheaply check process existence without
+/// pulling in a `windows`/`sysinfo` dependency. Return `false` so the
+/// stomp-guard becomes a no-op: stale discovery files are allowed to be
+/// overwritten, matching pre-guard behavior. If two live `chorus serve`
+/// instances race on Windows the last writer wins silently (same risk the
+/// Unix guard defends against). Revisit when Windows support is a first-class
+/// target.
 #[cfg(not(unix))]
 fn is_pid_alive(_pid: u32) -> bool {
-    true
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -286,13 +308,31 @@ mod tests {
         // process restart case). Confirm.
         write_bridge_info_to(&path, &incoming).expect("same-pid overwrite ok");
 
-        // Now the tough case: existing points to a live *other* PID. We use
-        // PID 1 (init) which is always alive on Unix but ≠ our PID.
+        // Now the tough case: existing points to a live *other* PID.
+        // Spawn a short-lived child whose PID is guaranteed != ours, then
+        // use that PID while it's still alive. Wrap in a Drop guard so an
+        // assertion panic below doesn't leave the child alive for 10s.
         #[cfg(unix)]
         {
+            struct ChildGuard(std::process::Child);
+            impl Drop for ChildGuard {
+                fn drop(&mut self) {
+                    let _ = self.0.kill();
+                    let _ = self.0.wait();
+                }
+            }
+
+            let child = std::process::Command::new("sleep")
+                .arg("10")
+                .spawn()
+                .expect("can spawn sleep");
+            let child_pid = child.id();
+            let _child_guard = ChildGuard(child);
+            assert_ne!(child_pid, std::process::id(), "child PID must differ");
+
             let other_live = BridgeInfo {
                 port: 9300,
-                pid: 1, // init — always alive, never us
+                pid: child_pid,
                 started_at: "2026-04-16T00:00:02Z".to_string(),
             };
             std::fs::write(&path, serde_json::to_string(&other_live).unwrap())
@@ -305,6 +345,7 @@ mod tests {
                 err.to_string().contains("already running"),
                 "error should name the conflict: {err}"
             );
+            // _child_guard's Drop impl kills the sleep as we leave scope.
         }
 
         let _ = std::fs::remove_file(&path);

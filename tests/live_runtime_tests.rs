@@ -46,26 +46,23 @@
 //! Use `--nocapture` to see runtime stderr piped through our tracing setup.
 //! If a test hangs, check whether the runtime has valid auth in its config dir.
 //!
-//! # Coverage matrix: `chorus serve --shared-bridge` (A1 + A2)
+//! # Coverage matrix
 //!
-//! The full `chorus serve --shared-bridge` flow is covered by the combination
-//! of three test layers — a dedicated A3 end-to-end test would be redundant:
+//! The shared-bridge runtime path is covered by four test layers:
 //!
 //! | Layer | Test location | What it proves |
 //! |-------|--------------|----------------|
-//! | Bridge HTTP layer (A1) | `tests/bridge_serve_tests.rs` | In-process bridge starts, health, sessions, token pairing, `send_message` → store |
-//! | Discovery file I/O | `src/bridge/discovery.rs` (unit tests) | `write_bridge_info_to` / `read_bridge_info_from` roundtrip, stale PID, corrupt file |
-//! | A2 URL formatting | `src/agent/manager.rs` (`bridge_endpoint_from_info_formats_url`, `bridge_endpoint_from_none_is_none`) | `BridgeInfo { port }` → `"http://127.0.0.1:{port}"` |
-//! | Driver + bridge round-trip | This file (4 `#[ignore]` live tests) | Real runtime binary with `bridge_endpoint: Some(url)` → message lands in store |
+//! | Bridge HTTP layer | `tests/bridge_serve_tests.rs` | In-process bridge starts, health, sessions, token pairing, `send_message` → store |
+//! | Discovery file I/O | `src/bridge/discovery.rs` (unit tests) | `write_bridge_info_to` / `read_bridge_info_from` roundtrip, stale PID, corrupt file, live-PID stomp guard |
+//! | `resolve_bridge_endpoint` | `src/agent/manager.rs` (`resolve_bridge_endpoint_returns_override_when_set`, `resolve_bridge_endpoint_fails_loudly_without_bridge`) | Override path Ok, no-bridge path Err with user-visible message |
+//! | Driver + bridge round-trip | This file (4 `#[ignore]` live tests) | Real runtime binary wired to `bridge_endpoint: String` → message lands in store |
 //!
-//! The one composition NOT tested by automation: `AgentManager::start_agent`
-//! calling `read_bridge_info()` when a discovery file is present (the `Some`
-//! branch of the auto-discover block in manager.rs). This is three mechanical
-//! lines that wire the above individually-tested functions together. The risk
-//! of a silent bug here is low, and exercising it requires either writing to
-//! `~/.chorus/bridge.json` (global, unsafe in CI) or adding a path-override
-//! seam to `AgentManager`. The trade-off favors trusting the unit tests over
-//! introducing test-only indirection into production code.
+//! The one composition that is not tested by automation is the
+//! `AgentManager::start_agent` → `read_bridge_info()` path when a real
+//! discovery file is present on the developer's machine. That path would
+//! require writing to `~/.chorus/bridge.json` (global, unsafe in CI); the
+//! combination of discovery unit tests + `resolve_bridge_endpoint` override
+//! tests covers everything that doesn't require a real bridge process.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -257,27 +254,52 @@ const DIAGNOSTIC_LOG_TAIL_BYTES: u64 = 256 * 1024;
 /// How many trailing lines of that tail we actually print.
 const DIAGNOSTIC_LOG_TAIL_LINES: usize = 200;
 
+/// Redact `/token/{token}/mcp` URL segments so pairing bearer tokens don't
+/// leak into CI-archived test logs. Replaces the `{token}` with `[REDACTED]`
+/// while leaving the surrounding URL visible so operators can still see the
+/// port / path shape when debugging. Non-URL occurrences of `token` are left
+/// alone.
+fn redact_pairing_tokens(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(idx) = rest.find("/token/") {
+        out.push_str(&rest[..idx]);
+        out.push_str("/token/[REDACTED]");
+        rest = &rest[idx + "/token/".len()..];
+        // Skip past the token itself up to the next `/` or line terminator.
+        let end = rest.find(['/', '\n', '"']).unwrap_or(rest.len());
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Read the trailing `max_bytes` of a file without loading the whole thing.
-/// Returns an empty string (never errors) if the file can't be opened.
-/// If the requested slice lands mid-multibyte-sequence the first partial
-/// character is trimmed at the nearest UTF-8 boundary.
+/// Returns `io::Error` if the file can't be opened or read.
+/// If a seek was performed (file larger than cap), trims up to the first
+/// newline so the output starts on a clean line. Files smaller than the cap
+/// are returned in full — trimming them would silently drop the first line.
+/// Any invalid UTF-8 bytes are replaced via lossy conversion.
 fn read_log_tail(path: &std::path::Path, max_bytes: u64) -> std::io::Result<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path)?;
     let len = f.metadata()?.len();
     let to_read = std::cmp::min(len, max_bytes);
-    if to_read < len {
+    let seeked = to_read < len;
+    if seeked {
         f.seek(SeekFrom::End(-(to_read as i64)))?;
     }
     let mut buf = Vec::with_capacity(to_read as usize);
     f.take(to_read).read_to_end(&mut buf)?;
-    // The seek likely landed mid-line; trim up to the first newline so the
-    // output always starts on a clean line.
-    let start = buf
-        .iter()
-        .position(|&b| b == b'\n')
-        .map(|i| i + 1)
-        .unwrap_or(0);
+    let start = if seeked {
+        // Seek likely landed mid-line; trim up to the first newline.
+        buf.iter()
+            .position(|&b| b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(0)
+    } else {
+        0
+    };
     Ok(String::from_utf8_lossy(&buf[start..]).into_owned())
 }
 
@@ -350,7 +372,11 @@ fn collect_failure_diagnostics(
                 out.push_str(&format!("\n  {}:\n", entry.path().display()));
                 match std::fs::read_to_string(entry.path()) {
                     Ok(contents) => {
-                        for line in contents.lines() {
+                        // Redact the pairing token in MCP URLs. These are
+                        // bearer credentials — even with a 5-min TTL, dumping
+                        // them into CI-archived logs is sloppy.
+                        let redacted = redact_pairing_tokens(&contents);
+                        for line in redacted.lines() {
                             out.push_str("    ");
                             out.push_str(line);
                             out.push('\n');
@@ -937,4 +963,64 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostic-helper unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod diagnostic_helper_tests {
+    use super::*;
+
+    #[test]
+    fn redact_pairing_tokens_masks_token_segment() {
+        let input = r#"{"url": "http://127.0.0.1:4321/token/abc123xyz/mcp"}"#;
+        let out = redact_pairing_tokens(input);
+        assert!(out.contains("/token/[REDACTED]/mcp"));
+        assert!(!out.contains("abc123xyz"));
+    }
+
+    #[test]
+    fn redact_pairing_tokens_leaves_non_url_text_alone() {
+        let input = "normal text with no URL";
+        assert_eq!(redact_pairing_tokens(input), input);
+    }
+
+    #[test]
+    fn redact_pairing_tokens_handles_multiple_tokens() {
+        let input = "A=/token/tok1/mcp B=/token/tok2/mcp";
+        let out = redact_pairing_tokens(input);
+        assert_eq!(out, "A=/token/[REDACTED]/mcp B=/token/[REDACTED]/mcp");
+    }
+
+    #[test]
+    fn read_log_tail_returns_full_file_when_smaller_than_cap() {
+        let tmp =
+            std::env::temp_dir().join(format!("chorus_log_tail_small_{}.log", std::process::id()));
+        std::fs::write(&tmp, b"line one\nline two\n").unwrap();
+        let got = read_log_tail(&tmp, 1024).unwrap();
+        assert_eq!(got, "line one\nline two\n");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn read_log_tail_trims_to_newline_when_seeking() {
+        let tmp =
+            std::env::temp_dir().join(format!("chorus_log_tail_big_{}.log", std::process::id()));
+        let mut contents = String::new();
+        for i in 0..500 {
+            contents.push_str(&format!("line number {i:04}\n"));
+        }
+        std::fs::write(&tmp, contents.as_bytes()).unwrap();
+        let got = read_log_tail(&tmp, 128).unwrap();
+        assert!(got.len() <= 128);
+        // First char must be the start of a line (either the original line
+        // we landed on, or the start of the next).
+        assert!(
+            !got.starts_with("umber"),
+            "must not start mid-line: {got:?}"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
 }

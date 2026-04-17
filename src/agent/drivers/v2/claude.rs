@@ -24,11 +24,7 @@ use super::*;
 /// bridge at `{endpoint}/token/{token}/mcp`. Factored out so config-shape
 /// tests don't need a live bridge.
 fn build_mcp_config(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = format!(
-        "{}/token/{}/mcp",
-        bridge_endpoint.trim_end_matches('/'),
-        token
-    );
+    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
     serde_json::json!({
         "mcpServers": {
             "chat": {

@@ -56,6 +56,9 @@ enum Commands {
         /// `<data_dir>/config.toml` > `~/agency-agents`.
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
+        /// Port for the shared MCP bridge, started in-process.
+        #[arg(long, default_value_t = chorus::bridge::DEFAULT_BRIDGE_PORT)]
+        bridge_port: u16,
     },
     /// Create and manage agents
     Agent {
@@ -97,7 +100,7 @@ enum Commands {
     #[command(name = "bridge-serve")]
     BridgeServe {
         /// Address to listen on (e.g. 127.0.0.1:4321)
-        #[arg(long, default_value = "127.0.0.1:4321")]
+        #[arg(long, default_value_t = format!("127.0.0.1:{}", chorus::bridge::DEFAULT_BRIDGE_PORT))]
         listen: String,
         /// Chorus backend server URL
         #[arg(long, default_value = "http://localhost:3001")]
@@ -126,7 +129,7 @@ enum Commands {
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
         /// Port for the shared MCP bridge, started in-process by `chorus serve`.
-        #[arg(long, default_value = "4321")]
+        #[arg(long, default_value_t = chorus::bridge::DEFAULT_BRIDGE_PORT)]
         bridge_port: u16,
         /// Deprecated: the shared bridge is now always started by
         /// `chorus serve` (there is no longer an opt-in). Accepted so existing
@@ -239,7 +242,8 @@ pub async fn run() -> anyhow::Result<()> {
             data_dir,
             no_open,
             template_dir,
-        }) => start::run(port, data_dir, no_open, template_dir).await,
+            bridge_port,
+        }) => start::run(port, data_dir, no_open, template_dir, bridge_port).await,
 
         None => {
             let data_dir_str = default_data_dir();
@@ -287,9 +291,10 @@ pub async fn run() -> anyhow::Result<()> {
             shared_bridge,
         }) => {
             if shared_bridge {
-                eprintln!(
-                    "warning: --shared-bridge is deprecated and has no effect. The \
-                     shared MCP bridge is always started by `chorus serve`."
+                tracing::warn!(
+                    "--shared-bridge is deprecated and has no effect. The shared MCP \
+                     bridge is always started by `chorus serve`. Remove the flag from \
+                     your scripts."
                 );
             }
             let data_dir_str = data_dir.unwrap_or_else(default_data_dir);

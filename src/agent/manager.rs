@@ -1007,26 +1007,43 @@ mod tests {
         let _ = manager.stop_agent("v2bot").await;
     }
 
-    // ── bridge endpoint helper ──
+    // ── resolve_bridge_endpoint ──
 
-    fn bridge_endpoint_from(info: Option<crate::bridge::discovery::BridgeInfo>) -> Option<String> {
-        info.map(|i| format!("http://127.0.0.1:{}", i.port))
+    #[test]
+    fn resolve_bridge_endpoint_returns_override_when_set() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let mut manager = AgentManager::new(store, dir.path().join("agents"));
+        manager.set_bridge_endpoint_override("http://127.0.0.1:9999");
+        let got = manager.resolve_bridge_endpoint().unwrap();
+        assert_eq!(got, "http://127.0.0.1:9999");
     }
 
     #[test]
-    fn bridge_endpoint_from_info_formats_url() {
-        let info = crate::bridge::discovery::BridgeInfo {
-            port: 4321,
-            pid: 12345,
-            started_at: "2026-04-16T00:00:00Z".to_string(),
-        };
-        let result = bridge_endpoint_from(Some(info));
-        assert_eq!(result, Some("http://127.0.0.1:4321".to_string()));
-    }
-
-    #[test]
-    fn bridge_endpoint_from_none_is_none() {
-        assert_eq!(bridge_endpoint_from(None), None);
+    fn resolve_bridge_endpoint_fails_loudly_without_bridge() {
+        // No override set and (in this test harness) no bridge running on
+        // the local machine at the default discovery path — even if one
+        // were, `read_bridge_info` returns None for stale/dead PIDs, and
+        // the default path is unlikely to point at a live chorus in CI.
+        // Skip the assertion if a live discovery file happens to exist.
+        if crate::bridge::discovery::read_bridge_info().is_some() {
+            eprintln!(
+                "skipping resolve_bridge_endpoint_fails_loudly_without_bridge: \
+                 live bridge detected on this machine"
+            );
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let manager = AgentManager::new(store, dir.path().join("agents"));
+        let err = manager
+            .resolve_bridge_endpoint()
+            .expect_err("must fail when no override and no bridge");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Shared MCP bridge is not running"),
+            "error should name the condition: {msg}"
+        );
     }
 
     #[tokio::test]

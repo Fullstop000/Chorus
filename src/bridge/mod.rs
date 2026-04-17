@@ -15,6 +15,18 @@ mod types;
 use backend::{Backend, ChorusBackend};
 use types::*;
 
+/// Default TCP port for the shared MCP bridge. Canonical across CLI defaults
+/// (`chorus start --bridge-port`, `chorus serve --bridge-port`,
+/// `chorus bridge-serve --listen`) so changing it touches one place.
+pub const DEFAULT_BRIDGE_PORT: u16 = 4321;
+
+/// Build the token-pair URL a runtime uses to reach the shared bridge:
+/// `{endpoint}/token/{token}/mcp`. Trimming the trailing slash on `endpoint`
+/// is a defensive chore the five drivers used to duplicate; put it here once.
+pub fn token_mcp_url(endpoint: &str, token: &str) -> String {
+    format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), token)
+}
+
 // ---------------------------------------------------------------------------
 // ChatBridge
 // ---------------------------------------------------------------------------

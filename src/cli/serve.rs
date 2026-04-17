@@ -62,9 +62,9 @@ pub async fn run(
                  already running? Pass `--bridge-port` to use a different port."
             )
         })?;
-    let bridge_local_addr = bridge_listener
-        .local_addr()
-        .expect("bridge listener has a local addr");
+    let bridge_local_addr = bridge_listener.local_addr().map_err(|e| {
+        anyhow::anyhow!("shared bridge: failed to read local address for {bridge_listen}: {e}")
+    })?;
     // Phase 1 bridge only supports loopback — guard in case the resolved
     // address is somehow non-loopback (shouldn't happen with 127.0.0.1, but
     // be defensive).
@@ -80,12 +80,22 @@ pub async fn run(
     // file — abort hard so we don't silently steal its agents' routing.
     // Other errors (permissions, disk) warn-and-continue so the bridge still
     // runs for same-process agents.
-    match chorus::bridge::discovery::write_bridge_info(&chorus::bridge::discovery::BridgeInfo {
-        port: actual_bridge_port,
-        pid: std::process::id(),
-        started_at: chrono::Utc::now().to_rfc3339(),
-    }) {
-        Ok(()) => {}
+    let _discovery_guard = match chorus::bridge::discovery::write_bridge_info(
+        &chorus::bridge::discovery::BridgeInfo {
+            port: actual_bridge_port,
+            pid: std::process::id(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        },
+    ) {
+        Ok(()) => {
+            // RAII guard removes the discovery file on every exit path —
+            // normal shutdown, `?` propagation, or a panic during the
+            // auto-restart loop below. Without this, a panic between here
+            // and the bridge task actually serving HTTP would leave a stale
+            // file that the next `chorus serve` reads as "another chorus
+            // is alive," permanently blocking startup.
+            Some(chorus::bridge::discovery::DiscoveryGuard)
+        }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
             anyhow::bail!(
                 "shared bridge: {e}. Stop the other chorus server (or wait for it to exit) \
@@ -94,8 +104,9 @@ pub async fn run(
         }
         Err(e) => {
             tracing::warn!(err = %e, "shared bridge: failed to write discovery file; bridge will still run");
+            None
         }
-    }
+    };
 
     tracing::info!(port = actual_bridge_port, "shared bridge listening");
 
@@ -118,8 +129,9 @@ pub async fn run(
         {
             tracing::error!(err = %e, "shared bridge exited with error");
         }
-        // Clean up discovery file when bridge shuts down.
-        chorus::bridge::discovery::remove_bridge_info();
+        // Note: the discovery file is removed by DiscoveryGuard held in the
+        // outer scope on drop; don't remove it here or we double-up and
+        // could race with a second serve that already stomp-checked.
         tracing::info!("shared bridge stopped");
     });
 
