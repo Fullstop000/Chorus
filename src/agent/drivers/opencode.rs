@@ -9,8 +9,8 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
-use crate::agent::drivers::{command_exists, run_command};
 use crate::agent::AgentRuntime;
+use crate::utils::cmd::{command_exists, run_command};
 
 use super::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator};
 use super::*;

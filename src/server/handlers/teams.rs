@@ -302,6 +302,10 @@ pub async fn handle_delete_team(
     let agents_dir = state.store.agents_dir();
     let agent_workspace = AgentWorkspace::new(&agents_dir);
     for agent_name in &agent_members {
+        // Agent may have been deleted already — skip cleanup for missing agents.
+        if state.store.get_agent(agent_name).ok().flatten().is_none() {
+            continue;
+        }
         agent_workspace
             .delete_team_memory(agent_name, &team.name)
             .map_err(internal_err)?;
