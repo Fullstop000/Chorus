@@ -9,6 +9,7 @@ use tracing::{info, warn};
 use super::path_params::{
     resolve_public_agent, resolve_public_agent_with_env, PublicResourceIdPath,
 };
+use super::templates::find_available_name;
 use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
@@ -214,10 +215,12 @@ pub async fn handle_create_agent(
     State(state): State<AppState>,
     Json(req): Json<CreateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let name = req.name.trim().to_string();
-    if name.is_empty() {
+    let requested_name = req.name.trim().to_string();
+    if requested_name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
+    // Auto-suffix colliding slugs so users don't have to manage identifier uniqueness.
+    let name = find_available_name(&state, &requested_name);
     let display_name = if req.display_name.is_empty() {
         name.clone()
     } else {

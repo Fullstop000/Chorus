@@ -211,7 +211,7 @@ pub async fn handle_launch_trio(
 
 /// Find a name that doesn't conflict with existing agents.
 /// Tries base_name, then base_name-2, base_name-3, etc.
-fn find_available_name(state: &AppState, base_name: &str) -> String {
+pub(crate) fn find_available_name(state: &AppState, base_name: &str) -> String {
     if state.store.get_agent(base_name).ok().flatten().is_none() {
         return base_name.to_string();
     }

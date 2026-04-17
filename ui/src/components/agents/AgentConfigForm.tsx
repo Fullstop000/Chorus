@@ -1,5 +1,5 @@
-import { useEffect } from "react";
-import { LoaderCircle } from "lucide-react";
+import { useEffect, useState } from "react";
+import { LoaderCircle, Pencil } from "lucide-react";
 import type { AgentEnvVar, RuntimeStatusInfo } from "./types";
 import { useRuntimeModels } from "../../hooks/useRuntimeModels";
 import {
@@ -44,6 +44,19 @@ interface Props {
   runtimeStatusError?: string | null;
   editableName?: boolean;
   onChange: (next: AgentConfigState) => void;
+}
+
+/**
+ * Derive a slug-safe agent identifier from a human-facing display name.
+ * Lowercases, keeps ASCII alphanumerics, collapses runs of other characters into
+ * single dashes, and trims leading/trailing dashes.
+ */
+export function toAgentSlug(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 export function runtimeOptionLabel(
@@ -145,6 +158,8 @@ export function AgentConfigForm({
   onChange,
 }: Props) {
   const { runtimeModels, runtimeModelsError, isLoading } = useRuntimeModels(state.runtime);
+  const [identifierTouched, setIdentifierTouched] = useState(false);
+  const [identifierOpen, setIdentifierOpen] = useState(false);
 
   useEffect(() => {
     if (runtimeModels.length === 0 || runtimeModels.includes(state.model)) {
@@ -194,34 +209,58 @@ export function AgentConfigForm({
           </span>
         </div>
         <div className="agent-config-grid">
-          {editableName && (
-            <FormField>
-              <Label>Name</Label>
-              <Input
-                value={state.name}
-                onChange={(e) => onChange({ ...state, name: e.target.value })}
-                placeholder="e.g. my-agent"
-                autoFocus
-              />
-              <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-                Stable machine name used in channels and internal references.
-              </p>
-            </FormField>
-          )}
-
           <FormField>
-            <Label>Display Name</Label>
+            <Label>Name</Label>
             <Input
               value={state.display_name}
-              onChange={(e) =>
-                onChange({ ...state, display_name: e.target.value })
-              }
-              placeholder={state.name || "Agent name"}
-              autoFocus={!editableName}
+              onChange={(e) => {
+                const display_name = e.target.value;
+                const next = { ...state, display_name };
+                if (editableName && !identifierTouched) {
+                  next.name = toAgentSlug(display_name);
+                }
+                onChange(next);
+              }}
+              placeholder="e.g. Code Reviewer"
+              autoFocus
             />
-            <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-              Human-facing label shown across the workspace.
-            </p>
+            {editableName && (
+              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground leading-relaxed">
+                <span className="truncate">
+                  Identifier:{" "}
+                  <code className="font-mono">
+                    {state.name || "—"}
+                  </code>
+                </span>
+                {!identifierOpen && (
+                  <button
+                    type="button"
+                    onClick={() => setIdentifierOpen(true)}
+                    className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
+                  >
+                    <Pencil size={11} />
+                    <span>Edit</span>
+                  </button>
+                )}
+              </div>
+            )}
+            {editableName && identifierOpen && (
+              <div className="mt-2">
+                <Input
+                  value={state.name}
+                  onChange={(e) => {
+                    setIdentifierTouched(true);
+                    onChange({ ...state, name: e.target.value });
+                  }}
+                  placeholder="e.g. code-reviewer"
+                />
+                <p className="text-xs text-muted-foreground leading-relaxed mt-1">
+                  Stable machine name used in channels, log files, and internal
+                  references. Auto-derived from the name above; collisions get a
+                  numeric suffix on save.
+                </p>
+              </div>
+            )}
           </FormField>
         </div>
 
