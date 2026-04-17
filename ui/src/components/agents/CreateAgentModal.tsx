@@ -199,6 +199,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
               runtimeStatuses={runtimeStatuses}
               runtimeStatusError={runtimeStatusError}
               editableName
+              identifierInitiallyLocked={selectedTemplate !== null}
               onChange={setConfig}
             />
 

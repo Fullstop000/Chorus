@@ -43,6 +43,12 @@ interface Props {
   runtimeStatuses?: RuntimeStatusInfo[];
   runtimeStatusError?: string | null;
   editableName?: boolean;
+  /**
+   * When true, treat the identifier as already manually set. Display-name edits
+   * will not overwrite the identifier via auto-slug. Used when a template
+   * pre-populates the identifier and we don't want to silently rename it.
+   */
+  identifierInitiallyLocked?: boolean;
   onChange: (next: AgentConfigState) => void;
 }
 
@@ -155,11 +161,17 @@ export function AgentConfigForm({
   runtimeStatuses = [],
   runtimeStatusError = null,
   editableName = false,
+  identifierInitiallyLocked = false,
   onChange,
 }: Props) {
   const { runtimeModels, runtimeModelsError, isLoading } = useRuntimeModels(state.runtime);
-  const [identifierTouched, setIdentifierTouched] = useState(false);
+  const [identifierTouched, setIdentifierTouched] = useState(identifierInitiallyLocked);
   const [identifierOpen, setIdentifierOpen] = useState(false);
+  const identifierUnavailable =
+    editableName &&
+    !identifierTouched &&
+    state.display_name.trim() !== "" &&
+    state.name.trim() === "";
 
   useEffect(() => {
     if (runtimeModels.length === 0 || runtimeModels.includes(state.model)) {
@@ -243,6 +255,12 @@ export function AgentConfigForm({
                   </button>
                 )}
               </div>
+            )}
+            {identifierUnavailable && !identifierOpen && (
+              <p className="mt-1 text-xs text-destructive leading-relaxed">
+                Can't derive an identifier from this name. Click Edit above to
+                set one manually.
+              </p>
             )}
             {editableName && identifierOpen && (
               <div className="mt-2">
