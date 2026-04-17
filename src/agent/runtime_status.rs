@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::drivers::runtime::{ProbeAuth, RuntimeDriver};
+use crate::agent::drivers::{ProbeAuth, RuntimeDriver};
 use crate::agent::AgentRuntime;
 
 /// HTTP/UI response shape for one supported runtime.

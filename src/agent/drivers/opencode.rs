@@ -1,16 +1,15 @@
-//! Native v2 driver for the Kimi runtime using ACP protocol.
-
-use std::io::Write;
-use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
+//! Native v2 driver for the OpenCode runtime using ACP protocol.
 
 use anyhow::{bail, Context};
 use async_trait::async_trait;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
-use crate::agent::drivers::{command_exists, home_dir, read_file};
+use crate::utils::cmd::{command_exists, run_command};
 use crate::agent::AgentRuntime;
 
 use super::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator};
@@ -20,58 +19,41 @@ use super::*;
 // MCP config construction
 // ---------------------------------------------------------------------------
 
-/// Build the `.chorus-kimi-mcp.json` config file contents.
+/// Build the `mcp.chat` config block for `opencode.json`.
 ///
 /// Produces the remote HTTP MCP shape, connecting the runtime to the shared
-/// bridge at `{endpoint}/token/{token}/mcp`. Kimi requires `transport: "http"`
-/// alongside `url` — without it, the runtime defaults to stdio and fails to
-/// connect. Verified against the format emitted by `kimi mcp add --transport
-/// http`.
-fn build_mcp_config_file(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+/// bridge at `{endpoint}/token/{token}/mcp`. Factored out so config-shape
+/// tests don't need a live bridge.
+fn build_mcp_chat_config(bridge_endpoint: &str, token: &str) -> serde_json::Value {
     serde_json::json!({
-        "mcpServers": {
-            "chat": {
-                "url": url,
-                "transport": "http"
-            }
-        }
+        "type": "remote",
+        "url": crate::bridge::token_mcp_url(bridge_endpoint, token),
     })
 }
 
-/// Build the `mcpServers` array for the ACP `session/new` inline params.
-///
-/// Produces the remote HTTP MCP shape. ACP spec for HTTP MCP servers in
-/// session/new params requires:
-///   - `type: "http"` (NOT `transport: "http"` like Kimi's file config format)
-///   - `headers` array (required, can be empty)
-///
-/// See <https://agentclientprotocol.com/protocol/session-setup> — sending the
-/// wrong shape produces ACP "Invalid params" errors.
-fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
-    serde_json::json!([{
-        "type": "http",
-        "name": "chat",
-        "url": url,
-        "headers": []
-    }])
+// ---------------------------------------------------------------------------
+// OpencodeDriver
+// ---------------------------------------------------------------------------
+
+pub struct OpencodeDriver;
+
+fn parse_opencode_models(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
 }
 
-// ---------------------------------------------------------------------------
-// KimiDriver
-// ---------------------------------------------------------------------------
-
-pub struct KimiDriver;
-
 #[async_trait]
-impl RuntimeDriver for KimiDriver {
+impl RuntimeDriver for OpencodeDriver {
     fn runtime(&self) -> AgentRuntime {
-        AgentRuntime::Kimi
+        AgentRuntime::Opencode
     }
 
     async fn probe(&self) -> anyhow::Result<RuntimeProbe> {
-        if !command_exists("kimi") {
+        if !command_exists("opencode") {
             return Ok(RuntimeProbe {
                 auth: ProbeAuth::NotInstalled,
                 transport: TransportKind::AcpNative,
@@ -79,18 +61,10 @@ impl RuntimeDriver for KimiDriver {
             });
         }
 
-        let home = home_dir();
-        let auth = read_file(&home.join(".kimi/credentials/kimi-code.json"))
+        let auth = run_command("opencode", &["--version"])
             .ok()
-            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-            .map(|payload| {
-                let has_access = payload["access_token"]
-                    .as_str()
-                    .is_some_and(|v| !v.trim().is_empty());
-                let has_refresh = payload["refresh_token"]
-                    .as_str()
-                    .is_some_and(|v| !v.trim().is_empty());
-                if has_access || has_refresh {
+            .map(|result| {
+                if result.success {
                     ProbeAuth::Authed
                 } else {
                     ProbeAuth::Unauthed
@@ -107,7 +81,7 @@ impl RuntimeDriver for KimiDriver {
 
     async fn login(&self) -> anyhow::Result<LoginOutcome> {
         Ok(LoginOutcome::Failed {
-            reason: "kimi does not support login via Chorus".into(),
+            reason: "opencode does not support login via Chorus".into(),
         })
     }
 
@@ -116,7 +90,19 @@ impl RuntimeDriver for KimiDriver {
     }
 
     async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>> {
-        Ok(vec![ModelInfo::from_id("kimi-code/kimi-for-coding".into())])
+        if !command_exists("opencode") {
+            return Ok(Vec::new());
+        }
+
+        let result = run_command("opencode", &["models"])?;
+        if !result.success {
+            bail!("opencode: failed to list models: {}", result.stderr.trim());
+        }
+
+        Ok(parse_opencode_models(&result.stdout)
+            .into_iter()
+            .map(ModelInfo::from_id)
+            .collect())
     }
 
     async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
@@ -125,7 +111,7 @@ impl RuntimeDriver for KimiDriver {
 
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
         let (events, event_tx) = EventFanOut::new();
-        let handle = KimiHandle {
+        let handle = OpencodeHandle {
             key,
             state: AgentState::Idle,
             events: events.clone(),
@@ -160,18 +146,15 @@ struct SharedReaderState {
     session_id: Option<String>,
     run_id: Option<RunId>,
     pending_prompt: Option<String>,
-    /// Kimi omits sessionId from session/load responses; stash the requested
-    /// id so the reader task can fall back to it.
     pending_session_id: Option<String>,
-    /// Canonical agent state, shared between handle methods and the reader task.
     agent_state: AgentState,
 }
 
 // ---------------------------------------------------------------------------
-// KimiHandle
+// OpencodeHandle
 // ---------------------------------------------------------------------------
 
-pub struct KimiHandle {
+pub struct OpencodeHandle {
     key: AgentKey,
     state: AgentState,
     events: EventStreamHandle,
@@ -184,7 +167,7 @@ pub struct KimiHandle {
     reader_handles: Vec<tokio::task::JoinHandle<()>>,
 }
 
-impl KimiHandle {
+impl OpencodeHandle {
     fn emit(&self, event: DriverEvent) {
         let _ = self.event_tx.try_send(event);
     }
@@ -196,7 +179,7 @@ impl KimiHandle {
     }
 }
 
-impl Drop for KimiHandle {
+impl Drop for OpencodeHandle {
     fn drop(&mut self) {
         if let Some(ref mut child) = self.child {
             let pid = child.id();
@@ -209,7 +192,7 @@ impl Drop for KimiHandle {
 }
 
 #[async_trait]
-impl AgentHandle for KimiHandle {
+impl AgentHandle for OpencodeHandle {
     fn key(&self) -> &AgentKey {
         &self.key
     }
@@ -223,57 +206,67 @@ impl AgentHandle for KimiHandle {
         opts: StartOpts,
         init_prompt: Option<PromptReq>,
     ) -> anyhow::Result<()> {
+        self.state = AgentState::Starting;
         {
             let mut s = self.shared.lock().unwrap();
             s.agent_state = AgentState::Starting;
         }
-        self.state = AgentState::Starting;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
             state: AgentState::Starting,
         });
 
+        // Build model ID: append reasoning effort as suffix if set
+        let wd = &self.spec.working_directory;
+        let model_id = match &self.spec.reasoning_effort {
+            Some(variant) if !variant.is_empty() => {
+                format!("{}/{}", self.spec.model, variant)
+            }
+            _ => self.spec.model.clone(),
+        };
+
         // Pair with the shared HTTP bridge. If pairing fails we surface the
         // error — misconfiguration is loud.
-        let pairing_token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+        let endpoint = &self.spec.bridge_endpoint;
+        let pairing_token = super::request_pairing_token(endpoint, &self.key)
             .await
-            .context("failed to pair with shared bridge")?;
+            .with_context(|| {
+                format!(
+                    "failed to pair with bridge at {endpoint} for agent {}",
+                    self.key
+                )
+            })?;
 
-        // Write MCP config file
-        let wd = &self.spec.working_directory;
-        let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
-        let mcp_config = build_mcp_config_file(&self.spec.bridge_endpoint, &pairing_token);
-        std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
-            .context("failed to write MCP config")?;
+        // Write opencode.json to the working directory
+        let config_path = wd.join("opencode.json");
+        let mcp_chat = build_mcp_chat_config(endpoint, &pairing_token);
+        let opencode_config = serde_json::json!({
+            "model": model_id,
+            "mcp": {
+                "chat": mcp_chat,
+            }
+        });
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&opencode_config)?,
+        )
+        .context("failed to write opencode.json")?;
 
         // Build CLI args
-        let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
-        let wd_str = wd.to_string_lossy().into_owned();
-        let mut args = vec![
-            "--work-dir".to_string(),
-            wd_str,
-            "--mcp-config-file".to_string(),
-            mcp_path_str,
-        ];
-        if !self.spec.model.is_empty() {
-            args.push("--model".to_string());
-            args.push(self.spec.model.clone());
-        }
-        args.push("acp".to_string());
+        let args = vec!["acp".to_string()];
 
-        // Build env
-        let mut cmd = Command::new("kimi");
+        let mut cmd = Command::new("opencode");
         cmd.args(&args)
+            .current_dir(&self.spec.working_directory)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("FORCE_COLOR", "0")
             .env("NO_COLOR", "1");
         for ev in &self.spec.env_vars {
             cmd.env(&ev.key, &ev.value);
         }
 
-        let mut child = cmd.spawn().context("failed to spawn kimi")?;
+        let mut child = cmd.spawn().context("failed to spawn opencode")?;
         let stdout = child.stdout.take().context("missing stdout")?;
         let stderr = child.stderr.take().context("missing stderr")?;
         let mut stdin = child.stdin.take().context("missing stdin")?;
@@ -282,10 +275,9 @@ impl AgentHandle for KimiHandle {
         let init_req = acp_protocol::build_initialize_request(1);
         writeln!(stdin, "{init_req}").context("failed to write initialize request")?;
 
-        let mcp_servers = build_acp_mcp_servers(&self.spec.bridge_endpoint, &pairing_token);
         let session_new_params = serde_json::json!({
             "cwd": self.spec.working_directory,
-            "mcpServers": mcp_servers
+            "mcpServers": []
         });
 
         let session_req = if let Some(ref sid) = opts.resume_session_id {
@@ -326,7 +318,14 @@ impl AgentHandle for KimiHandle {
         let shared = self.shared.clone();
         let stdin_tx_for_reader = self.stdin_tx.clone().unwrap();
         let stdout_handle = tokio::spawn(async move {
-            let reader = BufReader::new(tokio::process::ChildStdout::from_std(stdout).unwrap());
+            let stdout_async = match tokio::process::ChildStdout::from_std(stdout) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(key = %key, error = %e, "opencode: failed to convert stdout to async");
+                    return;
+                }
+            };
+            let reader = BufReader::new(stdout_async);
             let mut lines = reader.lines();
             let mut accumulator = ToolCallAccumulator::new();
 
@@ -334,14 +333,14 @@ impl AgentHandle for KimiHandle {
                 if line.trim().is_empty() {
                     continue;
                 }
-                trace!(line = %line, "kimi stdout");
+                trace!(line = %line, "opencode stdout");
                 let parsed = acp_protocol::parse_line(&line);
 
                 match parsed {
                     AcpParsed::InitializeResponse => {
                         let mut s = shared.lock().unwrap();
                         s.phase = AcpPhase::AwaitingSessionResponse;
-                        debug!("kimi: initialize response received");
+                        debug!("opencode: initialize response received");
                     }
 
                     AcpParsed::SessionResponse { session_id } => {
@@ -370,7 +369,6 @@ impl AgentHandle for KimiHandle {
                             },
                         });
 
-                        // Send deferred initial prompt now that we have a session
                         if let Some(prompt_text) = deferred_prompt {
                             let run_id = RunId::new_v4();
                             {
@@ -406,7 +404,6 @@ impl AgentHandle for KimiHandle {
                             (rid, sid)
                         };
 
-                        // Flush accumulated tool calls
                         if let Some(run_id) = run_id {
                             for (_id, name, input) in accumulator.drain() {
                                 let _ = event_tx.try_send(DriverEvent::Output {
@@ -464,7 +461,6 @@ impl AgentHandle for KimiHandle {
                                     });
                                 }
                                 AcpUpdateItem::ToolCall { id, name, input } => {
-                                    // Flush any previous pending calls before recording new one
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
@@ -481,7 +477,6 @@ impl AgentHandle for KimiHandle {
                                     accumulator.merge_update(id, input);
                                 }
                                 AcpUpdateItem::ToolResult { content } => {
-                                    // Flush the accumulated tool call first
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
@@ -529,7 +524,7 @@ impl AgentHandle for KimiHandle {
                         let option_id = acp_protocol::pick_best_option_id(&options);
                         debug!(
                             ?tool_name,
-                            request_id, option_id, "kimi: auto-approving permission"
+                            request_id, option_id, "opencode: auto-approving permission"
                         );
                         let response =
                             acp_protocol::build_permission_response_raw(request_id, option_id);
@@ -537,7 +532,7 @@ impl AgentHandle for KimiHandle {
                     }
 
                     AcpParsed::Error { message } => {
-                        warn!(message = %message, "kimi: ACP error");
+                        warn!(message = %message, "opencode: ACP error");
                         let run_id = {
                             let mut s = shared.lock().unwrap();
                             s.run_id.take()
@@ -576,14 +571,14 @@ impl AgentHandle for KimiHandle {
                     },
                 });
             }
-            let _ = event_tx.try_send(DriverEvent::Lifecycle {
-                key: key.clone(),
-                state: AgentState::Closed,
-            });
             {
                 let mut s = shared.lock().unwrap();
                 s.agent_state = AgentState::Closed;
             }
+            let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                key: key.clone(),
+                state: AgentState::Closed,
+            });
         });
         self.reader_handles.push(stdout_handle);
 
@@ -593,7 +588,7 @@ impl AgentHandle for KimiHandle {
             let stderr_async = match tokio::process::ChildStderr::from_std(stderr) {
                 Ok(s) => s,
                 Err(e) => {
-                    warn!(key = %key_err, error = %e, "kimi: failed to convert stderr to async");
+                    warn!(key = %key_err, error = %e, "opencode: failed to convert stderr to async");
                     return;
                 }
             };
@@ -601,7 +596,7 @@ impl AgentHandle for KimiHandle {
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
                 if !line.trim().is_empty() {
-                    warn!(key = %key_err, line = %line, "kimi stderr");
+                    warn!(key = %key_err, line = %line, "opencode stderr");
                 }
             }
         });
@@ -613,11 +608,11 @@ impl AgentHandle for KimiHandle {
     }
 
     async fn new_session(&mut self) -> anyhow::Result<SessionId> {
-        bail!("kimi does not support new_session on an active handle");
+        bail!("opencode does not support new_session on an active handle");
     }
 
     async fn resume_session(&mut self, _id: SessionId) -> anyhow::Result<()> {
-        bail!("kimi does not support resume_session on an active handle");
+        bail!("opencode does not support resume_session on an active handle");
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -665,34 +660,38 @@ impl AgentHandle for KimiHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        // Read authoritative state from shared — self.state can lag the reader task.
-        let (run_id, session_id) = {
+        let cancel_info = {
             let s = self.shared.lock().unwrap();
             match &s.agent_state {
-                AgentState::PromptInFlight { run_id, session_id } => (*run_id, session_id.clone()),
-                _ => return Ok(CancelOutcome::NotInFlight),
+                AgentState::PromptInFlight { run_id, session_id } => {
+                    Some((*run_id, session_id.clone()))
+                }
+                _ => None,
             }
         };
+        if let Some((run_id, session_id)) = cancel_info {
+            {
+                let mut s = self.shared.lock().unwrap();
+                s.run_id = None;
+                s.agent_state = AgentState::Active {
+                    session_id: session_id.clone(),
+                };
+            }
 
-        {
-            let mut s = self.shared.lock().unwrap();
-            s.run_id = None;
-            s.agent_state = AgentState::Active {
-                session_id: session_id.clone(),
-            };
+            self.emit(DriverEvent::Completed {
+                key: self.key.clone(),
+                run_id,
+                result: RunResult {
+                    session_id: session_id.clone(),
+                    finish_reason: FinishReason::Cancelled,
+                },
+            });
+
+            self.state = AgentState::Active { session_id };
+            Ok(CancelOutcome::Aborted)
+        } else {
+            Ok(CancelOutcome::NotInFlight)
         }
-
-        self.emit(DriverEvent::Completed {
-            key: self.key.clone(),
-            run_id,
-            result: RunResult {
-                session_id: session_id.clone(),
-                finish_reason: FinishReason::Cancelled,
-            },
-        });
-
-        self.state = AgentState::Active { session_id };
-        Ok(CancelOutcome::Aborted)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
@@ -740,10 +739,10 @@ mod tests {
 
     fn test_spec() -> AgentSpec {
         AgentSpec {
-            display_name: "test-kimi".to_string(),
+            display_name: "test-opencode".to_string(),
             description: None,
             system_prompt: None,
-            model: "kimi-code/kimi-for-coding".to_string(),
+            model: "openai/gpt-4o".to_string(),
             reasoning_effort: None,
             env_vars: vec![],
             working_directory: PathBuf::from("/fake"),
@@ -752,10 +751,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_kimi_driver_probe_not_installed() {
-        let driver = KimiDriver;
+    async fn test_opencode_driver_probe_not_installed() {
+        let driver = OpencodeDriver;
         let probe = driver.probe().await.unwrap();
-        // kimi binary is not on PATH in CI/test environments
         if probe.auth == ProbeAuth::NotInstalled {
             assert_eq!(probe.transport, TransportKind::AcpNative);
             assert!(probe.capabilities.contains(CapabilitySet::MODEL_LIST));
@@ -763,63 +761,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_kimi_driver_list_models() {
-        let driver = KimiDriver;
-        let models = driver.list_models().await.unwrap();
-        assert_eq!(models.len(), 1);
-        assert_eq!(models[0].id, "kimi-code/kimi-for-coding");
+    async fn test_opencode_driver_list_models_not_installed() {
+        let driver = OpencodeDriver;
+        if !command_exists("opencode") {
+            let models = driver.list_models().await.unwrap();
+            assert!(models.is_empty());
+        }
     }
 
     #[tokio::test]
-    async fn test_kimi_driver_attach_returns_idle() {
-        let driver = KimiDriver;
+    async fn test_opencode_driver_attach_returns_idle() {
+        let driver = OpencodeDriver;
         let result = driver
-            .attach("kimi-agent-1".to_string(), test_spec())
+            .attach("opencode-agent-1".to_string(), test_spec())
             .await
             .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
     }
 
-    // ---- build_mcp_config_file tests ----
-
     #[test]
-    fn build_mcp_config_file_http_shape() {
-        let config = build_mcp_config_file("http://127.0.0.1:4321", "tok-xyz");
-        let chat = &config["mcpServers"]["chat"];
-        assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
-        assert_eq!(chat["transport"], "http");
-        assert!(chat.get("command").is_none());
+    fn build_mcp_chat_config_http_shape() {
+        // Remote HTTP MCP shape — the only shape we produce.
+        let config = build_mcp_chat_config("http://127.0.0.1:4321", "tok-xyz");
+        assert_eq!(config["type"], "remote");
+        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert!(config.get("command").is_none());
     }
 
     #[test]
-    fn build_mcp_config_file_trims_trailing_slash() {
-        let config = build_mcp_config_file("http://127.0.0.1:4321/", "tok-xyz");
-        assert_eq!(
-            config["mcpServers"]["chat"]["url"],
-            "http://127.0.0.1:4321/token/tok-xyz/mcp"
-        );
-    }
-
-    // ---- build_acp_mcp_servers tests ----
-
-    #[test]
-    fn build_acp_mcp_servers_http_shape() {
-        let servers = build_acp_mcp_servers("http://127.0.0.1:4321", "tok-xyz");
-        let arr = servers.as_array().expect("array");
-        assert_eq!(arr.len(), 1);
-        let entry = &arr[0];
-        assert_eq!(entry["type"], "http");
-        assert_eq!(entry["name"], "chat");
-        assert_eq!(entry["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
-        // Headers array is required by ACP spec (can be empty)
-        assert!(entry["headers"].is_array());
-        assert!(entry.get("command").is_none());
-    }
-
-    #[test]
-    fn build_acp_mcp_servers_trims_trailing_slash() {
-        let servers = build_acp_mcp_servers("http://127.0.0.1:4321/", "tok-xyz");
-        let arr = servers.as_array().expect("array");
-        assert_eq!(arr[0]["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+    fn build_mcp_chat_config_trims_trailing_slash() {
+        // Endpoint with trailing slash must not produce `//token/` in the URL.
+        let config = build_mcp_chat_config("http://127.0.0.1:4321/", "tok-xyz");
+        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
     }
 }

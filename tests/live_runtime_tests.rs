@@ -67,11 +67,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chorus::agent::drivers::runtime::claude::ClaudeDriver;
-use chorus::agent::drivers::runtime::codex::CodexDriver;
-use chorus::agent::drivers::runtime::kimi::KimiDriver;
-use chorus::agent::drivers::runtime::opencode::OpencodeDriver;
-use chorus::agent::drivers::runtime::{AgentSpec, PromptReq, RuntimeDriver, StartOpts};
+use chorus::agent::drivers::claude::ClaudeDriver;
+use chorus::agent::drivers::codex::CodexDriver;
+use chorus::agent::drivers::kimi::KimiDriver;
+use chorus::agent::drivers::opencode::OpencodeDriver;
+use chorus::agent::drivers::{AgentSpec, PromptReq, RuntimeDriver, StartOpts};
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
@@ -406,7 +406,7 @@ fn collect_failure_diagnostics(
         and emitted via tracing::warn!). To see runtime stderr, re-run with:\n",
     );
     out.push_str(&format!(
-        "  RUST_LOG=chorus::agent::drivers::runtime::{}=debug \
+        "  RUST_LOG=chorus::agent::drivers::{}=debug \
         cargo test --test live_runtime_tests {}_agent_replies_through_shared_bridge \
         -- --ignored --nocapture\n",
         runtime_name, runtime_name

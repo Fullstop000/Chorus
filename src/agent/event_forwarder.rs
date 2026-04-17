@@ -27,7 +27,7 @@ use crate::agent::activity_log::{
     self, ActivityEntry, ActivityLogMap, ACTIVITY_ERROR, ACTIVITY_OFFLINE, ACTIVITY_ONLINE,
     ACTIVITY_THINKING, ACTIVITY_WORKING,
 };
-use crate::agent::drivers::runtime::{AgentEventItem, AgentState, DriverEvent};
+use crate::agent::drivers::{AgentEventItem, AgentState, DriverEvent};
 use crate::agent::manager::ManagedAgent;
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::store::Store;

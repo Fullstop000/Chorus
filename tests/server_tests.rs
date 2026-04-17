@@ -3,7 +3,7 @@ mod harness;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::ActivityLogResponse;
-use chorus::agent::drivers::runtime::ProbeAuth;
+use chorus::agent::drivers::ProbeAuth;
 use chorus::agent::runtime_status::{RuntimeStatusInfo, RuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::agent::AgentRuntime;

@@ -8,11 +8,11 @@ use tracing::{debug, info, warn};
 use crate::agent::activity_log::{
     self, ActivityEntry, ActivityLogMap, ActivityLogResponse, ACTIVITY_OFFLINE, ACTIVITY_WORKING,
 };
-use crate::agent::drivers::runtime::claude::ClaudeDriver;
-use crate::agent::drivers::runtime::codex::CodexDriver;
-use crate::agent::drivers::runtime::kimi::KimiDriver;
-use crate::agent::drivers::runtime::opencode::OpencodeDriver;
-use crate::agent::drivers::runtime::{
+use crate::agent::drivers::claude::ClaudeDriver;
+use crate::agent::drivers::codex::CodexDriver;
+use crate::agent::drivers::kimi::KimiDriver;
+use crate::agent::drivers::opencode::OpencodeDriver;
+use crate::agent::drivers::{
     AgentHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, StartOpts,
 };
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
@@ -556,7 +556,7 @@ fn truncate_prompt_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::drivers::runtime::fake::FakeDriver;
+    use crate::agent::drivers::fake::FakeDriver;
     use crate::store::AgentRecordUpsert;
     use std::sync::Arc;
     use tempfile::tempdir;
