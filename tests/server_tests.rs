@@ -2764,7 +2764,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn test_duplicate_agent_name_returns_agent_name_taken() {
+async fn test_duplicate_agent_name_auto_suffixes() {
     let (store, app, _lifecycle) = setup_with_lifecycle();
     store.ensure_builtin_channels("alice").unwrap();
 
@@ -2781,9 +2781,9 @@ async fn test_duplicate_agent_name_returns_agent_name_taken() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["code"], "AGENT_NAME_TAKEN");
+    assert_eq!(body["name"], "bot1-2");
 }
 
 #[tokio::test]
