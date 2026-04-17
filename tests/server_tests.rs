@@ -1397,12 +1397,18 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
+    let payload = body_json(resp).await;
+    let name = payload["name"].as_str().unwrap().to_string();
+    assert!(
+        name.starts_with("stuck-bot-"),
+        "expected suffixed slug, got `{name}`"
+    );
     let agent = store
-        .get_agent("stuck-bot")
+        .get_agent(&name)
         .unwrap()
         .expect("agent should remain in the store");
     assert_eq!(agent.status, AgentStatus::Inactive);
-    assert!(store.is_member("all", "stuck-bot").unwrap());
+    assert!(store.is_member("all", &name).unwrap());
 }
 
 #[tokio::test]
@@ -1437,17 +1443,21 @@ async fn test_create_kimi_agent_via_api() {
     )
     .unwrap();
 
+    let name = payload["name"].as_str().unwrap().to_string();
+    assert!(
+        name.starts_with("kimi-bot-"),
+        "expected suffixed slug, got `{name}`"
+    );
     let agent = store
-        .get_agent("kimi-bot")
+        .get_agent(&name)
         .unwrap()
         .expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
-    assert_eq!(payload["name"], "kimi-bot");
     assert_eq!(payload["status"], "active");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
-    assert_eq!(lifecycle.started_names(), vec!["kimi-bot".to_string()]);
+    assert_eq!(lifecycle.started_names(), vec![name]);
 }
 
 #[tokio::test]
@@ -2764,7 +2774,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn test_duplicate_agent_name_auto_suffixes() {
+async fn test_create_agent_appends_random_suffix() {
     let (store, app, _lifecycle) = setup_with_lifecycle();
     store.ensure_builtin_channels("alice").unwrap();
 
@@ -2783,7 +2793,22 @@ async fn test_duplicate_agent_name_auto_suffixes() {
 
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["name"], "bot1-2");
+    let name = body["name"].as_str().expect("name is a string");
+    // Assert the shape: `bot1-<4 lowercase hex chars>`. The suffix is
+    // always present even without a name collision.
+    let prefix = "bot1-";
+    assert!(
+        name.starts_with(prefix),
+        "name `{name}` should start with `{prefix}`"
+    );
+    let suffix = &name[prefix.len()..];
+    assert_eq!(suffix.len(), 4, "suffix `{suffix}` should be 4 chars");
+    assert!(
+        suffix
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "suffix `{suffix}` should be lowercase hex"
+    );
 }
 
 #[tokio::test]

@@ -117,9 +117,6 @@ pub async fn handle_launch_trio(
             .unwrap_or(&template.id)
             .to_string();
 
-        // Auto-suffix on name conflict.
-        let agent_name = find_available_name(&state, &base_name);
-
         // Resolve default model for the runtime.
         let model = match resolve_default_model(&state, &template.suggested_runtime).await {
             Some(m) => m,
@@ -135,22 +132,50 @@ pub async fn handle_launch_trio(
             }
         };
 
-        // Create the agent record.
-        let agent_id = match state.store.create_agent_record(&AgentRecordUpsert {
-            name: &agent_name,
-            display_name: &template.name,
-            description: template.description.as_deref(),
-            system_prompt: Some(&template.prompt_body),
-            runtime: &template.suggested_runtime,
-            model: &model,
-            reasoning_effort: None,
-            env_vars: &[],
-        }) {
-            Ok(id) => id,
-            Err(e) => {
+        // Create the agent record. Every agent gets a `{base}-{hex4}`
+        // slug; retry on the rare UNIQUE-constraint collision.
+        let mut created: Option<(String, String)> = None;
+        let mut last_error: Option<String> = None;
+        for _ in 0..MAX_SLUG_ATTEMPTS {
+            let candidate = format!("{base_name}-{}", random_slug_suffix());
+            match state.store.create_agent_record(&AgentRecordUpsert {
+                name: &candidate,
+                display_name: &template.name,
+                description: template.description.as_deref(),
+                system_prompt: Some(&template.prompt_body),
+                runtime: &template.suggested_runtime,
+                model: &model,
+                reasoning_effort: None,
+                env_vars: &[],
+            }) {
+                Ok(id) => {
+                    created = Some((id, candidate));
+                    break;
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("UNIQUE constraint") {
+                        last_error = Some(msg);
+                        continue;
+                    }
+                    last_error = Some(msg);
+                    break;
+                }
+            }
+        }
+        let (agent_id, agent_name) = match created {
+            Some(pair) => pair,
+            None => {
                 errors.push(LaunchTrioError {
                     template_id: template.id.clone(),
-                    error: format!("failed to create agent: {e}"),
+                    error: format!(
+                        "failed to create agent: {}",
+                        last_error.unwrap_or_else(|| {
+                            format!(
+                                "could not allocate a unique slug after {MAX_SLUG_ATTEMPTS} attempts"
+                            )
+                        })
+                    ),
                 });
                 continue;
             }
@@ -209,27 +234,18 @@ pub async fn handle_launch_trio(
     ))
 }
 
-/// Find a name that doesn't conflict with existing agents.
-/// Tries base_name, then base_name-2, base_name-3, etc.
-pub(crate) fn find_available_name(state: &AppState, base_name: &str) -> String {
-    if state.store.get_agent(base_name).ok().flatten().is_none() {
-        return base_name.to_string();
-    }
-    for suffix in 2..=100 {
-        let candidate = format!("{base_name}-{suffix}");
-        if state.store.get_agent(&candidate).ok().flatten().is_none() {
-            return candidate;
-        }
-    }
-    // Fallback: use UUID suffix.
-    format!(
-        "{base_name}-{}",
-        uuid::Uuid::new_v4()
-            .to_string()
-            .split('-')
-            .next()
-            .unwrap_or("x")
-    )
+/// Maximum attempts at inserting a `{base}-{hex4}` agent slug before
+/// giving up. 16⁴ = 65_536 suffix combinations per base, so hitting this
+/// cap implies either a pathological number of siblings or a real bug.
+pub(crate) const MAX_SLUG_ATTEMPTS: u32 = 5;
+
+/// 4-character lowercase hex suffix used to keep agent slugs unique.
+/// Callers combine it with the user-facing base name as `{base}-{hex4}`
+/// and retry on the rare UNIQUE-constraint collision.
+pub(crate) fn random_slug_suffix() -> String {
+    use rand::Rng;
+    let n: u16 = rand::rng().random();
+    format!("{n:04x}")
 }
 
 /// Pick the first available model for a runtime.

@@ -241,8 +241,11 @@ export function AgentConfigForm({
                 <span className="truncate">
                   Identifier:{" "}
                   <code className="font-mono">
-                    {state.name || "—"}
+                    {state.name ? `${state.name}-????` : "—"}
                   </code>
+                  <span className="ml-1 text-muted-foreground/80">
+                    (4-char random suffix added on save)
+                  </span>
                 </span>
                 {!identifierOpen && (
                   <button
@@ -273,9 +276,10 @@ export function AgentConfigForm({
                   placeholder="e.g. code-reviewer"
                 />
                 <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-                  Stable machine name used in channels, log files, and internal
-                  references. Auto-derived from the name above; collisions get a
-                  numeric suffix on save.
+                  Prefix of the stable machine name used in channels, log
+                  files, and internal references. Auto-derived from the name
+                  above. A 4-character random suffix (e.g. <code>-a7f2</code>)
+                  is always appended on save so handles are globally unique.
                 </p>
               </div>
             )}

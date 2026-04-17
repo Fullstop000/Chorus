@@ -9,7 +9,7 @@ use tracing::{info, warn};
 use super::path_params::{
     resolve_public_agent, resolve_public_agent_with_env, PublicResourceIdPath,
 };
-use super::templates::find_available_name;
+use super::templates::{random_slug_suffix, MAX_SLUG_ATTEMPTS};
 use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
@@ -215,14 +215,12 @@ pub async fn handle_create_agent(
     State(state): State<AppState>,
     Json(req): Json<CreateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let requested_name = req.name.trim().to_string();
-    if requested_name.is_empty() {
+    let base_name = req.name.trim().to_string();
+    if base_name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
-    // Auto-suffix colliding slugs so users don't have to manage identifier uniqueness.
-    let name = find_available_name(&state, &requested_name);
     let display_name = if req.display_name.is_empty() {
-        name.clone()
+        base_name.clone()
     } else {
         req.display_name
     };
@@ -234,10 +232,16 @@ pub async fn handle_create_agent(
     let reasoning_effort =
         normalize_reasoning_effort(&req.runtime, req.reasoning_effort.as_deref())?;
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
-    let id = state
-        .store
-        .create_agent_record(&AgentRecordUpsert {
-            name: &name,
+
+    // Every agent slug is `{base}-{hex4}`. The hash suffix makes handles
+    // unique without a check-then-insert race, and hides sibling ordering.
+    // On the rare UNIQUE collision, retry with a fresh suffix.
+    let mut created: Option<(String, String)> = None;
+    let mut last_error: Option<String> = None;
+    for _ in 0..MAX_SLUG_ATTEMPTS {
+        let candidate = format!("{base_name}-{}", random_slug_suffix());
+        match state.store.create_agent_record(&AgentRecordUpsert {
+            name: &candidate,
             display_name: &display_name,
             description,
             system_prompt: req.system_prompt.as_deref(),
@@ -245,15 +249,28 @@ pub async fn handle_create_agent(
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
             env_vars: &env_vars,
-        })
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint") {
-                app_err!(AppErrorCode::AgentNameTaken, "agent name already in use")
-            } else {
-                app_err!(StatusCode::BAD_REQUEST, msg)
+        }) {
+            Ok(agent_id) => {
+                created = Some((agent_id, candidate));
+                break;
             }
-        })?;
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE constraint") {
+                    last_error = Some(msg);
+                    continue;
+                }
+                return Err(app_err!(StatusCode::BAD_REQUEST, msg));
+            }
+        }
+    }
+    let (id, name) = created.ok_or_else(|| {
+        app_err!(
+            AppErrorCode::AgentNameTaken,
+            "failed to allocate a unique agent slug after {MAX_SLUG_ATTEMPTS} attempts: {}",
+            last_error.unwrap_or_else(|| "unknown error".to_string())
+        )
+    })?;
     for channel in state.store.get_auto_join_channels().map_err(internal_err)? {
         let _ = state
             .store
