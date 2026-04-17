@@ -3,7 +3,7 @@
 //! These tests exercise the full Phase 1+2 stack end-to-end against a **real**
 //! runtime binary (not a mock or in-process MCP client). They prove that:
 //!
-//!   1. A v2 driver, given `AgentSpec.bridge_endpoint = Some(url)`, pairs with
+//!   1. A driver, given `AgentSpec.bridge_endpoint = Some(url)`, pairs with
 //!      the shared bridge via `/admin/pair` and wires its config to
 //!      `{bridge_url}/token/{token}/mcp`.
 //!   2. The runtime process connects to the bridge over native HTTP MCP.
@@ -67,11 +67,11 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use chorus::agent::drivers::v2::claude::ClaudeDriver;
-use chorus::agent::drivers::v2::codex::CodexDriver;
-use chorus::agent::drivers::v2::kimi::KimiDriver;
-use chorus::agent::drivers::v2::opencode::OpencodeDriver;
-use chorus::agent::drivers::v2::{AgentSpec, PromptReq, RuntimeDriver, StartOpts};
+use chorus::agent::drivers::runtime::claude::ClaudeDriver;
+use chorus::agent::drivers::runtime::codex::CodexDriver;
+use chorus::agent::drivers::runtime::kimi::KimiDriver;
+use chorus::agent::drivers::runtime::opencode::OpencodeDriver;
+use chorus::agent::drivers::runtime::{AgentSpec, PromptReq, RuntimeDriver, StartOpts};
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
@@ -406,7 +406,7 @@ fn collect_failure_diagnostics(
         and emitted via tracing::warn!). To see runtime stderr, re-run with:\n",
     );
     out.push_str(&format!(
-        "  RUST_LOG=chorus::agent::drivers::v2::{}=debug \
+        "  RUST_LOG=chorus::agent::drivers::runtime::{}=debug \
         cargo test --test live_runtime_tests {}_agent_replies_through_shared_bridge \
         -- --ignored --nocapture\n",
         runtime_name, runtime_name

@@ -2,43 +2,92 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tracing::{debug, info, warn};
 
-use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
-use crate::agent::drivers::v2::claude::ClaudeDriver;
-use crate::agent::drivers::v2::codex::CodexDriver;
-use crate::agent::drivers::v2::kimi::KimiDriver;
-use crate::agent::drivers::v2::opencode::OpencodeDriver;
-use crate::agent::drivers::v2::{
+use crate::agent::activity_log::{
+    self, ActivityEntry, ActivityLogMap, ActivityLogResponse, ACTIVITY_OFFLINE, ACTIVITY_WORKING,
+};
+use crate::agent::drivers::runtime::claude::ClaudeDriver;
+use crate::agent::drivers::runtime::codex::CodexDriver;
+use crate::agent::drivers::runtime::kimi::KimiDriver;
+use crate::agent::drivers::runtime::opencode::OpencodeDriver;
+use crate::agent::drivers::runtime::{
     AgentHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, StartOpts,
 };
-use crate::agent::trace::{self, AgentTraceStore, TraceEventKind};
+use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
 use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
-/// V2-managed agent backed by a [`RuntimeDriver`] + [`AgentHandle`].
+/// Managed agent backed by a [`RuntimeDriver`] + [`AgentHandle`].
 ///
 /// Visible to the sibling `event_forwarder` module (not exported beyond
-/// the `agent` crate) because the forwarder's `Completed` arm needs to
-/// bump `pending_notification_count` and call `handle.prompt(...)` to
-/// deliver deferred messages. No other module should reach into these
-/// fields.
-pub(super) struct V2Agent {
+/// the `agent` crate) because the forwarder's `Completed` arm and the
+/// notify-agent debounce task both need to touch the handle and the
+/// pending-count field. No other module should reach into these fields;
+/// prefer `deliver_pending_notification` for the shared delivery path.
+pub(super) struct ManagedAgent {
     pub(super) handle: Box<dyn AgentHandle>,
     pub(super) _event_tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Debounce counter for stdin-style notification batching.
     pub(super) pending_notification_count: u32,
 }
 
+impl ManagedAgent {
+    /// Emit a `Reading` trace event and deliver a synthetic notification
+    /// prompt telling the agent how many messages arrived while it was
+    /// busy. Resets `pending_notification_count` as a side effect.
+    ///
+    /// Called from two paths that previously duplicated this logic:
+    ///   1. `notify_agent`'s debounce task (an agent is already Active,
+    ///      3s of quiet elapsed since the last notification bump).
+    ///   2. The event forwarder's `Completed` arm (an agent just finished
+    ///      a turn and we see pending notifications queued up).
+    ///
+    /// Returns the number of notifications that were merged into the
+    /// prompt (0 if nothing was pending; prompt is not sent in that case),
+    /// or an error if the prompt dispatch itself failed.
+    ///
+    /// Note: the caller typically holds the manager-wide `agents` mutex
+    /// while `await`ing this — meaning the prompt dispatch serializes all
+    /// other manager operations. Acceptable for single-user chorus today;
+    /// would want a per-agent lock if we ever scale the agent count.
+    pub(super) async fn deliver_pending_notification(
+        &mut self,
+        trace_store: &AgentTraceStore,
+        trace_tx: &broadcast::Sender<TraceEvent>,
+        agent_name: &str,
+    ) -> anyhow::Result<u32> {
+        let count = self.pending_notification_count;
+        if count == 0 {
+            return Ok(0);
+        }
+        self.pending_notification_count = 0;
+        trace::emit_event(trace_store, trace_tx, agent_name, TraceEventKind::Reading);
+        let plural = if count > 1 { "s" } else { "" };
+        let them = if count > 1 { "them" } else { "it" };
+        let text = format!(
+            "[System notification: You have {count} new message{plural} \
+             waiting. Call check_messages to read {them} when you're ready.]"
+        );
+        self.handle
+            .prompt(PromptReq {
+                text,
+                attachments: vec![],
+            })
+            .await?;
+        Ok(count)
+    }
+}
+
 pub struct AgentManager {
-    /// Driver registry — maps runtime to native v2 driver.
+    /// Driver registry — maps runtime to its driver.
     driver_registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
     /// Active agents keyed by agent name.
-    agents: Arc<Mutex<HashMap<String, V2Agent>>>,
+    agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
     store: Arc<Store>,
@@ -115,7 +164,7 @@ impl AgentManager {
         }
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
 
-        let v2_driver = self
+        let driver = self
             .driver_registry
             .get(&rt)
             .ok_or_else(|| anyhow::anyhow!("no driver for runtime {:?}", rt))?
@@ -139,7 +188,7 @@ impl AgentManager {
             bridge_endpoint,
         };
 
-        let attach_result = v2_driver.attach(agent_name.to_string(), spec).await?;
+        let attach_result = driver.attach(agent_name.to_string(), spec).await?;
         let mut handle = attach_result.handle;
         let events = attach_result.events;
 
@@ -149,7 +198,7 @@ impl AgentManager {
         let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
 
-        let init_prompt_text = build_v2_start_prompt(
+        let init_prompt_text = build_start_prompt(
             &agent.display_name,
             is_resume,
             &unread_summary,
@@ -165,7 +214,7 @@ impl AgentManager {
         activity_log::set_activity_state(
             &self.activity_logs,
             agent_name,
-            "working",
+            ACTIVITY_WORKING,
             "Starting\u{2026}",
         );
         activity_log::push_activity(
@@ -184,8 +233,7 @@ impl AgentManager {
             )
             .await?;
 
-        let forwarder = super::event_forwarder::spawn_v2_event_forwarder(
-            agent_name.to_string(),
+        let forwarder = super::event_forwarder::spawn_event_forwarder(
             event_rx,
             self.activity_logs.clone(),
             self.trace_store.clone(),
@@ -198,7 +246,7 @@ impl AgentManager {
             let mut agents = self.agents.lock().await;
             agents.insert(
                 agent_name.to_string(),
-                V2Agent {
+                ManagedAgent {
                     handle,
                     _event_tasks: vec![forwarder],
                     pending_notification_count: 0,
@@ -219,28 +267,22 @@ impl AgentManager {
                 warn!(agent = %agent_name, err = %e, "error closing handle");
             }
             // End any active trace run.
-            if let Some(run_id) = self.trace_store.active_run_id(agent_name) {
-                let seq = self.trace_store.next_seq(agent_name);
-                let ch = self.trace_store.run_channel_id(agent_name);
-                let event = trace::build_trace_event(
-                    run_id,
-                    agent_name,
-                    ch,
-                    seq,
-                    TraceEventKind::Error {
-                        message: "Agent stopped".to_string(),
-                    },
-                );
-                let _ = self.store.trace_sender().send(event);
-                self.trace_store.end_run(agent_name);
-            }
+            trace::emit_active_event(
+                &self.trace_store,
+                &self.store.trace_sender(),
+                agent_name,
+                TraceEventKind::Error {
+                    message: "Agent stopped".to_string(),
+                },
+            );
+            self.trace_store.end_run(agent_name);
             self.store
                 .update_agent_status(agent_name, AgentStatus::Inactive)?;
             let _ = self.store.update_agent_session(agent_name, None);
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
-                "offline",
+                ACTIVITY_OFFLINE,
                 "Process stopped",
             );
         }
@@ -261,7 +303,7 @@ impl AgentManager {
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
-                "offline",
+                ACTIVITY_OFFLINE,
                 "Sleeping",
             );
         }
@@ -292,46 +334,28 @@ impl AgentManager {
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 let mut agents = agents_ref.lock().await;
-                if let Some(agent) = agents.get_mut(&name) {
-                    let current_count = agent.pending_notification_count;
-                    if current_count == 0 || current_count != count {
-                        agent.pending_notification_count = 0;
-                        return;
-                    }
+                let Some(agent) = agents.get_mut(&name) else {
+                    return;
+                };
+                if agent.pending_notification_count != count {
+                    // Another notification bumped the count after we spawned;
+                    // the newer debounce task will be authoritative. Bow out.
+                    return;
+                }
+                if !matches!(agent.handle.state(), AgentState::Active { .. }) {
+                    debug!(agent = %name, "agent no longer Active after debounce, skipping");
                     agent.pending_notification_count = 0;
-
-                    if !matches!(agent.handle.state(), AgentState::Active { .. }) {
-                        debug!(agent = %name, "agent no longer Active after debounce, skipping");
-                        return;
+                    return;
+                }
+                match agent
+                    .deliver_pending_notification(&trace_store, &trace_tx, &name)
+                    .await
+                {
+                    Ok(delivered) if delivered > 0 => {
+                        info!(agent = %name, count = delivered, "sent prompt notification");
                     }
-
-                    // Emit a Reading trace so the frontend shows "reading…"
-                    let (run_id, _) = trace_store.ensure_run(&name);
-                    let seq = trace_store.next_seq(&name);
-                    let ch = trace_store.run_channel_id(&name);
-                    let _ = trace_tx.send(trace::build_trace_event(
-                        run_id,
-                        &name,
-                        ch,
-                        seq,
-                        TraceEventKind::Reading,
-                    ));
-
-                    let plural = if current_count > 1 { "s" } else { "" };
-                    let them = if current_count > 1 { "them" } else { "it" };
-                    let notification = format!(
-                        "[System notification: You have {current_count} new message{plural} \
-                         waiting. Call check_messages to read {them} when you're ready.]"
-                    );
-                    info!(agent = %name, count = current_count, "sending prompt notification");
-                    if let Err(e) = agent
-                        .handle
-                        .prompt(PromptReq {
-                            text: notification,
-                            attachments: vec![],
-                        })
-                        .await
-                    {
+                    Ok(_) => {} // nothing pending
+                    Err(e) => {
                         warn!(agent = %name, error = %e, "failed to deliver notification prompt");
                     }
                 }
@@ -372,7 +396,7 @@ impl AgentManager {
     }
 
     #[cfg(test)]
-    pub(crate) fn register_v2_driver(
+    pub(crate) fn register_driver(
         &mut self,
         runtime: AgentRuntime,
         driver: Arc<dyn RuntimeDriver>,
@@ -386,13 +410,13 @@ impl AgentManager {
     }
 }
 
-// The v2 event forwarder (driver events → trace/activity/store) now lives in
+// The event forwarder (driver events → trace/activity/store) now lives in
 // `super::event_forwarder`. Kept out of this file so the 270-line fan-out
 // doesn't sit next to the lifecycle orchestration it runs alongside.
 
-// ── v2 prompt builder ──
+// ── prompt builder ──
 
-fn build_v2_start_prompt(
+fn build_start_prompt(
     display_name: &str,
     is_resume: bool,
     unread_summary: &std::collections::HashMap<String, i64>,
@@ -532,15 +556,15 @@ fn truncate_prompt_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::drivers::v2::fake::FakeDriver as FakeV2Driver;
+    use crate::agent::drivers::runtime::fake::FakeDriver;
     use crate::store::AgentRecordUpsert;
     use std::sync::Arc;
     use tempfile::tempdir;
 
     fn make_test_manager(store: Arc<Store>, dir: &std::path::Path) -> AgentManager {
         let mut manager = AgentManager::new(store, dir.join("agents"));
-        let fake = Arc::new(FakeV2Driver::new(AgentRuntime::Codex));
-        manager.register_v2_driver(AgentRuntime::Codex, fake);
+        let fake = Arc::new(FakeDriver::new(AgentRuntime::Codex));
+        manager.register_driver(AgentRuntime::Codex, fake);
         // Tests use a synthetic endpoint — the FakeDriver ignores it, but the
         // manager now insists on one since there's no stdio fallback.
         manager.set_bridge_endpoint_override("http://127.0.0.1:1");

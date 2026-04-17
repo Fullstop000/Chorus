@@ -8,19 +8,14 @@
 //! Runs as a detached `tokio::spawn` per agent for the lifetime of the
 //! agent's `AgentHandle`. The task exits when the driver drops its side of
 //! the `mpsc::Sender<DriverEvent>` (e.g. on `stop_agent`). The returned
-//! `JoinHandle` is stored in [`super::manager::V2Agent::_event_tasks`] so
-//! it's dropped when the agent is removed from the manager's map.
+//! `JoinHandle` is stored on the agent's `ManagedAgent` so it's dropped
+//! when the agent is removed from the manager's map.
 //!
-//! This module deliberately owns no state: every input is passed in as
-//! owned `String` / `Arc` / channel handle, which keeps the forwarder
-//! testable in isolation (feed it a scripted `Receiver` and assert the
-//! writes). The one exception is the `Completed` branch, which briefly
-//! locks the manager's agents map to deliver a deferred notification when
-//! messages arrived while the agent was mid-turn.
-//!
-//! Extracted from `manager.rs` because the fan-out is its own concept: the
-//! lifecycle methods (`start_agent`, `stop_agent`, …) own the agents map
-//! and driver registry; this module owns the event-to-state translation.
+//! Every input is passed in as owned `String` / `Arc` / channel handle,
+//! so the forwarder is testable in isolation (feed it a scripted
+//! `Receiver` and assert the writes). The one exception is the
+//! `Completed` branch, which briefly locks the manager's agents map to
+//! deliver a deferred notification when messages arrived mid-turn.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -28,22 +23,24 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{error, info, trace, warn};
 
-use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap};
-use crate::agent::drivers::v2::{AgentEventItem, AgentState, DriverEvent, PromptReq};
-use crate::agent::manager::V2Agent;
+use crate::agent::activity_log::{
+    self, ActivityEntry, ActivityLogMap, ACTIVITY_ERROR, ACTIVITY_OFFLINE, ACTIVITY_ONLINE,
+    ACTIVITY_THINKING, ACTIVITY_WORKING,
+};
+use crate::agent::drivers::runtime::{AgentEventItem, AgentState, DriverEvent};
+use crate::agent::manager::ManagedAgent;
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::store::Store;
 
 /// Extract a short human-readable summary from an ACP tool-call `input`
-/// object. Probes the common argument keys drivers use (file paths,
-/// commands, queries) and returns the first match. Empty string when the
-/// input isn't an object or none of the keys are present — the caller is
-/// expected to treat empty as "no preview available."
+/// object. Probes the common argument keys drivers use (`file_path`,
+/// `path`, `command`, `query`, `url`) and returns the first string match.
+/// Returns empty string when none of the keys are present — callers treat
+/// empty as "no preview available."
 fn summarize_input(input: &serde_json::Value) -> String {
-    if !input.is_object() {
+    let Some(obj) = input.as_object() else {
         return String::new();
-    }
-    let obj = input.as_object().unwrap();
+    };
     for key in &["file_path", "path", "command", "query", "url"] {
         if let Some(v) = obj.get(*key) {
             if let Some(s) = v.as_str() {
@@ -56,9 +53,7 @@ fn summarize_input(input: &serde_json::Value) -> String {
 
 /// Emit a buffered run of thinking text as a single trace event + activity
 /// entry. Called when the driver switches away from Thinking (e.g. to Text
-/// or a ToolCall) or when the turn completes. Never called mid-stream —
-/// the forwarder accumulates Thinking items into `pending_thinking` and
-/// only flushes once the concept is "done."
+/// or a ToolCall) or when the turn completes.
 fn flush_thinking(
     text: &str,
     agent_name: &str,
@@ -66,13 +61,16 @@ fn flush_thinking(
     trace_tx: &broadcast::Sender<TraceEvent>,
     activity_logs: &ActivityLogMap,
 ) {
-    let preview: String = text.chars().take(200).collect();
-    let preview = if text.chars().count() > 200 {
+    // Single-pass truncation: take up to 200 chars, then check whether
+    // more remain rather than re-walking `text` with `chars().count()`.
+    let mut iter = text.chars();
+    let preview: String = iter.by_ref().take(200).collect();
+    let preview = if iter.next().is_some() {
         format!("{preview}\u{2026}")
     } else {
         preview
     };
-    trace!(agent = %agent_name, thought = %preview, "v2: thinking block complete");
+    trace!(agent = %agent_name, thought = %preview, "thinking block complete");
     activity_log::push_activity(
         activity_logs,
         agent_name,
@@ -80,18 +78,14 @@ fn flush_thinking(
             text: text.to_string(),
         },
     );
-    let (run_id, _) = trace_store.ensure_run(agent_name);
-    let seq = trace_store.next_seq(agent_name);
-    let ch = trace_store.run_channel_id(agent_name);
-    let _ = trace_tx.send(trace::build_trace_event(
-        run_id,
+    trace::emit_event(
+        trace_store,
+        trace_tx,
         agent_name,
-        ch,
-        seq,
         TraceEventKind::Thinking {
             text: text.to_string(),
         },
-    ));
+    );
 }
 
 /// Emit a buffered run of plain text as a single trace event. Unlike
@@ -104,35 +98,26 @@ fn flush_text(
     trace_store: &AgentTraceStore,
     trace_tx: &broadcast::Sender<TraceEvent>,
 ) {
-    let (run_id, _) = trace_store.ensure_run(agent_name);
-    let seq = trace_store.next_seq(agent_name);
-    let ch = trace_store.run_channel_id(agent_name);
-    let _ = trace_tx.send(trace::build_trace_event(
-        run_id,
+    trace::emit_event(
+        trace_store,
+        trace_tx,
         agent_name,
-        ch,
-        seq,
         TraceEventKind::Text {
             text: text.to_string(),
         },
-    ));
+    );
 }
 
-/// Spawn the per-agent event-forwarder task.
-///
-/// Takes owned / `Arc` handles to every state surface it writes to, so it
-/// has no shared mutable access with the caller beyond the agents-map
-/// lock it acquires briefly in the `Completed` arm. Returns the `JoinHandle`
-/// of the spawned task — store it on the agent's `V2Agent` so it's dropped
-/// when the agent is removed.
-pub(super) fn spawn_v2_event_forwarder(
-    _agent_name: String,
+/// Spawn the per-agent event-forwarder task. Returns the `JoinHandle` of
+/// the spawned task — store it on the agent's `ManagedAgent` so it's
+/// dropped (and the task aborted) when the agent is removed.
+pub(super) fn spawn_event_forwarder(
     mut event_rx: tokio::sync::mpsc::Receiver<DriverEvent>,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
     trace_tx: broadcast::Sender<TraceEvent>,
     store: Arc<Store>,
-    agents: Arc<Mutex<HashMap<String, V2Agent>>>,
+    agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut pending_thinking = String::new();
@@ -145,9 +130,9 @@ pub(super) fn spawn_v2_event_forwarder(
                     ref key,
                     ref session_id,
                 } => {
-                    info!(agent = %key, session = %session_id, "v2: session attached");
+                    info!(agent = %key, session = %session_id, "session attached");
                     let _ = store.update_agent_session(key, Some(session_id));
-                    activity_log::set_activity_state(&activity_logs, key, "online", "Ready");
+                    activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ONLINE, "Ready");
                 }
 
                 DriverEvent::Lifecycle { ref key, ref state } => match state {
@@ -155,15 +140,25 @@ pub(super) fn spawn_v2_event_forwarder(
                         activity_log::set_activity_state(
                             &activity_logs,
                             key,
-                            "working",
+                            ACTIVITY_WORKING,
                             "Starting\u{2026}",
                         );
                     }
                     AgentState::Active { .. } => {
-                        activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+                        activity_log::set_activity_state(
+                            &activity_logs,
+                            key,
+                            ACTIVITY_ONLINE,
+                            "Idle",
+                        );
                     }
                     AgentState::Closed => {
-                        activity_log::set_activity_state(&activity_logs, key, "offline", "Stopped");
+                        activity_log::set_activity_state(
+                            &activity_logs,
+                            key,
+                            ACTIVITY_OFFLINE,
+                            "Stopped",
+                        );
                     }
                     _ => {}
                 },
@@ -179,7 +174,7 @@ pub(super) fn spawn_v2_event_forwarder(
                             activity_log::set_activity_state(
                                 &activity_logs,
                                 key,
-                                "thinking",
+                                ACTIVITY_THINKING,
                                 "Thinking\u{2026}",
                             );
                             continue;
@@ -223,7 +218,7 @@ pub(super) fn spawn_v2_event_forwarder(
 
                     match item {
                         AgentEventItem::ToolCall { name, input } => {
-                            info!(agent = %key, tool = %name, "v2: tool call");
+                            info!(agent = %key, tool = %name, "tool call");
                             last_tool_raw_name = Some(name.clone());
                             let tool_input = summarize_input(input);
                             activity_log::push_activity(
@@ -234,20 +229,21 @@ pub(super) fn spawn_v2_event_forwarder(
                                     tool_input: tool_input.clone(),
                                 },
                             );
-                            activity_log::set_activity_state(&activity_logs, key, "working", name);
-                            let (rid, _) = trace_store.ensure_run(key);
-                            let seq = trace_store.next_seq(key);
-                            let ch = trace_store.run_channel_id(key);
-                            let _ = trace_tx.send(trace::build_trace_event(
-                                rid,
+                            activity_log::set_activity_state(
+                                &activity_logs,
                                 key,
-                                ch,
-                                seq,
+                                ACTIVITY_WORKING,
+                                name,
+                            );
+                            trace::emit_event(
+                                &trace_store,
+                                &trace_tx,
+                                key,
                                 TraceEventKind::ToolCall {
                                     tool_name: name.clone(),
                                     tool_input,
                                 },
-                            ));
+                            );
                         }
                         AgentEventItem::ToolResult { content } => {
                             let tool_name = last_tool_raw_name.clone().unwrap_or_default();
@@ -257,36 +253,32 @@ pub(super) fn spawn_v2_event_forwarder(
                                 tool_name.clone(),
                                 content.clone(),
                             );
-                            let (rid, _) = trace_store.ensure_run(key);
-                            let seq = trace_store.next_seq(key);
-                            let ch = trace_store.run_channel_id(key);
-                            let _ = trace_tx.send(trace::build_trace_event(
-                                rid,
+                            trace::emit_event(
+                                &trace_store,
+                                &trace_tx,
                                 key,
-                                ch,
-                                seq,
                                 TraceEventKind::ToolResult {
                                     tool_name,
                                     content: content.clone(),
                                 },
-                            ));
+                            );
                         }
                         AgentEventItem::TurnEnd => {
-                            if let Some(run_id) = trace_store.active_run_id(key) {
-                                let seq = trace_store.next_seq(key);
-                                let ch = trace_store.run_channel_id(key);
-                                let _ = trace_tx.send(trace::build_trace_event(
-                                    run_id,
-                                    key,
-                                    ch,
-                                    seq,
-                                    TraceEventKind::TurnEnd,
-                                ));
-                                trace_store.end_run(key);
-                            }
-                            activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+                            trace::emit_active_event(
+                                &trace_store,
+                                &trace_tx,
+                                key,
+                                TraceEventKind::TurnEnd,
+                            );
+                            trace_store.end_run(key);
+                            activity_log::set_activity_state(
+                                &activity_logs,
+                                key,
+                                ACTIVITY_ONLINE,
+                                "Idle",
+                            );
                         }
-                        // Thinking/Text handled above via continue.
+                        // Thinking / Text handled above via `continue`.
                         _ => {}
                     }
                 }
@@ -310,59 +302,30 @@ pub(super) fn spawn_v2_event_forwarder(
                         flush_text(&pending_text, key, &trace_store, &trace_tx);
                         pending_text.clear();
                     }
-                    info!(agent = %key, reason = ?result.finish_reason, "v2: run completed");
+                    info!(agent = %key, reason = ?result.finish_reason, "run completed");
                     if !result.session_id.is_empty() {
                         let _ = store.update_agent_session(key, Some(&result.session_id));
                     }
-                    if let Some(rid) = trace_store.active_run_id(key) {
-                        let seq = trace_store.next_seq(key);
-                        let ch = trace_store.run_channel_id(key);
-                        let _ = trace_tx.send(trace::build_trace_event(
-                            rid,
-                            key,
-                            ch,
-                            seq,
-                            TraceEventKind::TurnEnd,
-                        ));
-                        trace_store.end_run(key);
-                    }
-                    activity_log::set_activity_state(&activity_logs, key, "online", "Idle");
+                    trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
+                    trace_store.end_run(key);
+                    activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ONLINE, "Idle");
 
-                    // If messages arrived while we were busy (init turn or any turn),
-                    // deliver the notification immediately now that the turn is done.
-                    {
-                        let mut agents_guard = agents.lock().await;
-                        if let Some(agent) = agents_guard.get_mut(key) {
-                            let count = agent.pending_notification_count;
-                            if count > 0 {
-                                agent.pending_notification_count = 0;
-                                let plural = if count > 1 { "s" } else { "" };
-                                let them = if count > 1 { "them" } else { "it" };
-                                let notification = format!(
-                                    "[System notification: You have {count} new message{plural} \
-                                     waiting. Call check_messages to read {them} when you're ready.]"
-                                );
-                                let (run_id, _) = trace_store.ensure_run(key);
-                                let seq = trace_store.next_seq(key);
-                                let ch = trace_store.run_channel_id(key);
-                                let _ = trace_tx.send(trace::build_trace_event(
-                                    run_id,
-                                    key,
-                                    ch,
-                                    seq,
-                                    TraceEventKind::Reading,
-                                ));
-                                info!(agent = %key, count = count, "delivering deferred notification after turn completion");
-                                if let Err(e) = agent
-                                    .handle
-                                    .prompt(PromptReq {
-                                        text: notification,
-                                        attachments: vec![],
-                                    })
-                                    .await
-                                {
-                                    warn!(agent = %key, error = %e, "failed to deliver deferred notification");
-                                }
+                    // Deliver any notifications that queued up while the
+                    // agent was mid-turn. The debounce path in
+                    // `notify_agent` uses the same method, so the
+                    // Reading-trace + prompt format stays in one place.
+                    let mut guard = agents.lock().await;
+                    if let Some(agent) = guard.get_mut(key) {
+                        match agent
+                            .deliver_pending_notification(&trace_store, &trace_tx, key)
+                            .await
+                        {
+                            Ok(count) if count > 0 => {
+                                info!(agent = %key, count, "delivered deferred notification");
+                            }
+                            Ok(_) => {} // nothing pending
+                            Err(e) => {
+                                warn!(agent = %key, error = %e, "failed to deliver deferred notification");
                             }
                         }
                     }
@@ -374,22 +337,17 @@ pub(super) fn spawn_v2_event_forwarder(
                     ref error,
                 } => {
                     let msg = format!("{error:?}");
-                    error!(agent = %key, error = %msg, "v2: run failed");
-                    if let Some(rid) = trace_store.active_run_id(key) {
-                        let seq = trace_store.next_seq(key);
-                        let ch = trace_store.run_channel_id(key);
-                        let _ = trace_tx.send(trace::build_trace_event(
-                            rid,
-                            key,
-                            ch,
-                            seq,
-                            TraceEventKind::Error {
-                                message: msg.clone(),
-                            },
-                        ));
-                        trace_store.end_run(key);
-                    }
-                    activity_log::set_activity_state(&activity_logs, key, "error", &msg);
+                    error!(agent = %key, error = %msg, "run failed");
+                    trace::emit_active_event(
+                        &trace_store,
+                        &trace_tx,
+                        key,
+                        TraceEventKind::Error {
+                            message: msg.clone(),
+                        },
+                    );
+                    trace_store.end_run(key);
+                    activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ERROR, &msg);
                 }
             }
         }

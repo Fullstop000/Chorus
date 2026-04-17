@@ -139,6 +139,37 @@ impl AgentTraceStore {
         let agents = self.agents.lock().unwrap();
         agents.get(agent_name).and_then(|s| s.active_run.clone())
     }
+
+    /// Prepare to emit a trace event for `agent_name`, starting a run if
+    /// none is active. Returns `(run_id, seq, channel_id)` under a single
+    /// lock acquisition. Replaces the legacy three-call
+    /// `ensure_run` → `next_seq` → `run_channel_id` sequence, which took
+    /// three separate locks per event.
+    pub fn begin_event(&self, agent_name: &str) -> (RunId, u64, Option<String>) {
+        let mut agents = self.agents.lock().unwrap();
+        let state = agents
+            .entry(agent_name.to_string())
+            .or_insert_with(AgentRunState::new);
+        let run_id = match &state.active_run {
+            Some(r) => r.clone(),
+            None => state.start_run(),
+        };
+        let seq = state.next_seq();
+        let ch = state.channel_id.clone();
+        (run_id, seq, ch)
+    }
+
+    /// Prepare to emit a trace event only if a run is already active; never
+    /// starts a new one. Used for terminal events (`TurnEnd`, `Error`) that
+    /// shouldn't resurrect a run. Returns `None` if no active run.
+    pub fn begin_active_event(&self, agent_name: &str) -> Option<(RunId, u64, Option<String>)> {
+        let agents = self.agents.lock().unwrap();
+        let state = agents.get(agent_name)?;
+        let run_id = state.active_run.clone()?;
+        let seq = state.next_seq();
+        let ch = state.channel_id.clone();
+        Some((run_id, seq, ch))
+    }
 }
 
 impl Default for AgentTraceStore {
@@ -169,5 +200,32 @@ pub fn build_trace_event(
         seq,
         timestamp_ms: now_ms(),
         kind,
+    }
+}
+
+/// Emit a trace event for `agent_name`, starting a run if none is active.
+/// Collapses the common `begin_event` + `build_trace_event` + `tx.send`
+/// sequence into one call. Non-fatal if no subscriber; the send return is
+/// dropped.
+pub fn emit_event(
+    store: &AgentTraceStore,
+    tx: &tokio::sync::broadcast::Sender<TraceEvent>,
+    agent_name: &str,
+    kind: TraceEventKind,
+) {
+    let (run_id, seq, ch) = store.begin_event(agent_name);
+    let _ = tx.send(build_trace_event(run_id, agent_name, ch, seq, kind));
+}
+
+/// Emit a trace event only if a run is already active. No-op otherwise.
+/// Used for `TurnEnd` / `Error` events that shouldn't resurrect a run.
+pub fn emit_active_event(
+    store: &AgentTraceStore,
+    tx: &tokio::sync::broadcast::Sender<TraceEvent>,
+    agent_name: &str,
+    kind: TraceEventKind,
+) {
+    if let Some((run_id, seq, ch)) = store.begin_active_event(agent_name) {
+        let _ = tx.send(build_trace_event(run_id, agent_name, ch, seq, kind));
     }
 }

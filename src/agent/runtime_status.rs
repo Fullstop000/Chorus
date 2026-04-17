@@ -4,7 +4,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
-use crate::agent::drivers::v2::{ProbeAuth, RuntimeDriver};
+use crate::agent::drivers::runtime::{ProbeAuth, RuntimeDriver};
 use crate::agent::AgentRuntime;
 
 /// HTTP/UI response shape for one supported runtime.
@@ -25,7 +25,7 @@ pub trait RuntimeStatusProvider: Send + Sync {
 /// Shared trait alias used by the server state.
 pub type SharedRuntimeStatusProvider = Arc<dyn RuntimeStatusProvider>;
 
-/// Production runtime status provider backed by v2 driver probes.
+/// Production runtime status provider backed by driver probes.
 pub struct SystemRuntimeStatusProvider {
     drivers: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
 }

@@ -43,6 +43,16 @@ pub struct ActivityLogResponse {
 
 pub const ACTIVITY_LOG_MAX: usize = 500;
 
+/// Canonical activity-state strings. Agents transition through this set in
+/// response to driver events; the frontend decodes each to a status badge.
+/// Centralized here so producers (manager, event_forwarder) and consumers
+/// (realtime dispatch, UI) agree on the exact wire values.
+pub const ACTIVITY_ONLINE: &str = "online";
+pub const ACTIVITY_WORKING: &str = "working";
+pub const ACTIVITY_THINKING: &str = "thinking";
+pub const ACTIVITY_OFFLINE: &str = "offline";
+pub const ACTIVITY_ERROR: &str = "error";
+
 /// Per-agent in-memory activity log (ring buffer, up to ACTIVITY_LOG_MAX entries).
 #[derive(Default)]
 pub struct AgentActivityLog {

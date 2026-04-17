@@ -1,17 +1,7 @@
-//! v2 driver abstraction.
+//! Runtime driver abstraction.
 //!
-//! This module contains the trait and type scaffolding for the next-generation
-//! driver layer. The v1 [`crate::agent::drivers::Driver`] trait continues to
-//! back every runtime in production; v2 will be wired in behind a runtime
-//! toggle in a later task, at which point concrete implementations land here.
-//!
-//! Task 1 scope is intentionally narrow: publish the trait shape and the
-//! supporting data types so later tasks (EventFanOut, per-runtime drivers,
-//! adapter glue) can compile against a stable surface.
-//!
-//! Nothing in this module is wired into the runtime yet. Adding concrete
-//! drivers or invoking these traits from `AgentManager` will happen in
-//! follow-up tasks.
+//! This module contains the trait and type scaffolding for the
+//! driver layer backing every agent runtime in production.
 
 pub mod acp_protocol;
 pub mod claude;
@@ -40,7 +30,7 @@ use crate::store::agents::AgentEnvVar;
 ///
 /// Typically the agent's persisted UUID (as a string). String-typed so we can
 /// use it as a `HashMap` key and ship it through events without allocating a
-/// newtype in v2 — the v1 code already treats this as a `String`.
+/// newtype — the code already treats this as a `String`.
 pub type AgentKey = String;
 
 /// Runtime-assigned session identifier (Claude's `sessionId`, Codex's session
