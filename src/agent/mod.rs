@@ -1,6 +1,7 @@
 pub mod activity_log;
 pub mod config;
 pub mod drivers;
+mod event_forwarder;
 pub mod lifecycle;
 pub mod manager;
 pub mod runtime;
