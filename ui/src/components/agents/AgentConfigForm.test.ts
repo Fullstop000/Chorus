@@ -1,20 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isRuntimeAvailable, modelSelectDisplayLabel, runtimeOptionLabel, runtimeStatusSummary, toAgentSlug } from './AgentConfigForm'
-
-describe('toAgentSlug', () => {
-  it('lowercases and collapses whitespace into dashes', () => {
-    expect(toAgentSlug('Senior Data Scientist')).toBe('senior-data-scientist')
-  })
-
-  it('strips non-alphanumeric characters and leading/trailing dashes', () => {
-    expect(toAgentSlug('  Code Reviewer!!! ')).toBe('code-reviewer')
-  })
-
-  it('returns an empty string when the input has no alphanumerics', () => {
-    expect(toAgentSlug('!!!')).toBe('')
-  })
-})
-
+import { isRuntimeAvailable, modelSelectDisplayLabel, runtimeOptionLabel, runtimeStatusSummary } from './AgentConfigForm'
 
 describe('runtimeOptionLabel', () => {
   it('shows not installed copy when the runtime is missing', () => {

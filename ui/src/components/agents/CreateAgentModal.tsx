@@ -47,9 +47,8 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   function handleTemplateSelect(template: AgentTemplate | null) {
     if (!template) return
     setSelectedTemplate(template)
-    const agentName = template.id.split('/')[1] ?? template.id
     setConfig({
-      name: agentName,
+      name: '',
       display_name: template.name,
       description: template.description ?? '',
       systemPrompt: template.prompt_body,
@@ -95,8 +94,10 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   }, [open, templatesLoading, hasTemplates])
 
   // Default to the first installed ACP runtime once statuses load.
+  // `display_name` is the now-sole proxy for "the user has a template
+  // or has started filling in the form" and must not be overwritten.
   useEffect(() => {
-    if (runtimeStatuses.length === 0 || config.name !== '') return
+    if (runtimeStatuses.length === 0 || config.display_name !== '') return
     const acpRuntime = RUNTIME_ORDER.find((rt) =>
       runtimeStatuses.find((s) => s.runtime === rt && s.auth === 'authed'),
     )
@@ -106,7 +107,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
   }, [runtimeStatuses]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleCreate() {
-    if (!config.name.trim()) {
+    if (!config.display_name.trim()) {
       setError('Name is required')
       return
     }
@@ -117,7 +118,9 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
         throw new Error('Model is required')
       }
       await post<{ name: string; status: string; warning?: string }>('/api/agents', {
-          name: config.name.trim(),
+          // Slug derivation lives on the server; we send the human-facing
+          // name only and let the backend produce `{base}-{hex4}`.
+          name: '',
           display_name: config.display_name.trim(),
           description: config.description,
           systemPrompt: config.systemPrompt || null,
@@ -198,8 +201,6 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
               state={config}
               runtimeStatuses={runtimeStatuses}
               runtimeStatusError={runtimeStatusError}
-              editableName
-              identifierInitiallyLocked={selectedTemplate !== null}
               onChange={setConfig}
             />
 
@@ -212,7 +213,7 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
               <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
               <Button
                 onClick={handleCreate}
-                disabled={creating || !config.name.trim() || !config.model.trim()}
+                disabled={creating || !config.display_name.trim() || !config.model.trim()}
               >
                 {creating ? 'Creating...' : 'Create Agent'}
               </Button>

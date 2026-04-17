@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { LoaderCircle, Pencil } from "lucide-react";
+import { useEffect } from "react";
+import { LoaderCircle } from "lucide-react";
 import type { AgentEnvVar, RuntimeStatusInfo } from "./types";
 import { useRuntimeModels } from "../../hooks/useRuntimeModels";
 import {
@@ -42,27 +42,7 @@ interface Props {
   state: AgentConfigState;
   runtimeStatuses?: RuntimeStatusInfo[];
   runtimeStatusError?: string | null;
-  editableName?: boolean;
-  /**
-   * When true, treat the identifier as already manually set. Display-name edits
-   * will not overwrite the identifier via auto-slug. Used when a template
-   * pre-populates the identifier and we don't want to silently rename it.
-   */
-  identifierInitiallyLocked?: boolean;
   onChange: (next: AgentConfigState) => void;
-}
-
-/**
- * Derive a slug-safe agent identifier from a human-facing display name.
- * Lowercases, keeps ASCII alphanumerics, collapses runs of other characters into
- * single dashes, and trims leading/trailing dashes.
- */
-export function toAgentSlug(input: string): string {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
 }
 
 export function runtimeOptionLabel(
@@ -160,18 +140,9 @@ export function AgentConfigForm({
   state,
   runtimeStatuses = [],
   runtimeStatusError = null,
-  editableName = false,
-  identifierInitiallyLocked = false,
   onChange,
 }: Props) {
   const { runtimeModels, runtimeModelsError, isLoading } = useRuntimeModels(state.runtime);
-  const [identifierTouched, setIdentifierTouched] = useState(identifierInitiallyLocked);
-  const [identifierOpen, setIdentifierOpen] = useState(false);
-  const identifierUnavailable =
-    editableName &&
-    !identifierTouched &&
-    state.display_name.trim() !== "" &&
-    state.name.trim() === "";
 
   useEffect(() => {
     if (runtimeModels.length === 0 || runtimeModels.includes(state.model)) {
@@ -225,64 +196,12 @@ export function AgentConfigForm({
             <Label>Name</Label>
             <Input
               value={state.display_name}
-              onChange={(e) => {
-                const display_name = e.target.value;
-                const next = { ...state, display_name };
-                if (editableName && !identifierTouched) {
-                  next.name = toAgentSlug(display_name);
-                }
-                onChange(next);
-              }}
+              onChange={(e) =>
+                onChange({ ...state, display_name: e.target.value })
+              }
               placeholder="e.g. Code Reviewer"
               autoFocus
             />
-            {editableName && (
-              <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground leading-relaxed">
-                <span className="truncate">
-                  Identifier:{" "}
-                  <code className="font-mono">
-                    {state.name ? `${state.name}-????` : "—"}
-                  </code>
-                  <span className="ml-1 text-muted-foreground/80">
-                    (4-char random suffix added on save)
-                  </span>
-                </span>
-                {!identifierOpen && (
-                  <button
-                    type="button"
-                    onClick={() => setIdentifierOpen(true)}
-                    className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground"
-                  >
-                    <Pencil size={11} />
-                    <span>Edit</span>
-                  </button>
-                )}
-              </div>
-            )}
-            {identifierUnavailable && !identifierOpen && (
-              <p className="mt-1 text-xs text-destructive leading-relaxed">
-                Can't derive an identifier from this name. Click Edit above to
-                set one manually.
-              </p>
-            )}
-            {editableName && identifierOpen && (
-              <div className="mt-2">
-                <Input
-                  value={state.name}
-                  onChange={(e) => {
-                    setIdentifierTouched(true);
-                    onChange({ ...state, name: e.target.value });
-                  }}
-                  placeholder="e.g. code-reviewer"
-                />
-                <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-                  Prefix of the stable machine name used in channels, log
-                  files, and internal references. Auto-derived from the name
-                  above. A 4-character random suffix (e.g. <code>-a7f2</code>)
-                  is always appended on save so handles are globally unique.
-                </p>
-              </div>
-            )}
           </FormField>
         </div>
 

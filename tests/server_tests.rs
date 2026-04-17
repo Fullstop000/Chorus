@@ -2812,6 +2812,73 @@ async fn test_create_agent_appends_random_suffix() {
 }
 
 #[tokio::test]
+async fn test_create_agent_derives_slug_from_display_name() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // Send no explicit name. Server must slugify the display name.
+    let req = serde_json::json!({
+        "display_name": "Code Reviewer!!!",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let name = body["name"].as_str().expect("name is a string");
+    // Expect `code-reviewer-<4 hex>`: lowercased, non-alnum collapsed
+    // to a single dash, trailing `!!!` trimmed, random hash appended.
+    assert!(
+        name.starts_with("code-reviewer-"),
+        "name `{name}` should start with `code-reviewer-`"
+    );
+}
+
+#[tokio::test]
+async fn test_create_agent_falls_back_when_display_name_has_no_ascii() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // Pure non-ASCII display name: server can't slugify it, must fall
+    // back to the `agent-<hex4>` shape rather than 400ing.
+    let req = serde_json::json!({
+        "display_name": "名字",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let name = body["name"].as_str().expect("name is a string");
+    assert!(
+        name.starts_with("agent-"),
+        "name `{name}` should fall back to `agent-` prefix"
+    );
+}
+
+#[tokio::test]
 async fn test_duplicate_channel_name_returns_channel_name_taken() {
     let (_store, app) = setup();
 

@@ -51,6 +51,9 @@ pub struct AgentEnvVarPayload {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CreateAgentRequest {
+    /// Optional slug hint. When empty or omitted, the server derives
+    /// the base slug from `display_name` instead.
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub display_name: String,
@@ -211,18 +214,52 @@ pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<
     Ok(Json(agents))
 }
 
+/// Derive a slug-safe base from user input. Lowercases ASCII letters,
+/// keeps digits, collapses runs of other characters into single dashes,
+/// and trims leading/trailing dashes. Returns `None` if the input has
+/// no ASCII alphanumerics to slug on.
+fn slugify_base(input: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut prev_dash = true;
+    for c in input.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 pub async fn handle_create_agent(
     State(state): State<AppState>,
     Json(req): Json<CreateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let base_name = req.name.trim().to_string();
-    if base_name.is_empty() {
+    let name_hint = req.name.trim();
+    let display_name_trimmed = req.display_name.trim();
+    if name_hint.is_empty() && display_name_trimmed.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
-    let display_name = if req.display_name.is_empty() {
+    // Slug derivation lives on the server so every caller (new UI, old
+    // UI, curl users) lands on the same handle shape. Prefer an
+    // explicit name hint, fall back to the display name, and finally
+    // to `agent` when the input has no ASCII alphanumerics to slug on.
+    let base_name = slugify_base(name_hint)
+        .or_else(|| slugify_base(display_name_trimmed))
+        .unwrap_or_else(|| "agent".to_string());
+    let display_name = if display_name_trimmed.is_empty() {
         base_name.clone()
     } else {
-        req.display_name
+        display_name_trimmed.to_string()
     };
     let description = if req.description.is_empty() {
         None
