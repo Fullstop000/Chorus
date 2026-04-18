@@ -1,5 +1,6 @@
 pub mod cmd;
 pub mod error;
+pub mod http;
 pub mod slug;
 
 use std::path::{Path, PathBuf};

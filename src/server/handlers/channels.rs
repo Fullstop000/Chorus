@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{app_err, ApiResult, AppState};
 use crate::server::error::AppErrorCode;
-use crate::store::channels::{Channel, ChannelMemberProfile, ChannelType};
+use crate::store::channels::{normalize_channel_name, Channel, ChannelMemberProfile, ChannelType};
 use crate::store::messages::SenderType;
 use crate::store::ChannelListParams;
 
@@ -71,10 +71,6 @@ fn default_include_team() -> bool {
 }
 
 // ── Private helpers ──
-
-pub(super) fn normalize_channel_name(raw: &str) -> String {
-    raw.trim().trim_start_matches('#').trim().to_lowercase()
-}
 
 pub(super) fn validate_channel_mutation(
     state: &AppState,

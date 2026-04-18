@@ -7,6 +7,13 @@ use uuid::Uuid;
 use super::messages::SenderType;
 use super::Store;
 
+/// Normalize a channel name for storage/display: trim, strip a single leading
+/// `#`, trim again, lowercase. Shared between the HTTP handler and CLI so
+/// both sides agree on the canonical form.
+pub fn normalize_channel_name(raw: &str) -> String {
+    raw.trim().trim_start_matches('#').trim().to_lowercase()
+}
+
 // ── Types owned by this module ──
 
 /// One row from `channels` (any type: user, DM, system, or team).

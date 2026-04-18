@@ -25,7 +25,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             } else {
                 model
             };
-            let client = reqwest::Client::new();
+            let client = chorus::utils::http::client();
             let res = client
                 .post(format!("{server_url}/api/agents"))
                 .json(&serde_json::json!({
@@ -59,7 +59,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             Ok(())
         }
         AgentCommands::List { server_url } => {
-            let client = reqwest::Client::new();
+            let client = chorus::utils::http::client();
             let username = whoami::username();
             let res = client
                 .get(format!("{server_url}/internal/agent/{username}/server"))
