@@ -1395,20 +1395,20 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Start failure is now an explicit error, not a 200 with a warning.
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
     let payload = body_json(resp).await;
-    let name = payload["name"].as_str().unwrap().to_string();
-    assert!(
-        name.starts_with("stuck-bot-"),
-        "expected suffixed slug, got `{name}`"
-    );
-    let agent = store
-        .get_agent(&name)
-        .unwrap()
-        .expect("agent should remain in the store");
+    assert_eq!(payload["code"].as_str(), Some("AGENT_START_FAILED"));
+
+    // The agent record must still be persisted (inactive) so operators can inspect it.
+    let agents = store.get_agents().unwrap();
+    let agent = agents
+        .iter()
+        .find(|a| a.name.starts_with("stuck-bot-"))
+        .expect("agent should remain in the store after failed start");
     assert_eq!(agent.status, AgentStatus::Inactive);
-    assert!(store.is_member("all", &name).unwrap());
+    assert!(store.is_member("all", &agent.name).unwrap());
 }
 
 #[tokio::test]
