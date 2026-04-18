@@ -1,9 +1,33 @@
-//! `chorus channel create <name>` — stub; HTTP logic lands in a later task.
+//! `chorus channel create <name>` — POST a new channel to the server.
+//!
+//! Calls `POST /api/channels` with `{ name, description }`. The name is
+//! normalized client-side so the success line matches what the server stored.
+
+use anyhow::Context;
 
 pub async fn run(
-    _name: String,
-    _description: Option<String>,
-    _server_url: &str,
+    name: String,
+    description: Option<String>,
+    server_url: &str,
 ) -> anyhow::Result<()> {
-    anyhow::bail!("not yet implemented")
+    let normalized = super::normalize_channel_name(&name);
+    let description = description.unwrap_or_default();
+    let client = reqwest::Client::new();
+    let url = format!("{server_url}/api/channels");
+    let res = client
+        .post(&url)
+        .json(&serde_json::json!({
+            "name": normalized,
+            "description": description,
+        }))
+        .send()
+        .await
+        .with_context(|| format!("is the Chorus server running at {server_url}?"))?;
+    let status = res.status();
+    if status.is_success() {
+        tracing::info!("Channel #{normalized} created.");
+        return Ok(());
+    }
+    let body = res.text().await.unwrap_or_default();
+    Err(super::surface_http_error(status, &body))
 }

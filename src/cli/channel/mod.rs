@@ -58,17 +58,37 @@ pub async fn run(server_url: String, cmd: ChannelCommands) -> anyhow::Result<()>
 ///
 /// Mirrors `server::handlers::channels::normalize_channel_name`: trim, strip a
 /// single leading `#`, trim again, lowercase.
-#[allow(dead_code)] // used by future subcommands (del, join) landing in later tasks
+/// Normalize a channel name for display/request: trim, strip a single leading
+/// `#`, trim again, lowercase. Mirrors the server's `normalize_channel_name`.
+pub(super) fn normalize_channel_name(raw: &str) -> String {
+    raw.trim().trim_start_matches('#').trim().to_lowercase()
+}
+
+/// Turn a non-2xx HTTP response into an `anyhow::Error`.
+///
+/// Parses the server's `ErrorResponse` JSON (`{error, code?}`). When a typed
+/// `code` is present, surfaces it as `<code>: <error>`. Falls back to status +
+/// raw body when the body isn't the expected shape.
+pub(super) fn surface_http_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        let msg = val.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        let code = val.get("code").and_then(|v| v.as_str());
+        if let Some(code) = code {
+            return anyhow::anyhow!("{}: {}", code.to_lowercase(), msg);
+        }
+        if !msg.is_empty() {
+            return anyhow::anyhow!("{status}: {msg}");
+        }
+    }
+    anyhow::anyhow!("{status}: {body}")
+}
+
 pub(super) async fn resolve_channel_id(
     client: &reqwest::Client,
     server_url: &str,
     name: &str,
 ) -> anyhow::Result<String> {
-    let normalized = name
-        .trim()
-        .trim_start_matches('#')
-        .trim()
-        .to_lowercase();
+    let normalized = normalize_channel_name(name);
     let url = format!("{server_url}/api/channels");
     let res = client.get(&url).send().await.map_err(|e| {
         anyhow::anyhow!(
