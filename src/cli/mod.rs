@@ -106,12 +106,6 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
-    /// Run a smoke test against a temporary bridge server.
-    ///
-    /// Internal diagnostic — hidden from `chorus --help`. Still invokable as
-    /// `chorus bridge-smoke-test` for developers debugging the bridge layer.
-    #[command(name = "bridge-smoke-test", hide = true)]
-    BridgeSmokeTest,
     /// Mint a one-time pairing token for an agent to connect to the running bridge.
     #[command(name = "bridge-pair")]
     BridgePair {
@@ -141,7 +135,7 @@ enum Commands {
 
 #[derive(Subcommand)]
 pub(crate) enum AgentCommands {
-    /// Create and start a new agent
+    /// Create a new agent via the running server
     Create {
         name: String,
         #[arg(long, default_value = "claude")]
@@ -150,8 +144,8 @@ pub(crate) enum AgentCommands {
         model: String,
         #[arg(long)]
         description: Option<String>,
-        #[arg(long)]
-        data_dir: Option<String>,
+        #[arg(long, default_value = "http://localhost:3001")]
+        server_url: String,
     },
     /// Stop a running agent
     Stop {
@@ -254,8 +248,6 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::BridgeServe { listen, server_url }) => {
             chorus::bridge::serve::run_bridge_server(&listen, &server_url).await
         }
-
-        Some(Commands::BridgeSmokeTest) => chorus::bridge::smoke_test::run_smoke_test().await,
 
         Some(Commands::BridgePair { agent }) => {
             chorus::bridge::pairing::run_bridge_pair(&agent).await

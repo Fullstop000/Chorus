@@ -42,7 +42,6 @@ interface Props {
   state: AgentConfigState;
   runtimeStatuses?: RuntimeStatusInfo[];
   runtimeStatusError?: string | null;
-  editableName?: boolean;
   onChange: (next: AgentConfigState) => void;
 }
 
@@ -141,7 +140,6 @@ export function AgentConfigForm({
   state,
   runtimeStatuses = [],
   runtimeStatusError = null,
-  editableName = false,
   onChange,
 }: Props) {
   const { runtimeModels, runtimeModelsError, isLoading } = useRuntimeModels(state.runtime);
@@ -194,34 +192,16 @@ export function AgentConfigForm({
           </span>
         </div>
         <div className="agent-config-grid">
-          {editableName && (
-            <FormField>
-              <Label>Name</Label>
-              <Input
-                value={state.name}
-                onChange={(e) => onChange({ ...state, name: e.target.value })}
-                placeholder="e.g. my-agent"
-                autoFocus
-              />
-              <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-                Stable machine name used in channels and internal references.
-              </p>
-            </FormField>
-          )}
-
           <FormField>
-            <Label>Display Name</Label>
+            <Label>Name</Label>
             <Input
               value={state.display_name}
               onChange={(e) =>
                 onChange({ ...state, display_name: e.target.value })
               }
-              placeholder={state.name || "Agent name"}
-              autoFocus={!editableName}
+              placeholder="e.g. Code Reviewer"
+              autoFocus
             />
-            <p className="text-xs text-muted-foreground leading-relaxed mt-1">
-              Human-facing label shown across the workspace.
-            </p>
           </FormField>
         </div>
 

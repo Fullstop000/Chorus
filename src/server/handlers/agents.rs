@@ -18,6 +18,7 @@ use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
 use crate::utils::error::internal_err;
 use crate::utils::error::{format_anyhow_error, AppErrorCode};
+use crate::utils::slug::{random_slug_suffix, slugify_base, MAX_SLUG_ATTEMPTS};
 
 use super::dto::AgentInfo;
 
@@ -50,6 +51,9 @@ pub struct AgentEnvVarPayload {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CreateAgentRequest {
+    /// Optional slug hint. When empty or omitted, the server derives
+    /// the base slug from `display_name` instead.
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub display_name: String,
@@ -214,14 +218,28 @@ pub async fn handle_create_agent(
     State(state): State<AppState>,
     Json(req): Json<CreateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let name = req.name.trim().to_string();
-    if name.is_empty() {
+    let name_hint = req.name.trim();
+    let display_name_trimmed = req.display_name.trim();
+    if name_hint.is_empty() && display_name_trimmed.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
-    let display_name = if req.display_name.is_empty() {
-        name.clone()
+    if name_hint.chars().count() > 200 || display_name_trimmed.chars().count() > 200 {
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "name/display_name exceeds 200-character limit"
+        ));
+    }
+    // Slug derivation lives on the server so every caller (new UI, old
+    // UI, curl users) lands on the same handle shape. Prefer an
+    // explicit name hint, fall back to the display name, and finally
+    // to `agent` when the input has no ASCII alphanumerics to slug on.
+    let base_name = slugify_base(name_hint)
+        .or_else(|| slugify_base(display_name_trimmed))
+        .unwrap_or_else(|| "agent".to_string());
+    let display_name = if display_name_trimmed.is_empty() {
+        base_name.clone()
     } else {
-        req.display_name
+        display_name_trimmed.to_string()
     };
     let description = if req.description.is_empty() {
         None
@@ -231,10 +249,12 @@ pub async fn handle_create_agent(
     let reasoning_effort =
         normalize_reasoning_effort(&req.runtime, req.reasoning_effort.as_deref())?;
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
-    let id = state
-        .store
-        .create_agent_record(&AgentRecordUpsert {
-            name: &name,
+
+    // Create the agent record, join auto-join channels, and start it.
+    let result = create_and_start_agent(
+        &state,
+        &CreateAgentParams {
+            base_name: &base_name,
             display_name: &display_name,
             description,
             system_prompt: req.system_prompt.as_deref(),
@@ -242,34 +262,101 @@ pub async fn handle_create_agent(
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
             env_vars: &env_vars,
-        })
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint") {
-                app_err!(AppErrorCode::AgentNameTaken, "agent name already in use")
-            } else {
-                app_err!(StatusCode::BAD_REQUEST, msg)
+        },
+    )
+    .await
+    .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{e}"))?;
+    if let Some(ref err) = result.start_error {
+        return Err(app_err!(
+            AppErrorCode::AgentStartFailed,
+            "agent @{} created but failed to start: {err}",
+            result.name
+        ));
+    }
+    Ok(Json(serde_json::json!({
+        "id": result.id,
+        "name": result.name,
+        "status": AgentStatus::Active.as_str(),
+    })))
+}
+
+/// Parameters for creating a new agent with auto-slug.
+pub(crate) struct CreateAgentParams<'a> {
+    pub base_name: &'a str,
+    pub display_name: &'a str,
+    pub description: Option<&'a str>,
+    pub system_prompt: Option<&'a str>,
+    pub runtime: &'a str,
+    pub model: &'a str,
+    pub reasoning_effort: Option<&'a str>,
+    pub env_vars: &'a [AgentEnvVar],
+}
+
+/// Result of creating and starting an agent.
+pub(crate) struct CreateAgentResult {
+    pub name: String,
+    pub id: String,
+    /// `Some` when the agent was created but failed to start.
+    pub start_error: Option<String>,
+}
+
+/// Creates an agent record with a `{base}-{hex4}` slug, joins it to all
+/// auto-join channels, and starts it.
+pub(crate) async fn create_and_start_agent(
+    state: &AppState,
+    params: &CreateAgentParams<'_>,
+) -> anyhow::Result<CreateAgentResult> {
+    let mut last_error: Option<String> = None;
+    let mut slug_result: Option<(String, String)> = None;
+    for _ in 0..MAX_SLUG_ATTEMPTS {
+        let candidate = format!("{}-{}", params.base_name, random_slug_suffix());
+        match state.store.create_agent_record(&AgentRecordUpsert {
+            name: &candidate,
+            display_name: params.display_name,
+            description: params.description,
+            system_prompt: params.system_prompt,
+            runtime: params.runtime,
+            model: params.model,
+            reasoning_effort: params.reasoning_effort,
+            env_vars: params.env_vars,
+        }) {
+            Ok(id) => {
+                slug_result = Some((candidate, id));
+                break;
             }
-        })?;
-    for channel in state.store.get_auto_join_channels().map_err(internal_err)? {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE constraint") {
+                    last_error = Some(msg);
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+    let (name, id) = slug_result.ok_or_else(|| {
+        anyhow::anyhow!(
+            "failed to allocate a unique slug after {MAX_SLUG_ATTEMPTS} attempts: {}",
+            last_error.unwrap_or_else(|| "unknown".to_string())
+        )
+    })?;
+    for channel in state.store.get_auto_join_channels()? {
         let _ = state
             .store
             .join_channel(&channel.name, &name, SenderType::Agent);
     }
-    let mut created_status = AgentStatus::Active;
-    let mut start_warning = None;
-    if let Err(err) = state.lifecycle.start_agent(&name, None).await {
+    let start_error = if let Err(err) = state.lifecycle.start_agent(&name, None).await {
         let error_detail = format_anyhow_error(&err);
         warn!(agent = %name, error = %error_detail, "agent created but failed to start");
-        created_status = AgentStatus::Inactive;
-        start_warning = Some(format!("failed to start agent: {err}"));
-    }
-    Ok(Json(serde_json::json!({
-        "id": id,
-        "name": name,
-        "status": created_status.as_str(),
-        "warning": start_warning,
-    })))
+        Some(format!("{err}"))
+    } else {
+        None
+    };
+    Ok(CreateAgentResult {
+        name,
+        id,
+        start_error,
+    })
 }
 
 pub async fn handle_get_agent(

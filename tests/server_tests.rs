@@ -1395,14 +1395,20 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    // Start failure is now an explicit error, not a 200 with a warning.
+    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
-    let agent = store
-        .get_agent("stuck-bot")
-        .unwrap()
-        .expect("agent should remain in the store");
+    let payload = body_json(resp).await;
+    assert_eq!(payload["code"].as_str(), Some("AGENT_START_FAILED"));
+
+    // The agent record must still be persisted (inactive) so operators can inspect it.
+    let agents = store.get_agents().unwrap();
+    let agent = agents
+        .iter()
+        .find(|a| a.name.starts_with("stuck-bot-"))
+        .expect("agent should remain in the store after failed start");
     assert_eq!(agent.status, AgentStatus::Inactive);
-    assert!(store.is_member("all", "stuck-bot").unwrap());
+    assert!(store.is_member("all", &agent.name).unwrap());
 }
 
 #[tokio::test]
@@ -1437,17 +1443,18 @@ async fn test_create_kimi_agent_via_api() {
     )
     .unwrap();
 
-    let agent = store
-        .get_agent("kimi-bot")
-        .unwrap()
-        .expect("agent should exist");
+    let name = payload["name"].as_str().unwrap().to_string();
+    assert!(
+        name.starts_with("kimi-bot-"),
+        "expected suffixed slug, got `{name}`"
+    );
+    let agent = store.get_agent(&name).unwrap().expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
-    assert_eq!(payload["name"], "kimi-bot");
     assert_eq!(payload["status"], "active");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
-    assert_eq!(lifecycle.started_names(), vec!["kimi-bot".to_string()]);
+    assert_eq!(lifecycle.started_names(), vec![name]);
 }
 
 #[tokio::test]
@@ -2764,7 +2771,7 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 }
 
 #[tokio::test]
-async fn test_duplicate_agent_name_returns_agent_name_taken() {
+async fn test_create_agent_appends_random_suffix() {
     let (store, app, _lifecycle) = setup_with_lifecycle();
     store.ensure_builtin_channels("alice").unwrap();
 
@@ -2781,9 +2788,147 @@ async fn test_duplicate_agent_name_returns_agent_name_taken() {
         .await
         .unwrap();
 
-    assert_eq!(resp.status(), StatusCode::CONFLICT);
+    assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert_eq!(body["code"], "AGENT_NAME_TAKEN");
+    let name = body["name"].as_str().expect("name is a string");
+    // Assert the shape: `bot1-<4 lowercase hex chars>`. The suffix is
+    // always present even without a name collision.
+    let prefix = "bot1-";
+    assert!(
+        name.starts_with(prefix),
+        "name `{name}` should start with `{prefix}`"
+    );
+    let suffix = &name[prefix.len()..];
+    assert_eq!(suffix.len(), 4, "suffix `{suffix}` should be 4 chars");
+    assert!(
+        suffix
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "suffix `{suffix}` should be lowercase hex"
+    );
+}
+
+#[tokio::test]
+async fn test_create_agent_derives_slug_from_display_name() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // Send no explicit name. Server must slugify the display name.
+    let req = serde_json::json!({
+        "display_name": "Code Reviewer!!!",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let name = body["name"].as_str().expect("name is a string");
+    // Expect `code-reviewer-<4 hex>`: lowercased, non-alnum collapsed
+    // to a single dash, trailing `!!!` trimmed, random hash appended.
+    assert!(
+        name.starts_with("code-reviewer-"),
+        "name `{name}` should start with `code-reviewer-`"
+    );
+}
+
+#[tokio::test]
+async fn test_create_agent_falls_back_when_display_name_has_no_ascii() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // Pure non-ASCII display name: server can't slugify it, must fall
+    // back to the `agent-<hex4>` shape rather than 400ing.
+    let req = serde_json::json!({
+        "display_name": "名字",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let name = body["name"].as_str().expect("name is a string");
+    assert!(
+        name.starts_with("agent-"),
+        "name `{name}` should fall back to `agent-` prefix"
+    );
+}
+
+#[tokio::test]
+async fn test_create_agent_requires_name_or_display_name() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // Omitting both name and display_name must return 400 "name is required".
+    let req = serde_json::json!({ "runtime": "claude", "model": "sonnet" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_agent_name_hint_takes_priority_over_display_name() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // When both name hint and display_name are provided, the slug must
+    // derive from the name hint, not the display_name.
+    let req = serde_json::json!({
+        "name": "my-hint",
+        "display_name": "Should Not Appear In Slug",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let name = body["name"].as_str().expect("name is a string");
+    assert!(
+        name.starts_with("my-hint-"),
+        "name `{name}` should derive from name hint, not display_name"
+    );
 }
 
 #[tokio::test]

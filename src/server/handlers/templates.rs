@@ -7,8 +7,8 @@ use tracing::{info, warn};
 use crate::agent::templates::group_by_category;
 use crate::agent::AgentRuntime;
 use crate::store::messages::SenderType;
-use crate::store::AgentRecordUpsert;
 
+use super::agents::CreateAgentParams;
 use super::{app_err, ApiResult, AppState};
 
 // ── Response types ──
@@ -117,9 +117,6 @@ pub async fn handle_launch_trio(
             .unwrap_or(&template.id)
             .to_string();
 
-        // Auto-suffix on name conflict.
-        let agent_name = find_available_name(&state, &base_name);
-
         // Resolve default model for the runtime.
         let model = match resolve_default_model(&state, &template.suggested_runtime).await {
             Some(m) => m,
@@ -135,18 +132,23 @@ pub async fn handle_launch_trio(
             }
         };
 
-        // Create the agent record.
-        let agent_id = match state.store.create_agent_record(&AgentRecordUpsert {
-            name: &agent_name,
-            display_name: &template.name,
-            description: template.description.as_deref(),
-            system_prompt: Some(&template.prompt_body),
-            runtime: &template.suggested_runtime,
-            model: &model,
-            reasoning_effort: None,
-            env_vars: &[],
-        }) {
-            Ok(id) => id,
+        // Create the agent, join auto-join channels, and start it.
+        let result = match super::agents::create_and_start_agent(
+            &state,
+            &CreateAgentParams {
+                base_name: &base_name,
+                display_name: &template.name,
+                description: template.description.as_deref(),
+                system_prompt: Some(&template.prompt_body),
+                runtime: &template.suggested_runtime,
+                model: &model,
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .await
+        {
+            Ok(r) => r,
             Err(e) => {
                 errors.push(LaunchTrioError {
                     template_id: template.id.clone(),
@@ -155,24 +157,18 @@ pub async fn handle_launch_trio(
                 continue;
             }
         };
-
-        // Join agent to the trio channel.
-        let _ = state
-            .store
-            .join_channel(&channel_name, &agent_name, SenderType::Agent);
-
-        // Start the agent.
-        if let Err(e) = state.lifecycle.start_agent(&agent_name, None).await {
-            warn!(
-                agent = %agent_name,
-                error = %e,
-                "trio agent created but failed to start"
-            );
+        if let Some(ref err) = result.start_error {
+            warn!(agent = %result.name, error = %err, "trio agent created but failed to start");
         }
 
+        // Also join the trio channel (auto-join channels handled above).
+        let _ = state
+            .store
+            .join_channel(&channel_name, &result.name, SenderType::Agent);
+
         agents.push(LaunchTrioAgent {
-            id: agent_id,
-            name: agent_name,
+            id: result.id,
+            name: result.name,
             display_name: template.name.clone(),
         });
     }
@@ -207,29 +203,6 @@ pub async fn handle_launch_trio(
             errors,
         }),
     ))
-}
-
-/// Find a name that doesn't conflict with existing agents.
-/// Tries base_name, then base_name-2, base_name-3, etc.
-fn find_available_name(state: &AppState, base_name: &str) -> String {
-    if state.store.get_agent(base_name).ok().flatten().is_none() {
-        return base_name.to_string();
-    }
-    for suffix in 2..=100 {
-        let candidate = format!("{base_name}-{suffix}");
-        if state.store.get_agent(&candidate).ok().flatten().is_none() {
-            return candidate;
-        }
-    }
-    // Fallback: use UUID suffix.
-    format!(
-        "{base_name}-{}",
-        uuid::Uuid::new_v4()
-            .to_string()
-            .split('-')
-            .next()
-            .unwrap_or("x")
-    )
 }
 
 /// Pick the first available model for a runtime.
