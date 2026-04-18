@@ -179,17 +179,11 @@ async fn channel_del_not_found() {
 
 #[tokio::test]
 async fn channel_list_server_unreachable() {
-    // Bind and immediately drop a TCP listener to grab a port that was just
-    // confirmed free on loopback. There's a theoretical race where another
-    // process could grab this port before the chorus binary tries to
-    // connect, but in practice this is reliable and — unlike a fixed port
-    // like `:1` — isn't intercepted by corporate HTTP proxies that hijack
-    // connection refusals into 502s.
-    let port = {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        listener.local_addr().unwrap().port()
-    };
-    let unreachable = format!("http://127.0.0.1:{port}");
+    // Port 1 on loopback: reliably refused by the kernel (nothing binds there,
+    // and connecting as a non-root user to a privileged port is permitted —
+    // only *binding* requires privilege). We strip HTTP(S)_PROXY below so a
+    // corporate proxy can't turn the refusal into a 5xx response.
+    let unreachable = "http://127.0.0.1:1".to_string();
 
     // Strip HTTP(S)_PROXY env vars so we get a genuine connection refusal
     // from the kernel rather than a proxy turning it into a 5xx.
