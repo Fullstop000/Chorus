@@ -124,32 +124,62 @@ export async function createAgentApi(
   return { name: body.name }
 }
 
+/** Find the first agent whose name starts with `prefix`. */
+export function findAgentByPrefix(agents: AgentRow[], prefix: string): AgentRow | undefined {
+  return agents.find((a) => a.name === prefix || a.name.startsWith(`${prefix}-`))
+}
+
+/** Like requireAgentId but matches by name prefix (handles server-added suffixes). */
+export async function requireAgentByPrefix(
+  request: APIRequestContext,
+  prefix: string
+): Promise<AgentRow> {
+  const agents = await listAgents(request)
+  const agent = findAgentByPrefix(agents, prefix)
+  if (!agent) throw new Error(`Agent not found with prefix: ${prefix}`)
+  return agent
+}
+
+export interface TrioNames {
+  botA: string; botB: string; botC: string          // API names (server-suffixed)
+  displayA: string; displayB: string; displayC: string  // sidebar display names (original)
+}
+
 /** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case.
  * Trio: bot-a=codex/gpt-5.4, bot-b=kimi/kimi-code/kimi-for-coding, bot-c=opencode/opencode/gpt-5-nano
+ *
+ * Agent names may be suffixed by the server (e.g. bot-a → bot-a-279b).
+ * Returns the actual server-assigned names.
  */
-export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<void> {
-  const agents = await listAgents(request)
-  const names = new Set(agents.map((a) => a.name))
-  if (!names.has('bot-a')) {
-    await createAgentApi(
-      request,
-      { name: 'bot-a', runtime: 'codex', model: 'gpt-5.4' },
-      { allowNameTaken: true }
-    )
+export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<TrioNames> {
+  let agents = await listAgents(request)
+
+  let botA = findAgentByPrefix(agents, 'bot-a')
+  if (!botA) {
+    const { name } = await createAgentApi(request, { name: 'bot-a', runtime: 'codex', model: 'gpt-5.4' })
+    agents = await listAgents(request)
+    botA = findAgentByPrefix(agents, 'bot-a') ?? { name, id: '', status: '' } as AgentRow
   }
-  if (!names.has('bot-b')) {
-    await createAgentApi(
-      request,
-      { name: 'bot-b', runtime: 'kimi', model: 'kimi-code/kimi-for-coding' },
-      { allowNameTaken: true }
-    )
+
+  let botB = findAgentByPrefix(agents, 'bot-b')
+  if (!botB) {
+    const { name } = await createAgentApi(request, { name: 'bot-b', runtime: 'kimi', model: 'kimi-code/kimi-for-coding' })
+    agents = await listAgents(request)
+    botB = findAgentByPrefix(agents, 'bot-b') ?? { name, id: '', status: '' } as AgentRow
   }
-  if (!names.has('bot-c')) {
-    await createAgentApi(
-      request,
-      { name: 'bot-c', runtime: 'opencode', model: 'opencode/gpt-5-nano' },
-      { allowNameTaken: true }
-    )
+
+  let botC = findAgentByPrefix(agents, 'bot-c')
+  if (!botC) {
+    const { name } = await createAgentApi(request, { name: 'bot-c', runtime: 'opencode', model: 'opencode/gpt-5-nano' })
+    agents = await listAgents(request)
+    botC = findAgentByPrefix(agents, 'bot-c') ?? { name, id: '', status: '' } as AgentRow
+  }
+
+  return {
+    botA: botA.name, botB: botB.name, botC: botC.name,
+    displayA: botA.display_name ?? 'bot-a',
+    displayB: botB.display_name ?? 'bot-b',
+    displayC: botC.display_name ?? 'bot-c',
   }
 }
 

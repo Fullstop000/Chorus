@@ -14,14 +14,18 @@ test.describe('MSG-009', () => {
     request,
   }) => {
     const { username } = await getWhoami(request)
-    let agentName = (await listAgents(request))[0]?.name
+    const agents = await listAgents(request)
+    let agentName = agents[0]?.name
+    let displayName = agents[0]?.display_name ?? agentName
     if (!agentName) {
-      agentName = `msg009-bot-${Date.now()}`
-      await createAgentApi(request, {
-        name: agentName,
-        runtime: 'claude',
-        model: 'sonnet',
+      const inputName = `msg009-bot-${Date.now()}`
+      const created = await createAgentApi(request, {
+        name: inputName,
+        runtime: 'codex',
+        model: 'gpt-5.4-mini',
       })
+      agentName = created.name
+      displayName = inputName
     }
 
     const channelName = `msg009-${Date.now()}`
@@ -47,8 +51,8 @@ test.describe('MSG-009', () => {
     await clickSidebarChannel(page, channelName)
     await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
 
-    await openAgentChat(page, agentName)
-    await expect(page.locator('.chat-header-name')).toContainText(`@${agentName}`)
+    await openAgentChat(page, displayName)
+    await expect(page.locator('.chat-header-name')).toContainText(`@${displayName}`)
 
     await clickSidebarChannel(page, channelName)
     await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)

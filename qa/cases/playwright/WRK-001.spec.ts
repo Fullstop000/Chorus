@@ -5,6 +5,7 @@ import {
   ensureMixedRuntimeTrio,
   getWorkspaceApi,
   getWorkspaceFileApi,
+  type TrioNames,
 } from './helpers/api'
 import { openAgentTab , gotoApp } from './helpers/ui'
 
@@ -12,21 +13,23 @@ import { openAgentTab , gotoApp } from './helpers/ui'
  * Catalog: `qa/cases/agents.md` — WRK-001 Workspace Tab Path And File Visibility
  */
 test.describe('WRK-001', () => {
+  let trio: TrioNames
+
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    trio = await ensureMixedRuntimeTrio(request)
   })
 
   test('Workspace Tab Path And File Visibility @case WRK-001', async ({ page, request }) => {
-    const workspace = await getWorkspaceApi(request, 'bot-a')
+    const workspace = await getWorkspaceApi(request, trio.botA)
     const notesDir = path.join(workspace.path, 'notes')
     const noteRel = 'notes/work-log.md'
     const noteAbs = path.join(workspace.path, noteRel)
     await fs.mkdir(notesDir, { recursive: true })
     await fs.writeFile(noteAbs, '# Work Log\n\n- qa workspace note\n', 'utf8')
-    const preview = await getWorkspaceFileApi(request, 'bot-a', noteRel)
+    const preview = await getWorkspaceFileApi(request, trio.botA, noteRel)
 
     await gotoApp(page)
-    await openAgentTab(page, 'bot-a', 'Workspace')
+    await openAgentTab(page, trio.displayA, 'Workspace')
 
     await test.step('Steps 1–6: Path, tree, and file metadata are visible', async () => {
       await expect(page.locator('.workspace-location')).toContainText(workspace.path)

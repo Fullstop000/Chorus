@@ -1,6 +1,6 @@
 import { test, expect } from './helpers/fixtures'
 import { gotoApp } from './helpers/ui'
-import { ensureMixedRuntimeTrio, listAgents } from './helpers/api'
+import { ensureMixedRuntimeTrio, listAgents, type TrioNames } from './helpers/api'
 
 /**
  * Catalog: `qa/cases/agents.md` — LFC-001 Agent Lifecycle Start, Idle, Stop, And Manual Restart
@@ -26,8 +26,10 @@ import { ensureMixedRuntimeTrio, listAgents } from './helpers/api'
  * - manual restart restores the agent cleanly
  */
 test.describe('LFC-001', () => {
+  let trio: TrioNames
+
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    trio = await ensureMixedRuntimeTrio(request)
   })
 
   test('Agent Lifecycle Start, Idle, Stop, Manual Restart @case LFC-001', async ({
@@ -37,7 +39,7 @@ test.describe('LFC-001', () => {
     await gotoApp(page)
 
     await test.step('Step 1: Select test agent bot-a', async () => {
-      await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
+      await page.locator('.sidebar-item').filter({ hasText: trio.displayA }).first().click()
     })
 
     await test.step('Step 2–3: Transitional / idle status visible (sidebar dot or profile)', async () => {
@@ -69,7 +71,7 @@ test.describe('LFC-001', () => {
 
     await test.step('Expected: API list shows bot-a active after restart', async () => {
       const agents = await listAgents(request)
-      expect(agents.find((x) => x.name === 'bot-a')?.status).toBe('active')
+      expect(agents.find((x) => x.name === trio.botA)?.status).toBe('active')
     })
   })
 })

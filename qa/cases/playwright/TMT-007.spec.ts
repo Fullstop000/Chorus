@@ -1,5 +1,5 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
+import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists, type TrioNames } from './helpers/api'
 import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
@@ -23,15 +23,15 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 test.describe('TMT-007', () => {
   test('Team delete (disposable team) @case TMT-007', async ({ page, request }) => {
     test.setTimeout(240_000)
-    await ensureMixedRuntimeTrio(request)
+    const trio = await ensureMixedRuntimeTrio(request)
 
     const name = `qa-del-${Date.now()}`
     await createTeamApi(request, {
       name,
       display_name: 'E2E Delete Target',
       collaboration_model: 'leader_operators',
-      leader_agent_name: 'bot-a',
-      members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' }],
+      leader_agent_name: trio.botA,
+      members: [{ member_name: trio.botA, member_type: 'agent', member_id: trio.botA, role: 'operator' }],
     })
 
     await gotoApp(page)
@@ -59,12 +59,12 @@ test.describe('TMT-007', () => {
           request,
           username,
           '#all',
-          `bot-a ${mark}: list your team slugs; do not include ${name}.`
+          `${trio.botA} ${mark}: list your team slugs; do not include ${name}.`
         )
         await new Promise((r) => setTimeout(r, 60_000))
         const msgs = await historyForUser(request, username, '#all', 25)
-        const fromA = msgs.filter((m) => m.senderName === 'bot-a').pop()
-        expect(fromA, 'expected bot-a reply in #all').toBeTruthy()
+        const fromA = msgs.filter((m) => m.senderName === trio.botA).pop()
+        expect(fromA, `expected ${trio.botA} reply in #all`).toBeTruthy()
         expect((fromA!.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
       })
     }

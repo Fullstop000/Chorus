@@ -5,6 +5,7 @@ import {
   getWhoami,
   historyForUser,
   teamExists,
+  type TrioNames,
 } from './helpers/api'
 import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
 
@@ -33,17 +34,19 @@ import { clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
  * Hybrid: Steps 5–6/9 use `history` as member agent `bot-a` when human team history is empty.
  */
 test.describe('TMT-002', () => {
+  let trio: TrioNames
+
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    trio = await ensureMixedRuntimeTrio(request)
     if (!(await teamExists(request, 'qa-eng'))) {
       await createTeamApi(request, {
         name: 'qa-eng',
         display_name: 'QA Engineering',
         collaboration_model: 'leader_operators',
-        leader_agent_name: 'bot-a',
+        leader_agent_name: trio.botA,
         members: [
-          { member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' },
-          { member_name: 'bot-b', member_type: 'agent', member_id: 'bot-b', role: 'operator' },
+          { member_name: trio.botA, member_type: 'agent', member_id: trio.botA, role: 'operator' },
+          { member_name: trio.botB, member_type: 'agent', member_id: trio.botB, role: 'operator' },
         ],
       })
     }
@@ -53,7 +56,7 @@ test.describe('TMT-002', () => {
         display_name: 'QA Algo',
         collaboration_model: 'swarm',
         leader_agent_name: null,
-        members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'member' }],
+        members: [{ member_name: trio.botA, member_type: 'agent', member_id: trio.botA, role: 'member' }],
       })
     }
   })
@@ -72,7 +75,7 @@ test.describe('TMT-002', () => {
 
     await test.step('Steps 4–6: Open #qa-eng; copy + forwarded metadata (hybrid)', async () => {
       await clickSidebarChannel(page, 'qa-eng')
-      const msgs = await historyForUser(request, 'bot-a', '#qa-eng', 40)
+      const msgs = await historyForUser(request, trio.botA, '#qa-eng', 40)
       expect(msgs.some((m) => (m.content ?? '').includes('landing page'))).toBe(true)
       let humanVisibleHistory = null as Awaited<ReturnType<typeof historyForUser>> | null
       try {
@@ -99,8 +102,8 @@ test.describe('TMT-002', () => {
       let eng = false
       let algo = false
       while (Date.now() < deadline) {
-        const he = await historyForUser(request, 'bot-a', '#qa-eng', 50)
-        const ha = await historyForUser(request, 'bot-a', '#qa-algo', 50)
+        const he = await historyForUser(request, trio.botA, '#qa-eng', 50)
+        const ha = await historyForUser(request, trio.botA, '#qa-algo', 50)
         eng = he.some((m) => (m.content ?? '').includes(mark))
         algo = ha.some((m) => (m.content ?? '').includes(mark))
         if (eng && algo) break

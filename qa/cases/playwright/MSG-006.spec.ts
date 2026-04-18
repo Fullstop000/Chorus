@@ -15,7 +15,7 @@ test.describe('MSG-006', () => {
     if (!agent) {
       await createAgentApi(
         request,
-        { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
+        { name: 'bot-a', runtime: 'codex', model: 'gpt-5.4-mini' },
       )
       agents = await listAgents(request)
       agent = findAgentByPrefix(agents, 'bot-a')

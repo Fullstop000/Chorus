@@ -7,14 +7,12 @@ import {
   stopAgentApi,
   teamExists,
   waitForAgentStatus,
+  type TrioNames,
 } from './helpers/api'
 import { clickSidebarChannel, openThreadFromMessage, sendChatMessage, sendThreadMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
-const runtimeMatrix = [
-  { agentName: 'bot-a', runtimeLabel: 'claude', channelName: 'qa-thread-wake-claude' },
-  { agentName: 'bot-c', runtimeLabel: 'opencode', channelName: 'qa-thread-wake-opencode' },
-]
+let runtimeMatrix: { agentName: string; runtimeLabel: string; channelName: string }[]
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-009 Agent Team Thread Wake And In-Thread Reply
@@ -36,7 +34,11 @@ const runtimeMatrix = [
  */
 test.describe('TMT-009', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    const trio = await ensureMixedRuntimeTrio(request)
+    runtimeMatrix = [
+      { agentName: trio.botA, runtimeLabel: 'claude', channelName: 'qa-thread-wake-claude' },
+      { agentName: trio.botC, runtimeLabel: 'opencode', channelName: 'qa-thread-wake-opencode' },
+    ]
     const { username } = await getWhoami(request)
     for (const scenario of runtimeMatrix) {
       if (await teamExists(request, scenario.channelName)) continue
