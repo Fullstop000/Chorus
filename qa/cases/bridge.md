@@ -79,7 +79,7 @@ Cases covering the shared MCP bridge, pairing-token flow, and live agent-runtime
 ### LRT-001 Live Runtime Bridge [matrix]
 
 - Suite: regression
-- Supersedes: LRT-001, LRT-002, LRT-003, LRT-004
+- Supersedes: LRT-002, LRT-003, LRT-004
 - Execution mode: hybrid (Rust CLI)
 - Goal: Each runtime, configured with `bridge_endpoint`, pairs with the bridge and round-trips a message through MCP HTTP transport.
 - Script: [`tests/live_runtime_tests.rs`](../../tests/live_runtime_tests.rs)

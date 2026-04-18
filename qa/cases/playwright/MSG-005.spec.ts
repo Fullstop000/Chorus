@@ -5,7 +5,7 @@ import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: qa/cases/messaging.md — MSG-005 Attachment Upload And Download
- * Supersedes: MSG-006, ATT-001
+ * Supersedes: ATT-001
  */
 test.describe('MSG-005', () => {
   test.beforeAll(async ({ request }) => {

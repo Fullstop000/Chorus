@@ -21,7 +21,7 @@
 ### MSG-002 DM Round-Trip [runtime matrix]
 
 - Suite: smoke
-- Supersedes: MSG-002, DM-002
+- Supersedes: DM-002
 - Execution mode: hybrid
 - Goal: verify a DM send → agent reply round-trip works for every supported runtime
 - Script: [`playwright/MSG-002.spec.ts`](./playwright/MSG-002.spec.ts)
@@ -80,7 +80,7 @@
 ### MSG-005 Attachment Upload And Download
 
 - Suite: smoke
-- Supersedes: MSG-006, ATT-001
+- Supersedes: ATT-001
 - Goal: verify file upload, inline rendering, and download integrity end-to-end
 - Script: [`playwright/MSG-005.spec.ts`](./playwright/MSG-005.spec.ts)
 - Steps:

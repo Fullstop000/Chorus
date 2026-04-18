@@ -6,7 +6,7 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
 /**
  * Catalog: `qa/cases/messaging.md` — MSG-002 Direct Message Round-Trip
- * Supersedes: MSG-002, DM-002
+ * Supersedes: DM-002
  *
  * Preconditions:
  * - at least one test agent exists (`bot-a`)
