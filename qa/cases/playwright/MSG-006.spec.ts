@@ -1,5 +1,5 @@
 import { test, expect } from './helpers/fixtures'
-import { createAgentApi, getWhoami, sendAsUser } from './helpers/api'
+import { createAgentApi, getWhoami, sendAsUser, listAgents, findAgentByPrefix } from './helpers/api'
 import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
 /**
@@ -7,12 +7,21 @@ import { clickSidebarChannel , gotoApp } from './helpers/ui'
  * Supersedes: MSG-012
  */
 test.describe('MSG-006', () => {
+  let actualName: string
+
   test.beforeAll(async ({ request }) => {
-    await createAgentApi(
-      request,
-      { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
-      { allowNameTaken: true }
-    )
+    let agents = await listAgents(request)
+    let agent = findAgentByPrefix(agents, 'bot-a')
+    if (!agent) {
+      await createAgentApi(
+        request,
+        { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
+      )
+      agents = await listAgents(request)
+      agent = findAgentByPrefix(agents, 'bot-a')
+    }
+    if (!agent) throw new Error('Agent with prefix bot-a not found after creation')
+    actualName = agent.name
   })
 
   test('Clickable Mention Opens Agent Profile @case MSG-006', async ({ page, request }) => {
@@ -20,7 +29,7 @@ test.describe('MSG-006', () => {
     const mark = `msg06-${Date.now()}`
 
     // Pre-step: send a message with @mention via API so it appears in history
-    await sendAsUser(request, username, '#all', `MSG-006 ${mark} testing @bot-a mention`)
+    await sendAsUser(request, username, '#all', `MSG-006 ${mark} testing @${actualName} mention`)
 
     await gotoApp(page)
 
@@ -31,17 +40,15 @@ test.describe('MSG-006', () => {
     })
 
     await test.step('Step 2: Verify @mention has clickable styling and cursor', async () => {
-      const mention = page.locator('.mention-pill-clickable', { hasText: /@bot-a/ })
+      const mention = page.locator('.mention-pill-clickable', { hasText: new RegExp(actualName) })
       await expect(mention).toBeVisible()
-      
-      // Hover and verify cursor changes
       await mention.hover()
       const cursor = await mention.evaluate((el) => getComputedStyle(el).cursor)
       expect(cursor).toBe('pointer')
     })
 
     await test.step('Step 3: Click @mention and verify Profile panel opens', async () => {
-      const mention = page.locator('.mention-pill-clickable', { hasText: /@bot-a/ })
+      const mention = page.locator('.mention-pill-clickable', { hasText: new RegExp(actualName) })
       await mention.click()
 
       // Verify Profile tab is active
@@ -53,13 +60,11 @@ test.describe('MSG-006', () => {
     })
 
     await test.step('Step 4: Verify correct agent is displayed in profile', async () => {
-      // Verify profile shows bot-a
       const profilePanel = page.locator('.profile-panel')
-      await expect(profilePanel).toContainText('bot-a')
+      await expect(profilePanel).toContainText(actualName)
       
-      // Verify profile handle shows @bot-a
       const profileHandle = profilePanel.locator('.profile-handle')
-      await expect(profileHandle).toContainText('@bot-a')
+      await expect(profileHandle).toContainText(`@${actualName}`)
     })
   })
 
