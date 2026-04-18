@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
 use axum::extract::{Path as AxumPath, Query, State};
+use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
-use super::{api_err, internal_err, ApiResult, AppState};
+use super::path_params::{resolve_public_agent, PublicResourceIdPath};
+use super::{app_err, internal_err, ApiResult, AppState};
 
 // ── Inline query structs ──
 
@@ -26,12 +28,12 @@ fn sanitize_workspace_path(
         match component {
             Component::Normal(part) => cleaned.push(part),
             Component::CurDir => {}
-            _ => return Err(api_err("invalid workspace path")),
+            _ => return Err(app_err!(StatusCode::BAD_REQUEST, "invalid workspace path")),
         }
     }
 
     if cleaned.as_os_str().is_empty() {
-        return Err(api_err("invalid workspace path"));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "invalid workspace path"));
     }
 
     Ok(cleaned)
@@ -75,9 +77,10 @@ fn collect_workspace_files(
 
 pub async fn handle_agent_workspace(
     State(state): State<AppState>,
-    AxumPath(name): AxumPath<String>,
+    AxumPath(PublicResourceIdPath { id }): AxumPath<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
-    let workspace_dir = state.store.agents_dir().join(&name);
+    let agent = resolve_public_agent(&state, &id)?;
+    let workspace_dir = state.store.agents_dir().join(&agent.name);
     if !workspace_dir.exists() {
         return Ok(Json(serde_json::json!({
             "path": workspace_dir.to_string_lossy(),
@@ -94,19 +97,23 @@ pub async fn handle_agent_workspace(
 
 pub async fn handle_agent_workspace_file(
     State(state): State<AppState>,
-    AxumPath(name): AxumPath<String>,
+    AxumPath(PublicResourceIdPath { id }): AxumPath<PublicResourceIdPath>,
     Query(params): Query<WorkspaceFileParams>,
 ) -> ApiResult<serde_json::Value> {
-    let workspace_dir = state.store.agents_dir().join(&name);
+    let agent = resolve_public_agent(&state, &id)?;
+    let workspace_dir = state.store.agents_dir().join(&agent.name);
     let relative = sanitize_workspace_path(&params.path)?;
     let file_path = workspace_dir.join(&relative);
 
     if !file_path.is_file() {
-        return Err(api_err("workspace file not found"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "workspace file not found"
+        ));
     }
 
-    let metadata = std::fs::metadata(&file_path).map_err(|e| internal_err(e.to_string()))?;
-    let bytes = std::fs::read(&file_path).map_err(|e| internal_err(e.to_string()))?;
+    let metadata = std::fs::metadata(&file_path).map_err(internal_err)?;
+    let bytes = std::fs::read(&file_path).map_err(internal_err)?;
     let limit = 100_000usize;
     let truncated = bytes.len() > limit;
     let content = if truncated {

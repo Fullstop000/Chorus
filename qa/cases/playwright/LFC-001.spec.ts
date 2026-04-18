@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { gotoApp } from './helpers/ui'
 import { ensureMixedRuntimeTrio, listAgents } from './helpers/api'
 
 /**
@@ -33,14 +34,14 @@ test.describe('LFC-001', () => {
     page,
     request,
   }) => {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Select test agent bot-a', async () => {
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
     })
 
     await test.step('Step 2–3: Transitional / idle status visible (sidebar dot or profile)', async () => {
-      await page.getByRole('button', { name: 'Profile' }).click()
+      await page.getByRole('button', { name: 'Profile', exact: true }).click()
       await expect(page.getByRole('button', { name: /\[stop::agent\]|\[start::agent\]/ })).toBeVisible({
         timeout: 60_000,
       })

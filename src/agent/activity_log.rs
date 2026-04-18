@@ -8,31 +8,22 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ActivityEntry {
+    Start {
+        is_resume: bool,
+    },
     Thinking {
         text: String,
     },
-    ToolStart {
+    ToolCall {
         tool_name: String,
         tool_input: String,
     },
+    ToolResult {
+        tool_name: String,
+        content: String,
+    },
     Text {
         text: String,
-    },
-    RawOutput {
-        text: String,
-    },
-    MessageReceived {
-        channel_label: String,
-        sender_name: String,
-        content: String,
-    },
-    MessageSent {
-        target: String,
-        content: String,
-    },
-    Status {
-        activity: String,
-        detail: String,
     },
 }
 
@@ -51,6 +42,16 @@ pub struct ActivityLogResponse {
 }
 
 pub const ACTIVITY_LOG_MAX: usize = 500;
+
+/// Canonical activity-state strings. Agents transition through this set in
+/// response to driver events; the frontend decodes each to a status badge.
+/// Centralized here so producers (manager, event_forwarder) and consumers
+/// (realtime dispatch, UI) agree on the exact wire values.
+pub const ACTIVITY_ONLINE: &str = "online";
+pub const ACTIVITY_WORKING: &str = "working";
+pub const ACTIVITY_THINKING: &str = "thinking";
+pub const ACTIVITY_OFFLINE: &str = "offline";
+pub const ACTIVITY_ERROR: &str = "error";
 
 /// Per-agent in-memory activity log (ring buffer, up to ACTIVITY_LOG_MAX entries).
 #[derive(Default)]
@@ -79,16 +80,51 @@ impl AgentActivityLog {
         }
     }
 
-    pub fn set_state(&mut self, activity: &str, detail: &str) {
-        if self.activity == activity && self.detail == detail {
-            return;
+    /// Update the last `ToolResult` entry in-place if it has the same `tool_name`,
+    /// otherwise push a new entry. This prevents streaming chunks from flooding
+    /// the log with dozens of near-identical entries.
+    pub fn upsert_tool_result(&mut self, tool_name: String, content: String) {
+        if let Some(last) = self.entries.back_mut() {
+            if let ActivityEntry::ToolResult {
+                tool_name: ref existing_name,
+                content: ref mut existing_content,
+            } = last.entry
+            {
+                if *existing_name == tool_name {
+                    *existing_content = content;
+                    last.timestamp_ms = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
+                    return;
+                }
+            }
         }
+        self.push(ActivityEntry::ToolResult { tool_name, content });
+    }
+
+    /// Update the most recent `ToolCall` entry's input in-place.
+    /// Called when ACP runtimes deliver the real args in a deferred `tool_call_update`.
+    pub fn update_last_tool_call_input(&mut self, new_input: String) {
+        for entry in self.entries.iter_mut().rev() {
+            if let ActivityEntry::ToolCall {
+                tool_input: ref mut existing_input,
+                ..
+            } = entry.entry
+            {
+                *existing_input = new_input;
+                entry.timestamp_ms = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                return;
+            }
+        }
+    }
+
+    pub fn set_state(&mut self, activity: &str, detail: &str) {
         self.activity = activity.to_string();
         self.detail = detail.to_string();
-        self.push(ActivityEntry::Status {
-            activity: activity.to_string(),
-            detail: detail.to_string(),
-        });
     }
 
     pub fn entries_since(&self, after_seq: u64) -> Vec<ActivityLogEntry> {
@@ -114,6 +150,31 @@ pub fn push_activity(logs: &ActivityLogMap, agent_name: &str, entry: ActivityEnt
         .entry(agent_name.to_string())
         .or_default()
         .push(entry);
+}
+
+/// Upsert a ToolResult for an agent: update the last entry in-place if it
+/// matches the same tool_name, otherwise push a new entry.
+pub fn upsert_tool_result_activity(
+    logs: &ActivityLogMap,
+    agent_name: &str,
+    tool_name: String,
+    content: String,
+) {
+    logs.lock()
+        .unwrap()
+        .entry(agent_name.to_string())
+        .or_default()
+        .upsert_tool_result(tool_name, content);
+}
+
+/// Update the most recent ToolCall's input for an agent.
+/// Used when ACP runtimes deliver args in a deferred `tool_call_update`.
+pub fn update_tool_call_input(logs: &ActivityLogMap, agent_name: &str, new_input: String) {
+    logs.lock()
+        .unwrap()
+        .entry(agent_name.to_string())
+        .or_default()
+        .update_last_tool_call_input(new_input);
 }
 
 /// Update the activity state for an agent (also appends a Status entry).
@@ -166,7 +227,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_set_activity_state_skips_duplicate_entries() {
+    fn test_set_activity_state_does_not_emit_log_entries() {
         let logs = ActivityLogMap::default();
 
         set_activity_state(&logs, "bot1", "online", "Idle");
@@ -175,8 +236,10 @@ mod tests {
         let resp = get_activity_log(&logs, "bot1", None);
         assert_eq!(
             resp.entries.len(),
-            1,
-            "duplicate state transitions should not create duplicate log rows"
+            0,
+            "set_activity_state should not create log entries — only updates activity state fields"
         );
+        assert_eq!(resp.agent_activity, "online");
+        assert_eq!(resp.agent_detail, "Idle");
     }
 }

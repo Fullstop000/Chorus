@@ -1,10 +1,11 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, historyForUser } from './helpers/api'
 import {
   createUserChannelViaUi,
   clickSidebarChannel,
   openMembersPanel,
   sendChatMessage,
+  gotoApp,
 } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
@@ -39,7 +40,7 @@ test.describe('CHN-001', () => {
     test.setTimeout(300_000)
 
     const slug = `qa-ops-${Date.now()}`
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Create disposable channel', async () => {
       await createUserChannelViaUi(page, slug, 'playwright CHN-001')
@@ -61,9 +62,11 @@ test.describe('CHN-001', () => {
 
     await test.step('Step 5: Invite bot-a', async () => {
       await page.locator('.members-panel-actions button:has-text("Invite")').click()
-      await page.locator('.modal-card .form-group select').selectOption('bot-a')
-      await page.locator('.modal-card button:has-text("Invite Member")').click()
-      await expect(page.locator('.modal-title:text("Invite Member")')).toBeHidden()
+      const inviteDialog = page.locator('[role="dialog"]')
+      await inviteDialog.locator('[role="combobox"][aria-label="Member"]').click()
+      await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+      await inviteDialog.locator('button:has-text("Invite Member")').click()
+      await expect(inviteDialog).toBeHidden()
       await expect(page.locator('.members-panel-title').first()).toHaveText('2')
     })
 

@@ -1,439 +1,825 @@
-use std::io::Write as _;
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
+//! Native v2 driver for the Kimi runtime using ACP protocol.
 
-use super::{command_exists, home_dir, read_file, Driver, ParsedEvent, SpawnContext};
-use crate::agent::drivers::prompt::{build_base_system_prompt, PromptOptions};
-use crate::agent::runtime_status::{RuntimeAuthStatus, RuntimeStatus};
-use crate::store::agents::{AgentConfig, AgentRuntime};
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+
+use anyhow::{bail, Context};
+use async_trait::async_trait;
+use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc;
+use tracing::{debug, trace, warn};
+
+use crate::agent::AgentRuntime;
+use crate::utils::cmd::{command_exists, home_dir, read_file};
+
+use super::acp_protocol::{self, AcpParsed, AcpPhase, AcpUpdateItem, ToolCallAccumulator};
+use super::*;
+
+// ---------------------------------------------------------------------------
+// MCP config construction
+// ---------------------------------------------------------------------------
+
+/// Build the `.chorus-kimi-mcp.json` config file contents.
+///
+/// Produces the remote HTTP MCP shape, connecting the runtime to the shared
+/// bridge at `{endpoint}/token/{token}/mcp`. Kimi requires `transport: "http"`
+/// alongside `url` — without it, the runtime defaults to stdio and fails to
+/// connect. Verified against the format emitted by `kimi mcp add --transport
+/// http`.
+fn build_mcp_config_file(bridge_endpoint: &str, token: &str) -> serde_json::Value {
+    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+    serde_json::json!({
+        "mcpServers": {
+            "chat": {
+                "url": url,
+                "transport": "http"
+            }
+        }
+    })
+}
+
+/// Build the `mcpServers` array for the ACP `session/new` inline params.
+///
+/// Produces the remote HTTP MCP shape. ACP spec for HTTP MCP servers in
+/// session/new params requires:
+///   - `type: "http"` (NOT `transport: "http"` like Kimi's file config format)
+///   - `headers` array (required, can be empty)
+///
+/// See <https://agentclientprotocol.com/protocol/session-setup> — sending the
+/// wrong shape produces ACP "Invalid params" errors.
+fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Value {
+    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+    serde_json::json!([{
+        "type": "http",
+        "name": "chat",
+        "url": url,
+        "headers": []
+    }])
+}
+
+// ---------------------------------------------------------------------------
+// KimiDriver
+// ---------------------------------------------------------------------------
 
 pub struct KimiDriver;
 
-fn normalize_kimi_tool_name(name: &str) -> String {
-    match name {
-        "mcp__chat__send_message" => "send_message".to_string(),
-        "mcp__chat__check_messages" => "check_messages".to_string(),
-        "mcp__chat__wait_for_message" => "wait_for_message".to_string(),
-        "mcp__chat__receive_message" => "receive_message".to_string(),
-        "mcp__chat__upload_file" => "upload_file".to_string(),
-        "mcp__chat__view_file" => "view_file".to_string(),
-        "mcp__chat__list_tasks" => "list_tasks".to_string(),
-        "mcp__chat__create_tasks" => "create_tasks".to_string(),
-        "mcp__chat__claim_tasks" => "claim_tasks".to_string(),
-        "mcp__chat__unclaim_task" => "unclaim_task".to_string(),
-        "mcp__chat__update_task_status" => "update_task_status".to_string(),
-        "mcp__chat__list_server" => "list_server".to_string(),
-        "mcp__chat__read_history" => "read_history".to_string(),
-        other => other.to_string(),
-    }
-}
-
-impl Driver for KimiDriver {
+#[async_trait]
+impl RuntimeDriver for KimiDriver {
     fn runtime(&self) -> AgentRuntime {
         AgentRuntime::Kimi
     }
 
-    fn supports_stdin_notification(&self) -> bool {
-        true
-    }
+    async fn probe(&self) -> anyhow::Result<RuntimeProbe> {
+        if !command_exists("kimi") {
+            return Ok(RuntimeProbe {
+                auth: ProbeAuth::NotInstalled,
+                transport: TransportKind::AcpNative,
+                capabilities: CapabilitySet::MODEL_LIST,
+            });
+        }
 
-    fn mcp_tool_prefix(&self) -> &str {
-        ""
-    }
-
-    fn spawn(&self, ctx: &SpawnContext) -> anyhow::Result<Child> {
-        let mcp_config = serde_json::json!({
-            "mcpServers": {
-                "chat": {
-                    "command": ctx.bridge_binary,
-                    "args": ["bridge", "--agent-id", &ctx.agent_id, "--server-url", &ctx.server_url]
+        let home = home_dir();
+        let auth = read_file(&home.join(".kimi/credentials/kimi-code.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .map(|payload| {
+                let has_access = payload["access_token"]
+                    .as_str()
+                    .is_some_and(|v| !v.trim().is_empty());
+                let has_refresh = payload["refresh_token"]
+                    .as_str()
+                    .is_some_and(|v| !v.trim().is_empty());
+                if has_access || has_refresh {
+                    ProbeAuth::Authed
+                } else {
+                    ProbeAuth::Unauthed
                 }
-            }
+            })
+            .unwrap_or(ProbeAuth::Unauthed);
+
+        Ok(RuntimeProbe {
+            auth,
+            transport: TransportKind::AcpNative,
+            capabilities: CapabilitySet::MODEL_LIST,
+        })
+    }
+
+    async fn login(&self) -> anyhow::Result<LoginOutcome> {
+        Ok(LoginOutcome::Failed {
+            reason: "kimi does not support login via Chorus".into(),
+        })
+    }
+
+    async fn list_sessions(&self) -> anyhow::Result<Vec<StoredSessionMeta>> {
+        Ok(vec![])
+    }
+
+    async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>> {
+        Ok(vec![ModelInfo::from_id("kimi-code/kimi-for-coding".into())])
+    }
+
+    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
+        Ok(vec![])
+    }
+
+    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
+        let (events, event_tx) = EventFanOut::new();
+        let handle = KimiHandle {
+            key,
+            state: AgentState::Idle,
+            events: events.clone(),
+            event_tx,
+            spec,
+            child: None,
+            stdin_tx: None,
+            shared: Arc::new(Mutex::new(SharedReaderState {
+                phase: AcpPhase::AwaitingInitResponse,
+                session_id: None,
+                run_id: None,
+                pending_prompt: None,
+                pending_session_id: None,
+                agent_state: AgentState::Idle,
+            })),
+            next_request_id: 4,
+            reader_handles: vec![],
+        };
+        Ok(AttachResult {
+            handle: Box::new(handle),
+            events,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Shared reader state
+// ---------------------------------------------------------------------------
+
+struct SharedReaderState {
+    phase: AcpPhase,
+    session_id: Option<String>,
+    run_id: Option<RunId>,
+    pending_prompt: Option<String>,
+    /// Kimi omits sessionId from session/load responses; stash the requested
+    /// id so the reader task can fall back to it.
+    pending_session_id: Option<String>,
+    /// Canonical agent state, shared between handle methods and the reader task.
+    agent_state: AgentState,
+}
+
+// ---------------------------------------------------------------------------
+// KimiHandle
+// ---------------------------------------------------------------------------
+
+pub struct KimiHandle {
+    key: AgentKey,
+    state: AgentState,
+    events: EventStreamHandle,
+    event_tx: mpsc::Sender<DriverEvent>,
+    spec: AgentSpec,
+    child: Option<std::process::Child>,
+    stdin_tx: Option<mpsc::Sender<String>>,
+    shared: Arc<Mutex<SharedReaderState>>,
+    next_request_id: u64,
+    reader_handles: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl KimiHandle {
+    fn emit(&self, event: DriverEvent) {
+        let _ = self.event_tx.try_send(event);
+    }
+
+    fn alloc_id(&mut self) -> u64 {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        id
+    }
+}
+
+impl Drop for KimiHandle {
+    fn drop(&mut self) {
+        if let Some(ref mut child) = self.child {
+            let pid = child.id();
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid as i32),
+                nix::sys::signal::Signal::SIGTERM,
+            );
+        }
+    }
+}
+
+#[async_trait]
+impl AgentHandle for KimiHandle {
+    fn key(&self) -> &AgentKey {
+        &self.key
+    }
+
+    fn state(&self) -> AgentState {
+        self.shared.lock().unwrap().agent_state.clone()
+    }
+
+    async fn start(
+        &mut self,
+        opts: StartOpts,
+        init_prompt: Option<PromptReq>,
+    ) -> anyhow::Result<()> {
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.agent_state = AgentState::Starting;
+        }
+        self.state = AgentState::Starting;
+        self.emit(DriverEvent::Lifecycle {
+            key: self.key.clone(),
+            state: AgentState::Starting,
         });
-        let mcp_config_path =
-            std::path::Path::new(&ctx.working_directory).join(".chorus-kimi-mcp.json");
-        std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)?;
 
-        let session_id = ctx
-            .config
-            .session_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Kimi requires a prepared session id"))?;
+        // Pair with the shared HTTP bridge. If pairing fails we surface the
+        // error — misconfiguration is loud.
+        let pairing_token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+            .await
+            .context("failed to pair with shared bridge")?;
 
+        // Write MCP config file
+        let wd = &self.spec.working_directory;
+        let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
+        let mcp_config = build_mcp_config_file(&self.spec.bridge_endpoint, &pairing_token);
+        std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
+            .context("failed to write MCP config")?;
+
+        // Build CLI args
+        let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
+        let wd_str = wd.to_string_lossy().into_owned();
         let mut args = vec![
-            "--print".to_string(),
-            "--output-format".to_string(),
-            "stream-json".to_string(),
-            "--input-format".to_string(),
-            "stream-json".to_string(),
             "--work-dir".to_string(),
-            ctx.working_directory.clone(),
-            "--session".to_string(),
-            session_id.to_string(),
+            wd_str,
             "--mcp-config-file".to_string(),
-            mcp_config_path.to_string_lossy().into_owned(),
+            mcp_path_str,
         ];
-
-        if !ctx.config.model.is_empty() {
+        if !self.spec.model.is_empty() {
             args.push("--model".to_string());
-            args.push(ctx.config.model.clone());
+            args.push(self.spec.model.clone());
         }
+        args.push("acp".to_string());
 
-        let mut env_vars: std::collections::HashMap<String, String> = std::env::vars().collect();
-        env_vars.insert("FORCE_COLOR".to_string(), "0".to_string());
-        env_vars.insert("NO_COLOR".to_string(), "1".to_string());
-        for extra in &ctx.config.env_vars {
-            env_vars.insert(extra.key.clone(), extra.value.clone());
-        }
-
-        let mut child = Command::new("kimi")
-            .args(&args)
-            .current_dir(&ctx.working_directory)
+        // Build env
+        let mut cmd = Command::new("kimi");
+        cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .envs(&env_vars)
-            .spawn()?;
-
-        let stdin_msg = serde_json::json!({
-            "role": "user",
-            "content": &ctx.prompt,
-        });
-
-        if let Some(ref mut stdin) = child.stdin {
-            let mut line = serde_json::to_string(&stdin_msg)?;
-            line.push('\n');
-            stdin.write_all(line.as_bytes())?;
+            .env("FORCE_COLOR", "0")
+            .env("NO_COLOR", "1");
+        for ev in &self.spec.env_vars {
+            cmd.env(&ev.key, &ev.value);
         }
 
-        Ok(child)
-    }
+        let mut child = cmd.spawn().context("failed to spawn kimi")?;
+        let stdout = child.stdout.take().context("missing stdout")?;
+        let stderr = child.stderr.take().context("missing stderr")?;
+        let mut stdin = child.stdin.take().context("missing stdin")?;
 
-    fn parse_line(&self, line: &str) -> Vec<ParsedEvent> {
-        let event: serde_json::Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(_) => return vec![],
+        // Write handshake synchronously before handing stdin to the async writer
+        let init_req = acp_protocol::build_initialize_request(1);
+        writeln!(stdin, "{init_req}").context("failed to write initialize request")?;
+
+        let mcp_servers = build_acp_mcp_servers(&self.spec.bridge_endpoint, &pairing_token);
+        let session_new_params = serde_json::json!({
+            "cwd": self.spec.working_directory,
+            "mcpServers": mcp_servers
+        });
+
+        let session_req = if let Some(ref sid) = opts.resume_session_id {
+            {
+                let mut shared = self.shared.lock().unwrap();
+                shared.pending_session_id = Some(sid.clone());
+            }
+            acp_protocol::build_session_load_request(2, sid, session_new_params)
+        } else {
+            acp_protocol::build_session_new_request(2, session_new_params)
         };
+        writeln!(stdin, "{session_req}").context("failed to write session request")?;
 
-        let mut events = Vec::new();
-        match event.get("role").and_then(|v| v.as_str()) {
-            Some("assistant") => {
-                let mut has_tool_calls = false;
+        // Stash deferred initial prompt
+        if let Some(ref req) = init_prompt {
+            let mut shared = self.shared.lock().unwrap();
+            shared.pending_prompt = Some(req.text.clone());
+        }
 
-                match event.get("content") {
-                    Some(serde_json::Value::String(text)) => {
-                        events.push(ParsedEvent::Text {
-                            text: text.to_string(),
-                        });
+        // Stdin writer task
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
+        self.stdin_tx = Some(stdin_tx.clone());
+        let stdin_handle = tokio::task::spawn_blocking(move || {
+            while let Some(line) = stdin_rx.blocking_recv() {
+                if writeln!(stdin, "{line}").is_err() {
+                    break;
+                }
+                if stdin.flush().is_err() {
+                    break;
+                }
+            }
+        });
+        self.reader_handles.push(stdin_handle);
+
+        // Stdout reader task
+        let key = self.key.clone();
+        let event_tx = self.event_tx.clone();
+        let shared = self.shared.clone();
+        let stdin_tx_for_reader = self.stdin_tx.clone().unwrap();
+        let stdout_handle = tokio::spawn(async move {
+            let reader = BufReader::new(tokio::process::ChildStdout::from_std(stdout).unwrap());
+            let mut lines = reader.lines();
+            let mut accumulator = ToolCallAccumulator::new();
+
+            while let Ok(Some(line)) = lines.next_line().await {
+                if line.trim().is_empty() {
+                    continue;
+                }
+                trace!(line = %line, "kimi stdout");
+                let parsed = acp_protocol::parse_line(&line);
+
+                match parsed {
+                    AcpParsed::InitializeResponse => {
+                        let mut s = shared.lock().unwrap();
+                        s.phase = AcpPhase::AwaitingSessionResponse;
+                        debug!("kimi: initialize response received");
                     }
-                    Some(serde_json::Value::Array(content)) => {
-                        for block in content {
-                            match block.get("type").and_then(|v| v.as_str()) {
-                                Some("text") => {
-                                    if let Some(text) = block.get("text").and_then(|v| v.as_str()) {
-                                        events.push(ParsedEvent::Text {
-                                            text: text.to_string(),
+
+                    AcpParsed::SessionResponse { session_id } => {
+                        let (sid, deferred_prompt) = {
+                            let mut s = shared.lock().unwrap();
+                            s.phase = AcpPhase::Active;
+                            let sid = session_id
+                                .or_else(|| s.pending_session_id.take())
+                                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                            s.session_id = Some(sid.clone());
+                            s.agent_state = AgentState::Active {
+                                session_id: sid.clone(),
+                            };
+                            let prompt = s.pending_prompt.take();
+                            (sid, prompt)
+                        };
+
+                        let _ = event_tx.try_send(DriverEvent::SessionAttached {
+                            key: key.clone(),
+                            session_id: sid.clone(),
+                        });
+                        let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                            key: key.clone(),
+                            state: AgentState::Active {
+                                session_id: sid.clone(),
+                            },
+                        });
+
+                        // Send deferred initial prompt now that we have a session
+                        if let Some(prompt_text) = deferred_prompt {
+                            let run_id = RunId::new_v4();
+                            {
+                                let mut s = shared.lock().unwrap();
+                                s.run_id = Some(run_id);
+                                s.agent_state = AgentState::PromptInFlight {
+                                    run_id,
+                                    session_id: sid.clone(),
+                                };
+                            }
+                            let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                                key: key.clone(),
+                                state: AgentState::PromptInFlight {
+                                    run_id,
+                                    session_id: sid.clone(),
+                                },
+                            });
+
+                            let req =
+                                acp_protocol::build_session_prompt_request(3, &sid, &prompt_text);
+                            let _ = stdin_tx_for_reader.try_send(req);
+                        }
+                    }
+
+                    AcpParsed::PromptResponse { .. } => {
+                        let (run_id, sid) = {
+                            let mut s = shared.lock().unwrap();
+                            let rid = s.run_id.take();
+                            let sid = s.session_id.clone().unwrap_or_default();
+                            s.agent_state = AgentState::Active {
+                                session_id: sid.clone(),
+                            };
+                            (rid, sid)
+                        };
+
+                        // Flush accumulated tool calls
+                        if let Some(run_id) = run_id {
+                            for (_id, name, input) in accumulator.drain() {
+                                let _ = event_tx.try_send(DriverEvent::Output {
+                                    key: key.clone(),
+                                    run_id,
+                                    item: AgentEventItem::ToolCall { name, input },
+                                });
+                            }
+
+                            let _ = event_tx.try_send(DriverEvent::Output {
+                                key: key.clone(),
+                                run_id,
+                                item: AgentEventItem::TurnEnd,
+                            });
+                            let _ = event_tx.try_send(DriverEvent::Completed {
+                                key: key.clone(),
+                                run_id,
+                                result: RunResult {
+                                    session_id: sid.clone(),
+                                    finish_reason: FinishReason::Natural,
+                                },
+                            });
+                            let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                                key: key.clone(),
+                                state: AgentState::Active { session_id: sid },
+                            });
+                        }
+                    }
+
+                    AcpParsed::SessionUpdate { items } => {
+                        let run_id = {
+                            let s = shared.lock().unwrap();
+                            s.run_id
+                        };
+                        let Some(run_id) = run_id else { continue };
+
+                        for item in items {
+                            match item {
+                                AcpUpdateItem::SessionInit { session_id } => {
+                                    let mut s = shared.lock().unwrap();
+                                    s.session_id = Some(session_id);
+                                }
+                                AcpUpdateItem::Thinking { text } => {
+                                    let _ = event_tx.try_send(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::Thinking { text },
+                                    });
+                                }
+                                AcpUpdateItem::Text { text } => {
+                                    let _ = event_tx.try_send(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::Text { text },
+                                    });
+                                }
+                                AcpUpdateItem::ToolCall { id, name, input } => {
+                                    // Flush any previous pending calls before recording new one
+                                    for (_id, n, inp) in accumulator.drain() {
+                                        let _ = event_tx.try_send(DriverEvent::Output {
+                                            key: key.clone(),
+                                            run_id,
+                                            item: AgentEventItem::ToolCall {
+                                                name: n,
+                                                input: inp,
+                                            },
                                         });
                                     }
+                                    accumulator.record_call(id, name, input);
                                 }
-                                Some("tool_use") => {
-                                    has_tool_calls = true;
-                                    let name = normalize_kimi_tool_name(
-                                        block
-                                            .get("name")
-                                            .and_then(|v| v.as_str())
-                                            .unwrap_or("unknown_tool"),
-                                    );
-                                    let input = block
-                                        .get("input")
-                                        .cloned()
-                                        .unwrap_or(serde_json::Value::Null);
-                                    events.push(ParsedEvent::ToolCall { name, input });
+                                AcpUpdateItem::ToolCallUpdate { id, input } => {
+                                    accumulator.merge_update(id, input);
                                 }
-                                _ => {}
+                                AcpUpdateItem::ToolResult { content } => {
+                                    // Flush the accumulated tool call first
+                                    for (_id, n, inp) in accumulator.drain() {
+                                        let _ = event_tx.try_send(DriverEvent::Output {
+                                            key: key.clone(),
+                                            run_id,
+                                            item: AgentEventItem::ToolCall {
+                                                name: n,
+                                                input: inp,
+                                            },
+                                        });
+                                    }
+                                    let _ = event_tx.try_send(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::ToolResult { content },
+                                    });
+                                }
+                                AcpUpdateItem::TurnEnd => {
+                                    for (_id, n, inp) in accumulator.drain() {
+                                        let _ = event_tx.try_send(DriverEvent::Output {
+                                            key: key.clone(),
+                                            run_id,
+                                            item: AgentEventItem::ToolCall {
+                                                name: n,
+                                                input: inp,
+                                            },
+                                        });
+                                    }
+                                    let _ = event_tx.try_send(DriverEvent::Output {
+                                        key: key.clone(),
+                                        run_id,
+                                        item: AgentEventItem::TurnEnd,
+                                    });
+                                }
                             }
                         }
                     }
-                    _ => {}
-                }
 
-                if let Some(tool_calls) = event.get("tool_calls").and_then(|v| v.as_array()) {
-                    for tool_call in tool_calls {
-                        has_tool_calls = true;
-                        let name = normalize_kimi_tool_name(
-                            tool_call
-                                .get("function")
-                                .and_then(|function| function.get("name"))
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("unknown_tool"),
+                    AcpParsed::PermissionRequested {
+                        request_id,
+                        tool_name,
+                        options,
+                    } => {
+                        // Pick the most permissive option from the runtime's
+                        // offered choices (allow_always > allow_once > first).
+                        let option_id = acp_protocol::pick_best_option_id(&options);
+                        debug!(
+                            ?tool_name,
+                            request_id, option_id, "kimi: auto-approving permission"
                         );
-                        let input = tool_call
-                            .get("function")
-                            .and_then(|function| function.get("arguments"))
-                            .and_then(|v| v.as_str())
-                            .and_then(|value| serde_json::from_str(value).ok())
-                            .unwrap_or(serde_json::Value::Null);
-                        events.push(ParsedEvent::ToolCall { name, input });
+                        let response =
+                            acp_protocol::build_permission_response_raw(request_id, option_id);
+                        let _ = stdin_tx_for_reader.try_send(response);
                     }
-                }
 
-                if !has_tool_calls {
-                    events.push(ParsedEvent::TurnEnd { session_id: None });
+                    AcpParsed::Error { message } => {
+                        warn!(message = %message, "kimi: ACP error");
+                        let run_id = {
+                            let mut s = shared.lock().unwrap();
+                            s.run_id.take()
+                        };
+                        if let Some(run_id) = run_id {
+                            let _ = event_tx.try_send(DriverEvent::Failed {
+                                key: key.clone(),
+                                run_id,
+                                error: AgentError::RuntimeReported(message),
+                            });
+                        }
+                    }
+
+                    AcpParsed::Unknown => {}
                 }
             }
-            Some("tool") => {}
-            Some("error") => {
-                let message = event
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("Unknown Kimi error");
-                events.push(ParsedEvent::Error {
-                    message: message.to_string(),
+
+            // EOF — runtime exited
+            let run_id = {
+                let s = shared.lock().unwrap();
+                s.run_id
+            };
+            if let Some(run_id) = run_id {
+                let sid = shared
+                    .lock()
+                    .unwrap()
+                    .session_id
+                    .clone()
+                    .unwrap_or_default();
+                let _ = event_tx.try_send(DriverEvent::Completed {
+                    key: key.clone(),
+                    run_id,
+                    result: RunResult {
+                        session_id: sid,
+                        finish_reason: FinishReason::TransportClosed,
+                    },
                 });
             }
-            _ => {}
-        }
-
-        events
-    }
-
-    fn encode_stdin_message(&self, text: &str, _session_id: &str) -> Option<String> {
-        let msg = serde_json::json!({
-            "role": "user",
-            "content": text,
+            let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                key: key.clone(),
+                state: AgentState::Closed,
+            });
+            {
+                let mut s = shared.lock().unwrap();
+                s.agent_state = AgentState::Closed;
+            }
         });
-        Some(serde_json::to_string(&msg).unwrap_or_default())
-    }
+        self.reader_handles.push(stdout_handle);
 
-    fn build_system_prompt(&self, config: &AgentConfig, _agent_id: &str) -> String {
-        build_base_system_prompt(
-            config,
-            &PromptOptions {
-                tool_prefix: "".to_string(),
-                extra_critical_rules: vec![
-                    "- Do NOT use bash/curl/sqlite to send or receive messages. The MCP tools handle everything.".to_string(),
-                    "- Call `wait_for_message()` when you are idle so the agent stays in the receive loop.".to_string(),
-                    "- After `wait_for_message()` or `check_messages()` returns a real user message, you must either send a reply or deliberately explain why no reply is needed before going idle again.".to_string(),
-                    "- Direct messages and explicit @mentions are addressed to you. Do not silently consume them and return to waiting.".to_string(),
-                    "- Never treat raw assistant stdout as a user-visible reply. Any reply meant for humans must be delivered with `send_message()`.".to_string(),
-                ],
-                post_startup_notes: vec![],
-                include_stdin_notification_section: true,
-                teams: config.teams.clone(),
-            },
-        )
-    }
-
-    fn tool_display_name(&self, name: &str) -> String {
-        match name {
-            "send_message" => "Sending message…".to_string(),
-            "check_messages" => "Checking messages…".to_string(),
-            "wait_for_message" => "Waiting for messages…".to_string(),
-            "receive_message" => "Receiving messages…".to_string(),
-            "upload_file" => "Uploading file…".to_string(),
-            "view_file" => "Viewing file…".to_string(),
-            "list_tasks" => "Listing tasks…".to_string(),
-            "create_tasks" => "Creating tasks…".to_string(),
-            "claim_tasks" => "Claiming tasks…".to_string(),
-            "unclaim_task" => "Unclaiming task…".to_string(),
-            "update_task_status" => "Updating task status…".to_string(),
-            "list_server" => "Listing server…".to_string(),
-            "read_history" => "Reading history…".to_string(),
-            n if n.starts_with("mcp__chat__") => {
-                let op = normalize_kimi_tool_name(n).replace('_', " ");
-                format!("Using {op}…")
+        // Stderr reader task
+        let key_err = self.key.clone();
+        let stderr_handle = tokio::spawn(async move {
+            let stderr_async = match tokio::process::ChildStderr::from_std(stderr) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(key = %key_err, error = %e, "kimi: failed to convert stderr to async");
+                    return;
+                }
+            };
+            let reader = BufReader::new(stderr_async);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    warn!(key = %key_err, line = %line, "kimi stderr");
+                }
             }
-            other => {
-                let truncated: String = other.chars().take(20).collect();
-                format!("Using {truncated}…")
-            }
-        }
+        });
+        self.reader_handles.push(stderr_handle);
+
+        self.child = Some(child);
+
+        Ok(())
     }
 
-    fn summarize_tool_input(&self, name: &str, input: &serde_json::Value) -> String {
-        if !input.is_object() {
-            return String::new();
-        }
+    async fn new_session(&mut self) -> anyhow::Result<SessionId> {
+        bail!("kimi does not support new_session on an active handle");
+    }
 
-        let str_field = |field: &str| -> String {
-            input
-                .get(field)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
+    async fn resume_session(&mut self, _id: SessionId) -> anyhow::Result<()> {
+        bail!("kimi does not support resume_session on an active handle");
+    }
+
+    async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
+        let session_id = {
+            let s = self.shared.lock().unwrap();
+            match &s.agent_state {
+                AgentState::Active { session_id } => session_id.clone(),
+                _ => bail!("cannot prompt: handle not in Active state"),
+            }
         };
 
-        match name {
-            "Read" | "read_file" | "Write" | "write_file" | "Edit" | "edit_file" => {
-                let p = str_field("file_path");
-                if p.is_empty() {
-                    str_field("path")
-                } else {
-                    p
-                }
-            }
-            "Bash" | "bash" => {
-                let cmd = str_field("command");
-                if cmd.chars().count() > 100 {
-                    let truncated: String = cmd.chars().take(100).collect();
-                    format!("{truncated}…")
-                } else {
-                    cmd
-                }
-            }
-            "Glob" | "glob" | "Grep" | "grep" => str_field("pattern"),
-            "WebFetch" | "web_fetch" => str_field("url"),
-            "send_message" | "mcp__chat__send_message" => {
-                let target = str_field("target");
-                let text = {
-                    let content = str_field("content");
-                    if content.is_empty() {
-                        str_field("text")
-                    } else {
-                        content
-                    }
-                };
-                if target.is_empty() {
-                    text
-                } else if text.is_empty() {
-                    target
-                } else {
-                    format!("{target}: {text}")
-                }
-            }
-            "read_history" | "mcp__chat__read_history" => str_field("channel"),
-            "view_file" | "mcp__chat__view_file" => str_field("path"),
-            _ => String::new(),
+        let run_id = RunId::new_v4();
+        let request_id = self.alloc_id();
+
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.run_id = Some(run_id);
+            s.agent_state = AgentState::PromptInFlight {
+                run_id,
+                session_id: session_id.clone(),
+            };
         }
-    }
 
-    fn detect_runtime_status(&self) -> anyhow::Result<RuntimeStatus> {
-        detect_kimi_runtime_status(self.id(), &home_dir())
-    }
-}
-
-fn detect_kimi_runtime_status(runtime_id: &str, home: &Path) -> anyhow::Result<RuntimeStatus> {
-    if !command_exists("kimi") {
-        return Ok(RuntimeStatus {
-            runtime: runtime_id.to_string(),
-            installed: false,
-            auth_status: None,
+        self.state = AgentState::PromptInFlight {
+            run_id,
+            session_id: session_id.clone(),
+        };
+        self.emit(DriverEvent::Lifecycle {
+            key: self.key.clone(),
+            state: AgentState::PromptInFlight {
+                run_id,
+                session_id: session_id.clone(),
+            },
         });
+
+        let prompt_req =
+            acp_protocol::build_session_prompt_request(request_id, &session_id, &req.text);
+        if let Some(ref tx) = self.stdin_tx {
+            tx.send(prompt_req).await.context("stdin channel closed")?;
+        } else {
+            bail!("stdin not available — handle not started");
+        }
+
+        Ok(run_id)
     }
 
-    let auth_status = read_file(&home.join(".kimi/credentials/kimi-code.json"))
-        .ok()
-        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
-        .map(|payload| {
-            let has_access = payload["access_token"]
-                .as_str()
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false);
-            let has_refresh = payload["refresh_token"]
-                .as_str()
-                .map(|value| !value.trim().is_empty())
-                .unwrap_or(false);
-            if has_access || has_refresh {
-                RuntimeAuthStatus::Authed
-            } else {
-                RuntimeAuthStatus::Unauthed
+    async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
+        // Read authoritative state from shared — self.state can lag the reader task.
+        let (run_id, session_id) = {
+            let s = self.shared.lock().unwrap();
+            match &s.agent_state {
+                AgentState::PromptInFlight { run_id, session_id } => (*run_id, session_id.clone()),
+                _ => return Ok(CancelOutcome::NotInFlight),
             }
-        })
-        .unwrap_or(RuntimeAuthStatus::Unauthed);
+        };
 
-    Ok(RuntimeStatus {
-        runtime: runtime_id.to_string(),
-        installed: true,
-        auth_status: Some(auth_status),
-    })
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.run_id = None;
+            s.agent_state = AgentState::Active {
+                session_id: session_id.clone(),
+            };
+        }
+
+        self.emit(DriverEvent::Completed {
+            key: self.key.clone(),
+            run_id,
+            result: RunResult {
+                session_id: session_id.clone(),
+                finish_reason: FinishReason::Cancelled,
+            },
+        });
+
+        self.state = AgentState::Active { session_id };
+        Ok(CancelOutcome::Aborted)
+    }
+
+    async fn close(&mut self) -> anyhow::Result<()> {
+        if matches!(self.state, AgentState::Closed) {
+            return Ok(());
+        }
+
+        if let Some(ref mut child) = self.child {
+            let pid = child.id();
+            let _ = nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid as i32),
+                nix::sys::signal::Signal::SIGTERM,
+            );
+        }
+        self.child = None;
+        self.stdin_tx = None;
+
+        self.state = AgentState::Closed;
+        {
+            let mut s = self.shared.lock().unwrap();
+            s.agent_state = AgentState::Closed;
+        }
+        self.emit(DriverEvent::Lifecycle {
+            key: self.key.clone(),
+            state: AgentState::Closed,
+        });
+        self.events.close();
+
+        for handle in self.reader_handles.drain(..) {
+            handle.abort();
+        }
+
+        Ok(())
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
+    use std::path::PathBuf;
 
-    #[test]
-    fn kimi_parse_line_maps_documented_assistant_text_output() {
-        let driver = KimiDriver;
-        let events =
-            driver.parse_line(r#"{"role":"assistant","content":"Hello! How can I help you?"}"#);
-
-        assert!(matches!(
-            &events[0],
-            ParsedEvent::Text { text } if text == "Hello! How can I help you?"
-        ));
-        assert!(matches!(events[1], ParsedEvent::TurnEnd { .. }));
-    }
-
-    #[test]
-    fn kimi_parse_line_maps_documented_tool_sequence() {
-        let driver = KimiDriver;
-        let events = driver.parse_line(
-            r#"{"role":"assistant","content":[{"type":"tool_use","name":"check_messages","input":{"limit":5}}]}"#,
-        );
-
-        assert!(matches!(
-            &events[0],
-            ParsedEvent::ToolCall { name, .. } if name == "check_messages"
-        ));
-    }
-
-    #[test]
-    fn kimi_parse_line_maps_top_level_tool_calls() {
-        let driver = KimiDriver;
-        let events = driver.parse_line(
-            r#"{"role":"assistant","content":[{"type":"think","think":"..." }],"tool_calls":[{"type":"function","id":"tool_1","function":{"name":"send_message","arguments":"{\"target\":\"dm:@bytedance\",\"content\":\"TRACE-KIMI-123\"}"}}]}"#,
-        );
-
-        assert!(matches!(
-            &events[0],
-            ParsedEvent::ToolCall { name, input }
-                if name == "send_message" && input["target"] == "dm:@bytedance"
-        ));
-    }
-
-    #[test]
-    fn kimi_encode_stdin_message_uses_documented_message_shape() {
-        let driver = KimiDriver;
-        let encoded = driver
-            .encode_stdin_message("Hello", "ignored")
-            .expect("Kimi driver should support stdin messages");
-        let json: serde_json::Value = serde_json::from_str(&encoded).unwrap();
-
-        assert_eq!(json["role"], "user");
-        assert_eq!(json["content"], "Hello");
-    }
-
-    #[test]
-    fn kimi_summarize_tool_input_includes_read_history_channel() {
-        let driver = KimiDriver;
-        let input = serde_json::json!({ "channel": "#common-feature-squad", "limit": 20 });
-
-        assert_eq!(
-            driver.summarize_tool_input("read_history", &input),
-            "#common-feature-squad"
-        );
-    }
-
-    #[test]
-    fn kimi_runtime_status_reads_local_credentials() {
-        let dir = tempdir().unwrap();
-        let credentials_dir = dir.path().join(".kimi/credentials");
-        std::fs::create_dir_all(&credentials_dir).unwrap();
-        std::fs::write(
-            credentials_dir.join("kimi-code.json"),
-            r#"{"access_token":"token","refresh_token":""}"#,
-        )
-        .unwrap();
-
-        let status = detect_kimi_runtime_status("kimi", dir.path()).unwrap();
-
-        assert_eq!(status.runtime, "kimi");
-        if status.installed {
-            assert_eq!(status.auth_status, Some(RuntimeAuthStatus::Authed));
-        } else {
-            assert_eq!(status.auth_status, None);
+    fn test_spec() -> AgentSpec {
+        AgentSpec {
+            display_name: "test-kimi".to_string(),
+            description: None,
+            system_prompt: None,
+            model: "kimi-code/kimi-for-coding".to_string(),
+            reasoning_effort: None,
+            env_vars: vec![],
+            working_directory: PathBuf::from("/fake"),
+            bridge_endpoint: "http://127.0.0.1:1".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn test_kimi_driver_probe_not_installed() {
+        let driver = KimiDriver;
+        let probe = driver.probe().await.unwrap();
+        // kimi binary is not on PATH in CI/test environments
+        if probe.auth == ProbeAuth::NotInstalled {
+            assert_eq!(probe.transport, TransportKind::AcpNative);
+            assert!(probe.capabilities.contains(CapabilitySet::MODEL_LIST));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_kimi_driver_list_models() {
+        let driver = KimiDriver;
+        let models = driver.list_models().await.unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "kimi-code/kimi-for-coding");
+    }
+
+    #[tokio::test]
+    async fn test_kimi_driver_attach_returns_idle() {
+        let driver = KimiDriver;
+        let result = driver
+            .attach("kimi-agent-1".to_string(), test_spec())
+            .await
+            .unwrap();
+        assert!(matches!(result.handle.state(), AgentState::Idle));
+    }
+
+    // ---- build_mcp_config_file tests ----
+
+    #[test]
+    fn build_mcp_config_file_http_shape() {
+        let config = build_mcp_config_file("http://127.0.0.1:4321", "tok-xyz");
+        let chat = &config["mcpServers"]["chat"];
+        assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(chat["transport"], "http");
+        assert!(chat.get("command").is_none());
+    }
+
+    #[test]
+    fn build_mcp_config_file_trims_trailing_slash() {
+        let config = build_mcp_config_file("http://127.0.0.1:4321/", "tok-xyz");
+        assert_eq!(
+            config["mcpServers"]["chat"]["url"],
+            "http://127.0.0.1:4321/token/tok-xyz/mcp"
+        );
+    }
+
+    // ---- build_acp_mcp_servers tests ----
+
+    #[test]
+    fn build_acp_mcp_servers_http_shape() {
+        let servers = build_acp_mcp_servers("http://127.0.0.1:4321", "tok-xyz");
+        let arr = servers.as_array().expect("array");
+        assert_eq!(arr.len(), 1);
+        let entry = &arr[0];
+        assert_eq!(entry["type"], "http");
+        assert_eq!(entry["name"], "chat");
+        assert_eq!(entry["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        // Headers array is required by ACP spec (can be empty)
+        assert!(entry["headers"].is_array());
+        assert!(entry.get("command").is_none());
+    }
+
+    #[test]
+    fn build_acp_mcp_servers_trims_trailing_slash() {
+        let servers = build_acp_mcp_servers("http://127.0.0.1:4321/", "tok-xyz");
+        let arr = servers.as_array().expect("array");
+        assert_eq!(arr[0]["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
     }
 }

@@ -13,20 +13,6 @@ pub(super) struct SendMessageParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct ReceiveMessageParams {
-    /// Whether to block (wait) for new messages (default true)
-    #[serde(default = "default_true")]
-    pub(super) block: Option<bool>,
-    /// How long to wait in ms when blocking (default 59000)
-    #[serde(default)]
-    pub(super) timeout_ms: Option<u64>,
-}
-
-pub(super) fn default_true() -> Option<bool> {
-    Some(true)
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct EmptyParams {}
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -105,28 +91,4 @@ pub(super) struct UploadFileParams {
 pub(super) struct ViewFileParams {
     /// The attachment UUID (from the 'id:...' shown in the message)
     pub(super) attachment_id: String,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct RememberParams {
-    /// Short label for this fact, e.g. "rate-limiting approach" or "api shape"
-    pub(super) key: String,
-    /// The full content of the fact
-    pub(super) value: String,
-    /// Optional space-separated tags for filtering later, e.g. "research task-42"
-    #[serde(default)]
-    pub(super) tags: Option<String>,
-    /// Optional channel context where this fact was discovered (e.g. '#general')
-    #[serde(default, rename = "channelContext")]
-    pub(super) channel_context: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub(super) struct RecallParams {
-    /// Keyword query to search across all stored facts (key, value, and tags)
-    #[serde(default)]
-    pub(super) query: Option<String>,
-    /// Space-separated tags to filter by (all listed tags must be present)
-    #[serde(default)]
-    pub(super) tags: Option<String>,
 }

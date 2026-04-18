@@ -1,13 +1,16 @@
+mod harness;
+
 use std::sync::Arc;
 
-use chorus::server::build_router;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::SenderType;
+use chorus::store::messages::{CreateMessage, SenderType};
+use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
+use harness::build_router;
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.add_human("testuser").unwrap();
+    store.create_human("testuser").unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel)
         .unwrap();
@@ -30,21 +33,32 @@ async fn test_human_to_agent_message_flow() {
     let client = reqwest::Client::new();
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
 
     store
-        .send_message(
-            "general",
-            None,
-            "testuser",
-            SenderType::Human,
-            "hello bot",
-            &[],
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "testuser",
+            sender_type: SenderType::Human,
+            content: "hello bot",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
         .unwrap();
 
     let resp: serde_json::Value = client
@@ -69,7 +83,16 @@ async fn test_agent_reply_in_history() {
     let client = reqwest::Client::new();
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -110,7 +133,16 @@ async fn test_blocking_receive_wakes_on_message() {
     let client = reqwest::Client::new();
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -135,14 +167,16 @@ async fn test_blocking_receive_wakes_on_message() {
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     store
-        .send_message(
-            "general",
-            None,
-            "testuser",
-            SenderType::Human,
-            "wake up!",
-            &[],
-        )
+        .create_message(CreateMessage {
+            channel_name: "general",
+            thread_parent_id: None,
+            sender_name: "testuser",
+            sender_type: SenderType::Human,
+            content: "wake up!",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
         .unwrap();
 
     let resp = tokio::time::timeout(std::time::Duration::from_secs(3), recv_handle)
@@ -162,17 +196,27 @@ async fn test_task_board_e2e() {
     let client = reqwest::Client::new();
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
 
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+
     // Create tasks
     let resp: serde_json::Value = client
-        .post(format!("{url}/internal/agent/bot1/tasks"))
+        .post(format!("{url}/api/conversations/{channel_id}/tasks"))
         .json(&serde_json::json!({
-            "channel": "#general",
             "tasks": [{"title": "Task A"}, {"title": "Task B"}]
         }))
         .send()
@@ -185,9 +229,8 @@ async fn test_task_board_e2e() {
 
     // Claim task 1 (transitions from todo -> in_progress)
     let resp: serde_json::Value = client
-        .post(format!("{url}/internal/agent/bot1/tasks/claim"))
+        .post(format!("{url}/api/conversations/{channel_id}/tasks/claim"))
         .json(&serde_json::json!({
-            "channel": "#general",
             "task_numbers": [1]
         }))
         .send()
@@ -200,9 +243,10 @@ async fn test_task_board_e2e() {
 
     // Update status to in_review (in_progress -> in_review)
     let resp = client
-        .post(format!("{url}/internal/agent/bot1/tasks/update-status"))
+        .post(format!(
+            "{url}/api/conversations/{channel_id}/tasks/update-status"
+        ))
         .json(&serde_json::json!({
-            "channel": "#general",
             "task_number": 1,
             "status": "in_review"
         }))
@@ -213,9 +257,7 @@ async fn test_task_board_e2e() {
 
     // List tasks — task 1 should be in_review
     let resp: serde_json::Value = client
-        .get(format!(
-            "{url}/internal/agent/bot1/tasks?channel=%23general"
-        ))
+        .get(format!("{url}/api/conversations/{channel_id}/tasks"))
         .send()
         .await
         .unwrap()
@@ -235,8 +277,18 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
     let client = reqwest::Client::new();
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
@@ -260,7 +312,7 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
     .unwrap();
 
     let workspace: serde_json::Value = client
-        .get(format!("{url}/api/agents/bot1/workspace"))
+        .get(format!("{url}/api/agents/{}/workspace", bot1.id))
         .send()
         .await
         .unwrap()
@@ -279,7 +331,8 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
 
     let preview: serde_json::Value = client
         .get(format!(
-            "{url}/api/agents/bot1/workspace/file?path=notes%2Fwork-log.md"
+            "{url}/api/agents/{}/workspace/file?path=notes%2Fwork-log.md",
+            bot1.id
         ))
         .send()
         .await
@@ -310,7 +363,16 @@ async fn test_dm_and_thread_flow() {
     let client = reqwest::Client::new();
 
     store
-        .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
 
     // Agent sends DM to testuser
@@ -370,10 +432,28 @@ async fn test_multi_agent_channel_communication() {
     let client = reqwest::Client::new();
 
     store
-        .create_agent_record("claude_bot", "Claude", None, "claude", "sonnet", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude_bot",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
-        .create_agent_record("codex_bot", "Codex", None, "codex", "o3", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "codex_bot",
+            display_name: "Codex",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "o3",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
         .join_channel("general", "claude_bot", SenderType::Agent)
@@ -435,13 +515,22 @@ async fn test_team_thread_target_round_trip_for_codex_agent() {
         .create_channel("qa-eng", Some("QA Engineering"), ChannelType::Team)
         .unwrap();
     store
-        .create_agent_record("bot1", "Bot 1", None, "codex", "gpt-5.4-mini", &[])
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot 1",
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4-mini",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
         .unwrap();
     store
-        .add_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
         .unwrap();
     store
-        .add_team_member(&team_id, "testuser", "human", "testuser", "observer")
+        .create_team_member(&team_id, "testuser", "human", "testuser", "observer")
         .unwrap();
     store
         .join_channel("qa-eng", "bot1", SenderType::Agent)

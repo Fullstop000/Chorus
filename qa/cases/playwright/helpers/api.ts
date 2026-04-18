@@ -2,7 +2,7 @@ import type { APIRequestContext } from '@playwright/test'
 import { expect } from '@playwright/test'
 
 export interface AgentRow {
-  id?: string
+  id: string
   name: string
   status: string
   display_name?: string
@@ -37,14 +37,9 @@ export interface ChannelMembersResponse {
   }>
 }
 
-export interface KnowledgeEntry {
+interface TeamRow {
   id: string
-  key: string
-  value: string
-  tags: string
-  author_agent_id: string
-  channel_context?: string | null
-  created_at: string
+  name: string
 }
 
 export async function getWhoami(request: APIRequestContext): Promise<{ username: string }> {
@@ -59,8 +54,26 @@ export async function listAgents(request: APIRequestContext): Promise<AgentRow[]
   return res.json()
 }
 
+async function requireAgentId(
+  request: APIRequestContext,
+  agentName: string
+): Promise<string> {
+  const agent = (await listAgents(request)).find((entry) => entry.name === agentName)
+  if (!agent) {
+    throw new Error(`Agent not found: ${agentName}`)
+  }
+  return agent.id
+}
+
+async function listTeams(request: APIRequestContext): Promise<TeamRow[]> {
+  const res = await request.get('/api/teams')
+  expect(res.ok(), await res.text()).toBeTruthy()
+  return res.json()
+}
+
 export async function getAgentDetail(request: APIRequestContext, name: string): Promise<AgentDetail> {
-  const res = await request.get(`/api/agents/${encodeURIComponent(name)}`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.get(`/api/agents/${encodeURIComponent(agentId)}`)
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
@@ -75,8 +88,11 @@ export async function createAgentApi(
     description?: string
     reasoningEffort?: string | null
     envVars?: Array<{ key: string; value: string }>
+  },
+  options?: {
+    allowNameTaken?: boolean
   }
-): Promise<void> {
+): Promise<{ name: string }> {
   const res = await request.post('/api/agents', {
     data: {
       name: body.name,
@@ -88,21 +104,52 @@ export async function createAgentApi(
       envVars: body.envVars ?? [],
     },
   })
-  expect(res.ok(), await res.text()).toBeTruthy()
+  if (res.ok()) {
+    const json = await res.json() as { name: string }
+    return { name: json.name }
+  }
+
+  const text = await res.text()
+  if (options?.allowNameTaken) {
+    const parsed = JSON.parse(text) as { error?: string; code?: string }
+    if (
+      parsed.code === 'AGENT_NAME_TAKEN' ||
+      /agent name already in use/i.test(parsed.error ?? text)
+    ) {
+      return { name: body.name }
+    }
+  }
+
+  expect(res.ok(), text).toBeTruthy()
+  return { name: body.name }
 }
 
-/** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case. */
+/** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case.
+ * Trio: bot-a=codex/gpt-5.4, bot-b=kimi/kimi-code/kimi-for-coding, bot-c=opencode/opencode/gpt-5-nano
+ */
 export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<void> {
   const agents = await listAgents(request)
   const names = new Set(agents.map((a) => a.name))
   if (!names.has('bot-a')) {
-    await createAgentApi(request, { name: 'bot-a', runtime: 'claude', model: 'sonnet' })
+    await createAgentApi(
+      request,
+      { name: 'bot-a', runtime: 'codex', model: 'gpt-5.4' },
+      { allowNameTaken: true }
+    )
   }
   if (!names.has('bot-b')) {
-    await createAgentApi(request, { name: 'bot-b', runtime: 'claude', model: 'opus' })
+    await createAgentApi(
+      request,
+      { name: 'bot-b', runtime: 'kimi', model: 'kimi-code/kimi-for-coding' },
+      { allowNameTaken: true }
+    )
   }
   if (!names.has('bot-c')) {
-    await createAgentApi(request, { name: 'bot-c', runtime: 'codex', model: 'gpt-5.4-mini' })
+    await createAgentApi(
+      request,
+      { name: 'bot-c', runtime: 'opencode', model: 'opencode/gpt-5-nano' },
+      { allowNameTaken: true }
+    )
   }
 }
 
@@ -138,12 +185,14 @@ export async function waitForAgentStatus(
 }
 
 export async function startAgentApi(request: APIRequestContext, name: string): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/start`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/start`)
   expect(res.ok(), await res.text()).toBeTruthy()
 }
 
 export async function stopAgentApi(request: APIRequestContext, name: string): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/stop`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/stop`)
   expect(res.ok(), await res.text()).toBeTruthy()
 }
 
@@ -152,7 +201,8 @@ export async function restartAgentApi(
   name: string,
   mode: 'restart' | 'reset_session' | 'full_reset'
 ): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/restart`, {
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/restart`, {
     data: { mode },
   })
   expect(res.ok(), await res.text()).toBeTruthy()
@@ -170,7 +220,8 @@ export async function updateAgentApi(
     envVars: Array<{ key: string; value: string }>
   }
 ): Promise<void> {
-  const res = await request.patch(`/api/agents/${encodeURIComponent(name)}`, {
+  const agentId = await requireAgentId(request, name)
+  const res = await request.patch(`/api/agents/${encodeURIComponent(agentId)}`, {
     data: payload,
   })
   expect(res.ok(), await res.text()).toBeTruthy()
@@ -181,7 +232,8 @@ export async function deleteAgentApi(
   name: string,
   mode: 'preserve_workspace' | 'delete_workspace'
 ): Promise<void> {
-  const res = await request.post(`/api/agents/${encodeURIComponent(name)}/delete`, {
+  const agentId = await requireAgentId(request, name)
+  const res = await request.post(`/api/agents/${encodeURIComponent(agentId)}/delete`, {
     data: { mode },
   })
   expect(res.ok(), await res.text()).toBeTruthy()
@@ -251,7 +303,8 @@ export async function getAgentActivityLogApi(
   request: APIRequestContext,
   name: string
 ): Promise<AgentActivityLogResponse> {
-  const res = await request.get(`/api/agents/${encodeURIComponent(name)}/activity-log`)
+  const agentId = await requireAgentId(request, name)
+  const res = await request.get(`/api/agents/${encodeURIComponent(agentId)}/activity-log`)
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
@@ -335,42 +388,12 @@ export async function inviteChannelMemberApi(
   return res.json()
 }
 
-export async function rememberApi(
-  request: APIRequestContext,
-  agentName: string,
-  payload: {
-    key: string
-    value: string
-    tags?: string[]
-    channelContext?: string
-  }
-): Promise<{ id: string }> {
-  const res = await request.post(`/internal/agent/${encodeURIComponent(agentName)}/remember`, {
-    data: payload,
-  })
-  expect(res.ok(), await res.text()).toBeTruthy()
-  return res.json()
-}
-
-export async function recallApi(
-  request: APIRequestContext,
-  agentName: string,
-  params?: { query?: string; tags?: string }
-): Promise<{ entries: KnowledgeEntry[] }> {
-  const search = new URLSearchParams()
-  if (params?.query) search.set('query', params.query)
-  if (params?.tags) search.set('tags', params.tags)
-  const suffix = search.size > 0 ? `?${search.toString()}` : ''
-  const res = await request.get(`/internal/agent/${encodeURIComponent(agentName)}/recall${suffix}`)
-  expect(res.ok(), await res.text()).toBeTruthy()
-  return res.json()
-}
-
 export async function getWorkspaceApi(
   request: APIRequestContext,
   agentName: string
 ): Promise<{ path: string; files: string[] }> {
-  const res = await request.get(`/api/agents/${encodeURIComponent(agentName)}/workspace`)
+  const agentId = await requireAgentId(request, agentName)
+  const res = await request.get(`/api/agents/${encodeURIComponent(agentId)}/workspace`)
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
@@ -386,16 +409,19 @@ export async function getWorkspaceFileApi(
   sizeBytes: number
   modifiedMs?: number
 }> {
+  const agentId = await requireAgentId(request, agentName)
   const params = new URLSearchParams({ path })
   const res = await request.get(
-    `/api/agents/${encodeURIComponent(agentName)}/workspace/file?${params.toString()}`
+    `/api/agents/${encodeURIComponent(agentId)}/workspace/file?${params.toString()}`
   )
   expect(res.ok(), await res.text()).toBeTruthy()
   return res.json()
 }
 
 export async function teamExists(request: APIRequestContext, name: string): Promise<boolean> {
-  const res = await request.get(`/api/teams/${encodeURIComponent(name)}`)
+  const team = (await listTeams(request)).find((entry) => entry.name === name)
+  if (!team) return false
+  const res = await request.get(`/api/teams/${encodeURIComponent(team.id)}`)
   return res.ok()
 }
 
@@ -416,4 +442,43 @@ export async function createTeamApi(
 ): Promise<void> {
   const res = await request.post('/api/teams', { data: body })
   expect(res.ok(), await res.text()).toBeTruthy()
+}
+
+/**
+ * Generic polling helper. `fn` returns a resolved value when the condition is
+ * met, or `undefined` to keep waiting. Rejects with a timeout error on expiry.
+ */
+export async function pollUntil<T>(
+  fn: () => Promise<T | undefined>,
+  timeoutMs: number,
+  intervalMs = 4_000
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const result = await fn()
+    if (result !== undefined) return result
+    await new Promise((r) => setTimeout(r, intervalMs))
+  }
+  throw new Error(`pollUntil: timed out after ${timeoutMs}ms`)
+}
+
+/**
+ * Ensure a dedicated isolated channel exists and all listed agents are
+ * members. Idempotent: if the channel already exists it is left as-is.
+ * The calling user is automatically a member as the channel creator.
+ */
+export async function ensureIsolatedChannel(
+  request: APIRequestContext,
+  channelName: string,
+  agentNames: string[]
+): Promise<void> {
+  const channels = await listChannelsApi(request)
+  if (channels.some((c) => c.name === channelName)) return
+
+  const { id } = await createChannelApi(request, { name: channelName })
+  for (const agentName of agentNames) {
+    await inviteChannelMemberApi(request, id, agentName).catch(() => {
+      // member already present — safe to ignore
+    })
+  }
 }

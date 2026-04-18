@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createAgentApi,
   getAgentActivityLogApi,
@@ -6,7 +6,7 @@ import {
   historyForUser,
   waitForAgentActive,
 } from './helpers/api'
-import { openAgentChat, openAgentTab, sendChatMessage } from './helpers/ui'
+import { openAgentChat, openAgentTab, sendChatMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -32,7 +32,7 @@ test.describe('KIMI-001', () => {
 
     await waitForAgentActive(request, 'bot-k')
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Send direct message to bot-k asking for an exact token', async () => {
       await openAgentChat(page, 'bot-k')

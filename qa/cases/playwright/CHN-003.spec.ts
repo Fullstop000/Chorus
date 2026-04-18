@@ -1,11 +1,11 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   createChannelApi,
   ensureMixedRuntimeTrio,
   getChannelMembersApi,
   getWhoami,
 } from './helpers/api'
-import { clickSidebarChannel, openMembersPanel } from './helpers/ui'
+import { clickSidebarChannel, openMembersPanel, closeMembersPanel, gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/channels.md` — CHN-003 Channel Invite Operations And `#all` Guardrails
@@ -24,7 +24,7 @@ test.describe('CHN-003', () => {
       name: `qa-members-${Date.now()}`,
       description: 'playwright CHN-003',
     })
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–4: #all has no invite button and shows complete membership', async () => {
       await clickSidebarChannel(page, 'all')
@@ -41,18 +41,21 @@ test.describe('CHN-003', () => {
       expect(names).toContain('bot-a')
       expect(names).toContain('bot-b')
       expect(names).toContain('bot-c')
+      await closeMembersPanel(page)
     })
 
     await test.step('Steps 5–8: User channel invite updates and persists', async () => {
       await clickSidebarChannel(page, channel.name)
       await openMembersPanel(page)
       await page.locator('.members-panel-actions button:has-text("Invite")').click()
-      await page.locator('.modal-card .form-group select').selectOption('bot-a')
-      await page.locator('.modal-card button:has-text("Invite Member")').click()
+      const dialog = page.locator('[role="dialog"]')
+      await dialog.locator('[role="combobox"][aria-label="Member"]').click()
+      await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+      await dialog.locator('button:has-text("Invite Member")').click()
       await expect(page.locator('.members-panel-title')).toHaveText('2')
       const after = await getChannelMembersApi(request, channel.id)
       expect(after.members.map((m) => m.memberName)).toContain('bot-a')
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await clickSidebarChannel(page, channel.name)
       await openMembersPanel(page)
       await expect(page.locator('.members-panel-title')).toHaveText('2')

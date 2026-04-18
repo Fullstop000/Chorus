@@ -1,190 +1,159 @@
 # Chorus
 
-Chorus is an AI agent collaboration platform. Agents run as real OS processes and communicate through a Slack-like chat interface.
+AI agent collaboration platform. Agents run as OS processes and communicate through a Slack-like chat interface.
 
-This file is the working contract for agents in this repository. Read it before making changes, and keep it aligned with shipped behavior.
+---
 
-## Architecture
+## Principles
 
-```text
-ui/ (React + Vite)  <->  src/ (Rust/Axum)  <->  ~/.chorus/
-                              |
-                    +---------+---------+
-                    |                   |
-                    agent processes      bridge processes
-                 (claude/codex/kimi CLI) (chorus bridge --agent-id)
-```
+1. **Read before you write.** Read the file, the surrounding code, the existing tests. Never speculate about a bug without reading the relevant code first.
+2. **Fix root causes, not symptoms.** No silent fallbacks. Surface errors; the caller decides.
+3. **When in doubt, stop and ask.** The human has context you don't. Silent guessing is not an answer.
 
-### Message Flow
+---
 
-Data flow for an agent receiving a message:
-
-1. Human sends via UI -> `POST /api/channels/{name}/messages`
-2. Server writes to SQLite and notifies via broadcast channel
-3. `AgentManager` wakes the agent notification task and writes to the agent stdin
-4. Agent (Claude/Codex) calls `mcp__chat__receive_message` via the bridge MCP server
-5. Bridge POSTs to `GET /internal/agent/{id}/receive` (long-poll, 30s timeout)
-6. Agent replies via `mcp__chat__send_message`, and the bridge POSTs to `/internal/agent/{id}/send`
-
-### Agent Sessions
-
-Each agent runs as a single process across all channels and DMs. One session equals one process and retains full conversation history in the agent memory.
-
-- Session ID is persisted to SQLite on `SessionInit` and `TurnEnd`
-- On server restart, active agents are auto-restarted with `--resume <session_id>` (Claude), `codex exec resume <thread_id>` (Codex), or `kimi --session <session_id>` (Kimi)
-- Context isolation between channels is provided through `MEMORY.md` in the agent workspace, not through separate processes
-
-## Code Organization
-
-Organize code by subsystem, not by request or one-off feature patches.
-
-### Backend Layout
-
-- `src/main.rs`
-  - CLI entrypoint and `serve` bootstrap only
-- `src/lib.rs`
-  - crate-level module exports
-- `src/agent/`
-  - agent lifecycle, process management, activity log, collaboration logic, workspace handling
-  - runtime-specific subprocess drivers live under `src/agent/drivers/`
-- `src/bridge/`
-  - MCP bridge implementation, request and response formatting, bridge-local types
-- `src/server/`
-  - Axum router assembly in `mod.rs`
-  - HTTP handlers grouped by domain under `src/server/handlers/`
-- `src/store/`
-  - SQLite persistence and domain store modules (`agents`, `channels`, `messages`, `tasks`, `teams`, `knowledge`)
-
-### Frontend Layout
-
-- `ui/src/App.tsx`
-  - top-level shell composition only
-- `ui/src/api.ts`
-  - browser-to-server API calls only
-- `ui/src/store.tsx`
-  - client app state and selection logic
-- `ui/src/hooks/`
-  - reusable data-loading and polling hooks
-- `ui/src/components/`
-  - UI grouped by panel, modal, and component responsibility
-- `ui/src/channelList.ts` and `ui/src/types.ts`
-  - shared UI-side derivation and types
-
-### Organization Rules
-
-- Put new HTTP handlers in the matching file under `src/server/handlers/`; do not grow `src/server/mod.rs` into a handler dump
-- Put persistence logic in the matching `src/store/*.rs` module; do not hide DB writes in handlers
-- Put agent runtime and subprocess behavior in `src/agent/`; do not mix it into HTTP or store modules
-- Put bridge-only formatting and protocol glue in `src/bridge/`
-- Keep frontend state changes in `ui/src/store.tsx`; components should call APIs and store actions, not invent parallel state systems
-- Co-locate component styles with the component in `ui/src/components/`
-- Treat `qa/` as its own execution layer; specs, plans, reports, and evidence stay under `qa/`, not mixed into app code
-
-## Core Conventions
-
-### Engineering Principles
-
-- Add comments for key structs and non-trivial functions so intent is clear on first read
-- Handle errors explicitly; do not ignore `Result`s or rely on hidden failure paths
-- Prefer clear, sufficient design over speculative architecture
-- Read this file before making changes, and keep it aligned with shipped behavior
-
-### Store Conventions
-
-- Every DB operation uses `self.conn.lock().unwrap()`; the connection is `Mutex<Connection>`
-- IDs are `uuid::Uuid::new_v4().to_string()`
-- Timestamps are stored as ISO 8601 text and parsed via `chrono`
-
-### UI Conventions
-
-- Component styles live in co-located `.css` files (for example `ActivityPanel.tsx` + `ActivityPanel.css`)
-- Design tokens are CSS variables defined in `App.css`
-- Icons use `lucide-react`; keep sizes consistent (13px for inline tool icons, 16px for panel icons)
-- No global state mutations outside `ui/src/store.tsx`
-- API calls go through `ui/src/api.ts`
-
-### Logging
-
-Use `RUST_LOG=chorus=debug` for verbose output. All logging uses `tracing`; never use `eprintln!` or `println!` in library code.
-
-## Development Workflow
-
-### Branch Workflow For Feature Work
-
-When the user explicitly asks to implement a new feature or do a refactor:
-
-1. Check whether the worktree is dirty before switching branches
-2. If local changes exist, stop and ask the user whether to commit, stash, or move them aside
-3. Start work from an up-to-date `main` based on `origin/main`
-4. Create a new branch with the `{agent}/` prefix (`codex/`, `claude/`, `gemini/`, and so on)
-5. Do not carry unrelated residual changes into the new branch without explicit user approval
-
-### Commit Conventions
-
-- Use conventional-style commit messages with a scope when practical
-- Preferred patterns: `feat(settings): ...`, `fix(command): ...`, `refactor(config): ...`, `docs(agent): ...`, `ci: ...`
-
-### Development Commands
+## Getting Started
 
 ```bash
-# Full dev environment (backend + UI hot-reload)
-./dev.sh
+# Run
+cargo run -- serve --port 3001        # backend
+cd ui && npm run dev                   # frontend (proxies to :3001)
 
-# Backend only
-cargo build && ./target/debug/chorus serve
+# Test
+cargo test                             # all Rust tests
+cargo test --test e2e_tests            # e2e (message/agent flows)
+cd ui && npm run test                  # vitest (all frontend tests)
+cd ui && npx tsc --noEmit              # typecheck only
 
-# UI only (needs backend running)
-cd ui && npm run dev
-
-# Run tests
-cargo test
-
-# Production build
-make release
+# Build
+cargo build                            # backend
+cd ui && npm run build                 # frontend production build
 ```
 
-### Ports
+Use this doc index before touching a subsystem or workflow:
 
-- API: `:3001`
-- UI dev server: `:5173`
+| Doc | Covers | Read Before |
+| --- | --- | --- |
+| `[docs/DEV.md](docs/DEV.md)` | Setup, prerequisites, run/test/build loops, and local troubleshooting | First local run, environment setup, or when local tooling is acting up |
+| `[qa/README.md](qa/README.md)` | Authoritative QA SOP: run modes, Playwright workflow, failure classification, evidence handling | Running QA, debugging QA failures, or updating QA process |
+| `[qa/QA_CASES.md](qa/QA_CASES.md)` | Static case catalog index and area-by-area case map | Choosing coverage for a change or mapping a failure to an existing case |
+| `[docs/BACKEND.md](docs/BACKEND.md)` | Rust — error handling, enums, logging, schema/views, tests, Axum handlers | Any backend change |
+| `[docs/DESIGN.md](docs/DESIGN.md)` | Frontend — tokens, typography, components, interaction states, motion, a11y | Any UI change |
+| `[docs/INBOX.md](docs/INBOX.md)` | Inbox delivery mechanism — how messages reach agents | Modifying message delivery |
+| `[docs/ACP.md](docs/ACP.md)` | Agent Client Protocol — JSON-RPC handshake, session lifecycle | Modifying ACP driver |
+| `[docs/DRIVERS.md](docs/DRIVERS.md)` | Runtime drivers and template types | Adding or changing a runtime driver or template type |
+| `[docs/BRIDGE_MIGRATION.md](docs/BRIDGE_MIGRATION.md)` | Shared MCP bridge — architecture, `bridge-serve`, driver conversion, phased migration plan | Running `bridge-serve`, converting a driver to the shared bridge, or debugging bridge failures |
+| `[docs/KNOWLEDGE.md](docs/KNOWLEDGE.md)` | Decisions, bug postmortems, project facts, patterns | Debugging non-obvious behavior or revisiting architecture choices |
+| `[docs/DRIVER_GUIDE.md](docs/DRIVER_GUIDE.md)` | Step-by-step guide for implementing a new driver | Adding a new driver |
 
-## Verification Policy
+---
 
-Do not claim a task is complete without running verification that matches the risk of the change.
+## Conventions
 
-### Minimum Verification
+How we write code. Read the relevant doc from the index above before touching that subsystem.
 
-1. Run focused Rust tests for the affected modules
-2. Run `cargo test --test e2e_tests` when backend message flow, task flow, DM flow, thread flow, or agent lifecycle is affected
-3. For core user-facing workflow changes, run the browser QA pass defined in `qa/README.md`
+For UI work, `docs/DESIGN.md` is authoritative. All font choices, colors,
+spacing, and aesthetic direction are defined there. Do not deviate without
+explicit user approval. In QA mode, flag any code that doesn't match
+`docs/DESIGN.md`.
 
-### Required Escalation
+Cross-cutting rules (apply everywhere):
 
-- For backend or data-path changes, run the relevant Rust tests first
-- For any change that affects a core user process, verify the real flow with headless-browser end-to-end testing against the running app
-- Core process verification is mandatory for user-facing critical paths such as channel messaging, DM flows, thread replies, task board actions, and agent interaction loops
-- Backend integration tests alone are not sufficient when the user-visible flow changed
-- If required headless-browser verification cannot be run, say so clearly and do not present the work as fully verified
+- **Match the neighborhood.** Enum-first types, SQL views for read models, mono chat content, zero-radius UI. Check existing patterns before inventing new ones.
+- **Make invalid states unrepresentable.** Enums over booleans. Typed errors over `null`. Required args over optional flags.
+- **Names are documentation.** `isLoading` not `loading`. One concept = one word.
+- **One thing, done well.** One function = one job. One file = one concept (300 lines = signal, 500 = problem).
+- **Fail loudly with context.** Never swallow exceptions. `anyhow!("channel not found: {name}")`. No silent retry logic.
+- **Explain why, not what.** Comments justify decisions the code cannot express.
+- **Verification matches risk.** Backend → `cargo test`. Data path → `cargo test --test e2e_tests`. UI → `/gstack-qa`.
 
-## QA Workflow
+---
 
-The authoritative QA execution workflow lives in `qa/README.md`, with the case catalog and templates under `qa/`.
+## Chorus Workflows
 
-## Extension Points
+All skills prefixed with `/gstack-` (`SKILL_PREFIX=true`).
+When a request matches a skill, ALWAYS invoke it using the Skill tool as the FIRST action.
+Do NOT answer directly or use other tools first.
 
-### Adding A New Driver
+### Spec
 
-1. Create `src/agent/drivers/myruntimename.rs`
-2. Implement the `Driver` trait with all required methods:
-3. Register the driver in `src/agent/drivers/mod.rs`
-4. Add it to the driver selection match in `src/agent/manager.rs`
-5. Follow [`docs/DRIVER_GUIDE.md`](./docs/DRIVER_GUIDE.md) for protocol discovery, live-runtime debugging, and required verification
+
+| Skill                     | When                                                        |
+| ------------------------- | ----------------------------------------------------------- |
+| `/gstack-office-hours`    | New feature idea, "is this worth building", problem framing |
+| `/gstack-plan-eng-review` | Architecture review before implementation                   |
+| `/gstack-plan-ceo-review` | Scope challenge, dream state mapping, expansion decisions   |
+
+
+### Develop
+
+
+| Skill                                     | When                                                            |
+| ----------------------------------------- | --------------------------------------------------------------- |
+| `superpowers:executing-plans`             | Implement a plan with review checkpoints                        |
+| `superpowers:subagent-driven-development` | Parallel implementation of independent tasks                    |
+| `/gstack-investigate`                     | Agent won't start, message not delivered, driver error, any bug |
+| `/gstack-review`                          | Code review, check my diff before shipping                      |
+| `/gstack-health`                          | Code quality dashboard, test coverage, dead code                |
+
+
+### Polish
+
+
+| Skill                         | When                                        |
+| ----------------------------- | ------------------------------------------- |
+| `/gstack-design-consultation` | Design system, brand, typography, color     |
+| `/gstack-design-review`       | Visual audit, spacing issues, design polish |
+
+
+### Ship
+
+
+| Skill          | When                                      |
+| -------------- | ----------------------------------------- |
+| `/gstack-ship` | Create PR, push, deploy                   |
+| `/gstack-qa`   | Test the live site, find bugs, verify fix |
+
+
+### Maintain
+
+
+| Skill                      | When                                   |
+| -------------------------- | -------------------------------------- |
+| `/gstack-document-release` | Update docs after shipping             |
+| `/gstack-retro`            | Weekly retro, what shipped, what broke |
+| `/gstack-checkpoint`       | Save progress, resume later            |
+| `/project-memory`          | Record a decision, bug postmortem, fact, or pattern |
+
+
+Browser: use `/gstack-browse`. Never use `mcp__claude-in-chrome__`* tools.
+Run `/gstack-upgrade` to update skill inventory.
+
+---
+
+## Rules for This File
+
+1. **Every rule earns its place by preventing a real problem.** No rule without an incident.
+2. **Adding a rule means deleting a weaker one.** Fixed budget. Growth is not progress.
+3. **Update in the same PR that made you wish it said something.**
+4. **Annual audit.** Read every rule, every doc pointer. Delete what's stale. If you didn't delete anything, you didn't audit.
+
+
+---
 
 ## Completion Checklist
 
-Before stopping, confirm all of the following:
+Before stopping, confirm:
 
-- The change lives in the correct subsystem and file
-- Verification matches the risk of the change
-- Required e2e or browser QA was run for user-visible critical paths, or the gap was called out explicitly
-- `AGENTS.md` or related docs were updated if shipped behavior or workflow changed
+- [ ] Change lives in correct subsystem and file
+- [ ] Verification matches risk of change
+- [ ] Required e2e/browser QA run for user-facing critical paths, or gap called out
+- [ ] `AGENTS.md` or related docs updated if shipped behavior/workflow changed
+
+## Health Stack
+
+- typecheck: cd ui && tsc --noEmit
+- lint: cargo clippy -- -D warnings
+- test: cargo test
+- test-ui: cd ui && npm run test
+- shell: shellcheck dev.sh

@@ -3,8 +3,9 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use super::{api_err, ApiResult, AppState};
-use crate::store::channels::{Channel, ChannelMemberProfile, ChannelType};
+use super::{app_err, ApiResult, AppState};
+use crate::server::error::AppErrorCode;
+use crate::store::channels::{normalize_channel_name, Channel, ChannelMemberProfile, ChannelType};
 use crate::store::messages::SenderType;
 use crate::store::ChannelListParams;
 
@@ -71,21 +72,20 @@ fn default_include_team() -> bool {
 
 // ── Private helpers ──
 
-pub(super) fn normalize_channel_name(raw: &str) -> String {
-    raw.trim().trim_start_matches('#').trim().to_lowercase()
-}
-
 pub(super) fn validate_channel_mutation(
     state: &AppState,
     channel_id: &str,
 ) -> Result<Channel, (StatusCode, Json<super::ErrorResponse>)> {
     let channel = state
         .store
-        .find_channel_by_id(channel_id)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("channel not found"))?;
+        .get_channel_by_id(channel_id)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))?;
     if channel.channel_type != ChannelType::Channel {
-        return Err(api_err("only user channels can be modified"));
+        return Err(app_err!(
+            AppErrorCode::ChannelOperationUnsupported,
+            "only user channels can be modified"
+        ));
     }
     Ok(channel)
 }
@@ -115,7 +115,7 @@ pub async fn handle_list_channels(
             include_team: query.include_team,
         },
     )
-    .map_err(|e| api_err(e.to_string()))?;
+    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(channels))
 }
 
@@ -125,7 +125,7 @@ pub async fn handle_create_channel(
 ) -> ApiResult<serde_json::Value> {
     let name = normalize_channel_name(&req.name);
     if name.is_empty() {
-        return Err(api_err("name is required"));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
     let description = if req.description.trim().is_empty() {
         None
@@ -135,7 +135,17 @@ pub async fn handle_create_channel(
     let channel_id = state
         .store
         .create_channel(&name, description, ChannelType::Channel)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("UNIQUE constraint") {
+                app_err!(
+                    AppErrorCode::ChannelNameTaken,
+                    "channel name already in use"
+                )
+            } else {
+                app_err!(StatusCode::BAD_REQUEST, msg)
+            }
+        })?;
     let username = whoami::username();
     let _ = state
         .store
@@ -149,17 +159,20 @@ pub async fn handle_list_channel_members(
 ) -> ApiResult<ChannelMembersResponse> {
     let channel = state
         .store
-        .find_channel_by_id(&channel_id)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("channel not found"))?;
+        .get_channel_by_id(&channel_id)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))?;
     if channel.channel_type == ChannelType::Dm {
-        return Err(api_err("dm channels are not supported by this endpoint"));
+        return Err(app_err!(
+            AppErrorCode::ChannelOperationUnsupported,
+            "dm channels are not supported by this endpoint"
+        ));
     }
 
     let members = state
         .store
         .get_channel_member_profiles(&channel_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .into_iter()
         .map(channel_member_info)
         .collect::<Vec<_>>();
@@ -179,23 +192,23 @@ pub async fn handle_invite_channel_member(
     let channel = validate_channel_mutation(&state, &channel_id)?;
     let member_name = req.member_name.trim();
     if member_name.is_empty() {
-        return Err(api_err("memberName is required"));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "memberName is required"));
     }
     let member_type = state
         .store
         .lookup_sender_type(member_name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err(format!("member not found: {member_name}")))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "member not found: {member_name}"))?;
 
     state
         .store
         .join_channel_by_id(&channel.id, member_name, member_type)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let members = state
         .store
         .get_channel_member_profiles(&channel_id)
-        .map_err(|e| api_err(e.to_string()))?
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .into_iter()
         .map(channel_member_info)
         .collect::<Vec<_>>();
@@ -215,7 +228,7 @@ pub async fn handle_update_channel(
     let channel = validate_channel_mutation(&state, &channel_id)?;
     let name = normalize_channel_name(&req.name);
     if name.is_empty() {
-        return Err(api_err("name is required"));
+        return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
     let description = if req.description.trim().is_empty() {
         None
@@ -227,17 +240,20 @@ pub async fn handle_update_channel(
     if name != channel.name
         && state
             .store
-            .find_channel_by_name(&name)
-            .map_err(|e| api_err(e.to_string()))?
+            .get_channel_by_name(&name)
+            .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
             .is_some()
     {
-        return Err(api_err(format!("channel already exists: {name}")));
+        return Err(app_err!(
+            AppErrorCode::ChannelNameTaken,
+            "channel already exists: {name}"
+        ));
     }
 
     state
         .store
         .update_channel(&channel_id, &name, description)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     Ok(Json(serde_json::json!({
         "id": channel_id,
@@ -250,11 +266,11 @@ pub async fn handle_archive_channel(
     State(state): State<AppState>,
     Path(channel_id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    validate_channel_mutation(&state, &channel_id)?;
+    let _ = validate_channel_mutation(&state, &channel_id)?;
     state
         .store
         .archive_channel(&channel_id)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -262,10 +278,10 @@ pub async fn handle_delete_channel(
     State(state): State<AppState>,
     Path(channel_id): Path<String>,
 ) -> ApiResult<serde_json::Value> {
-    validate_channel_mutation(&state, &channel_id)?;
+    let _ = validate_channel_mutation(&state, &channel_id)?;
     state
         .store
         .delete_channel(&channel_id)
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

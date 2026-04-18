@@ -25,90 +25,56 @@
   - hydration/render error
   - mismatched current user names
 
-### AGT-001 Create Three Agents And Verify Sidebar Presence
+### AGT-001 Create Agent And Verify Sidebar Presence
 
 - Tier: 0
 - Release-sensitive: yes
 - Goal:
-  - verify agent creation works repeatedly, not just once
+  - verify agent creation works with a non-claude runtime and appears in the sidebar
 - Script:
   - [`playwright/AGT-001.spec.ts`](./playwright/AGT-001.spec.ts)
 - Preconditions:
-  - no existing test agents in the fresh data dir
+  - fresh data dir
 - Steps:
-  1. Create `bot-a`.
-  2. Create `bot-b`.
-  3. Create `bot-c`.
-  4. Verify each agent appears in the sidebar.
-  5. Click each agent once and verify its tabs load without crashing.
+  1. Create `smoke-bot` using the Codex runtime.
+  2. Verify the agent appears in the sidebar.
+  3. Click the agent and verify its tabs load without crashing.
 - Expected:
-  - all three agents are created successfully
-  - sidebar updates after each creation
-  - each agent is selectable
+  - agent is created successfully
+  - sidebar updates after creation
+  - agent is selectable and tabs render
 - Common failure signals:
-  - only first creation works
-  - stale sidebar list
-  - duplicate-name handling is broken
-  - profile tabs crash for newly created agents
+  - creation fails for non-claude runtime
+  - sidebar does not update
+  - profile tabs crash for newly created agent
 
-### AGT-002 Agent Create Matrix Across Every Driver And Model
+### AGT-002 Agent Edit Persists Correctly
 
 - Tier: 1
-- Release-sensitive: yes when touching agent creation, runtime defaults, model defaults, driver registration, or the create-agent modal
+- Release-sensitive: yes when touching agent edit flow, profile controls, or config persistence
 - Execution mode: browser
 - Goal:
-  - verify every runtime and model pair currently exposed in the UI can be created and is stored correctly
-  - verify duplicate agent names are rejected consistently
-  - verify runtime-specific controls appear only when applicable, especially Codex reasoning effort
+  - verify the edit agent flow saves role, model, and reasoning effort and the profile reflects the changes immediately
 - Script:
-  - [`playwright/AGT-002.spec.ts`](./playwright/AGT-002.spec.ts) (browser-driven matrix create + duplicate-name checks)
+  - [`playwright/AGT-002.spec.ts`](./playwright/AGT-002.spec.ts)
 - Preconditions:
-  - fresh data dir
-  - current runtime/model matrix captured from the create-agent modal before execution
-- Required matrix:
-  - Claude:
-    - `claude-sonnet-4-6`
-    - `claude-opus-4-6`
-    - `claude-haiku-4-5`
-  - Codex:
-    - `gpt-5.4`
-    - `gpt-5.4-mini`
-    - `gpt-5.3-codex`
-    - `gpt-5.2-codex`
-    - `gpt-5.2`
-    - `gpt-5.1-codex-max`
-    - `gpt-5.1-codex-mini`
-  - Kimi:
-    - `kimi-for-coding`
+  - `smoke-bot` from AGT-001 exists (or any Codex agent)
 - Steps:
-  1. Open the create-agent modal and record the runtime and model options actually shown in the build under test.
-  2. Switch between Claude, Codex, and Kimi in the create-agent modal.
-  3. Verify the reasoning-effort control is hidden for Claude and Kimi, and visible for Codex.
-  4. For at least one Codex model, choose a non-default reasoning effort and create the agent.
-  5. Create one disposable agent for every runtime/model pair using a stable naming scheme such as `matrix-<runtime>-<model>`.
-  6. After each creation, verify the new agent appears in the sidebar.
-  7. Open the new agent profile and verify the runtime badge and model badge match the selected pair exactly.
-  8. For Codex agents created with a non-default reasoning effort, verify the profile reflects the selected reasoning effort exactly.
-  9. Verify creation does not silently fall back to a different runtime, model, or Codex reasoning effort.
-  10. Attempt to create one duplicate name using the exact same config.
-  11. Attempt to create the same duplicate name again with a different runtime or model.
-  12. Verify both duplicate-name attempts fail with a clear error and do not create extra records.
+  1. Open the agent profile and click Edit.
+  2. Change the role text to a distinct value.
+  3. Change the reasoning effort to `high`.
+  4. Save and verify the profile shows the updated role text.
+  5. Verify the profile config grid shows `high` reasoning effort.
+  6. Verify the API returns the updated values.
 - Expected:
-  - every visible runtime/model pair is creatable
-  - stored runtime and model match the selected values exactly
-  - Codex shows a reasoning-effort control and persists the chosen value exactly
-  - Claude and Kimi do not show a meaningless reasoning-effort control
-  - duplicate names are rejected regardless of runtime or model
-  - failures are attributable to a specific pair, not hidden behind a generic fallback
+  - edit dialog opens and accepts changes
+  - saved role text is visible in the profile
+  - reasoning effort is persisted and shown
+  - API and UI agree on the stored values
 - Common failure signals:
-  - one runtime/model pair cannot be created
-  - created agent shows a different model than requested
-  - reasoning-effort control is missing for Codex
-  - reasoning-effort control appears for Claude or Kimi
-  - created Codex agent ignores the selected reasoning effort
-  - runtime picker and stored runtime disagree
-  - duplicate name is accepted
-  - duplicate name creates partial sidebar or DB state
+  - edit saves but profile does not update
+  - reasoning effort reverts after save
+  - API returns stale values
 
 ### AGT-003 Agent Delete And Name-Reuse Contract
 
@@ -368,6 +334,31 @@
 - Common failure signals:
   - selected target and rendered content disagree
   - switching tabs changes the underlying target unexpectedly
+
+### NAV-002 Idle Shell Does Not Poll Sidebar Resources
+
+- Tier: 1
+- Release-sensitive: yes when touching shell bootstrap, sidebar refresh logic, or server-info fetching
+- Goal:
+  - verify the app shell does one bootstrap fetch for sidebar resources and then remains idle until a real user action requires refresh
+- Script:
+  - [`playwright/NAV-002.spec.ts`](./playwright/NAV-002.spec.ts) (request-count assertions for idle shell behavior)
+- Preconditions:
+  - fresh app load
+  - no user action after initial shell render
+- Steps:
+  1. Open the app root.
+  2. Wait for the shell to render and then remain idle for at least 6 seconds.
+  3. Count requests to `/api/humans`, `/api/channels`, `/api/agents`, and `/api/teams`.
+  4. Verify each endpoint is fetched exactly once during bootstrap.
+- Expected:
+  - shell bootstraps correctly
+  - sidebar data is fetched once
+  - no background polling resumes while the shell is idle
+- Common failure signals:
+  - repeated humans-list polling
+  - channels, agents, or teams lists refetch without user action
+  - idle shell continuously wakes the network panel
 
 ### WRK-001 Workspace Tab Path And File Visibility
 

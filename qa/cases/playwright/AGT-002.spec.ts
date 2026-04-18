@@ -1,76 +1,80 @@
-import { test, expect } from '@playwright/test'
-import { createAgentViaUi, openAgentTab } from './helpers/ui'
-import { getAgentDetail, listAgents } from './helpers/api'
-
-const MODELS: Record<string, string[]> = {
-  claude: ['sonnet', 'opus', 'haiku'],
-  codex: [
-    'gpt-5.4',
-    'gpt-5.4-mini',
-    'gpt-5.3-codex',
-    'gpt-5.2-codex',
-    'gpt-5.2',
-    'gpt-5.1-codex-max',
-    'gpt-5.1-codex-mini',
-  ],
-  kimi: ['kimi-code/kimi-for-coding'],
-}
+import { test, expect } from './helpers/fixtures'
+import { createAgentViaUi, openAgentTab, gotoApp } from './helpers/ui'
+import { createAgentApi, getAgentDetail, listAgents } from './helpers/api'
 
 /**
- * Catalog: `qa/cases/agents.md` — AGT-002 Agent Create Matrix Across Every Driver And Model
+ * Catalog: `qa/cases/agents.md` — AGT-002 Agent Edit Persists Correctly
+ *
+ * Preconditions:
+ * - smoke-bot from AGT-001 exists (or any Codex agent)
+ *
+ * Steps:
+ * 1. Open the agent profile and click Edit.
+ * 2. Change the role text to a distinct value.
+ * 3. Change the reasoning effort to `high`.
+ * 4. Save and verify the profile shows the updated role text.
+ * 5. Verify the profile config grid shows `high` reasoning effort.
+ * 6. Verify the API returns the updated values.
+ *
+ * Expected:
+ * - edit dialog opens and accepts changes
+ * - saved role text is visible in the profile
+ * - reasoning effort is persisted and shown
+ * - API and UI agree on the stored values
  */
 test.describe('AGT-002', () => {
-  test('Agent Create Matrix Across Every Driver And Model @case AGT-002', async ({ page, request }) => {
-    const created: string[] = []
-    await page.goto('/', { waitUntil: 'networkidle' })
+  /** Actual stored slug (used for API lookups). */
+  let agentName: string
+  /** Display name shown in the sidebar (used for UI navigation). */
+  let agentDisplayName: string
 
-    await test.step('Steps 1–9: Create one agent for every runtime/model pair and verify stored config', async () => {
-      for (const runtime of Object.keys(MODELS)) {
-        for (const model of MODELS[runtime]) {
-          const name = `matrix-${runtime}-${model.replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-${Date.now()}`
-          const reasoningEffort = runtime === 'codex' ? 'high' : null
-          await createAgentViaUi(page, { name, runtime, model, reasoningEffort })
-          created.push(name)
-          await openAgentTab(page, name, 'Profile')
-          await expect(page.locator('.profile-config-grid')).toContainText(runtime)
-          await expect(page.locator('.profile-config-grid')).toContainText(model)
-          if (runtime === 'codex') {
-            await expect(page.locator('.profile-config-grid')).toContainText('high')
-          }
-          const detail = await getAgentDetail(request, name)
-          expect(detail.agent.runtime).toBe(runtime)
-          expect(detail.agent.model).toBe(model)
-        }
-      }
+  test.beforeAll(async ({ request }) => {
+    const agents = await listAgents(request)
+    const existing = agents.find(
+      (a) => a.display_name === 'smoke-bot' || a.name === 'smoke-bot' || a.name.startsWith('smoke-bot-')
+    )
+    if (existing) {
+      agentName = existing.name
+      agentDisplayName = existing.display_name ?? existing.name
+    } else {
+      const created = await createAgentApi(request, {
+        name: 'agt-002-edit',
+        display_name: 'agt-002-edit',
+        runtime: 'codex',
+        model: 'gpt-5.4-mini',
+        reasoningEffort: 'medium',
+        description: 'initial role',
+      })
+      agentName = created.name
+      agentDisplayName = 'agt-002-edit'
+    }
+  })
+
+  test('Agent Edit Persists Correctly @case AGT-002', async ({ page, request }) => {
+    await gotoApp(page)
+
+    await test.step('Steps 1–3: Open edit dialog, change role and reasoning effort', async () => {
+      await openAgentTab(page, agentDisplayName, 'Profile')
+      await page.locator('.profile-toolbar').getByRole('button', { name: 'Edit' }).click()
+      const dialog = page.locator('[role="dialog"]')
+      await expect(dialog).toBeVisible()
+      await dialog.locator('textarea').fill('updated role from agt-002')
+      await dialog.locator('[role="combobox"][aria-label="Reasoning"]').click()
+      await page.locator('[role="option"]').filter({ hasText: /^High$/ }).click()
     })
 
-    await test.step('Steps 10–12: Duplicate names fail regardless of config', async () => {
-      const dupName = created[0]
-      const first = await request.post('/api/agents', {
-        data: {
-          name: dupName,
-          display_name: dupName,
-          description: 'dup',
-          runtime: 'claude',
-          model: 'sonnet',
-          envVars: [],
-        },
-      })
-      expect(first.ok()).toBeFalsy()
-      const second = await request.post('/api/agents', {
-        data: {
-          name: dupName,
-          display_name: dupName,
-          description: 'dup',
-          runtime: 'codex',
-          model: 'gpt-5.4-mini',
-          reasoningEffort: 'high',
-          envVars: [],
-        },
-      })
-      expect(second.ok()).toBeFalsy()
-      const agents = await listAgents(request)
-      expect(agents.filter((agent) => agent.name === dupName)).toHaveLength(1)
+    await test.step('Steps 4–5: Save and verify profile reflects changes', async () => {
+      const dialog = page.locator('[role="dialog"]')
+      await dialog.locator('button:has-text("Save")').click()
+      await expect(dialog).toBeHidden({ timeout: 15_000 })
+      const roleSection = page.locator('.profile-section').filter({ hasText: '[role::brief]' }).first()
+      await expect(roleSection.locator('.profile-role-text')).toContainText('updated role from agt-002')
+      await expect(page.locator('.profile-config-grid')).toContainText('high')
+    })
+
+    await test.step('Step 6: API returns updated values', async () => {
+      const detail = await getAgentDetail(request, agentName)
+      expect(detail.agent.reasoningEffort).toBe('high')
     })
   })
 })

@@ -1,6 +1,6 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { clickSidebarChannel, openAgentTab, openThreadFromMessage, sendChatMessage } from './helpers/ui'
+import { clickSidebarChannel, openAgentTab, openThreadFromMessage, sendChatMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -16,7 +16,7 @@ test.describe('REC-002', () => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
     const { username } = await getWhoami(request)
     const mark = `rec-002-${Date.now()}`
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–4: Trigger multi-agent replies, switch activity, and open a thread', async () => {
       await clickSidebarChannel(page, 'all')

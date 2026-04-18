@@ -168,6 +168,47 @@ When a case is not fully automated yet:
 
 If a case changes, update the markdown case and its Playwright spec in the same behavior change. The case steps, expected results, spec header, and `test.step(...)` labels should continue to describe the same flow.
 
+## Subprocess and External Runtime Tests
+
+Chorus has tests that spawn real external processes: agent runtimes (Claude, Codex, Kimi, OpenCode), the shared MCP bridge daemon, and future per-backend adapters. These tests follow the same case-catalog discipline as browser QA: each scenario gets a numbered case, each case links to its executable.
+
+Case module: [`cases/bridge.md`](./cases/bridge.md). Case IDs: `BRG-NNN` (bridge HTTP layer), `LRT-NNN` (live runtime round-trips), `INT-NNN` (full `chorus serve --shared-bridge` integration).
+
+### The Iron Rule
+
+**When a subprocess-spawning test fails, its failure message MUST include the subprocess's diagnostic output.**
+
+A test that prints "agent did not reply in 60s" without also dumping the subprocess's stderr, log file contents, and config files has shipped a timeout, not a bug report. Each case's "Failure evidence" field in the catalog lists the specific artifacts it must emit.
+
+This rule exists because one class of bug — protocol-shape mismatches between our emitter and a downstream consumer — is invisible from the test's happy-path observation channel. The only signal lives in the subprocess's own logs.
+
+### Runtime Log File Reference
+
+Each runtime writes its own logs. Debugging cycles are short only when we know where to look.
+
+| Runtime | Log location | Enable extra logging |
+|---------|--------------|----------------------|
+| Claude Code | `~/.claude/logs/` | `CLAUDE_LOG_LEVEL=debug` (verify) |
+| Codex | `~/.codex/log/` | `--log-level debug` or `RUST_LOG` (verify) |
+| Kimi | `~/.kimi/logs/kimi.log` | `--debug` CLI flag or `KIMI_LOG_LEVEL=debug` |
+| OpenCode | `~/.opencode/logs/` | `--log-level debug` (verify) |
+
+Chorus tracing: `RUST_LOG=chorus::agent::drivers=debug` for drivers, `RUST_LOG=chorus::bridge=debug` for the bridge. Entries marked `(verify)` need confirmation.
+
+### Execution
+
+Subprocess tests are `#[ignore]` by default (require installed binaries + valid auth). Run them explicitly:
+
+```bash
+cargo test --test live_runtime_tests -- --ignored --nocapture
+```
+
+Each test must skip cleanly when its required binary or credentials are missing. A test that fails on a different machine because of an environment gap is a skip-logic bug, not flakiness.
+
+### Protocol Conformance
+
+Tests that cross a protocol boundary (ACP, MCP, JSON-RPC wire format) should validate conformance at the unit level. Asserting `entry["transport"] == "http"` only proves "we emit what we expect" — it does not catch "we emit something the consumer rejects." When a live test fails because of a wire-format mismatch that unit tests missed, that's a signal to add a schema-level contract test.
+
 ## Debug Failures
 
 When a scripted QA case fails, do not write a vague report entry like "Playwright failed." Record the exact failing step, exact repro command, and concrete artifacts that prove the failure.

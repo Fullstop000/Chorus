@@ -118,7 +118,7 @@ impl Store {
     }
 
     /// List all teams ordered by name.
-    pub fn list_teams(&self) -> Result<Vec<Team>> {
+    pub fn get_teams(&self) -> Result<Vec<Team>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
@@ -153,8 +153,7 @@ impl Store {
         Ok(())
     }
 
-    /// Delete a team by id. Cascades to team_members, team_task_quorum, and team_task_signals
-    /// because the schema declares ON DELETE CASCADE and PRAGMA foreign_keys=ON is set at open.
+    /// Delete a team by id. Cascades to team_members via ON DELETE CASCADE.
     pub fn delete_team(&self, id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute("DELETE FROM teams WHERE id = ?1", params![id])?;
@@ -162,7 +161,7 @@ impl Store {
     }
 
     /// Add a member to a team. Silently no-ops if the (team_id, member_name) pair already exists.
-    pub fn add_team_member(
+    pub fn create_team_member(
         &self,
         team_id: &str,
         member_name: &str,
@@ -180,7 +179,7 @@ impl Store {
     }
 
     /// Remove a single member from a team.
-    pub fn remove_team_member(&self, team_id: &str, member_name: &str) -> Result<()> {
+    pub fn delete_team_member(&self, team_id: &str, member_name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "DELETE FROM team_members WHERE team_id = ?1 AND member_name = ?2",
@@ -190,7 +189,12 @@ impl Store {
     }
 
     /// Update a single member role within a team.
-    pub fn set_team_member_role(&self, team_id: &str, member_name: &str, role: &str) -> Result<()> {
+    pub fn update_team_member_role(
+        &self,
+        team_id: &str,
+        member_name: &str,
+        role: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "UPDATE team_members SET role = ?1 WHERE team_id = ?2 AND member_name = ?3",
@@ -203,7 +207,7 @@ impl Store {
     /// so their channel membership is cleaned up alongside the team membership.
     pub fn leave_channel(&self, channel_name: &str, member_name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        if let Some(ch) = Self::find_channel_by_name_inner(&conn, channel_name)? {
+        if let Some(ch) = Self::get_channel_by_name_inner(&conn, channel_name)? {
             conn.execute(
                 "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
                 params![ch.id, member_name],
@@ -236,7 +240,7 @@ impl Store {
     }
 
     /// List all teams an agent belongs to, along with their role in each team.
-    pub fn list_teams_for_agent(&self, agent_name: &str) -> Result<Vec<TeamMembership>> {
+    pub fn get_teams_by_agent_name(&self, agent_name: &str) -> Result<Vec<TeamMembership>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
@@ -254,88 +258,5 @@ impl Store {
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
-    }
-
-    /// Snapshot the current set of agent members into team_task_quorum for a new swarm task.
-    /// The trigger_message_id is the message that kicked off the task.
-    pub fn snapshot_swarm_quorum(&self, team_id: &str, trigger_message_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO team_task_quorum (trigger_message_id, team_id, member_name)
-             SELECT ?1, team_id, member_name FROM team_members
-             WHERE team_id = ?2 AND member_type = 'agent'",
-            params![trigger_message_id, team_id],
-        )?;
-        Ok(())
-    }
-
-    /// Record a signal (e.g. "READY") from an agent for an open swarm task quorum.
-    ///
-    /// Finds the earliest unresolved trigger for this team, inserts the signal, then checks
-    /// whether all quorum members have now signalled. Returns `true` when consensus is reached
-    /// and the quorum row is marked resolved.
-    pub fn record_swarm_signal(
-        &self,
-        team_id: &str,
-        member_name: &str,
-        signal: &str,
-    ) -> Result<bool> {
-        let conn = self.conn.lock().unwrap();
-
-        // Find the earliest unresolved trigger_message_id for this team.
-        let trigger_id: Option<String> = conn
-            .prepare(
-                "SELECT q.trigger_message_id FROM team_task_quorum q
-                 JOIN messages m ON m.id = q.trigger_message_id
-                 WHERE q.team_id = ?1 AND q.resolved_at IS NULL
-                 ORDER BY m.created_at ASC
-                 LIMIT 1",
-            )?
-            .query_row(params![team_id], |r| r.get(0))
-            .ok();
-
-        let trigger_id = match trigger_id {
-            None => return Ok(false), // no open quorum — discard signal
-            Some(id) => id,
-        };
-
-        // Only insert if member_name is in the quorum for this trigger; discard signals
-        // from agents that joined after the quorum was snapshotted.
-        let signal_id = Uuid::new_v4().to_string();
-        let inserted = conn.execute(
-            "INSERT OR IGNORE INTO team_task_signals (id, team_id, trigger_message_id, member_name, signal)
-             SELECT ?1, ?2, ?3, ?4, ?5
-             WHERE EXISTS (
-                 SELECT 1 FROM team_task_quorum
-                 WHERE trigger_message_id = ?3 AND member_name = ?4
-             )",
-            params![signal_id, team_id, trigger_id, member_name, signal],
-        )?;
-        if inserted == 0 {
-            return Ok(false); // non-quorum member, discard signal
-        }
-
-        // Check if quorum is now complete (all expected members have signalled).
-        let quorum_size: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM team_task_quorum WHERE trigger_message_id = ?1",
-            params![trigger_id],
-            |r| r.get(0),
-        )?;
-        let signal_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM team_task_signals WHERE trigger_message_id = ?1",
-            params![trigger_id],
-            |r| r.get(0),
-        )?;
-
-        if signal_count >= quorum_size {
-            conn.execute(
-                "UPDATE team_task_quorum SET resolved_at = datetime('now')
-                 WHERE trigger_message_id = ?1",
-                params![trigger_id],
-            )?;
-            return Ok(true);
-        }
-
-        Ok(false)
     }
 }

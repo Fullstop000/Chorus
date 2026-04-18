@@ -116,7 +116,7 @@ impl Store {
         titles: &[&str],
     ) -> Result<Vec<TaskInfo>> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let max_num: i64 = conn.query_row(
@@ -144,13 +144,13 @@ impl Store {
         Ok(result)
     }
 
-    pub fn list_tasks(
+    pub fn get_tasks(
         &self,
         channel_name: &str,
         status_filter: Option<TaskStatus>,
     ) -> Result<Vec<TaskInfo>> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let map_row = |row: &rusqlite::Row| -> rusqlite::Result<TaskInfo> {
@@ -181,14 +181,14 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn claim_tasks(
+    pub fn update_tasks_claim(
         &self,
         channel_name: &str,
         claimer_name: &str,
         task_numbers: &[i64],
     ) -> Result<Vec<ClaimResult>> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let mut results = Vec::new();
@@ -232,14 +232,14 @@ impl Store {
         Ok(results)
     }
 
-    pub fn unclaim_task(
+    pub fn update_task_unclaim(
         &self,
         channel_name: &str,
         claimer_name: &str,
         task_number: i64,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let claimed_by: Option<String> = conn.query_row(
@@ -267,7 +267,7 @@ impl Store {
         new_status: TaskStatus,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let channel = Self::find_channel_by_name_inner(&conn, channel_name)?
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let (current_status_str, claimed_by): (String, Option<String>) = conn.query_row(

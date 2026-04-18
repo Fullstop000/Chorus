@@ -1,11 +1,12 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import {
   ensureMixedRuntimeTrio,
   getAgentDetail,
   getWhoami,
   historyForUser,
+  stopAgentApi,
 } from './helpers/api'
-import { openAgentChat, openAgentTab, sendChatMessage } from './helpers/ui'
+import { openAgentChat, openAgentTab, sendChatMessage , gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -21,10 +22,10 @@ test.describe('ACT-002', () => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
     const { username } = await getWhoami(request)
     const token = `act-wake-${Date.now()}`
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Precondition: stop bot-a, then wake it via DM', async () => {
-      await request.post('/api/agents/bot-a/stop')
+      await stopAgentApi(request, 'bot-a')
       await openAgentChat(page, 'bot-a')
       await sendChatMessage(page, `Reply with exact token ${token}`)
       const deadline = Date.now() + 120_000

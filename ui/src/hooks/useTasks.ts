@@ -1,25 +1,25 @@
 import { useState, useEffect, useCallback } from 'react'
-import { getTasks } from '../api'
-import type { TaskInfo } from '../types'
+import { getTasks } from '../data'
+import type { TaskInfo } from '../data'
 
-export function useTasks(username: string, channel: string | null) {
+export function useTasks(username: string, conversationId: string | null) {
   const [tasks, setTasks] = useState<TaskInfo[]>([])
   const [loading, setLoading] = useState(false)
 
   const fetchTasks = useCallback(async () => {
-    if (!username || !channel) return
+    if (!username || !conversationId) return
     try {
-      const res = await getTasks(username, channel, 'all')
+      const res = await getTasks(conversationId, 'all')
       setTasks(res.tasks)
     } catch (e) {
       console.error('fetchTasks error', e)
     } finally {
       setLoading(false)
     }
-  }, [username, channel])
+  }, [conversationId, username])
 
   useEffect(() => {
-    if (!channel) {
+    if (!conversationId) {
       setTasks([])
       return
     }
@@ -27,7 +27,7 @@ export function useTasks(username: string, channel: string | null) {
     fetchTasks()
     const id = setInterval(fetchTasks, 5_000)
     return () => clearInterval(id)
-  }, [channel, fetchTasks])
+  }, [conversationId, fetchTasks])
 
   return { tasks, loading, refresh: fetchTasks }
 }

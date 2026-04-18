@@ -1,5 +1,5 @@
-import { test, expect } from '@playwright/test'
-import { createUserChannelViaUi, clickSidebarChannel, sendChatMessage } from './helpers/ui'
+import { test, expect } from './helpers/fixtures'
+import { createUserChannelViaUi, clickSidebarChannel, sendChatMessage , gotoApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/tasks.md` — TSK-002 Create Message-As-Task From Composer
@@ -8,7 +8,7 @@ test.describe('TSK-002', () => {
   test('Create Message-As-Task From Composer @case TSK-002', async ({ page }) => {
     const slug = `qa-task-msg-${Date.now()}`
     const title = `Task from composer ${Date.now()}`
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Precondition: open disposable channel', async () => {
       await createUserChannelViaUi(page, slug, 'playwright TSK-002')
@@ -22,7 +22,7 @@ test.describe('TSK-002', () => {
     })
 
     await test.step('Step 4: Matching task exists in Tasks tab', async () => {
-      await page.getByRole('button', { name: 'Tasks' }).click()
+      await page.getByRole('button', { name: 'Tasks', exact: true }).click()
       await expect(
         page.locator('.task-column[data-status="todo"] .task-card-title').filter({ hasText: title })
       ).toBeVisible()

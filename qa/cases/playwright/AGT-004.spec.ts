@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import {
@@ -9,10 +9,9 @@ import {
   createAgentApi,
   getAgentDetail,
   getWhoami,
-  sendAsUser,
   historyForUser,
 } from './helpers/api'
-import { openAgentTab, clickSidebarChannel } from './helpers/ui'
+import { openAgentTab, clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/agents.md` — AGT-004 Agent Control Center Edit, Restart, Delete, And Deleted History
@@ -35,19 +34,22 @@ test.describe('AGT-004', () => {
       reasoningEffort: 'medium',
       description: 'initial role',
     })
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–5: Edit config and verify role/env/reasoning persist', async () => {
       await openAgentTab(page, name, 'Profile')
       await page.getByRole('button', { name: 'Edit' }).click()
-      await page.locator('.modal-box-agent textarea').fill('updated role text')
-      await page.locator('.modal-box-agent .modal-field:has-text("Reasoning") select').selectOption('high')
-      await page.locator('.modal-box-agent .env-add-btn').click()
-      const row = page.locator('.env-var-editor-row').last()
+      const dialog = page.locator('[role="dialog"]')
+      await dialog.locator('textarea').fill('updated role text')
+      await dialog.locator('[role="combobox"][aria-label="Reasoning"]').click()
+      await page.locator('[role="option"]').filter({ hasText: /^High$/ }).click()
+      await dialog.locator('button:has-text("Add variable")').click()
+      const row = dialog.locator('.env-var-editor-row').last()
       await row.locator('input').nth(0).fill('QA_FLAG')
       await row.locator('input').nth(1).fill('on')
-      await page.locator('.modal-footer button:has-text("Save")').click()
-      await expect(page.locator('.profile-role-text')).toContainText('updated role text')
+      await dialog.locator('button:has-text("Save")').click()
+      const roleSection = page.locator('.profile-section').filter({ hasText: '[role::brief]' }).first()
+      await expect(roleSection.locator('.profile-role-text')).toContainText('updated role text')
       await expect(page.locator('.profile-config-grid')).toContainText('high')
       await expect(page.locator('.env-var-row')).toContainText('QA_FLAG')
       const detail = await getAgentDetail(request, name)
@@ -67,8 +69,15 @@ test.describe('AGT-004', () => {
 
     await test.step('Steps 8–12: Delete with keep-workspace preserves deleted history styling', async () => {
       await clickSidebarChannel(page, 'all')
-      await sendAsUser(request, username, '#all', `@${name} reply once before delete`)
-      await page.reload({ waitUntil: 'networkidle' })
+      const seeded = await request.post(`/internal/agent/${encodeURIComponent(name)}/send`, {
+        data: {
+          target: '#all',
+          content: `agent history ${Date.now()}`,
+          suppressAgentDelivery: true,
+        },
+      })
+      expect(seeded.ok(), await seeded.text()).toBeTruthy()
+      await reloadApp(page)
       await deleteAgentApi(request, name, 'preserve_workspace')
       const oldHistory = await historyForUser(request, username, '#all', 50)
       expect(oldHistory.some((entry) => entry.senderName === name && entry.senderDeleted)).toBe(true)

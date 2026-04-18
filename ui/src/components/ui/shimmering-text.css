@@ -1,0 +1,13 @@
+/* ── ShimmeringText: animate-ui per-character motion/react wave ── */
+
+.ui-shimmering-text {
+  --shimmer-base: var(--color-muted-foreground);
+  --shimmer-bright: var(--color-background);
+}
+
+@media (forced-colors: active) {
+  .ui-shimmering-text * {
+    color: CanvasText !important;
+    animation: none !important;
+  }
+}

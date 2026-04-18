@@ -4,14 +4,21 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
-use tracing::info;
+use tracing::{info, warn};
 
-use super::{acquire_transition, api_err, internal_err, ApiResult, AppState};
+use super::path_params::{
+    resolve_public_agent, resolve_public_agent_with_env, PublicResourceIdPath,
+};
+use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
-use crate::store::agents::{AgentEnvVar, AgentRuntime, AgentStatus};
+use crate::agent::AgentRuntime;
+use crate::store::agents::{AgentEnvVar, AgentStatus};
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
+use crate::utils::error::internal_err;
+use crate::utils::error::{format_anyhow_error, AppErrorCode};
+use crate::utils::slug::{random_slug_suffix, slugify_base, MAX_SLUG_ATTEMPTS};
 
 use super::dto::AgentInfo;
 
@@ -44,11 +51,16 @@ pub struct AgentEnvVarPayload {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct CreateAgentRequest {
+    /// Optional slug hint. When empty or omitted, the server derives
+    /// the base slug from `display_name` instead.
+    #[serde(default)]
     pub name: String,
     #[serde(default)]
     pub display_name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, rename = "systemPrompt")]
+    pub system_prompt: Option<String>,
     #[serde(default = "default_runtime")]
     pub runtime: String,
     #[serde(default = "default_model")]
@@ -64,6 +76,8 @@ pub struct UpdateAgentRequest {
     pub display_name: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default, rename = "systemPrompt")]
+    pub system_prompt: Option<String>,
     #[serde(default = "default_runtime")]
     pub runtime: String,
     #[serde(default = "default_model")]
@@ -113,7 +127,10 @@ pub(super) fn normalize_agent_env_vars(
     env_vars: &[AgentEnvVarPayload],
 ) -> Result<Vec<AgentEnvVar>, (StatusCode, Json<super::ErrorResponse>)> {
     if env_vars.len() > 100 {
-        return Err(api_err("too many environment variables"));
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "too many environment variables",
+        ));
     }
 
     let mut seen = HashSet::new();
@@ -121,15 +138,22 @@ pub(super) fn normalize_agent_env_vars(
     for (index, env_var) in env_vars.iter().enumerate() {
         let key = env_var.key.trim().to_string();
         if key.is_empty() {
-            return Err(api_err("environment variable key is required"));
+            return Err(app_err!(
+                StatusCode::BAD_REQUEST,
+                "environment variable key is required",
+            ));
         }
         if key.len() > 8_192 || env_var.value.len() > 8_192 {
-            return Err(api_err("environment variable key/value is too large"));
+            return Err(app_err!(
+                StatusCode::BAD_REQUEST,
+                "environment variable key/value is too large",
+            ));
         }
         if !seen.insert(key.clone()) {
-            return Err(api_err(format!(
+            return Err(app_err!(
+                StatusCode::BAD_REQUEST,
                 "duplicate environment variable key: {key}"
-            )));
+            ));
         }
         normalized.push(AgentEnvVar {
             key,
@@ -144,7 +168,8 @@ pub(super) fn normalize_reasoning_effort(
     runtime: &str,
     reasoning_effort: Option<&str>,
 ) -> Result<Option<String>, (StatusCode, Json<super::ErrorResponse>)> {
-    if AgentRuntime::parse(runtime) != Some(AgentRuntime::Codex) {
+    let parsed = AgentRuntime::parse(runtime);
+    if parsed != Some(AgentRuntime::Codex) && parsed != Some(AgentRuntime::Opencode) {
         return Ok(None);
     }
 
@@ -156,12 +181,13 @@ pub(super) fn normalize_reasoning_effort(
     }
 
     match reasoning_effort {
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => {
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => {
             Ok(Some(reasoning_effort.to_string()))
         }
-        _ => Err(api_err(format!(
-            "unsupported Codex reasoning effort: {reasoning_effort}"
-        ))),
+        _ => Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "unsupported reasoning effort: {reasoning_effort}"
+        )),
     }
 }
 
@@ -170,8 +196,8 @@ pub(super) fn normalize_reasoning_effort(
 pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<AgentInfo>> {
     let mut agents: Vec<AgentInfo> = state
         .store
-        .list_agents()
-        .map_err(|e| api_err(e.to_string()))?
+        .get_agents()
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .iter()
         .map(AgentInfo::from)
         .collect();
@@ -192,14 +218,28 @@ pub async fn handle_create_agent(
     State(state): State<AppState>,
     Json(req): Json<CreateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
-    let name = req.name.trim().to_string();
-    if name.is_empty() {
-        return Err(api_err("name is required"));
+    let name_hint = req.name.trim();
+    let display_name_trimmed = req.display_name.trim();
+    if name_hint.is_empty() && display_name_trimmed.is_empty() {
+        return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
-    let display_name = if req.display_name.is_empty() {
-        name.clone()
+    if name_hint.chars().count() > 200 || display_name_trimmed.chars().count() > 200 {
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "name/display_name exceeds 200-character limit"
+        ));
+    }
+    // Slug derivation lives on the server so every caller (new UI, old
+    // UI, curl users) lands on the same handle shape. Prefer an
+    // explicit name hint, fall back to the display name, and finally
+    // to `agent` when the input has no ASCII alphanumerics to slug on.
+    let base_name = slugify_base(name_hint)
+        .or_else(|| slugify_base(display_name_trimmed))
+        .unwrap_or_else(|| "agent".to_string());
+    let display_name = if display_name_trimmed.is_empty() {
+        base_name.clone()
     } else {
-        req.display_name
+        display_name_trimmed.to_string()
     };
     let description = if req.description.is_empty() {
         None
@@ -209,43 +249,121 @@ pub async fn handle_create_agent(
     let reasoning_effort =
         normalize_reasoning_effort(&req.runtime, req.reasoning_effort.as_deref())?;
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
-    state
-        .store
-        .create_agent_record_with_reasoning(&AgentRecordUpsert {
-            name: &name,
+
+    // Create the agent record, join auto-join channels, and start it.
+    let result = create_and_start_agent(
+        &state,
+        &CreateAgentParams {
+            base_name: &base_name,
             display_name: &display_name,
             description,
+            system_prompt: req.system_prompt.as_deref(),
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
             env_vars: &env_vars,
-        })
-        .map_err(|e| api_err(e.to_string()))?;
-    for channel in state
-        .store
-        .list_auto_join_channels()
-        .map_err(|e| internal_err(e.to_string()))?
-    {
+        },
+    )
+    .await
+    .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{e}"))?;
+    if let Some(ref err) = result.start_error {
+        return Err(app_err!(
+            AppErrorCode::AgentStartFailed,
+            "agent @{} created but failed to start: {err}",
+            result.name
+        ));
+    }
+    Ok(Json(serde_json::json!({
+        "id": result.id,
+        "name": result.name,
+        "status": AgentStatus::Active.as_str(),
+    })))
+}
+
+/// Parameters for creating a new agent with auto-slug.
+pub(crate) struct CreateAgentParams<'a> {
+    pub base_name: &'a str,
+    pub display_name: &'a str,
+    pub description: Option<&'a str>,
+    pub system_prompt: Option<&'a str>,
+    pub runtime: &'a str,
+    pub model: &'a str,
+    pub reasoning_effort: Option<&'a str>,
+    pub env_vars: &'a [AgentEnvVar],
+}
+
+/// Result of creating and starting an agent.
+pub(crate) struct CreateAgentResult {
+    pub name: String,
+    pub id: String,
+    /// `Some` when the agent was created but failed to start.
+    pub start_error: Option<String>,
+}
+
+/// Creates an agent record with a `{base}-{hex4}` slug, joins it to all
+/// auto-join channels, and starts it.
+pub(crate) async fn create_and_start_agent(
+    state: &AppState,
+    params: &CreateAgentParams<'_>,
+) -> anyhow::Result<CreateAgentResult> {
+    let mut last_error: Option<String> = None;
+    let mut slug_result: Option<(String, String)> = None;
+    for _ in 0..MAX_SLUG_ATTEMPTS {
+        let candidate = format!("{}-{}", params.base_name, random_slug_suffix());
+        match state.store.create_agent_record(&AgentRecordUpsert {
+            name: &candidate,
+            display_name: params.display_name,
+            description: params.description,
+            system_prompt: params.system_prompt,
+            runtime: params.runtime,
+            model: params.model,
+            reasoning_effort: params.reasoning_effort,
+            env_vars: params.env_vars,
+        }) {
+            Ok(id) => {
+                slug_result = Some((candidate, id));
+                break;
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("UNIQUE constraint") {
+                    last_error = Some(msg);
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+    let (name, id) = slug_result.ok_or_else(|| {
+        anyhow::anyhow!(
+            "failed to allocate a unique slug after {MAX_SLUG_ATTEMPTS} attempts: {}",
+            last_error.unwrap_or_else(|| "unknown".to_string())
+        )
+    })?;
+    for channel in state.store.get_auto_join_channels()? {
         let _ = state
             .store
             .join_channel(&channel.name, &name, SenderType::Agent);
     }
-    if let Err(err) = state.lifecycle.start_agent(&name, None).await {
-        let _ = state.store.delete_agent_record(&name);
-        return Err(internal_err(format!("failed to start agent: {err}")));
-    }
-    Ok(Json(serde_json::json!({ "name": name })))
+    let start_error = if let Err(err) = state.lifecycle.start_agent(&name, None).await {
+        let error_detail = format_anyhow_error(&err);
+        warn!(agent = %name, error = %error_detail, "agent created but failed to start");
+        Some(format!("{err}"))
+    } else {
+        None
+    };
+    Ok(CreateAgentResult {
+        name,
+        id,
+        start_error,
+    })
 }
 
 pub async fn handle_get_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentDetailResponse> {
-    let agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
+    let agent = resolve_public_agent_with_env(&state, &id)?;
     Ok(Json(AgentDetailResponse {
         agent: AgentInfo::from(&agent),
         env_vars: agent
@@ -261,15 +379,12 @@ pub async fn handle_get_agent(
 
 pub async fn handle_update_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<UpdateAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
+    let existing = resolve_public_agent(&state, &id)?;
+    let name = existing.name.clone();
     let _transition = acquire_transition(&state, &name)?;
-    let existing = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
 
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     let display_name = if req.display_name.trim().is_empty() {
@@ -292,33 +407,34 @@ pub async fn handle_update_agent(
 
     state
         .store
-        .update_agent_record_with_reasoning(&AgentRecordUpsert {
+        .update_agent_record(&AgentRecordUpsert {
             name: &name,
             display_name: &display_name,
             description,
+            system_prompt: req.system_prompt.as_deref(),
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
             env_vars: &env_vars,
         })
-        .map_err(|e| api_err(e.to_string()))?;
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if existing.status == AgentStatus::Active && requires_restart {
         state
             .lifecycle
             .stop_agent(&name)
             .await
-            .map_err(|e| internal_err(e.to_string()))?;
+            .map_err(internal_err)?;
         if let Err(err) = state.lifecycle.start_agent(&name, None).await {
             let _ = state
                 .store
                 .update_agent_status(&name, AgentStatus::Inactive);
-            return Err(internal_err(format!(
+            return Err(app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
                 "agent updated but restart failed: {err}"
-            )));
+            ));
         }
     }
-
     Ok(Json(serde_json::json!({
         "ok": true,
         "restarted": existing.status == AgentStatus::Active && requires_restart
@@ -327,15 +443,12 @@ pub async fn handle_update_agent(
 
 pub async fn handle_restart_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<RestartAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name.clone();
     let _transition = acquire_transition(&state, &name)?;
-    let agent = state
-        .store
-        .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
     let agents_dir = state.store.agents_dir();
     let workspace = AgentWorkspace::new(&agents_dir);
 
@@ -343,7 +456,7 @@ pub async fn handle_restart_agent(
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(internal_err)?;
 
     match req.mode {
         RestartMode::Restart => {}
@@ -351,16 +464,19 @@ pub async fn handle_restart_agent(
             state
                 .store
                 .update_agent_session(&name, None)
-                .map_err(|e| internal_err(e.to_string()))?;
+                .map_err(internal_err)?;
         }
         RestartMode::FullReset => {
             state
                 .store
                 .update_agent_session(&name, None)
-                .map_err(|e| internal_err(e.to_string()))?;
-            workspace
-                .delete_if_exists(&name)
-                .map_err(|e| internal_err(format!("failed to delete workspace: {e}")))?;
+                .map_err(internal_err)?;
+            workspace.delete_if_exists(&name).map_err(|e| {
+                app_err!(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "failed to delete workspace: {e}"
+                )
+            })?;
         }
     }
 
@@ -368,9 +484,11 @@ pub async fn handle_restart_agent(
         let _ = state
             .store
             .update_agent_status(&name, AgentStatus::Inactive);
-        return Err(internal_err(format!("restart failed: {err}")));
+        return Err(app_err!(
+            AppErrorCode::AgentRestartFailed,
+            "restart failed: {err}"
+        ));
     }
-
     Ok(Json(serde_json::json!({
         "ok": true,
         "mode": req.mode,
@@ -380,90 +498,98 @@ pub async fn handle_restart_agent(
 
 pub async fn handle_delete_agent(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Json(req): Json<DeleteAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
-    state
-        .store
-        .get_agent(&name)
-        .map_err(|e| api_err(e.to_string()))?
-        .ok_or_else(|| api_err("agent not found"))?;
 
     state
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(internal_err)?;
 
     state
         .store
         .mark_agent_messages_deleted(&name)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(internal_err)?;
     state
         .store
         .delete_agent_record(&name)
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(internal_err)?;
 
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
         let agents_dir = state.store.agents_dir();
         let workspace = AgentWorkspace::new(&agents_dir);
-        workspace.delete_if_exists(&name).map_err(|e| {
-            internal_err(format!("agent deleted but failed to delete workspace: {e}"))
-        })?;
+        if let Err(e) = workspace.delete_if_exists(&name) {
+            return Ok(Json(serde_json::json!({
+                "ok": true,
+                "warning": format!("agent deleted but workspace cleanup failed: {e}"),
+                "code": "AGENT_DELETE_WORKSPACE_CLEANUP_FAILED"
+            })));
+        }
     }
-
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn handle_agent_start(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
     info!(agent = %name, "starting agent");
     state
         .lifecycle
         .start_agent(&name, None)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(internal_err)?;
     info!(agent = %name, "agent started");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn handle_agent_stop(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
+    let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
     info!(agent = %name, "stopping agent");
     state
         .lifecycle
         .stop_agent(&name)
         .await
-        .map_err(|e| internal_err(e.to_string()))?;
+        .map_err(internal_err)?;
     info!(agent = %name, "agent stopped");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 pub async fn handle_agent_activity(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Query(params): Query<ActivityParams>,
 ) -> ApiResult<serde_json::Value> {
+    let agent = resolve_public_agent(&state, &id)?;
     let limit = params.limit.unwrap_or(50).min(200);
     let messages = state
         .store
-        .get_agent_activity(&name, limit)
-        .map_err(|e| api_err(e.to_string()))?;
+        .get_agent_activity(&agent.name, limit)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
 
 pub async fn handle_agent_activity_log(
     State(state): State<AppState>,
-    Path(name): Path<String>,
+    Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
     Query(params): Query<ActivityLogParams>,
 ) -> ApiResult<ActivityLogResponse> {
-    let resp = state.lifecycle.get_activity_log_data(&name, params.after);
+    let agent = resolve_public_agent(&state, &id)?;
+    let resp = state
+        .lifecycle
+        .get_activity_log_data(&agent.name, params.after);
     Ok(Json(resp))
 }

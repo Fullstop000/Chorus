@@ -1,7 +1,7 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
 import type { Page } from '@playwright/test'
 import { ensureMixedRuntimeTrio, teamExists } from './helpers/api'
-import { createTeamQaEngViaUi, clickSidebarChannel } from './helpers/ui'
+import { createTeamQaEngViaUi, clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 async function expectSingleRightAlignedTeamRow(page: Page) {
   const row = page
@@ -34,7 +34,7 @@ async function expectSingleRightAlignedTeamRow(page: Page) {
  * Steps:
  * 1. Click `+ New Channel` and verify the modal has a Channel / Team toggle at the top.
  * 2. Switch the toggle to `Team`.
- * 3. Fill in name `qa-eng`, display name `QA Engineering`, model Leader+Operators, leader + operator agents.
+ * 3. Fill in name `qa-eng`, display name `QA Engineering`, and initial members.
  * 4. Submit the form.
  * 5. Verify `#qa-eng` appears with `[team]` badge, not `[sys]`.
  * 6. Verify no separate Teams-only section (sidebar structure).
@@ -54,21 +54,23 @@ test.describe('TMT-001', () => {
   test('Team Create, Channel Badge, Sidebar @case TMT-001', async ({ page, request }) => {
     const hasTeam = await teamExists(request, 'qa-eng')
 
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–2: New Channel modal — Channel / Team toggle', async () => {
       await page.click('button[title="Add channel"]')
-      await expect(page.locator('.modal-title:text("Create Channel")')).toBeVisible()
-      await expect(page.locator('.btn-brutal:has-text("Team")')).toBeVisible()
-      await page.locator('.btn-brutal:has-text("Team")').click()
-      await expect(page.locator('.modal-title:text("Create Team")')).toBeVisible()
-      await page.locator('.modal-close').click()
+      const dialog = page.locator('[role="dialog"]')
+      await expect(dialog.getByRole('heading', { name: 'Create Channel' })).toBeVisible()
+      await expect(dialog.locator('button:has-text("Team")')).toBeVisible()
+      await dialog.locator('button:has-text("Team")').click()
+      await expect(dialog.getByRole('heading', { name: 'Create Team' })).toBeVisible()
+      await dialog.locator('button:has-text("Cancel")').click()
     })
 
     await test.step('Step 7 (+ New Team shortcut): Team tab pre-selected', async () => {
       await page.click('button[title="Add team"]')
-      await expect(page.locator('.modal-title:text("Create Team")')).toBeVisible()
-      await page.locator('.modal-close').click()
+      const dialog = page.locator('[role="dialog"]')
+      await expect(dialog.getByRole('heading', { name: 'Create Team' })).toBeVisible()
+      await dialog.locator('button:has-text("Cancel")').click()
     })
 
     if (!hasTeam) {
@@ -93,7 +95,7 @@ test.describe('TMT-001', () => {
     })
 
     await test.step('Step 10: Refresh — team badge persists', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await expectSingleRightAlignedTeamRow(page)
     })
   })

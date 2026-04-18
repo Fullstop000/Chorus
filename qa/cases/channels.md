@@ -119,3 +119,32 @@
   - deleted channel remains selected
   - refresh resurrects deleted channel
   - old history appears under the wrong target
+
+### CHN-005 Channel Rename Updates Sidebar Immediately
+
+- Tier: 1
+- Release-sensitive: yes when touching channel edit flows, sidebar refresh logic, or selected-target rendering
+- Execution mode: browser
+- Goal:
+  - verify renaming a channel updates both the sidebar row and the open chat header immediately without a full page refresh
+- Script:
+  - [`playwright/CHN-005.spec.ts`](./playwright/CHN-005.spec.ts) (UI rename flow + sidebar/header assertions)
+- Preconditions:
+  - channel edit control exists in the current build
+  - disposable user channel can be created
+- Steps:
+  1. Create a disposable channel and open it.
+  2. Trigger the shipped edit-channel flow from the sidebar or channel controls.
+  3. Rename the channel to a distinct value and save.
+  4. Verify the modal closes cleanly.
+  5. Verify the sidebar shows only the new name.
+  6. Verify the open chat header also updates to the new name without reload.
+- Expected:
+  - rename persists
+  - sidebar updates immediately
+  - selected channel header updates immediately
+  - old name does not linger in navigation
+- Common failure signals:
+  - sidebar keeps the stale name until refresh
+  - header and sidebar disagree about the current name
+  - rename saves in backend but not in visible navigation

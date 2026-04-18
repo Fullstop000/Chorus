@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { gotoApp, reloadApp } from './helpers/ui'
 import {
   createChannelApi,
   deleteChannelApi,
@@ -18,7 +19,7 @@ test.describe('CHN-002', () => {
     const rawName = `#QaMix-${Date.now()}`
     const normalizedName = rawName.replace(/^#/, '').toLowerCase()
     const { username } = await getWhoami(request)
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Steps 1–2: Mixed-case + # prefix are normalized', async () => {
       const created = await createChannelApi(request, {
@@ -27,7 +28,7 @@ test.describe('CHN-002', () => {
       })
       createdIds.push(created.id)
       expect(created.name).toBe(normalizedName)
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await expect(page.locator('.sidebar-item-text').filter({ hasText: normalizedName }).first()).toBeVisible()
     })
 
@@ -37,7 +38,8 @@ test.describe('CHN-002', () => {
       })
       expect(dup.ok()).toBeFalsy()
       const body = await dup.json()
-      expect(String(body.error ?? '')).toMatch(/exists|unique constraint/i)
+      expect(body.code).toBe('CHANNEL_NAME_TAKEN')
+      expect(String(body.error ?? '')).toMatch(/channel name already in use/i)
     })
 
     await test.step('Step 4: Invalid or empty name rejected', async () => {

@@ -4,8 +4,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_datetime, Attachment, Store};
-use crate::store::teams::TeamMembership;
+use super::{parse_datetime, Store};
 
 // ── Types owned by this module ──
 
@@ -20,6 +19,8 @@ pub struct Agent {
     pub display_name: String,
     /// Optional longer description.
     pub description: Option<String>,
+    /// Full system prompt for the LLM (rich template prompts go here).
+    pub system_prompt: Option<String>,
     /// Which subprocess driver to spawn (`claude`, `codex`, `kimi`, …).
     pub runtime: String,
     /// Model identifier for the driver.
@@ -79,66 +80,6 @@ impl AgentStatus {
     }
 }
 
-/// Supported local agent runtimes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRuntime {
-    Claude,
-    Codex,
-    Kimi,
-}
-
-impl AgentRuntime {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Kimi => "kimi",
-        }
-    }
-
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "claude" => Some(Self::Claude),
-            "codex" => Some(Self::Codex),
-            "kimi" => Some(Self::Kimi),
-            _ => None,
-        }
-    }
-}
-
-/// Snapshot passed to the bridge when spawning an agent (includes team context).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct AgentConfig {
-    /// Agent handle.
-    pub name: String,
-    /// Display name for prompts.
-    pub display_name: String,
-    /// Optional description for system prompt.
-    pub description: Option<String>,
-    /// Driver key.
-    pub runtime: String,
-    /// Model id.
-    pub model: String,
-    /// Active session id if resuming.
-    pub session_id: Option<String>,
-    /// Reasoning effort for Codex.
-    pub reasoning_effort: Option<String>,
-    /// Environment variables for the child process.
-    pub env_vars: Vec<AgentEnvVar>,
-    /// Team memberships injected into the agent's system prompt at spawn time.
-    pub teams: Vec<TeamMembership>,
-}
-
-/// Registered human user (can post and own channels).
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Human {
-    /// Username (typically OS login) used as sender id.
-    pub name: String,
-    /// When the human row was inserted.
-    pub created_at: DateTime<Utc>,
-}
-
 /// Shared persisted agent configuration used by store create/update helpers.
 pub struct AgentRecordUpsert<'a> {
     /// Agent handle (primary key for updates).
@@ -147,6 +88,8 @@ pub struct AgentRecordUpsert<'a> {
     pub display_name: &'a str,
     /// Optional description column.
     pub description: Option<&'a str>,
+    /// Optional system prompt for the LLM.
+    pub system_prompt: Option<&'a str>,
     /// Driver column.
     pub runtime: &'a str,
     /// Model column.
@@ -158,47 +101,16 @@ pub struct AgentRecordUpsert<'a> {
 }
 
 impl Store {
-    pub fn create_agent_record(
-        &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        env_vars: &[AgentEnvVar],
-    ) -> Result<String> {
-        self.create_agent_record_with_reasoning(&AgentRecordUpsert {
-            name,
-            display_name,
-            description,
-            runtime,
-            model,
-            reasoning_effort: None,
-            env_vars,
-        })
-    }
-
-    pub fn create_agent_record_with_reasoning(
-        &self,
-        record: &AgentRecordUpsert<'_>,
-    ) -> Result<String> {
+    pub fn create_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO agents (id, name, display_name, description, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                id,
-                record.name,
-                record.display_name,
-                record.description,
-                record.runtime,
-                record.model,
-                record.reasoning_effort
-            ],
+            "INSERT INTO agents (id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
         if let Some(all_channel) =
-            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
+            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
         {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
@@ -219,26 +131,14 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_agents(&self) -> Result<Vec<Agent>> {
+    pub fn get_agents(&self) -> Result<Vec<Agent>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
-                "SELECT id, name, display_name, description, runtime, model, reasoning_effort, status, session_id, created_at FROM agents ORDER BY name",
+                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents ORDER BY name",
             )?
             .query_map([], |row| {
-                Ok(Agent {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    display_name: row.get(2)?,
-                    description: row.get(3)?,
-                    runtime: row.get(4)?,
-                    model: row.get(5)?,
-                    reasoning_effort: row.get(6)?,
-                    env_vars: Vec::new(),
-                    status: AgentStatus::from_status_str(&row.get::<_, String>(7)?),
-                    session_id: row.get(8)?,
-                    created_at: parse_datetime(&row.get::<_, String>(9)?),
-                })
+                Self::agent_from_row(row)
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -248,57 +148,39 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, display_name, description, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
+            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
         )?;
-        let mut rows = stmt.query_map(params![name], |row| {
-            Ok(Agent {
-                id: row.get(0)?,
-                name: row.get(1)?,
-                display_name: row.get(2)?,
-                description: row.get(3)?,
-                runtime: row.get(4)?,
-                model: row.get(5)?,
-                reasoning_effort: row.get(6)?,
-                env_vars: Vec::new(),
-                status: AgentStatus::from_status_str(&row.get::<_, String>(7)?),
-                session_id: row.get(8)?,
-                created_at: parse_datetime(&row.get::<_, String>(9)?),
-            })
-        })?;
+        let mut rows = stmt.query_map(params![name], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
         if let Some(ref mut agent) = agent {
-            agent.env_vars = Self::list_agent_env_vars_inner(&conn, &agent.name)?;
+            Self::hydrate_agent_env_vars_inner(&conn, agent)?;
         }
         Ok(agent)
     }
 
-    pub fn update_agent_record(
-        &self,
-        name: &str,
-        display_name: &str,
-        description: Option<&str>,
-        runtime: &str,
-        model: &str,
-        env_vars: &[AgentEnvVar],
-    ) -> Result<()> {
-        self.update_agent_record_with_reasoning(&AgentRecordUpsert {
-            name,
-            display_name,
-            description,
-            runtime,
-            model,
-            reasoning_effort: None,
-            env_vars,
-        })
+    pub fn get_agent_by_id(&self, id: &str, hydrate_env: bool) -> Result<Option<Agent>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query_map(params![id], Self::agent_from_row)?;
+        let mut agent = rows.next().transpose()?;
+        if hydrate_env {
+            if let Some(ref mut agent) = agent {
+                Self::hydrate_agent_env_vars_inner(&conn, agent)?;
+            }
+        }
+        Ok(agent)
     }
 
-    pub fn update_agent_record_with_reasoning(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
+    pub fn update_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE agents SET display_name = ?1, description = ?2, runtime = ?3, model = ?4, reasoning_effort = ?5 WHERE name = ?6",
+            "UPDATE agents SET display_name = ?1, description = ?2, system_prompt = ?3, runtime = ?4, model = ?5, reasoning_effort = ?6 WHERE name = ?7",
             params![
                 record.display_name,
                 record.description,
+                record.system_prompt,
                 record.runtime,
                 record.model,
                 record.reasoning_effort,
@@ -318,7 +200,7 @@ impl Store {
         Ok(())
     }
 
-    pub fn list_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
+    pub fn get_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
         let conn = self.conn.lock().unwrap();
         Self::list_agent_env_vars_inner(&conn, name)
     }
@@ -337,10 +219,33 @@ impl Store {
                     value: row.get(1)?,
                     position: row.get(2)?,
                 })
-            })?
+        })?
             .filter_map(|row| row.ok())
             .collect();
         Ok(rows)
+    }
+
+    fn hydrate_agent_env_vars_inner(conn: &rusqlite::Connection, agent: &mut Agent) -> Result<()> {
+        agent.env_vars = Self::list_agent_env_vars_inner(conn, &agent.name)?;
+        Ok(())
+    }
+
+    fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Agent> {
+        let created_at = row.get::<_, String>(10)?;
+        Ok(Agent {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            display_name: row.get(2)?,
+            description: row.get(3)?,
+            system_prompt: row.get(4)?,
+            runtime: row.get(5)?,
+            model: row.get(6)?,
+            reasoning_effort: row.get(7)?,
+            env_vars: Vec::new(),
+            status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
+            session_id: row.get(9)?,
+            created_at: parse_datetime(&created_at),
+        })
     }
 
     fn replace_agent_env_vars_inner(
@@ -370,70 +275,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn add_human(&self, name: &str) -> Result<()> {
+    /// Get all channel IDs where an agent is a member (includes DM channels).
+    pub fn agent_channel_ids(&self, agent_name: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
-            params![name],
-        )?;
-        if let Some(all_channel) =
-            Self::find_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
-        {
-            conn.execute(
-                "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
-                 VALUES (?1, ?2, 'human', 0)",
-                params![all_channel.id, name],
-            )?;
-        }
-        Ok(())
-    }
-
-    pub fn list_humans(&self) -> Result<Vec<Human>> {
-        let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .prepare("SELECT name, created_at FROM humans ORDER BY name")?
-            .query_map([], |row| {
-                Ok(Human {
-                    name: row.get(0)?,
-                    created_at: parse_datetime(&row.get::<_, String>(1)?),
-                })
-            })?
+        let mut stmt =
+            conn.prepare("SELECT DISTINCT channel_id FROM channel_members WHERE member_name = ?1")?;
+        let ids = stmt
+            .query_map(rusqlite::params![agent_name], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
-        Ok(rows)
-    }
-
-    pub fn store_attachment(
-        &self,
-        filename: &str,
-        mime_type: &str,
-        size: i64,
-        stored_path: &str,
-    ) -> Result<String> {
-        let conn = self.conn.lock().unwrap();
-        let id = Uuid::new_v4().to_string();
-        conn.execute(
-            "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, filename, mime_type, size, stored_path],
-        )?;
-        Ok(id)
-    }
-
-    pub fn get_attachment(&self, id: &str) -> Result<Option<Attachment>> {
-        let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, filename, mime_type, size_bytes, stored_path, uploaded_at FROM attachments WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![id], |row| {
-            Ok(Attachment {
-                id: row.get(0)?,
-                filename: row.get(1)?,
-                mime_type: row.get(2)?,
-                size_bytes: row.get(3)?,
-                stored_path: row.get(4)?,
-                uploaded_at: parse_datetime(&row.get::<_, String>(5)?),
-            })
-        })?;
-        Ok(rows.next().transpose()?)
+        Ok(ids)
     }
 }

@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { test, expect } from './helpers/fixtures'
+import { gotoApp, reloadApp } from './helpers/ui'
 import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
 
 /**
@@ -30,7 +31,7 @@ test.describe('ACT-001', () => {
   })
 
   test('Activity Timeline Completeness And Readability @case ACT-001', async ({ page }) => {
-    await page.goto('/', { waitUntil: 'networkidle' })
+    await gotoApp(page)
 
     await test.step('Step 1: Open bot-a Activity tab', async () => {
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
@@ -38,26 +39,26 @@ test.describe('ACT-001', () => {
     })
 
     await test.step('Step 2–7: Activity panel shows list or empty state', async () => {
-      await expect(page.locator('.activity-panel')).toBeVisible({ timeout: 15_000 })
-      const items = page.locator('.activity-item')
+      await expect(page.locator('.ta-layout')).toBeVisible({ timeout: 15_000 })
+      const items = page.locator('.ta-detail .activity-item')
       const count = await items.count()
       if (count > 0) {
         await expect(items.first()).toBeVisible()
-        const received = page.locator('.activity-item-message-received')
-        const sent = page.locator('.activity-item-message-sent')
-        const tool = page.locator('.activity-item-tool')
+        const received = page.locator('.ta-detail .activity-item-message-received')
+        const sent = page.locator('.ta-detail .activity-item-message-sent')
+        const tool = page.locator('.ta-detail .activity-item-tool')
         const hasAny = (await received.count()) + (await sent.count()) + (await tool.count()) > 0
         expect(hasAny || count > 0).toBe(true)
       } else {
-        await expect(page.locator('.activity-empty')).toBeVisible()
+        await expect(page.locator('.ta-runs-empty, .ta-detail-empty').first()).toBeVisible()
       }
     })
 
     await test.step('Step 8: Refresh preserves panel', async () => {
-      await page.reload({ waitUntil: 'networkidle' })
+      await reloadApp(page)
       await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
       await page.getByRole('button', { name: 'Activity' }).click()
-      await expect(page.locator('.activity-panel')).toBeVisible()
+      await expect(page.locator('.ta-layout')).toBeVisible()
     })
   })
 })

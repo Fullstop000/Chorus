@@ -1,63 +1,124 @@
 use std::collections::HashMap;
-use std::io::Write as _;
 use std::path::PathBuf;
-use std::process::Child;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use tokio::sync::Mutex;
-use tracing::{debug, error, info, warn};
+use tokio::sync::{broadcast, Mutex};
+use tracing::{debug, info, warn};
 
-use crate::agent::activity_log::{self, ActivityEntry, ActivityLogMap, ActivityLogResponse};
-use crate::agent::drivers::{Driver, ParsedEvent, SpawnContext};
+use crate::agent::activity_log::{
+    self, ActivityEntry, ActivityLogMap, ActivityLogResponse, ACTIVITY_OFFLINE, ACTIVITY_WORKING,
+};
+use crate::agent::drivers::claude::ClaudeDriver;
+use crate::agent::drivers::codex::CodexDriver;
+use crate::agent::drivers::kimi::KimiDriver;
+use crate::agent::drivers::opencode::OpencodeDriver;
+use crate::agent::drivers::{
+    AgentHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, StartOpts,
+};
+use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
-use crate::store::agents::{AgentConfig, AgentRuntime, AgentStatus};
+use crate::agent::AgentRuntime;
+use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
-struct RunningAgent {
-    instance_id: u64,
-    process: Child,
-    driver: Arc<dyn Driver>,
-    session_id: Option<String>,
-    is_in_receive_message: bool,
-    pending_notification_count: u32,
+/// Managed agent backed by a [`RuntimeDriver`] + [`AgentHandle`].
+///
+/// Visible to the sibling `event_forwarder` module (not exported beyond
+/// the `agent` crate) because the forwarder's `Completed` arm and the
+/// notify-agent debounce task both need to touch the handle and the
+/// pending-count field. No other module should reach into these fields;
+/// prefer `deliver_pending_notification` for the shared delivery path.
+pub(super) struct ManagedAgent {
+    pub(super) handle: Box<dyn AgentHandle>,
+    pub(super) _event_tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// Debounce counter for stdin-style notification batching.
+    pub(super) pending_notification_count: u32,
 }
 
-pub struct AgentManager {
-    agents: Arc<Mutex<HashMap<String, RunningAgent>>>,
-    activity_logs: Arc<ActivityLogMap>,
-    store: Arc<Store>,
-    data_dir: PathBuf,
-    bridge_binary: String,
-    server_url: String,
-    next_instance_id: AtomicU64,
-}
-
-fn get_driver(runtime: &str) -> anyhow::Result<Arc<dyn Driver>> {
-    match AgentRuntime::parse(runtime) {
-        Some(AgentRuntime::Claude) => Ok(Arc::new(crate::agent::drivers::claude::ClaudeDriver)),
-        Some(AgentRuntime::Codex) => Ok(Arc::new(crate::agent::drivers::codex::CodexDriver)),
-        Some(AgentRuntime::Kimi) => Ok(Arc::new(crate::agent::drivers::kimi::KimiDriver)),
-        None => anyhow::bail!("Unknown runtime: {runtime}"),
+impl ManagedAgent {
+    /// Emit a `Reading` trace event and deliver a synthetic notification
+    /// prompt telling the agent how many messages arrived while it was
+    /// busy. Resets `pending_notification_count` as a side effect.
+    ///
+    /// Called from two paths that previously duplicated this logic:
+    ///   1. `notify_agent`'s debounce task (an agent is already Active,
+    ///      3s of quiet elapsed since the last notification bump).
+    ///   2. The event forwarder's `Completed` arm (an agent just finished
+    ///      a turn and we see pending notifications queued up).
+    ///
+    /// Returns the number of notifications that were merged into the
+    /// prompt (0 if nothing was pending; prompt is not sent in that case),
+    /// or an error if the prompt dispatch itself failed.
+    ///
+    /// Note: the caller typically holds the manager-wide `agents` mutex
+    /// while `await`ing this — meaning the prompt dispatch serializes all
+    /// other manager operations. Acceptable for single-user chorus today;
+    /// would want a per-agent lock if we ever scale the agent count.
+    pub(super) async fn deliver_pending_notification(
+        &mut self,
+        trace_store: &AgentTraceStore,
+        trace_tx: &broadcast::Sender<TraceEvent>,
+        agent_name: &str,
+    ) -> anyhow::Result<u32> {
+        let count = self.pending_notification_count;
+        if count == 0 {
+            return Ok(0);
+        }
+        self.pending_notification_count = 0;
+        trace::emit_event(trace_store, trace_tx, agent_name, TraceEventKind::Reading);
+        let plural = if count > 1 { "s" } else { "" };
+        let them = if count > 1 { "them" } else { "it" };
+        let text = format!(
+            "[System notification: You have {count} new message{plural} \
+             waiting. Call check_messages to read {them} when you're ready.]"
+        );
+        self.handle
+            .prompt(PromptReq {
+                text,
+                attachments: vec![],
+            })
+            .await?;
+        Ok(count)
     }
 }
 
+pub struct AgentManager {
+    /// Driver registry — maps runtime to its driver.
+    driver_registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
+    /// Active agents keyed by agent name.
+    agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
+    activity_logs: Arc<ActivityLogMap>,
+    trace_store: Arc<AgentTraceStore>,
+    store: Arc<Store>,
+    data_dir: PathBuf,
+    /// Test-only override for the bridge endpoint. Production code leaves this
+    /// `None` and discovery reads `~/.chorus/bridge.json`; tests set it to a
+    /// synthetic URL so they don't depend on a real bridge being up.
+    #[cfg(test)]
+    bridge_endpoint_override: Option<String>,
+}
+
+pub fn build_driver_registry() -> HashMap<AgentRuntime, Arc<dyn RuntimeDriver>> {
+    let mut registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>> = HashMap::new();
+    registry.insert(AgentRuntime::Claude, Arc::new(ClaudeDriver));
+    registry.insert(AgentRuntime::Codex, Arc::new(CodexDriver));
+    registry.insert(AgentRuntime::Kimi, Arc::new(KimiDriver));
+    registry.insert(AgentRuntime::Opencode, Arc::new(OpencodeDriver));
+    registry
+}
+
 impl AgentManager {
-    pub fn new(
-        store: Arc<Store>,
-        data_dir: PathBuf,
-        bridge_binary: String,
-        server_url: String,
-    ) -> Self {
+    pub fn new(store: Arc<Store>, data_dir: PathBuf) -> Self {
         Self {
+            driver_registry: build_driver_registry(),
             agents: Arc::new(Mutex::new(HashMap::new())),
             activity_logs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            trace_store: Arc::new(AgentTraceStore::new()),
             store,
             data_dir,
-            bridge_binary,
-            server_url,
-            next_instance_id: AtomicU64::new(1),
+            #[cfg(test)]
+            bridge_endpoint_override: None,
         }
     }
 
@@ -68,6 +129,7 @@ impl AgentManager {
         agent_name: &str,
         wake_message: Option<ReceivedMessage>,
     ) -> anyhow::Result<()> {
+        // Already running?
         {
             let agents = self.agents.lock().await;
             if agents.contains_key(agent_name) {
@@ -80,39 +142,15 @@ impl AgentManager {
             .get_agent(agent_name)?
             .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
 
-        let driver = get_driver(&agent.runtime)?;
-        let resumable_session_id = match driver.runtime() {
-            AgentRuntime::Codex => agent.session_id.clone(),
-            AgentRuntime::Kimi => Some(
-                agent
-                    .session_id
-                    .clone()
-                    .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
-            ),
-            AgentRuntime::Claude => None,
-        };
-
-        let config = AgentConfig {
-            name: agent.name.clone(),
-            display_name: agent.display_name.clone(),
-            description: agent.description.clone(),
-            runtime: agent.runtime.clone(),
-            model: agent.model.clone(),
-            session_id: resumable_session_id,
-            reasoning_effort: agent.reasoning_effort.clone(),
-            env_vars: agent.env_vars.clone(),
-            teams: self
-                .store
-                .list_teams_for_agent(agent_name)
-                .unwrap_or_default(),
-        };
+        let rt = AgentRuntime::parse(&agent.runtime)
+            .ok_or_else(|| anyhow::anyhow!("Unknown runtime: {}", agent.runtime))?;
 
         let agent_data_dir = self.data_dir.join(agent_name);
         tokio::fs::create_dir_all(&agent_data_dir).await?;
 
         let memory_md_path = agent_data_dir.join("MEMORY.md");
         if !memory_md_path.exists() {
-            let description = config
+            let description = agent
                 .description
                 .as_deref()
                 .unwrap_or("No role defined yet.");
@@ -120,164 +158,209 @@ impl AgentManager {
                 &memory_md_path,
                 format!(
                     "# {}\n\n## Role\n{}\n\n## Key Knowledge\n- No notes yet.\n\n## Active Context\n- First startup.\n",
-                    config.display_name, description
+                    agent.display_name, description
                 ),
             ).await?;
         }
         tokio::fs::create_dir_all(agent_data_dir.join("notes")).await?;
 
-        let is_resume = config.session_id.is_some();
+        let driver = self
+            .driver_registry
+            .get(&rt)
+            .ok_or_else(|| anyhow::anyhow!("no driver for runtime {:?}", rt))?
+            .clone();
+
+        // Discover the shared bridge. `chorus serve` starts it in-process, so
+        // if it's missing the server didn't boot correctly — fail loudly
+        // rather than silently falling back to a (now-deleted) stdio path.
+        let bridge_endpoint = self.resolve_bridge_endpoint()?;
+
+        info!(agent = %agent_name, endpoint = %bridge_endpoint, "starting agent via shared bridge");
+
+        let spec = AgentSpec {
+            display_name: agent.display_name.clone(),
+            description: agent.description.clone(),
+            system_prompt: agent.system_prompt.clone(),
+            model: agent.model.clone(),
+            reasoning_effort: agent.reasoning_effort.clone(),
+            env_vars: agent.env_vars.clone(),
+            working_directory: agent_data_dir.clone(),
+            bridge_endpoint,
+        };
+
+        let attach_result = driver.attach(agent_name.to_string(), spec).await?;
+        let mut handle = attach_result.handle;
+        let events = attach_result.events;
+
+        // Subscribe BEFORE start so we don't miss early events.
+        let event_rx = events.subscribe();
+
+        let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
 
-        let prompt = build_start_prompt(
-            &config,
-            driver.as_ref(),
+        let init_prompt_text = build_start_prompt(
+            &agent.display_name,
             is_resume,
             &unread_summary,
             wake_message.as_ref(),
         );
 
-        let running_session_id = config.session_id.clone();
-        if driver.runtime() == AgentRuntime::Kimi {
-            if let Some(ref session_id) = running_session_id {
-                self.store
-                    .update_agent_session(agent_name, Some(session_id.as_str()))?;
-            }
-        }
-
-        let ctx = SpawnContext {
-            agent_id: agent.name.clone(),
-            agent_name: agent.name.clone(),
-            config,
-            prompt,
-            working_directory: agent_data_dir.to_string_lossy().into_owned(),
-            bridge_binary: self.bridge_binary.clone(),
-            server_url: self.server_url.clone(),
+        let start_opts = StartOpts {
+            resume_session_id: agent.session_id.clone(),
         };
 
-        let mut child = driver.spawn(&ctx)?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Failed to capture agent stdout"))?;
-        let stderr = child.stderr.take();
+        self.store
+            .update_agent_status(agent_name, AgentStatus::Active)?;
+        activity_log::set_activity_state(
+            &self.activity_logs,
+            agent_name,
+            ACTIVITY_WORKING,
+            "Starting\u{2026}",
+        );
+        activity_log::push_activity(
+            &self.activity_logs,
+            agent_name,
+            ActivityEntry::Start { is_resume },
+        );
 
-        let instance_id = self.next_instance_id.fetch_add(1, Ordering::Relaxed);
+        handle
+            .start(
+                start_opts,
+                Some(PromptReq {
+                    text: init_prompt_text,
+                    attachments: vec![],
+                }),
+            )
+            .await?;
+
+        let forwarder = super::event_forwarder::spawn_event_forwarder(
+            event_rx,
+            self.activity_logs.clone(),
+            self.trace_store.clone(),
+            self.store.trace_sender(),
+            self.store.clone(),
+            self.agents.clone(),
+        );
 
         {
             let mut agents = self.agents.lock().await;
             agents.insert(
                 agent_name.to_string(),
-                RunningAgent {
-                    instance_id,
-                    process: child,
-                    driver: driver.clone(),
-                    session_id: running_session_id,
-                    is_in_receive_message: false,
+                ManagedAgent {
+                    handle,
+                    _event_tasks: vec![forwarder],
                     pending_notification_count: 0,
                 },
             );
         }
 
-        self.store
-            .update_agent_status(agent_name, AgentStatus::Active)?;
-        activity_log::set_activity_state(&self.activity_logs, agent_name, "working", "Starting…");
-
-        self.spawn_output_reader(agent_name.to_string(), stdout, driver, instance_id);
-        if let Some(stderr) = stderr {
-            self.spawn_stderr_reader(agent_name.to_string(), stderr, instance_id);
-        }
+        info!(agent = %agent_name, runtime = %rt.as_str(), "agent started");
         Ok(())
     }
 
     /// Stop an agent process and mark it inactive.
     pub async fn stop_agent(&self, agent_name: &str) -> anyhow::Result<()> {
-        let mut running = {
-            let mut agents = self.agents.lock().await;
-            match agents.remove(agent_name) {
-                Some(r) => r,
-                None => return Ok(()),
+        let mut agents = self.agents.lock().await;
+        if let Some(mut agent) = agents.remove(agent_name) {
+            info!(agent = %agent_name, "stopping agent");
+            if let Err(e) = agent.handle.close().await {
+                warn!(agent = %agent_name, err = %e, "error closing handle");
             }
-        };
-        let _ = running.process.kill();
-        self.store
-            .update_agent_status(agent_name, AgentStatus::Inactive)?;
-        activity_log::set_activity_state(
-            &self.activity_logs,
-            agent_name,
-            "offline",
-            "Process stopped",
-        );
+            // End any active trace run.
+            trace::emit_active_event(
+                &self.trace_store,
+                &self.store.trace_sender(),
+                agent_name,
+                TraceEventKind::Error {
+                    message: "Agent stopped".to_string(),
+                },
+            );
+            self.trace_store.end_run(agent_name);
+            self.store
+                .update_agent_status(agent_name, AgentStatus::Inactive)?;
+            let _ = self.store.update_agent_session(agent_name, None);
+            activity_log::set_activity_state(
+                &self.activity_logs,
+                agent_name,
+                ACTIVITY_OFFLINE,
+                "Process stopped",
+            );
+        }
         Ok(())
     }
 
     /// Kill process but keep status as sleeping (will auto-restart on next message).
     pub async fn sleep_agent(&self, agent_name: &str) -> anyhow::Result<()> {
-        let mut running = {
-            let mut agents = self.agents.lock().await;
-            match agents.remove(agent_name) {
-                Some(r) => r,
-                None => return Ok(()),
+        let mut agents = self.agents.lock().await;
+        if let Some(mut agent) = agents.remove(agent_name) {
+            info!(agent = %agent_name, "sleeping agent");
+            if let Err(e) = agent.handle.close().await {
+                warn!(agent = %agent_name, err = %e, "error closing handle for sleep");
             }
-        };
-        info!(agent = %agent_name, "hibernating (sleeping)");
-        let _ = running.process.kill();
-        self.store
-            .update_agent_status(agent_name, AgentStatus::Sleeping)?;
-        activity_log::set_activity_state(&self.activity_logs, agent_name, "offline", "Sleeping");
+            self.store
+                .update_agent_status(agent_name, AgentStatus::Sleeping)?;
+            let _ = self.store.update_agent_session(agent_name, None);
+            activity_log::set_activity_state(
+                &self.activity_logs,
+                agent_name,
+                ACTIVITY_OFFLINE,
+                "Sleeping",
+            );
+        }
         Ok(())
     }
 
     /// Deliver a wakeup notification to agent stdin.
     pub async fn notify_agent(&self, agent_name: &str) -> anyhow::Result<()> {
         let mut agents = self.agents.lock().await;
-        let running = match agents.get_mut(agent_name) {
-            Some(r) => r,
-            None => return Ok(()),
-        };
+        if let Some(agent) = agents.get_mut(agent_name) {
+            agent.pending_notification_count += 1;
+            let count = agent.pending_notification_count;
 
-        if !running.driver.supports_stdin_notification()
-            || running.is_in_receive_message
-            || running.session_id.is_none()
-        {
-            return Ok(());
-        }
+            let is_active = matches!(agent.handle.state(), AgentState::Active { .. });
+            if !is_active {
+                // Agent is mid-run (e.g. init turn or processing another message).
+                // The event forwarder will deliver the notification immediately
+                // when the current turn's Completed event fires — no polling needed.
+                debug!(agent = %agent_name, "agent not Active, notification queued for post-turn delivery");
+                return Ok(());
+            }
 
-        running.pending_notification_count += 1;
-        let count = running.pending_notification_count;
+            let agents_ref = self.agents.clone();
+            let trace_store = self.trace_store.clone();
+            let trace_tx = self.store.trace_sender();
+            let name = agent_name.to_string();
 
-        let agents_ref = self.agents.clone();
-        let name = agent_name.to_string();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let mut agents = agents_ref.lock().await;
-            if let Some(running) = agents.get_mut(&name) {
-                let current_count = running.pending_notification_count;
-                if current_count == 0 || running.is_in_receive_message || current_count != count {
-                    running.pending_notification_count = 0;
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                let mut agents = agents_ref.lock().await;
+                let Some(agent) = agents.get_mut(&name) else {
+                    return;
+                };
+                if agent.pending_notification_count != count {
+                    // Another notification bumped the count after we spawned;
+                    // the newer debounce task will be authoritative. Bow out.
                     return;
                 }
-                let sid = match running.session_id.clone() {
-                    Some(s) => s,
-                    None => return,
-                };
-                running.pending_notification_count = 0;
-
-                let plural = if current_count > 1 { "s" } else { "" };
-                let them = if current_count > 1 { "them" } else { "it" };
-                let check_tool = format!("{}check_messages", running.driver.mcp_tool_prefix());
-                let notification = format!(
-                    "[System notification: You have {current_count} new message{plural} waiting. \
-                     Call {check_tool} to read {them} when you're ready.]"
-                );
-                info!(agent = %name, count = current_count, "sending stdin notification");
-                if let Some(encoded) = running.driver.encode_stdin_message(&notification, &sid) {
-                    if let Some(stdin) = running.process.stdin.as_mut() {
-                        let _ = writeln!(stdin, "{encoded}");
+                if !matches!(agent.handle.state(), AgentState::Active { .. }) {
+                    debug!(agent = %name, "agent no longer Active after debounce, skipping");
+                    agent.pending_notification_count = 0;
+                    return;
+                }
+                match agent
+                    .deliver_pending_notification(&trace_store, &trace_tx, &name)
+                    .await
+                {
+                    Ok(delivered) if delivered > 0 => {
+                        info!(agent = %name, count = delivered, "sent prompt notification");
+                    }
+                    Ok(_) => {} // nothing pending
+                    Err(e) => {
+                        warn!(agent = %name, error = %e, "failed to deliver notification prompt");
                     }
                 }
-            }
-        });
+            });
+        }
 
         Ok(())
     }
@@ -294,229 +377,100 @@ impl AgentManager {
         self.agents.lock().await.keys().cloned().collect()
     }
 
-    fn spawn_output_reader(
-        &self,
-        agent_name: String,
-        stdout: std::process::ChildStdout,
-        driver: Arc<dyn Driver>,
-        instance_id: u64,
-    ) {
-        let agents = self.agents.clone();
-        let activity_logs = self.activity_logs.clone();
-        let store = self.store.clone();
-        let name = agent_name.clone();
-
-        tokio::task::spawn_blocking(move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stdout);
-
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(e) => {
-                        error!(agent = %name, err = %e, "stdout read error");
-                        break;
-                    }
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-
-                if driver.runtime() == AgentRuntime::Kimi {
-                    debug!(agent = %name, raw_stdout = %line, "raw agent stdout");
-                    activity_log::push_activity(
-                        &activity_logs,
-                        &name,
-                        ActivityEntry::RawOutput { text: line.clone() },
-                    );
-                }
-
-                for event in driver.parse_line(&line) {
-                    let rt = tokio::runtime::Handle::current();
-                    rt.block_on(async {
-                        handle_parsed_event(&agents, &activity_logs, &store, &name, event, &driver)
-                            .await;
-                    });
-                }
-            }
-
-            let rt = tokio::runtime::Handle::current();
-            rt.block_on(async {
-                let mut agents_map = agents.lock().await;
-                let Some(current) = agents_map.get(&name) else {
-                    info!(agent = %name, instance_id, "stdout reader ended for stale process");
-                    return;
-                };
-                if current.instance_id != instance_id {
-                    info!(agent = %name, stale_instance = instance_id, current_instance = current.instance_id, "stdout reader ended after agent restart");
-                    return;
-                }
-
-                info!(agent = %name, "stdout reader ended — checking exit status");
-                activity_log::set_activity_state(&activity_logs, &name, "offline", "Process stopped");
-
-                if let Some(mut running) = agents_map.remove(&name) {
-                    match running.process.wait() {
-                        Ok(status) => {
-                            let code = status.code().unwrap_or(-1);
-                            if code == 0 {
-                                info!(agent = %name, code, "process exited cleanly — sleeping");
-                                let _ = store.update_agent_status(&name, AgentStatus::Sleeping);
-                            } else {
-                                warn!(agent = %name, code, "process crashed — marking inactive");
-                                let _ = store.update_agent_status(&name, AgentStatus::Inactive);
-                            }
-                        }
-                        Err(e) => {
-                            error!(agent = %name, err = %e, "failed to get exit status");
-                            let _ = store.update_agent_status(&name, AgentStatus::Inactive);
-                        }
-                    }
-                }
-            });
-        });
+    /// Resolve the shared bridge endpoint. Fails loudly if no bridge is
+    /// running — there is no stdio fallback anymore.
+    fn resolve_bridge_endpoint(&self) -> anyhow::Result<String> {
+        #[cfg(test)]
+        if let Some(override_url) = &self.bridge_endpoint_override {
+            return Ok(override_url.clone());
+        }
+        crate::bridge::discovery::read_bridge_info()
+            .map(|info| format!("http://127.0.0.1:{}", info.port))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Shared MCP bridge is not running. This usually means `chorus serve` \
+                     didn't start it — this shouldn't happen. Check server logs for \
+                     bridge startup errors."
+                )
+            })
     }
 
-    fn spawn_stderr_reader(
-        &self,
-        agent_name: String,
-        stderr: std::process::ChildStderr,
-        instance_id: u64,
+    #[cfg(test)]
+    pub(crate) fn register_driver(
+        &mut self,
+        runtime: AgentRuntime,
+        driver: Arc<dyn RuntimeDriver>,
     ) {
-        tokio::task::spawn_blocking(move || {
-            use std::io::BufRead;
-            let reader = std::io::BufReader::new(stderr);
+        self.driver_registry.insert(runtime, driver);
+    }
 
-            for line in reader.lines() {
-                let line = match line {
-                    Ok(l) => l,
-                    Err(e) => {
-                        error!(agent = %agent_name, err = %e, "stderr read error");
-                        break;
-                    }
-                };
-                if line.trim().is_empty() {
-                    continue;
-                }
-                warn!(agent = %agent_name, instance_id, raw_stderr = %line, "agent stderr");
-            }
-        });
+    #[cfg(test)]
+    pub(crate) fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
+        self.bridge_endpoint_override = Some(url.into());
     }
 }
 
-async fn handle_parsed_event(
-    agents: &Arc<Mutex<HashMap<String, RunningAgent>>>,
-    logs: &Arc<ActivityLogMap>,
-    store: &Arc<Store>,
-    agent_name: &str,
-    event: ParsedEvent,
-    driver: &Arc<dyn Driver>,
-) {
-    let mut agents_map = agents.lock().await;
-    let running = match agents_map.get_mut(agent_name) {
-        Some(r) => r,
-        None => return,
-    };
+// The event forwarder (driver events → trace/activity/store) now lives in
+// `super::event_forwarder`. Kept out of this file so the 270-line fan-out
+// doesn't sit next to the lifecycle orchestration it runs alongside.
 
-    match event {
-        ParsedEvent::SessionInit { session_id } => {
-            info!(agent = %agent_name, session = %session_id, "session started");
-            running.session_id = Some(session_id.clone());
-            let _ = store.update_agent_session(agent_name, Some(&session_id));
-            activity_log::set_activity_state(logs, agent_name, "online", "Ready");
-        }
-        ParsedEvent::Thinking { ref text } => {
-            running.is_in_receive_message = false;
-            let preview: String = text.chars().take(120).collect();
-            let preview = if text.chars().count() > 120 {
-                format!("{preview}…")
-            } else {
-                preview
-            };
-            debug!(agent = %agent_name, text = %preview, "thinking");
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::Thinking { text: text.clone() },
-            );
-            activity_log::set_activity_state(logs, agent_name, "thinking", "Thinking…");
-        }
-        ParsedEvent::Text { ref text } => {
-            running.is_in_receive_message = false;
-            let preview: String = text.chars().take(120).collect();
-            let preview = if text.chars().count() > 120 {
-                format!("{preview}…")
-            } else {
-                preview
-            };
-            info!(agent = %agent_name, text = %preview, "text output");
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::Text { text: text.clone() },
-            );
-        }
-        ParsedEvent::ToolCall {
-            ref name,
-            ref input,
-        } => {
-            let receive_tool = format!("{}receive_message", driver.mcp_tool_prefix());
-            let wait_tool = format!("{}wait_for_message", driver.mcp_tool_prefix());
-            if *name == receive_tool || *name == wait_tool {
-                running.is_in_receive_message = true;
-                running.pending_notification_count = 0;
-                info!(agent = %agent_name, "waiting for messages");
-                let display_name = driver.tool_display_name(name);
-                activity_log::push_activity(
-                    logs,
-                    agent_name,
-                    ActivityEntry::ToolStart {
-                        tool_name: display_name,
-                        tool_input: String::new(),
-                    },
-                );
-                activity_log::set_activity_state(
-                    logs,
-                    agent_name,
-                    "online",
-                    "Waiting for messages",
-                );
-            } else {
-                running.is_in_receive_message = false;
-                let display_name = driver.tool_display_name(name);
-                let tool_input = driver.summarize_tool_input(name, input);
-                info!(agent = %agent_name, tool = %name, input = %tool_input, "tool call");
-                activity_log::push_activity(
-                    logs,
-                    agent_name,
-                    ActivityEntry::ToolStart {
-                        tool_name: display_name.clone(),
-                        tool_input,
-                    },
-                );
-                activity_log::set_activity_state(logs, agent_name, "working", &display_name);
+// ── prompt builder ──
+
+fn build_start_prompt(
+    display_name: &str,
+    is_resume: bool,
+    unread_summary: &std::collections::HashMap<String, i64>,
+    wake_message: Option<&ReceivedMessage>,
+) -> String {
+    if let Some(msg) = wake_message {
+        let target = format_message_target(msg);
+        let attachment_count = msg.attachments.as_ref().map_or(0, Vec::len);
+        let content_preview = truncate_prompt_text(&msg.content, 2_000);
+
+        let mut prompt = format!(
+            "You were just woken by a new unread message.\n\
+             Treat this preview as wake-up context only. The message is still unread.\n\
+             Call check_messages() now to load unread messages before you respond.\n\n\
+             Triggering message:\n\
+             - From: {}\n\
+             - Target: {target}\n\
+             - Timestamp: {}\n\
+             - Attachments: {attachment_count}\n\
+             - Content:\n{content_preview}",
+            msg.sender_name, msg.timestamp,
+        );
+
+        if !unread_summary.is_empty() {
+            prompt.push_str("\n\nUnread summary:");
+            for (ch, count) in unread_summary {
+                prompt.push_str(&format!("\n- {ch}: {count} unread"));
             }
         }
-        ParsedEvent::TurnEnd { session_id } => {
-            info!(agent = %agent_name, "turn ended");
-            running.is_in_receive_message = false;
-            if let Some(ref sid) = session_id {
-                running.session_id = Some(sid.clone());
-                let _ = store.update_agent_session(agent_name, Some(sid));
-            }
-            activity_log::set_activity_state(logs, agent_name, "online", "Idle");
+        return prompt;
+    }
+
+    if !is_resume {
+        return format!(
+            "Hello {display_name}, you are now online. \
+             There are no messages or tasks right now. \
+             Do not use any tools. \
+             Simply reply with a short acknowledgement and stop."
+        );
+    }
+
+    if !unread_summary.is_empty() {
+        let mut prompt = String::from("You have unread messages from while you were offline:");
+        for (ch, count) in unread_summary {
+            prompt.push_str(&format!("\n- {ch}: {count} unread"));
         }
-        ParsedEvent::Error { ref message } => {
-            error!(agent = %agent_name, message = %message, "agent error");
-            activity_log::push_activity(
-                logs,
-                agent_name,
-                ActivityEntry::Status {
-                    activity: "error".to_string(),
-                    detail: message.clone(),
-                },
-            );
-        }
+        prompt.push_str(
+            "\n\nUse read_history to catch up on important channels, \
+             then stop. New messages will be delivered to you automatically.",
+        );
+        prompt
+    } else {
+        "No new messages while you were away. Nothing to do right now \u{2014} just stop."
+            .to_string()
     }
 }
 
@@ -555,109 +509,13 @@ impl AgentLifecycle for AgentManager {
         activity_log::all_activity_states(&self.activity_logs)
     }
 
-    fn push_activity_entry(&self, agent_name: &str, entry: ActivityEntry) {
-        activity_log::push_activity(&self.activity_logs, agent_name, entry);
-    }
-}
-
-// ── Prompt builder for start/resume ──
-
-fn build_start_prompt(
-    config: &AgentConfig,
-    driver: &dyn Driver,
-    is_resume: bool,
-    unread_summary: &std::collections::HashMap<String, i64>,
-    wake_message: Option<&ReceivedMessage>,
-) -> String {
-    if let Some(wake_message) = wake_message {
-        let wake_prompt = build_wake_message_prompt(driver, wake_message, unread_summary);
-        if is_resume {
-            return wake_prompt;
-        }
-        return format!(
-            "{}\n\n{}",
-            driver.build_system_prompt(config, &config.name),
-            wake_prompt
-        );
+    fn active_run_id(&self, agent_name: &str) -> Option<String> {
+        self.trace_store.active_run_id(agent_name)
     }
 
-    if !is_resume {
-        return driver.build_system_prompt(config, &config.name);
+    fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
+        self.trace_store.set_run_channel(agent_name, channel_id);
     }
-
-    let prefix = driver.mcp_tool_prefix();
-
-    if !unread_summary.is_empty() {
-        let mut prompt = String::from("You have unread messages from while you were offline:");
-        for (ch, count) in unread_summary {
-            prompt.push_str(&format!("\n- {ch}: {count} unread"));
-        }
-        prompt.push_str(
-            "\n\nUse read_history to catch up on important channels, \
-             then call the wait_for_message tool to return to the idle loop.",
-        );
-        if driver.supports_stdin_notification() {
-            prompt.push_str(&format!(
-                "\n\nNote: While you are busy, you may receive \
-                 [System notification: ...] messages. \
-                 Finish your current step, then call {prefix}check_messages().",
-            ));
-        }
-        prompt
-    } else {
-        let mut prompt = format!(
-            "No new messages while you were away. \
-             Call {prefix}wait_for_message() to listen for new messages."
-        );
-        if driver.supports_stdin_notification() {
-            prompt.push_str(&format!(
-                "\n\nNote: While you are busy, you may receive \
-                 [System notification: ...] messages about new messages. \
-                 Finish your current step, then call {prefix}check_messages().",
-            ));
-        }
-        prompt
-    }
-}
-
-/// Format the specific unread message that caused an agent restart so the
-/// resumed runtime knows why it woke up without treating the preview as the
-/// authoritative source of truth.
-fn build_wake_message_prompt(
-    driver: &dyn Driver,
-    wake_message: &ReceivedMessage,
-    unread_summary: &std::collections::HashMap<String, i64>,
-) -> String {
-    let prefix = driver.mcp_tool_prefix();
-    let target = format_message_target(wake_message);
-    let attachment_count = wake_message.attachments.as_ref().map_or(0, Vec::len);
-    let content_preview = truncate_prompt_text(&wake_message.content, 2_000);
-
-    let mut prompt = format!(
-        "You were just woken by a new unread message.\n\
-         Treat this preview as wake-up context only. The message is still unread.\n\
-         Call {prefix}check_messages() now to load unread messages before you respond.\n\n\
-         Triggering message:\n\
-         - From: {}\n\
-         - Target: {target}\n\
-         - Timestamp: {}\n\
-         - Attachments: {attachment_count}\n\
-         - Content:\n{}",
-        wake_message.sender_name, wake_message.timestamp, content_preview
-    );
-
-    if !unread_summary.is_empty() {
-        prompt.push_str("\n\nUnread summary:");
-        for (channel_name, count) in unread_summary {
-            prompt.push_str(&format!("\n- {channel_name}: {count} unread"));
-        }
-    }
-
-    prompt.push_str(&format!(
-        "\n\nAfter you finish the triggered work, return to {prefix}wait_for_message()."
-    ));
-
-    prompt
 }
 
 /// Convert the stored message shape into the human-facing target label used in
@@ -698,243 +556,199 @@ fn truncate_prompt_text(text: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
-    use std::process::{Command, Stdio};
+    use crate::agent::drivers::fake::FakeDriver;
+    use crate::store::AgentRecordUpsert;
     use std::sync::Arc;
-    use std::time::Duration;
     use tempfile::tempdir;
 
-    struct FakeDriver;
+    fn make_test_manager(store: Arc<Store>, dir: &std::path::Path) -> AgentManager {
+        let mut manager = AgentManager::new(store, dir.join("agents"));
+        let fake = Arc::new(FakeDriver::new(AgentRuntime::Codex));
+        manager.register_driver(AgentRuntime::Codex, fake);
+        // Tests use a synthetic endpoint — the FakeDriver ignores it, but the
+        // manager now insists on one since there's no stdio fallback.
+        manager.set_bridge_endpoint_override("http://127.0.0.1:1");
+        manager
+    }
 
-    impl Driver for FakeDriver {
-        fn runtime(&self) -> AgentRuntime {
-            AgentRuntime::Codex
-        }
-
-        fn supports_stdin_notification(&self) -> bool {
-            false
-        }
-
-        fn mcp_tool_prefix(&self) -> &str {
-            "mcp_chat_"
-        }
-
-        fn spawn(&self, _ctx: &SpawnContext) -> anyhow::Result<Child> {
-            unreachable!("spawn is not used by prompt unit tests")
-        }
-
-        fn parse_line(&self, _line: &str) -> Vec<ParsedEvent> {
-            vec![]
-        }
-
-        fn encode_stdin_message(&self, _text: &str, _session_id: &str) -> Option<String> {
-            None
-        }
-
-        fn build_system_prompt(&self, _config: &AgentConfig, _agent_id: &str) -> String {
-            "BASE PROMPT".to_string()
-        }
-
-        fn tool_display_name(&self, name: &str) -> String {
-            name.to_string()
-        }
-
-        fn summarize_tool_input(&self, _name: &str, _input: &serde_json::Value) -> String {
-            String::new()
-        }
-
-        fn detect_runtime_status(
-            &self,
-        ) -> anyhow::Result<crate::agent::runtime_status::RuntimeStatus> {
-            Ok(crate::agent::runtime_status::RuntimeStatus {
-                runtime: self.id().to_string(),
-                installed: true,
-                auth_status: Some(crate::agent::runtime_status::RuntimeAuthStatus::Authed),
+    fn insert_codex_agent(store: &Store) {
+        store
+            .create_agent_record(&AgentRecordUpsert {
+                name: "v2bot",
+                display_name: "V2 Bot",
+                description: Some("Test v2 agent"),
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-5.4-mini",
+                reasoning_effort: None,
+                env_vars: &[],
             })
-        }
+            .unwrap();
     }
 
-    fn sample_config(session_id: Option<&str>) -> AgentConfig {
-        AgentConfig {
-            name: "bot1".to_string(),
-            display_name: "Bot 1".to_string(),
-            description: Some("Replies in Chorus".to_string()),
-            runtime: "codex".to_string(),
-            model: "gpt-5.4-mini".to_string(),
-            session_id: session_id.map(str::to_string),
-            reasoning_effort: None,
-            env_vars: Vec::new(),
-            teams: vec![],
-        }
+    #[tokio::test]
+    async fn start_agent_with_fake_driver() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        let manager = make_test_manager(store, dir.path());
+
+        let result = manager.start_agent("v2bot", None).await;
+
+        assert!(result.is_ok(), "start_agent should succeed: {result:?}");
+
+        let agents = manager.agents.lock().await;
+        assert!(agents.contains_key("v2bot"), "v2bot should be in agents");
+
+        // Should also show up in running agent names.
+        drop(agents);
+        let names = manager.get_running_agent_names().await;
+        assert!(names.contains(&"v2bot".to_string()));
+
+        // Cleanup
+        let _ = manager.stop_agent("v2bot").await;
     }
 
-    fn sample_wake_message() -> ReceivedMessage {
-        serde_json::from_value(json!({
-            "message_id": "msg-1",
-            "channel_name": "general",
-            "channel_type": "channel",
-            "sender_name": "alice",
-            "sender_type": "human",
-            "content": "Please investigate the Codex restart path.",
-            "timestamp": "2026-03-22T12:00:00Z"
-        }))
-        .expect("wake message fixture should deserialize")
-    }
+    #[tokio::test]
+    async fn stop_agent_idempotent() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
 
-    fn sample_thread_wake_message() -> ReceivedMessage {
-        serde_json::from_value(json!({
-            "message_id": "reply-1",
-            "channel_name": "thread-a1b2c3d4",
-            "channel_type": "thread",
-            "parent_channel_name": "eng-team",
-            "parent_channel_type": "channel",
-            "sender_name": "alice",
-            "sender_type": "human",
-            "content": "Please reply in the team thread.",
-            "timestamp": "2026-03-22T12:00:00Z"
-        }))
-        .expect("thread wake message fixture should deserialize")
-    }
+        let manager = make_test_manager(store, dir.path());
 
-    #[test]
-    fn wake_prompt_for_resumed_agent_mentions_check_and_wait_tools() {
-        let config = sample_config(Some("thread-123"));
-        let driver = FakeDriver;
-        let prompt = build_start_prompt(
-            &config,
-            &driver,
-            true,
-            &std::collections::HashMap::new(),
-            Some(&sample_wake_message()),
-        );
+        manager.start_agent("v2bot", None).await.unwrap();
 
-        assert!(prompt.contains("woken by a new unread message"));
-        assert!(prompt.contains("mcp_chat_check_messages() now"));
-        assert!(prompt.contains("mcp_chat_wait_for_message()"));
-        assert!(prompt.contains("Please investigate the Codex restart path."));
+        // First stop should succeed.
+        let r1 = manager.stop_agent("v2bot").await;
+        assert!(r1.is_ok(), "first stop should succeed: {r1:?}");
+
+        // Second stop should also be Ok (idempotent).
+        let r2 = manager.stop_agent("v2bot").await;
+        assert!(r2.is_ok(), "second stop should be idempotent: {r2:?}");
+
+        let agents = manager.agents.lock().await;
         assert!(
-            !prompt.contains("BASE PROMPT"),
-            "resume prompt should send only the wake-specific delta"
-        );
-    }
-
-    #[test]
-    fn wake_prompt_for_fresh_agent_keeps_base_prompt() {
-        let config = sample_config(None);
-        let driver = FakeDriver;
-        let prompt = build_start_prompt(
-            &config,
-            &driver,
-            false,
-            &std::collections::HashMap::new(),
-            Some(&sample_wake_message()),
-        );
-
-        assert!(prompt.contains("BASE PROMPT"));
-        assert!(prompt.contains("Treat this preview as wake-up context only."));
-        assert!(prompt.contains("Target: #general"));
-    }
-
-    #[test]
-    fn wake_prompt_for_thread_message_uses_exact_reply_target() {
-        let config = sample_config(Some("thread-123"));
-        let driver = FakeDriver;
-        let prompt = build_start_prompt(
-            &config,
-            &driver,
-            true,
-            &std::collections::HashMap::new(),
-            Some(&sample_thread_wake_message()),
-        );
-
-        assert!(prompt.contains("Target: #eng-team:a1b2c3d4"));
-        assert!(
-            !prompt.contains("Target: #eng-team thread"),
-            "wake prompts must preserve the exact thread target so resumed agents can reply in place"
+            !agents.contains_key("v2bot"),
+            "v2bot should be removed after stop"
         );
     }
 
     #[tokio::test]
-    async fn stale_output_reader_does_not_remove_restarted_agent() {
+    async fn sleep_agent_marks_sleeping() {
         let dir = tempdir().unwrap();
-        let db_path = dir.path().join("chorus.db");
-        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
-        store
-            .create_agent_record("bot1", "Bot 1", None, "claude", "sonnet", &[])
-            .unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
 
-        let manager = AgentManager::new(
-            store,
-            dir.path().join("agents"),
-            "chorus".to_string(),
-            "http://127.0.0.1:3001".to_string(),
-        );
-        let driver: Arc<dyn Driver> = Arc::new(FakeDriver);
+        let manager = make_test_manager(store.clone(), dir.path());
 
-        let mut first = Command::new("sh")
-            .arg("-c")
-            .arg("sleep 0.1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        let first_stdout = first.stdout.take().unwrap();
-        {
-            let mut agents = manager.agents.lock().await;
-            agents.insert(
-                "bot1".to_string(),
-                RunningAgent {
-                    instance_id: 1,
-                    process: first,
-                    driver: driver.clone(),
-                    session_id: None,
-                    is_in_receive_message: false,
-                    pending_notification_count: 0,
-                },
-            );
-        }
-        manager.spawn_output_reader("bot1".to_string(), first_stdout, driver.clone(), 1);
+        manager.start_agent("v2bot", None).await.unwrap();
 
-        {
-            let mut agents = manager.agents.lock().await;
-            agents.remove("bot1").unwrap();
-        }
+        manager.sleep_agent("v2bot").await.unwrap();
 
-        let second = Command::new("sh")
-            .arg("-c")
-            .arg("sleep 1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .unwrap();
-        {
-            let mut agents = manager.agents.lock().await;
-            agents.insert(
-                "bot1".to_string(),
-                RunningAgent {
-                    instance_id: 2,
-                    process: second,
-                    driver,
-                    session_id: None,
-                    is_in_receive_message: false,
-                    pending_notification_count: 0,
-                },
-            );
-        }
-
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        let contains_restarted_agent = manager.agents.lock().await.contains_key("bot1");
-        if contains_restarted_agent {
-            if let Some(mut running) = manager.agents.lock().await.remove("bot1") {
-                let _ = running.process.kill();
-                let _ = running.process.wait();
-            }
-        }
-
+        let agents = manager.agents.lock().await;
         assert!(
-            contains_restarted_agent,
-            "stale stdout reader removed the restarted agent from the running map"
+            !agents.contains_key("v2bot"),
+            "v2bot should be removed after sleep"
         );
+
+        let agent_record = store.get_agent("v2bot").unwrap().unwrap();
+        assert_eq!(
+            agent_record.status,
+            AgentStatus::Sleeping,
+            "agent status should be sleeping"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_is_noop_when_already_running() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        let manager = make_test_manager(store, dir.path());
+
+        manager.start_agent("v2bot", None).await.unwrap();
+
+        // Second start should be a no-op (returns Ok).
+        let r2 = manager.start_agent("v2bot", None).await;
+
+        assert!(r2.is_ok(), "duplicate start should be no-op: {r2:?}");
+
+        let _ = manager.stop_agent("v2bot").await;
+    }
+
+    #[tokio::test]
+    async fn notify_returns_ok_for_agent() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+        insert_codex_agent(&store);
+
+        let manager = make_test_manager(store, dir.path());
+
+        manager.start_agent("v2bot", None).await.unwrap();
+
+        let result = manager.notify_agent("v2bot").await;
+        assert!(result.is_ok(), "notify should succeed: {result:?}");
+
+        let _ = manager.stop_agent("v2bot").await;
+    }
+
+    // ── resolve_bridge_endpoint ──
+
+    #[test]
+    fn resolve_bridge_endpoint_returns_override_when_set() {
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let mut manager = AgentManager::new(store, dir.path().join("agents"));
+        manager.set_bridge_endpoint_override("http://127.0.0.1:9999");
+        let got = manager.resolve_bridge_endpoint().unwrap();
+        assert_eq!(got, "http://127.0.0.1:9999");
+    }
+
+    #[test]
+    fn resolve_bridge_endpoint_fails_loudly_without_bridge() {
+        // No override set and (in this test harness) no bridge running on
+        // the local machine at the default discovery path — even if one
+        // were, `read_bridge_info` returns None for stale/dead PIDs, and
+        // the default path is unlikely to point at a live chorus in CI.
+        // Skip the assertion if a live discovery file happens to exist.
+        if crate::bridge::discovery::read_bridge_info().is_some() {
+            eprintln!(
+                "skipping resolve_bridge_endpoint_fails_loudly_without_bridge: \
+                 live bridge detected on this machine"
+            );
+            return;
+        }
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(":memory:").unwrap());
+        let manager = AgentManager::new(store, dir.path().join("agents"));
+        let err = manager
+            .resolve_bridge_endpoint()
+            .expect_err("must fail when no override and no bridge");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("Shared MCP bridge is not running"),
+            "error should name the condition: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn driver_registry_has_all_runtimes() {
+        let registry = build_driver_registry();
+        assert_eq!(registry.len(), 4, "should have all four runtimes");
+        for rt in [
+            AgentRuntime::Claude,
+            AgentRuntime::Codex,
+            AgentRuntime::Kimi,
+            AgentRuntime::Opencode,
+        ] {
+            assert!(
+                registry.contains_key(&rt),
+                "registry should contain {:?}",
+                rt
+            );
+        }
     }
 }

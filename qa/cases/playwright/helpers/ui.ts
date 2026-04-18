@@ -1,20 +1,58 @@
 import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 
+function exactText(text: string): RegExp {
+  return new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
+}
+
+/**
+ * Wait for the app shell to finish loading: sidebar must have at least one
+ * visible item.  Always cheaper than waitUntil:'networkidle' and explicitly
+ * tests a real UI signal instead of network heuristics.
+ */
+export async function waitForAppReady(page: Page): Promise<void> {
+  await expect(page.locator('.sidebar-item-text').first()).toBeVisible({ timeout: 30_000 })
+  await expect(page.locator('.chat-header-name, .empty-state, .message-input-area').first()).toBeVisible({ timeout: 15_000 })
+}
+
+/** Navigate to the app root and wait for the shell to be ready. */
+export async function gotoApp(page: Page): Promise<void> {
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await waitForAppReady(page)
+}
+
+/** Reload the page and wait for the shell to be ready. */
+export async function reloadApp(page: Page): Promise<void> {
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await waitForAppReady(page)
+}
+
 export async function createAgentViaUi(
   page: Page,
   opts: { name: string; runtime: string; model: string; reasoningEffort?: string | null }
 ): Promise<void> {
   await page.click('button[title="Create agent"]')
-  await expect(page.locator('.modal-title:text("Create Agent")')).toBeVisible()
-  await page.locator('.modal-box-agent input[placeholder="e.g. my-agent"]').fill(opts.name)
-  await page.locator('.modal-box-agent .modal-field:has-text("Runtime") select').selectOption(opts.runtime)
-  await page.locator('.modal-box-agent .modal-field:has-text("Model") select').first().selectOption(opts.model)
-  if (opts.runtime === 'codex' && opts.reasoningEffort) {
-    await page.locator('.modal-box-agent .modal-field:has-text("Reasoning") select').selectOption(opts.reasoningEffort)
+  const dialog = page.locator('[role="dialog"]')
+  await expect(dialog).toBeVisible()
+  const browseHeading = dialog.getByRole('heading', { name: 'Create Agent' })
+  const configureHeading = dialog.getByRole('heading', { name: 'Configure Agent' })
+  const fromScratch = dialog.getByRole('button', { name: 'Create from scratch' })
+  if (await browseHeading.isVisible().catch(() => false) && await fromScratch.isVisible().catch(() => false)) {
+    await fromScratch.click()
   }
-  await page.locator('.modal-box-agent button:has-text("Create Agent")').click()
-  await expect(page.locator('.modal-title:text("Create Agent")')).toBeHidden({ timeout: 120_000 })
+  await expect(configureHeading).toBeVisible()
+  await dialog.locator('input[placeholder="e.g. Code Reviewer"]').fill(opts.name)
+  await dialog.locator('[role="combobox"][aria-label="Runtime"]').click()
+  await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.runtime, 'i') }).first().click()
+  await dialog.locator('[role="combobox"][aria-label="Model"]').click()
+  const modelLabel = opts.model.split('/').at(-1) ?? opts.model
+  await page.locator('[role="option"]').filter({ hasText: exactText(modelLabel) }).first().click()
+  if (opts.runtime === 'codex' && opts.reasoningEffort) {
+    await dialog.locator('[role="combobox"][aria-label="Reasoning"]').click()
+    await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.reasoningEffort, 'i') }).first().click()
+  }
+  await dialog.locator('button:has-text("Create Agent")').click()
+  await expect(dialog).toBeHidden({ timeout: 120_000 })
 }
 
 export async function createUserChannelViaUi(
@@ -23,30 +61,31 @@ export async function createUserChannelViaUi(
   description: string
 ): Promise<void> {
   await page.click('button[title="Add channel"]')
-  await expect(page.locator('.modal-title:text("Create Channel")')).toBeVisible()
+  const dialog = page.locator('[role="dialog"]')
+  await expect(dialog.getByRole('heading', { name: 'Create Channel' })).toBeVisible()
   await page.locator('input[placeholder="e.g. engineering"]').fill(name)
   await page.locator('input[placeholder="What\'s this channel about?"]').fill(description)
-  await page.locator('.modal-card button:has-text("Create Channel")').click()
-  await expect(page.locator('.modal-title:text("Create Channel")')).toBeHidden({ timeout: 30_000 })
+  await dialog.locator('button:has-text("Create Channel")').click()
+  await expect(dialog).toBeHidden({ timeout: 30_000 })
 }
 
-/** Catalog TMT-001 steps 3–4: Leader+Operators `qa-eng`, bot-a leader, bot-b operator. */
+/** Catalog TMT-001 steps 3–4: create `qa-eng` with initial members. */
 export async function createTeamQaEngViaUi(page: Page): Promise<void> {
   await page.click('button[title="Add channel"]')
-  await page.locator('.btn-brutal:has-text("Team")').click()
-  await expect(page.locator('.modal-title:text("Create Team")')).toBeVisible()
+  const dialog = page.locator('[role="dialog"]')
+  await dialog.locator('button:has-text("Team")').click()
+  await expect(dialog.getByRole('heading', { name: 'Create Team' })).toBeVisible()
   await page.locator('input[placeholder="e.g. eng-team"]').fill('qa-eng')
   await page.locator('input[placeholder="Engineering Team"]').fill('QA Engineering')
-  const memberSelect = page.locator('.form-group:has-text("Initial Members") select.form-select').first()
-  await memberSelect.selectOption('bot-a')
-  await page.locator('.form-group:has-text("Initial Members") button:has-text("Add")').click()
-  await memberSelect.selectOption('bot-b')
-  await page.locator('.form-group:has-text("Initial Members") button:has-text("Add")').click()
-  await page
-    .locator('.form-group:has(> .form-label:text("Leader")) > select.form-select')
-    .selectOption('bot-a')
-  await page.locator('.modal-card button:has-text("Create Team")').click()
-  await expect(page.locator('.modal-title:text("Create Team")')).toBeHidden({ timeout: 60_000 })
+  const memberSelect = dialog.locator('[role="combobox"][aria-label="Initial Members"]')
+  await memberSelect.click()
+  await page.locator('[role="option"]').filter({ hasText: 'bot-a' }).first().click()
+  await dialog.locator('button:has-text("Add")').click()
+  await memberSelect.click()
+  await page.locator('[role="option"]').filter({ hasText: 'bot-b' }).first().click()
+  await dialog.locator('button:has-text("Add")').click()
+  await dialog.locator('button:has-text("Create Team")').click()
+  await expect(dialog).toBeHidden({ timeout: 60_000 })
 }
 
 export async function clickSidebarChannel(page: Page, channelName: string): Promise<void> {
@@ -80,7 +119,8 @@ export async function openAgentTab(
 export async function sendChatMessage(page: Page, text: string): Promise<void> {
   const ta = page.locator('.message-input-textarea')
   await ta.fill(text)
-  await page.locator('.message-input-send').click()
+  // Use keyboard Enter to bypass any unread-badge overlay on the send button
+  await ta.press('Enter')
 }
 
 export async function sendThreadMessage(page: Page, text: string): Promise<void> {
@@ -90,6 +130,7 @@ export async function sendThreadMessage(page: Page, text: string): Promise<void>
 }
 
 export async function openMembersPanel(page: Page): Promise<void> {
+  await page.getByRole('button', { name: /Show members list/i }).waitFor({ state: 'visible' })
   await page.getByRole('button', { name: /Show members list/i }).click()
   await expect(page.locator('.members-panel-kicker:text("Members")')).toBeVisible()
 }
@@ -104,8 +145,18 @@ export async function closeMembersPanel(page: Page): Promise<void> {
 export async function openThreadFromMessage(page: Page, contentSnippet: string): Promise<void> {
   const msg = page.locator('.message-item').filter({ hasText: contentSnippet }).first()
   await expect(msg).toBeVisible()
-  await msg.hover()
-  await expect(msg.locator('.message-action-btn[title="Reply in thread"]')).toBeVisible()
-  await msg.locator('.message-action-btn[title="Reply in thread"]').click()
+  await msg.scrollIntoViewIfNeeded()
+  const replyCount = msg.locator('.message-reply-count').first()
+  if (await replyCount.isVisible().catch(() => false)) {
+    await replyCount.click()
+    await expect(page.locator('.thread-panel')).toBeVisible()
+    return
+  }
+  await msg.hover({ force: true })
+  const replyButton = msg.locator('.message-action-btn[title="Reply in thread"]').first()
+  await expect(replyButton).toBeVisible()
+  await replyButton.evaluate((element) => {
+    (element as HTMLButtonElement).click()
+  })
   await expect(page.locator('.thread-panel')).toBeVisible()
 }

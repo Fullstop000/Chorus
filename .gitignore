@@ -40,6 +40,10 @@ TODOS.md
 
 # Test output
 /tmp/chorus-test/
+test-results/
+ui/test-results/
+**/.last-run.json
+.vite/
 
 # UI build artifacts
 ui/dist/
@@ -58,3 +62,4 @@ docs/handoffs
 .playwright-cli/
 node_modules
 .worktrees/
+.superpowers/
