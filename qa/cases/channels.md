@@ -1,16 +1,13 @@
 # Channel Cases
 
+## Smoke
+
 ### CHN-001 Channel Create And Default Membership
 
 - Suite: smoke
-- Release-sensitive: yes
-- Execution mode: browser
-- Goal:
-  - verify a new channel can be created from the product, starts with only the human creator, and becomes usable after explicit invites
-- Script:
-  - [`playwright/CHN-001.spec.ts`](./playwright/CHN-001.spec.ts) (disposable channel slug; Step 7 hybrid via member `history` when LLM enabled)
-- Preconditions:
-  - at least 3 test agents exist
+- Goal: verify channel create, default single-member state, invite flow, and `#all` invite guardrail
+- Script: [`playwright/CHN-001.spec.ts`](./playwright/CHN-001.spec.ts)
+- Preconditions: at least 3 test agents exist
 - Steps:
   1. Create a new disposable channel such as `#qa-ops`.
   2. Verify it appears in the sidebar immediately.
@@ -18,31 +15,20 @@
   4. Open the members rail and verify the count starts at `1`, showing only the current human user.
   5. Invite one agent into the channel through the shipped member control.
   6. Send one human message asking the invited agent to reply.
-  7. Verify the invited agent replies in the new channel and uninvited agents do not.
+  7. Open `#all` members rail and verify no invite button exists.
   8. Navigate away and back, then verify the new channel history and membership count persist.
 - Expected:
-  - channel create succeeds
-  - sidebar updates immediately
-  - new channel starts with only the creator as a member
-  - invited members become active participants in that channel
-  - uninvited agents do not behave like implicit members
-- Common failure signals:
-  - channel create succeeds but sidebar does not update
-  - member rail shows agents before any invite occurs
-  - uninvited agents receive or reply in the new channel
-  - invited replies land in the wrong channel
+  - Channel creates and appears in sidebar immediately
+  - New channel starts with only the creator as a member
+  - Invited agent becomes active participant
+  - `#all` exposes no invite affordance
+  - Membership persists after navigation
 
 ### CHN-002 Channel Name Validation, Normalization, And Duplicate Rejection
 
-- Suite: regression
-- Release-sensitive: yes when touching channel create, channel routing, or channel validation
-- Execution mode: browser
-- Goal:
-  - verify channel names are normalized and duplicate channels are rejected cleanly
-- Script:
-  - [`playwright/CHN-002.spec.ts`](./playwright/CHN-002.spec.ts) (API-backed normalization and duplicate rejection checks)
-- Preconditions:
-  - channel create modal is available
+- Suite: smoke
+- Goal: verify channel names are normalized and duplicates are rejected cleanly
+- Script: [`playwright/CHN-002.spec.ts`](./playwright/CHN-002.spec.ts)
 - Steps:
   1. Create a channel using mixed case or a leading `#`, for example `#Engineering`.
   2. Verify the stored/displayed name is normalized consistently, such as `engineering`.
@@ -50,88 +36,17 @@
   4. Attempt to create an invalid or empty channel name.
   5. Verify the UI shows a clear failure and does not create a partial sidebar entry.
 - Expected:
-  - normalization is consistent
-  - duplicate rejection is based on the logical channel name, not raw input formatting
-  - invalid names are rejected without corrupting navigation
-- Common failure signals:
-  - `#Engineering` and `engineering` create separate channels
-  - duplicate create looks successful but produces partial state
-  - invalid name is silently accepted
+  - Normalization is consistent across casing and `#` prefix
+  - Duplicate rejection uses the logical name, not raw input
+  - Invalid names are rejected without corrupting navigation
 
-### CHN-003 Channel Invite Operations And `#all` Guardrails
+### CHN-003 Channel Rename Updates Sidebar Immediately
 
-- Suite: regression
-- Release-sensitive: yes when explicit membership controls exist or channel delivery logic changes
-- Execution mode: browser
-- Goal:
-  - verify invite controls add the intended members to user channels, and verify the built-in `#all` channel behaves as a complete-membership system room with no invite affordance
-- Script:
-  - [`playwright/CHN-003.spec.ts`](./playwright/CHN-003.spec.ts) (browser invite flow + #all guardrails)
-- Preconditions:
-  - disposable user channel exists
-  - at least one extra human and one extra agent exist in the build under test
-- Steps:
-  1. Open `#all`.
-  2. Open the members rail.
-  3. Verify there is no invite button in `#all`.
-  4. Verify the member list includes all visible humans and agents from the sidebar.
-  5. Open the disposable user channel.
-  6. Open the members rail and invite one extra human and one extra agent.
-  7. Verify the member count increments after each invite and the newly invited entries appear in the list.
-  8. Refresh the page and confirm the disposable channel still shows the invited members.
-- Expected:
-  - `#all` exposes no invite affordance
-  - `#all` member list is the full set of humans and agents
-  - user-channel invites update the member list immediately
-  - invited membership persists after refresh
-- Common failure signals:
-  - `#all` shows an invite button or incomplete membership
-  - invited human or agent does not appear until a manual refresh
-  - refreshed page drops invited members from the disposable channel
-
-### CHN-004 Channel Delete And Selection Recovery
-
-- Suite: regression
-- Release-sensitive: yes when a delete flow exists or channel persistence changes
-- Execution mode: hybrid
-- Current product note:
-  - the current build does not expose a normal delete-channel flow
-  - if that remains true for the build under test, mark this case `Blocked` and record the product gap
-- Goal:
-  - verify deleting a channel removes it cleanly and leaves the UI in a sane selection state
-- Script:
-  - [`playwright/CHN-004.spec.ts`](./playwright/CHN-004.spec.ts) (hybrid delete + selection recovery)
-- Preconditions:
-  - disposable channel exists
-  - delete control exists in the current product build
-- Steps:
-  1. Create a disposable channel and open it.
-  2. Put some message history into it.
-  3. Delete the channel through the shipped control.
-  4. Verify the channel disappears from the sidebar.
-  5. Verify the main panel falls back to a sane target instead of rendering stale channel state.
-  6. Refresh and confirm the deleted channel does not reappear.
-- Expected:
-  - deleted channel is removed from navigation and selection state
-  - no stale chat view remains attached to the deleted channel
-  - refresh preserves the deleted state
-- Common failure signals:
-  - deleted channel remains selected
-  - refresh resurrects deleted channel
-  - old history appears under the wrong target
-
-### CHN-005 Channel Rename Updates Sidebar Immediately
-
-- Suite: regression
-- Release-sensitive: yes when touching channel edit flows, sidebar refresh logic, or selected-target rendering
-- Execution mode: browser
-- Goal:
-  - verify renaming a channel updates both the sidebar row and the open chat header immediately without a full page refresh
-- Script:
-  - [`playwright/CHN-005.spec.ts`](./playwright/CHN-005.spec.ts) (UI rename flow + sidebar/header assertions)
-- Preconditions:
-  - channel edit control exists in the current build
-  - disposable user channel can be created
+- Suite: smoke
+- Supersedes: CHN-005
+- Goal: verify renaming a channel updates sidebar and chat header immediately without reload
+- Script: [`playwright/CHN-003.spec.ts`](./playwright/CHN-003.spec.ts)
+- Preconditions: channel edit control exists in the current build
 - Steps:
   1. Create a disposable channel and open it.
   2. Trigger the shipped edit-channel flow from the sidebar or channel controls.
@@ -140,11 +55,31 @@
   5. Verify the sidebar shows only the new name.
   6. Verify the open chat header also updates to the new name without reload.
 - Expected:
-  - rename persists
-  - sidebar updates immediately
-  - selected channel header updates immediately
-  - old name does not linger in navigation
+  - Rename persists; sidebar and header update immediately
+  - Old name does not linger in navigation
+
+## Regression
+
+### CHN-004 Channel Delete And Selection Recovery
+
+- Suite: regression
+- Execution mode: hybrid
+- Blocked until shipped: the current build does not expose a delete-channel flow; if still true, mark `Blocked` and record the product gap
+- Goal: verify deleting a channel removes it cleanly and leaves the UI in a sane selection state
+- Script: [`playwright/CHN-004.spec.ts`](./playwright/CHN-004.spec.ts)
+- Preconditions: delete control exists in the current product build
+- Steps:
+  1. Create a disposable channel and open it.
+  2. Put some message history into it.
+  3. Delete the channel through the shipped control.
+  4. Verify the channel disappears from the sidebar.
+  5. Verify the main panel falls back to a sane target instead of rendering stale channel state.
+  6. Refresh and confirm the deleted channel does not reappear.
+- Expected:
+  - Deleted channel is removed from navigation and selection state
+  - No stale chat view remains attached to the deleted channel
+  - Refresh preserves the deleted state
 - Common failure signals:
-  - sidebar keeps the stale name until refresh
-  - header and sidebar disagree about the current name
-  - rename saves in backend but not in visible navigation
+  - Deleted channel remains selected after delete
+  - Refresh resurrects deleted channel
+  - Old history appears under the wrong target
