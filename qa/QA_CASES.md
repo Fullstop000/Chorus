@@ -8,24 +8,43 @@ It is intentionally:
 - strict enough to catch state-consistency failures, not just obvious crashes
 
 All cases below are browser-first cases unless explicitly marked otherwise.
-The explicit `Tier:` field on each case is authoritative. Nearby placement in the file is for related-domain readability.
+The `Suite:` field on each case is authoritative (`smoke` or `regression`). Nearby placement in the file is for related-domain readability.
 
 **Non-browser case modules:** [`cases/bridge.md`](./cases/bridge.md) covers subprocess and live-runtime tests (IDs `BRG-NNN`, `LRT-NNN`, `INT-NNN`). Those run through `cargo test`, not Playwright. See [`README.md`](./README.md) → "Subprocess and External Runtime Tests" for the evidence rules that apply to them.
 
+## Suite Definitions
+
+- `smoke` — runs on every PR. Must pass before merge. Covers all data-model CRUD, base message flows, and critical UX paths.
+- `regression` — runs in Core Regression and deeper passes. Includes all smoke cases plus edge cases, stress tests, recovery flows, and niche UI assertions. Regression ⊃ smoke.
+
+## Case Modules
+
+Cases live in dedicated `.md` files. Each file is the source of truth for its domain.
+
+| Domain | Module | Covers |
+|--------|--------|--------|
+| Agents & Lifecycle | [`cases/agents.md`](./cases/agents.md) | Agent CRUD, lifecycle, activity, workspace, navigation, recovery |
+| Channels | [`cases/channels.md`](./cases/channels.md) | Channel CRUD, membership, archive |
+| Teams | [`cases/teams.md`](./cases/teams.md) | Team CRUD, members, delete, thread wake |
+| Tasks | [`cases/tasks.md`](./cases/tasks.md) | Task CRUD, message-as-task |
+| Messaging | [`cases/messaging.md`](./cases/messaging.md) | DM, channels, threads, mentions, unread, history, errors |
+| Bridge & Runtime | [`cases/bridge.md`](./cases/bridge.md) | Bridge subprocess, live runtime, integration |
+
 ## Case record template (authoring)
 
-Each executable case under `cases/*.md` should use this shape (fields may omit `Execution mode` when default is browser-first):
+Each executable case under `cases/*.md` should use this shape (omit `Execution mode` when default browser-first):
 
 - `### ABC-NNN Short Title`
-- `Tier:` / `Release-sensitive:` / `Execution mode:` (when not default)
-- `Goal:` (bullet list)
-- **`Script:`** — required link to Playwright spec under [`cases/playwright/`](./cases/playwright/) (e.g. [`playwright/ENV-001.spec.ts`](./cases/playwright/ENV-001.spec.ts)); if the case is not yet automated, the linked spec must exist and state the gap with `test.fixme(...)`.
-- `Preconditions:`
-- `Steps:` (numbered)
-- `Expected:`
-- `Common failure signals:`
+- `Suite:` (`smoke` or `regression`)
+- `Execution mode:` (when not default browser-first)
+- `Goal:` (one line)
+- **`Script:`** — required link to Playwright spec under [`cases/playwright/`](./cases/playwright/); if not yet automated, the spec must exist with `test.fixme(...)`.
+- `Preconditions:` (only when non-default)
+- `Steps:` (numbered, ≤ 8 for smoke cases)
+- `Expected:` (terse assertions, one per line)
 
-When you add or change automation, update the case’s `Script:` line and keep the spec’s file header in sync with Preconditions / Steps / Expected (see `qa/README.md` → Playwright).
+When you add or change automation, update the case's `Script:` line and keep the spec in sync.
+
 
 ## How To Use This Catalog
 
@@ -52,33 +71,16 @@ Apply these unless a case overrides them:
 
 ## Result Definitions
 
-- `Pass`
-  - all expected results observed
-- `Fail`
-  - at least one expected result is violated
-- `Blocked`
-  - cannot finish because an earlier failure or environment issue prevents execution
-- `Not Run`
-  - intentionally skipped in this run mode
+- `Pass` — all expected results observed
+- `Fail` — at least one expected result is violated
+- `Blocked` — cannot finish because an earlier failure or environment issue prevents execution
+- `Not Run` — intentionally skipped in this run mode
 
 ## Notes On Product Gaps
 
 - Some QA cases intentionally cover product controls that are not fully shipped yet, such as delete flows or explicit channel member management.
 - When a case is marked `hybrid` or `blocked-until-shipped`, follow the case instructions exactly.
 - Do not simulate missing user-facing flows by editing SQLite directly during QA.
-
-## Case Modules
-
-Cases are split into focused modules under [`cases/`](./cases/):
-
-| Module | Cases |
-| ------ | ----- |
-| [`cases/agents.md`](./cases/agents.md) | ENV-001, AGT-001, AGT-002, AGT-003, AGT-004, PRF-001, LFC-001, LFC-002, ACT-001, ACT-002, NAV-001, NAV-002, WRK-001, REC-001, REC-002 |
-| [`cases/channels.md`](./cases/channels.md) | CHN-001, CHN-002, CHN-003, CHN-004, CHN-005 |
-| [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, MSG-005, MSG-006, MSG-007, MSG-008, MSG-009, MSG-010, MSG-011, MSG-012, DM-002, HIS-001, ATT-001, ERR-001 |
-| [`cases/tasks.md`](./cases/tasks.md) | TSK-001, TSK-002 |
-| [`cases/teams.md`](./cases/teams.md) | TMT-001, TMT-002, TMT-005, TMT-007, TMT-009 |
-| [`cases/bridge.md`](./cases/bridge.md) | BRG-001, BRG-002, BRG-003, BRG-004, LRT-001, LRT-002, LRT-003, LRT-004, INT-001 |
 
 ## Maintenance Notes
 

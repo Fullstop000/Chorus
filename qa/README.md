@@ -97,20 +97,20 @@ Execution mode describes how a specific case is allowed to run:
 
 ### Run Modes
 
-Run mode describes the scope of the overall QA run.
+Run mode describes the scope of the overall QA run. Each mode maps to a case suite:
 
 - `PR Smoke`
+  - run all `Suite: smoke` cases
   - fast confidence pass for a small or targeted change
-  - run the smallest set of critical cases needed to cover the changed surface
 - `Core Regression`
-  - standard product regression pass
-  - run the core cases for messaging, channels, tasks, agent lifecycle, and any changed user-facing flows
+  - run all cases (`smoke` + `regression`)
+  - standard product regression pass covering messaging, channels, tasks, agent lifecycle, and all edge cases
 - `Recovery / Reliability`
-  - targeted stability pass for retry behavior, resume flows, reconnect paths, and failure handling
-  - use this when a change affects robustness more than steady-state UI behavior
+  - targeted subset of `Suite: regression` cases
+  - use when a change affects robustness more than steady-state UI behavior
 - `Agent Matrix`
-  - compatibility pass across multiple agent runtimes or preset combinations
-  - use this when a change touches driver, lifecycle, prompt wiring, bridge behavior, or runtime-specific behavior
+  - targeted subset, any suite
+  - use when a change touches driver, lifecycle, prompt wiring, bridge behavior, or runtime-specific behavior
 
 For each run, the plan should state:
 

@@ -1,5 +1,5 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists } from './helpers/api'
+import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, pollUntil, sendAsUser, teamExists, type TrioNames } from './helpers/api'
 import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
@@ -22,16 +22,16 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('TMT-007', () => {
   test('Team delete (disposable team) @case TMT-007', async ({ page, request }) => {
-    test.setTimeout(240_000)
-    await ensureMixedRuntimeTrio(request)
+    test.setTimeout(120_000)
+    const trio = await ensureMixedRuntimeTrio(request)
 
     const name = `qa-del-${Date.now()}`
     await createTeamApi(request, {
       name,
       display_name: 'E2E Delete Target',
       collaboration_model: 'leader_operators',
-      leader_agent_name: 'bot-a',
-      members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' }],
+      leader_agent_name: trio.botB,
+      members: [{ member_name: trio.botB, member_type: 'agent', member_id: trio.botB, role: 'operator' }],
     })
 
     await gotoApp(page)
@@ -52,20 +52,20 @@ test.describe('TMT-007', () => {
     })
 
     if (!skipLLM) {
-      await test.step('Steps 7–8: bot-a still answers #all; team list omits deleted slug', async () => {
+      await test.step('Steps 7–8: bot-b still answers #all; team list omits deleted slug', async () => {
         const { username } = await getWhoami(request)
         const mark = `tmt7-${Date.now()}`
         await sendAsUser(
           request,
           username,
           '#all',
-          `bot-a ${mark}: list your team slugs; do not include ${name}.`
+          `${trio.displayB} ${mark}: list your team slugs; do not include ${name}.`
         )
-        await new Promise((r) => setTimeout(r, 60_000))
-        const msgs = await historyForUser(request, username, '#all', 25)
-        const fromA = msgs.filter((m) => m.senderName === 'bot-a').pop()
-        expect(fromA, 'expected bot-a reply in #all').toBeTruthy()
-        expect((fromA!.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
+        const fromB = await pollUntil(async () => {
+          const msgs = await historyForUser(request, username, '#all', 25)
+          return msgs.filter((m) => m.senderName === trio.botB).pop()
+        }, 120_000)
+        expect((fromB.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
       })
     }
   })

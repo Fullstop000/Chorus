@@ -19,6 +19,7 @@ import path from 'path'
 const REPO_ROOT = path.resolve(__dirname, '../../../../')
 const BINARY = path.join(REPO_ROOT, 'target', 'debug', 'chorus')
 const BASE_PORT = 3200
+const BASE_BRIDGE_PORT = 4400
 
 async function pollServer(url: string, timeoutMs: number): Promise<void> {
   const deadline = Date.now() + timeoutMs
@@ -49,11 +50,12 @@ export const test = base.extend<Record<string, never>, WorkerFixtures>({
       }
 
       const port = BASE_PORT + workerInfo.workerIndex
+      const bridgePort = BASE_BRIDGE_PORT + workerInfo.workerIndex
       const dataDir = mkdtempSync(path.join(tmpdir(), `chorus-qa-w${workerInfo.workerIndex}-`))
 
       const proc: ChildProcess = spawn(
         BINARY,
-        ['serve', '--port', String(port), '--data-dir', dataDir],
+        ['serve', '--port', String(port), '--bridge-port', String(bridgePort), '--data-dir', dataDir],
         { cwd: REPO_ROOT, stdio: 'pipe' }
       )
 

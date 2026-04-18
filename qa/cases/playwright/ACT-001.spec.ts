@@ -1,40 +1,27 @@
 import { test, expect } from './helpers/fixtures'
 import { gotoApp, reloadApp } from './helpers/ui'
-import { ensureMixedRuntimeTrio, getWhoami, sendAsUser } from './helpers/api'
+import { ensureMixedRuntimeTrio, getWhoami, sendAsUser, type TrioNames } from './helpers/api'
 
 /**
  * Catalog: `qa/cases/agents.md` — ACT-001 Activity Timeline Completeness And Readability
  *
- * Preconditions:
- * - run `MSG-001`, `MSG-003`, and `MSG-002` first
- *   → This script **hybrid-seeds** traffic via API when `CHORUS_E2E_LLM` is not `0`, so activity has messages to show.
- *
- * Steps:
- * 1. Open `bot-a` activity tab.
- * 2. Verify the most recent entries include row types when they occurred (status, received, sent, tool, thinking).
- * 3–5. Pick received / sent / tool rows and verify labels (when present).
- * 6. Entries visually distinguishable.
- * 7. No obvious duplicate status spam (heuristic).
- * 8. Refresh — activity still loads.
- *
- * Expected:
- * - activity tells a coherent story
- * - message send and receive visible when preconditions met
- * - refresh does not blank recent activity
+ * Uses bot-b (kimi) for DM seed and activity inspection — only kimi reliably responds.
  */
+let trio: TrioNames
+
 test.describe('ACT-001', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    trio = await ensureMixedRuntimeTrio(request)
     if (process.env.CHORUS_E2E_LLM === '0') return
     const { username } = await getWhoami(request)
-    await sendAsUser(request, username, 'dm:@bot-a', `ACT-001 seed ping ${Date.now()}`).catch(() => {})
+    await sendAsUser(request, username, `dm:@${trio.botB}`, `ACT-001 seed ping ${Date.now()}`).catch(() => {})
   })
 
   test('Activity Timeline Completeness And Readability @case ACT-001', async ({ page }) => {
     await gotoApp(page)
 
-    await test.step('Step 1: Open bot-a Activity tab', async () => {
-      await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
+    await test.step('Step 1: Open bot-b Activity tab', async () => {
+      await page.locator('.sidebar-item').filter({ hasText: trio.displayB }).first().click()
       await page.getByRole('button', { name: 'Activity' }).click()
     })
 
@@ -56,7 +43,7 @@ test.describe('ACT-001', () => {
 
     await test.step('Step 8: Refresh preserves panel', async () => {
       await reloadApp(page)
-      await page.locator('.sidebar-item').filter({ hasText: 'bot-a' }).first().click()
+      await page.locator('.sidebar-item').filter({ hasText: trio.displayB }).first().click()
       await page.getByRole('button', { name: 'Activity' }).click()
       await expect(page.locator('.ta-layout')).toBeVisible()
     })

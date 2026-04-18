@@ -58,7 +58,8 @@ async function requireAgentId(
   request: APIRequestContext,
   agentName: string
 ): Promise<string> {
-  const agent = (await listAgents(request)).find((entry) => entry.name === agentName)
+  const agents = await listAgents(request)
+  const agent = agents.find((entry) => entry.name === agentName) || findAgentByPrefix(agents, agentName)
   if (!agent) {
     throw new Error(`Agent not found: ${agentName}`)
   }
@@ -124,33 +125,79 @@ export async function createAgentApi(
   return { name: body.name }
 }
 
+/** Find the first agent whose name starts with `prefix`. */
+export function findAgentByPrefix(agents: AgentRow[], prefix: string): AgentRow | undefined {
+  return agents.find((a) => a.name === prefix || a.name.startsWith(`${prefix}-`))
+}
+
+/** Like requireAgentId but matches by name prefix (handles server-added suffixes). */
+export async function requireAgentByPrefix(
+  request: APIRequestContext,
+  prefix: string
+): Promise<AgentRow> {
+  const agents = await listAgents(request)
+  const agent = findAgentByPrefix(agents, prefix)
+  if (!agent) throw new Error(`Agent not found with prefix: ${prefix}`)
+  return agent
+}
+
+export interface TrioNames {
+  botA: string; botB: string; botC: string          // API names (server-suffixed)
+  displayA: string; displayB: string; displayC: string  // sidebar display names (original)
+}
+
+// Per-worker cache — each Playwright worker runs in its own Node process,
+// so module-level state is automatically per-worker.
+let cachedTrio: TrioNames | null = null
+
 /** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case.
  * Trio: bot-a=codex/gpt-5.4, bot-b=kimi/kimi-code/kimi-for-coding, bot-c=opencode/opencode/gpt-5-nano
+ *
+ * Agent names may be suffixed by the server (e.g. bot-a → bot-a-279b).
+ * Returns the actual server-assigned names. Result is cached per worker.
  */
-export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<void> {
-  const agents = await listAgents(request)
-  const names = new Set(agents.map((a) => a.name))
-  if (!names.has('bot-a')) {
-    await createAgentApi(
-      request,
-      { name: 'bot-a', runtime: 'codex', model: 'gpt-5.4' },
-      { allowNameTaken: true }
-    )
+export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<TrioNames> {
+  // Validate cached trio — on the shared-server debug path (CHORUS_BASE_URL), prior runs may
+  // have left extra bot-a-*/bot-b-* agents behind. Re-check that the cached names still exist.
+  if (cachedTrio) {
+    const agents = await listAgents(request)
+    const names = new Set(agents.map((a) => a.name))
+    if (names.has(cachedTrio.botA) && names.has(cachedTrio.botB) && names.has(cachedTrio.botC)) {
+      return cachedTrio
+    }
+    cachedTrio = null
   }
-  if (!names.has('bot-b')) {
-    await createAgentApi(
-      request,
-      { name: 'bot-b', runtime: 'kimi', model: 'kimi-code/kimi-for-coding' },
-      { allowNameTaken: true }
-    )
+  let agents = await listAgents(request)
+
+  let botA = findAgentByPrefix(agents, 'bot-a')
+  if (!botA) {
+    const { name } = await createAgentApi(request, { name: 'bot-a', runtime: 'codex', model: 'gpt-5.4' })
+    agents = await listAgents(request)
+    botA = findAgentByPrefix(agents, 'bot-a') ?? { name, id: '', status: '' } as AgentRow
   }
-  if (!names.has('bot-c')) {
-    await createAgentApi(
-      request,
-      { name: 'bot-c', runtime: 'opencode', model: 'opencode/gpt-5-nano' },
-      { allowNameTaken: true }
-    )
+
+  let botB = findAgentByPrefix(agents, 'bot-b')
+  if (!botB) {
+    const { name } = await createAgentApi(request, { name: 'bot-b', runtime: 'kimi', model: 'kimi-code/kimi-for-coding' })
+    agents = await listAgents(request)
+    botB = findAgentByPrefix(agents, 'bot-b') ?? { name, id: '', status: '' } as AgentRow
   }
+
+  let botC = findAgentByPrefix(agents, 'bot-c')
+  if (!botC) {
+    const { name } = await createAgentApi(request, { name: 'bot-c', runtime: 'opencode', model: 'opencode/gpt-5-nano' })
+    agents = await listAgents(request)
+    botC = findAgentByPrefix(agents, 'bot-c') ?? { name, id: '', status: '' } as AgentRow
+  }
+
+  const trio: TrioNames = {
+    botA: botA.name, botB: botB.name, botC: botC.name,
+    displayA: botA.display_name ?? 'bot-a',
+    displayB: botB.display_name ?? 'bot-b',
+    displayC: botC.display_name ?? 'bot-c',
+  }
+  cachedTrio = trio
+  return trio
 }
 
 export async function waitForAgentActive(
@@ -451,7 +498,7 @@ export async function createTeamApi(
 export async function pollUntil<T>(
   fn: () => Promise<T | undefined>,
   timeoutMs: number,
-  intervalMs = 4_000
+  intervalMs = 2_000
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
