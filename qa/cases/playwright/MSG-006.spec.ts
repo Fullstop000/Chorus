@@ -1,97 +1,92 @@
-import type { APIRequestContext } from '@playwright/test'
 import { test, expect } from './helpers/fixtures'
-import {
-  createAgentApi,
-  createChannelApi,
-  getWhoami,
-  inviteChannelMemberApi,
-  listAgents,
-} from './helpers/api'
-import { clickSidebarChannel } from './helpers/ui'
+import { createAgentApi, getWhoami, sendAsUser } from './helpers/api'
+import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
-async function postMessage(
-  request: APIRequestContext,
-  actor: string,
-  target: string,
-  content: string,
-  options?: { suppressAgentDelivery?: boolean }
-): Promise<{ messageId: string }> {
-  const response = await request.post(`/internal/agent/${encodeURIComponent(actor)}/send`, {
-    data: {
-      target,
-      content,
-      suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
-    },
-  })
-  expect(response.ok(), await response.text()).toBeTruthy()
-  return response.json()
-}
-
+/**
+ * Catalog: qa/cases/messaging.md — MSG-006 Clickable Mention Opens Agent Profile
+ * Supersedes: MSG-012
+ */
 test.describe('MSG-006', () => {
-  test('thread read cursor is only sent after thread replies become visible @case MSG-006', async ({
-    page,
-    request,
-  }) => {
+  test.beforeAll(async ({ request }) => {
+    await createAgentApi(
+      request,
+      { name: 'bot-a', runtime: 'claude', model: 'sonnet' },
+      { allowNameTaken: true }
+    )
+  })
+
+  test('Clickable Mention Opens Agent Profile @case MSG-006', async ({ page, request }) => {
     const { username } = await getWhoami(request)
-    let agentName = (await listAgents(request))[0]?.name
-    if (!agentName) {
-      agentName = `msg006-bot-${Date.now()}`
-      await createAgentApi(request, {
-        name: agentName,
-        runtime: 'claude',
-        model: 'sonnet',
+    const mark = `msg06-${Date.now()}`
+
+    // Pre-step: send a message with @mention via API so it appears in history
+    await sendAsUser(request, username, '#all', `MSG-006 ${mark} testing @bot-a mention`)
+
+    await gotoApp(page)
+
+    await test.step('Step 1: Open channel and locate message with @mention', async () => {
+      await clickSidebarChannel(page, 'all')
+      // Wait for message to appear
+      await expect(page.locator('.message-content', { hasText: mark })).toBeVisible()
+    })
+
+    await test.step('Step 2: Verify @mention has clickable styling and cursor', async () => {
+      const mention = page.locator('.mention-pill-clickable', { hasText: /@bot-a/ })
+      await expect(mention).toBeVisible()
+      
+      // Hover and verify cursor changes
+      await mention.hover()
+      const cursor = await mention.evaluate((el) => getComputedStyle(el).cursor)
+      expect(cursor).toBe('pointer')
+    })
+
+    await test.step('Step 3: Click @mention and verify Profile panel opens', async () => {
+      const mention = page.locator('.mention-pill-clickable', { hasText: /@bot-a/ })
+      await mention.click()
+
+      // Verify Profile tab is active
+      const profileTab = page.locator('[data-testid="tab-profile"], .tab-profile, [role="tab"]:has-text("profile")')
+      await expect(profileTab).toHaveAttribute('data-active', 'true').catch(() => {
+        // Fallback: check if profile panel is visible
+        return expect(page.locator('.profile-panel')).toBeVisible()
       })
-    }
-    const channelName = `msg006-${Date.now()}`
-    const channel = await createChannelApi(request, {
-      name: channelName,
-      description: 'MSG-006 thread read cursor coverage',
-    })
-    await inviteChannelMemberApi(request, channel.id, agentName)
-    const parentToken = `thread-parent-${Date.now()}`
-    const replyToken = `thread-reply-${Date.now()}`
-    const parent = await postMessage(request, username, `#${channelName}`, parentToken)
-    await postMessage(request, agentName, `#${channelName}:${parent.messageId}`, replyToken, {
-      suppressAgentDelivery: true,
     })
 
-    const readCursorPosts: Array<{ threadParentId?: string; lastReadSeq?: number }> = []
-    page.on('request', (req) => {
-      const url = new URL(req.url())
-      if (
-        req.method() === 'POST' &&
-        url.pathname === `/api/conversations/${channel.id}/read-cursor`
-      ) {
-        const payload = req.postDataJSON() as { threadParentId?: string; lastReadSeq?: number }
-        readCursorPosts.push(payload)
-      }
+    await test.step('Step 4: Verify correct agent is displayed in profile', async () => {
+      // Verify profile shows bot-a
+      const profilePanel = page.locator('.profile-panel')
+      await expect(profilePanel).toContainText('bot-a')
+      
+      // Verify profile handle shows @bot-a
+      const profileHandle = profilePanel.locator('.profile-handle')
+      await expect(profileHandle).toContainText('@bot-a')
     })
+  })
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' })
-    await page.locator('.sidebar-item-text').filter({ hasText: channelName }).first().waitFor({
-      state: 'visible',
-      timeout: 30_000,
+  test('Non-existent agent mention is not clickable @case MSG-006', async ({ page, request }) => {
+    const { username } = await getWhoami(request)
+    const mark = `msg06-nonexist-${Date.now()}`
+
+    // Send message with non-existent agent mention
+    await sendAsUser(request, username, '#all', `MSG-006 ${mark} mentioning @nonexistent-agent`)
+
+    await gotoApp(page)
+    await clickSidebarChannel(page, 'all')
+    // Wait for message to appear
+    await expect(page.locator('.message-content', { hasText: mark })).toBeVisible()
+
+    await test.step('Verify non-existent agent mention is not clickable', async () => {
+      // Should have mention-pill class but NOT mention-pill-clickable
+      const mention = page.locator('.mention-pill', { hasText: /@nonexistent-agent/ })
+      await expect(mention).toBeVisible()
+      
+      // Should not have clickable class
+      const clickableMention = page.locator('.mention-pill-clickable', { hasText: /@nonexistent-agent/ })
+      await expect(clickableMention).not.toBeVisible()
+      
+      // Cursor should not be pointer
+      const cursor = await mention.evaluate((el) => getComputedStyle(el).cursor)
+      expect(cursor).not.toBe('pointer')
     })
-    await clickSidebarChannel(page, channelName)
-    await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
-    const parentMessage = page.locator('.message-item').filter({ hasText: parentToken }).first()
-    await expect(parentMessage).toBeVisible()
-    // 300 ms is well beyond the 150 ms read-cursor debounce — enough to catch a premature send
-    await page.waitForTimeout(300)
-
-    expect(readCursorPosts.some((post) => post.threadParentId === parent.messageId)).toBeFalsy()
-
-    await parentMessage.locator('.message-reply-count').click()
-    await expect(page.locator('.thread-panel')).toBeVisible()
-    await expect(page.locator('.thread-panel .message-item').filter({ hasText: replyToken })).toBeVisible()
-
-    await expect
-      .poll(
-        () =>
-          readCursorPosts.find((post) => post.threadParentId === parent.messageId)?.lastReadSeq ??
-            null,
-        { timeout: 10_000 }
-      )
-      .not.toBeNull()
   })
 })

@@ -1,59 +1,39 @@
 import { test, expect } from './helpers/fixtures'
-import { createChannelApi, getWhoami, sendAsUser } from './helpers/api'
-import { clickSidebarChannel, sendChatMessage } from './helpers/ui'
+import path from 'node:path'
+import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
+import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
+/**
+ * Catalog: qa/cases/messaging.md — MSG-005 Attachment Upload And Download
+ * Supersedes: MSG-006, ATT-001
+ */
 test.describe('MSG-005', () => {
-  test('Chat view stays websocket-driven after initial history bootstrap @case MSG-005', async ({
-    page,
-    request,
-  }) => {
+  test.beforeAll(async ({ request }) => {
+    await ensureMixedRuntimeTrio(request)
+  })
+
+  test('Attachment Upload And Download @case MSG-005', async ({ page, request }) => {
+    const fixture = path.resolve(__dirname, '../../fixtures/qa-attachment.txt')
     const { username } = await getWhoami(request)
-    const channelName = `msg005-${Date.now()}`
-    await createChannelApi(request, {
-      name: channelName,
-      description: 'MSG-005 websocket-driven chat coverage',
-    })
-    let historyRequests = 0
-    const historyAfterParams: Array<number | null> = []
+    await gotoApp(page)
+    await clickSidebarChannel(page, 'all')
 
-    page.on('request', (req) => {
-      const url = new URL(req.url())
-      if (req.method() === 'GET' && /^\/api\/conversations\/[^/]+\/messages$/.test(url.pathname)) {
-        historyRequests += 1
-        const after = url.searchParams.get('after')
-        historyAfterParams.push(after == null ? null : Number(after))
-      }
+    await test.step('Steps 1–4: Attach file and send message', async () => {
+      const [chooser] = await Promise.all([
+        page.waitForEvent('filechooser'),
+        page.locator('.attach-btn').click(),
+      ])
+      await chooser.setFiles(fixture)
+      await expect(page.locator('.file-chip')).toContainText('qa-attachment.txt')
+      await page.locator('.message-input-send').click()
     })
 
-    await page.goto('/', { waitUntil: 'domcontentloaded' })
-    await page.locator('.sidebar-item-text').filter({ hasText: channelName }).first().waitFor({
-      state: 'visible',
-      timeout: 30_000,
+    await test.step('Steps 5–7: Attachment renders with download target and composer clears', async () => {
+      await expect(page.locator('.attachment-link').filter({ hasText: 'qa-attachment.txt' }).first()).toBeVisible()
+      await expect(page.locator('.file-chip')).toHaveCount(0)
+      const history = await historyForUser(request, username, '#all', 30)
+      const msg = history.find((entry) => (entry.attachments ?? []).some((att) => att.filename === 'qa-attachment.txt'))
+      expect(msg).toBeTruthy()
     })
-    await clickSidebarChannel(page, channelName)
-    await expect(page.locator('.chat-header-name')).toContainText(`#${channelName}`)
-    // Let the initial history bootstrap and any immediate gap-fill requests settle
-    // before snapshotting the baseline request count.
-    await expect(page.locator('.message-input-textarea')).toBeVisible()
-    await page.waitForTimeout(500)
-
-    const baselineHistoryRequests = historyRequests
-
-    const localToken = `msg-local-${Date.now()}`
-    await sendChatMessage(page, localToken)
-    await expect(page.locator('.message-item').filter({ hasText: localToken }).first()).toBeVisible()
-    expect(historyRequests).toBe(baselineHistoryRequests)
-    const historyAfterLocalSend = historyRequests
-
-    const remoteToken = `msg-remote-${Date.now()}`
-    await sendAsUser(request, username, `#${channelName}`, remoteToken)
-    await expect(page.locator('.message-item').filter({ hasText: remoteToken }).first()).toBeVisible()
-    expect(historyRequests).toBe(historyAfterLocalSend)
-    const historyAfterRemoteSend = historyRequests
-
-    // Observe for 2 s to confirm no further history polling occurs
-    await page.waitForTimeout(2_000)
-    expect(historyRequests).toBe(historyAfterRemoteSend)
-    expect(historyAfterParams.slice(baselineHistoryRequests)).toHaveLength(0)
   })
 })
