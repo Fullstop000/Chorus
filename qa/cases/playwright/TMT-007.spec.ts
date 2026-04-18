@@ -30,8 +30,8 @@ test.describe('TMT-007', () => {
       name,
       display_name: 'E2E Delete Target',
       collaboration_model: 'leader_operators',
-      leader_agent_name: trio.botA,
-      members: [{ member_name: trio.botA, member_type: 'agent', member_id: trio.botA, role: 'operator' }],
+      leader_agent_name: trio.botB,
+      members: [{ member_name: trio.botB, member_type: 'agent', member_id: trio.botB, role: 'operator' }],
     })
 
     await gotoApp(page)
@@ -52,20 +52,20 @@ test.describe('TMT-007', () => {
     })
 
     if (!skipLLM) {
-      await test.step('Steps 7–8: bot-a still answers #all; team list omits deleted slug', async () => {
+      await test.step('Steps 7–8: bot-b still answers #all; team list omits deleted slug', async () => {
         const { username } = await getWhoami(request)
         const mark = `tmt7-${Date.now()}`
         await sendAsUser(
           request,
           username,
           '#all',
-          `${trio.botA} ${mark}: list your team slugs; do not include ${name}.`
+          `${trio.displayB} ${mark}: list your team slugs; do not include ${name}.`
         )
         await new Promise((r) => setTimeout(r, 60_000))
         const msgs = await historyForUser(request, username, '#all', 25)
-        const fromA = msgs.filter((m) => m.senderName === trio.botA).pop()
-        expect(fromA, `expected ${trio.botA} reply in #all`).toBeTruthy()
-        expect((fromA!.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
+        const fromB = msgs.filter((m) => m.senderName === trio.botB).pop()
+        expect(fromB, `expected ${trio.botB} reply in #all`).toBeTruthy()
+        expect((fromB!.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
       })
     }
   })

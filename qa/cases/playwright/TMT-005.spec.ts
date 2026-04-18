@@ -1,32 +1,24 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, createTeamApi, teamExists } from './helpers/api'
+import { ensureMixedRuntimeTrio, createTeamApi, teamExists, type TrioNames } from './helpers/api'
 import { clickSidebarChannel, openMembersPanel, sendChatMessage , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
 /**
  * Catalog: `qa/cases/teams.md` — TMT-005 Team Member Management (Add, Remove, Role)
- *
- * Preconditions:
- * - team `qa-eng` with bot-a; bot-b exists and may be added
- *
- * Steps:
- * 1–4. Settings: add bot-b; verify settings + members rail.
- * 5. Post in `#qa-eng`; bot-b responds (LLM).
- * 6–8. Remove bot-b; verify lists.
- * 9. Post again; bot-b does not respond (heuristic / LLM).
- * 10. Refresh; state consistent.
  */
+let trio: TrioNames
+
 test.describe('TMT-005', () => {
   test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
+    trio = await ensureMixedRuntimeTrio(request)
     if (!(await teamExists(request, 'qa-eng'))) {
       await createTeamApi(request, {
         name: 'qa-eng',
         display_name: 'QA Engineering',
         collaboration_model: 'leader_operators',
-        leader_agent_name: 'bot-a',
-        members: [{ member_name: 'bot-a', member_type: 'agent', member_id: 'bot-a', role: 'operator' }],
+        leader_agent_name: trio.botA,
+        members: [{ member_name: trio.botA, member_type: 'agent', member_id: trio.botA, role: 'operator' }],
       })
     }
   })

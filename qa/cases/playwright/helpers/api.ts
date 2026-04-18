@@ -58,7 +58,8 @@ async function requireAgentId(
   request: APIRequestContext,
   agentName: string
 ): Promise<string> {
-  const agent = (await listAgents(request)).find((entry) => entry.name === agentName)
+  const agents = await listAgents(request)
+  const agent = agents.find((entry) => entry.name === agentName) || findAgentByPrefix(agents, agentName)
   if (!agent) {
     throw new Error(`Agent not found: ${agentName}`)
   }
