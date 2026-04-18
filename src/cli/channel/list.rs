@@ -17,7 +17,7 @@ pub async fn run(all: bool, server_url: &str) -> anyhow::Result<()> {
         "{server_url}/api/channels?member={}&include_system=true",
         urlencoding::encode(&username)
     );
-    let client = reqwest::Client::new();
+    let client = super::http_client();
     let res = client
         .get(&url)
         .send()

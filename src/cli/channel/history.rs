@@ -9,10 +9,15 @@ use super::surface_http_error;
 
 pub async fn run(name: String, limit: i64, server_url: &str) -> anyhow::Result<()> {
     let username = whoami::username();
-    let client = reqwest::Client::new();
+    let client = super::http_client();
+    // Normalize the user input (trim, strip leading `#`, lowercase) and then
+    // send it back with a leading `#`. The server's `resolve_history_target`
+    // only runs its own normalization on targets that already start with `#`
+    // or `dm:@`; a bare `General` would otherwise be looked up literally.
+    let channel_target = format!("#{}", super::normalize_channel_name(&name));
     let url = format!(
         "{server_url}/internal/agent/{username}/history?channel={}&limit={limit}",
-        urlencoding::encode(&name)
+        urlencoding::encode(&channel_target)
     );
     let res = client
         .get(&url)

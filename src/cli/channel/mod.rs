@@ -10,10 +10,31 @@ mod history;
 mod join;
 mod list;
 
+use std::time::Duration;
+
 use anyhow::Context;
 use clap::Subcommand;
 
 pub(super) use chorus::store::channels::normalize_channel_name;
+
+/// Upper bound on `channel history --limit`. The server streams rows from
+/// SQLite without a cap of its own; clamp here so a typo like `--limit 99999`
+/// can't spike memory, and a negative value can't become SQLite's "no limit"
+/// sentinel (`LIMIT -1`).
+const HISTORY_LIMIT_MAX: i64 = 500;
+
+/// Per-request timeout for every CLI HTTP call. Bounded so a server that
+/// accepts the TCP handshake and then stalls doesn't hang the CLI forever.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Shared `reqwest::Client` factory. All subcommands go through this so the
+/// timeout policy lives in one place.
+pub(super) fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(HTTP_TIMEOUT)
+        .build()
+        .expect("reqwest client builder with static config cannot fail")
+}
 
 #[derive(Subcommand)]
 pub(crate) enum ChannelCommands {
@@ -39,7 +60,7 @@ pub(crate) enum ChannelCommands {
     /// Print recent messages from a channel
     History {
         name: String,
-        #[arg(long, default_value = "20")]
+        #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=HISTORY_LIMIT_MAX))]
         limit: i64,
     },
 }
