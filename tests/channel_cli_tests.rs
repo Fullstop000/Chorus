@@ -178,6 +178,25 @@ async fn channel_del_not_found() {
 }
 
 #[tokio::test]
+async fn channel_del_non_tty_refuses_without_yes() {
+    let url = start_fixture().await;
+
+    // Run `del` without `--yes`. Command::output inherits a non-TTY stdin,
+    // so the binary should exit 1 with the refusal message rather than
+    // blocking on a prompt.
+    let out = run_channel(&["del", "foo", "--server-url", &url]).await;
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when refusing non-TTY del"
+    );
+    let err = combined(&out);
+    assert!(
+        err.contains("refusing to delete #foo without --yes on non-interactive stdin"),
+        "expected non-TTY refusal message, got: {err}"
+    );
+}
+
+#[tokio::test]
 async fn channel_list_server_unreachable() {
     // Port 1 on loopback: reliably refused by the kernel (nothing binds there,
     // and connecting as a non-root user to a privileged port is permitted —

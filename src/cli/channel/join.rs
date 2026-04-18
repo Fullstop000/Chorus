@@ -10,7 +10,7 @@ pub async fn run(name: String, server_url: &str) -> anyhow::Result<()> {
     let username = whoami::username();
     let normalized = super::normalize_channel_name(&name);
     let client = reqwest::Client::new();
-    let channel_id = super::resolve_channel_id(&client, server_url, &name).await?;
+    let channel_id = super::resolve_channel_id(&client, server_url, &normalized).await?;
 
     // Piggybacks on the invite endpoint because there is no dedicated self-join
     // route; server-side self-invites are idempotent joins.
