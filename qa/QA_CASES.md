@@ -17,6 +17,19 @@ The `Suite:` field on each case is authoritative (`smoke` or `regression`). Near
 - `smoke` — runs on every PR. Must pass before merge. Covers all data-model CRUD, base message flows, and critical UX paths.
 - `regression` — runs in Core Regression and deeper passes. Includes all smoke cases plus edge cases, stress tests, recovery flows, and niche UI assertions. Regression ⊃ smoke.
 
+## Case Modules
+
+Cases live in dedicated `.md` files. Each file is the source of truth for its domain.
+
+| Domain | Module | Covers |
+|--------|--------|--------|
+| Agents & Lifecycle | [`cases/agents.md`](./cases/agents.md) | Agent CRUD, lifecycle, activity, workspace, navigation, recovery |
+| Channels | [`cases/channels.md`](./cases/channels.md) | Channel CRUD, membership, archive |
+| Teams | [`cases/teams.md`](./cases/teams.md) | Team CRUD, members, delete, thread wake |
+| Tasks | [`cases/tasks.md`](./cases/tasks.md) | Task CRUD, message-as-task |
+| Messaging | [`cases/messaging.md`](./cases/messaging.md) | DM, channels, threads, mentions, unread, history, errors |
+| Bridge & Runtime | [`cases/bridge.md`](./cases/bridge.md) | Bridge subprocess, live runtime, integration |
+
 ## Case record template (authoring)
 
 Each executable case under `cases/*.md` should use this shape (omit `Execution mode` when default browser-first):
@@ -58,45 +71,16 @@ Apply these unless a case overrides them:
 
 ## Result Definitions
 
-- `Pass`
-  - all expected results observed
-- `Fail`
-  - at least one expected result is violated
-- `Blocked`
-  - cannot finish because an earlier failure or environment issue prevents execution
-- `Not Run`
-  - intentionally skipped in this run mode
+- `Pass` — all expected results observed
+- `Fail` — at least one expected result is violated
+- `Blocked` — cannot finish because an earlier failure or environment issue prevents execution
+- `Not Run` — intentionally skipped in this run mode
 
 ## Notes On Product Gaps
 
 - Some QA cases intentionally cover product controls that are not fully shipped yet, such as delete flows or explicit channel member management.
 - When a case is marked `hybrid` or `blocked-until-shipped`, follow the case instructions exactly.
 - Do not simulate missing user-facing flows by editing SQLite directly during QA.
-
-## Case Modules
-
-### Smoke Cases (24)
-
-| Category | Module | Cases |
-|----------|--------|-------|
-| App & Navigation | [`cases/agents.md`](./cases/agents.md) | ENV-001, NAV-001 |
-| Agent CRUD | [`cases/agents.md`](./cases/agents.md) | AGT-001, AGT-002, AGT-003 |
-| Agent Lifecycle | [`cases/agents.md`](./cases/agents.md) | LFC-001 |
-| Channel CRUD | [`cases/channels.md`](./cases/channels.md) | CHN-001, CHN-002, CHN-003 |
-| Team CRUD | [`cases/teams.md`](./cases/teams.md) | TMT-001, TMT-002, TMT-005 |
-| Task CRUD | [`cases/tasks.md`](./cases/tasks.md) | TSK-001, TSK-002 |
-| Messaging Core | [`cases/messaging.md`](./cases/messaging.md) | MSG-001, MSG-002, MSG-003, MSG-004, MSG-005, MSG-006 |
-| Bridge & Runtime | [`cases/bridge.md`](./cases/bridge.md) | BRG-001, BRG-002, BRG-003, BRG-004 |
-
-### Regression Cases (19 additional)
-
-| Module | Cases |
-|--------|-------|
-| [`cases/agents.md`](./cases/agents.md) | LFC-002, ACT-001, ACT-002, NAV-002, WRK-001, REC-001, REC-002 |
-| [`cases/channels.md`](./cases/channels.md) | CHN-004 |
-| [`cases/teams.md`](./cases/teams.md) | TMT-007, TMT-009 |
-| [`cases/messaging.md`](./cases/messaging.md) | MSG-007, MSG-008, MSG-009, MSG-010, MSG-011, HIS-001, ERR-001 |
-| [`cases/bridge.md`](./cases/bridge.md) | LRT-001, INT-001 |
 
 ## Maintenance Notes
 
