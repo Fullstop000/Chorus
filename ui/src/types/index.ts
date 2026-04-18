@@ -46,6 +46,4 @@ export type {
 export type {
   InboxConversationState,
   InboxResponse,
-  ThreadInboxEntry,
-  ThreadInboxResponse,
 } from '../data/inbox'

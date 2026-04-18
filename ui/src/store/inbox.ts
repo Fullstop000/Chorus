@@ -1,74 +1,16 @@
 import { queryOptions } from '@tanstack/react-query'
 import type { ChannelInfo } from '../components/channels/types'
 import { getInboxState } from '../data/inbox'
-import type { InboxConversationState, ThreadInboxEntry } from '../data/inbox'
-
-export interface ThreadInboxState {
-  conversationId: string
-  threadParentId: string
-  latestSeq: number
-  lastReadSeq: number
-  unreadCount: number
-  lastReadMessageId?: string | null
-  lastReplyMessageId?: string | null
-  lastReplyAt?: string | null
-}
+import type { InboxConversationState } from '../data/inbox'
 
 export interface InboxState {
   conversations: Record<string, InboxConversationState>
-  threads: Record<string, ThreadInboxState>
 }
 
 export function createInboxState(): InboxState {
   return {
     conversations: {},
-    threads: {},
   }
-}
-
-export function threadNotificationKey(conversationId: string, threadParentId: string): string {
-  return `${conversationId}:${threadParentId}`
-}
-
-export function conversationThreadUnreadCount(
-  state: InboxState,
-  conversationId?: string | null
-): number {
-  if (!conversationId) return 0
-  let unreadCount = 0
-  for (const threadState of Object.values(state.threads)) {
-    if (threadState.conversationId !== conversationId) continue
-    unreadCount += threadState.unreadCount
-  }
-  return unreadCount
-}
-
-export function mergeChannelThreadInboxEntries(
-  entries: ThreadInboxEntry[],
-  state: InboxState,
-  conversationId?: string | null
-): ThreadInboxEntry[] {
-  const merged = entries
-    .filter((entry) => !conversationId || entry.conversationId === conversationId)
-    .map((entry) => {
-      const liveState = state.threads[threadNotificationKey(entry.conversationId, entry.threadParentId)]
-      if (!liveState) return entry
-      return {
-        ...entry,
-        latestSeq: liveState.latestSeq,
-        lastReadSeq: liveState.lastReadSeq,
-        unreadCount: liveState.unreadCount,
-        lastReplyMessageId: liveState.lastReplyMessageId ?? entry.lastReplyMessageId ?? null,
-        lastReplyAt: liveState.lastReplyAt ?? entry.lastReplyAt ?? null,
-      }
-    })
-
-  merged.sort((left, right) =>
-    (right.latestSeq - left.latestSeq) ||
-    (right.parentSeq - left.parentSeq)
-  )
-
-  return merged
 }
 
 export function bootstrapInboxState(
@@ -105,7 +47,6 @@ export function ensureInboxConversations(
       latestSeq: 0,
       lastReadSeq: 0,
       unreadCount: 0,
-      threadUnreadCount: 0,
       lastReadMessageId: null,
       lastMessageId: null,
       lastMessageAt: null,

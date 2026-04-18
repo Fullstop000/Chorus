@@ -4,7 +4,6 @@ import { historyQueryKeys } from '../data'
 import { getHistoryAfter } from '../data/chat'
 import {
   normalizeEvent,
-  bumpReplyCount,
   maxHistorySeq,
 } from '../data/messages'
 import { getSession } from '../transport'
@@ -12,18 +11,13 @@ import type { RealtimeFrame } from '../transport'
 import type { HistoryMessage, HistoryResponse } from '../data'
 import { useStore } from '../store'
 
-interface UseHistoryOptions {
-  threadParentId?: string | null
-}
-
 export function useHistory(
   username: string,
   targetKey: string | null,
   conversationId: string | null,
-  options?: UseHistoryOptions
 ) {
   const queryClient = useQueryClient()
-  const queryKey = historyQueryKeys.history(conversationId ?? '', options?.threadParentId ?? null)
+  const queryKey = historyQueryKeys.history(conversationId ?? '')
 
   const {
     data: response,
@@ -35,7 +29,7 @@ export function useHistory(
     queryKey,
     queryFn: () =>
       conversationId
-        ? import('../data').then((m) => m.getHistory(conversationId, 50, options?.threadParentId ?? undefined))
+        ? import('../data').then((m) => m.getHistory(conversationId, 50))
         : Promise.resolve(null),
     enabled: !!username && !!targetKey && !!conversationId,
   })
@@ -64,7 +58,7 @@ export function useHistory(
     if (isFetchingGapRef.current) return
     isFetchingGapRef.current = true
 
-    getHistoryAfter(conversationId, cacheMaxSeq, storeLatestSeq - cacheMaxSeq, options?.threadParentId ?? undefined)
+    getHistoryAfter(conversationId, cacheMaxSeq, storeLatestSeq - cacheMaxSeq)
       .then((gap) => {
         if (gap.messages.length === 0) return
         queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
@@ -78,7 +72,7 @@ export function useHistory(
       .finally(() => {
         isFetchingGapRef.current = false
       })
-  }, [targetKey, storeLatestSeq, response, isLoading, conversationId, queryClient, queryKey, options?.threadParentId])
+  }, [targetKey, storeLatestSeq, response, isLoading, conversationId, queryClient, queryKey])
 
   const commitMessages = useCallback(
     (updater: (current: HistoryMessage[]) => HistoryMessage[]) => {
@@ -105,12 +99,6 @@ export function useHistory(
       const msg = normalizeEvent(frame.event)
       if (!msg) return
 
-      // Thread replies bump the parent's reply count but don't insert into root history
-      if (msg.thread_parent_id) {
-        commitMessages((current) => bumpReplyCount(current, msg.thread_parent_id!))
-        return
-      }
-
       // Append if newer than the last message in cache
       advanceConversationLatestSeq(conversationId, msg.seq)
       queryClient.setQueryData<HistoryResponse | undefined>(queryKey, (current) => {
@@ -127,7 +115,7 @@ export function useHistory(
       cancelled = true
       unsubscribeRealtime?.()
     }
-  }, [conversationId, options?.threadParentId, targetKey, username, queryClient, queryKey, commitMessages, advanceConversationLatestSeq])
+  }, [conversationId, targetKey, username, queryClient, queryKey, commitMessages, advanceConversationLatestSeq])
 
   const appendMessage = useCallback(
     (message: HistoryMessage) => {

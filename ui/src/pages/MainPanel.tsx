@@ -18,8 +18,6 @@ import { ProfilePanel } from "../components/agents/profile/ProfilePanel";
 import { TelescopeActivity } from "../components/agents/activity/TelescopeActivity";
 import { WorkspacePanel } from "../components/agents/WorkspacePanel";
 import { MessageInput } from "../components/chat/MessageInput";
-import { ThreadPanel } from "../components/chat/ThreadPanel";
-import { ThreadsTab } from "../components/chat/ThreadsTab";
 import { ChannelMembersPanel } from "../components/channels/ChannelMembersPanel";
 import type {
   ChannelMemberInfo,
@@ -39,7 +37,6 @@ export function MainPanel() {
     activeTab,
     currentChannel,
     currentAgent,
-    openThreadMsg,
   } = useStore();
   const agents = useAgents();
   const humans = useHumans();
@@ -220,7 +217,6 @@ export function MainPanel() {
               />
             </>
           )}
-          {activeTab === "threads" && <ThreadsTab />}
           {activeTab === "tasks" && <TasksPanel />}
           {activeTab === "profile" && <ProfilePanel />}
           {activeTab === "activity" && currentAgent && (
@@ -266,7 +262,6 @@ export function MainPanel() {
               />
             )}
         </div>
-        {activeTab === "chat" && openThreadMsg && <ThreadPanel />}
       </div>
       {teamDetails && (
         <TeamSettings

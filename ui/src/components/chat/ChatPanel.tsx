@@ -94,7 +94,7 @@ export function ChatPanel({
   loading,
   lastReadSeq,
 }: ChatPanelProps) {
-  const { currentUser, setOpenThreadMsg } = useStore();
+  const { currentUser } = useStore();
 
   if (!target) {
     return (
@@ -115,7 +115,6 @@ export function ChatPanel({
         loading={loading}
         lastReadSeq={lastReadSeq}
         currentUser={currentUser}
-        onReply={setOpenThreadMsg}
       />
     </div>
   );
