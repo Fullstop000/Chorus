@@ -64,16 +64,29 @@ The old `History { channel, limit, server_url }` top-level variant and the `mod 
 
 ### `ChannelCommands` enum
 
+`--server-url` is defined once as a **global arg** on the `channel` parent (not repeated on each subcommand), per eng-review finding:
+
 ```rust
+/// Manage channels
+Channel {
+    /// Chorus server URL (inherited by all channel subcommands)
+    #[arg(long, global = true, default_value = "http://localhost:3001")]
+    server_url: String,
+    #[command(subcommand)]
+    cmd: ChannelCommands,
+},
+
 #[derive(Subcommand)]
 pub(crate) enum ChannelCommands {
-    Create { name: String, #[arg(long)] description: Option<String>, #[arg(long, default_value = "http://localhost:3001")] server_url: String },
-    Del    { name: String, #[arg(long)] yes: bool, #[arg(long, default_value = "http://localhost:3001")] server_url: String },
-    Join   { name: String, #[arg(long, default_value = "http://localhost:3001")] server_url: String },
-    List   { #[arg(long)] all: bool, #[arg(long, default_value = "http://localhost:3001")] server_url: String },
-    History { name: String, #[arg(long, default_value = "20")] limit: i64, #[arg(long, default_value = "http://localhost:3001")] server_url: String },
+    Create  { name: String, #[arg(long)] description: Option<String> },
+    Del     { name: String, #[arg(long)] yes: bool },
+    Join    { name: String },
+    List    { #[arg(long)] all: bool },
+    History { name: String, #[arg(long, default_value = "20")] limit: i64 },
 }
 ```
+
+Dispatch in `cli/mod.rs` destructures both `server_url` and `cmd`, then passes `&server_url` to each subcommand's `run` function.
 
 ### Name→ID resolution
 
@@ -91,9 +104,15 @@ Calls `GET /api/channels` (no member filter, `include_archived=false`), finds th
 | ---        | ---                                                             | ---    |
 | `create`   | `POST /api/channels` `{name, description}`                      | `Channel #<name> created.` |
 | `del`      | resolve → `DELETE /api/channels/{id}`                           | `Channel #<name> deleted.` |
-| `join`     | resolve → `POST /api/channels/{id}/members` `{memberName:$USER}`| `Joined #<name> as @<user>.` |
+| `join`     | resolve → `POST /api/channels/{id}/members` `{memberName:$USER}` (see note) | `Joined #<name> as @<user>.` |
 | `list`     | `GET /api/channels?member=$USER` (omit `member` if `--all`)     | Aligned table: `#<name>  [joined/not]  <description>` (same format as `status`) |
 | `history`  | `GET /internal/agent/$USER/history?channel=<name>&limit=<n>`    | `[<timestamp>] @<sender>: <content>` (unchanged from today) |
+
+> **Note on `join`:** the server exposes only `handle_invite_channel_member` for channel membership writes; there is no dedicated "self-join" endpoint. Chorus runs without auth on localhost, so the invite endpoint functions correctly when the OS user invites themselves. If auth is added later, this path needs revisiting.
+
+### TTY detection
+
+`del` uses `std::io::IsTerminal` (stable since Rust 1.70) on `stdin()` to decide between prompting and refusing. No new dependency.
 
 ### Error handling
 
@@ -113,15 +132,40 @@ This is a clean break (pre-1.0):
 
 ## Testing
 
-- **Unit / parse:** no new tests needed beyond clap's own; the subcommand is declarative.
-- **E2E:** extend `tests/e2e_tests.rs` (or add `tests/channel_cli_tests.rs` if that file is getting large — decided during implementation) with a single `channel_lifecycle` test:
-  1. Start the server fixture.
-  2. Shell out to the built binary: `channel create foo --description "bar"`.
-  3. `channel list` → asserts `#foo` appears with `joined` status.
-  4. `channel history foo --limit 5` → asserts no error.
-  5. `channel del foo --yes` → asserts success.
-  6. `channel list` → asserts `#foo` gone.
-- **Manual:** verify `--yes`-less `del` shows the prompt on a TTY and refuses on a piped stdin.
+Tests required by eng-review; all must land in this PR.
+
+### 1. E2E lifecycle (integration)
+
+Extend `tests/e2e_tests.rs` (or new `tests/channel_cli_tests.rs` if the file is getting large) with a `channel_lifecycle` test:
+
+1. Start the server fixture.
+2. Shell out to the built binary: `channel create foo --description "bar"`.
+3. `channel list` → asserts `#foo` appears with `joined` status.
+4. `channel history foo --limit 5` → asserts no error.
+5. `channel del foo --yes` → asserts success.
+6. `channel list` → asserts `#foo` gone.
+
+### 2. `del` confirmation-prompt unit tests
+
+Factor the prompt-read logic into a small pure function taking a `BufRead` and a `bool` (is_tty), returning `ConfirmOutcome::{Proceed, Abort, RefuseNonInteractive}`. Test directly — no subprocess needed:
+
+- `is_tty=true`, stdin `"y\n"` → `Proceed`.
+- `is_tty=true`, stdin `"n\n"` → `Abort`.
+- `is_tty=true`, stdin `"\n"` (empty) → `Abort` (default No).
+- `is_tty=false`, any stdin → `RefuseNonInteractive`.
+
+The `run` function composes this with the real `stdin`/`IsTerminal` check.
+
+### 3. Error-path tests (integration)
+
+Two additional shell-out tests in the same file:
+
+- **Name not found:** `channel del nope --yes` against a running fixture → exit code 1, stderr contains `channel not found: #nope`.
+- **Server unreachable:** `channel list --server-url http://127.0.0.1:1` (closed port) → exit code 1, stderr contains `is the Chorus server running at`.
+
+### 4. Manual smoke
+
+Before merging: run `chorus channel del foo` in a real terminal; confirm the `[y/N]` prompt renders and `n` aborts without calling the server.
 
 ## Out-of-scope follow-ups
 
