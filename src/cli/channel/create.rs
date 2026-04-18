@@ -12,7 +12,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
     let description = description.unwrap_or_default();
-    let client = super::http_client();
+    let client = super::http::client();
     let url = format!("{server_url}/api/channels");
     let res = client
         .post(&url)

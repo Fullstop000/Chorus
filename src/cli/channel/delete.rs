@@ -71,7 +71,7 @@ pub async fn run(name: String, yes: bool, server_url: &str) -> anyhow::Result<()
         }
     }
 
-    let client = super::http_client();
+    let client = super::http::client();
     let id = super::resolve_channel_id(&client, server_url, &normalized).await?;
     let url = format!("{server_url}/api/channels/{id}");
     let res = client

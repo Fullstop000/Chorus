@@ -5,7 +5,7 @@
 
 pub async fn run(server_url: String) -> anyhow::Result<()> {
     let username = whoami::username();
-    let client = reqwest::Client::new();
+    let client = chorus::utils::http::client();
     let res = client
         .get(format!("{server_url}/internal/agent/{username}/server"))
         .send()

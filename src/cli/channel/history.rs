@@ -9,7 +9,7 @@ use super::surface_http_error;
 
 pub async fn run(name: String, limit: i64, server_url: &str) -> anyhow::Result<()> {
     let username = whoami::username();
-    let client = super::http_client();
+    let client = super::http::client();
     // Normalize the user input (trim, strip leading `#`, lowercase) and then
     // send it back with a leading `#`. The server's `resolve_history_target`
     // only runs its own normalization on targets that already start with `#`
