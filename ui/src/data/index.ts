@@ -145,12 +145,9 @@ export {
 
 export {
   getInboxState,
-  getChannelThreads,
   dmConversationNameForParticipants,
   type InboxConversationState,
   type InboxResponse,
-  type ThreadInboxEntry,
-  type ThreadInboxResponse,
 } from './inbox'
 
 export {

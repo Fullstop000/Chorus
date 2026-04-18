@@ -31,19 +31,16 @@ export interface SendMessageRequest {
   attachmentIds?: string[]
   suppressAgentDelivery?: boolean
   suppressEvent?: boolean
-  threadParentId?: string
 }
 
 export interface GetHistoryParams {
   limit?: number
-  threadParentId?: string
   before?: number
   after?: number
 }
 
 export interface UpdateReadCursorRequest {
   lastReadSeq: number
-  threadParentId?: string
 }
 
 // ── Task requests ──

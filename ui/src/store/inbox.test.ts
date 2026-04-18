@@ -17,7 +17,6 @@ function makeConversation(
     latestSeq: 2,
     lastReadSeq: 2,
     unreadCount: 0,
-    threadUnreadCount: 0,
     lastReadMessageId: 'message-2',
     lastMessageId: 'message-2',
     lastMessageAt: '2026-03-30T00:00:00Z',

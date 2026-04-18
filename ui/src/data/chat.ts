@@ -27,9 +27,7 @@ export interface HistoryMessage {
   senderType: 'human' | 'agent' | 'system'
   senderDeleted: boolean
   createdAt: string
-  thread_parent_id?: string
   attachments?: AttachmentRef[]
-  replyCount?: number
   forwardedFrom?: ForwardedFrom
   runId?: string
   traceSummary?: string
@@ -50,7 +48,6 @@ export interface MessageCreatedPayload {
   messageId: string
   conversationId: string
   conversationType: string
-  threadParentId: string | null
   sender: MessageSenderInfo
   senderDeleted: boolean
   content: string
@@ -100,11 +97,10 @@ export function sendMessage(
 export function getHistory(
   conversationId: string,
   limit = 50,
-  threadParentId?: string,
   before?: number,
   after?: number
 ): Promise<HistoryResponse> {
-  const params: GetHistoryParams = { limit, threadParentId, before, after }
+  const params: GetHistoryParams = { limit, before, after }
   return get(
     `${conversationPath(conversationId, '/messages')}${queryString(params as Record<string, string | number | boolean | undefined>)}`
   )
@@ -113,10 +109,9 @@ export function getHistory(
 export function getHistoryAfter(
   conversationId: string,
   after: number,
-  limit = 50,
-  threadParentId?: string
+  limit = 50
 ): Promise<HistoryResponse> {
-  return getHistory(conversationId, limit, threadParentId, undefined, after)
+  return getHistory(conversationId, limit, undefined, after)
 }
 
 export function uploadFile(file: File): Promise<UploadResponse> {
@@ -155,19 +150,13 @@ export interface ReadCursorResponse {
   conversationUnreadCount: number
   conversationLastReadSeq: number
   conversationLatestSeq: number
-  conversationThreadUnreadCount: number
-  threadParentId?: string
-  threadUnreadCount?: number
-  threadLastReadSeq?: number
-  threadLatestSeq?: number
 }
 
 export function updateReadCursor(
   conversationId: string,
-  lastReadSeq: number,
-  threadParentId?: string
+  lastReadSeq: number
 ): Promise<ReadCursorResponse> {
-  const payload: UpdateReadCursorRequest = { lastReadSeq, threadParentId }
+  const payload: UpdateReadCursorRequest = { lastReadSeq }
   return post(conversationPath(conversationId, '/read-cursor'), payload)
 }
 
@@ -184,17 +173,14 @@ export function findAttachmentById(message: HistoryMessage, id: string): Attachm
 // ── Query definitions ──
 
 export const historyQueryKeys = {
-  history: (conversationId: string, threadParentId?: string | null) =>
-    ['history', conversationId, threadParentId ?? 'root'] as const,
+  history: (conversationId: string) =>
+    ['history', conversationId] as const,
 } as const
 
-export const historyQuery = (
-  conversationId: string,
-  threadParentId?: string | null
-) =>
+export const historyQuery = (conversationId: string) =>
   queryOptions({
-    queryKey: historyQueryKeys.history(conversationId, threadParentId),
-    queryFn: () => getHistory(conversationId, 50, threadParentId ?? undefined),
+    queryKey: historyQueryKeys.history(conversationId),
+    queryFn: () => getHistory(conversationId, 50),
     enabled: !!conversationId,
     staleTime: 30_000,
   })

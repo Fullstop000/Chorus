@@ -37,7 +37,7 @@ export function getBottomTransition(
 }
 
 interface MessageListProps {
-  // Stable store key for the current channel, DM, or thread.
+  // Stable store key for the current channel or DM.
   targetKey: string;
   // Conversation id for read-cursor tracking.
   conversationId: string | null;
@@ -53,12 +53,8 @@ interface MessageListProps {
   scrollMode?: "internal" | "inherit";
   // Parent scroll container used when scrollMode is inherit.
   externalScrollContainerRef?: RefObject<HTMLDivElement | null>;
-  // Optional reply action for each message row.
-  onReply?: (message: HistoryMessage) => void;
   // Empty state copy shown when no messages exist.
   emptyLabel?: string;
-  // Thread parent id — set when rendering a thread message list.
-  threadParentId?: string | null;
 }
 
 export function MessageList({
@@ -70,9 +66,7 @@ export function MessageList({
   currentUser,
   scrollMode = "internal",
   externalScrollContainerRef,
-  onReply,
   emptyLabel = "No messages yet. Be the first to say something!",
-  threadParentId,
 }: MessageListProps) {
   // ── DOM refs ──
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -92,12 +86,8 @@ export function MessageList({
 
   // ── Store / query ──
   const queryClient = useQueryClient();
-  const queryKey = historyQueryKeys.history(
-    conversationId ?? "",
-    threadParentId ?? null,
-  );
-  const { advanceConversationLastReadSeq, advanceThreadLastReadSeq } =
-    useStore();
+  const queryKey = historyQueryKeys.history(conversationId ?? "");
+  const { advanceConversationLastReadSeq } = useStore();
 
   // ── Sync refs with props ──
   useEffect(() => {
@@ -121,11 +111,7 @@ export function MessageList({
     if (activeTargetRef.current !== targetKey) return;
     if (document.visibilityState !== "visible") return;
     try {
-      await updateReadCursor(
-        conversationId!,
-        flushSeq,
-        threadParentId || undefined,
-      );
+      await updateReadCursor(conversationId!, flushSeq);
       // Sync the server-confirmed seq back into the React Query cache.
       queryClient.setQueryData<HistoryResponse | undefined>(
         queryKey,
@@ -140,7 +126,7 @@ export function MessageList({
     } catch (cursorError) {
       console.error("Failed to update read cursor", cursorError);
     }
-  }, [conversationId, threadParentId, targetKey, queryClient, queryKey]);
+  }, [conversationId, targetKey, queryClient, queryKey]);
 
   // ── Visibility callback ──
   // Called by useVisibilityTracking when a message DOM element enters the viewport.
@@ -159,11 +145,7 @@ export function MessageList({
       pendingReadSeqRef.current = nextSeq;
 
       // 1. Optimistically advance lastReadSeq so unread count drops immediately.
-      if (threadParentId) {
-        advanceThreadLastReadSeq(conversationId, threadParentId, nextSeq);
-      } else {
-        advanceConversationLastReadSeq(conversationId, nextSeq);
-      }
+      advanceConversationLastReadSeq(conversationId, nextSeq);
 
       // 2. Debounce: if a flush is already scheduled, it will pick up the new seq.
       if (readCursorTimerRef.current != null) return;
@@ -172,12 +154,10 @@ export function MessageList({
     [
       conversationId,
       loading,
-      threadParentId,
       targetKey,
       currentUser,
       flushReadCursor,
       advanceConversationLastReadSeq,
-      advanceThreadLastReadSeq,
     ],
   );
 
@@ -383,7 +363,6 @@ export function MessageList({
               message={msg}
               currentUser={currentUser}
               prevMessage={messages[i - 1]}
-              onReply={onReply}
               traceData={agentTrace}
               showTraceSummary={
                 !msg.runId || firstMsgIdPerRun.get(msg.runId) === msg.id
