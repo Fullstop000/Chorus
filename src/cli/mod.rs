@@ -7,7 +7,6 @@
 
 mod agent;
 mod channel;
-mod history;
 mod send;
 mod serve;
 mod setup;
@@ -74,27 +73,18 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
-    /// Read message history
-    History {
-        /// Target: #channel, dm:@name, etc.
-        channel: String,
-        #[arg(long, default_value = "20")]
-        limit: i64,
-        #[arg(long, default_value = "http://localhost:3001")]
-        server_url: String,
-    },
     /// List channels, agents, humans
     Status {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
-    /// Create a channel
+    /// Manage channels (create, del, join, list, history)
     Channel {
-        name: String,
-        #[arg(long)]
-        description: Option<String>,
-        #[arg(long)]
-        data_dir: Option<String>,
+        #[command(subcommand)]
+        cmd: channel::ChannelCommands,
+        /// Chorus server URL (inherited by all channel subcommands)
+        #[arg(long, global = true, default_value = "http://localhost:3001")]
+        server_url: String,
     },
     /// Start the shared HTTP MCP bridge server (multi-agent)
     #[command(name = "bridge-serve")]
@@ -259,19 +249,9 @@ pub async fn run() -> anyhow::Result<()> {
             server_url,
         }) => send::run(target, content, server_url).await,
 
-        Some(Commands::History {
-            channel,
-            limit,
-            server_url,
-        }) => history::run(channel, limit, server_url).await,
-
         Some(Commands::Status { server_url }) => status::run(server_url).await,
 
-        Some(Commands::Channel {
-            name,
-            description,
-            data_dir,
-        }) => channel::run(name, description, data_dir),
+        Some(Commands::Channel { cmd, server_url }) => channel::run(server_url, cmd).await,
 
         Some(Commands::Agent { cmd }) => agent::run(cmd).await,
 

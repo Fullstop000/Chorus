@@ -1,15 +1,15 @@
-//! `chorus history <channel>` — print recent messages from a channel.
+//! `chorus channel history <name>` — print recent messages from a channel.
 //!
-//! Calls `GET /internal/agent/<username>/history?channel=<channel>&limit=<limit>`
+//! Calls `GET /internal/agent/<username>/history?channel=<name>&limit=<limit>`
 //! and prints each message as `[<timestamp>] @<sender>: <content>`.
 
-pub async fn run(channel: String, limit: i64, server_url: String) -> anyhow::Result<()> {
+pub async fn run(name: String, limit: i64, server_url: &str) -> anyhow::Result<()> {
     let username = whoami::username();
     let client = reqwest::Client::new();
     let res = client
         .get(format!(
             "{server_url}/internal/agent/{username}/history?channel={}&limit={limit}",
-            urlencoding::encode(&channel)
+            urlencoding::encode(&name)
         ))
         .send()
         .await?;
