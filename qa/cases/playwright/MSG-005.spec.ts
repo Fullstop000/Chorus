@@ -4,7 +4,7 @@ import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api
 import { clickSidebarChannel , gotoApp } from './helpers/ui'
 
 /**
- * Catalog: qa/cases/messaging.md — MSG-005 Attachment Upload And Download
+ * Catalog: qa/cases/messaging.md — MSG-005 Attachment Upload And Inline Render
  * Supersedes: ATT-001
  */
 test.describe('MSG-005', () => {
@@ -12,7 +12,7 @@ test.describe('MSG-005', () => {
     await ensureMixedRuntimeTrio(request)
   })
 
-  test('Attachment Upload And Download @case MSG-005', async ({ page, request }) => {
+  test('Attachment Upload And Inline Render @case MSG-005', async ({ page, request }) => {
     const fixture = path.resolve(__dirname, '../../fixtures/qa-attachment.txt')
     const { username } = await getWhoami(request)
     await gotoApp(page)

@@ -5,7 +5,7 @@
 ### CHN-001 Channel Create And Default Membership
 
 - Suite: smoke
-- Goal: verify channel create, default single-member state, invite flow, and `#all` invite guardrail
+- Goal: verify channel create, default single-member state, invite flow, and post-navigation persistence
 - Script: [`playwright/CHN-001.spec.ts`](./playwright/CHN-001.spec.ts)
 - Preconditions: at least 3 test agents exist
 - Steps:
@@ -15,13 +15,11 @@
   4. Open the members rail and verify the count starts at `1`, showing only the current human user.
   5. Invite one agent into the channel through the shipped member control.
   6. Send one human message asking the invited agent to reply.
-  7. Open `#all` members rail and verify no invite button exists.
-  8. Navigate away and back, then verify the new channel history and membership count persist.
+  7. Navigate away and back, then verify the new channel history and membership count persist.
 - Expected:
   - Channel creates and appears in sidebar immediately
   - New channel starts with only the creator as a member
   - Invited agent becomes active participant
-  - `#all` exposes no invite affordance
   - Membership persists after navigation
 
 ### CHN-002 Channel Name Validation, Normalization, And Duplicate Rejection

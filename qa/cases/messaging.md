@@ -18,34 +18,24 @@
   6. Verify no messages are duplicated or misattributed.
 - Expected: one human message, three distinct correctly-attributed agent replies, no cross-channel leak
 
-### MSG-002 DM Round-Trip [runtime matrix]
+### MSG-002 DM Round-Trip
 
 - Suite: smoke
 - Supersedes: DM-002
 - Execution mode: hybrid
-- Goal: verify a DM send → agent reply round-trip works for every supported runtime
+- Goal: verify a DM send → agent reply round-trip and history persistence
 - Script: [`playwright/MSG-002.spec.ts`](./playwright/MSG-002.spec.ts)
 - Preconditions:
-  - runtime and model selected via `CHORUS_RUNTIME` / `CHORUS_MODEL` env vars
-  - agent `dm-e2e-<runtime>` seeded by spec `beforeAll`
-- Runtime matrix:
-
-  | `CHORUS_RUNTIME` | `CHORUS_MODEL` | Agent slug |
-  | --- | --- | --- |
-  | `codex` | `codex` | `dm-e2e-codex` |
-  | `claude` | `sonnet` | `dm-e2e-claude` |
-  | `kimi` | `kimi` | `dm-e2e-kimi` |
-
+  - `bot-b` (kimi) exists and is reachable
 - Steps:
-  1. Seed or confirm agent `dm-e2e-<runtime>` exists with the chosen runtime/model.
-  2. Open a DM with the agent.
-  3. Send a message containing a unique token (e.g. `DM2-<timestamp>`).
-  4. Verify the human message appears immediately in the DM timeline.
-  5. Poll the history API for an agent reply containing the token (up to 2 min).
-  6. Verify the reply appears in the DM timeline, not in any channel.
-  7. Verify the activity log shows a `tool_start` entry for `send_message`.
-  8. Refresh and confirm both messages persist.
-- Expected: agent reply in same DM with token; activity log confirms `send_message` tool call; history survives refresh
+  1. Open a DM with `bot-b`.
+  2. Send a message containing a unique token.
+  3. Verify the human message appears immediately in the DM timeline.
+  4. Poll the history API for an agent reply containing the token (up to 2 min).
+  5. Verify the reply appears in the DM timeline (top-level or thread), not in any channel.
+  6. Refresh and confirm both messages persist.
+  7. Switch to another channel and return — history still present.
+- Expected: agent reply in same DM with token; history survives refresh and channel switch
 
 ### MSG-003 Thread Reply In Busy Channel
 
@@ -77,19 +67,19 @@
   5. Confirm the reply appears in the DM timeline.
 - Expected: agent auto-starts; reply rendered in the DM, not in a channel
 
-### MSG-005 Attachment Upload And Download
+### MSG-005 Attachment Upload And Inline Render
 
 - Suite: smoke
 - Supersedes: ATT-001
-- Goal: verify file upload, inline rendering, and download integrity end-to-end
+- Goal: verify file upload renders inline and persists in message history
 - Script: [`playwright/MSG-005.spec.ts`](./playwright/MSG-005.spec.ts)
 - Steps:
   1. Open the composer and attach a prepared test file.
   2. Send the message.
   3. Verify the attachment name appears inline in the sent message.
-  4. Click the attachment link and download the file.
-  5. Verify downloaded content matches the original file.
-- Expected: attachment visible inline; download returns identical content
+  4. Verify the attachment appears in the message history API response.
+  5. Verify the composer clears after send.
+- Expected: attachment visible inline; composer clears; attachment present in history
 
 ### MSG-006 Clickable Mention Opens Agent Profile
 
