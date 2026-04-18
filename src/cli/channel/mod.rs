@@ -10,7 +10,10 @@ mod history;
 mod join;
 mod list;
 
+use anyhow::Context;
 use clap::Subcommand;
+
+pub(super) use chorus::store::channels::normalize_channel_name;
 
 #[derive(Subcommand)]
 pub(crate) enum ChannelCommands {
@@ -53,17 +56,6 @@ pub async fn run(server_url: String, cmd: ChannelCommands) -> anyhow::Result<()>
     }
 }
 
-/// Resolve a channel name (with or without a leading `#`) to its id by listing
-/// all channels from the server and matching on the normalized name.
-///
-/// Mirrors `server::handlers::channels::normalize_channel_name`: trim, strip a
-/// single leading `#`, trim again, lowercase.
-/// Normalize a channel name for display/request: trim, strip a single leading
-/// `#`, trim again, lowercase. Mirrors the server's `normalize_channel_name`.
-pub(super) fn normalize_channel_name(raw: &str) -> String {
-    raw.trim().trim_start_matches('#').trim().to_lowercase()
-}
-
 /// Turn a non-2xx HTTP response into an `anyhow::Error`.
 ///
 /// Parses the server's `ErrorResponse` JSON (`{error, code?}`). When a typed
@@ -83,6 +75,8 @@ pub(super) fn surface_http_error(status: reqwest::StatusCode, body: &str) -> any
     anyhow::anyhow!("{status}: {body}")
 }
 
+/// Resolve a channel name (with or without a leading `#`) to its id by listing
+/// all channels from the server and matching on the normalized name.
 pub(super) async fn resolve_channel_id(
     client: &reqwest::Client,
     server_url: &str,
@@ -90,12 +84,18 @@ pub(super) async fn resolve_channel_id(
 ) -> anyhow::Result<String> {
     let normalized = normalize_channel_name(name);
     let url = format!("{server_url}/api/channels");
-    let res = client.get(&url).send().await.map_err(|e| {
-        anyhow::anyhow!(
-            "{e}: is the Chorus server running at {server_url}?"
-        )
-    })?;
-    let data: serde_json::Value = res.json().await?;
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("is the Chorus server running at {server_url}?"))?;
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(surface_http_error(status, &body));
+    }
+    let data: serde_json::Value = serde_json::from_str(&body)
+        .with_context(|| format!("unexpected response from {url}"))?;
     let arr = data
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("unexpected response from {url}: not a JSON array"))?;

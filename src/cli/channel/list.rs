@@ -38,16 +38,28 @@ pub async fn run(all: bool, server_url: &str) -> anyhow::Result<()> {
     let mut printed = 0usize;
     for ch in arr {
         let joined = ch.get("joined").and_then(|v| v.as_bool()).unwrap_or(false);
+        // Server's ?member= sets the `joined` flag per row but does not filter rows out.
+        // Client filters here in the default path to honor "joined-only unless --all".
         if !all && !joined {
             continue;
         }
         let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("?");
         let desc = ch.get("description").and_then(|v| v.as_str()).unwrap_or("");
-        let label = if joined { "joined" } else { "not joined" };
-        if desc.is_empty() {
-            tracing::info!("  #{name} [{label}]");
+        // When `all` is false, every surviving row is joined — the tag is redundant.
+        let tag = if all {
+            if joined {
+                "[joined]"
+            } else {
+                "[not joined]"
+            }
         } else {
-            tracing::info!("  #{name} [{label}] — {desc}");
+            ""
+        };
+        match (tag.is_empty(), desc.is_empty()) {
+            (true, true) => tracing::info!("  #{name}"),
+            (true, false) => tracing::info!("  #{name} — {desc}"),
+            (false, true) => tracing::info!("  #{name} {tag}"),
+            (false, false) => tracing::info!("  #{name} {tag} — {desc}"),
         }
         printed += 1;
     }

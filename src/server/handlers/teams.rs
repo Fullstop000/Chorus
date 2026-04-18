@@ -7,8 +7,7 @@ use super::path_params::{PublicResourceIdPath, TeamMemberPath};
 use super::{app_err, internal_err, ApiResult, AppState};
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
 use crate::server::error::AppErrorCode;
-use crate::server::handlers::channels::normalize_channel_name;
-use crate::store::channels::ChannelType;
+use crate::store::channels::{normalize_channel_name, ChannelType};
 use crate::store::messages::SenderType;
 use crate::store::teams::{Team, TeamMember};
 
