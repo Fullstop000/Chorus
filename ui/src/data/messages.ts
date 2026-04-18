@@ -13,21 +13,11 @@ export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
     senderType: p.sender.type ?? 'human',
     senderDeleted: p.senderDeleted ?? false,
     createdAt: p.createdAt ?? new Date().toISOString(),
-    thread_parent_id: p.threadParentId ?? undefined,
     runId: p.runId ?? undefined,
     traceSummary: p.traceSummary ?? undefined,
   }
 }
 
-export function bumpReplyCount(messages: HistoryMessage[], parentId: string): HistoryMessage[] {
-  return messages.map((message) =>
-    message.id === parentId
-      ? { ...message, replyCount: (message.replyCount ?? 0) + 1 }
-      : message
-  )
-}
-
 export function maxHistorySeq(messages: HistoryMessage[]): number {
   return messages.reduce((maxSeq, message) => Math.max(maxSeq, message.seq), 0)
 }
-

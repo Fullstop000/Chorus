@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { normalizeEvent, bumpReplyCount } from './messages'
-import type { HistoryMessage, StreamEvent } from './chat'
+import { normalizeEvent } from './messages'
+import type { StreamEvent } from './chat'
 import { EventType } from '../transport'
 
 function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
@@ -13,7 +13,6 @@ function makeEvent(overrides: Partial<StreamEvent> = {}): StreamEvent {
       messageId: 'message-6',
       conversationId: 'conversation-1',
       conversationType: 'channel',
-      threadParentId: null,
     },
     schemaVersion: 1,
     ...overrides,
@@ -36,7 +35,6 @@ describe('normalizeEvent', () => {
         messageId: 'msg-1',
         conversationId: 'conv-1',
         conversationType: 'channel',
-        threadParentId: null,
         content: 'hello',
         sender: { name: 'alice', type: 'human' },
         seq: 10,
@@ -52,33 +50,5 @@ describe('normalizeEvent', () => {
       senderDeleted: false,
       createdAt: '2025-01-01T00:00:00Z',
     })
-  })
-})
-
-describe('bumpReplyCount', () => {
-  it('increments replyCount on the parent message', () => {
-    const messages: HistoryMessage[] = [
-      { id: 'parent-1', seq: 3, content: 'root', senderName: 'alice', senderType: 'human', senderDeleted: false, createdAt: '2025-01-01T00:00:00Z', replyCount: 2 },
-    ]
-    const result = bumpReplyCount(messages, 'parent-1')
-    expect(result[0]?.replyCount).toBe(3)
-  })
-
-  it('initializes replyCount from undefined to 1', () => {
-    const messages: HistoryMessage[] = [
-      { id: 'parent-1', seq: 3, content: 'root', senderName: 'alice', senderType: 'human', senderDeleted: false, createdAt: '2025-01-01T00:00:00Z' },
-    ]
-    const result = bumpReplyCount(messages, 'parent-1')
-    expect(result[0]?.replyCount).toBe(1)
-  })
-
-  it('leaves other messages untouched', () => {
-    const messages: HistoryMessage[] = [
-      { id: 'other-1', seq: 1, content: 'other', senderName: 'bob', senderType: 'human', senderDeleted: false, createdAt: 'T' },
-      { id: 'parent-1', seq: 3, content: 'root', senderName: 'alice', senderType: 'human', senderDeleted: false, createdAt: 'T' },
-    ]
-    const result = bumpReplyCount(messages, 'parent-1')
-    expect(result[0].id).toBe('other-1')
-    expect(result[0]).not.toHaveProperty('replyCount')
   })
 })
