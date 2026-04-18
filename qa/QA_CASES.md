@@ -8,24 +8,30 @@ It is intentionally:
 - strict enough to catch state-consistency failures, not just obvious crashes
 
 All cases below are browser-first cases unless explicitly marked otherwise.
-The explicit `Tier:` field on each case is authoritative. Nearby placement in the file is for related-domain readability.
+The `Suite:` field on each case is authoritative (`smoke` or `regression`). Nearby placement in the file is for related-domain readability.
 
 **Non-browser case modules:** [`cases/bridge.md`](./cases/bridge.md) covers subprocess and live-runtime tests (IDs `BRG-NNN`, `LRT-NNN`, `INT-NNN`). Those run through `cargo test`, not Playwright. See [`README.md`](./README.md) → "Subprocess and External Runtime Tests" for the evidence rules that apply to them.
 
+## Suite Definitions
+
+- `smoke` — runs on every PR. Must pass before merge. Covers all data-model CRUD, base message flows, and critical UX paths.
+- `regression` — runs in Core Regression and deeper passes. Includes all smoke cases plus edge cases, stress tests, recovery flows, and niche UI assertions. Regression ⊃ smoke.
+
 ## Case record template (authoring)
 
-Each executable case under `cases/*.md` should use this shape (fields may omit `Execution mode` when default is browser-first):
+Each executable case under `cases/*.md` should use this shape (omit `Execution mode` when default browser-first):
 
 - `### ABC-NNN Short Title`
-- `Tier:` / `Release-sensitive:` / `Execution mode:` (when not default)
-- `Goal:` (bullet list)
-- **`Script:`** — required link to Playwright spec under [`cases/playwright/`](./cases/playwright/) (e.g. [`playwright/ENV-001.spec.ts`](./cases/playwright/ENV-001.spec.ts)); if the case is not yet automated, the linked spec must exist and state the gap with `test.fixme(...)`.
-- `Preconditions:`
-- `Steps:` (numbered)
-- `Expected:`
-- `Common failure signals:`
+- `Suite:` (`smoke` or `regression`)
+- `Execution mode:` (when not default browser-first)
+- `Goal:` (one line)
+- **`Script:`** — required link to Playwright spec under [`cases/playwright/`](./cases/playwright/); if not yet automated, the spec must exist with `test.fixme(...)`.
+- `Preconditions:` (only when non-default)
+- `Steps:` (numbered, ≤ 8 for smoke cases)
+- `Expected:` (terse assertions, one per line)
 
-When you add or change automation, update the case’s `Script:` line and keep the spec’s file header in sync with Preconditions / Steps / Expected (see `qa/README.md` → Playwright).
+When you add or change automation, update the case's `Script:` line and keep the spec in sync.
+
 
 ## How To Use This Catalog
 

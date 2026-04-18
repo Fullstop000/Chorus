@@ -16,7 +16,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### BRG-001 Bridge starts and responds to /health
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes when touching `src/bridge/serve.rs`
 - Execution mode: subprocess (in-process listener)
 - Goal:
@@ -44,7 +44,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### BRG-002 Two agents get isolated MCP sessions
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes when touching `src/bridge/serve.rs` session routing or `get_or_create_service`
 - Execution mode: subprocess (in-process listener)
 - Goal:
@@ -73,7 +73,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### BRG-003 Pairing token lifecycle
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes when touching `src/bridge/pairing.rs` or the `/token/{token}/mcp` route
 - Execution mode: subprocess (in-process listener)
 - Goal:
@@ -106,7 +106,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### BRG-004 End-to-end send_message through bridge lands in store
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes when touching `src/bridge/backend.rs`, `src/bridge/mod.rs`, or any driver HTTP config
 - Execution mode: subprocess (in-process Chorus server + bridge)
 - Goal:
@@ -139,7 +139,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### LRT-001 OpenCode agent replies through shared bridge
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching OpenCode driver or the shared pairing helper
 - Execution mode: subprocess (spawns real `opencode` binary)
 - Goal:
@@ -174,7 +174,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### LRT-002 Claude Code agent replies through shared bridge
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching Claude driver
 - Execution mode: subprocess (spawns real `claude` binary)
 - Goal:
@@ -200,7 +200,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### LRT-003 Codex agent replies through shared bridge
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching Codex driver; watch for HTTP-MCP instability flagged in [`../../docs/RUNTIME_MCP_SUPPORT.md`](../../docs/RUNTIME_MCP_SUPPORT.md)
 - Execution mode: subprocess (spawns real `codex` binary)
 - Goal:
@@ -227,7 +227,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### LRT-004 Kimi agent replies through shared bridge
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching Kimi driver's ACP `session/new` params or `.chorus-kimi-mcp.json` config
 - Execution mode: subprocess (spawns real `kimi` binary in ACP mode)
 - Goal:
@@ -254,7 +254,7 @@ See [`../README.md`](../README.md) → "Subprocess and External Runtime Tests" f
 
 ### INT-001 `chorus serve --shared-bridge` auto-wires agents
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching `src/cli/serve.rs` shared-bridge startup or `src/agent/manager.rs` discovery auto-population
 - Execution mode: subprocess (currently validated by unit + integration tests across three layers)
 - Goal:

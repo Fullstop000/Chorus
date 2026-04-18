@@ -2,7 +2,7 @@
 
 ### TMT-001 Team Create, Channel Badge, and Sidebar Appearance
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Execution mode: browser
 - Goal:
@@ -37,7 +37,7 @@
 
 ### TMT-002 @mention Routing Forwards Message to Team Channel
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Execution mode: browser
 - Goal:
@@ -72,7 +72,7 @@
 
 ### TMT-005 Team Member Management (Add, Remove, Role)
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when team membership or channel membership logic changes
 - Execution mode: browser
 - Goal:
@@ -108,7 +108,7 @@
 
 ### TMT-007 Team Delete — Channel Archive and Workspace Cleanup
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when team deletion or channel archive logic changes
 - Execution mode: browser
 - Goal:
@@ -143,7 +143,7 @@
 
 ### TMT-009 Agent Team Thread Wake And In-Thread Reply
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes when touching agent lifecycle, restart prompts, bridge formatting, thread routing, or team-channel messaging
 - Execution mode: hybrid
 - Goal:

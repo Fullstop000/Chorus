@@ -2,7 +2,7 @@
 
 ### ENV-001 App Startup And Identity
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - prove the product shell boots and identifies the current user correctly
@@ -27,7 +27,7 @@
 
 ### AGT-001 Create Agent And Verify Sidebar Presence
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - verify agent creation works with a non-claude runtime and appears in the sidebar
@@ -50,7 +50,7 @@
 
 ### AGT-002 Agent Edit Persists Correctly
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching agent edit flow, profile controls, or config persistence
 - Execution mode: browser
 - Goal:
@@ -78,7 +78,7 @@
 
 ### AGT-003 Agent Delete And Name-Reuse Contract
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when a delete flow exists or agent cleanup logic changes
 - Execution mode: hybrid
 - Current product note:
@@ -111,7 +111,7 @@
 
 ### AGT-004 Agent Control Center Edit, Restart, Delete, And Deleted History
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching profile controls, agent edit flows, restart modes, delete flows, environment variables, or deleted-agent history rendering
 - Execution mode: browser
 - Goal:
@@ -152,7 +152,7 @@
 
 ### PRF-001 Agent Profile Accuracy During Lifecycle Changes
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - verify profile state matches actual runtime state
@@ -178,7 +178,7 @@
 
 ### LFC-001 Agent Lifecycle Start, Idle, Stop, And Manual Restart
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Execution mode: browser
 - Goal:
@@ -210,7 +210,7 @@
 
 ### LFC-002 System Restart Routine And Post-Restart Recovery
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching startup, persistence, session restore, or lifecycle transitions
 - Execution mode: hybrid
 - Goal:
@@ -239,7 +239,7 @@
 
 ### ACT-001 Activity Timeline Completeness And Readability
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes
 - Goal:
   - verify activity is readable and complete for real mixed flows
@@ -278,7 +278,7 @@
 
 ### ACT-002 Activity Timeline Ordering During Wake And Recovery
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching lifecycle, restart, driver wake behavior, or activity aggregation
 - Goal:
   - verify the activity timeline preserves the order and meaning of a wake-up flow, especially for DM-triggered recovery
@@ -313,7 +313,7 @@
 
 ### NAV-001 Sidebar Navigation And Selection Persistence
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes
 - Goal:
   - verify users can move between channels, agents, and tabs without stale selection bugs
@@ -337,7 +337,7 @@
 
 ### NAV-002 Idle Shell Does Not Poll Sidebar Resources
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching shell bootstrap, sidebar refresh logic, or server-info fetching
 - Goal:
   - verify the app shell does one bootstrap fetch for sidebar resources and then remains idle until a real user action requires refresh
@@ -362,7 +362,7 @@
 
 ### WRK-001 Workspace Tab Path And File Visibility
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes
 - Goal:
   - verify the workspace tab reflects the actual agent workspace, including non-default data dirs
@@ -405,7 +405,7 @@
 
 ### REC-001 Restart Server And Verify Agent Recovery
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching runtime/session logic
 - Goal:
   - verify server restart does not destroy active product state
@@ -430,7 +430,7 @@
 
 ### REC-002 Concurrent Agent Activity Under One Channel
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching agent manager, runtime, or activity aggregation
 - Goal:
   - verify the system remains usable when several agents respond in the same channel window

@@ -43,7 +43,7 @@ Agents:
 
 Notes:
 - This keeps the normal three-agent concurrency pressure while guaranteeing one real Codex-backed agent in the browser flow.
-- Prefer this preset over `claude-trio` for Tier 0 messaging and lifecycle regressions when driver code changed.
+- Prefer this preset over `claude-trio` for smoke messaging and lifecycle regressions when driver code changed.
 
 ### `codex-lifecycle-pair`
 

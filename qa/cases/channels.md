@@ -2,7 +2,7 @@
 
 ### CHN-001 Channel Create And Default Membership
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Execution mode: browser
 - Goal:
@@ -34,7 +34,7 @@
 
 ### CHN-002 Channel Name Validation, Normalization, And Duplicate Rejection
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching channel create, channel routing, or channel validation
 - Execution mode: browser
 - Goal:
@@ -60,7 +60,7 @@
 
 ### CHN-003 Channel Invite Operations And `#all` Guardrails
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when explicit membership controls exist or channel delivery logic changes
 - Execution mode: browser
 - Goal:
@@ -91,7 +91,7 @@
 
 ### CHN-004 Channel Delete And Selection Recovery
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when a delete flow exists or channel persistence changes
 - Execution mode: hybrid
 - Current product note:
@@ -122,7 +122,7 @@
 
 ### CHN-005 Channel Rename Updates Sidebar Immediately
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching channel edit flows, sidebar refresh logic, or selected-target rendering
 - Execution mode: browser
 - Goal:

@@ -2,7 +2,7 @@
 
 ### TSK-001 Create And Advance A Task
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - verify task workflow transitions match visible UI state
@@ -28,7 +28,7 @@
 
 ### TSK-002 Create Message-As-Task From Composer
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - verify the chat composer can create a task while sending a message

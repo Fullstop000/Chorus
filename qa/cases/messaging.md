@@ -2,7 +2,7 @@
 
 ### MSG-001 Multi-Agent Channel Fan-Out
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - verify a human message in a shared channel can wake multiple agents and preserve message correctness
@@ -31,7 +31,7 @@
 
 ### MSG-002 Direct Message Round-Trip
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - verify DM send and agent reply rendering work independently of channel traffic
@@ -64,7 +64,7 @@
 
 ### MSG-003 Thread Reply In Busy Channel
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes
 - Goal:
   - prove thread behavior still works when the parent channel has multiple agents participating
@@ -90,7 +90,7 @@
 
 ### MSG-004 Direct Message Wake And Reply Visibility
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching lifecycle, runtime integration, DM routing, or restart/wake behavior
 - Goal:
   - verify a sleeping or inactive agent can wake from a DM and render its reply back into the same DM timeline
@@ -113,7 +113,7 @@
 
 ### MSG-005 Websocket-Driven Chat After Initial History Bootstrap
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching composer, message list, or send pipeline
 - Goal:
   - verify the chat view boots from one history fetch, then stays websocket-driven for local and remote messages
@@ -137,7 +137,7 @@
 
 ### MSG-006 Inline Attachment Rendering
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching attachment upload, storage, or rendering
 - Goal:
   - verify attachments are visible and downloadable after upload
@@ -161,7 +161,7 @@
 
 ### MSG-007 Optimistic Send Success And Failure States
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching composer, message list, or send pipeline
 - Goal:
   - verify the shipped ack-first composer surfaces success and failure coherently
@@ -185,7 +185,7 @@
 
 ### MSG-008 Conversation Read Cursor Advances On Visibility
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching unread state, viewport detection, or cursor APIs
 - Goal:
   - verify read cursor advances when messages become visible in viewport
@@ -210,7 +210,7 @@
 
 ### MSG-009 Single Websocket Tunnel Across Target Switches
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching realtime transport, subscription management, or socket lifecycle
 - Goal:
   - verify one WebSocket is reused across channel/DM switches instead of creating new connections
@@ -234,7 +234,7 @@
 
 ### MSG-010 Inactive Room Unread Badge Lifecycle
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching unread badges, realtime events, or inbox state
 - Goal:
   - verify unread badges appear correctly for inactive rooms when new messages arrive
@@ -262,7 +262,7 @@
 
 ### MSG-011 Thread Unread Lifecycle And Reply Count
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching thread inbox, reply counts, or badge aggregation
 - Goal:
   - verify thread reply counts and unread states update correctly through the lifecycle
@@ -291,7 +291,7 @@
 
 ### MSG-012 Clickable Mention Opens Agent Profile
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching message rendering, mention styling, or profile navigation
 - Goal:
   - verify clicking an @agent mention in a message opens the agent's profile panel
@@ -323,7 +323,7 @@
 
 ### DM-002 Single-Agent DM E2E Reply
 
-- Tier: 0
+- Suite: smoke
 - Release-sensitive: yes when touching DM routing, agent lifecycle, driver output parsing, or bridge wiring
 - Execution mode: hybrid
 - Goal:
@@ -355,7 +355,7 @@
 
 ### HIS-001 History Reload And Selection Stability
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: no
 - Goal:
   - verify scrolling loads older messages correctly without duplication
@@ -379,7 +379,7 @@
 
 ### ATT-001 Attachment Upload And Download
 
-- Tier: 1
+- Suite: regression
 - Release-sensitive: yes when touching upload pipeline or storage
 - Goal:
   - verify file upload and download work end-to-end
@@ -403,7 +403,7 @@
 
 ### ERR-001 Error Handling And Recovery
 
-- Tier: 2
+- Suite: regression
 - Release-sensitive: no
 - Goal:
   - verify errors are visible and the UI can recover cleanly
