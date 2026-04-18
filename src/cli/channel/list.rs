@@ -9,15 +9,14 @@ use anyhow::Context;
 
 pub async fn run(all: bool, server_url: &str) -> anyhow::Result<()> {
     let username = whoami::username();
-    let mut url = format!(
-        "{server_url}/api/channels?member={}",
+    // Always request system channels so the default path can surface rooms
+    // like `#all` that every human is auto-joined to. The client-side filter
+    // below drops rows with `joined=false` when `!all`, which keeps the
+    // default output to "channels you've joined" as the help text promises.
+    let url = format!(
+        "{server_url}/api/channels?member={}&include_system=true",
         urlencoding::encode(&username)
     );
-    if all {
-        // Include system channels (e.g. #all) so `--all` surfaces everything
-        // visible, not just the default user/team set.
-        url.push_str("&include_system=true");
-    }
     let client = reqwest::Client::new();
     let res = client
         .get(&url)
