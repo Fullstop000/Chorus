@@ -1448,10 +1448,7 @@ async fn test_create_kimi_agent_via_api() {
         name.starts_with("kimi-bot-"),
         "expected suffixed slug, got `{name}`"
     );
-    let agent = store
-        .get_agent(&name)
-        .unwrap()
-        .expect("agent should exist");
+    let agent = store.get_agent(&name).unwrap().expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
     assert_eq!(payload["status"], "active");
     assert_eq!(agent.runtime, "kimi");
@@ -2875,6 +2872,62 @@ async fn test_create_agent_falls_back_when_display_name_has_no_ascii() {
     assert!(
         name.starts_with("agent-"),
         "name `{name}` should fall back to `agent-` prefix"
+    );
+}
+
+#[tokio::test]
+async fn test_create_agent_requires_name_or_display_name() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // Omitting both name and display_name must return 400 "name is required".
+    let req = serde_json::json!({ "runtime": "claude", "model": "sonnet" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_create_agent_name_hint_takes_priority_over_display_name() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    // When both name hint and display_name are provided, the slug must
+    // derive from the name hint, not the display_name.
+    let req = serde_json::json!({
+        "name": "my-hint",
+        "display_name": "Should Not Appear In Slug",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let name = body["name"].as_str().expect("name is a string");
+    assert!(
+        name.starts_with("my-hint-"),
+        "name `{name}` should derive from name hint, not display_name"
     );
 }
 

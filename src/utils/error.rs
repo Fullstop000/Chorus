@@ -35,6 +35,8 @@ pub enum AppErrorCode {
     TeamNameTaken,
     /// Agent restart failed — keep restart modal, show retry + "check logs".
     AgentRestartFailed,
+    /// Agent created but failed to start — record exists, caller decides next step.
+    AgentStartFailed,
     /// Agent deleted but workspace cleanup failed — partial success, warning toast.
     AgentDeleteWorkspaceCleanupFailed,
     /// DM/system/team channel hit unsupported endpoint — disable affordance.
@@ -50,6 +52,7 @@ impl AppErrorCode {
             Self::ChannelNameTaken => StatusCode::CONFLICT,
             Self::TeamNameTaken => StatusCode::CONFLICT,
             Self::AgentRestartFailed => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::AgentStartFailed => StatusCode::INTERNAL_SERVER_ERROR,
             Self::AgentDeleteWorkspaceCleanupFailed => StatusCode::INTERNAL_SERVER_ERROR,
             Self::ChannelOperationUnsupported => StatusCode::BAD_REQUEST,
             Self::MessageNotAMember => StatusCode::FORBIDDEN,

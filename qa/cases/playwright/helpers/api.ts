@@ -92,7 +92,7 @@ export async function createAgentApi(
   options?: {
     allowNameTaken?: boolean
   }
-): Promise<void> {
+): Promise<{ name: string }> {
   const res = await request.post('/api/agents', {
     data: {
       name: body.name,
@@ -104,7 +104,10 @@ export async function createAgentApi(
       envVars: body.envVars ?? [],
     },
   })
-  if (res.ok()) return
+  if (res.ok()) {
+    const json = await res.json() as { name: string }
+    return { name: json.name }
+  }
 
   const text = await res.text()
   if (options?.allowNameTaken) {
@@ -113,11 +116,12 @@ export async function createAgentApi(
       parsed.code === 'AGENT_NAME_TAKEN' ||
       /agent name already in use/i.test(parsed.error ?? text)
     ) {
-      return
+      return { name: body.name }
     }
   }
 
   expect(res.ok(), text).toBeTruthy()
+  return { name: body.name }
 }
 
 /** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case.

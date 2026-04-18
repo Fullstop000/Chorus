@@ -41,7 +41,7 @@ export async function createAgentViaUi(
     await fromScratch.click()
   }
   await expect(configureHeading).toBeVisible()
-  await dialog.locator('input[placeholder="e.g. my-agent"]').fill(opts.name)
+  await dialog.locator('input[placeholder="e.g. Code Reviewer"]').fill(opts.name)
   await dialog.locator('[role="combobox"][aria-label="Runtime"]').click()
   await page.locator('[role="option"]').filter({ hasText: new RegExp(opts.runtime, 'i') }).first().click()
   await dialog.locator('[role="combobox"][aria-label="Model"]').click()

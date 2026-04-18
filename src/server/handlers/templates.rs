@@ -7,8 +7,8 @@ use tracing::{info, warn};
 use crate::agent::templates::group_by_category;
 use crate::agent::AgentRuntime;
 use crate::store::messages::SenderType;
-use crate::store::AgentRecordUpsert;
 
+use super::agents::CreateAgentParams;
 use super::{app_err, ApiResult, AppState};
 
 // ── Response types ──
@@ -132,14 +132,11 @@ pub async fn handle_launch_trio(
             }
         };
 
-        // Create the agent record. Every agent gets a `{base}-{hex4}`
-        // slug; retry on the rare UNIQUE-constraint collision.
-        let mut created: Option<(String, String)> = None;
-        let mut last_error: Option<String> = None;
-        for _ in 0..MAX_SLUG_ATTEMPTS {
-            let candidate = format!("{base_name}-{}", random_slug_suffix());
-            match state.store.create_agent_record(&AgentRecordUpsert {
-                name: &candidate,
+        // Create the agent, join auto-join channels, and start it.
+        let result = match super::agents::create_and_start_agent(
+            &state,
+            &CreateAgentParams {
+                base_name: &base_name,
                 display_name: &template.name,
                 description: template.description.as_deref(),
                 system_prompt: Some(&template.prompt_body),
@@ -147,57 +144,31 @@ pub async fn handle_launch_trio(
                 model: &model,
                 reasoning_effort: None,
                 env_vars: &[],
-            }) {
-                Ok(id) => {
-                    created = Some((id, candidate));
-                    break;
-                }
-                Err(e) => {
-                    let msg = e.to_string();
-                    if msg.contains("UNIQUE constraint") {
-                        last_error = Some(msg);
-                        continue;
-                    }
-                    last_error = Some(msg);
-                    break;
-                }
-            }
-        }
-        let (agent_id, agent_name) = match created {
-            Some(pair) => pair,
-            None => {
+            },
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
                 errors.push(LaunchTrioError {
                     template_id: template.id.clone(),
-                    error: format!(
-                        "failed to create agent: {}",
-                        last_error.unwrap_or_else(|| {
-                            format!(
-                                "could not allocate a unique slug after {MAX_SLUG_ATTEMPTS} attempts"
-                            )
-                        })
-                    ),
+                    error: format!("failed to create agent: {e}"),
                 });
                 continue;
             }
         };
-
-        // Join agent to the trio channel.
-        let _ = state
-            .store
-            .join_channel(&channel_name, &agent_name, SenderType::Agent);
-
-        // Start the agent.
-        if let Err(e) = state.lifecycle.start_agent(&agent_name, None).await {
-            warn!(
-                agent = %agent_name,
-                error = %e,
-                "trio agent created but failed to start"
-            );
+        if let Some(ref err) = result.start_error {
+            warn!(agent = %result.name, error = %err, "trio agent created but failed to start");
         }
 
+        // Also join the trio channel (auto-join channels handled above).
+        let _ = state
+            .store
+            .join_channel(&channel_name, &result.name, SenderType::Agent);
+
         agents.push(LaunchTrioAgent {
-            id: agent_id,
-            name: agent_name,
+            id: result.id,
+            name: result.name,
             display_name: template.name.clone(),
         });
     }
@@ -232,20 +203,6 @@ pub async fn handle_launch_trio(
             errors,
         }),
     ))
-}
-
-/// Maximum attempts at inserting a `{base}-{hex4}` agent slug before
-/// giving up. 16⁴ = 65_536 suffix combinations per base, so hitting this
-/// cap implies either a pathological number of siblings or a real bug.
-pub(crate) const MAX_SLUG_ATTEMPTS: u32 = 5;
-
-/// 4-character lowercase hex suffix used to keep agent slugs unique.
-/// Callers combine it with the user-facing base name as `{base}-{hex4}`
-/// and retry on the rare UNIQUE-constraint collision.
-pub(crate) fn random_slug_suffix() -> String {
-    use rand::Rng;
-    let n: u16 = rand::rng().random();
-    format!("{n:04x}")
 }
 
 /// Pick the first available model for a runtime.
