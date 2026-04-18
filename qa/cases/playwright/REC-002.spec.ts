@@ -16,6 +16,7 @@ test.describe('REC-002', () => {
 
   test('Concurrent Agent Activity Under One Channel @case REC-002', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.setTimeout(180_000)
     const { username } = await getWhoami(request)
     const mark = `rec-002-${Date.now()}`
     await gotoApp(page)

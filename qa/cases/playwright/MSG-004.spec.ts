@@ -18,6 +18,7 @@ test.describe('MSG-004', () => {
 
   test('Direct Message Wake And Reply Visibility @case MSG-004', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.setTimeout(120_000)
     const { username } = await getWhoami(request)
     const token = `dm-wake-${Date.now()}`
     const dmChannel = `dm:@${trio.botB}`

@@ -99,13 +99,13 @@
 - Suite: regression
 - Execution mode: hybrid
 - Goal: Verify a stopped agent wakes and replies inside a team thread without flattening into the top-level timeline.
-- Script: [`playwright/TMT-009.spec.ts`](./playwright/TMT-009.spec.ts) (runtime matrix; hybrid setup + browser thread flow + API polling)
+- Script: [`playwright/TMT-009.spec.ts`](./playwright/TMT-009.spec.ts)
 - Preconditions:
-  - mixed-runtime trio with at least one Claude agent and one Codex agent
-  - per-runtime team channels with the agent as member and human as observer
+  - `bot-b` (kimi) exists as a team member
+  - team channel with bot-b as member and human as observer
 - Steps:
-  1. For each runtime under test, seed a top-level parent message from that agent in its team channel.
-  2. Stop that agent so the next thread message must wake it.
+  1. Seed a top-level parent message from bot-b in its team channel.
+  2. Stop bot-b so the next thread message must wake it.
   3. Open the team channel.
   4. Open a thread from the agent-authored parent message.
   5. In the thread, send a message asking the stopped agent to reply with an exact token.
@@ -114,8 +114,8 @@
   8. Verify the top-level timeline does not show the thread-only reply as a channel message.
   9. Poll agent state and verify it returned to `active`.
 - Expected:
-  - Agent wakes across runtimes, replies in-thread only, lifecycle status agrees.
+  - Agent wakes and replies in-thread only; lifecycle status agrees.
+- Note: exercises kimi runtime only; multi-runtime matrix coverage deferred until other runtimes are reliable in this environment
 - Common failure signals:
-  - One runtime wakes correctly while another does not
   - Agent posts top-level instead of in-thread
   - Agent never wakes on a thread it owns

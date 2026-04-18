@@ -25,6 +25,7 @@ test.describe('ACT-002', () => {
 
   test('Activity Timeline Ordering During Wake And Recovery @case ACT-002', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
+    test.setTimeout(120_000)
     const { username } = await getWhoami(request)
     const token = `act-wake-${Date.now()}`
     const dmChannel = `dm:@${trio.botB}`

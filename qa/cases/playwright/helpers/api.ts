@@ -157,7 +157,16 @@ let cachedTrio: TrioNames | null = null
  * Returns the actual server-assigned names. Result is cached per worker.
  */
 export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<TrioNames> {
-  if (cachedTrio) return cachedTrio
+  // Validate cached trio — on the shared-server debug path (CHORUS_BASE_URL), prior runs may
+  // have left extra bot-a-*/bot-b-* agents behind. Re-check that the cached names still exist.
+  if (cachedTrio) {
+    const agents = await listAgents(request)
+    const names = new Set(agents.map((a) => a.name))
+    if (names.has(cachedTrio.botA) && names.has(cachedTrio.botB) && names.has(cachedTrio.botC)) {
+      return cachedTrio
+    }
+    cachedTrio = null
+  }
   let agents = await listAgents(request)
 
   let botA = findAgentByPrefix(agents, 'bot-a')
