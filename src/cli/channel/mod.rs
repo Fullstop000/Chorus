@@ -115,8 +115,8 @@ pub(super) async fn resolve_channel_id(
     if !status.is_success() {
         return Err(surface_http_error(status, &body));
     }
-    let data: serde_json::Value = serde_json::from_str(&body)
-        .with_context(|| format!("unexpected response from {url}"))?;
+    let data: serde_json::Value =
+        serde_json::from_str(&body).with_context(|| format!("unexpected response from {url}"))?;
     let arr = data
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("unexpected response from {url}: not a JSON array"))?;

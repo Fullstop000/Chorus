@@ -121,15 +121,7 @@ async fn channel_lifecycle() {
     );
 
     // History
-    let out = run_channel(&[
-        "history",
-        "lifetest",
-        "--limit",
-        "5",
-        "--server-url",
-        &url,
-    ])
-    .await;
+    let out = run_channel(&["history", "lifetest", "--limit", "5", "--server-url", &url]).await;
     assert!(
         out.status.success(),
         "history failed: stdout={} stderr={}",

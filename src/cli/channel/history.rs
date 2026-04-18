@@ -29,8 +29,8 @@ pub async fn run(name: String, limit: i64, server_url: &str) -> anyhow::Result<(
     if !status.is_success() {
         return Err(surface_http_error(status, &body));
     }
-    let data: serde_json::Value = serde_json::from_str(&body)
-        .with_context(|| format!("unexpected response from {url}"))?;
+    let data: serde_json::Value =
+        serde_json::from_str(&body).with_context(|| format!("unexpected response from {url}"))?;
     if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
         anyhow::bail!("{err}");
     }
