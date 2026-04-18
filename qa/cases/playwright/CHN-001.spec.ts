@@ -23,7 +23,7 @@ test.describe('CHN-001', () => {
   })
 
   test('Channel Create And Default Membership @case CHN-001', async ({ page, request }) => {
-    test.setTimeout(300_000)
+    test.setTimeout(120_000)
 
     const slug = `qa-ops-${Date.now()}`
     await gotoApp(page)
@@ -74,7 +74,7 @@ test.describe('CHN-001', () => {
         const msgs = await historyForUser(request, trio.botB, `#${slug}`, 30)
         ok = msgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))
         if (ok) break
-        await new Promise((r) => setTimeout(r, 4000))
+        await new Promise((r) => setTimeout(r, 2000))
       }
       expect(ok, `${trio.botB} should reply in channel`).toBe(true)
     })

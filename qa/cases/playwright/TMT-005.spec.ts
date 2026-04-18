@@ -24,7 +24,7 @@ test.describe('TMT-005', () => {
   })
 
   test('Team Member Add / Remove @case TMT-005', async ({ page }) => {
-    test.setTimeout(300_000)
+    test.setTimeout(120_000)
 
     await gotoApp(page)
     await clickSidebarChannel(page, 'qa-eng')

@@ -19,7 +19,7 @@ test.describe('MSG-002', () => {
 
   test('Direct Message Round-Trip @case MSG-002', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
-    test.setTimeout(180_000)
+    test.setTimeout(120_000)
 
     const { username } = await getWhoami(request)
     const token = `dm-check-${Date.now()}`
@@ -64,7 +64,7 @@ test.describe('MSG-002', () => {
           }
         }
         if (ok) break
-        await new Promise((r) => setTimeout(r, 4000))
+        await new Promise((r) => setTimeout(r, 2000))
       }
       expect(ok).toBe(true)
     })

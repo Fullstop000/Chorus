@@ -21,7 +21,7 @@ test.describe('MSG-001', () => {
 
   test('Multi-Agent Channel Fan-Out @case MSG-001', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
-    test.setTimeout(300_000)
+    test.setTimeout(120_000)
 
     const { username } = await getWhoami(request)
     const mark = `msg1-${Date.now()}`
@@ -43,7 +43,7 @@ test.describe('MSG-001', () => {
           after.filter((m) => m.senderType === 'agent').map((m) => m.senderName)
         )
         return distinct.size >= 1 ? after : undefined
-      }, 300_000)
+      }, 120_000)
 
       const humanCount = afterMark.filter(
         (m) => (m.content ?? '').includes(mark) && m.senderType !== 'agent'

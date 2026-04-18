@@ -36,7 +36,7 @@ test.describe('MSG-004', () => {
         const history = await historyForUser(request, username, dmChannel, 40)
         sawReply = history.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))
         if (sawReply) break
-        await new Promise((r) => setTimeout(r, 4000))
+        await new Promise((r) => setTimeout(r, 2000))
       }
       expect(sawReply).toBe(true)
     })

@@ -146,13 +146,18 @@ export interface TrioNames {
   displayA: string; displayB: string; displayC: string  // sidebar display names (original)
 }
 
+// Per-worker cache — each Playwright worker runs in its own Node process,
+// so module-level state is automatically per-worker.
+let cachedTrio: TrioNames | null = null
+
 /** API precondition helper only — catalog AGT-001 still requires UI creation when run for that case.
  * Trio: bot-a=codex/gpt-5.4, bot-b=kimi/kimi-code/kimi-for-coding, bot-c=opencode/opencode/gpt-5-nano
  *
  * Agent names may be suffixed by the server (e.g. bot-a → bot-a-279b).
- * Returns the actual server-assigned names.
+ * Returns the actual server-assigned names. Result is cached per worker.
  */
 export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promise<TrioNames> {
+  if (cachedTrio) return cachedTrio
   let agents = await listAgents(request)
 
   let botA = findAgentByPrefix(agents, 'bot-a')
@@ -176,12 +181,14 @@ export async function ensureMixedRuntimeTrio(request: APIRequestContext): Promis
     botC = findAgentByPrefix(agents, 'bot-c') ?? { name, id: '', status: '' } as AgentRow
   }
 
-  return {
+  const trio: TrioNames = {
     botA: botA.name, botB: botB.name, botC: botC.name,
     displayA: botA.display_name ?? 'bot-a',
     displayB: botB.display_name ?? 'bot-b',
     displayC: botC.display_name ?? 'bot-c',
   }
+  cachedTrio = trio
+  return trio
 }
 
 export async function waitForAgentActive(
@@ -482,7 +489,7 @@ export async function createTeamApi(
 export async function pollUntil<T>(
   fn: () => Promise<T | undefined>,
   timeoutMs: number,
-  intervalMs = 4_000
+  intervalMs = 2_000
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {

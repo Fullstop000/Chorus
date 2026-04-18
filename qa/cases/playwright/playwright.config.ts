@@ -19,7 +19,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 1 : 0,
   workers: process.env.CHORUS_WORKERS ? parseInt(process.env.CHORUS_WORKERS) : 4,
-  timeout: 180_000,
+  timeout: 60_000,
   expect: { timeout: 15_000 },
   use: {
     trace: 'on-first-retry',

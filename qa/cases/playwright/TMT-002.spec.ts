@@ -62,7 +62,7 @@ test.describe('TMT-002', () => {
   })
 
   test('@mention Routing Forwards To Team Channels @case TMT-002', async ({ page, request }) => {
-    test.setTimeout(240_000)
+    test.setTimeout(120_000)
     const { username } = await getWhoami(request)
 
     await gotoApp(page)
@@ -107,7 +107,7 @@ test.describe('TMT-002', () => {
         eng = he.some((m) => (m.content ?? '').includes(mark))
         algo = ha.some((m) => (m.content ?? '').includes(mark))
         if (eng && algo) break
-        await new Promise((r) => setTimeout(r, 4000))
+        await new Promise((r) => setTimeout(r, 2000))
       }
       expect(eng).toBe(true)
       expect(algo).toBe(true)

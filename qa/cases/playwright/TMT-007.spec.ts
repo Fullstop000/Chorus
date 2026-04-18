@@ -1,5 +1,5 @@
 import { test, expect } from './helpers/fixtures'
-import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, sendAsUser, teamExists, type TrioNames } from './helpers/api'
+import { ensureMixedRuntimeTrio, createTeamApi, getWhoami, historyForUser, pollUntil, sendAsUser, teamExists, type TrioNames } from './helpers/api'
 import { clickSidebarChannel , gotoApp , reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
@@ -22,7 +22,7 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
  */
 test.describe('TMT-007', () => {
   test('Team delete (disposable team) @case TMT-007', async ({ page, request }) => {
-    test.setTimeout(240_000)
+    test.setTimeout(120_000)
     const trio = await ensureMixedRuntimeTrio(request)
 
     const name = `qa-del-${Date.now()}`
@@ -61,11 +61,11 @@ test.describe('TMT-007', () => {
           '#all',
           `${trio.displayB} ${mark}: list your team slugs; do not include ${name}.`
         )
-        await new Promise((r) => setTimeout(r, 60_000))
-        const msgs = await historyForUser(request, username, '#all', 25)
-        const fromB = msgs.filter((m) => m.senderName === trio.botB).pop()
-        expect(fromB, `expected ${trio.botB} reply in #all`).toBeTruthy()
-        expect((fromB!.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
+        const fromB = await pollUntil(async () => {
+          const msgs = await historyForUser(request, username, '#all', 25)
+          return msgs.filter((m) => m.senderName === trio.botB).pop()
+        }, 120_000)
+        expect((fromB.content ?? '').toLowerCase()).not.toContain(name.toLowerCase())
       })
     }
   })

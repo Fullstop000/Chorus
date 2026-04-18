@@ -47,7 +47,7 @@ test.describe('TMT-009', () => {
 
   test('Agent Team Thread Wake And In-Thread Reply @case TMT-009', async ({ page, request }) => {
     test.skip(skipLLM, 'CHORUS_E2E_LLM=0')
-    test.setTimeout(300_000)
+    test.setTimeout(120_000)
 
     const { username } = await getWhoami(request)
     const channelName = 'qa-thread-wake-kimi'
@@ -113,7 +113,7 @@ test.describe('TMT-009', () => {
             }
           }
 
-          await new Promise((resolve) => setTimeout(resolve, 4000))
+          await new Promise((resolve) => setTimeout(resolve, 2000))
         }
 
         expect(parentId).toBeTruthy()

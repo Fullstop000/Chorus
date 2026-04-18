@@ -35,7 +35,7 @@ test.describe('REC-002', () => {
           sawAny = true
           break
         }
-        await new Promise((r) => setTimeout(r, 5000))
+        await new Promise((r) => setTimeout(r, 2000))
       }
       expect(sawAny).toBe(true)
       // Re-navigate to #all to ensure mark message is visible in viewport
