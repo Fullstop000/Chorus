@@ -444,6 +444,15 @@ pub struct ClaudeHandle {
     transport: Mutex<Option<Box<dyn ClaudeTransport>>>,
     stdin_tx: Option<mpsc::Sender<String>>,
     shared: Option<Arc<Mutex<SharedReaderState>>>,
+    /// Session id cache synced from the stdout reader. The reader writes
+    /// here on `system.init` so `session_id()` can return `Option<&str>`
+    /// without needing to lock the shared state (and without the lifetime
+    /// gymnastics of borrowing across a mutex guard).
+    ///
+    /// `OnceLock` because Claude's session id is established exactly once
+    /// per handle — the resumed and newly-minted paths both land on the same
+    /// `system.init` emission. Shared with the reader task via `Arc`.
+    session_id: Arc<OnceLock<String>>,
     reader_handles: Vec<tokio::task::JoinHandle<()>>,
     /// `true` once `start()` has successfully spun up the child and we've
     /// bumped the proc's live-session counter. Guards against double
@@ -475,6 +484,7 @@ impl ClaudeHandle {
             transport: Mutex::new(None),
             stdin_tx: None,
             shared: None,
+            session_id: Arc::new(OnceLock::new()),
             reader_handles: Vec::new(),
             started: false,
         }
@@ -492,14 +502,23 @@ impl AgentSessionHandle for ClaudeHandle {
     }
 
     fn session_id(&self) -> Option<&str> {
-        // Shared reader owns the active session id for the Claude transport.
-        // We can't borrow across the Mutex guard, so reach into self.state as a
-        // best-effort fallback for callers that already hold the handle.
-        match &self.state {
-            AgentState::Active { session_id } => Some(session_id),
-            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
-            _ => None,
-        }
+        // The stdout reader writes the minted session id into `self.session_id`
+        // on `system.init` (see `spawn_stdout_reader`). `self.state` is NOT a
+        // reliable source here — it's advanced to `Starting`/`PromptInFlight`/
+        // `Closed` from the handle's own methods but never to `Active`, because
+        // the transition to `Active` lives in the reader task under
+        // `shared.agent_state`. Reading from the `OnceLock` lets us return a
+        // borrow without the lifetime-vs-mutex-guard tangle, and `OnceLock`
+        // matches the semantics: Claude's session id is assigned exactly once
+        // per handle (new or resumed — both land on `system.init`).
+        //
+        // Fall back to the pre-assigned id for the resume path when callers
+        // inspect the handle before `start()` runs and the reader has produced
+        // its first `system.init` line.
+        self.session_id
+            .get()
+            .map(String::as_str)
+            .or(self.preassigned_session_id.as_deref())
     }
 
     fn state(&self) -> AgentState {
@@ -608,6 +627,7 @@ impl AgentSessionHandle for ClaudeHandle {
             self.proc.event_tx.clone(),
             stdout,
             shared,
+            Arc::clone(&self.session_id),
         ));
 
         if let Some(stderr) = maybe_stderr {
@@ -751,6 +771,7 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
     tx: mpsc::Sender<DriverEvent>,
     stdout: R,
     shared: Arc<Mutex<SharedReaderState>>,
+    handle_session_id: Arc<OnceLock<String>>,
 ) -> tokio::task::JoinHandle<()> {
     use tokio::io::{AsyncBufReadExt, BufReader};
 
@@ -768,6 +789,13 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
             match parsed {
                 HeadlessEvent::SystemInit { session_id } => {
                     debug!(key = %key, session_id = %session_id, "claude headless: system init");
+
+                    // Publish the session id to the handle-level cache so
+                    // `session_id()` can return a borrow without touching the
+                    // shared mutex. Ignored on Err: `set` fails only if the
+                    // cell is already populated, which happens when a resumed
+                    // child re-emits its same id — no-op is correct.
+                    let _ = handle_session_id.set(session_id.clone());
 
                     // Capture whether there's already a run in flight (initial
                     // prompt was sent on stdin before init arrived).
@@ -1137,8 +1165,13 @@ mod tests {
         }));
 
         // Spawn the reader
-        let _handle =
-            spawn_stdout_reader("test-agent".into(), event_tx, mock_stdout, shared.clone());
+        let _handle = spawn_stdout_reader(
+            "test-agent".into(),
+            event_tx,
+            mock_stdout,
+            shared.clone(),
+            Arc::new(OnceLock::new()),
+        );
 
         // Write JSONL lines
         for line in &jsonl {
@@ -1610,6 +1643,67 @@ mod tests {
         assert!(
             found,
             "expected DriverEvent::SessionAttached{{ session_id: sess_abc }} on the shared stream"
+        );
+
+        h.close().await.unwrap();
+        agent_instances().lock().unwrap().remove(&key);
+    }
+
+    /// Regression guard for the Stage 2 bug where `ClaudeHandle::session_id()`
+    /// read only from `self.state` — which is never advanced to `Active`,
+    /// because the `Active` transition lives in the stdout reader task and
+    /// writes to `shared.agent_state`. The fix wires the reader's
+    /// `system.init` branch through an `OnceLock<String>` the handle owns, so
+    /// `session_id()` observes the minted id without touching the shared
+    /// mutex. Pre-fix this assertion failed (returned `None`); post-fix it
+    /// returns `Some("sess_zzz")`. The live integration test
+    /// `claude_multi_session_bootstrap_close_preserves_secondary` caught
+    /// this, but the fake-transport unit tests missed it — hence this
+    /// targeted test.
+    #[tokio::test]
+    async fn session_id_returns_value_after_system_init() {
+        let (bridge_url, _bridge) = spawn_mock_bridge().await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let driver = ClaudeDriver;
+        let key = format!("agent-claude-sid-after-init-{}", uuid::Uuid::new_v4());
+        agent_instances().lock().unwrap().remove(&key);
+
+        let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
+        let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
+        let factory = install_fake_factory(&driver.ensure_process(&key));
+
+        let mut h = attach.handle;
+
+        // Before start(): no id to report.
+        assert_eq!(
+            h.session_id(),
+            None,
+            "session_id() must be None before start() runs the reader"
+        );
+
+        h.start(StartOpts::default(), None).await.unwrap();
+
+        // Inject system.init for instance 0 — the reader publishes the id
+        // into the handle's OnceLock cache.
+        feed_system_init(&factory, 0, "sess_zzz").await;
+
+        // The reader task is async; give it a brief window to process the
+        // line and set the cache. Polling — not fixed sleep — so the test
+        // stays fast when the reader is already done.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        let mut seen: Option<String> = None;
+        while tokio::time::Instant::now() < deadline {
+            if let Some(sid) = h.session_id() {
+                seen = Some(sid.to_string());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(
+            seen.as_deref(),
+            Some("sess_zzz"),
+            "session_id() must reflect the id emitted on system.init"
         );
 
         h.close().await.unwrap();
