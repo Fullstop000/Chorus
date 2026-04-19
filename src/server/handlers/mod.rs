@@ -192,7 +192,7 @@ pub async fn handle_logs(
         .unwrap_or_else(|| state.store.data_dir())
         .join("logs");
     let log_path = logs_dir.join("chorus.log");
-    let lines = match std::fs::read_to_string(&log_path) {
+    let lines = match tokio::fs::read_to_string(&log_path).await {
         Ok(content) => {
             let all: Vec<&str> = content.lines().collect();
             let start = all.len().saturating_sub(tail);
@@ -216,7 +216,19 @@ pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateHumanRequest {
-    pub display_name: Option<String>,
+    /// `Some(v)` sets the display name; `null` clears it; omitting the field is a no-op.
+    #[serde(default, deserialize_with = "deser_optional_field")]
+    pub display_name: Option<Option<String>>,
+}
+
+/// Deserializer that maps a present JSON field (including `null`) to `Some(...)`,
+/// and a missing field (via `#[serde(default)]`) to `None`.
+fn deser_optional_field<'de, T, D>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(de).map(Some)
 }
 
 pub async fn handle_update_human(
@@ -224,15 +236,29 @@ pub async fn handle_update_human(
     Path(name): Path<String>,
     Json(body): Json<UpdateHumanRequest>,
 ) -> ApiResult<dto::HumanInfo> {
-    let display_name = body
-        .display_name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
+    // Field absent → no-op: return current state without touching the DB.
+    let Some(raw) = body.display_name else {
+        let human = state
+            .store
+            .get_humans()
+            .map_err(internal_err)?
+            .into_iter()
+            .find(|h| h.name == name)
+            .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "human not found"))?;
+        return Ok(Json(dto::HumanInfo::from(human)));
+    };
+    let display_name = raw.as_deref().map(str::trim).filter(|s| !s.is_empty());
     let human = state
         .store
         .update_human_display_name(&name, display_name)
-        .map_err(|e| app_err!(StatusCode::NOT_FOUND, e.to_string()))?;
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.to_ascii_lowercase().contains("not found") {
+                app_err!(StatusCode::NOT_FOUND, "human not found")
+            } else {
+                app_err!(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            }
+        })?;
     Ok(Json(dto::HumanInfo::from(human)))
 }
 

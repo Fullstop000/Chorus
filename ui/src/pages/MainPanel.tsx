@@ -81,6 +81,14 @@ export function MainPanel() {
 
   }, [channelId]);
 
+  // Close transient panels when settings page opens to avoid them reappearing on close.
+  useEffect(() => {
+    if (showSettings) {
+      setShowMembersPanel(false);
+      setShowTeamSettings(false);
+    }
+  }, [showSettings]);
+
   useEffect(() => {
     if (!channelId) {
       setMembers([]);

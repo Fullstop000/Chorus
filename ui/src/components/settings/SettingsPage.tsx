@@ -34,6 +34,13 @@ function ProfileSection({ username }: { username: string }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     setDisplayName(currentHuman?.display_name ?? '')
@@ -47,7 +54,7 @@ function ProfileSection({ username }: { username: string }) {
       await updateHuman(username, { display_name: displayName.trim() || null })
       await queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans })
       setSaved(true)
-      setTimeout(() => setSaved(false), 2000)
+      savedTimerRef.current = setTimeout(() => setSaved(false), 2000)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -152,12 +159,14 @@ function ConfigSection({ config }: { config: ConfigInfo }) {
 function SystemSection() {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     setLoading(true)
+    setError(null)
     getSystemInfo()
       .then(setSystemInfo)
-      .catch(() => {})
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false))
   }, [])
 
@@ -168,6 +177,17 @@ function SystemSection() {
           <h2 className="settings-section-title">System</h2>
         </div>
         <p className="text-muted-foreground font-mono text-xs">Loading…</p>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="settings-section">
+        <div className="settings-section-header">
+          <h2 className="settings-section-title">System</h2>
+        </div>
+        <FormError>Failed to load system info: {error}</FormError>
       </div>
     )
   }
@@ -210,13 +230,15 @@ function logLevelClass(line: string): string {
 function LogsSection() {
   const [logs, setLogs] = useState<string[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const logContainerRef = useRef<HTMLDivElement>(null)
 
   function fetchLogs() {
     setLoading(true)
+    setError(null)
     getLogs(500)
       .then((r) => setLogs(r.lines))
-      .catch(() => {})
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
       .finally(() => setLoading(false))
   }
 
@@ -240,7 +262,8 @@ function LogsSection() {
       </div>
 
       <div className="settings-log-container" ref={logContainerRef}>
-        {logs.length === 0 && !loading && (
+        {error && <div className="settings-log-empty log-error">Failed to load logs: {error}</div>}
+        {!error && logs.length === 0 && !loading && (
           <div className="settings-log-empty">No logs available</div>
         )}
         {logs.map((line, i) => (
