@@ -8,7 +8,6 @@ import { isVisibleSidebarChannel } from './sidebarChannels'
 import { CreateAgentModal } from '../../components/agents/CreateAgentModal'
 import { CreateChannelModal } from '../../components/channels/CreateChannelModal'
 import { DeleteChannelModal, EditChannelModal } from '../../components/channels/EditChannelModal'
-import { UserSettings } from '../../components/settings/UserSettings'
 import './Sidebar.css'
 
 function agentColor(name: string): string {
@@ -51,7 +50,7 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const { currentUser, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent } = useStore()
+  const { currentUser, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings } = useStore()
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
   const humans = useHumans()
@@ -67,7 +66,6 @@ export function Sidebar() {
   const [channelsCollapsed, setChannelsCollapsed] = useState(false)
   const [agentsCollapsed, setAgentsCollapsed] = useState(false)
   const [humansCollapsed, setHumansCollapsed] = useState(false)
-  const [showUserSettings, setShowUserSettings] = useState(false)
 
   const channels = loadedChannels.filter(isVisibleSidebarChannel)
   const currentHumanInfo = humans.find((h) => h.name === currentUser)
@@ -367,7 +365,7 @@ export function Sidebar() {
             <span className="sidebar-footer-name">{currentHumanInfo?.display_name ?? currentUser}</span>
             <span className="sidebar-footer-meta">[operator::active]</span>
           </div>
-          <button className="sidebar-footer-cog" type="button" aria-label="Open settings" onClick={() => setShowUserSettings(true)}>
+          <button className="sidebar-footer-cog" type="button" aria-label="Open settings" onClick={() => setShowSettings(!showSettings)}>
             <Settings2 size={15} />
           </button>
         </div>
@@ -425,11 +423,6 @@ export function Sidebar() {
           }}
         />
       )}
-      <UserSettings
-        username={currentUser}
-        open={showUserSettings}
-        onOpenChange={setShowUserSettings}
-      />
     </>
   )
 }
