@@ -71,6 +71,23 @@ fn build_mcp_chat_config(bridge_endpoint: &str, token: &str) -> serde_json::Valu
 /// the same `OpencodeAgentProcess` the `attach` on that key created.
 pub struct OpencodeDriver;
 
+/// Role of a handle relative to the shared child process. The bootstrap
+/// handle spawns the child and owns the process lifecycle; secondary handles
+/// multiplex sessions onto the already-live child.
+///
+/// Kept as a local enum — mirrored identically in `kimi.rs` — so that every
+/// `if bootstrap { ... }` branch reads as an intent rather than a boolean.
+enum HandleRole {
+    Bootstrap,
+    Secondary,
+}
+
+impl HandleRole {
+    fn is_bootstrap(&self) -> bool {
+        matches!(self, Self::Bootstrap)
+    }
+}
+
 /// Process-global registry: agent key -> shared runtime process. Populated
 /// by `attach`; reused by subsequent `new_session` / `resume_session` calls
 /// on the same key. Returning an `Arc` keeps the inner `Mutex` held only
@@ -84,10 +101,23 @@ fn agent_instances() -> &'static Mutex<HashMap<AgentKey, Arc<OpencodeAgentProces
 impl OpencodeDriver {
     /// Return the existing shared process for `key`, or create one if it's
     /// the first `attach` for this agent.
+    ///
+    /// If a cached entry's child has died (e.g. after a prior close → child
+    /// exit → SIGTERM) it is evicted here so the caller rebuilds a fresh
+    /// process. This is belt-and-suspenders for the case where close-time
+    /// registry pruning races a subsequent attach.
     fn ensure_process(&self, key: &AgentKey) -> Arc<OpencodeAgentProcess> {
         let mut guard = agent_instances().lock().unwrap();
         if let Some(existing) = guard.get(key) {
-            return Arc::clone(existing);
+            if existing.is_stale() {
+                debug!(
+                    agent = %key,
+                    "opencode: evicting stale agent process (child exited) before re-attach"
+                );
+                guard.remove(key);
+            } else {
+                return Arc::clone(existing);
+            }
         }
         let (events, event_tx) = EventFanOut::new();
         let proc = Arc::new(OpencodeAgentProcess {
@@ -97,6 +127,11 @@ impl OpencodeDriver {
             child: Mutex::new(None),
             stdin_tx: Mutex::new(None),
             shared: Arc::new(Mutex::new(SharedReaderState::new())),
+            // Starts at 3: ids 1 (initialize) and 2 (first session request)
+            // are reserved by `start_bootstrap_child`. If an init prompt is
+            // present, `start_bootstrap_child` immediately calls `alloc_id()`
+            // to reserve id 3 for the deferred prompt before any secondary
+            // `new_session` can race it.
             next_request_id: AtomicU64::new(3),
             reader_handles: Mutex::new(Vec::new()),
             started: std::sync::atomic::AtomicBool::new(false),
@@ -186,7 +221,7 @@ impl RuntimeDriver for OpencodeDriver {
             spec,
             proc: Arc::clone(&proc),
             preassigned_session_id: None,
-            bootstraps_process: true,
+            role: HandleRole::Bootstrap,
         };
         Ok(AttachResult {
             handle: Box::new(handle),
@@ -219,7 +254,7 @@ impl RuntimeDriver for OpencodeDriver {
             spec,
             proc: Arc::clone(&proc),
             preassigned_session_id: Some(session_id),
-            bootstraps_process: false,
+            role: HandleRole::Secondary,
         };
         Ok(AttachResult {
             handle: Box::new(handle),
@@ -252,7 +287,7 @@ impl RuntimeDriver for OpencodeDriver {
             spec,
             proc: Arc::clone(&proc),
             preassigned_session_id: Some(resumed_id),
-            bootstraps_process: false,
+            role: HandleRole::Secondary,
         };
         Ok(AttachResult {
             handle: Box::new(handle),
@@ -273,16 +308,19 @@ enum PendingKind {
     Initialize,
     /// The inline handshake `session/new` (id 2) or any later one spawned via
     /// `new_session`. The oneshot delivers the minted session id back to the
-    /// caller, or an error if the runtime failed.
+    /// caller, or an error if the runtime failed. `None` for the bootstrap
+    /// handshake — the bootstrap handle observes the session id through the
+    /// fan-out event stream, not a direct oneshot.
     NewSession {
-        responder: oneshot::Sender<anyhow::Result<String>>,
+        responder: Option<oneshot::Sender<anyhow::Result<String>>>,
     },
     /// `session/load` for resuming a caller-supplied session id. Included
     /// here so we can echo the id back through the oneshot even when the
-    /// runtime's response body omits `sessionId` (some do).
+    /// runtime's response body omits `sessionId` (some do). `responder` is
+    /// `None` for the bootstrap path (same reasoning as `NewSession`).
     LoadSession {
         requested_session_id: String,
-        responder: oneshot::Sender<anyhow::Result<String>>,
+        responder: Option<oneshot::Sender<anyhow::Result<String>>>,
     },
     /// A `session/prompt`. Carries enough context for the reader to emit the
     /// correct `Completed` event when the response arrives.
@@ -323,10 +361,12 @@ struct SharedReaderState {
     pending_requests: HashMap<u64, PendingKind>,
     /// Per-session live state, keyed by the runtime's `sessionId`.
     sessions: HashMap<String, SessionRuntimeState>,
-    /// The initial `attach` session id (from id-2 response), stashed so we
-    /// can emit `SessionAttached` + `Active` once it lands. `None` after the
-    /// first `SessionResponse` drains it.
-    bootstrap_pending_prompt: Option<(String, String)>,
+    /// An initial-prompt deferred until the bootstrap `session/new` response
+    /// arrives and mints the session id. Holds `(request_id, text)` where
+    /// `request_id` was reserved up-front via `alloc_id()` at handshake time
+    /// so it can never collide with a racing secondary `new_session`. `None`
+    /// after the first `SessionResponse` consumes it.
+    bootstrap_pending_prompt: Option<(u64, String)>,
     /// Caller-supplied resume id for the initial handshake (id 2). If
     /// `session/load` omits `sessionId`, we fall back to this.
     bootstrap_requested_session_id: Option<String>,
@@ -351,18 +391,18 @@ impl SharedReaderState {
 /// an `Arc` to the same process and concurrently drive distinct sessions on
 /// it.
 pub struct OpencodeAgentProcess {
-    /// Agent key this process belongs to. Carried so the reader's event
-    /// emissions (wired via `.clone()`) stay consistent with the
-    /// `OpencodeHandle::key` they feed.
-    #[allow(dead_code)]
+    /// Agent key this process belongs to. Used in tracing from the reader
+    /// and teardown paths so log lines tie back to the owning agent.
     key: AgentKey,
     events: EventStreamHandle,
     event_tx: mpsc::Sender<DriverEvent>,
     child: Mutex<Option<std::process::Child>>,
     stdin_tx: Mutex<Option<mpsc::Sender<String>>>,
     shared: Arc<Mutex<SharedReaderState>>,
-    /// Next JSON-RPC request id. Starts at 3 because ids 1 (initialize) and
-    /// 2 (first session request) are reserved for the handshake.
+    /// Next JSON-RPC request id. Starts at 3 because ids 1 (initialize)
+    /// and 2 (first session request) are reserved by the handshake. If an
+    /// init prompt is deferred, `start_bootstrap_child` burns id 3 off this
+    /// counter up-front so a racing secondary `new_session` cannot collide.
     next_request_id: AtomicU64,
     reader_handles: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     /// Flipped to true once `start` has spawned the child and written the
@@ -395,7 +435,12 @@ impl OpencodeAgentProcess {
     async fn request_new_session(&self, spec: &AgentSpec) -> anyhow::Result<String> {
         let id = self.alloc_id();
         let (responder, rx) = oneshot::channel();
-        self.register_pending(id, PendingKind::NewSession { responder });
+        self.register_pending(
+            id,
+            PendingKind::NewSession {
+                responder: Some(responder),
+            },
+        );
 
         let params = serde_json::json!({
             "cwd": spec.working_directory,
@@ -427,7 +472,7 @@ impl OpencodeAgentProcess {
             id,
             PendingKind::LoadSession {
                 requested_session_id: session_id.to_string(),
-                responder,
+                responder: Some(responder),
             },
         );
 
@@ -450,12 +495,33 @@ impl OpencodeAgentProcess {
         let mut guard = self.child.lock().unwrap();
         if let Some(ref mut child) = *guard {
             let pid = child.id();
-            let _ = nix::sys::signal::kill(
+            if let Err(e) = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(pid as i32),
                 nix::sys::signal::Signal::SIGTERM,
-            );
+            ) {
+                warn!(key = %self.key, pid, error = %e, "opencode: failed to SIGTERM child");
+            }
         }
         *guard = None;
+    }
+
+    /// Returns `true` once the shared child has gone away — either the
+    /// process exited (stdin writer dropped the receiver) or was never
+    /// wired up. Used by `ensure_process` to evict a cached entry whose
+    /// child is dead so the next `attach` rebuilds from scratch.
+    fn is_stale(&self) -> bool {
+        if !self.started.load(Ordering::SeqCst) {
+            // Never spawned — not stale, just fresh.
+            return false;
+        }
+        let guard = self.stdin_tx.lock().unwrap();
+        match guard.as_ref() {
+            // Started flag flipped but wiring not landed yet — transient;
+            // treat as live so we don't tear down a process mid-spawn.
+            None => false,
+            // Writer task exited (dropped the receiver) → child is dead.
+            Some(tx) => tx.is_closed(),
+        }
     }
 }
 
@@ -485,10 +551,10 @@ pub struct OpencodeHandle {
     /// Set by `new_session` / `resume_session` so `start` knows this handle
     /// is attaching to an already-minted session id on the shared child.
     preassigned_session_id: Option<SessionId>,
-    /// True for the handle returned from `attach`; false for ones from
-    /// `new_session` / `resume_session`. The bootstrap handle is responsible
-    /// for spawning the child and driving the handshake.
-    bootstraps_process: bool,
+    /// `Bootstrap` for the handle returned from `attach` (owns process
+    /// spawn + handshake); `Secondary` for ones from `new_session` /
+    /// `resume_session` that join the already-live child.
+    role: HandleRole,
 }
 
 impl OpencodeHandle {
@@ -526,7 +592,7 @@ impl AgentSessionHandle for OpencodeHandle {
             state: AgentState::Starting,
         });
 
-        if self.bootstraps_process {
+        if self.role.is_bootstrap() {
             // First-attach path: spawn the child, drive handshake, emit
             // SessionAttached + Active when the id-2 response lands.
             self.start_bootstrap_child(opts, init_prompt).await?;
@@ -671,13 +737,22 @@ impl AgentSessionHandle for OpencodeHandle {
         // For the bootstrap handle, closing implies tearing down the shared
         // process — that handle "owns" the lifecycle. This mirrors the v2
         // single-session semantics the existing tests encode.
-        if self.bootstraps_process {
+        if self.role.is_bootstrap() {
             self.proc.kill_child();
             self.proc.events.close();
-            let mut handles = self.proc.reader_handles.lock().unwrap();
-            for h in handles.drain(..) {
-                h.abort();
+            {
+                let mut handles = self.proc.reader_handles.lock().unwrap();
+                for h in handles.drain(..) {
+                    h.abort();
+                }
             }
+            // Evict from the process-global registry so a subsequent
+            // `attach` on this key doesn't reuse our now-dead Arc (with
+            // killed child + closed stdin). `ensure_process`'s `is_stale`
+            // check would catch it anyway, but dropping the map entry also
+            // lets the `OpencodeAgentProcess` ref drop when the last handle
+            // releases it.
+            agent_instances().lock().unwrap().remove(&self.key);
         }
 
         Ok(())
@@ -745,33 +820,49 @@ impl OpencodeHandle {
         let stderr = child.stderr.take().context("missing stderr")?;
         let mut stdin = child.stdin.take().context("missing stdin")?;
 
+        // Reserve the deferred-prompt id BEFORE anyone else can alloc. This
+        // prevents a race where a secondary `new_session` fires on another
+        // task between us writing `initialize` (id 1) + `session/new` (id 2)
+        // and the bootstrap reader landing on the session response: without
+        // an up-front reservation, `alloc_id()` on that racing call would
+        // return 3, collide with the hardcoded deferred-prompt id, and
+        // mis-route the response. Allocating via `alloc_id()` here burns id
+        // 3 off the counter even if we don't end up with an init prompt —
+        // that's fine; ids are cheap and a missing id in the sequence is
+        // harmless to the runtime.
+        let deferred_prompt_id = if init_prompt.is_some() {
+            Some(self.proc.alloc_id())
+        } else {
+            None
+        };
+
         // Register handshake ids BEFORE writing, so an unexpectedly fast
         // runtime can't land a response before the pending map sees it.
         {
             let mut s = self.proc.shared.lock().unwrap();
             s.pending_requests.insert(1, PendingKind::Initialize);
-            // Bootstrap session response uses a sentinel responder; we don't
-            // hand the session id back through a oneshot for the first
-            // handshake because the bootstrap handle receives it via the
-            // emitted SessionAttached event (it's been wiring that up).
-            let (responder, _rx) = oneshot::channel();
+            // Bootstrap session response carries `responder: None` — the
+            // bootstrap handle observes the minted session id through the
+            // emitted `SessionAttached` event on the shared fan-out, not a
+            // direct oneshot.
             if let Some(ref sid) = opts.resume_session_id {
                 s.bootstrap_requested_session_id = Some(sid.clone());
                 s.pending_requests.insert(
                     2,
                     PendingKind::LoadSession {
                         requested_session_id: sid.clone(),
-                        responder,
+                        responder: None,
                     },
                 );
             } else {
-                s.pending_requests.insert(2, PendingKind::NewSession { responder });
+                s.pending_requests
+                    .insert(2, PendingKind::NewSession { responder: None });
             }
-            // Stash the init prompt so the reader can fire it once the
-            // session is minted. Key by "(session_id, text)" would require
-            // the id — defer by stashing under None.
-            if let Some(ref req) = init_prompt {
-                s.bootstrap_pending_prompt = Some((String::new(), req.text.clone()));
+            // Stash the init prompt + its reserved id so the reader can
+            // fire it once the session is minted without colliding with a
+            // racing `alloc_id()` on a secondary `new_session`.
+            if let (Some(ref req), Some(pid)) = (&init_prompt, deferred_prompt_id) {
+                s.bootstrap_pending_prompt = Some((pid, req.text.clone()));
             }
         }
 
@@ -927,9 +1018,9 @@ impl OpencodeHandle {
             };
         }
         // For fresh new_session we stay in Starting until the reader fires
-        // SessionAttached. The bootstrap pending prompt is delivered by the
-        // reader when the session response arrives.
-        let _ = init_prompt; // kept for shape parity — stashed earlier
+        // SessionAttached. The bootstrap pending prompt (text + reserved
+        // id) was stashed above on `shared.bootstrap_pending_prompt`; the
+        // reader will pull it once the session response arrives.
 
         Ok(())
     }
@@ -1017,7 +1108,7 @@ fn classify_line(line: &str, shared: &Arc<Mutex<SharedReaderState>>) -> Classifi
         PendingKind::Initialize => ClassifiedFrame::Initialize,
         PendingKind::NewSession { responder } => ClassifiedFrame::NewSessionResponse {
             session_id,
-            responder: Some(responder),
+            responder,
         },
         PendingKind::LoadSession {
             requested_session_id,
@@ -1025,7 +1116,7 @@ fn classify_line(line: &str, shared: &Arc<Mutex<SharedReaderState>>) -> Classifi
         } => ClassifiedFrame::LoadSessionResponse {
             session_id,
             requested_session_id,
-            responder: Some(responder),
+            responder,
         },
         PendingKind::Prompt { session_id: s, run_id } => ClassifiedFrame::PromptResponse {
             session_id: s,
@@ -1051,10 +1142,11 @@ async fn dispatch_line(
             session_id,
             responder,
         } => {
-            // Bootstrap path: no responder (we use a dropped oneshot and the
-            // session id flows via the event stream).
-            // new_session path: responder is Some and we hand the minted id
-            // back.
+            // Bootstrap path: `responder` is `None` — the bootstrap handle
+            // observes the session id through the emitted SessionAttached
+            // event on the shared fan-out.
+            // new_session path: `responder` is `Some(tx)` and we hand the
+            // minted id back to the caller.
             let sid = session_id.unwrap_or_else(|| {
                 warn!("opencode: session/new response omitted sessionId; synthesizing");
                 uuid::Uuid::new_v4().to_string()
@@ -1088,7 +1180,7 @@ async fn dispatch_line(
                 },
             });
 
-            if let Some((_, prompt_text)) = deferred_prompt {
+            if let Some((prompt_id, prompt_text)) = deferred_prompt {
                 let run_id = RunId::new_v4();
                 {
                     let mut s = shared.lock().unwrap();
@@ -1099,9 +1191,10 @@ async fn dispatch_line(
                             session_id: sid.clone(),
                         };
                     }
-                    // Track the deferred prompt id in pending_requests so the
-                    // classifier recognizes the eventual response.
-                    let prompt_id = 3u64; // id 3 is the conventional initial prompt
+                    // Track the deferred prompt id (reserved up-front in
+                    // `start_bootstrap_child` via `alloc_id`) in
+                    // `pending_requests` so the classifier recognizes the
+                    // eventual response.
                     s.pending_requests.insert(
                         prompt_id,
                         PendingKind::Prompt {
@@ -1118,7 +1211,8 @@ async fn dispatch_line(
                     },
                 });
 
-                let req = acp_protocol::build_session_prompt_request(3, &sid, &prompt_text);
+                let req =
+                    acp_protocol::build_session_prompt_request(prompt_id, &sid, &prompt_text);
                 let _ = stdin_tx.try_send(req);
             }
         }
@@ -1198,14 +1292,33 @@ async fn dispatch_line(
             warn!(message = %message, "opencode: ACP error");
             match kind {
                 PendingKind::Initialize => {
-                    // Initialize failing is terminal; the EOF path will
-                    // emit Closed.
+                    // Initialize failing is terminal. The EOF path normally
+                    // emits `Closed`, but a runtime that replies with a
+                    // JSON-RPC error and keeps stdin open would leave the
+                    // process zombied with `started=true` and no Closed
+                    // lifecycle ever fired. Force the teardown here so
+                    // downstream consumers observe the failure.
+                    let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                        key: key.clone(),
+                        state: AgentState::Closed,
+                    });
+                    // Clear per-session state so a subsequent attach on this
+                    // key can proceed cleanly; the `is_stale` check in
+                    // `ensure_process` will evict the registry entry once
+                    // the child actually exits (or the user closes the
+                    // bootstrap handle).
+                    let mut s = shared.lock().unwrap();
+                    s.sessions.clear();
                 }
                 PendingKind::NewSession { responder } => {
-                    let _ = responder.send(Err(anyhow::anyhow!("{message}")));
+                    if let Some(tx) = responder {
+                        let _ = tx.send(Err(anyhow::anyhow!("{message}")));
+                    }
                 }
                 PendingKind::LoadSession { responder, .. } => {
-                    let _ = responder.send(Err(anyhow::anyhow!("{message}")));
+                    if let Some(tx) = responder {
+                        let _ = tx.send(Err(anyhow::anyhow!("{message}")));
+                    }
                 }
                 PendingKind::Prompt { session_id, run_id } => {
                     {
@@ -1487,6 +1600,9 @@ mod tests {
             child: Mutex::new(None),
             stdin_tx: Mutex::new(Some(stdin_tx)),
             shared: Arc::new(Mutex::new(SharedReaderState::new())),
+            // Matches production `ensure_process`: counter starts at 3.
+            // Tests that simulate a bootstrap reservation burn id 3 via
+            // `alloc_id()` before exercising secondary new_sessions.
             next_request_id: AtomicU64::new(3),
             reader_handles: Mutex::new(Vec::new()),
             started: std::sync::atomic::AtomicBool::new(true),
@@ -1655,110 +1771,150 @@ mod tests {
 
     #[tokio::test]
     async fn session_update_events_carry_session_id() {
-        // Drive a prompt on session A, observe that its session/update items
-        // are emitted with session_id == "sess-A". Then drive another prompt
-        // on session B; its events must carry "sess-B".
+        // This test exercises the single most important multi-session
+        // correctness invariant: a `session/update` frame landing on the
+        // shared stdin must be routed to the session whose id is named by
+        // `params.update.sessionId` — NOT to whichever session happens to
+        // have a prompt in flight. We feed real JSON lines through the
+        // same `classify_line` → `dispatch_line` path the production
+        // reader uses, so any drift in `acp_protocol::parse_line`'s
+        // SessionInit-at-items[0] contract would break this test.
         let (proc, _stdin_rx, mut event_rx) = build_test_process("agent-multi");
 
-        // Seed two sessions as if new_session had minted them.
-        {
-            let mut s = proc.shared.lock().unwrap();
-            s.sessions
-                .insert("sess-A".to_string(), SessionRuntimeState::active("sess-A"));
-            s.sessions
-                .insert("sess-B".to_string(), SessionRuntimeState::active("sess-B"));
-        }
-
-        // Simulate prompt-in-flight on sess-A only.
+        // Seed two concurrent sessions as if `new_session` had minted them,
+        // and put BOTH in PromptInFlight — this is the race the
+        // `session_id`-based routing must disambiguate. If routing silently
+        // fell back to "any session in PromptInFlight", the assertions
+        // below would fail non-deterministically.
         let run_a = RunId::new_v4();
+        let run_b = RunId::new_v4();
         {
             let mut s = proc.shared.lock().unwrap();
-            let sess = s.sessions.get_mut("sess-A").unwrap();
-            sess.run_id = Some(run_a);
-            sess.agent_state = AgentState::PromptInFlight {
+            let mut st_a = SessionRuntimeState::active("sess-A");
+            st_a.run_id = Some(run_a);
+            st_a.agent_state = AgentState::PromptInFlight {
                 run_id: run_a,
                 session_id: "sess-A".to_string(),
             };
-        }
-
-        // Drive a session/update carrying an agent_message_chunk. Route by
-        // SessionInit item so handle_session_update picks sess-A deterministically.
-        let update = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","sessionId":"sess-A","content":{"type":"text","text":"hi from A"}}}}"#;
-        // Pre-seed a SessionInit item for deterministic routing. We simulate
-        // the reader seeing the SessionInit by crafting an AcpParsed::SessionUpdate
-        // with both SessionInit + Text:
-        let items = vec![
-            AcpUpdateItem::SessionInit {
-                session_id: "sess-A".to_string(),
-            },
-            AcpUpdateItem::Text {
-                text: "hi from A".to_string(),
-            },
-        ];
-        handle_session_update(items, &proc.key, &proc.event_tx, &proc.shared).await;
-        let _ = update; // kept to document the shape; not fed through parse_line here
-
-        // Drain events — expect one Output(Text) with session_id sess-A.
-        let ev = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
-            .await
-            .expect("event arrived")
-            .expect("channel open");
-        match ev {
-            DriverEvent::Output {
-                session_id,
-                item: AgentEventItem::Text { text },
-                ..
-            } => {
-                assert_eq!(session_id, "sess-A");
-                assert_eq!(text, "hi from A");
-            }
-            other => panic!("expected Output(Text) for sess-A, got {other:?}"),
-        }
-
-        // Now flip: sess-A returns to Active, sess-B goes PromptInFlight.
-        {
-            let mut s = proc.shared.lock().unwrap();
-            let sa = s.sessions.get_mut("sess-A").unwrap();
-            sa.run_id = None;
-            sa.agent_state = AgentState::Active {
-                session_id: "sess-A".to_string(),
-            };
-            let run_b = RunId::new_v4();
-            let sb = s.sessions.get_mut("sess-B").unwrap();
-            sb.run_id = Some(run_b);
-            sb.agent_state = AgentState::PromptInFlight {
+            s.sessions.insert("sess-A".to_string(), st_a);
+            let mut st_b = SessionRuntimeState::active("sess-B");
+            st_b.run_id = Some(run_b);
+            st_b.agent_state = AgentState::PromptInFlight {
                 run_id: run_b,
                 session_id: "sess-B".to_string(),
             };
+            s.sessions.insert("sess-B".to_string(), st_b);
         }
-        let items_b = vec![
-            AcpUpdateItem::SessionInit {
-                session_id: "sess-B".to_string(),
-            },
-            AcpUpdateItem::Text {
-                text: "hi from B".to_string(),
-            },
-        ];
-        handle_session_update(items_b, &proc.key, &proc.event_tx, &proc.shared).await;
 
-        let ev = tokio::time::timeout(Duration::from_secs(1), event_rx.recv())
-            .await
-            .expect("event B arrived")
-            .expect("channel open");
-        match ev {
-            DriverEvent::Output {
+        // Real `session/update` JSON for sess-A, as `opencode acp` would
+        // emit it. `acp_protocol::parse_line` (post-00fc6d5) prepends
+        // `AcpUpdateItem::SessionInit { session_id: "sess-A" }` at
+        // items[0] — our routing reads that to pick the target session.
+        let update_a = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-A","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi from A"}}}}"#;
+        // And sess-B, same shape.
+        let update_b = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess-B","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi from B"}}}}"#;
+
+        // Feed sess-A first, then sess-B, through the same code path the
+        // reader uses. `feed_line` wraps `classify_line` + `dispatch_line`.
+        feed_line(&proc, update_a).await;
+        feed_line(&proc, update_b).await;
+
+        // Drain events until we've seen one Text per session. With two
+        // concurrent in-flight sessions, any misrouting (fallback to a
+        // single in-flight session) would surface both texts on the same
+        // `session_id` — exactly what this test forbids.
+        let mut seen_a = false;
+        let mut seen_b = false;
+        for _ in 0..4 {
+            let ev = match tokio::time::timeout(Duration::from_secs(1), event_rx.recv()).await {
+                Ok(Some(ev)) => ev,
+                _ => break,
+            };
+            if let DriverEvent::Output {
                 session_id,
+                run_id,
                 item: AgentEventItem::Text { text },
                 ..
-            } => {
-                assert_eq!(
-                    session_id, "sess-B",
-                    "event from sess-B must carry its own session id"
-                );
-                assert_eq!(text, "hi from B");
+            } = ev
+            {
+                match session_id.as_str() {
+                    "sess-A" => {
+                        assert_eq!(text, "hi from A", "sess-A text mismatch");
+                        assert_eq!(run_id, run_a, "sess-A event must carry sess-A run id");
+                        seen_a = true;
+                    }
+                    "sess-B" => {
+                        assert_eq!(text, "hi from B", "sess-B text mismatch");
+                        assert_eq!(run_id, run_b, "sess-B event must carry sess-B run id");
+                        seen_b = true;
+                    }
+                    other => panic!("unexpected session_id on output event: {other}"),
+                }
             }
-            other => panic!("expected Output(Text) for sess-B, got {other:?}"),
+            if seen_a && seen_b {
+                break;
+            }
         }
+        assert!(
+            seen_a && seen_b,
+            "multi-session routing lost an event: seen_a={seen_a}, seen_b={seen_b}"
+        );
+    }
+
+    #[tokio::test]
+    async fn bootstrap_deferred_prompt_id_does_not_collide_with_racing_new_session() {
+        // Regression for the id-3 collision: before the fix, the bootstrap
+        // path hardcoded `id = 3` for its deferred init prompt while
+        // `next_request_id` also started at 3 — a secondary `new_session`
+        // racing the bootstrap's `session/new` response would receive the
+        // same id via `alloc_id()`. Now id 3 is reserved up-front.
+        //
+        // We simulate the bootstrap reservation by burning id 3 off the
+        // counter (as `start_bootstrap_child` does when an init_prompt is
+        // present), then call `request_new_session` twice and assert the
+        // outgoing ids are distinct from the reserved 3 and from each other.
+        let (proc, mut stdin_rx, _event_rx) = build_test_process("agent-race");
+
+        // Mimic bootstrap: the reserved deferred-prompt id is 3.
+        let reserved = proc.alloc_id();
+        assert_eq!(reserved, 3, "bootstrap reservation should be id 3");
+
+        // Two racing secondary new_sessions.
+        let proc_a = proc.clone();
+        let proc_b = proc.clone();
+        let spec_a = test_spec();
+        let spec_b = test_spec();
+        let a = tokio::spawn(async move { proc_a.request_new_session(&spec_a).await });
+        let b = tokio::spawn(async move { proc_b.request_new_session(&spec_b).await });
+
+        let line_a = stdin_rx.recv().await.expect("first session/new");
+        let line_b = stdin_rx.recv().await.expect("second session/new");
+        let id_a = serde_json::from_str::<serde_json::Value>(&line_a).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let id_b = serde_json::from_str::<serde_json::Value>(&line_b).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+
+        assert_ne!(
+            id_a, reserved,
+            "secondary new_session id must not collide with reserved deferred-prompt id"
+        );
+        assert_ne!(
+            id_b, reserved,
+            "secondary new_session id must not collide with reserved deferred-prompt id"
+        );
+        assert_ne!(id_a, id_b, "two concurrent new_session calls must use distinct ids");
+
+        // Drain the futures cleanly.
+        let resp_a =
+            format!(r#"{{"jsonrpc":"2.0","id":{id_a},"result":{{"sessionId":"sess-A"}}}}"#);
+        let resp_b =
+            format!(r#"{{"jsonrpc":"2.0","id":{id_b},"result":{{"sessionId":"sess-B"}}}}"#);
+        feed_line(&proc, &resp_a).await;
+        feed_line(&proc, &resp_b).await;
+        let _ = a.await.unwrap().unwrap();
+        let _ = b.await.unwrap().unwrap();
     }
 
     #[tokio::test]
