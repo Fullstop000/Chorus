@@ -113,6 +113,52 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
     Ok(Json(serde_json::to_value(info).unwrap()))
 }
 
+pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto::SystemInfo> {
+    let data_dir = state
+        .store
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| state.store.data_dir())
+        .to_string_lossy()
+        .into_owned();
+    let db_size_bytes = std::fs::metadata(state.store.db_path())
+        .map(|m| m.len())
+        .ok();
+    Ok(Json(dto::SystemInfo {
+        data_dir,
+        db_size_bytes,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsParams {
+    /// Number of lines to return from the end of the log. Default 200, max 2000.
+    pub tail: Option<usize>,
+}
+
+pub async fn handle_logs(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<LogsParams>,
+) -> ApiResult<serde_json::Value> {
+    let tail = params.tail.unwrap_or(200).min(2000);
+    let logs_dir = state
+        .store
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| state.store.data_dir())
+        .join("logs");
+    let log_path = logs_dir.join("chorus.log");
+    let lines = match std::fs::read_to_string(&log_path) {
+        Ok(content) => {
+            let all: Vec<&str> = content.lines().collect();
+            let start = all.len().saturating_sub(tail);
+            all[start..].iter().map(|s| s.to_string()).collect::<Vec<_>>()
+        }
+        Err(_) => vec![],
+    };
+    Ok(Json(serde_json::json!({ "lines": lines })))
+}
+
 pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<dto::HumanInfo>> {
     let humans = state
         .store

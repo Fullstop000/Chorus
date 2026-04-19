@@ -23,6 +23,15 @@ pub struct ServerInfo {
     pub humans: Vec<HumanInfo>,
 }
 
+/// System diagnostics for the settings panel.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SystemInfo {
+    /// Root data directory (parent of the db `data/` subdir).
+    pub data_dir: String,
+    /// SQLite database file size in bytes, or null if inaccessible.
+    pub db_size_bytes: Option<u64>,
+}
+
 /// Minimal payload for the UI shell before full server-info polling (sidebar bootstrap).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UiShellInfo {

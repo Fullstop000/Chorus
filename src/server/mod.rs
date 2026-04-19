@@ -183,6 +183,8 @@ pub fn build_router_with_services(
         .route("/templates", get(handle_list_templates))
         .route("/templates/launch-trio", post(handle_launch_trio))
         .route("/server-info", get(handle_ui_server_info))
+        .route("/system-info", get(handle_system_info))
+        .route("/logs", get(handle_logs))
         .route("/events/ws", get(handle_events_ws))
         .route("/traces/{run_id}", get(handle_trace_events))
         .route("/agents/{id}/runs", get(handle_agent_runs));
