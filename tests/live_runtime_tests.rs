@@ -472,7 +472,6 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     //    shape and to have a thread for replies to land in.
     store.create_message(CreateMessage {
         channel_name: "general",
-        thread_parent_id: None,
         sender_name: "tester",
         sender_type: SenderType::Human,
         content: "@opencode-live-bot please reply to everyone",
@@ -517,7 +516,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         if messages
             .iter()
             .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
@@ -533,7 +532,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     bridge_ct.cancel();
 
     if !found {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         let history_str = format!(
             "{:#?}",
             messages
@@ -605,7 +604,6 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
         channel_name: "general",
-        thread_parent_id: None,
         sender_name: "tester",
         sender_type: SenderType::Human,
         content: "@claude-live-bot please reply to everyone",
@@ -648,7 +646,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         if messages
             .iter()
             .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
@@ -664,7 +662,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     bridge_ct.cancel();
 
     if !found {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         let history_str = format!(
             "{:#?}",
             messages
@@ -740,7 +738,6 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
         channel_name: "general",
-        thread_parent_id: None,
         sender_name: "tester",
         sender_type: SenderType::Human,
         content: "@codex-live-bot please reply to everyone",
@@ -790,7 +787,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(codex_deadline_secs);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         if messages
             .iter()
             .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
@@ -806,7 +803,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     bridge_ct.cancel();
 
     if !found {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         let history_str = format!(
             "{:#?}",
             messages
@@ -880,7 +877,6 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
         channel_name: "general",
-        thread_parent_id: None,
         sender_name: "tester",
         sender_type: SenderType::Human,
         content: "@kimi-live-bot please reply to everyone",
@@ -926,7 +922,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     let mut found = false;
     while tokio::time::Instant::now() < deadline {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         if messages
             .iter()
             .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
@@ -942,7 +938,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     bridge_ct.cancel();
 
     if !found {
-        let (messages, _) = store.get_history("general", None, 100, None, None)?;
+        let (messages, _) = store.get_history("general", 100, None, None)?;
         let history_str = format!(
             "{:#?}",
             messages

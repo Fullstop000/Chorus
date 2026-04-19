@@ -84,10 +84,6 @@ fn migrate_remove_legacy_shared_memory_channel(conn: &Connection) -> Result<()> 
     };
 
     conn.execute(
-        "DELETE FROM inbox_thread_read_state WHERE conversation_id = ?1",
-        rusqlite::params![channel_id],
-    )?;
-    conn.execute(
         "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
         rusqlite::params![channel_id],
     )?;

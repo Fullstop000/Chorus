@@ -13,21 +13,7 @@ pub(super) fn to_local_time(iso: &str) -> String {
 pub(super) fn format_target(m: &Value) -> String {
     let channel_type = m.get("channel_type").and_then(|v| v.as_str()).unwrap_or("");
     let channel_name = m.get("channel_name").and_then(|v| v.as_str()).unwrap_or("");
-    let parent_channel_name = m.get("parent_channel_name").and_then(|v| v.as_str());
-    let parent_channel_type = m
-        .get("parent_channel_type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
 
-    if channel_type == "thread" {
-        if let Some(parent_name) = parent_channel_name {
-            let short_id = channel_name.strip_prefix("thread-").unwrap_or(channel_name);
-            if parent_channel_type == "dm" {
-                return format!("dm:@{}:{}", parent_name, short_id);
-            }
-            return format!("#{}:{}", parent_name, short_id);
-        }
-    }
     if channel_type == "dm" {
         return format!("dm:@{}", channel_name);
     }

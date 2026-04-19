@@ -32,25 +32,10 @@
   2. Send a message containing a unique token.
   3. Verify the human message appears immediately in the DM timeline.
   4. Poll the history API for an agent reply containing the token (up to 2 min).
-  5. Verify the reply appears in the DM timeline (top-level or thread), not in any channel.
+  5. Verify the reply appears in the DM timeline, not in any channel.
   6. Refresh and confirm both messages persist.
   7. Switch to another channel and return — history still present.
 - Expected: agent reply in same DM with token; history survives refresh and channel switch
-
-### MSG-003 Thread Reply In Busy Channel
-
-- Suite: smoke
-- Goal: verify thread replies stay scoped to the thread and do not leak into the main timeline
-- Script: [`playwright/MSG-003.spec.ts`](./playwright/MSG-003.spec.ts)
-- Preconditions:
-  - channel with at least one agent reply exists
-- Steps:
-  1. In the shared channel, open a thread from one agent reply.
-  2. Send a thread reply from the human.
-  3. Wait for the addressed agent to reply in the thread.
-  4. Return to the main channel view.
-  5. Verify thread messages stay attached to the thread and do not pollute the main timeline.
-- Expected: thread replies remain in thread; channel timeline does not contain thread-only messages
 
 ### MSG-004 DM Wake From Inactive State
 
@@ -106,7 +91,6 @@
   2. While in flight, verify the composer exposes a pending state.
   3. On success: verify the confirmed message appears once and the composer returns to idle.
   4. On failure: verify a visible error toast appears and unsent text remains in the composer.
-  5. Repeat the same checks inside a thread composer.
 - Expected: success shows one message, no phantom failure; failure is visible and recoverable
 - Common failure signals:
   - successful send duplicates a message row
@@ -168,29 +152,6 @@
   - badge missing for new messages
   - badge does not clear on view
   - incorrect count
-
-### MSG-011 Thread Unread Lifecycle And Reply Count
-
-- Suite: regression
-- Goal: verify thread reply counts and unread indicators update correctly through the lifecycle
-- Script: [`playwright/MSG-011.spec.ts`](./playwright/MSG-011.spec.ts)
-- Preconditions:
-  - a message with an existing thread exists
-- Steps:
-  1. Open a channel and locate a message with replies.
-  2. Verify reply count badge is visible.
-  3. Open the thread panel and verify replies load.
-  4. Add a new reply in the thread.
-  5. Close the thread panel.
-  6. Verify reply count incremented.
-  7. From another session or agent, add another reply.
-  8. Verify unread indicator appears on the thread.
-  9. Re-open the thread and verify unread clears.
-- Expected: reply count accurate; unread tracks new replies since last view; badge clears on open
-- Common failure signals:
-  - reply count wrong
-  - unread badge missing
-  - state doesn't clear
 
 ### HIS-001 History Reload And Selection Stability
 

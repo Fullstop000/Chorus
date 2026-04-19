@@ -1,7 +1,5 @@
 //! Agent **receive** path: unread rows from SQLite, shaping into [`ReceivedMessage`], optional read-cursor updates.
 
-use std::collections::BTreeMap;
-
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection};
 use tracing::warn;
@@ -20,7 +18,6 @@ struct AgentUnreadMessageRow {
     content: String,
     created_at: String,
     seq: i64,
-    thread_parent_id: Option<String>,
     forwarded_from_raw: Option<String>,
 }
 
@@ -28,13 +25,11 @@ struct AgentChannelUnreadScan {
     received: Vec<ReceivedMessage>,
     max_conversation_seq: i64,
     last_conversation_message_id: Option<String>,
-    thread_read_updates: BTreeMap<String, (i64, String)>,
 }
 
-/// Per-channel snapshot before scanning: channel row, thread cursors, unread rows, DM display peer.
+/// Per-channel snapshot before scanning: channel row, unread rows, DM display peer.
 struct AgentInboxChannelContext {
     channel: Channel,
-    thread_last_read: BTreeMap<String, i64>,
     unread_rows: Vec<AgentUnreadMessageRow>,
     dm_peer_name: Option<String>,
 }
@@ -65,7 +60,7 @@ impl Store {
                 agent_name,
                 *last_read_seq,
             )?;
-            let scan = Self::scan_agent_inbox_channel(&conn, &ctx, agent_name, *last_read_seq)?;
+            let scan = Self::scan_agent_inbox_channel(&conn, &ctx)?;
             Self::persist_agent_inbox_read_cursors(
                 &mut conn,
                 &ctx.channel,
@@ -122,35 +117,6 @@ impl Store {
         Ok(list)
     }
 
-    fn load_inbox_thread_read_state(
-        conn: &Connection,
-        channel_id: &str,
-        agent_name: &str,
-    ) -> Result<BTreeMap<String, i64>> {
-        let mut map = BTreeMap::new();
-        let mut stmt = conn.prepare(
-            "SELECT thread_parent_id, last_read_seq
-             FROM inbox_thread_read_state
-             WHERE conversation_id = ?1 AND member_name = ?2",
-        )?;
-        for row in stmt.query_map(params![channel_id, agent_name], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })? {
-            match row {
-                Ok((parent_id, seq)) => {
-                    map.insert(parent_id, seq);
-                }
-                Err(e) => warn!(
-                    agent = %agent_name,
-                    channel_id = %channel_id,
-                    error = %e,
-                    "get_messages_for_agent: skip bad thread read state row"
-                ),
-            }
-        }
-        Ok(map)
-    }
-
     fn load_agent_unread_message_rows(
         conn: &Connection,
         channel_id: &str,
@@ -159,7 +125,7 @@ impl Store {
     ) -> Result<Vec<AgentUnreadMessageRow>> {
         let mut rows = Vec::new();
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.thread_parent_id, m.forwarded_from
+            "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.forwarded_from
              FROM messages m
              WHERE m.channel_id = ?1
                AND m.seq > ?2
@@ -174,8 +140,7 @@ impl Store {
                 content: row.get(3)?,
                 created_at: row.get(4)?,
                 seq: row.get(5)?,
-                thread_parent_id: row.get(6)?,
-                forwarded_from_raw: row.get(7)?,
+                forwarded_from_raw: row.get(6)?,
             })
         })? {
             match row {
@@ -219,7 +184,6 @@ impl Store {
         let channel = Self::get_channel_by_id_inner(conn, channel_id)?
             .ok_or_else(|| anyhow!("channel not found by id"))?;
         Ok(AgentInboxChannelContext {
-            thread_last_read: Self::load_inbox_thread_read_state(conn, channel_id, agent_name)?,
             unread_rows: Self::load_agent_unread_message_rows(
                 conn,
                 channel_id,
@@ -250,26 +214,10 @@ impl Store {
             None => channel.name.clone(),
         };
 
-        let parent_label = channel_type_wire_label(channel.channel_type);
-        let (channel_name, channel_type, parent_channel_name, parent_channel_type) =
-            if let Some(parent_id) = &row.thread_parent_id {
-                let short = parent_id.get(..8).unwrap_or(parent_id.as_str());
-                (
-                    format!("thread-{}", short),
-                    "thread".to_string(),
-                    Some(effective_channel_name),
-                    Some(parent_label.to_string()),
-                )
-            } else {
-                (effective_channel_name, parent_label.to_string(), None, None)
-            };
-
         Ok(ReceivedMessage {
             message_id: row.message_id.clone(),
-            channel_name,
-            channel_type,
-            parent_channel_name,
-            parent_channel_type,
+            channel_name: effective_channel_name,
+            channel_type: channel_type_wire_label(channel.channel_type).to_string(),
             sender_name: row.sender_name.clone(),
             sender_type: row.sender_type.clone(),
             content: row.content.clone(),
@@ -282,34 +230,16 @@ impl Store {
     fn scan_agent_inbox_channel(
         conn: &Connection,
         ctx: &AgentInboxChannelContext,
-        agent_name: &str,
-        last_read_seq: i64,
     ) -> Result<AgentChannelUnreadScan> {
-        let channel_id = ctx.channel.id.as_str();
-        let mut max_conversation_seq = last_read_seq;
+        let mut max_conversation_seq = 0i64;
         let mut last_conversation_message_id = None::<String>;
-        let mut thread_read_updates = BTreeMap::<String, (i64, String)>::new();
         let mut received = Vec::new();
 
         for row in &ctx.unread_rows {
-            if let Some(parent_id) = &row.thread_parent_id {
-                if row.seq <= ctx.thread_last_read.get(parent_id).copied().unwrap_or(0) {
-                    continue;
-                }
-                if !Self::agent_can_access_thread_inner(conn, channel_id, parent_id, agent_name)? {
-                    continue;
-                }
-                let entry = thread_read_updates
-                    .entry(parent_id.clone())
-                    .or_insert((row.seq, row.message_id.clone()));
-                if row.seq > entry.0 {
-                    *entry = (row.seq, row.message_id.clone());
-                }
-            } else if row.seq > max_conversation_seq {
+            if row.seq > max_conversation_seq {
                 max_conversation_seq = row.seq;
                 last_conversation_message_id = Some(row.message_id.clone());
             }
-
             received.push(Self::shape_agent_received_message(
                 conn,
                 &ctx.channel,
@@ -322,7 +252,6 @@ impl Store {
             received,
             max_conversation_seq,
             last_conversation_message_id,
-            thread_read_updates,
         })
     }
 
@@ -338,33 +267,19 @@ impl Store {
         if !update_read_pos {
             return Ok(());
         }
-        let inbox_advanced = scan.max_conversation_seq > last_read_seq;
-        if !inbox_advanced && scan.thread_read_updates.is_empty() {
+        if scan.max_conversation_seq <= last_read_seq {
             return Ok(());
         }
 
         let tx = conn.transaction()?;
-        if inbox_advanced {
-            Self::set_inbox_read_cursor_tx(
-                &tx,
-                channel,
-                agent_name,
-                member_type,
-                scan.max_conversation_seq,
-                scan.last_conversation_message_id.as_deref(),
-            )?;
-        }
-        for (parent_id, (seq, message_id)) in &scan.thread_read_updates {
-            Self::set_thread_read_cursor_tx(
-                &tx,
-                channel,
-                parent_id,
-                agent_name,
-                member_type,
-                *seq,
-                Some(message_id.as_str()),
-            )?;
-        }
+        Self::set_inbox_read_cursor_tx(
+            &tx,
+            channel,
+            agent_name,
+            member_type,
+            scan.max_conversation_seq,
+            scan.last_conversation_message_id.as_deref(),
+        )?;
         tx.commit()?;
         Ok(())
     }

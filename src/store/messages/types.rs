@@ -56,8 +56,6 @@ pub struct Message {
     pub id: String,
     /// Owning channel id.
     pub channel_id: String,
-    /// When set, this message is a thread reply under the parent message id.
-    pub thread_parent_id: Option<String>,
     /// Author handle.
     pub sender_name: String,
     /// Author kind.
@@ -83,12 +81,6 @@ pub struct ReceivedMessage {
     pub channel_name: String,
     /// API string for channel kind (`channel`, `dm`, …).
     pub channel_type: String,
-    /// Parent channel when this is a thread under another room.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_channel_name: Option<String>,
-    /// Parent channel kind string when applicable.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parent_channel_type: Option<String>,
     /// Author handle.
     pub sender_name: String,
     /// `human` or `agent` string for JSON consumers.
@@ -138,9 +130,6 @@ pub struct HistoryMessage {
     /// Linked files when any.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attachments: Option<Vec<AttachmentRef>>,
-    /// Number of thread replies when loaded.
-    #[serde(rename = "replyCount", skip_serializing_if = "Option::is_none")]
-    pub reply_count: Option<i64>,
     /// Set when this message was forwarded from another channel (e.g. via @team mention).
     #[serde(rename = "forwardedFrom", skip_serializing_if = "Option::is_none")]
     pub forwarded_from: Option<ForwardedFrom>,
@@ -164,8 +153,6 @@ pub struct ConversationMessageView {
     pub conversation_name: String,
     /// `channel`, `dm`, `team`, or `system`.
     pub conversation_type: String,
-    /// Parent message id when this row is a thread reply.
-    pub thread_parent_id: Option<String>,
     /// Author handle.
     pub sender_name: String,
     /// `human` or `agent`.
@@ -180,8 +167,6 @@ pub struct ConversationMessageView {
     pub seq: i64,
     /// Linked files when present.
     pub attachments: Vec<AttachmentRef>,
-    /// Reply count for top-level messages.
-    pub reply_count: Option<i64>,
     /// Forward provenance when present.
     pub forwarded_from: Option<ForwardedFrom>,
     /// Telescope trace run id.
@@ -189,106 +174,15 @@ pub struct ConversationMessageView {
     /// JSON trace summary for collapsed Telescope.
     pub trace_summary: Option<String>,
 }
-/// messages while thread semantics remain conversation-local.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ThreadSummaryView {
-    /// Owning conversation UUID.
-    pub conversation_id: String,
-    /// Top-level message id that anchors the thread.
-    pub parent_message_id: String,
-    /// Number of replies currently in the thread.
-    pub reply_count: i64,
-    /// Most recent reply id when at least one reply exists.
-    pub last_reply_message_id: Option<String>,
-    /// Timestamp for the most recent reply when present.
-    pub last_reply_at: Option<String>,
-    /// Number of unique participants including the parent author.
-    pub participant_count: i64,
-}
-
-/// Member-specific thread inbox row for one conversation, combining parent
-/// preview, thread summary metadata, and unread/read cursor state.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelThreadInboxEntry {
-    /// Owning conversation UUID.
-    #[serde(rename = "conversationId")]
-    pub conversation_id: String,
-    /// Top-level message id that anchors the thread.
-    #[serde(rename = "threadParentId")]
-    pub thread_parent_id: String,
-    /// Parent message sequence in the conversation stream.
-    #[serde(rename = "parentSeq")]
-    pub parent_seq: i64,
-    /// Parent author handle.
-    #[serde(rename = "parentSenderName")]
-    pub parent_sender_name: String,
-    /// Parent author kind.
-    #[serde(rename = "parentSenderType")]
-    pub parent_sender_type: String,
-    /// Parent message preview/source text.
-    #[serde(rename = "parentContent")]
-    pub parent_content: String,
-    /// Parent message timestamp.
-    #[serde(rename = "parentCreatedAt")]
-    pub parent_created_at: String,
-    /// Current number of replies in the thread.
-    #[serde(rename = "replyCount")]
-    pub reply_count: i64,
-    /// Number of unique participants including the parent author.
-    #[serde(rename = "participantCount")]
-    pub participant_count: i64,
-    /// Latest reply sequence in the conversation stream.
-    #[serde(rename = "latestSeq")]
-    pub latest_seq: i64,
-    /// Highest read reply sequence for this member in this thread.
-    #[serde(rename = "lastReadSeq")]
-    pub last_read_seq: i64,
-    /// Replies newer than `last_read_seq`.
-    #[serde(rename = "unreadCount")]
-    pub unread_count: i64,
-    /// Most recent reply id when present.
-    #[serde(rename = "lastReplyMessageId")]
-    pub last_reply_message_id: Option<String>,
-    /// Most recent reply timestamp when present.
-    #[serde(rename = "lastReplyAt")]
-    pub last_reply_at: Option<String>,
-}
-
-/// Channel-scoped thread inbox payload for one member.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ChannelThreadInbox {
-    /// Total unread replies across all listed threads.
-    #[serde(rename = "unreadCount")]
-    pub unread_count: i64,
-    /// Threads sorted unread-first, then newest activity first.
-    pub threads: Vec<ChannelThreadInboxEntry>,
-}
-
-impl ThreadSummaryView {
-    pub(crate) fn from_projection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
-        Ok(Self {
-            conversation_id: row.get("conversation_id")?,
-            parent_message_id: row.get("parent_message_id")?,
-            reply_count: row.get("reply_count")?,
-            last_reply_message_id: row.get("last_reply_message_id")?,
-            last_reply_at: row.get("last_reply_at")?,
-            participant_count: row.get("participant_count")?,
-        })
-    }
-}
 
 impl ConversationMessageView {
     pub(crate) fn from_projection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         let forwarded_from_raw: Option<String> = row.get("forwarded_from")?;
-        let reply_count = row
-            .get::<_, Option<i64>>("reply_count")?
-            .filter(|count| *count > 0);
         Ok(Self {
             message_id: row.get("message_id")?,
             conversation_id: row.get("conversation_id")?,
             conversation_name: row.get("conversation_name")?,
             conversation_type: row.get("conversation_type")?,
-            thread_parent_id: row.get("thread_parent_id")?,
             sender_name: row.get("sender_name")?,
             sender_type: row.get("sender_type")?,
             sender_deleted: row.get::<_, i64>("sender_deleted")? > 0,
@@ -296,7 +190,6 @@ impl ConversationMessageView {
             created_at: row.get("created_at")?,
             seq: row.get("seq")?,
             attachments: Vec::new(),
-            reply_count,
             forwarded_from: Store::parse_forwarded_from_raw(forwarded_from_raw.as_deref()),
             run_id: row.get("run_id")?,
             trace_summary: row.get("trace_summary")?,
@@ -313,7 +206,6 @@ impl ConversationMessageView {
             created_at: self.created_at.clone(),
             sender_deleted: self.sender_deleted,
             attachments: (!self.attachments.is_empty()).then(|| self.attachments.clone()),
-            reply_count: self.reply_count,
             forwarded_from: self.forwarded_from.clone(),
             run_id: self.run_id.clone(),
             trace_summary: self.trace_summary.clone(),
@@ -331,7 +223,6 @@ impl ConversationMessageView {
             "messageId": self.message_id,
             "conversationId": self.conversation_id,
             "conversationType": self.conversation_type,
-            "threadParentId": self.thread_parent_id,
             "sender": {
                 "name": self.sender_name,
                 "type": self.sender_type,
@@ -396,9 +287,6 @@ pub(crate) struct MessageCreatedPayload {
     pub conversation_id: String,
     /// One of "channel", "dm", or "team".
     pub conversation_type: String,
-    /// Parent message ID if this is a thread reply; null for top-level messages.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread_parent_id: Option<String>,
     /// Author identity — name and type ("human" | "agent").
     pub sender: MessageSenderInfo,
     /// True if the sender has been soft-deleted (hide content, show tombstone).
@@ -433,7 +321,6 @@ impl InsertedMessage {
         &self,
         conversation_id: &str,
         conversation_type: &str,
-        thread_parent_id: Option<&str>,
         sender_name: &str,
         sender_type: &str,
         content: &str,
@@ -442,7 +329,6 @@ impl InsertedMessage {
             message_id: self.id.clone(),
             conversation_id: conversation_id.to_string(),
             conversation_type: conversation_type.to_string(),
-            thread_parent_id: thread_parent_id.map(|s| s.to_string()),
             sender: MessageSenderInfo {
                 name: sender_name.to_string(),
                 sender_type: sender_type.to_string(),

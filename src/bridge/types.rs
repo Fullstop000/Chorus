@@ -3,7 +3,7 @@ use serde::Deserialize;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct SendMessageParams {
-    /// Where to send. Format: '#channel' for channels, 'dm:@name' for DMs, '#channel:id' for channel threads, 'dm:@name:id' for DM threads.
+    /// Where to send. Format: '#channel' for channels, 'dm:@name' for DMs.
     pub(super) target: String,
     /// The message content
     pub(super) content: String,

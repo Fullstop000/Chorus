@@ -1,4 +1,4 @@
-import { useCallback, useRef } from 'react'
+import { useCallback } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useStore } from '../store/uiStore'
 import {
@@ -7,27 +7,21 @@ import {
   channelMembersQuery,
   teamsQuery,
   humansQuery,
-  getChannelThreads,
   channelQueryKeys,
   agentQueryKeys,
   teamQueryKeys,
 } from '../data'
-import type { ChannelInfo, ThreadInboxEntry } from '../data'
-import {
-  conversationThreadUnreadCount,
-  mergeChannelThreadInboxEntries,
-  type InboxState,
-} from '../store/inbox'
+import type { ChannelInfo } from '../data'
+import type { InboxState } from '../store/inbox'
 import { dmConversationNameForParticipants } from '../data'
 import type { AgentInfo } from '../data'
 
 function useAppInboxSelectors(params: {
   currentUser: string
   inboxState: InboxState
-  conversationThreads: Record<string, ThreadInboxEntry[]>
   dmChannels: ChannelInfo[]
 }) {
-  const { currentUser, inboxState, conversationThreads, dmChannels } = params
+  const { currentUser, inboxState, dmChannels } = params
 
   const getConversationUnread = useCallback(
     (conversationId?: string | null) => {
@@ -37,41 +31,6 @@ function useAppInboxSelectors(params: {
       return Math.max(conv.latestSeq - conv.lastReadSeq, 0)
     },
     [inboxState.conversations]
-  )
-
-  const getConversationThreadUnreadCount = useCallback(
-    (conversationId?: string | null) => {
-      if (!conversationId) return 0
-      return inboxState.conversations[conversationId]?.threadUnreadCount ?? 0
-    },
-    [inboxState.conversations]
-  )
-
-  const getConversationThreads = useCallback(
-    (conversationId?: string | null) => {
-      if (!conversationId) return []
-      return mergeChannelThreadInboxEntries(
-        conversationThreads[conversationId] ?? [],
-        inboxState,
-        conversationId
-      )
-    },
-    [conversationThreads, inboxState]
-  )
-
-  const getConversationThreadUnread = useCallback(
-    (conversationId?: string | null) => {
-      if (!conversationId) return 0
-      const cached = conversationThreads[conversationId]
-      if (cached && cached.length > 0) {
-        return mergeChannelThreadInboxEntries(cached, inboxState, conversationId).reduce(
-          (sum, entry) => sum + entry.unreadCount,
-          0
-        )
-      }
-      return conversationThreadUnreadCount(inboxState, conversationId)
-    },
-    [conversationThreads, inboxState]
   )
 
   const getAgentUnread = useCallback(
@@ -93,9 +52,6 @@ function useAppInboxSelectors(params: {
 
   return {
     getConversationUnread,
-    getConversationThreadUnreadCount,
-    getConversationThreads,
-    getConversationThreadUnread,
     getAgentUnread,
     getAgentConversationId,
   }
@@ -139,36 +95,11 @@ export function useChannels() {
 }
 
 /**
- * Cache-invalidation actions: refreshConversationThreads (with in-flight
- * dedup), refreshChannels, refreshAgents, refreshTeams, refreshServerInfo.
+ * Cache-invalidation actions: refreshChannels, refreshAgents, refreshTeams, refreshServerInfo.
  */
 export function useRefresh() {
   const currentUser = useStore((s) => s.currentUser)
   const queryClient = useQueryClient()
-  const setConversationThreads = useStore((s) => s.setConversationThreads)
-  const conversationThreadsInFlight = useRef<Map<string, Promise<void>>>(new Map())
-
-  const refreshConversationThreads = useCallback(
-    async (conversationId: string) => {
-      if (!currentUser) return
-      const inFlight = conversationThreadsInFlight.current
-      const existing = inFlight.get(conversationId)
-      if (existing) return existing
-      const promise = (async () => {
-        try {
-          const response = await getChannelThreads(conversationId)
-          setConversationThreads(conversationId, response.threads)
-        } catch (error) {
-          console.error('Failed to load channel threads', error)
-        } finally {
-          inFlight.delete(conversationId)
-        }
-      })()
-      inFlight.set(conversationId, promise)
-      return promise
-    },
-    [currentUser, setConversationThreads]
-  )
 
   const refreshChannels = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUser) })
@@ -192,7 +123,6 @@ export function useRefresh() {
   }, [currentUser, queryClient])
 
   return {
-    refreshConversationThreads,
     refreshChannels,
     refreshAgents,
     refreshTeams,
@@ -202,18 +132,16 @@ export function useRefresh() {
 
 /**
  * Inbox selectors.
- * Returns unread counts per conversation/thread/agent and thread listings.
+ * Returns unread counts per conversation/agent.
  */
 export function useInbox() {
   const currentUser = useStore((s) => s.currentUser)
   const inboxState = useStore((s) => s.inboxState)
-  const conversationThreads = useStore((s) => s.conversationThreads)
   const { dmChannels } = useChannels()
 
   const selectors = useAppInboxSelectors({
     currentUser,
     inboxState,
-    conversationThreads,
     dmChannels,
   })
 

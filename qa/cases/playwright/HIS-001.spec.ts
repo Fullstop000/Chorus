@@ -1,6 +1,6 @@
 import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { clickSidebarChannel, openAgentChat, openThreadFromMessage, sendChatMessage, sendThreadMessage , gotoApp , reloadApp } from './helpers/ui'
+import { clickSidebarChannel, openAgentChat, sendChatMessage, gotoApp, reloadApp } from './helpers/ui'
 
 /**
  * Catalog: `qa/cases/messaging.md` — HIS-001 History Reload And Selection Stability
@@ -15,32 +15,22 @@ test.describe('HIS-001', () => {
     const mark = `his-${Date.now()}`
     await gotoApp(page)
 
-    await test.step('Precondition: create channel, DM, and thread history', async () => {
+    await test.step('Precondition: create channel and DM history', async () => {
       await clickSidebarChannel(page, 'all')
       await sendChatMessage(page, `Channel history ${mark}`)
       await openAgentChat(page, 'bot-a')
       await sendChatMessage(page, `DM history ${mark}`)
-      await clickSidebarChannel(page, 'all')
-      await openThreadFromMessage(page, `Channel history ${mark}`)
-      await sendThreadMessage(page, `Thread history ${mark}`)
-      await expect(
-        page.locator('.thread-panel .message-item').filter({ hasText: `Thread history ${mark}` }).first()
-      ).toBeVisible()
     })
 
-    await test.step('Steps 1–5: Refresh and verify channel, DM, and thread history remain stable', async () => {
+    await test.step('Steps 1–5: Refresh and verify channel and DM history remain stable', async () => {
       await reloadApp(page)
+      await clickSidebarChannel(page, 'all')
       await expect(page.locator('.chat-header-name')).toContainText('#all')
       await expect(page.locator('.message-item').filter({ hasText: `Channel history ${mark}` }).first()).toBeVisible()
       await openAgentChat(page, 'bot-a')
       await expect(page.locator('.message-item').filter({ hasText: `DM history ${mark}` }).first()).toBeVisible()
-      await clickSidebarChannel(page, 'all')
-      await openThreadFromMessage(page, `Channel history ${mark}`)
-      await expect(
-        page.locator('.thread-panel .message-item').filter({ hasText: `Thread history ${mark}` }).first()
-      ).toBeVisible()
-      const threadHistory = await historyForUser(request, username, `#all`, 50)
-      expect(threadHistory.some((m) => (m.content ?? '').includes(`Channel history ${mark}`))).toBe(true)
+      const channelHistory = await historyForUser(request, username, `#all`, 50)
+      expect(channelHistory.some((m) => (m.content ?? '').includes(`Channel history ${mark}`))).toBe(true)
     })
   })
 })

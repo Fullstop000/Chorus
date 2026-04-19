@@ -9,7 +9,6 @@ use crate::store::Store;
 
 pub struct CreateMessage<'a> {
     pub channel_name: &'a str,
-    pub thread_parent_id: Option<&'a str>,
     pub sender_name: &'a str,
     pub sender_type: SenderType,
     pub content: &'a str,
@@ -23,7 +22,6 @@ impl Store {
     pub(crate) fn insert_message_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
-        thread_parent_id: Option<&str>,
         sender_name: &str,
         sender_type: SenderType,
         content: &str,
@@ -40,12 +38,11 @@ impl Store {
         let forwarded_from_json = forwarded_from.map(serde_json::to_string).transpose()?;
         tx.execute(
             "INSERT INTO messages (
-                id, channel_id, thread_parent_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from, run_id
-             ) VALUES (?1, ?2, ?3, ?4, ?5, 0, ?6, ?7, ?8, ?9)",
+                id, channel_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from, run_id
+             ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8)",
             params![
                 msg_id,
                 channel.id,
-                thread_parent_id,
                 sender_name,
                 sender_type.as_str(),
                 content,
@@ -82,7 +79,6 @@ impl Store {
         let inserted = Self::insert_message_tx(
             &tx,
             &channel,
-            None,
             sender_name,
             sender_type,
             content,
@@ -95,7 +91,6 @@ impl Store {
         let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
-            None,
             sender_name,
             sender_type.as_str(),
             content,
@@ -118,7 +113,6 @@ impl Store {
         let inserted = Self::insert_message_tx(
             &tx,
             &channel,
-            None,
             "system",
             SenderType::System,
             content,
@@ -131,7 +125,6 @@ impl Store {
         let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
-            None,
             "system",
             SenderType::System.as_str(),
             content,
@@ -153,7 +146,6 @@ impl Store {
         let inserted = Self::insert_message_tx(
             &tx,
             &channel,
-            message.thread_parent_id,
             message.sender_name,
             message.sender_type,
             message.content,
@@ -161,32 +153,19 @@ impl Store {
             None,
             message.run_id,
         )?;
-        if let Some(parent_id) = message.thread_parent_id {
-            Self::set_thread_read_cursor_tx(
-                &tx,
-                &channel,
-                parent_id,
-                message.sender_name,
-                message.sender_type.as_str(),
-                inserted.seq,
-                Some(&inserted.id),
-            )?;
-        } else {
-            Self::set_inbox_read_cursor_tx(
-                &tx,
-                &channel,
-                message.sender_name,
-                message.sender_type.as_str(),
-                inserted.seq,
-                Some(&inserted.id),
-            )?;
-        }
+        Self::set_inbox_read_cursor_tx(
+            &tx,
+            &channel,
+            message.sender_name,
+            message.sender_type.as_str(),
+            inserted.seq,
+            Some(&inserted.id),
+        )?;
         tx.commit()?;
 
         let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
-            message.thread_parent_id,
             message.sender_name,
             message.sender_type.as_str(),
             message.content,

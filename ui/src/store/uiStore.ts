@@ -1,9 +1,9 @@
 import { create } from 'zustand'
-import type { AgentInfo, ChannelInfo, HistoryMessage, ThreadInboxEntry } from '../data'
+import type { AgentInfo, ChannelInfo } from '../data'
 import type { InboxState } from './inbox'
-import { createInboxState, threadNotificationKey } from './inbox'
+import { createInboxState } from './inbox'
 
-export type ActiveTab = 'chat' | 'threads' | 'tasks' | 'workspace' | 'activity' | 'profile'
+export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
 export interface ToastEntry {
   id: string
@@ -20,12 +20,8 @@ interface UIState {
   currentAgent: AgentInfo | null
   /** Which top-level tab the MainPanel is showing */
   activeTab: ActiveTab
-  /** The message whose thread replies are shown in the ThreadPanel overlay; null = no thread open */
-  openThreadMsg: HistoryMessage | null
   /** Unread / read-cursor state for every inbox conversation (DMs + channels) */
   inboxState: InboxState
-  /** Thread preview entries keyed by conversationId, used by the ThreadsTab badge count */
-  conversationThreads: Record<string, ThreadInboxEntry[]>
   /** True once the initial whoami + channels + inbox bootstrap has completed; gates autoSelectChannel */
   shellBootstrapped: boolean
   /** Global toast notifications */
@@ -37,16 +33,12 @@ interface UIActions {
   setCurrentChannel: (channel: ChannelInfo | null) => void
   setCurrentAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
-  setOpenThreadMsg: (msg: HistoryMessage | null) => void
   /** Bulk-replace inboxState (used by realtime subscription on reconnect) */
   updateInboxState: (updater: (current: InboxState) => InboxState) => void
-  setConversationThreads: (conversationId: string, threads: ThreadInboxEntry[]) => void
   /** Optimistically bump latestSeq for a conversation (used by realtime append) */
   advanceConversationLatestSeq: (conversationId: string, seq: number) => void
   /** Optimistically advance lastReadSeq for a conversation (used when messages are viewed) */
   advanceConversationLastReadSeq: (conversationId: string, seq: number) => void
-  /** Optimistically advance lastReadSeq for a thread (used when thread replies are viewed) */
-  advanceThreadLastReadSeq: (conversationId: string, threadParentId: string, seq: number) => void
   setShellBootstrapped: (value: boolean) => void
   /** Clear all selection state back to defaults (used on logout / session reset) */
   resetUserSession: () => void
@@ -61,9 +53,7 @@ const initialState: UIState = {
   currentChannel: null,
   currentAgent: null,
   activeTab: 'chat',
-  openThreadMsg: null,
   inboxState: createInboxState(),
-  conversationThreads: {},
   shellBootstrapped: false,
   toasts: [],
 }
@@ -82,7 +72,6 @@ export const useStore = create<UIStore>((set) => ({
 
       return {
         currentAgent: agent,
-        openThreadMsg: isSameAgent ? state.openThreadMsg : null,
         ...(agent
           ? {
               currentChannel: null,
@@ -95,7 +84,6 @@ export const useStore = create<UIStore>((set) => ({
   setCurrentChannel: (channel: ChannelInfo | null) =>
     set((state) => ({
       currentChannel: channel,
-      openThreadMsg: null,
       currentAgent: channel ? null : state.currentAgent,
       activeTab:
         channel &&
@@ -108,15 +96,8 @@ export const useStore = create<UIStore>((set) => ({
 
   setActiveTab: (activeTab: ActiveTab) => set({ activeTab }),
 
-  setOpenThreadMsg: (openThreadMsg: HistoryMessage | null) => set({ openThreadMsg }),
-
   updateInboxState: (updater: (current: InboxState) => InboxState) =>
     set((state) => ({ inboxState: updater(state.inboxState) })),
-
-  setConversationThreads: (conversationId: string, threads: ThreadInboxEntry[]) =>
-    set((state) => ({
-      conversationThreads: { ...state.conversationThreads, [conversationId]: threads },
-    })),
 
   advanceConversationLatestSeq: (conversationId: string, seq: number) =>
     set((state) => {
@@ -148,41 +129,6 @@ export const useStore = create<UIStore>((set) => ({
       }
     }),
 
-  advanceThreadLastReadSeq: (conversationId: string, threadParentId: string, seq: number) =>
-    set((state) => {
-      const key = threadNotificationKey(conversationId, threadParentId)
-      const thread = state.inboxState.threads[key]
-      if (!thread || seq <= thread.lastReadSeq) return state
-      const nextThreads = {
-        ...state.inboxState.threads,
-        [key]: {
-          ...thread,
-          lastReadSeq: seq,
-          unreadCount: Math.max(thread.latestSeq - seq, 0),
-        },
-      }
-      const conversation = state.inboxState.conversations[conversationId]
-      const nextConversations = conversation
-        ? {
-            ...state.inboxState.conversations,
-            [conversationId]: {
-              ...conversation,
-              threadUnreadCount: Object.values(nextThreads)
-                .filter((entry) => entry.conversationId === conversationId)
-                .reduce((sum, entry) => sum + entry.unreadCount, 0),
-            },
-          }
-        : state.inboxState.conversations
-
-      return {
-        inboxState: {
-          ...state.inboxState,
-          conversations: nextConversations,
-          threads: nextThreads,
-        },
-      }
-    }),
-
   setShellBootstrapped: (shellBootstrapped: boolean) => set({ shellBootstrapped }),
 
   resetUserSession: () =>
@@ -190,9 +136,7 @@ export const useStore = create<UIStore>((set) => ({
       currentAgent: null,
       currentChannel: null,
       activeTab: 'chat',
-      openThreadMsg: null,
       inboxState: createInboxState(),
-      conversationThreads: {},
       shellBootstrapped: false,
       toasts: [],
     }),

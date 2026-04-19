@@ -48,14 +48,14 @@ test.describe('MSG-008', () => {
     const token = `conversation-read-${Date.now()}`
     const seeded = await postMessage(request, agentName, `#${channelName}`, token)
 
-    const readCursorPosts: Array<{ threadParentId?: string; lastReadSeq?: number }> = []
+    const readCursorPosts: Array<{ lastReadSeq?: number }> = []
     page.on('request', (req) => {
       const url = new URL(req.url())
       if (
         req.method() === 'POST' &&
         url.pathname === `/api/conversations/${channel.id}/read-cursor`
       ) {
-        const payload = req.postDataJSON() as { threadParentId?: string; lastReadSeq?: number }
+        const payload = req.postDataJSON() as { lastReadSeq?: number }
         readCursorPosts.push(payload)
       }
     })
@@ -69,9 +69,8 @@ test.describe('MSG-008', () => {
     await expect
       .poll(
         () =>
-          readCursorPosts.find(
-            (post) => !post.threadParentId && (post.lastReadSeq ?? 0) >= seeded.seq
-          )?.lastReadSeq ?? null,
+          readCursorPosts.find((post) => (post.lastReadSeq ?? 0) >= seeded.seq)?.lastReadSeq ??
+          null,
         { timeout: 10_000 }
       )
       .not.toBeNull()

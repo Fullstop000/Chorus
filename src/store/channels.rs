@@ -227,7 +227,7 @@ impl Store {
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 
-    /// Update a user channel in place so message/task/thread data continues to
+    /// Update a user channel in place so message/task data continues to
     /// point at the same stable channel id.
     pub fn update_channel(
         &self,
@@ -299,10 +299,6 @@ impl Store {
             .filter_map(|row| row.ok())
             .collect();
 
-        conn.execute(
-            "DELETE FROM inbox_thread_read_state WHERE conversation_id = ?1",
-            params![channel_id],
-        )?;
         conn.execute(
             "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
             params![channel_id],

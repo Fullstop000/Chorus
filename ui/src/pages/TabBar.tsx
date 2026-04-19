@@ -1,5 +1,4 @@
 import { useStore } from "../store";
-import { useInbox } from "../hooks/data";
 import type { ActiveTab } from "../store";
 import "./TabBar.css";
 
@@ -11,19 +10,14 @@ const AGENT_TABS: { id: ActiveTab; label: string }[] = [
   { id: "profile", label: "Profile" },
 ];
 
+const CHANNEL_TABS: { id: ActiveTab; label: string }[] = [
+  { id: "chat", label: "Chat" },
+  { id: "tasks", label: "Tasks" },
+];
+
 export function TabBar() {
-  const { currentChannel, currentAgent, activeTab, setActiveTab } = useStore();
-  const { getConversationThreadUnread } = useInbox();
-  const threadUnread = getConversationThreadUnread(currentChannel?.id);
-  const channelTabs: { id: ActiveTab; label: string }[] = [
-    { id: "chat", label: "Chat" },
-    {
-      id: "threads",
-      label: threadUnread > 0 ? `Threads (${threadUnread})` : "Threads",
-    },
-    { id: "tasks", label: "Tasks" },
-  ];
-  const tabs = currentAgent ? AGENT_TABS : channelTabs;
+  const { currentAgent, activeTab, setActiveTab } = useStore();
+  const tabs = currentAgent ? AGENT_TABS : CHANNEL_TABS;
 
   return (
     <div className="tab-bar">

@@ -123,12 +123,6 @@ export async function sendChatMessage(page: Page, text: string): Promise<void> {
   await ta.press('Enter')
 }
 
-export async function sendThreadMessage(page: Page, text: string): Promise<void> {
-  const ta = page.locator('.thread-input-textarea')
-  await ta.fill(text)
-  await page.locator('.thread-send-btn').click()
-}
-
 export async function openMembersPanel(page: Page): Promise<void> {
   await page.getByRole('button', { name: /Show members list/i }).waitFor({ state: 'visible' })
   await page.getByRole('button', { name: /Show members list/i }).click()
@@ -142,21 +136,3 @@ export async function closeMembersPanel(page: Page): Promise<void> {
   }
 }
 
-export async function openThreadFromMessage(page: Page, contentSnippet: string): Promise<void> {
-  const msg = page.locator('.message-item').filter({ hasText: contentSnippet }).first()
-  await expect(msg).toBeVisible()
-  await msg.scrollIntoViewIfNeeded()
-  const replyCount = msg.locator('.message-reply-count').first()
-  if (await replyCount.isVisible().catch(() => false)) {
-    await replyCount.click()
-    await expect(page.locator('.thread-panel')).toBeVisible()
-    return
-  }
-  await msg.hover({ force: true })
-  const replyButton = msg.locator('.message-action-btn[title="Reply in thread"]').first()
-  await expect(replyButton).toBeVisible()
-  await replyButton.evaluate((element) => {
-    (element as HTMLButtonElement).click()
-  })
-  await expect(page.locator('.thread-panel')).toBeVisible()
-}

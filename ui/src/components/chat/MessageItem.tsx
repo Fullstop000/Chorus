@@ -1,16 +1,12 @@
 import React, { useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
-import { MessageSquare, Copy, Paperclip, Loader } from "lucide-react";
+import { Copy, Paperclip, Loader } from "lucide-react";
 import type { AgentInfo, HistoryMessage, TraceSummary } from "../../data";
 import { attachmentUrl } from "../../data";
 import { useStore } from "../../store";
 import { useAgents } from "../../hooks/data";
 import { Telescope } from "./Telescope";
 import type { AgentTrace } from "../../store/traceStore";
-
-function replyLabel(n: number) {
-  return n === 1 ? "1 reply" : `${n} replies`;
-}
 
 // Render message content with markdown + @mention pills
 function renderContent(
@@ -140,7 +136,6 @@ interface MessageItemProps {
   message: HistoryMessage;
   currentUser: string | null;
   prevMessage?: HistoryMessage;
-  onReply?: (msg: HistoryMessage) => void;
   traceData?: AgentTrace;
   showTraceSummary?: boolean;
   isRunActive?: boolean;
@@ -171,7 +166,6 @@ export function MessageItem({
   message,
   currentUser,
   prevMessage,
-  onReply,
   traceData,
   showTraceSummary = true,
   isRunActive = false,
@@ -317,15 +311,6 @@ export function MessageItem({
           {renderContent(message.content, agents, handleSelectAgent)}
         </div>
         <div className="message-actions">
-          {onReply && (
-            <button
-              className="message-action-btn"
-              title="Reply in thread"
-              onClick={() => onReply(message)}
-            >
-              <MessageSquare size={13} />
-            </button>
-          )}
           <button
             className="message-action-btn"
             title="Copy markdown"
@@ -349,15 +334,6 @@ export function MessageItem({
               </a>
             ))}
           </div>
-        )}
-        {onReply && (message.replyCount ?? 0) > 0 && (
-          <button
-            className="message-reply-count"
-            onClick={() => onReply(message)}
-          >
-            <MessageSquare size={12} />
-            {replyLabel(message.replyCount!)}
-          </button>
         )}
       </div>
     </div>

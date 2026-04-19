@@ -111,10 +111,6 @@ pub fn build_router_with_services(
             get(handle_public_conversation_inbox_notification),
         )
         .route(
-            "/conversations/{conversation_id}/threads",
-            get(handle_public_threads),
-        )
-        .route(
             "/conversations/{conversation_id}/read-cursor",
             post(handle_public_update_read_cursor),
         )

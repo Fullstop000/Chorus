@@ -7,19 +7,12 @@ use crate::store::messages::*;
 use crate::store::Store;
 
 impl Store {
-    /// Resolve a `#channel`, `#channel:msgid`, `dm:@name`, or `dm:@name:msgid` target
-    /// into `(channel_id, thread_parent_id)`.
-    pub fn resolve_target(
-        &self,
-        target: &str,
-        sender_name: &str,
-    ) -> Result<(String, Option<String>)> {
+    /// Resolve a `#channel` or `dm:@name` target into a `channel_id`.
+    pub fn resolve_target(&self, target: &str, sender_name: &str) -> Result<String> {
         let conn = self.conn.lock().unwrap();
 
         if let Some(rest) = target.strip_prefix("dm:@") {
-            let parts: Vec<&str> = rest.splitn(2, ':').collect();
-            let other_name = parts[0];
-            let thread_short = parts.get(1).copied();
+            let other_name = rest;
 
             let mut names = [sender_name.to_string(), other_name.to_string()];
             names.sort();
@@ -57,34 +50,11 @@ impl Store {
                 }
             };
 
-            let thread_parent_id = thread_short.and_then(|short| {
-                conn.query_row(
-                    "SELECT id FROM messages WHERE channel_id = ?1 AND id LIKE ?2",
-                    params![channel.id, format!("{}%", short)],
-                    |row| row.get(0),
-                )
-                .ok()
-            });
-
-            Ok((channel.id, thread_parent_id))
+            Ok(channel.id)
         } else if let Some(rest) = target.strip_prefix('#') {
-            let parts: Vec<&str> = rest.splitn(2, ':').collect();
-            let channel_name = parts[0];
-            let thread_short = parts.get(1).copied();
-
-            let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
-                .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-
-            let thread_parent_id = thread_short.and_then(|short| {
-                conn.query_row(
-                    "SELECT id FROM messages WHERE channel_id = ?1 AND id LIKE ?2",
-                    params![channel.id, format!("{}%", short)],
-                    |row| row.get(0),
-                )
-                .ok()
-            });
-
-            Ok((channel.id, thread_parent_id))
+            let channel = Self::get_channel_by_name_inner(&conn, rest)?
+                .ok_or_else(|| anyhow!("channel not found: {}", rest))?;
+            Ok(channel.id)
         } else {
             Err(anyhow!("invalid target format: {}", target))
         }

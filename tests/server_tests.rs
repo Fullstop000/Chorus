@@ -25,11 +25,6 @@ use chorus::agent::activity_log::{self, ActivityLogMap};
 use tempfile::tempdir;
 use tower::ServiceExt;
 
-fn sorted(mut names: Vec<String>) -> Vec<String> {
-    names.sort();
-    names
-}
-
 fn setup() -> (Arc<Store>, axum::Router) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
@@ -1106,7 +1101,6 @@ async fn test_history_rejects_non_member_agent() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            thread_parent_id: None,
             sender_name: "alice",
             sender_type: SenderType::Human,
             content: "secret channel update",
@@ -1180,7 +1174,6 @@ async fn test_delete_channel_via_api_removes_channel_owned_data() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            thread_parent_id: None,
             sender_name: "alice",
             sender_type: SenderType::Human,
             content: "hello",
@@ -1611,7 +1604,6 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            thread_parent_id: None,
             sender_name: "bot1",
             sender_type: SenderType::Agent,
             content: "hello",
@@ -1740,219 +1732,12 @@ async fn test_send_persists_message_even_if_agent_delivery_fails() {
     assert_eq!(resp.status(), StatusCode::OK);
 
     let history = store
-        .get_history_snapshot("general", "alice", None, 10, None, None)
+        .get_history_snapshot("general", "alice", 10, None, None)
         .unwrap();
     assert!(history
         .messages
         .iter()
         .any(|message| message.content == "persist despite delivery failure"));
-}
-
-#[tokio::test]
-async fn test_thread_send_only_starts_parent_author_agent() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "gpt-5.4",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot2", SenderType::Agent)
-        .unwrap();
-
-    let parent_message_id = store
-        .create_message(CreateMessage {
-            channel_name: "general",
-            thread_parent_id: None,
-            sender_name: "bot1",
-            sender_type: SenderType::Agent,
-            content: "parent from bot1",
-            attachment_ids: &[],
-            suppress_event: false,
-            run_id: None,
-        })
-        .unwrap();
-    let thread_target = format!("#general:{}", &parent_message_id[..8]);
-
-    let send_req = serde_json::json!({
-        "target": thread_target,
-        "content": "thread reply for parent author only"
-    });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        lifecycle.started_names(),
-        vec!["bot1".to_string()],
-        "thread replies should wake only the parent author when no other agent has joined the thread"
-    );
-}
-
-#[tokio::test]
-async fn test_thread_send_starts_parent_author_and_existing_thread_repliers() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "gpt-5.4",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot2", SenderType::Agent)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot3",
-            display_name: "Bot 3",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot3", SenderType::Agent)
-        .unwrap();
-
-    let parent_message_id = store
-        .create_message(CreateMessage {
-            channel_name: "general",
-            thread_parent_id: None,
-            sender_name: "bot1",
-            sender_type: SenderType::Agent,
-            content: "parent from bot1",
-            attachment_ids: &[],
-            suppress_event: false,
-            run_id: None,
-        })
-        .unwrap();
-    store
-        .create_message(CreateMessage {
-            channel_name: "general",
-            thread_parent_id: Some(&parent_message_id),
-            sender_name: "bot2",
-            sender_type: SenderType::Agent,
-            content: "bot2 already joined the thread",
-            attachment_ids: &[],
-            suppress_event: false,
-            run_id: None,
-        })
-        .unwrap();
-
-    let thread_target = format!("#general:{}", &parent_message_id[..8]);
-    let send_req = serde_json::json!({
-        "target": thread_target,
-        "content": "thread reply for joined participants"
-    });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        sorted(lifecycle.started_names()),
-        vec!["bot1".to_string(), "bot2".to_string()],
-        "thread replies should wake the parent author plus agent participants already present in that thread"
-    );
-}
-
-#[tokio::test]
-async fn test_agent_thread_reply_to_human_parent_does_not_start_unrelated_agents() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "gpt-5.4",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot2", SenderType::Agent)
-        .unwrap();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
-
-    let parent_message_id = store
-        .create_message(CreateMessage {
-            channel_name: "general",
-            thread_parent_id: None,
-            sender_name: "alice",
-            sender_type: SenderType::Human,
-            content: "human started the thread",
-            attachment_ids: &[],
-            suppress_event: false,
-            run_id: None,
-        })
-        .unwrap();
-
-    let thread_target = format!("#general:{}", &parent_message_id[..8]);
-    let send_req = serde_json::json!({
-        "target": thread_target,
-        "content": "bot1 joins the human thread"
-    });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/bot1/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(
-        lifecycle.started_names().is_empty(),
-        "an agent joining a human-owned thread should not wake unrelated agents"
-    );
-    assert!(
-        lifecycle.notified_names().is_empty(),
-        "thread replies to a human-owned thread should not notify unrelated active agents"
-    );
 }
 
 #[tokio::test]
@@ -2038,7 +1823,6 @@ async fn test_history() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            thread_parent_id: None,
             sender_name: "alice",
             sender_type: SenderType::Human,
             content: "msg 1",
@@ -2050,7 +1834,6 @@ async fn test_history() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            thread_parent_id: None,
             sender_name: "alice",
             sender_type: SenderType::Human,
             content: "msg 2",

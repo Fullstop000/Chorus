@@ -9,20 +9,13 @@ impl Store {
     pub fn get_history(
         &self,
         channel_name: &str,
-        thread_parent_id: Option<&str>,
         limit: i64,
         before: Option<i64>,
         after: Option<i64>,
     ) -> Result<(Vec<HistoryMessage>, bool)> {
         let conn = self.conn.lock().unwrap();
-        let (messages, has_more) = Self::get_conversation_history_view_inner(
-            &conn,
-            channel_name,
-            thread_parent_id,
-            limit,
-            before,
-            after,
-        )?;
+        let (messages, has_more) =
+            Self::get_conversation_history_view_inner(&conn, channel_name, limit, before, after)?;
         Ok((
             messages
                 .iter()
@@ -37,36 +30,22 @@ impl Store {
         &self,
         channel_name: &str,
         member_name: &str,
-        thread_parent_id: Option<&str>,
         limit: i64,
         before: Option<i64>,
         after: Option<i64>,
     ) -> Result<HistorySnapshot> {
         let conn = self.conn.lock().unwrap();
-        let (message_views, has_more) = Self::get_conversation_history_view_inner(
-            &conn,
-            channel_name,
-            thread_parent_id,
-            limit,
-            before,
-            after,
-        )?;
+        let (message_views, has_more) =
+            Self::get_conversation_history_view_inner(&conn, channel_name, limit, before, after)?;
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let last_read_seq = if let Some(parent_id) = thread_parent_id {
-            Self::get_thread_notification_state_by_channel_id_inner(
-                &conn,
-                &channel.id,
-                parent_id,
-                member_name,
-            )?
-            .map(|state| state.last_read_seq)
-            .unwrap_or(0)
-        } else {
-            Self::get_inbox_conversation_state_by_channel_id_inner(&conn, &channel.id, member_name)?
-                .map(|state| state.last_read_seq)
-                .unwrap_or(0)
-        };
+        let last_read_seq = Self::get_inbox_conversation_state_by_channel_id_inner(
+            &conn,
+            &channel.id,
+            member_name,
+        )?
+        .map(|state| state.last_read_seq)
+        .unwrap_or(0);
         Ok(HistorySnapshot {
             messages: message_views
                 .iter()
@@ -80,7 +59,6 @@ impl Store {
     fn get_conversation_history_view_inner(
         conn: &Connection,
         channel_name: &str,
-        thread_parent_id: Option<&str>,
         limit: i64,
         before: Option<i64>,
         after: Option<i64>,
@@ -88,83 +66,35 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let fetch_limit = limit + 1;
-
-        // Build SQL with correct positional params depending on which optional args are present.
-        // Always: ?1 = channel_id
-        // If has_cursor: ?2 = cursor (before or after value)
-        // If has_thread: ?N = thread_parent_id (N=2 when no cursor, N=3 when cursor)
-        let has_cursor = before.is_some() || after.is_some();
-        let cursor_param = if has_cursor { "?2" } else { "" };
-        let thread_param_num = if has_cursor { "?3" } else { "?2" };
-
-        let thread_clause = if thread_parent_id.is_some() {
-            format!("AND conversation_messages_view.thread_parent_id = {thread_param_num}")
-        } else {
-            "AND conversation_messages_view.thread_parent_id IS NULL".to_string()
-        };
-        let (cursor_clause, order, needs_reverse) = if before.is_some() {
-            (
-                format!("AND conversation_messages_view.seq < {cursor_param}"),
-                "DESC",
-                true,
-            )
-        } else if after.is_some() {
-            (
-                format!("AND conversation_messages_view.seq > {cursor_param}"),
-                "ASC",
-                false,
-            )
-        } else {
-            (String::new(), "DESC", true)
-        };
         if before.is_some() && after.is_some() {
             return Err(anyhow!("cannot specify both before and after"));
         }
 
+        let fetch_limit = limit + 1;
+        let (cursor_clause, order, needs_reverse) = if before.is_some() {
+            ("AND seq < ?2", "DESC", true)
+        } else if after.is_some() {
+            ("AND seq > ?2", "ASC", false)
+        } else {
+            ("", "DESC", true)
+        };
+
         let sql = format!(
-            "SELECT conversation_messages_view.message_id AS message_id,
-                    conversation_messages_view.conversation_id AS conversation_id,
-                    conversation_messages_view.conversation_name AS conversation_name,
-                    conversation_messages_view.conversation_type AS conversation_type,
-                    conversation_messages_view.thread_parent_id AS thread_parent_id,
-                    conversation_messages_view.sender_name AS sender_name,
-                    conversation_messages_view.sender_type AS sender_type,
-                    conversation_messages_view.sender_deleted AS sender_deleted,
-                    conversation_messages_view.content AS content,
-                    conversation_messages_view.created_at AS created_at,
-                    conversation_messages_view.seq AS seq,
-                    conversation_messages_view.forwarded_from AS forwarded_from,
-                    conversation_messages_view.run_id AS run_id,
-                    conversation_messages_view.trace_summary AS trace_summary,
-                    thread_summaries_view.reply_count AS reply_count
+            "SELECT message_id, conversation_id, conversation_name, conversation_type,
+                    sender_name, sender_type, sender_deleted, content, created_at, seq,
+                    forwarded_from, run_id, trace_summary
              FROM conversation_messages_view
-             LEFT JOIN thread_summaries_view
-               ON thread_summaries_view.conversation_id = conversation_messages_view.conversation_id
-              AND thread_summaries_view.parent_message_id = conversation_messages_view.message_id
-             WHERE conversation_messages_view.conversation_id = ?1 {thread_clause} {cursor_clause} \
-             ORDER BY conversation_messages_view.seq {order} LIMIT {fetch_limit}"
+             WHERE conversation_id = ?1 {cursor_clause}
+             ORDER BY seq {order} LIMIT {fetch_limit}"
         );
 
-        let cursor_val = before.or(after).unwrap_or(0);
-        let thread_val = thread_parent_id.unwrap_or("");
         let mut stmt = conn.prepare(&sql)?;
-
-        // Bind exactly the parameters the SQL expects: ?1=channel_id, optionally ?2=cursor, optionally ?3=thread
-        let rows: Vec<ConversationMessageView> = match (has_cursor, thread_parent_id.is_some()) {
-            (true, true) => stmt.query_map(
-                params![channel.id, cursor_val, thread_val],
+        let rows: Vec<ConversationMessageView> = match before.or(after) {
+            Some(cursor) => stmt.query_map(
+                params![channel.id, cursor],
                 ConversationMessageView::from_projection_row,
             )?,
-            (true, false) => stmt.query_map(
-                params![channel.id, cursor_val],
-                ConversationMessageView::from_projection_row,
-            )?,
-            (false, true) => stmt.query_map(
-                params![channel.id, thread_val],
-                ConversationMessageView::from_projection_row,
-            )?,
-            (false, false) => stmt.query_map(
+            None => stmt.query_map(
                 params![channel.id],
                 ConversationMessageView::from_projection_row,
             )?,
@@ -203,26 +133,11 @@ impl Store {
     ) -> Result<Option<ConversationMessageView>> {
         let message = conn
             .query_row(
-                "SELECT conversation_messages_view.message_id AS message_id,
-                        conversation_messages_view.conversation_id AS conversation_id,
-                        conversation_messages_view.conversation_name AS conversation_name,
-                        conversation_messages_view.conversation_type AS conversation_type,
-                        conversation_messages_view.thread_parent_id AS thread_parent_id,
-                        conversation_messages_view.sender_name AS sender_name,
-                        conversation_messages_view.sender_type AS sender_type,
-                        conversation_messages_view.sender_deleted AS sender_deleted,
-                        conversation_messages_view.content AS content,
-                        conversation_messages_view.created_at AS created_at,
-                        conversation_messages_view.seq AS seq,
-                        conversation_messages_view.forwarded_from AS forwarded_from,
-                        conversation_messages_view.run_id AS run_id,
-                        conversation_messages_view.trace_summary AS trace_summary,
-                        thread_summaries_view.reply_count AS reply_count
+                "SELECT message_id, conversation_id, conversation_name, conversation_type,
+                        sender_name, sender_type, sender_deleted, content, created_at, seq,
+                        forwarded_from, run_id, trace_summary
                  FROM conversation_messages_view
-                 LEFT JOIN thread_summaries_view
-                   ON thread_summaries_view.conversation_id = conversation_messages_view.conversation_id
-                  AND thread_summaries_view.parent_message_id = conversation_messages_view.message_id
-                 WHERE conversation_messages_view.message_id = ?1",
+                 WHERE message_id = ?1",
                 params![message_id],
                 ConversationMessageView::from_projection_row,
             )
