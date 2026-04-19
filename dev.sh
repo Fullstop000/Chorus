@@ -11,13 +11,9 @@ RESET='\033[0m'
 
 echo -e "${CYAN}Chorus dev environment${RESET}"
 
-# ── First-run setup (skipped when config.toml already exists) ──
-CHORUS_DATA_DIR="${CHORUS_DATA_DIR:-$HOME/.chorus}"
-if [ ! -f "$CHORUS_DATA_DIR/config.toml" ]; then
-  echo -e "${YELLOW}▶ Running first-time setup...${RESET}"
-  "$ROOT/target/debug/chorus" setup --yes 2>/dev/null || \
-    cargo run --quiet -- setup --yes
-fi
+# ── First-run setup (idempotent — chorus setup skips when config already exists) ──
+"$ROOT/target/debug/chorus" setup 2>/dev/null || \
+  cargo run --quiet -- setup
 
 port_in_use() {
   lsof -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
