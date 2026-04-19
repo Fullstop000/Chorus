@@ -120,7 +120,7 @@ export function listHumans(): Promise<HumanInfo[]> {
   return get('/api/humans')
 }
 
-export function updateHuman(name: string, body: { display_name?: string }): Promise<HumanInfo> {
+export function updateHuman(name: string, body: { display_name?: string | null }): Promise<HumanInfo> {
   return patch(`/api/humans/${encodeURIComponent(name)}`, body)
 }
 

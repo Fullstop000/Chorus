@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { updateHuman } from '../../data'
+import { useQueryClient } from '@tanstack/react-query'
+import { updateHuman, channelQueryKeys } from '../../data'
 import { useHumans } from '../../hooks/data'
 import {
   Dialog,
@@ -22,6 +23,7 @@ interface Props {
 }
 
 export function UserSettings({ username, open, onOpenChange }: Props) {
+  const queryClient = useQueryClient()
   const humans = useHumans()
   const currentHuman = humans.find((h) => h.name === username)
 
@@ -30,14 +32,15 @@ export function UserSettings({ username, open, onOpenChange }: Props) {
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
-    setDisplayName(currentHuman?.display_name ?? '')
-  }, [currentHuman?.display_name])
+    if (open) setDisplayName(currentHuman?.display_name ?? '')
+  }, [currentHuman?.display_name, open])
 
   async function handleSave() {
     setSaving(true)
     setError(null)
     try {
-      await updateHuman(username, { display_name: displayName.trim() || undefined })
+      await updateHuman(username, { display_name: displayName.trim() || null })
+      await queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans })
       onOpenChange(false)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
