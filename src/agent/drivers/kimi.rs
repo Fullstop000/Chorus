@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, bail, Context};
@@ -19,6 +20,29 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
+
+// ---------------------------------------------------------------------------
+// Handle role
+// ---------------------------------------------------------------------------
+
+/// Which slot a [`KimiHandle`] fills in the per-agent core.
+///
+/// The `Bootstrap` handle — produced by [`RuntimeDriver::attach`] — owns the
+/// child-process lifecycle: its `start()` spawns the child and its `close()`
+/// signals SIGTERM + unregisters from the static registry. `Secondary` handles
+/// (from `new_session` / `resume_session`) multiplex on top of the same
+/// process and never kill it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HandleRole {
+    Bootstrap,
+    Secondary,
+}
+
+impl HandleRole {
+    fn is_bootstrap(&self) -> bool {
+        matches!(self, Self::Bootstrap)
+    }
+}
 
 use crate::agent::AgentRuntime;
 use crate::utils::cmd::{command_exists, home_dir, read_file};
@@ -137,6 +161,25 @@ impl KimiAgentCore {
     fn emit(&self, event: DriverEvent) {
         let _ = self.event_tx.try_send(event);
     }
+
+    /// True when the cached core's child is no longer usable. Happens when
+    /// `close()` SIGTERMed the child and aborted the writer task, but the
+    /// static registry still holds an Arc (nothing has pruned it yet).
+    ///
+    /// A fresh core — never-spawned — is NOT stale; callers may still drive
+    /// the bootstrap path on it. Evict only when `stdin_tx` exists but its
+    /// receiver has dropped (writer task exited).
+    fn is_stale(&self) -> bool {
+        let Ok(inner) = self.inner.try_lock() else {
+            // Someone's mid-mutation (e.g. spawn_child in progress) — treat
+            // as live so we don't tear down a process mid-spawn.
+            return false;
+        };
+        match inner.stdin_tx.as_ref() {
+            None => false,
+            Some(tx) => tx.is_closed(),
+        }
+    }
 }
 
 impl Drop for KimiAgentCore {
@@ -174,8 +217,20 @@ fn kimi_registry() -> &'static Mutex<HashMap<AgentKey, Arc<KimiAgentCore>>> {
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Get the cached core for `key`, evicting it first if the cached entry is
+/// stale (dead child / closed stdin). Returns `None` when no entry exists or
+/// the existing entry was evicted.
 fn registry_get(key: &AgentKey) -> Option<Arc<KimiAgentCore>> {
-    kimi_registry().lock().unwrap().get(key).cloned()
+    let mut guard = kimi_registry().lock().unwrap();
+    if let Some(core) = guard.get(key) {
+        if core.is_stale() {
+            debug!(agent = %key, "kimi: evicting stale core (child exited) from registry");
+            guard.remove(key);
+            return None;
+        }
+        return Some(core.clone());
+    }
+    None
 }
 
 fn registry_insert(key: AgentKey, core: Arc<KimiAgentCore>) {
@@ -263,7 +318,7 @@ impl RuntimeDriver for KimiDriver {
         let core = KimiAgentCore::new(key.clone(), spec.clone(), events.clone(), event_tx);
         registry_insert(key.clone(), core.clone());
 
-        let handle = KimiHandle::new_primary(core);
+        let handle = KimiHandle::new_bootstrap(core);
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
@@ -320,23 +375,16 @@ struct SharedReaderState {
     /// (which otherwise bucket id>=3 as PromptResponse).
     pending: HashMap<u64, PendingRequest>,
     /// For the very first session, we omit a `pending` entry for id 2 so the
-    /// existing warm-up flow still works — but we do need to know what the
-    /// user wanted (new vs load) and what to do with deferred initial prompt.
+    /// existing warm-up flow still works — but we do need to know what to do
+    /// with the deferred initial prompt.
     warmup: Option<WarmupState>,
-    /// Cached for tests that want to assert against the primary run_id on
-    /// a session that hasn't surfaced via shared.sessions yet.
-    #[allow(dead_code)]
-    last_warmup_session_id: Option<String>,
+    /// Set to true once a `Lifecycle { Closed }` has been emitted for this
+    /// agent (either by `close()` on the bootstrap handle, or the reader EOF
+    /// path). Guards against duplicate emissions when both fire.
+    closed_emitted: Arc<AtomicBool>,
 }
 
 struct WarmupState {
-    /// If set, the first session is actually a resume; the warm-up response
-    /// may omit sessionId and we fall back to this. Stored on the pending
-    /// entry (WarmupSession::expected_session_id) — kept here too so future
-    /// diagnostics / UI can surface "resume target" without digging through
-    /// the pending map.
-    #[allow(dead_code)]
-    expected_session_id: Option<String>,
     /// Deferred initial prompt: delivered as `session/prompt` once the first
     /// session is Active.
     pending_prompt: Option<String>,
@@ -389,9 +437,15 @@ enum PendingRequest {
     /// flow sent synchronously without a oneshot (id is hardcoded to 2). Same
     /// outcomes as SessionNew/SessionLoad but drives reader state directly.
     WarmupSession {
-        is_load: bool,
         expected_session_id: Option<String>,
     },
+    /// Reservation slot for the bootstrap's deferred initial prompt at id 3.
+    /// Inserted by `spawn_child` before any response can land so that
+    /// [`alloc_id`] returning id >=4 for concurrent `new_session` callers
+    /// can't collide with the warmup's hardcoded id-3 prompt. The warmup
+    /// response handler either replaces this with a real `Prompt` entry
+    /// (deferred prompt fires) or removes it (no deferred prompt was set).
+    WarmupPromptReserved,
 }
 
 // ---------------------------------------------------------------------------
@@ -400,11 +454,11 @@ enum PendingRequest {
 
 pub struct KimiHandle {
     core: Arc<KimiAgentCore>,
-    /// True for the handle returned by `attach()` — it owns the child process
-    /// lifecycle (spawn on start, terminate on close). Secondary handles
-    /// (from `new_session`/`resume_session`) share the process and never kill
-    /// it.
-    is_primary: bool,
+    /// Whether this is the bootstrap handle (owns child lifecycle) or a
+    /// secondary handle (multiplexes on the existing stdin, never kills the
+    /// child). The bootstrap handle is returned by `attach()`; secondary
+    /// handles come from `new_session`/`resume_session`.
+    role: HandleRole,
     /// Session id assigned to this handle. None until start() completes.
     /// Secondary handles' `start()` populates this from the
     /// `session/new`/`session/load` response.
@@ -419,10 +473,10 @@ pub struct KimiHandle {
 }
 
 impl KimiHandle {
-    fn new_primary(core: Arc<KimiAgentCore>) -> Self {
+    fn new_bootstrap(core: Arc<KimiAgentCore>) -> Self {
         Self {
             core,
-            is_primary: true,
+            role: HandleRole::Bootstrap,
             session_id: None,
             state: AgentState::Idle,
             preassigned_session_id: None,
@@ -432,7 +486,7 @@ impl KimiHandle {
     fn new_secondary(core: Arc<KimiAgentCore>) -> Self {
         Self {
             core,
-            is_primary: false,
+            role: HandleRole::Secondary,
             session_id: None,
             state: AgentState::Idle,
             preassigned_session_id: None,
@@ -452,7 +506,7 @@ impl KimiHandle {
     }
 
     /// Spawn the Kimi child process and wire up stdio tasks. First-session
-    /// only — called by the primary handle's `start()`.
+    /// only — called by the bootstrap handle's `start()`.
     async fn spawn_child(
         &mut self,
         opts: &StartOpts,
@@ -523,7 +577,12 @@ impl KimiHandle {
         writeln!(stdin, "{session_req}").context("failed to write session request")?;
 
         // Shared reader state, seeded with Init + WarmupSession pending entries
-        // so the reader task routes the first two responses correctly.
+        // so the reader task routes the first two responses correctly. We
+        // also reserve id 3 (`WarmupPromptReserved`) up-front: see
+        // `alloc_id` discussion below — this prevents a secondary
+        // `new_session` kicked off between `start()` returning and the
+        // warmup response landing from grabbing id 3 and colliding with the
+        // bootstrap's deferred prompt (which is hardcoded at id 3).
         let shared = Arc::new(Mutex::new(SharedReaderState {
             phase: acp_protocol::AcpPhase::AwaitingInitResponse,
             sessions: HashMap::new(),
@@ -533,17 +592,16 @@ impl KimiHandle {
                 m.insert(
                     2,
                     PendingRequest::WarmupSession {
-                        is_load: expected_session_id.is_some(),
                         expected_session_id: expected_session_id.clone(),
                     },
                 );
+                m.insert(3, PendingRequest::WarmupPromptReserved);
                 m
             },
             warmup: Some(WarmupState {
-                expected_session_id: expected_session_id.clone(),
                 pending_prompt: None,
             }),
-            last_warmup_session_id: None,
+            closed_emitted: Arc::new(AtomicBool::new(false)),
         }));
 
         // Stdin writer task.
@@ -604,9 +662,16 @@ impl KimiHandle {
                 .extend([stdin_handle, stdout_handle, stderr_handle]);
             inner.stdin_tx = Some(stdin_tx);
             inner.shared = Some(shared.clone());
-            // Next id is 3 — used for the first prompt. alloc_id starts from
-            // 3 so follow-up prompts / session ops don't collide with warm-up.
-            inner.next_request_id = 3;
+            // Next id is 4, NOT 3. Id 3 is reserved for the bootstrap's
+            // deferred initial prompt (fired from the warmup response
+            // handler at a hardcoded id 3). A secondary `new_session` that
+            // starts between `start()` returning and the warmup response
+            // landing calls `alloc_id()` — without this +1 skip it would
+            // hand out id 3 and collide on the wire with the deferred
+            // prompt. Mirror: `shared.pending` gets a
+            // `WarmupPromptReserved` entry at id 3 in the seed above so
+            // `handle_response` can't silently drop a reply routed to it.
+            inner.next_request_id = 4;
         }
 
         // For the warm-up flow we don't get a oneshot — the reader task
@@ -618,13 +683,14 @@ impl KimiHandle {
 
 impl Drop for KimiHandle {
     fn drop(&mut self) {
-        // Only the primary handle's Drop needs to intervene — and even then
-        // only to unregister from the static map. Actual child termination is
-        // handled by KimiAgentCore::drop when the last Arc is released.
+        // Only the bootstrap handle's Drop needs to intervene — and even
+        // then only to unregister from the static map. Actual child
+        // termination is handled by KimiAgentCore::drop when the last Arc
+        // is released.
         //
-        // We do NOT signal the child here: a primary handle may be dropped
-        // while secondary handles still hold Arcs to the core. Let the Arc
-        // reference count decide when to terminate.
+        // We do NOT signal the child here: a bootstrap handle may be
+        // dropped while secondary handles still hold Arcs to the core. Let
+        // the Arc reference count decide when to terminate.
     }
 }
 
@@ -660,15 +726,15 @@ impl AgentSessionHandle for KimiHandle {
             state: AgentState::Starting,
         });
 
-        if self.is_primary {
+        if self.role.is_bootstrap() {
             // Spawn (or re-use a partially-spawned core). The current code
-            // path only supports one primary per core; duplicate attach+start
+            // path only supports one bootstrap per core; duplicate attach+start
             // would already have panicked on stdin_tx being Some.
             {
                 let inner = self.core.inner.lock().await;
                 if inner.stdin_tx.is_some() {
                     drop(inner);
-                    bail!("kimi: primary start() called twice on same core");
+                    bail!("kimi: bootstrap start() called twice on same core");
                 }
             }
 
@@ -705,7 +771,7 @@ impl AgentSessionHandle for KimiHandle {
             let (stdin_tx, shared) = {
                 let inner = self.core.inner.lock().await;
                 let tx = inner.stdin_tx.clone().ok_or_else(|| {
-                    anyhow!("kimi: new_session before primary start() spawned the child")
+                    anyhow!("kimi: new_session before bootstrap start() spawned the child")
                 })?;
                 let shared = inner
                     .shared
@@ -732,22 +798,11 @@ impl AgentSessionHandle for KimiHandle {
                         },
                     );
                 }
-                let mcp_servers = build_acp_mcp_servers(
-                    &self.core.spec.bridge_endpoint,
-                    // reuse-any-token: fine — secondary sessions share the
-                    // pairing token already written by the primary start().
-                    // We cannot re-pair here without a fresh token endpoint,
-                    // and the MCP server is already attached to the bridge.
-                    // Kimi treats `mcpServers` as per-session connection
-                    // config; passing the same URL is a no-op in practice.
-                    // If the bridge changes, the primary must be recycled.
-                    "", // sentinel — replaced below if needed
-                );
-                let _ = mcp_servers; // silence unused
-                                     // Reuse the primary's MCP config by re-deriving the URL from
-                                     // the bridge endpoint. We don't have the pairing token here,
-                                     // so pass an empty mcpServers array. Kimi accepts this on
-                                     // session/load (it reuses the primary session's MCP state).
+                // Secondary sessions send an empty `mcpServers` array. Kimi
+                // accepts this on `session/load` — the bootstrap session's
+                // MCP state is reused, so there's no per-session connection
+                // to stand up. If the bridge endpoint changes at runtime
+                // the bootstrap must be recycled.
                 let params = serde_json::json!({
                     "cwd": self.core.spec.working_directory,
                     "mcpServers": [],
@@ -812,13 +867,13 @@ impl AgentSessionHandle for KimiHandle {
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
         // Session id comes from our local mirror (secondary) or from shared
-        // state after warm-up completed (primary).
+        // state after warm-up completed (bootstrap).
         let session_id = if let Some(sid) = self.session_id.clone() {
             sid
         } else {
-            // Primary handle after warm-up: look up the first active session
-            // in shared state. For single-session usage this is the only
-            // session that exists.
+            // Bootstrap handle after warm-up: look up the first active
+            // session in shared state. For single-session usage this is the
+            // only session that exists.
             let inner = self.core.inner.lock().await;
             let shared = inner
                 .shared
@@ -826,9 +881,9 @@ impl AgentSessionHandle for KimiHandle {
                 .ok_or_else(|| anyhow!("kimi: prompt before start"))?;
             drop(inner);
             let s = shared.lock().unwrap();
-            // Pick the first (and for primary single-session, only) session
-            // with an Active-ish state. If the warm-up session id has been
-            // populated we use that.
+            // Pick the first (and for bootstrap single-session, only)
+            // session with an Active-ish state. If the warm-up session id
+            // has been populated we use that.
             s.sessions
                 .keys()
                 .next()
@@ -947,16 +1002,53 @@ impl AgentSessionHandle for KimiHandle {
             return Ok(());
         }
 
-        self.state = AgentState::Closed;
-        self.emit(DriverEvent::Lifecycle {
-            key: self.core.key.clone(),
-            state: AgentState::Closed,
-        });
+        // Remove this handle's session from shared state so `pick_session` /
+        // `pick_session_and_run` stop routing events to a dead handle. This
+        // applies equally to bootstrap and secondary — each handle owns one
+        // session entry and no one else gets to write to it. Mirror:
+        // opencode.rs:661-663.
+        //
+        // Also check, under the same lock, whether every remaining session
+        // is Closed — if so, the bootstrap teardown path (below) must prune
+        // the registry entry so the shared Arc can finally Drop.
+        let (all_closed, shared_opt) = {
+            let shared_opt = {
+                let inner = self.core.inner.lock().await;
+                inner.shared.clone()
+            };
+            if let Some(ref shared) = shared_opt {
+                let mut s = shared.lock().unwrap();
+                if let Some(ref sid) = self.session_id {
+                    s.sessions.remove(sid);
+                }
+                let all_closed = s
+                    .sessions
+                    .values()
+                    .all(|slot| matches!(slot.state, AgentState::Closed));
+                (all_closed, Some(shared.clone()))
+            } else {
+                // start() never completed; nothing to route to.
+                (true, None)
+            }
+        };
 
-        if self.is_primary {
-            // Tear down the shared child + reader tasks + unregister from the
-            // static map. Secondary handles close() is a no-op at the process
-            // level — they just stop emitting.
+        self.state = AgentState::Closed;
+
+        if self.role.is_bootstrap() {
+            // The bootstrap handle owns the child + reader tasks. Tear them
+            // down here and let the reader's EOF path NOT re-emit Closed.
+            // `closed_emitted` is flipped BEFORE SIGTERM so that if the
+            // reader races ahead of our abort() and reaches the EOF emission,
+            // it sees the flag and skips.
+            if let Some(ref shared) = shared_opt {
+                let s = shared.lock().unwrap();
+                s.closed_emitted.store(true, Ordering::SeqCst);
+            }
+            self.emit(DriverEvent::Lifecycle {
+                key: self.core.key.clone(),
+                state: AgentState::Closed,
+            });
+
             let key = self.core.key.clone();
             {
                 let mut inner = self.core.inner.lock().await;
@@ -975,6 +1067,19 @@ impl AgentSessionHandle for KimiHandle {
             }
             self.core.events.close();
             registry_remove(&key);
+        } else {
+            // Secondary handle. Emit our per-session Closed lifecycle event
+            // (so subscribers see it go away), then — if we were the last
+            // remaining live session on this agent — prune the registry so
+            // the shared Arc can drop and SIGTERM the child via
+            // `KimiAgentCore::drop`.
+            self.emit(DriverEvent::Lifecycle {
+                key: self.core.key.clone(),
+                state: AgentState::Closed,
+            });
+            if all_closed {
+                registry_remove(&self.core.key);
+            }
         }
 
         Ok(())
@@ -1095,13 +1200,18 @@ async fn reader_loop(
     }
 
     // EOF — runtime exited. Emit TransportClosed for every in-flight run,
-    // then close out the event stream.
-    let drained: Vec<(String, RunId)> = {
+    // then close out the event stream. Skip the `Lifecycle { Closed }` emit
+    // if the bootstrap's `close()` already fired it (`closed_emitted`
+    // flag) — otherwise subscribers see two identical Closed events.
+    let (drained, already_closed) = {
         let s = shared.lock().unwrap();
-        s.sessions
+        let drained: Vec<(String, RunId)> = s
+            .sessions
             .iter()
             .filter_map(|(sid, st)| st.run_id.map(|r| (sid.clone(), r)))
-            .collect()
+            .collect();
+        let already_closed = s.closed_emitted.load(Ordering::SeqCst);
+        (drained, already_closed)
     };
     for (sid, run_id) in drained {
         let _ = event_tx.try_send(DriverEvent::Completed {
@@ -1113,10 +1223,20 @@ async fn reader_loop(
             },
         });
     }
-    let _ = event_tx.try_send(DriverEvent::Lifecycle {
-        key: key.clone(),
-        state: AgentState::Closed,
-    });
+    if !already_closed {
+        // Claim the slot first so a concurrent close() sees it already
+        // emitted and skips (guards the other direction too).
+        let shared_emitted = {
+            let s = shared.lock().unwrap();
+            s.closed_emitted.clone()
+        };
+        if !shared_emitted.swap(true, Ordering::SeqCst) {
+            let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                key: key.clone(),
+                state: AgentState::Closed,
+            });
+        }
+    }
     {
         let mut s = shared.lock().unwrap();
         for st in s.sessions.values_mut() {
@@ -1199,15 +1319,15 @@ async fn handle_response(
             let _ = responder.send(Ok(session_id));
         }
         PendingRequest::WarmupSession {
-            is_load,
             expected_session_id,
         } => {
-            let _ = is_load; // retained for future diagnostics
             if let Some(emsg) = error_msg {
                 warn!(message = %emsg, "kimi: warm-up session response errored");
+                // Release the reserved id 3 slot so it doesn't leak.
+                shared.lock().unwrap().pending.remove(&3);
                 return;
             }
-            // Primary-path warm-up: phase → Active, install session state,
+            // Bootstrap-path warm-up: phase → Active, install session state,
             // fire deferred prompt if any.
             let session_id = msg
                 .get("result")
@@ -1223,7 +1343,6 @@ async fn handle_response(
                 s.sessions
                     .entry(session_id.clone())
                     .or_insert_with(|| SessionState::new(&session_id));
-                s.last_warmup_session_id = Some(session_id.clone());
                 s.warmup.as_mut().and_then(|w| w.pending_prompt.take())
             };
 
@@ -1239,17 +1358,14 @@ async fn handle_response(
             });
 
             if let Some(prompt_text) = deferred_prompt {
-                // Build + fire the first session/prompt at id 3 (next_request_id).
+                // Fire the bootstrap's initial prompt at the reserved id 3.
+                // `spawn_child` already pre-inserted a
+                // `WarmupPromptReserved` placeholder at id 3 and bumped
+                // `next_request_id` to 4, so `alloc_id()` on any concurrent
+                // secondary cannot have handed out id 3. We replace the
+                // placeholder with the real `Prompt` entry under lock and
+                // send on stdin.
                 let run_id = RunId::new_v4();
-                // alloc an id directly from shared.pending count? We don't
-                // have the core Arc here. Use the SharedReaderState to peek
-                // at next_request_id — but next_request_id lives on the core,
-                // not shared. Simplest: hardcode id 3 here since this is the
-                // warm-up path where the contract says id 3 = first prompt.
-                // The core's next_request_id is advanced to 3 already by
-                // spawn_child; any subsequent prompt will .alloc_id(). This
-                // means after this first prompt the next handle.prompt() will
-                // get id 4, matching the original behaviour.
                 let prompt_id = 3u64;
                 {
                     let mut s = shared.lock().unwrap();
@@ -1281,7 +1397,22 @@ async fn handle_response(
                     &prompt_text,
                 );
                 let _ = stdin_tx.try_send(req);
+            } else {
+                // No deferred prompt — release the reserved id 3 slot so
+                // it doesn't linger in `pending`. Future prompts use
+                // `alloc_id()` which starts at 4.
+                shared.lock().unwrap().pending.remove(&3);
             }
+        }
+        PendingRequest::WarmupPromptReserved => {
+            // Should be unreachable — the slot is replaced (deferred prompt
+            // fired) or removed (no deferred prompt) by the WarmupSession
+            // branch above. If we got here, Kimi sent an unprompted response
+            // at id 3. Log and ignore.
+            warn!(
+                id,
+                "kimi: unexpected response at reserved warmup-prompt id 3 — ignoring"
+            );
         }
         PendingRequest::Prompt { session_id, run_id } => {
             let drained: Vec<(Option<String>, String, Value)> = {
@@ -1362,7 +1493,7 @@ fn handle_session_update(
                     .or_insert_with(|| SessionState::new(&session_id));
             }
             AcpUpdateItem::Thinking { text } => {
-                if let (Some(sid), Some(run_id)) = pick_session_and_run(shared, sid_opt.as_deref())
+                if let (Some(sid), Some(run_id)) = pick_session_and_run(key, shared, sid_opt.as_deref())
                 {
                     let _ = event_tx.try_send(DriverEvent::Output {
                         key: key.clone(),
@@ -1373,7 +1504,7 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::Text { text } => {
-                if let (Some(sid), Some(run_id)) = pick_session_and_run(shared, sid_opt.as_deref())
+                if let (Some(sid), Some(run_id)) = pick_session_and_run(key, shared, sid_opt.as_deref())
                 {
                     let _ = event_tx.try_send(DriverEvent::Output {
                         key: key.clone(),
@@ -1384,7 +1515,7 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::ToolCall { id, name, input } => {
-                if let Some(sid) = pick_session(shared, sid_opt.as_deref()) {
+                if let Some(sid) = pick_session(key, shared, sid_opt.as_deref()) {
                     let mut s = shared.lock().unwrap();
                     if let Some(slot) = s.sessions.get_mut(&sid) {
                         // Flush any previous pending calls first.
@@ -1412,7 +1543,7 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::ToolCallUpdate { id, input } => {
-                if let Some(sid) = pick_session(shared, sid_opt.as_deref()) {
+                if let Some(sid) = pick_session(key, shared, sid_opt.as_deref()) {
                     let mut s = shared.lock().unwrap();
                     if let Some(slot) = s.sessions.get_mut(&sid) {
                         slot.tool_accumulator.merge_update(id, input);
@@ -1420,7 +1551,7 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::ToolResult { content } => {
-                if let Some(sid) = pick_session(shared, sid_opt.as_deref()) {
+                if let Some(sid) = pick_session(key, shared, sid_opt.as_deref()) {
                     let (flushed, run_id) = {
                         let mut s = shared.lock().unwrap();
                         if let Some(slot) = s.sessions.get_mut(&sid) {
@@ -1451,7 +1582,7 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::TurnEnd => {
-                if let Some(sid) = pick_session(shared, sid_opt.as_deref()) {
+                if let Some(sid) = pick_session(key, shared, sid_opt.as_deref()) {
                     let (flushed, run_id) = {
                         let mut s = shared.lock().unwrap();
                         if let Some(slot) = s.sessions.get_mut(&sid) {
@@ -1485,20 +1616,46 @@ fn handle_session_update(
     }
 }
 
-fn pick_session(shared: &Arc<Mutex<SharedReaderState>>, hint: Option<&str>) -> Option<String> {
+fn pick_session(
+    key: &AgentKey,
+    shared: &Arc<Mutex<SharedReaderState>>,
+    hint: Option<&str>,
+) -> Option<String> {
     let s = shared.lock().unwrap();
     if let Some(h) = hint {
         if s.sessions.contains_key(h) {
             return Some(h.to_string());
         }
+        // Hint present but not in sessions map — fall through to the
+        // single-session heuristic, but LOUDLY. CLAUDE.md forbids silent
+        // fallbacks; this makes the "stale hint" case visible so the real
+        // cause (close raced with an update, parser returned a bogus sid)
+        // gets diagnosed instead of masked.
+        warn!(
+            agent = %key,
+            hint = %h,
+            session_count = s.sessions.len(),
+            "kimi: pick_session hint missing from sessions — falling back to single-session heuristic"
+        );
     }
     if s.sessions.len() == 1 {
         return s.sessions.keys().next().cloned();
+    }
+    if hint.is_none() && !s.sessions.is_empty() {
+        // No hint and multiple live sessions — we cannot route this update.
+        // Dropping silently would hide malformed frames from the runtime;
+        // surface it.
+        warn!(
+            agent = %key,
+            session_count = s.sessions.len(),
+            "kimi: pick_session called with no hint and >1 live sessions — dropping update"
+        );
     }
     None
 }
 
 fn pick_session_and_run(
+    key: &AgentKey,
     shared: &Arc<Mutex<SharedReaderState>>,
     hint: Option<&str>,
 ) -> (Option<String>, Option<RunId>) {
@@ -1507,13 +1664,32 @@ fn pick_session_and_run(
         if s.sessions.contains_key(h) {
             Some(h.to_string())
         } else if s.sessions.len() == 1 {
+            warn!(
+                agent = %key,
+                hint = %h,
+                session_count = s.sessions.len(),
+                "kimi: pick_session_and_run hint missing from sessions — falling back to single-session heuristic"
+            );
             s.sessions.keys().next().cloned()
         } else {
+            warn!(
+                agent = %key,
+                hint = %h,
+                session_count = s.sessions.len(),
+                "kimi: pick_session_and_run hint missing with ambiguous sessions — dropping update"
+            );
             None
         }
     } else if s.sessions.len() == 1 {
         s.sessions.keys().next().cloned()
     } else {
+        if !s.sessions.is_empty() {
+            warn!(
+                agent = %key,
+                session_count = s.sessions.len(),
+                "kimi: pick_session_and_run called with no hint and >1 live sessions — dropping update"
+            );
+        }
         None
     };
     let run = sid
@@ -1649,7 +1825,7 @@ mod tests {
             sessions: HashMap::new(),
             pending: HashMap::new(),
             warmup: None,
-            last_warmup_session_id: None,
+            closed_emitted: Arc::new(AtomicBool::new(false)),
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1703,7 +1879,7 @@ mod tests {
             sessions: HashMap::new(),
             pending: HashMap::new(),
             warmup: None,
-            last_warmup_session_id: None,
+            closed_emitted: Arc::new(AtomicBool::new(false)),
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1744,7 +1920,7 @@ mod tests {
             sessions: HashMap::new(),
             pending: HashMap::new(),
             warmup: None,
-            last_warmup_session_id: None,
+            closed_emitted: Arc::new(AtomicBool::new(false)),
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1904,7 +2080,7 @@ mod tests {
             sessions: HashMap::new(),
             pending: HashMap::new(),
             warmup: None,
-            last_warmup_session_id: None,
+            closed_emitted: Arc::new(AtomicBool::new(false)),
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1915,5 +2091,231 @@ mod tests {
         let s = shared.lock().unwrap();
         assert!(s.pending.is_empty());
         assert!(s.sessions.is_empty());
+    }
+
+    /// Regression: id 3 is reserved for the bootstrap's deferred initial
+    /// prompt. A secondary `new_session` firing between `spawn_child`
+    /// publishing its stdin and the warmup response landing must NOT grab
+    /// id 3 — otherwise its `session/new` request collides on the wire
+    /// with the deferred prompt Kimi is about to receive at id 3.
+    ///
+    /// Asserts: after `spawn_child`-equivalent seeding,
+    /// `core.alloc_id()` returns 4 (not 3); and the seeded `pending`
+    /// map holds a `WarmupPromptReserved` placeholder at id 3.
+    #[tokio::test]
+    async fn warmup_prompt_id_3_reserved_alloc_id_skips_to_4() {
+        let (events, event_tx) = EventFanOut::new();
+        let _ = events;
+        let key: AgentKey = format!("agent-warmup-reserve-{}", uuid::Uuid::new_v4());
+        let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        // Mirror the end-of-spawn_child state: shared seeded with id 1 Init,
+        // id 2 WarmupSession, id 3 WarmupPromptReserved, and
+        // next_request_id advanced to 4.
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::AwaitingInitResponse,
+            sessions: HashMap::new(),
+            pending: {
+                let mut m = HashMap::new();
+                m.insert(1, PendingRequest::Init);
+                m.insert(
+                    2,
+                    PendingRequest::WarmupSession {
+                        expected_session_id: None,
+                    },
+                );
+                m.insert(3, PendingRequest::WarmupPromptReserved);
+                m
+            },
+            warmup: Some(WarmupState {
+                pending_prompt: Some("hello".to_string()),
+            }),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+        }));
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared.clone());
+            inner.next_request_id = 4;
+            // Fake stdin_tx so alloc_id paths that inspect it don't panic.
+            let (tx, _rx) = mpsc::channel::<String>(1);
+            inner.stdin_tx = Some(tx);
+        }
+
+        // Build a secondary handle and call alloc_id. Must return 4, not 3.
+        let handle = KimiHandle::new_secondary(core.clone());
+        let id = handle.alloc_id().await;
+        assert_eq!(
+            id, 4,
+            "alloc_id on a just-spawned core must return 4 — id 3 is reserved for the bootstrap's deferred prompt"
+        );
+
+        // The reserved placeholder must still be present so the reader's
+        // `handle_response` can replace/remove it deterministically.
+        let s = shared.lock().unwrap();
+        assert!(
+            matches!(s.pending.get(&3), Some(PendingRequest::WarmupPromptReserved)),
+            "id 3 pending slot must still hold WarmupPromptReserved"
+        );
+    }
+
+    /// Regression: when the bootstrap's warmup response lands WITHOUT a
+    /// deferred prompt queued, the reserved id 3 entry must be released
+    /// so a later `alloc_id()` handing out id 4+ doesn't leave stale
+    /// bookkeeping.
+    #[tokio::test]
+    async fn warmup_without_deferred_prompt_releases_id_3() {
+        let (events, event_tx) = EventFanOut::new();
+        let _ = events;
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::AwaitingSessionResponse,
+            sessions: HashMap::new(),
+            pending: {
+                let mut m = HashMap::new();
+                m.insert(
+                    2,
+                    PendingRequest::WarmupSession {
+                        expected_session_id: None,
+                    },
+                );
+                m.insert(3, PendingRequest::WarmupPromptReserved);
+                m
+            },
+            warmup: Some(WarmupState {
+                pending_prompt: None,
+            }),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+        }));
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+
+        let key: AgentKey = "agent-w-noprompt".to_string();
+        let resp: Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-0"}}"#,
+        )
+        .unwrap();
+        handle_response(&key, &event_tx, &shared, &stdin_tx, &resp).await;
+
+        let s = shared.lock().unwrap();
+        assert!(
+            !s.pending.contains_key(&3),
+            "id 3 reservation must be cleared when no deferred prompt was queued"
+        );
+    }
+
+    /// Regression: when the bootstrap's warmup response lands WITH a
+    /// deferred prompt queued, id 3 is replaced by a real Prompt entry
+    /// carrying the session_id + run_id we just installed.
+    #[tokio::test]
+    async fn warmup_with_deferred_prompt_replaces_id_3_reservation() {
+        let (events, event_tx) = EventFanOut::new();
+        let _ = events;
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::AwaitingSessionResponse,
+            sessions: HashMap::new(),
+            pending: {
+                let mut m = HashMap::new();
+                m.insert(
+                    2,
+                    PendingRequest::WarmupSession {
+                        expected_session_id: None,
+                    },
+                );
+                m.insert(3, PendingRequest::WarmupPromptReserved);
+                m
+            },
+            warmup: Some(WarmupState {
+                pending_prompt: Some("hi".to_string()),
+            }),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+        }));
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(8);
+
+        let key: AgentKey = "agent-w-prompt".to_string();
+        let resp: Value = serde_json::from_str(
+            r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#,
+        )
+        .unwrap();
+        handle_response(&key, &event_tx, &shared, &stdin_tx, &resp).await;
+
+        // Reservation replaced with real Prompt entry.
+        {
+            let s = shared.lock().unwrap();
+            match s.pending.get(&3) {
+                Some(PendingRequest::Prompt {
+                    session_id,
+                    run_id: _,
+                }) => {
+                    assert_eq!(session_id, "sess-1");
+                }
+                other => panic!(
+                    "id 3 pending must hold Prompt{{session_id:sess-1,..}} after deferred fire — got {:?}",
+                    other.map(|_| "other variant")
+                ),
+            }
+        }
+
+        // And the prompt wire frame must have been queued on stdin.
+        let line = stdin_rx
+            .recv()
+            .await
+            .expect("prompt frame must be sent on stdin");
+        assert!(
+            line.contains("\"id\":3") && line.contains("sess-1"),
+            "expected stdin frame to be a session/prompt at id 3 for sess-1, got: {line}"
+        );
+    }
+
+    /// Regression: `KimiAgentCore::is_stale` returns true once the stdin
+    /// writer has been closed (mirrors the close()-then-linger state), and
+    /// `registry_get` evicts such an entry rather than handing back a
+    /// zombie Arc to a fresh attach.
+    #[tokio::test]
+    async fn registry_get_evicts_stale_core() {
+        let (events, event_tx) = EventFanOut::new();
+        let _ = events;
+        let key: AgentKey = format!("agent-stale-{}", uuid::Uuid::new_v4());
+        let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        // Wire a stdin_tx but immediately drop the receiver to simulate
+        // the post-close state (writer task exited).
+        {
+            let mut inner = core.inner.lock().await;
+            let (tx, rx) = mpsc::channel::<String>(1);
+            drop(rx);
+            inner.stdin_tx = Some(tx);
+        }
+        assert!(core.is_stale(), "closed stdin must mark core stale");
+
+        registry_insert(key.clone(), core);
+        assert!(
+            registry_get(&key).is_none(),
+            "registry_get must evict the stale entry and return None"
+        );
+        // Ensure it was actually removed from the map.
+        assert!(
+            kimi_registry().lock().unwrap().get(&key).is_none(),
+            "stale entry must have been pruned from the registry"
+        );
+    }
+
+    /// Regression: a fresh (never-spawned) core is NOT stale — callers
+    /// that just ran `attach()` and haven't called `start()` yet must
+    /// still be able to retrieve it via `registry_get`.
+    #[tokio::test]
+    async fn registry_get_keeps_fresh_never_spawned_core() {
+        let (events, event_tx) = EventFanOut::new();
+        let _ = events;
+        let key: AgentKey = format!("agent-fresh-{}", uuid::Uuid::new_v4());
+        let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        assert!(
+            !core.is_stale(),
+            "a never-spawned core must not be reported as stale"
+        );
+        registry_insert(key.clone(), core);
+        assert!(
+            registry_get(&key).is_some(),
+            "registry_get must return a fresh core"
+        );
+        registry_remove(&key);
     }
 }
