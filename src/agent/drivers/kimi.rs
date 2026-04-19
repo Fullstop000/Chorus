@@ -307,12 +307,24 @@ impl RuntimeDriver for KimiDriver {
     }
 
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        // If an existing core is still registered for this key (e.g. stale
-        // attach from a prior run that never closed cleanly), drop it first
-        // so the new attach owns a fresh event stream. This matches the
-        // existing single-session semantics where each attach() yielded a
-        // brand-new `EventFanOut`.
-        registry_remove(&key);
+        // Stale-gate the eviction: `registry_get` already evicts cores whose
+        // writer task exited (`is_stale()` true). If it returns `Some`, the
+        // core is live — reuse it rather than orphaning its child + readers.
+        // This matches Codex's fix pattern in `codex.rs::ensure_process`.
+        //
+        // Reuse semantics: the caller gets a fresh bootstrap handle wired to
+        // the existing fan-out + shared state, so any live sessions on the
+        // core keep running and their events keep reaching subscribers. `start`
+        // on the new handle short-circuits its child spawn via the `spawned`
+        // flag in `KimiAgentCore`, so double-spawn is impossible.
+        if let Some(existing) = registry_get(&key) {
+            let events = existing.events.clone();
+            let handle = KimiHandle::new_bootstrap(existing);
+            return Ok(AttachResult {
+                handle: Box::new(handle),
+                events,
+            });
+        }
 
         let (events, event_tx) = EventFanOut::new();
         let core = KimiAgentCore::new(key.clone(), spec.clone(), events.clone(), event_tx);

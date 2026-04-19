@@ -942,9 +942,11 @@ impl AgentSessionHandle for CodexHandle {
         }
 
         // Mark this handle's session as Closed in shared state. If we were
-        // the last live session on this agent, also drop the registry entry
-        // so the shared `Arc<CodexAgentProcess>` refcount can reach zero
-        // and its Drop impl terminates the child process + reader tasks.
+        // the last live session on this agent — AND no new_session /
+        // resume_session is mid-flight (which would add a new session
+        // slot on response) — also drop the registry entry so the shared
+        // `Arc<CodexAgentProcess>` refcount can reach zero and its Drop impl
+        // terminates the child process + reader tasks.
         let last_session = {
             let mut s = self.process.shared.lock().unwrap();
             if let Some(ref sid) = self.session_id {
@@ -952,11 +954,17 @@ impl AgentSessionHandle for CodexHandle {
                     session.agent_state = AgentState::Closed;
                 }
             }
-            // `true` iff every session we know about is Closed (or the set
-            // is empty, which happens if start() never completed).
-            s.sessions
+            let all_closed = s
+                .sessions
                 .values()
-                .all(|sess| matches!(sess.agent_state, AgentState::Closed))
+                .all(|sess| matches!(sess.agent_state, AgentState::Closed));
+            // Don't tear down while a thread/start or thread/resume response
+            // is pending — the caller is awaiting a new session that would
+            // lose its backing process if we pruned now.
+            let no_pending_session_creation = !s.pending_requests.values().any(|pr| {
+                pr.method == "thread/start" || pr.method == "thread/resume"
+            });
+            all_closed && no_pending_session_creation
         };
 
         if last_session {
