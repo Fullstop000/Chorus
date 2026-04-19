@@ -100,6 +100,7 @@ pub fn build_router_with_services(
         .route("/attachments", post(handle_public_upload))
         .route("/whoami", get(handle_whoami))
         .route("/humans", get(handle_list_humans))
+        .route("/humans/{name}", patch(handle_update_human))
         .route("/inbox", get(handle_public_inbox))
         .route("/dms/{peer_name}", put(handle_public_ensure_dm))
         .route(

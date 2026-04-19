@@ -25,6 +25,7 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use serde::Deserialize;
 use tracing::debug;
 
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
@@ -121,6 +122,28 @@ pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<
         .map(dto::HumanInfo::from)
         .collect();
     Ok(Json(humans))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateHumanRequest {
+    pub display_name: Option<String>,
+}
+
+pub async fn handle_update_human(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<UpdateHumanRequest>,
+) -> ApiResult<dto::HumanInfo> {
+    let display_name = body
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let human = state
+        .store
+        .update_human_display_name(&name, display_name)
+        .map_err(|e| app_err!(StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(dto::HumanInfo::from(human)))
 }
 
 pub async fn handle_list_runtime_statuses(

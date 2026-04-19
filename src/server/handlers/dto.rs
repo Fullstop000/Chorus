@@ -95,6 +95,9 @@ pub struct AgentInfo {
 pub struct HumanInfo {
     /// OS / login username used as human id.
     pub name: String,
+    /// Optional user-chosen display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 impl From<(&Channel, bool)> for ChannelInfo {
@@ -133,6 +136,9 @@ impl From<&Agent> for AgentInfo {
 
 impl From<Human> for HumanInfo {
     fn from(human: Human) -> Self {
-        Self { name: human.name }
+        Self {
+            name: human.name,
+            display_name: human.display_name,
+        }
     }
 }

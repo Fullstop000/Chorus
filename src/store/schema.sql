@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS agent_env_vars (
 -- Human users.
 CREATE TABLE IF NOT EXISTS humans (
     name TEXT PRIMARY KEY, -- Unique username
+    display_name TEXT, -- Optional user-chosen display name
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the user was created
 );
 

@@ -10,6 +10,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_add_run_id_to_messages(conn)?;
     migrate_add_trace_summary_to_messages(conn)?;
     migrate_create_trace_events_table(conn)?;
+    migrate_add_display_name_to_humans(conn)?;
     Ok(())
 }
 
@@ -190,5 +191,19 @@ fn migrate_create_trace_events_table(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq);",
     )?;
+    Ok(())
+}
+
+/// Add display_name column to humans table for user-friendly names.
+fn migrate_add_display_name_to_humans(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(humans)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "display_name");
+    if !has_column {
+        conn.execute_batch("ALTER TABLE humans ADD COLUMN display_name TEXT")?;
+        tracing::info!("migration: added display_name column to humans");
+    }
     Ok(())
 }
