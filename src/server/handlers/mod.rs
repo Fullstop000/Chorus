@@ -196,7 +196,10 @@ pub async fn handle_logs(
         Ok(content) => {
             let all: Vec<&str> = content.lines().collect();
             let start = all.len().saturating_sub(tail);
-            all[start..].iter().map(|s| s.to_string()).collect::<Vec<_>>()
+            all[start..]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
         }
         Err(_) => vec![],
     };

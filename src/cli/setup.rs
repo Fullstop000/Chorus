@@ -357,9 +357,7 @@ pub async fn run(
     let interactive = !yes && std::io::stdin().is_terminal();
 
     // Resolve the data dir early so we can check for an existing config.
-    let data_dir_str_early = data_dir
-        .clone()
-        .unwrap_or_else(default_data_dir);
+    let data_dir_str_early = data_dir.clone().unwrap_or_else(default_data_dir);
     let data_dir_early = chorus::agent::templates::expand_tilde(&data_dir_str_early);
     let config_path = data_dir_early.join("config.toml");
 

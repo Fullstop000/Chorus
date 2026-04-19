@@ -102,7 +102,9 @@ mod tests {
     fn set_display_name() {
         let store = test_store();
         store.create_human("bob").unwrap();
-        let updated = store.update_human_display_name("bob", Some("Bob Smith")).unwrap();
+        let updated = store
+            .update_human_display_name("bob", Some("Bob Smith"))
+            .unwrap();
         assert_eq!(updated.display_name.as_deref(), Some("Bob Smith"));
         let humans = store.get_humans().unwrap();
         assert_eq!(humans[0].display_name.as_deref(), Some("Bob Smith"));
@@ -112,7 +114,9 @@ mod tests {
     fn clear_display_name() {
         let store = test_store();
         store.create_human("carol").unwrap();
-        store.update_human_display_name("carol", Some("Carol")).unwrap();
+        store
+            .update_human_display_name("carol", Some("Carol"))
+            .unwrap();
         let updated = store.update_human_display_name("carol", None).unwrap();
         assert!(updated.display_name.is_none());
     }
