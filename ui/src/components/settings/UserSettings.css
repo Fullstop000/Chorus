@@ -1,0 +1,10 @@
+.user-settings-card {
+  width: min(440px, 96vw);
+}
+
+.user-settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 20px;
+}

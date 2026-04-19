@@ -21,6 +21,7 @@ export interface ChannelInfo {
 
 export interface HumanInfo {
   name: string
+  display_name?: string
 }
 
 export interface ChannelMemberInfo {
@@ -117,6 +118,10 @@ function putDm(peerName: string): Promise<ChannelInfo> {
 
 export function listHumans(): Promise<HumanInfo[]> {
   return get('/api/humans')
+}
+
+export function updateHuman(name: string, body: { display_name?: string }): Promise<HumanInfo> {
+  return patch(`/api/humans/${encodeURIComponent(name)}`, body)
 }
 
 export function getServerInfo(): Promise<ServerInfo> {

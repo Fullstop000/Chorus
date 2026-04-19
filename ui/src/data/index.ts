@@ -36,6 +36,7 @@ export {
   inviteChannelMember,
   ensureDirectMessageConversation,
   listHumans,
+  updateHuman,
   getServerInfo,
   getWhoami,
   resolveChannel,
