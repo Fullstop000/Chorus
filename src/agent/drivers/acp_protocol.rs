@@ -18,7 +18,7 @@
 //! The caller tracks its own `AcpPhase` and owns the next-id allocator.
 
 use serde_json::{json, Value};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 // ---------------------------------------------------------------------------
 // MCP prefix stripping (moved from deleted v1 acp.rs)
@@ -406,8 +406,39 @@ fn parse_notification(method: &str, msg: &Value) -> AcpParsed {
     }
 
     let Some(params) = msg.get("params") else {
+        // No params at all — fully malformed frame. Return an empty items
+        // vec (no SessionInit) so drivers see a no-op rather than routing
+        // confusion. Emitting an empty-string SessionInit here would route
+        // the update to a nonexistent session (Kimi would insert "" as a
+        // session_id key; OpenCode would drop the update). The `warn!`
+        // surfaces the spec violation for triage.
+        warn!("acp session/update missing params entirely — emitting empty items vec");
         return AcpParsed::SessionUpdate { items: vec![] };
     };
+
+    // Per ACP spec (https://agentclientprotocol.com/protocol/session-setup),
+    // every `session/update` notification carries `params.sessionId`. When
+    // present, we prepend an `AcpUpdateItem::SessionInit { session_id }` at
+    // position 0 so multi-session drivers can route deterministically by
+    // the first item rather than falling back to HashMap iteration order
+    // of in-flight sessions.
+    //
+    // Missing/non-string sessionId is a malformed frame per spec. Rather
+    // than emitting a `SessionInit { session_id: "" }` (which would route
+    // the update to a nonexistent session), we omit the `SessionInit`
+    // entirely and return the body items alone. Drivers without a
+    // `SessionInit` at `items[0]` already fall back to their `pick_session`
+    // heuristics (with warn-on-ambiguity logging). The `warn!` here
+    // surfaces the spec violation for triage.
+    let session_id = params
+        .get("sessionId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if session_id.is_none() {
+        warn!(
+            "acp session/update missing params.sessionId — spec violation, emitting body items without SessionInit"
+        );
+    }
 
     // Some runtimes wrap updates in `params.update`; others put fields at the
     // top level of `params`. v1 handles both with a fallback.
@@ -425,7 +456,7 @@ fn parse_notification(method: &str, msg: &Value) -> AcpParsed {
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let items = match kind {
+    let body_items: Vec<AcpUpdateItem> = match kind {
         "agentMessageChunk" | "agent_message_chunk" => {
             let text = extract_text(update);
             if text.is_empty() {
@@ -488,6 +519,20 @@ fn parse_notification(method: &str, msg: &Value) -> AcpParsed {
             );
             vec![]
         }
+    };
+
+    // When sessionId is present, prepend SessionInit at position 0. Drivers
+    // iterate and stop at the first SessionInit for routing — position is
+    // load-bearing. When sessionId is absent (malformed frame), we emit the
+    // body items only; drivers fall back to their `pick_session` heuristics.
+    let items = match session_id {
+        Some(session_id) => {
+            let mut items = Vec::with_capacity(body_items.len() + 1);
+            items.push(AcpUpdateItem::SessionInit { session_id });
+            items.extend(body_items);
+            items
+        }
+        None => body_items,
     };
 
     AcpParsed::SessionUpdate { items }
@@ -725,8 +770,12 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"agentMessageChunk","chunk":"hello"}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::Text { text } => assert_eq!(text, "hello"),
                     other => panic!("expected Text, got {other:?}"),
                 }
@@ -741,8 +790,12 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hi there"}}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::Text { text } => assert_eq!(text, "hi there"),
                     other => panic!("expected Text, got {other:?}"),
                 }
@@ -756,8 +809,12 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"agentThoughtChunk","chunk":"reasoning..."}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::Thinking { text } => assert_eq!(text, "reasoning..."),
                     other => panic!("expected Thinking, got {other:?}"),
                 }
@@ -776,8 +833,12 @@ mod tests {
 
         match parse_line(call) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::ToolCall { id, name, input } => {
                         assert_eq!(id.as_deref(), Some("call-1"));
                         assert_eq!(name, "send_message");
@@ -791,8 +852,12 @@ mod tests {
 
         match parse_line(update) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::ToolCallUpdate { id, input } => {
                         assert_eq!(id.as_deref(), Some("call-1"));
                         assert_eq!(input["target"], "#all");
@@ -811,8 +876,12 @@ mod tests {
         let line = r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCall","toolCallId":"call-2","toolName":"mcp__chat__send_message","rawInput":{"target":"#general","content":"hello"},"status":"pending"}}}"##;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::ToolCall { input, .. } => {
                         assert_eq!(input["target"], "#general");
                         assert_eq!(input["content"], "hello");
@@ -829,8 +898,12 @@ mod tests {
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCallUpdate","toolCallId":"call-1","content":"Message sent successfully"}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::ToolResult { content } => {
                         assert_eq!(content, "Message sent successfully");
                     }
@@ -844,11 +917,15 @@ mod tests {
     #[test]
     fn parse_session_update_with_structured_tool_result_kimi_shape() {
         // kimi nested: content array where each item is {content: {text, type}, type}.
-        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","content":[{"content":{"type":"text","text":"line A"},"type":"content"},{"content":{"type":"text","text":"line B"},"type":"content"}]}}}"#;
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","content":[{"content":{"type":"text","text":"line A"},"type":"content"},{"content":{"type":"text","text":"line B"},"type":"content"}]}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::ToolResult { content } => {
                         assert_eq!(content, "line A\nline B");
                     }
@@ -862,11 +939,15 @@ mod tests {
     #[test]
     fn parse_session_update_with_structured_tool_result_flat_shape() {
         // flat: content array where each item is {type:"text", text:"..."}.
-        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"kind":"toolCallUpdate","toolCallId":"c1","content":[{"type":"text","text":"alpha"},{"type":"text","text":"beta"}]}}}"#;
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCallUpdate","toolCallId":"c1","content":[{"type":"text","text":"alpha"},{"type":"text","text":"beta"}]}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 1);
+                assert_eq!(items.len(), 2);
                 match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
                     AcpUpdateItem::ToolResult { content } => {
                         assert_eq!(content, "alpha\nbeta");
                     }
@@ -883,9 +964,13 @@ mod tests {
         let line = r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"kind":"toolCallUpdate","toolCallId":"call-1","rawInput":{"file_path":"/tmp/x"},"content":"File written successfully","status":"completed"}}}"##;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 2);
-                assert!(matches!(items[0], AcpUpdateItem::ToolCallUpdate { .. }));
-                match &items[1] {
+                assert_eq!(items.len(), 3);
+                match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => assert_eq!(session_id, "s1"),
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                assert!(matches!(items[1], AcpUpdateItem::ToolCallUpdate { .. }));
+                match &items[2] {
                     AcpUpdateItem::ToolResult { content } => {
                         assert_eq!(content, "File written successfully");
                     }
@@ -897,8 +982,8 @@ mod tests {
     }
 
     #[test]
-    fn parse_session_update_ignored_kinds_yield_empty_items() {
-        // Informational kinds — parser returns SessionUpdate with 0 items.
+    fn parse_session_update_ignored_kinds_yield_only_session_init() {
+        // Informational kinds — parser emits SessionInit at [0] but no body items.
         for kind in [
             "userMessageChunk",
             "user_message_chunk",
@@ -909,14 +994,101 @@ mod tests {
             "sessionInfoUpdate",
         ] {
             let line = format!(
-                r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"update":{{"kind":"{kind}"}}}}}}"#
+                r#"{{"jsonrpc":"2.0","method":"session/update","params":{{"sessionId":"s1","update":{{"kind":"{kind}"}}}}}}"#
             );
             match parse_line(&line) {
                 AcpParsed::SessionUpdate { items } => {
-                    assert!(items.is_empty(), "kind {kind} should yield empty items");
+                    assert_eq!(
+                        items.len(),
+                        1,
+                        "kind {kind} should yield only the prepended SessionInit"
+                    );
+                    match &items[0] {
+                        AcpUpdateItem::SessionInit { session_id } => {
+                            assert_eq!(session_id, "s1", "kind {kind} session_id mismatch")
+                        }
+                        other => panic!("expected SessionInit at [0] for kind {kind}, got {other:?}"),
+                    }
                 }
                 other => panic!("expected SessionUpdate for kind {kind}, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn session_update_notification_prepends_session_init() {
+        // Per ACP spec, session/update notifications always carry params.sessionId.
+        // The parser must emit AcpUpdateItem::SessionInit at position 0 so
+        // multi-session drivers can route deterministically by the first item.
+        let line = r##"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_expected","update":{"kind":"toolCall","toolCallId":"call-xyz","toolName":"send_message","rawInput":{"target":"#general","content":"hi"}}}}"##;
+        match parse_line(line) {
+            AcpParsed::SessionUpdate { items } => {
+                assert_eq!(items.len(), 2, "expected SessionInit + body item");
+                match &items[0] {
+                    AcpUpdateItem::SessionInit { session_id } => {
+                        assert_eq!(session_id, "sess_expected");
+                    }
+                    other => panic!("expected SessionInit at [0], got {other:?}"),
+                }
+                match &items[1] {
+                    AcpUpdateItem::ToolCall { id, name, input } => {
+                        assert_eq!(id.as_deref(), Some("call-xyz"));
+                        assert_eq!(name, "send_message");
+                        assert_eq!(input["target"], "#general");
+                        assert_eq!(input["content"], "hi");
+                    }
+                    other => panic!("expected ToolCall at [1], got {other:?}"),
+                }
+            }
+            other => panic!("expected SessionUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_update_missing_session_id_emits_no_session_init() {
+        // Spec requires params.sessionId on every session/update. When absent,
+        // we treat it as a malformed frame: emit the body items without a
+        // prepended SessionInit and warn! (see parse_notification doc
+        // comment). Drivers without a SessionInit at items[0] fall back to
+        // their pick_session heuristics — emitting an empty-string
+        // SessionInit would instead route the update to a nonexistent
+        // session, breaking both Kimi (inserts "" as a session_id key) and
+        // OpenCode (drops the update entirely).
+        let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"kind":"agentMessageChunk","chunk":"hello"}}}"#;
+        match parse_line(line) {
+            AcpParsed::SessionUpdate { items } => {
+                assert!(
+                    items
+                        .iter()
+                        .all(|i| !matches!(i, AcpUpdateItem::SessionInit { .. })),
+                    "missing sessionId must not produce any SessionInit: {items:?}"
+                );
+                assert_eq!(items.len(), 1, "expected body item only: {items:?}");
+                match &items[0] {
+                    AcpUpdateItem::Text { text } => assert_eq!(text, "hello"),
+                    other => panic!("expected Text at [0], got {other:?}"),
+                }
+            }
+            other => panic!("expected SessionUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_update_missing_params_entirely_returns_empty_items() {
+        // A session/update frame with no `params` key at all is fully
+        // malformed. Rather than emitting an empty-string SessionInit
+        // (which would route to a nonexistent session and cause Kimi /
+        // OpenCode to misbehave), parse_notification returns an empty
+        // items vec so drivers see a no-op.
+        let line = r#"{"jsonrpc":"2.0","method":"session/update"}"#;
+        match parse_line(line) {
+            AcpParsed::SessionUpdate { items } => {
+                assert!(
+                    items.is_empty(),
+                    "missing params must yield empty items vec: {items:?}"
+                );
+            }
+            other => panic!("expected SessionUpdate with empty items, got {other:?}"),
         }
     }
 
