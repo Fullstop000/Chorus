@@ -40,7 +40,7 @@ use tracing::{debug, trace, warn};
 use crate::agent::AgentRuntime;
 use crate::utils::cmd::{command_exists, run_command};
 
-use super::codex_app_server::{self, AppServerEvent, AppServerPhase, ItemEvent, TurnStatus};
+use super::codex_app_server::{self, AppServerEvent, ItemEvent, TurnStatus};
 use super::*;
 
 // ---------------------------------------------------------------------------
@@ -152,10 +152,23 @@ impl CodexDriver {
     /// call seeds the entry; subsequent `new_session`/`resume_session` calls
     /// return the same `Arc` so every handle writes into the same stdin and
     /// reads from the same event stream.
+    ///
+    /// If a cached entry's child has died (e.g. after a prior close → child
+    /// exit → SIGTERM) it is evicted here so the caller rebuilds a fresh
+    /// process. This is belt-and-suspenders for the case where close-time
+    /// registry pruning races a subsequent attach.
     fn ensure_process(&self, key: &AgentKey) -> Arc<CodexAgentProcess> {
         let mut guard = agent_instances().lock().unwrap();
         if let Some(existing) = guard.get(key) {
-            return Arc::clone(existing);
+            if existing.is_stale() {
+                debug!(
+                    agent = %key,
+                    "codex: evicting stale agent process (child exited) before re-attach"
+                );
+                guard.remove(key);
+            } else {
+                return Arc::clone(existing);
+            }
         }
         let (events, event_tx) = EventFanOut::new();
         let proc = Arc::new(CodexAgentProcess {
@@ -386,6 +399,26 @@ impl CodexAgentProcess {
             warn!("codex v2: failed to emit event: {e}");
         }
     }
+
+    /// Returns `true` once the shared transport has gone away — either the
+    /// child exited (writer task dropped the receiver) or the process was
+    /// never wired up yet. Used by [`CodexDriver::ensure_process`] to evict
+    /// a cached entry whose underlying child is dead so the next `attach`
+    /// rebuilds from scratch.
+    fn is_stale(&self) -> bool {
+        if !self.spawned.load(Ordering::SeqCst) {
+            // Never spawned — not stale, just fresh.
+            return false;
+        }
+        let guard = self.stdin_tx.lock().unwrap();
+        match guard.as_ref() {
+            // Spawn flag was flipped but wiring hasn't landed yet — transient;
+            // treat as live so we don't tear down a process mid-spawn.
+            None => false,
+            // Writer task exited (dropped the receiver) → child is dead.
+            Some(tx) => tx.is_closed(),
+        }
+    }
 }
 
 impl Drop for CodexAgentProcess {
@@ -445,7 +478,6 @@ struct SessionState {
 
 /// State shared between every handle and the stdout reader task.
 struct SharedReaderState {
-    phase: AppServerPhase,
     /// `true` once the `initialize` + `initialized` handshake has completed.
     initialized: bool,
     /// Wakers to fire when the initialize handshake finishes. Secondary
@@ -477,7 +509,6 @@ struct SharedReaderState {
 impl SharedReaderState {
     fn new() -> Self {
         Self {
-            phase: AppServerPhase::AwaitingInitResponse,
             initialized: false,
             init_wakers: Vec::new(),
             pending_requests: HashMap::new(),
@@ -910,14 +941,33 @@ impl AgentSessionHandle for CodexHandle {
             return Ok(());
         }
 
-        // Mark this handle's session as Closed in shared state, but do NOT
-        // tear the process down — other handles may still be active.
-        if let Some(ref sid) = self.session_id {
+        // Mark this handle's session as Closed in shared state. If we were
+        // the last live session on this agent, also drop the registry entry
+        // so the shared `Arc<CodexAgentProcess>` refcount can reach zero
+        // and its Drop impl terminates the child process + reader tasks.
+        let last_session = {
             let mut s = self.process.shared.lock().unwrap();
-            if let Some(session) = s.sessions.get_mut(sid) {
-                session.agent_state = AgentState::Closed;
+            if let Some(ref sid) = self.session_id {
+                if let Some(session) = s.sessions.get_mut(sid) {
+                    session.agent_state = AgentState::Closed;
+                }
             }
+            // `true` iff every session we know about is Closed (or the set
+            // is empty, which happens if start() never completed).
+            s.sessions
+                .values()
+                .all(|sess| matches!(sess.agent_state, AgentState::Closed))
+        };
+
+        if last_session {
+            // Remove the registry entry. The driver map was holding one of
+            // the Arc refs; other refs (on live `CodexHandle`s) keep the
+            // process alive until every handle is dropped. Once they are,
+            // `Drop for CodexAgentProcess` fires: SIGTERM to the child +
+            // abort for the reader tasks.
+            agent_instances().lock().unwrap().remove(&self.key);
         }
+
         self.state = AgentState::Closed;
 
         self.process.emit(DriverEvent::Lifecycle {
@@ -1032,12 +1082,11 @@ fn update_routing_from_response(
             }
         }
         ("initialize", AppServerEvent::InitializeResponse) => {
-            // Send the `initialized` notification, flip phase, fire wakers.
+            // Send the `initialized` notification, flip the init flag, fire wakers.
             let initialized = codex_app_server::build_initialized();
             let _ = proc.send_line(initialized);
             let wakers = {
                 let mut s = proc.shared.lock().unwrap();
-                s.phase = AppServerPhase::Active;
                 s.initialized = true;
                 std::mem::take(&mut s.init_wakers)
             };
@@ -1600,7 +1649,6 @@ mod multisession_tests {
         {
             let mut s = proc.shared.lock().unwrap();
             s.initialized = true;
-            s.phase = AppServerPhase::Active;
         }
         CodexAgentProcess::wire_transport(proc, Box::new(transport));
 
@@ -1875,6 +1923,69 @@ mod multisession_tests {
         assert!(
             child_guard.is_some(),
             "exactly one transport owned by shared process"
+        );
+    }
+
+    /// Regression: attach → close → re-attach on the same key must return a
+    /// fresh `CodexAgentProcess`, not the dead cached one. Guards against
+    /// the "registry never pruned" bug where close left the old Arc in the
+    /// global map and the next attach wrote into a closed stdin channel.
+    #[tokio::test]
+    async fn attach_close_reattach_spawns_fresh_process() {
+        let driver = CodexDriver;
+        let key = "agent-reattach-1".to_string();
+
+        // --- round 1: attach, start, close ---
+        let attach1 = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let mut h1 = attach1.handle;
+        let _sim1 = install_fake_transport(&process_for(&driver, &key));
+        h1.start(StartOpts::default(), None).await.unwrap();
+
+        // Snapshot the Arc identity so we can prove the post-reattach Arc is
+        // a different allocation.
+        let proc_v1_addr = {
+            let guard = agent_instances().lock().unwrap();
+            let proc = guard.get(&key).expect("entry present after attach");
+            Arc::as_ptr(proc) as usize
+        };
+
+        h1.close().await.expect("close succeeds");
+
+        // Registry entry must have been removed — otherwise `ensure_process`
+        // on re-attach would hand back the dead Arc.
+        {
+            let guard = agent_instances().lock().unwrap();
+            assert!(
+                guard.get(&key).is_none(),
+                "close on the last live session must prune the agent from the registry"
+            );
+        }
+
+        // --- round 2: re-attach on the same key ---
+        let attach2 = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let mut h2 = attach2.handle;
+
+        let proc_v2 = process_for(&driver, &key);
+        let proc_v2_addr = Arc::as_ptr(&proc_v2) as usize;
+        assert_ne!(
+            proc_v1_addr, proc_v2_addr,
+            "re-attach must build a fresh CodexAgentProcess, not recycle the stale one"
+        );
+        assert!(
+            !proc_v2.spawned.load(Ordering::SeqCst),
+            "fresh process must have spawned=false so ensure_process_started wires a new transport"
+        );
+
+        // Wire a new transport on the fresh process and drive the
+        // thread/start round-trip. Proves the new handle is functionally
+        // live, not just structurally fresh.
+        let _sim2 = install_fake_transport(&proc_v2);
+        h2.start(StartOpts::default(), None)
+            .await
+            .expect("start on re-attached handle must succeed via fresh transport");
+        assert!(
+            h2.session_id().is_some(),
+            "re-attached handle must obtain a thread_id"
         );
     }
 }
