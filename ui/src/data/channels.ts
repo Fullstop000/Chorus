@@ -27,6 +27,25 @@ export interface HumanInfo {
 export interface SystemInfo {
   data_dir: string
   db_size_bytes: number | null
+  config?: ConfigInfo
+}
+
+export interface ConfigInfo {
+  machine_id?: string
+  agent_template: {
+    dir?: string
+    default: string
+  }
+  logs: {
+    level: string
+    rotation: string
+    retention: number
+  }
+  runtimes: {
+    name: string
+    binary_path?: string
+    acp_adaptor?: string
+  }[]
 }
 
 export interface LogsResponse {

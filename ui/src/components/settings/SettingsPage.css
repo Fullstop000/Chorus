@@ -164,9 +164,81 @@
   background: var(--color-accent);
 }
 
+.settings-log-line.log-error {
+  color: #c43c3c;
+}
+
+.settings-log-line.log-warn {
+  color: #b58b2b;
+}
+
+.settings-log-line.log-info {
+  color: var(--color-foreground);
+}
+
+.settings-log-line.log-debug {
+  color: var(--color-muted-foreground);
+}
+
+.settings-log-line.log-trace {
+  color: var(--color-muted-foreground);
+  opacity: 0.7;
+}
+
 .settings-log-empty {
   color: var(--color-muted-foreground);
   font-style: italic;
   padding: 20px;
   text-align: center;
+}
+
+/* Config display */
+.settings-config {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-config-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-config-heading {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 4px;
+}
+
+.settings-runtime-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.settings-runtime-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-config-missing {
+  margin-top: 24px;
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+.settings-config-missing code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-muted);
+  padding: 1px 4px;
 }

@@ -32,6 +32,7 @@ use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
+use crate::config::ChorusConfig;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::store::Store;
 use dto::ServerInfo;
@@ -121,12 +122,55 @@ pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto:
         .unwrap_or_else(|| state.store.data_dir())
         .to_string_lossy()
         .into_owned();
+    let data_dir_path = state
+        .store
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| state.store.data_dir())
+        .to_path_buf();
     let db_size_bytes = std::fs::metadata(state.store.db_path())
         .map(|m| m.len())
         .ok();
+
+    let config = ChorusConfig::load(&data_dir_path)
+        .ok()
+        .flatten()
+        .map(|cfg| {
+            let mut runtimes = Vec::new();
+            let runtime_entries = [
+                ("claude", &cfg.claude),
+                ("codex", &cfg.codex),
+                ("kimi", &cfg.kimi),
+                ("opencode", &cfg.opencode),
+            ];
+            for (name, rt) in runtime_entries {
+                if rt.binary_path.is_some() || rt.acp_adaptor.is_some() {
+                    runtimes.push(dto::RuntimeInfo {
+                        name: name.to_string(),
+                        binary_path: rt.binary_path.clone(),
+                        acp_adaptor: rt.acp_adaptor.clone(),
+                    });
+                }
+            }
+            dto::ConfigInfo {
+                machine_id: cfg.machine_id,
+                agent_template: dto::AgentTemplateInfo {
+                    dir: cfg.agent_template.dir,
+                    default: cfg.agent_template.default,
+                },
+                logs: dto::LogsInfo {
+                    level: cfg.logs.level,
+                    rotation: cfg.logs.rotation,
+                    retention: cfg.logs.retention,
+                },
+                runtimes,
+            }
+        });
+
     Ok(Json(dto::SystemInfo {
         data_dir,
         db_size_bytes,
+        config,
     }))
 }
 

@@ -40,6 +40,7 @@ export {
   getSystemInfo,
   getLogs,
   type SystemInfo,
+  type ConfigInfo,
   type LogsResponse,
   getServerInfo,
   getWhoami,

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { X } from 'lucide-react'
 import { updateHuman, channelQueryKeys, getSystemInfo, getLogs } from '../../data'
-import type { SystemInfo } from '../../data'
+import type { SystemInfo, ConfigInfo } from '../../data'
 import { useHumans } from '../../hooks/data'
 import { useStore } from '../../store'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,7 @@ type SettingsSection = 'profile' | 'system' | 'logs'
 const NAV_ITEMS: { id: SettingsSection; label: string }[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'system', label: 'System' },
-  { id: 'logs', label: 'Server Logs' },
+  { id: 'logs', label: 'Logs' },
 ]
 
 function formatBytes(bytes: number): string {
@@ -86,6 +86,69 @@ function ProfileSection({ username }: { username: string }) {
   )
 }
 
+function ConfigSection({ config }: { config: ConfigInfo }) {
+  return (
+    <div className="settings-config">
+      <div className="settings-config-group">
+        <h3 className="settings-config-heading">General</h3>
+        <div className="settings-info-grid">
+          <span className="settings-info-label">Machine ID</span>
+          <span className="settings-info-value">{config.machine_id ?? '—'}</span>
+        </div>
+      </div>
+
+      <div className="settings-config-group">
+        <h3 className="settings-config-heading">Templates</h3>
+        <div className="settings-info-grid">
+          <span className="settings-info-label">Directory</span>
+          <span className="settings-info-value">{config.agent_template.dir ?? '(default)'}</span>
+          <span className="settings-info-label">Default</span>
+          <span className="settings-info-value">
+            {config.agent_template.default || '(none)'}
+          </span>
+        </div>
+      </div>
+
+      <div className="settings-config-group">
+        <h3 className="settings-config-heading">Logging</h3>
+        <div className="settings-info-grid">
+          <span className="settings-info-label">Level</span>
+          <span className="settings-info-value">{config.logs.level}</span>
+          <span className="settings-info-label">Rotation</span>
+          <span className="settings-info-value">{config.logs.rotation}</span>
+          <span className="settings-info-label">Retention</span>
+          <span className="settings-info-value">{config.logs.retention} files</span>
+        </div>
+      </div>
+
+      {config.runtimes.length > 0 && (
+        <div className="settings-config-group">
+          <h3 className="settings-config-heading">Runtimes</h3>
+          {config.runtimes.map((rt) => (
+            <div key={rt.name} className="settings-runtime-entry">
+              <span className="settings-runtime-name">{rt.name}</span>
+              <div className="settings-info-grid">
+                {rt.binary_path && (
+                  <>
+                    <span className="settings-info-label">Binary</span>
+                    <span className="settings-info-value">{rt.binary_path}</span>
+                  </>
+                )}
+                {rt.acp_adaptor && (
+                  <>
+                    <span className="settings-info-label">ACP adaptor</span>
+                    <span className="settings-info-value">{rt.acp_adaptor}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SystemSection() {
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
   const [loading, setLoading] = useState(true)
@@ -124,8 +187,24 @@ function SystemSection() {
           {systemInfo?.db_size_bytes != null ? formatBytes(systemInfo.db_size_bytes) : '—'}
         </span>
       </div>
+
+      {systemInfo?.config ? (
+        <ConfigSection config={systemInfo.config} />
+      ) : (
+        <p className="settings-config-missing">
+          No config file found. Run <code>chorus setup</code> to generate one.
+        </p>
+      )}
     </div>
   )
+}
+
+const LOG_LEVEL_RE = /\b(TRACE|DEBUG|INFO|WARN|ERROR)\b/
+
+function logLevelClass(line: string): string {
+  const match = LOG_LEVEL_RE.exec(line)
+  if (!match) return ''
+  return `log-${match[1].toLowerCase()}`
 }
 
 function LogsSection() {
@@ -154,7 +233,7 @@ function LogsSection() {
   return (
     <div className="settings-section">
       <div className="settings-section-header">
-        <h2 className="settings-section-title">Server Logs</h2>
+        <h2 className="settings-section-title">Logs</h2>
         <Button variant="ghost" size="sm" onClick={fetchLogs} disabled={loading}>
           {loading ? 'Loading…' : 'Refresh'}
         </Button>
@@ -165,7 +244,7 @@ function LogsSection() {
           <div className="settings-log-empty">No logs available</div>
         )}
         {logs.map((line, i) => (
-          <div key={i} className="settings-log-line">
+          <div key={i} className={`settings-log-line ${logLevelClass(line)}`}>
             {line}
           </div>
         ))}
