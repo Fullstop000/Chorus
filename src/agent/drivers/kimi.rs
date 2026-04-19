@@ -149,6 +149,23 @@ impl RuntimeDriver for KimiDriver {
             events,
         })
     }
+
+    async fn new_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("kimi does not support new_session on an active handle (Phase 0.9 Stage 2+)")
+    }
+
+    async fn resume_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+        _session_id: SessionId,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("kimi does not support resume_session on an active handle (Phase 0.9 Stage 2+)")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -209,9 +226,20 @@ impl Drop for KimiHandle {
 }
 
 #[async_trait]
-impl AgentHandle for KimiHandle {
+impl AgentSessionHandle for KimiHandle {
     fn key(&self) -> &AgentKey {
         &self.key
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        // Shared reader owns the authoritative session id but we cannot
+        // borrow across the Mutex guard. Fall back to the local mirror which
+        // matches the shared state for Active/PromptInFlight.
+        match &self.state {
+            AgentState::Active { session_id } => Some(session_id),
+            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
+            _ => None,
+        }
     }
 
     fn state(&self) -> AgentState {
@@ -411,6 +439,7 @@ impl AgentHandle for KimiHandle {
                             for (_id, name, input) in accumulator.drain() {
                                 let _ = event_tx.try_send(DriverEvent::Output {
                                     key: key.clone(),
+                                    session_id: sid.clone(),
                                     run_id,
                                     item: AgentEventItem::ToolCall { name, input },
                                 });
@@ -418,14 +447,15 @@ impl AgentHandle for KimiHandle {
 
                             let _ = event_tx.try_send(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id: sid.clone(),
                                 run_id,
                                 item: AgentEventItem::TurnEnd,
                             });
                             let _ = event_tx.try_send(DriverEvent::Completed {
                                 key: key.clone(),
+                                session_id: sid.clone(),
                                 run_id,
                                 result: RunResult {
-                                    session_id: sid.clone(),
                                     finish_reason: FinishReason::Natural,
                                 },
                             });
@@ -437,9 +467,9 @@ impl AgentHandle for KimiHandle {
                     }
 
                     AcpParsed::SessionUpdate { items } => {
-                        let run_id = {
+                        let (run_id, sid) = {
                             let s = shared.lock().unwrap();
-                            s.run_id
+                            (s.run_id, s.session_id.clone().unwrap_or_default())
                         };
                         let Some(run_id) = run_id else { continue };
 
@@ -452,6 +482,7 @@ impl AgentHandle for KimiHandle {
                                 AcpUpdateItem::Thinking { text } => {
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::Thinking { text },
                                     });
@@ -459,6 +490,7 @@ impl AgentHandle for KimiHandle {
                                 AcpUpdateItem::Text { text } => {
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::Text { text },
                                     });
@@ -468,6 +500,7 @@ impl AgentHandle for KimiHandle {
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
+                                            session_id: sid.clone(),
                                             run_id,
                                             item: AgentEventItem::ToolCall {
                                                 name: n,
@@ -485,6 +518,7 @@ impl AgentHandle for KimiHandle {
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
+                                            session_id: sid.clone(),
                                             run_id,
                                             item: AgentEventItem::ToolCall {
                                                 name: n,
@@ -494,6 +528,7 @@ impl AgentHandle for KimiHandle {
                                     }
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::ToolResult { content },
                                     });
@@ -502,6 +537,7 @@ impl AgentHandle for KimiHandle {
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
+                                            session_id: sid.clone(),
                                             run_id,
                                             item: AgentEventItem::ToolCall {
                                                 name: n,
@@ -511,6 +547,7 @@ impl AgentHandle for KimiHandle {
                                     }
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::TurnEnd,
                                     });
@@ -538,13 +575,14 @@ impl AgentHandle for KimiHandle {
 
                     AcpParsed::Error { message } => {
                         warn!(message = %message, "kimi: ACP error");
-                        let run_id = {
+                        let (run_id, session_id) = {
                             let mut s = shared.lock().unwrap();
-                            s.run_id.take()
+                            (s.run_id.take(), s.session_id.clone().unwrap_or_default())
                         };
                         if let Some(run_id) = run_id {
                             let _ = event_tx.try_send(DriverEvent::Failed {
                                 key: key.clone(),
+                                session_id,
                                 run_id,
                                 error: AgentError::RuntimeReported(message),
                             });
@@ -569,9 +607,9 @@ impl AgentHandle for KimiHandle {
                     .unwrap_or_default();
                 let _ = event_tx.try_send(DriverEvent::Completed {
                     key: key.clone(),
+                    session_id: sid,
                     run_id,
                     result: RunResult {
-                        session_id: sid,
                         finish_reason: FinishReason::TransportClosed,
                     },
                 });
@@ -610,14 +648,6 @@ impl AgentHandle for KimiHandle {
         self.child = Some(child);
 
         Ok(())
-    }
-
-    async fn new_session(&mut self) -> anyhow::Result<SessionId> {
-        bail!("kimi does not support new_session on an active handle");
-    }
-
-    async fn resume_session(&mut self, _id: SessionId) -> anyhow::Result<()> {
-        bail!("kimi does not support resume_session on an active handle");
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -684,9 +714,9 @@ impl AgentHandle for KimiHandle {
 
         self.emit(DriverEvent::Completed {
             key: self.key.clone(),
+            session_id: session_id.clone(),
             run_id,
             result: RunResult {
-                session_id: session_id.clone(),
                 finish_reason: FinishReason::Cancelled,
             },
         });

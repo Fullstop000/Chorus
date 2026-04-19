@@ -135,6 +135,23 @@ impl RuntimeDriver for OpencodeDriver {
             events,
         })
     }
+
+    async fn new_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("opencode does not support new_session on an active handle (Phase 0.9 Stage 2+)")
+    }
+
+    async fn resume_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+        _session_id: SessionId,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("opencode does not support resume_session on an active handle (Phase 0.9 Stage 2+)")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,9 +209,19 @@ impl Drop for OpencodeHandle {
 }
 
 #[async_trait]
-impl AgentHandle for OpencodeHandle {
+impl AgentSessionHandle for OpencodeHandle {
     fn key(&self) -> &AgentKey {
         &self.key
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        // Shared reader owns authoritative state; reach into local mirror
+        // here for a stable borrow.
+        match &self.state {
+            AgentState::Active { session_id } => Some(session_id),
+            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
+            _ => None,
+        }
     }
 
     fn state(&self) -> AgentState {
@@ -408,6 +435,7 @@ impl AgentHandle for OpencodeHandle {
                             for (_id, name, input) in accumulator.drain() {
                                 let _ = event_tx.try_send(DriverEvent::Output {
                                     key: key.clone(),
+                                    session_id: sid.clone(),
                                     run_id,
                                     item: AgentEventItem::ToolCall { name, input },
                                 });
@@ -415,14 +443,15 @@ impl AgentHandle for OpencodeHandle {
 
                             let _ = event_tx.try_send(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id: sid.clone(),
                                 run_id,
                                 item: AgentEventItem::TurnEnd,
                             });
                             let _ = event_tx.try_send(DriverEvent::Completed {
                                 key: key.clone(),
+                                session_id: sid.clone(),
                                 run_id,
                                 result: RunResult {
-                                    session_id: sid.clone(),
                                     finish_reason: FinishReason::Natural,
                                 },
                             });
@@ -434,9 +463,9 @@ impl AgentHandle for OpencodeHandle {
                     }
 
                     AcpParsed::SessionUpdate { items } => {
-                        let run_id = {
+                        let (run_id, sid) = {
                             let s = shared.lock().unwrap();
-                            s.run_id
+                            (s.run_id, s.session_id.clone().unwrap_or_default())
                         };
                         let Some(run_id) = run_id else { continue };
 
@@ -449,6 +478,7 @@ impl AgentHandle for OpencodeHandle {
                                 AcpUpdateItem::Thinking { text } => {
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::Thinking { text },
                                     });
@@ -456,6 +486,7 @@ impl AgentHandle for OpencodeHandle {
                                 AcpUpdateItem::Text { text } => {
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::Text { text },
                                     });
@@ -464,6 +495,7 @@ impl AgentHandle for OpencodeHandle {
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
+                                            session_id: sid.clone(),
                                             run_id,
                                             item: AgentEventItem::ToolCall {
                                                 name: n,
@@ -480,6 +512,7 @@ impl AgentHandle for OpencodeHandle {
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
+                                            session_id: sid.clone(),
                                             run_id,
                                             item: AgentEventItem::ToolCall {
                                                 name: n,
@@ -489,6 +522,7 @@ impl AgentHandle for OpencodeHandle {
                                     }
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::ToolResult { content },
                                     });
@@ -497,6 +531,7 @@ impl AgentHandle for OpencodeHandle {
                                     for (_id, n, inp) in accumulator.drain() {
                                         let _ = event_tx.try_send(DriverEvent::Output {
                                             key: key.clone(),
+                                            session_id: sid.clone(),
                                             run_id,
                                             item: AgentEventItem::ToolCall {
                                                 name: n,
@@ -506,6 +541,7 @@ impl AgentHandle for OpencodeHandle {
                                     }
                                     let _ = event_tx.try_send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: sid.clone(),
                                         run_id,
                                         item: AgentEventItem::TurnEnd,
                                     });
@@ -533,13 +569,14 @@ impl AgentHandle for OpencodeHandle {
 
                     AcpParsed::Error { message } => {
                         warn!(message = %message, "opencode: ACP error");
-                        let run_id = {
+                        let (run_id, session_id) = {
                             let mut s = shared.lock().unwrap();
-                            s.run_id.take()
+                            (s.run_id.take(), s.session_id.clone().unwrap_or_default())
                         };
                         if let Some(run_id) = run_id {
                             let _ = event_tx.try_send(DriverEvent::Failed {
                                 key: key.clone(),
+                                session_id,
                                 run_id,
                                 error: AgentError::RuntimeReported(message),
                             });
@@ -564,9 +601,9 @@ impl AgentHandle for OpencodeHandle {
                     .unwrap_or_default();
                 let _ = event_tx.try_send(DriverEvent::Completed {
                     key: key.clone(),
+                    session_id: sid,
                     run_id,
                     result: RunResult {
-                        session_id: sid,
                         finish_reason: FinishReason::TransportClosed,
                     },
                 });
@@ -605,14 +642,6 @@ impl AgentHandle for OpencodeHandle {
         self.child = Some(child);
 
         Ok(())
-    }
-
-    async fn new_session(&mut self) -> anyhow::Result<SessionId> {
-        bail!("opencode does not support new_session on an active handle");
-    }
-
-    async fn resume_session(&mut self, _id: SessionId) -> anyhow::Result<()> {
-        bail!("opencode does not support resume_session on an active handle");
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -680,9 +709,9 @@ impl AgentHandle for OpencodeHandle {
 
             self.emit(DriverEvent::Completed {
                 key: self.key.clone(),
+                session_id: session_id.clone(),
                 run_id,
                 result: RunResult {
-                    session_id: session_id.clone(),
                     finish_reason: FinishReason::Cancelled,
                 },
             });

@@ -6,7 +6,7 @@
 //!   3. `store.agent_sessions` — persisted session ID for resume.
 //!
 //! Runs as a detached `tokio::spawn` per agent for the lifetime of the
-//! agent's `AgentHandle`. The task exits when the driver drops its side of
+//! agent's `AgentSessionHandle`. The task exits when the driver drops its side of
 //! the `mpsc::Sender<DriverEvent>` (e.g. on `stop_agent`). The returned
 //! `JoinHandle` is stored on the agent's `ManagedAgent` so it's dropped
 //! when the agent is removed from the manager's map.
@@ -165,6 +165,7 @@ pub(super) fn spawn_event_forwarder(
 
                 DriverEvent::Output {
                     ref key,
+                    session_id: _,
                     run_id: _,
                     ref item,
                 } => {
@@ -285,6 +286,7 @@ pub(super) fn spawn_event_forwarder(
 
                 DriverEvent::Completed {
                     ref key,
+                    ref session_id,
                     run_id: _,
                     ref result,
                 } => {
@@ -303,8 +305,8 @@ pub(super) fn spawn_event_forwarder(
                         pending_text.clear();
                     }
                     info!(agent = %key, reason = ?result.finish_reason, "run completed");
-                    if !result.session_id.is_empty() {
-                        let _ = store.update_agent_session(key, Some(&result.session_id));
+                    if !session_id.is_empty() {
+                        let _ = store.update_agent_session(key, Some(session_id));
                     }
                     trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
                     trace_store.end_run(key);
@@ -333,6 +335,7 @@ pub(super) fn spawn_event_forwarder(
 
                 DriverEvent::Failed {
                     ref key,
+                    session_id: _,
                     run_id: _,
                     ref error,
                 } => {

@@ -118,10 +118,27 @@ impl RuntimeDriver for ClaudeDriver {
             events,
         })
     }
+
+    async fn new_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("claude v2: new_session not yet implemented (Phase 0.9 Stage 2+)")
+    }
+
+    async fn resume_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+        _session_id: SessionId,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("claude v2: resume_session not yet implemented (Phase 0.9 Stage 2+)")
+    }
 }
 
 // ---------------------------------------------------------------------------
-// ClaudeHandle — AgentHandle
+// ClaudeHandle — AgentSessionHandle
 // ---------------------------------------------------------------------------
 
 pub struct ClaudeHandle {
@@ -152,9 +169,20 @@ impl ClaudeHandle {
 }
 
 #[async_trait]
-impl AgentHandle for ClaudeHandle {
+impl AgentSessionHandle for ClaudeHandle {
     fn key(&self) -> &AgentKey {
         &self.key
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        // Shared reader owns the active session id for the Claude transport.
+        // We can't borrow across the Mutex guard, so reach into self.state as a
+        // best-effort fallback for callers that already hold the handle.
+        match &self.state {
+            AgentState::Active { session_id } => Some(session_id),
+            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
+            _ => None,
+        }
     }
 
     fn state(&self) -> AgentState {
@@ -286,14 +314,6 @@ impl AgentHandle for ClaudeHandle {
         self.stdin_tx = Some(stdin_tx);
 
         Ok(())
-    }
-
-    async fn new_session(&mut self) -> anyhow::Result<SessionId> {
-        bail!("claude v2: new_session not yet implemented")
-    }
-
-    async fn resume_session(&mut self, _id: SessionId) -> anyhow::Result<()> {
-        bail!("claude v2: resume_session not yet implemented")
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -468,11 +488,15 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 }
 
                 HeadlessEvent::ThinkingDelta { text } => {
-                    let run_id = shared.lock().unwrap().run_id;
+                    let (run_id, session_id) = {
+                        let g = shared.lock().unwrap();
+                        (g.run_id, g.session_id.clone().unwrap_or_default())
+                    };
                     if let Some(rid) = run_id {
                         let _ = tx
                             .send(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id,
                                 run_id: rid,
                                 item: AgentEventItem::Thinking { text },
                             })
@@ -481,11 +505,15 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 }
 
                 HeadlessEvent::TextDelta { text } => {
-                    let run_id = shared.lock().unwrap().run_id;
+                    let (run_id, session_id) = {
+                        let g = shared.lock().unwrap();
+                        (g.run_id, g.session_id.clone().unwrap_or_default())
+                    };
                     if let Some(rid) = run_id {
                         let _ = tx
                             .send(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id,
                                 run_id: rid,
                                 item: AgentEventItem::Text { text },
                             })
@@ -495,7 +523,10 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
 
                 HeadlessEvent::ToolUseStart { index, id, name } => {
                     // Flush any pending tool call
-                    let run_id = shared.lock().unwrap().run_id;
+                    let (run_id, session_id) = {
+                        let g = shared.lock().unwrap();
+                        (g.run_id, g.session_id.clone().unwrap_or_default())
+                    };
                     if let Some(rid) = run_id {
                         if let Some((_tid, tname, tbuf, _idx)) = pending_tool.take() {
                             let input: serde_json::Value =
@@ -503,6 +534,7 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                             let _ = tx
                                 .send(DriverEvent::Output {
                                     key: key.clone(),
+                                    session_id,
                                     run_id: rid,
                                     item: AgentEventItem::ToolCall { name: tname, input },
                                 })
@@ -524,7 +556,10 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                     // If index matches current tool accumulation, flush it
                     let should_flush = pending_tool.as_ref().is_some_and(|t| t.3 == index);
                     if should_flush {
-                        let run_id = shared.lock().unwrap().run_id;
+                        let (run_id, session_id) = {
+                            let g = shared.lock().unwrap();
+                            (g.run_id, g.session_id.clone().unwrap_or_default())
+                        };
                         if let Some(rid) = run_id {
                             if let Some((_tid, tname, tbuf, _idx)) = pending_tool.take() {
                                 let input: serde_json::Value =
@@ -532,6 +567,7 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                                 let _ = tx
                                     .send(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id,
                                         run_id: rid,
                                         item: AgentEventItem::ToolCall { name: tname, input },
                                     })
@@ -544,19 +580,6 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                 HeadlessEvent::TurnResult { session_id, .. } => {
                     let run_id = shared.lock().unwrap().run_id;
                     if let Some(rid) = run_id {
-                        // Flush remaining tool calls
-                        if let Some((_tid, tname, tbuf, _idx)) = pending_tool.take() {
-                            let input: serde_json::Value =
-                                serde_json::from_str(&tbuf).unwrap_or(serde_json::Value::Null);
-                            let _ = tx
-                                .send(DriverEvent::Output {
-                                    key: key.clone(),
-                                    run_id: rid,
-                                    item: AgentEventItem::ToolCall { name: tname, input },
-                                })
-                                .await;
-                        }
-
                         let resolved_sid = if session_id.is_empty() {
                             shared
                                 .lock()
@@ -568,9 +591,24 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                             session_id
                         };
 
+                        // Flush remaining tool calls
+                        if let Some((_tid, tname, tbuf, _idx)) = pending_tool.take() {
+                            let input: serde_json::Value =
+                                serde_json::from_str(&tbuf).unwrap_or(serde_json::Value::Null);
+                            let _ = tx
+                                .send(DriverEvent::Output {
+                                    key: key.clone(),
+                                    session_id: resolved_sid.clone(),
+                                    run_id: rid,
+                                    item: AgentEventItem::ToolCall { name: tname, input },
+                                })
+                                .await;
+                        }
+
                         let _ = tx
                             .send(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id: resolved_sid.clone(),
                                 run_id: rid,
                                 item: AgentEventItem::TurnEnd,
                             })
@@ -578,9 +616,9 @@ fn spawn_stdout_reader<R: tokio::io::AsyncRead + Unpin + Send + 'static>(
                         let _ = tx
                             .send(DriverEvent::Completed {
                                 key: key.clone(),
+                                session_id: resolved_sid.clone(),
                                 run_id: rid,
                                 result: RunResult {
-                                    session_id: resolved_sid.clone(),
                                     finish_reason: FinishReason::Natural,
                                 },
                             })

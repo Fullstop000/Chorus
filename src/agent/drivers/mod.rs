@@ -192,7 +192,6 @@ pub enum FinishReason {
 /// Result payload delivered alongside a [`DriverEvent::Completed`].
 #[derive(Debug, Clone)]
 pub struct RunResult {
-    pub session_id: SessionId,
     pub finish_reason: FinishReason,
 }
 
@@ -209,21 +208,25 @@ pub enum DriverEvent {
         key: AgentKey,
         session_id: SessionId,
     },
-    /// A single output item from an in-flight run.
+    /// A single output item from an in-flight run. `session_id` is the run's
+    /// parent session; runs are turns inside sessions.
     Output {
         key: AgentKey,
+        session_id: SessionId,
         run_id: RunId,
         item: AgentEventItem,
     },
     /// A run completed successfully.
     Completed {
         key: AgentKey,
+        session_id: SessionId,
         run_id: RunId,
         result: RunResult,
     },
     /// A run failed.
     Failed {
         key: AgentKey,
+        session_id: SessionId,
         run_id: RunId,
         error: AgentError,
     },
@@ -395,7 +398,7 @@ impl EventFanOut {
 ///
 /// Cheap to clone (`Arc`). Subscribers obtain one of these from
 /// [`AttachResult`] and call [`EventStreamHandle::subscribe`] to register a
-/// listener; the AgentHandle implementation calls [`EventStreamHandle::close`]
+/// listener; the AgentSessionHandle implementation calls [`EventStreamHandle::close`]
 /// when the runtime shuts down.
 #[derive(Debug, Clone)]
 pub struct EventStreamHandle {
@@ -434,7 +437,7 @@ impl EventStreamHandle {
     }
 
     /// Signal the fan-out dispatcher to drain its inbound queue and exit
-    /// after the final event. Call this from `AgentHandle::close()` after
+    /// after the final event. Call this from `AgentSessionHandle::close()` after
     /// emitting the terminal `Lifecycle::Closed` event. Idempotent.
     pub fn close(&self) {
         self.inner.closing.store(true, Ordering::SeqCst);
@@ -445,7 +448,7 @@ impl EventStreamHandle {
 // Request / attachment payloads
 // ---------------------------------------------------------------------------
 
-/// Options passed to [`AgentHandle::start`].
+/// Options passed to [`AgentSessionHandle::start`].
 #[derive(Debug, Clone, Default)]
 pub struct StartOpts {
     /// If set, the driver should resume the given session instead of minting
@@ -469,14 +472,14 @@ pub struct PromptAttachment {
     pub bytes: Vec<u8>,
 }
 
-/// Prompt request sent to [`AgentHandle::prompt`].
+/// Prompt request sent to [`AgentSessionHandle::prompt`].
 #[derive(Debug, Clone)]
 pub struct PromptReq {
     pub text: String,
     pub attachments: Vec<PromptAttachment>,
 }
 
-/// Outcome of a [`AgentHandle::cancel`] call.
+/// Outcome of a [`AgentSessionHandle::cancel`] call.
 #[derive(Debug, Clone)]
 pub enum CancelOutcome {
     /// The in-flight run was aborted; the session remains usable.
@@ -560,9 +563,9 @@ pub struct AgentSpec {
     pub bridge_endpoint: String,
 }
 
-/// Return value of [`RuntimeDriver::attach`].
+/// Return value of [`RuntimeDriver::attach`] / `new_session` / `resume_session`.
 pub struct AttachResult {
-    pub handle: Box<dyn AgentHandle>,
+    pub handle: Box<dyn AgentSessionHandle>,
     pub events: EventStreamHandle,
 }
 
@@ -572,9 +575,10 @@ pub struct AttachResult {
 
 /// Runtime-level factory.
 ///
-/// One instance per runtime (Claude, Codex, Kimi, OpenCode, Fake). Stateless
-/// with respect to individual agents — it probes the host, lists catalog
-/// data, and mints per-agent [`AgentHandle`]s on demand.
+/// One instance per runtime (Claude, Codex, Kimi, OpenCode, Fake). Session
+/// lifecycle lives here: `attach` brings the first session online; further
+/// sessions on the same agent are spawned via `new_session` or resumed via
+/// `resume_session`, each yielding a fresh [`AgentSessionHandle`].
 ///
 /// `'static` so driver pointers can be stored in registries; `Send + Sync`
 /// because the agent manager holds them behind an `Arc`.
@@ -598,31 +602,60 @@ pub trait RuntimeDriver: Send + Sync + 'static {
     /// Enumerate runtime-advertised slash commands (if supported).
     async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>>;
 
-    /// Build a per-agent handle and its event stream for the given key/spec.
+    /// Build a per-agent session handle and its event stream for the given
+    /// key/spec.
     ///
-    /// The returned handle is in [`AgentState::Idle`]; callers must invoke
-    /// `start` to bring it online.
+    /// This is the initial attach. The returned handle is in
+    /// [`AgentState::Idle`]; callers must invoke `start` to bring it online.
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult>;
+
+    /// Spawn an additional session on an already-attached agent. Yields a new
+    /// [`AgentSessionHandle`] for the spawned session. Drivers that support
+    /// multiplexing reuse the existing process; drivers that do not should
+    /// return an error (the caller may then fall back to a new `attach`).
+    async fn new_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+    ) -> anyhow::Result<AttachResult>;
+
+    /// Resume a previously-stored session. Same lifecycle as `new_session` but
+    /// the returned handle is attached to `session_id` rather than a freshly
+    /// minted one.
+    async fn resume_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        session_id: SessionId,
+    ) -> anyhow::Result<AttachResult>;
 }
 
-/// Per-agent lifecycle handle.
+/// Per-session lifecycle handle.
 ///
-/// Owns exactly one runtime process (or equivalent connection). Consumers
-/// drive it through `start` -> `prompt` -> `cancel`/`close` transitions and
+/// Represents one ACP session (or equivalent). Multiple session handles may
+/// coexist for a single agent when the driver supports multiplexing; each
+/// carries its own `session_id`, state, and event timeline. Consumers drive a
+/// session through `start` -> `prompt` -> `cancel`/`close` transitions and
 /// observe side effects on the paired [`EventStreamHandle`].
 ///
 /// `Send` only — handles may be moved across tasks but are not required to be
 /// `Sync`; serialization of concurrent access is the handle implementation's
-/// responsibility (typically via an internal actor loop landing in Task 11).
+/// responsibility (typically via an internal actor loop).
 #[async_trait]
-pub trait AgentHandle: Send {
-    /// The agent key this handle was attached under.
+pub trait AgentSessionHandle: Send {
+    /// The agent key this session belongs to.
     fn key(&self) -> &AgentKey;
 
-    /// Current lifecycle state.
+    /// The session id this handle is attached to, if one has been assigned.
+    ///
+    /// `None` before `start` completes (or `start` resumes without a known
+    /// id). `Some` for every state downstream of `Active`.
+    fn session_id(&self) -> Option<&str>;
+
+    /// Current lifecycle state of this session.
     fn state(&self) -> AgentState;
 
-    /// Bring the runtime online.
+    /// Bring the session online.
     ///
     /// If `opts.resume_session_id` is set, resumes that session; otherwise
     /// starts fresh. `init_prompt`, when present, is delivered as the first
@@ -633,13 +666,6 @@ pub trait AgentHandle: Send {
         init_prompt: Option<PromptReq>,
     ) -> anyhow::Result<()>;
 
-    /// Start a new session on an already-started handle, replacing the
-    /// currently attached session.
-    async fn new_session(&mut self) -> anyhow::Result<SessionId>;
-
-    /// Resume a previously-stored session on an already-started handle.
-    async fn resume_session(&mut self, id: SessionId) -> anyhow::Result<()>;
-
     /// Send a prompt to the live session. Returns the [`RunId`] assigned so
     /// callers can correlate subsequent events.
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId>;
@@ -648,7 +674,8 @@ pub trait AgentHandle: Send {
     /// [`CancelOutcome`].
     async fn cancel(&mut self, run: RunId) -> anyhow::Result<CancelOutcome>;
 
-    /// Shut the runtime down and release all resources.
+    /// Shut this session down and release its resources. Does not tear down
+    /// the agent's shared runtime process when other sessions remain live.
     async fn close(&mut self) -> anyhow::Result<()>;
 }
 

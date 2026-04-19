@@ -133,6 +133,23 @@ impl RuntimeDriver for CodexDriver {
             events,
         })
     }
+
+    async fn new_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("codex: new_session not supported on an active handle (Phase 0.9 Stage 2+)")
+    }
+
+    async fn resume_session(
+        &self,
+        _key: AgentKey,
+        _spec: AgentSpec,
+        _session_id: SessionId,
+    ) -> anyhow::Result<AttachResult> {
+        bail!("codex: resume_session not supported on an active handle (Phase 0.9 Stage 2+)")
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -199,9 +216,20 @@ impl Drop for CodexHandle {
 }
 
 #[async_trait]
-impl AgentHandle for CodexHandle {
+impl AgentSessionHandle for CodexHandle {
     fn key(&self) -> &AgentKey {
         &self.key
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        // Mirrors session_id discovery from prompt(): prefer local state
+        // when available (matches borrow-safety constraints); callers that
+        // need the shared-state value should use state() and pattern-match.
+        match &self.state {
+            AgentState::Active { session_id } => Some(session_id),
+            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
+            _ => None,
+        }
     }
 
     /// Returns the authoritative agent state.
@@ -450,6 +478,7 @@ impl AgentHandle for CodexHandle {
                                 TurnStatus::Failed { message } => {
                                     emit(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: thread_id.clone(),
                                         run_id,
                                         item: AgentEventItem::Text {
                                             text: format!("⚠️ {message}"),
@@ -460,16 +489,15 @@ impl AgentHandle for CodexHandle {
                             };
                             emit(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id: thread_id.clone(),
                                 run_id,
                                 item: AgentEventItem::TurnEnd,
                             });
                             emit(DriverEvent::Completed {
                                 key: key.clone(),
+                                session_id: thread_id.clone(),
                                 run_id,
-                                result: RunResult {
-                                    session_id: thread_id.clone(),
-                                    finish_reason,
-                                },
+                                result: RunResult { finish_reason },
                             });
                             emit(DriverEvent::Lifecycle {
                                 key: key.clone(),
@@ -481,10 +509,14 @@ impl AgentHandle for CodexHandle {
                     }
 
                     AppServerEvent::AgentMessageDelta { item_id: _, text } => {
-                        let run_id = { shared.lock().unwrap().run_id };
+                        let (run_id, session_id) = {
+                            let s = shared.lock().unwrap();
+                            (s.run_id, s.thread_id.clone().unwrap_or_default())
+                        };
                         if let Some(run_id) = run_id {
                             emit(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id,
                                 run_id,
                                 item: AgentEventItem::Text { text },
                             });
@@ -492,10 +524,14 @@ impl AgentHandle for CodexHandle {
                     }
 
                     AppServerEvent::ReasoningSummaryDelta { item_id: _, text } => {
-                        let run_id = { shared.lock().unwrap().run_id };
+                        let (run_id, session_id) = {
+                            let s = shared.lock().unwrap();
+                            (s.run_id, s.thread_id.clone().unwrap_or_default())
+                        };
                         if let Some(run_id) = run_id {
                             emit(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id,
                                 run_id,
                                 item: AgentEventItem::Thinking { text },
                             });
@@ -506,17 +542,18 @@ impl AgentHandle for CodexHandle {
                         // Buffer up to 256 KB per command item; still forward each delta.
                         // Drained at TurnCompleted to avoid unbounded growth.
                         const MAX_BUF: usize = 256 * 1024;
-                        let run_id = {
+                        let (run_id, session_id) = {
                             let mut s = shared.lock().unwrap();
                             let buf = s.cmd_output_buf.entry(item_id.clone()).or_default();
                             if buf.len() + text.len() <= MAX_BUF {
                                 buf.push_str(&text);
                             }
-                            s.run_id
+                            (s.run_id, s.thread_id.clone().unwrap_or_default())
                         };
                         if let Some(run_id) = run_id {
                             emit(DriverEvent::Output {
                                 key: key.clone(),
+                                session_id,
                                 run_id,
                                 item: AgentEventItem::Text { text },
                             });
@@ -538,13 +575,14 @@ impl AgentHandle for CodexHandle {
 
                     AppServerEvent::Error { message, .. } => {
                         warn!(message = %message, "codex: protocol error");
-                        let run_id = {
+                        let (run_id, session_id) = {
                             let mut s = shared.lock().unwrap();
-                            s.run_id.take()
+                            (s.run_id.take(), s.thread_id.clone().unwrap_or_default())
                         };
                         if let Some(run_id) = run_id {
                             emit(DriverEvent::Failed {
                                 key: key.clone(),
+                                session_id,
                                 run_id,
                                 error: AgentError::RuntimeReported(message),
                             });
@@ -554,7 +592,10 @@ impl AgentHandle for CodexHandle {
                     // ItemCompleted: emit ToolCall/ToolResult trace events so the
                     // Telescope can show what tools the agent used.
                     AppServerEvent::ItemCompleted { item } => {
-                        let run_id = { shared.lock().unwrap().run_id };
+                        let (run_id, session_id) = {
+                            let s = shared.lock().unwrap();
+                            (s.run_id, s.thread_id.clone().unwrap_or_default())
+                        };
                         if let Some(run_id) = run_id {
                             match item {
                                 ItemEvent::CommandExecution {
@@ -569,6 +610,7 @@ impl AgentHandle for CodexHandle {
                                     };
                                     emit(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id: session_id.clone(),
                                         run_id,
                                         item: AgentEventItem::ToolCall {
                                             name: "shell".to_string(),
@@ -584,6 +626,7 @@ impl AgentHandle for CodexHandle {
                                     };
                                     emit(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id,
                                         run_id,
                                         item: AgentEventItem::ToolResult { content: result },
                                     });
@@ -596,6 +639,7 @@ impl AgentHandle for CodexHandle {
                                 } => {
                                     emit(DriverEvent::Output {
                                         key: key.clone(),
+                                        session_id,
                                         run_id,
                                         item: AgentEventItem::ToolCall {
                                             name: format!("{server}/{tool}"),
@@ -624,9 +668,9 @@ impl AgentHandle for CodexHandle {
             if let Some(run_id) = run_id {
                 emit(DriverEvent::Completed {
                     key: key.clone(),
+                    session_id,
                     run_id,
                     result: RunResult {
-                        session_id,
                         finish_reason: FinishReason::TransportClosed,
                     },
                 });
@@ -653,14 +697,6 @@ impl AgentHandle for CodexHandle {
 
         self.child = Some(child);
         Ok(())
-    }
-
-    async fn new_session(&mut self) -> anyhow::Result<SessionId> {
-        bail!("codex: new_session not supported on an active handle");
-    }
-
-    async fn resume_session(&mut self, _id: SessionId) -> anyhow::Result<()> {
-        bail!("codex: resume_session not supported on an active handle");
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -746,9 +782,9 @@ impl AgentHandle for CodexHandle {
         if let Some(run_id) = run_id {
             self.emit(DriverEvent::Completed {
                 key: self.key.clone(),
+                session_id,
                 run_id,
                 result: RunResult {
-                    session_id,
                     finish_reason: FinishReason::Cancelled,
                 },
             });

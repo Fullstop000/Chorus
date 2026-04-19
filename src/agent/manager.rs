@@ -13,7 +13,7 @@ use crate::agent::drivers::codex::CodexDriver;
 use crate::agent::drivers::kimi::KimiDriver;
 use crate::agent::drivers::opencode::OpencodeDriver;
 use crate::agent::drivers::{
-    AgentHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, StartOpts,
+    AgentSessionHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, StartOpts,
 };
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
@@ -22,7 +22,7 @@ use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
-/// Managed agent backed by a [`RuntimeDriver`] + [`AgentHandle`].
+/// Managed agent backed by a [`RuntimeDriver`] + [`AgentSessionHandle`].
 ///
 /// Visible to the sibling `event_forwarder` module (not exported beyond
 /// the `agent` crate) because the forwarder's `Completed` arm and the
@@ -30,7 +30,7 @@ use crate::store::Store;
 /// pending-count field. No other module should reach into these fields;
 /// prefer `deliver_pending_notification` for the shared delivery path.
 pub(super) struct ManagedAgent {
-    pub(super) handle: Box<dyn AgentHandle>,
+    pub(super) handle: Box<dyn AgentSessionHandle>,
     pub(super) _event_tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Debounce counter for stdin-style notification batching.
     pub(super) pending_notification_count: u32,
