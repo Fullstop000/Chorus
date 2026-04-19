@@ -90,10 +90,15 @@ export function UserSettings({ username, open, onOpenChange }: Props) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="user-settings-card">
         <DialogHeader>
-          <DialogTitle>User Settings</DialogTitle>
-          <DialogDescription>
-            Logged in as <span style={{ fontFamily: 'var(--font-mono)' }}>{username}</span>
-          </DialogDescription>
+          <div className="flex flex-col gap-1">
+            <DialogTitle>User Settings</DialogTitle>
+            <DialogDescription>
+              Logged in as {username}
+            </DialogDescription>
+          </div>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">
+            ×
+          </DialogClose>
         </DialogHeader>
 
         <FormField>
@@ -111,17 +116,17 @@ export function UserSettings({ username, open, onOpenChange }: Props) {
         {error && <FormError>{error}</FormError>}
 
         <div className="user-settings-actions">
+          <DialogClose asChild>
+            <Button variant="outline">Cancel</Button>
+          </DialogClose>
           <Button onClick={handleSave} disabled={saving}>
             {saving ? 'Saving…' : 'Save'}
           </Button>
-          <DialogClose asChild>
-            <Button variant="ghost">Cancel</Button>
-          </DialogClose>
         </div>
 
         {systemInfo && (
           <div className="user-settings-system">
-            <div className="user-settings-section-label">System</div>
+            <div className="user-settings-section-label user-settings-kicker">System</div>
             <div className="user-settings-info-grid">
               <span className="user-settings-info-label">Data directory</span>
               <span className="user-settings-info-value">{systemInfo.data_dir}</span>
@@ -135,7 +140,7 @@ export function UserSettings({ username, open, onOpenChange }: Props) {
 
         <div className="user-settings-logs">
           <div className="user-settings-logs-header">
-            <span className="user-settings-section-label">Server Logs</span>
+            <span className="user-settings-section-label user-settings-kicker">Server Logs</span>
             <Button
               variant="ghost"
               size="sm"
