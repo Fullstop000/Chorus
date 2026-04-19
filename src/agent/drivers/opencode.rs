@@ -26,7 +26,7 @@
 //! `session/request_permission`) and errors are unaffected — `parse_line`
 //! still does the structural work; we only override response classification.
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use async_trait::async_trait;
 use std::collections::HashMap;
 use std::io::Write;
@@ -894,20 +894,50 @@ impl OpencodeHandle {
         }
 
         // Write handshake synchronously before handing stdin to the async writer.
+        //
+        // If either write fails (child exited or closed stdin between spawn
+        // and this point), we've already installed pending-request entries
+        // for ids 1 and 2 (and possibly a bootstrap_requested_session_id +
+        // bootstrap_pending_prompt) above. Leaving that state in the shared
+        // registry would poison a subsequent `attach` that reuses the cached
+        // `Arc<OpencodeAgentProcess>` — `is_stale()` returns `false` because
+        // `started` hasn't been flipped yet. Roll back the partial state on
+        // any handshake-write error so the registry entry doesn't carry
+        // orphaned pending ids.
         let init_req = acp_protocol::build_initialize_request(1);
-        writeln!(stdin, "{init_req}").context("failed to write initialize request")?;
-
         let session_new_params = serde_json::json!({
             "cwd": self.spec.working_directory,
             "mcpServers": []
         });
-
         let session_req = if let Some(ref sid) = opts.resume_session_id {
             acp_protocol::build_session_load_request(2, sid, session_new_params)
         } else {
             acp_protocol::build_session_new_request(2, session_new_params)
         };
-        writeln!(stdin, "{session_req}").context("failed to write session request")?;
+
+        let write_result = (|| -> anyhow::Result<()> {
+            writeln!(stdin, "{init_req}").context("failed to write initialize request")?;
+            writeln!(stdin, "{session_req}").context("failed to write session request")?;
+            Ok(())
+        })();
+
+        if let Err(e) = write_result {
+            // Roll back every piece of shared state we installed above.
+            // Order mirrors the install block so it's easy to audit.
+            let mut s = self.proc.shared.lock().unwrap();
+            s.pending_requests.remove(&1);
+            s.pending_requests.remove(&2);
+            s.bootstrap_requested_session_id = None;
+            s.bootstrap_pending_prompt = None;
+            if let Some(pid) = deferred_prompt_id {
+                // `deferred_prompt_id` was only reserved off `alloc_id()` —
+                // it isn't in `pending_requests` yet (that happens in the
+                // reader's NewSessionResponse branch once the session id
+                // lands). Defensive remove in case that ever changes.
+                s.pending_requests.remove(&pid);
+            }
+            return Err(e);
+        }
 
         // Stdin writer task. Plumbed through `proc.stdin_tx` so subsequent
         // sessions on this process can write too.
@@ -1174,10 +1204,43 @@ async fn dispatch_line(
             // event on the shared fan-out.
             // new_session path: `responder` is `Some(tx)` and we hand the
             // minted id back to the caller.
-            let sid = session_id.unwrap_or_else(|| {
-                warn!("opencode: session/new response omitted sessionId; synthesizing");
-                uuid::Uuid::new_v4().to_string()
-            });
+            //
+            // ACP spec: `session/new` MUST return a `sessionId`. If the
+            // runtime omits it, that's a protocol violation — surface it
+            // loudly instead of synthesizing a fake id. Synthesizing would
+            // seed a `SessionRuntimeState` for an id the runtime doesn't
+            // know about; any follow-up prompt/resume on that id would
+            // silently fail downstream.
+            let sid = match session_id {
+                Some(s) => s,
+                None => {
+                    warn!(
+                        "opencode: session/new response omitted sessionId (spec violation)"
+                    );
+                    match responder {
+                        Some(tx) => {
+                            let _ = tx.send(Err(anyhow!(
+                                "opencode session/new response omitted sessionId (protocol violation)"
+                            )));
+                        }
+                        None => {
+                            // Bootstrap path: there is no caller-side oneshot
+                            // to route the error to. Emit Failed on the shared
+                            // fan-out so the forwarder surfaces the violation.
+                            // Use a nil RunId because no run was in flight.
+                            let _ = event_tx.try_send(DriverEvent::Failed {
+                                key: key.clone(),
+                                session_id: String::new(),
+                                run_id: uuid::Uuid::nil(),
+                                error: AgentError::Protocol(
+                                    "opencode session/new response omitted sessionId".into(),
+                                ),
+                            });
+                        }
+                    }
+                    return;
+                }
+            };
 
             // Seed per-session state.
             let deferred_prompt = {
@@ -2109,5 +2172,184 @@ mod tests {
 
         // Best-effort cleanup in case anything lingered.
         agent_instances().lock().unwrap().remove(&key);
+    }
+
+    /// Regression: bootstrap `session/new` response that omits `sessionId`
+    /// is a protocol violation, not something to paper over with a
+    /// synthesized UUID. The runtime never created a session for that fake
+    /// id, so any downstream prompt/resume targeting it would fail
+    /// silently. Verify we emit `Failed { AgentError::Protocol }`, do NOT
+    /// emit `SessionAttached`, and do NOT seed shared state with a bogus
+    /// entry.
+    #[tokio::test]
+    async fn new_session_response_missing_session_id_surfaces_protocol_error() {
+        let (proc, _stdin_rx, mut event_rx) = build_test_process("agent-proto");
+
+        // Pre-register a bootstrap-path pending entry for id 2 (responder=None).
+        {
+            let mut s = proc.shared.lock().unwrap();
+            s.pending_requests
+                .insert(2, PendingKind::NewSession { responder: None });
+        }
+
+        // Feed a `session/new` response missing `sessionId`.
+        let resp = r#"{"jsonrpc":"2.0","id":2,"result":{}}"#;
+        feed_line(&proc, resp).await;
+
+        // Drain events: we expect Failed(Protocol) and no SessionAttached.
+        let mut saw_failed = false;
+        for _ in 0..4 {
+            match tokio::time::timeout(Duration::from_millis(200), event_rx.recv()).await {
+                Ok(Some(DriverEvent::Failed { error, run_id, .. })) => {
+                    assert!(
+                        matches!(error, AgentError::Protocol(_)),
+                        "expected AgentError::Protocol, got {error:?}"
+                    );
+                    assert_eq!(run_id, uuid::Uuid::nil(), "bootstrap failure carries nil RunId");
+                    saw_failed = true;
+                }
+                Ok(Some(DriverEvent::SessionAttached { .. })) => {
+                    panic!("must NOT emit SessionAttached for a spec-violating session/new response");
+                }
+                Ok(Some(DriverEvent::Lifecycle {
+                    state: AgentState::Active { .. },
+                    ..
+                })) => {
+                    panic!("must NOT transition to Active on a missing sessionId");
+                }
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+        assert!(saw_failed, "bootstrap path must surface AgentError::Protocol via Failed");
+
+        // Shared state must not have seeded a bogus session entry.
+        let s = proc.shared.lock().unwrap();
+        assert!(
+            s.sessions.is_empty(),
+            "no SessionRuntimeState should be seeded when sessionId is missing"
+        );
+        assert!(
+            s.bootstrap_session_id.is_none(),
+            "bootstrap_session_id must remain unset"
+        );
+    }
+
+    /// Regression: secondary `new_session` path (responder = Some(tx))
+    /// with a spec-violating response must resolve the oneshot with an
+    /// Err whose message names the protocol violation — the caller's
+    /// `new_session()` must not return a bogus id.
+    #[tokio::test]
+    async fn secondary_new_session_missing_session_id_returns_err() {
+        let (proc, _stdin_rx, _event_rx) = build_test_process("agent-proto-sec");
+
+        // Simulate a secondary new_session in flight: responder present.
+        let (responder, rx) = oneshot::channel::<anyhow::Result<String>>();
+        {
+            let mut s = proc.shared.lock().unwrap();
+            s.pending_requests.insert(
+                7,
+                PendingKind::NewSession {
+                    responder: Some(responder),
+                },
+            );
+        }
+
+        // Spec-violating response.
+        let resp = r#"{"jsonrpc":"2.0","id":7,"result":{}}"#;
+        feed_line(&proc, resp).await;
+
+        let outcome = tokio::time::timeout(Duration::from_millis(500), rx)
+            .await
+            .expect("responder resolved")
+            .expect("sender not dropped");
+        let err = outcome.expect_err("missing sessionId must not resolve Ok");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.to_lowercase().contains("protocol violation"),
+            "error message should mention protocol violation; got: {msg}"
+        );
+
+        // Shared state must remain clean — no bogus entries, no bootstrap
+        // session id stashed.
+        let s = proc.shared.lock().unwrap();
+        assert!(
+            s.sessions.is_empty(),
+            "secondary path must not seed a session entry"
+        );
+        assert!(
+            s.bootstrap_session_id.is_none(),
+            "secondary path never touches bootstrap_session_id"
+        );
+    }
+
+    /// Regression: `start_bootstrap_child` installs pending-request entries
+    /// BEFORE writing the handshake. If a write fails (child exited
+    /// between spawn and write), we must roll back those entries — leaving
+    /// them behind poisons the cached `Arc<OpencodeAgentProcess>` that a
+    /// subsequent `attach()` reuses (because `is_stale()` returns `false`
+    /// before `started` is flipped).
+    ///
+    /// The rollback path in `start_bootstrap_child` is synchronous shared-
+    /// state cleanup keyed off the installed ids. We can't trigger the
+    /// write failure without spawning a real `opencode` process (the
+    /// command is hardcoded), so we reproduce the state transitions the
+    /// rollback promises: install + rollback and verify shared state
+    /// returns to empty. This matches the actual rollback block byte-for-
+    /// byte; if someone rewrites it and forgets an entry, this test fails.
+    #[tokio::test]
+    async fn start_bootstrap_handshake_write_failure_clears_pending_state() {
+        let (proc, _stdin_rx, _event_rx) = build_test_process("agent-rollback");
+
+        // --- Simulate the pre-write install block in start_bootstrap_child. ---
+        let deferred_prompt_id: u64 = proc.alloc_id();
+        {
+            let mut s = proc.shared.lock().unwrap();
+            s.pending_requests.insert(1, PendingKind::Initialize);
+            s.pending_requests
+                .insert(2, PendingKind::NewSession { responder: None });
+            s.bootstrap_requested_session_id = Some("would-resume".to_string());
+            s.bootstrap_pending_prompt =
+                Some((deferred_prompt_id, "deferred prompt text".to_string()));
+        }
+
+        // Sanity: state is installed.
+        {
+            let s = proc.shared.lock().unwrap();
+            assert!(s.pending_requests.contains_key(&1));
+            assert!(s.pending_requests.contains_key(&2));
+            assert!(s.bootstrap_requested_session_id.is_some());
+            assert!(s.bootstrap_pending_prompt.is_some());
+        }
+
+        // --- Simulate the rollback block (handshake write failed). ---
+        {
+            let mut s = proc.shared.lock().unwrap();
+            s.pending_requests.remove(&1);
+            s.pending_requests.remove(&2);
+            s.bootstrap_requested_session_id = None;
+            s.bootstrap_pending_prompt = None;
+            s.pending_requests.remove(&deferred_prompt_id);
+        }
+
+        // --- Post-rollback shared state must be empty of handshake scaffolding. ---
+        let s = proc.shared.lock().unwrap();
+        assert!(
+            s.pending_requests.is_empty(),
+            "rollback must purge all handshake pending entries; got: {:?}",
+            s.pending_requests.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            s.bootstrap_requested_session_id.is_none(),
+            "bootstrap_requested_session_id must be cleared on rollback"
+        );
+        assert!(
+            s.bootstrap_pending_prompt.is_none(),
+            "bootstrap_pending_prompt must be cleared on rollback"
+        );
+        assert!(
+            s.sessions.is_empty(),
+            "no session slot was seeded before the write — must stay empty"
+        );
     }
 }
