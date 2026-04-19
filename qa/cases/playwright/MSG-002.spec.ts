@@ -1,6 +1,6 @@
 import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser, type TrioNames } from './helpers/api'
-import { openAgentChat, openThreadFromMessage, sendChatMessage , gotoApp , reloadApp } from './helpers/ui'
+import { openAgentChat, sendChatMessage, gotoApp, reloadApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -23,8 +23,7 @@ test.describe('MSG-002', () => {
 
     const { username } = await getWhoami(request)
     const token = `dm-check-${Date.now()}`
-    const prompt = `Reply in this DM, not in a thread. Return exact token: ${token}`
-    let replyMode: 'top-level' | 'thread' = 'top-level'
+    const prompt = `Reply in this DM. Return exact token: ${token}`
     const dmChannel = `dm:@${trio.botB}`
 
     await gotoApp(page)
@@ -45,25 +44,9 @@ test.describe('MSG-002', () => {
       while (Date.now() < deadline) {
         const msgs = await historyForUser(request, username, dmChannel, 40)
         if (msgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))) {
-          replyMode = 'top-level'
           ok = true
           break
         }
-        const parent = msgs.find(
-          (m) =>
-            m.senderType !== 'agent' &&
-            (m.content ?? '').includes(token) &&
-            (m.replyCount ?? 0) > 0
-        )
-        if (parent) {
-          const threadMsgs = await historyForUser(request, username, `${dmChannel}:${parent.id}`, 40)
-          if (threadMsgs.some((m) => m.senderType === 'agent' && (m.content ?? '').includes(token))) {
-            replyMode = 'thread'
-            ok = true
-            break
-          }
-        }
-        if (ok) break
         await new Promise((r) => setTimeout(r, 2000))
       }
       expect(ok).toBe(true)
@@ -72,23 +55,13 @@ test.describe('MSG-002', () => {
     await test.step('Step 7–8: Refresh and re-open DM — history persists', async () => {
       await reloadApp(page)
       await openAgentChat(page, trio.displayB)
-      if (replyMode === 'top-level') {
-        await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
-      } else {
-        await openThreadFromMessage(page, token)
-        await expect(page.locator('.thread-body')).toContainText(token, { timeout: 15_000 })
-      }
+      await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
     })
 
     await test.step('Step 9: Switch target and return to DM', async () => {
       await page.locator('.sidebar-item-text:text("all")').first().click()
       await openAgentChat(page, trio.displayB)
-      if (replyMode === 'top-level') {
-        await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
-      } else {
-        await openThreadFromMessage(page, token)
-        await expect(page.locator('.thread-body')).toContainText(token, { timeout: 15_000 })
-      }
+      await expect(page.getByText(token).first()).toBeVisible({ timeout: 15_000 })
     })
   })
 })

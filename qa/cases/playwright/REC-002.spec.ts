@@ -1,6 +1,6 @@
 import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser } from './helpers/api'
-import { clickSidebarChannel, openAgentTab, openThreadFromMessage, sendChatMessage , gotoApp } from './helpers/ui'
+import { clickSidebarChannel, openAgentTab, sendChatMessage, gotoApp } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -21,7 +21,7 @@ test.describe('REC-002', () => {
     const mark = `rec-002-${Date.now()}`
     await gotoApp(page)
 
-    await test.step('Steps 1–4: Trigger multi-agent replies, switch activity, and open a thread', async () => {
+    await test.step('Steps 1–3: Trigger multi-agent replies, switch activity tabs, verify chat stays in sync', async () => {
       await clickSidebarChannel(page, 'all')
       await sendChatMessage(page, `MSG ${mark}: please reply to confirm you received this`)
       await openAgentTab(page, 'bot-b', 'Activity')
@@ -39,13 +39,8 @@ test.describe('REC-002', () => {
         await new Promise((r) => setTimeout(r, 2000))
       }
       expect(sawAny).toBe(true)
-      // Re-navigate to #all to ensure mark message is visible in viewport
       await clickSidebarChannel(page, 'all')
       const markMsg = page.locator('.message-item').filter({ hasText: mark }).first()
-      await markMsg.scrollIntoViewIfNeeded().catch(() => {})
-      await openThreadFromMessage(page, mark)
-      await expect(page.locator('.thread-panel')).toBeVisible()
-      await page.locator('.thread-close-btn').click()
       await expect(markMsg).toBeVisible()
     })
   })

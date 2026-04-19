@@ -32,7 +32,7 @@
   2. Send a message containing a unique token.
   3. Verify the human message appears immediately in the DM timeline.
   4. Poll the history API for an agent reply containing the token (up to 2 min).
-  5. Verify the reply appears in the DM timeline (top-level or thread), not in any channel.
+  5. Verify the reply appears in the DM timeline, not in any channel.
   6. Refresh and confirm both messages persist.
   7. Switch to another channel and return — history still present.
 - Expected: agent reply in same DM with token; history survives refresh and channel switch
@@ -91,7 +91,6 @@
   2. While in flight, verify the composer exposes a pending state.
   3. On success: verify the confirmed message appears once and the composer returns to idle.
   4. On failure: verify a visible error toast appears and unsent text remains in the composer.
-  5. Repeat the same checks inside a thread composer.
 - Expected: success shows one message, no phantom failure; failure is visible and recoverable
 - Common failure signals:
   - successful send duplicates a message row

@@ -256,12 +256,10 @@
 - Steps:
   1. Send a channel prompt that agents will answer.
   2. While replies are arriving, switch to activity and back.
-  3. Open a thread from one of the arriving messages.
-  4. Confirm the UI remains stable and messages are not lost.
+  3. Confirm the UI remains stable and messages are not lost.
 - Expected:
   - at least one agent reply appears; no dropped or duplicated messages
   - activity and chat stay in sync
-  - thread open does not corrupt the channel timeline
 - Note: only kimi (bot-b) reliably responds; the case validates UI stability and message integrity during live updates, not that all three agents reply concurrently
 - Common failure signals:
   - disappearing messages

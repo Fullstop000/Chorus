@@ -59,7 +59,7 @@ test.describe('MSG-010', () => {
     expect(created?.id).toBeTruthy()
     await inviteChannelMemberApi(request, created!.id!, agentName)
 
-    const readCursorPosts: Array<{ threadParentId?: string; lastReadSeq?: number }> = []
+    const readCursorPosts: Array<{ lastReadSeq?: number }> = []
     let historyRequests = 0
     page.on('request', (req) => {
       const url = new URL(req.url())
@@ -67,7 +67,7 @@ test.describe('MSG-010', () => {
         req.method() === 'POST' &&
         url.pathname === `/api/conversations/${created!.id}/read-cursor`
       ) {
-        readCursorPosts.push(req.postDataJSON() as { threadParentId?: string; lastReadSeq?: number })
+        readCursorPosts.push(req.postDataJSON() as { lastReadSeq?: number })
       }
       if (
         req.method() === 'GET' &&
@@ -91,9 +91,8 @@ test.describe('MSG-010', () => {
     await expect
       .poll(
         () =>
-          readCursorPosts.find(
-            (post) => !post.threadParentId && (post.lastReadSeq ?? 0) >= baselineLastSeq
-          )?.lastReadSeq ?? 0,
+          readCursorPosts.find((post) => (post.lastReadSeq ?? 0) >= baselineLastSeq)
+            ?.lastReadSeq ?? 0,
         { timeout: 10_000 }
       )
       .toBeGreaterThanOrEqual(baselineLastSeq)
