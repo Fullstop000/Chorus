@@ -14,9 +14,10 @@
 //!   id >= 2 with `result.turn.id` → TurnResponse
 //!   id >= 2 with empty/null result → TurnInterruptResponse
 //!
-//! Callers that send additional request types (like `model/list`) should use
-//! a `parse_line_with_registry` variant that accepts a caller-supplied
-//! `id → method` map. (TODO: implement `parse_line_with_registry`)
+//! Callers that send additional request types, or that multiplex multiple
+//! threads over one connection, use [`parse_line_with_registry`] — it
+//! classifies responses by the method the caller associated with the
+//! request id rather than by id position.
 
 use serde_json::{json, Value};
 use tracing::{debug, warn};
@@ -299,8 +300,10 @@ pub fn build_approval_response(request_id: &Value, decision: &str) -> String {
 ///   id 1 → ThreadResponse
 ///   id >= 2 with `result.turn.id` → TurnResponse
 ///   id >= 2 with empty/null result → TurnInterruptResponse
-/// Callers that send additional request types should extend this by tracking
-/// their own id→method map (future: `parse_line_with_registry`).
+///
+/// Callers that multiplex multiple threads on one connection use
+/// [`parse_line_with_registry`] instead — it classifies responses by the
+/// method the caller sent rather than by id position.
 pub fn parse_line(line: &str) -> AppServerEvent {
     let msg: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -330,6 +333,130 @@ pub fn parse_line(line: &str) -> AppServerEvent {
     }
 
     AppServerEvent::Unknown
+}
+
+/// Parse one line of `codex app-server` stdout with id-agnostic response
+/// routing. `method_for_id(id)` must return the method the caller
+/// associated with a given numeric request id (typically via a
+/// `HashMap<u64, _>`); notifications and server-initiated requests follow
+/// the same path as [`parse_line`].
+///
+/// Recognized methods for response classification:
+///   * `"initialize"` → [`AppServerEvent::InitializeResponse`]
+///   * `"thread/start"` or `"thread/resume"` → [`AppServerEvent::ThreadResponse`]
+///   * `"turn/start"` → [`AppServerEvent::TurnResponse`]
+///   * `"turn/interrupt"` → [`AppServerEvent::TurnInterruptResponse`]
+///
+/// Responses whose id is absent from the registry, or whose registered
+/// method is unknown, return [`AppServerEvent::Unknown`]. Errors on a
+/// registered id always produce [`AppServerEvent::Error`] regardless of
+/// method.
+pub fn parse_line_with_registry<F>(line: &str, method_for_id: F) -> AppServerEvent
+where
+    F: FnOnce(u64) -> Option<String>,
+{
+    let msg: Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(_) => return AppServerEvent::Unknown,
+    };
+
+    let has_id = msg.get("id").is_some();
+    let has_result = msg.get("result").is_some();
+    let has_error = msg.get("error").is_some();
+    let has_method = msg.get("method").is_some();
+
+    if has_id && (has_result || has_error) && !has_method {
+        return parse_response_by_method(&msg, method_for_id);
+    }
+
+    if has_method && has_id {
+        let method = msg["method"].as_str().unwrap_or("");
+        return parse_server_request(method, &msg);
+    }
+
+    if has_method {
+        let method = msg["method"].as_str().unwrap_or("");
+        return parse_notification(method, &msg);
+    }
+
+    AppServerEvent::Unknown
+}
+
+fn parse_response_by_method<F>(msg: &Value, method_for_id: F) -> AppServerEvent
+where
+    F: FnOnce(u64) -> Option<String>,
+{
+    let id_val = msg.get("id");
+
+    if let Some(err) = msg.get("error") {
+        let message = err
+            .get("data")
+            .and_then(|d| d.get("message"))
+            .and_then(|v| v.as_str())
+            .or_else(|| err.get("message").and_then(|v| v.as_str()))
+            .unwrap_or("unknown error")
+            .to_string();
+        return AppServerEvent::Error {
+            id: id_val.cloned(),
+            message,
+        };
+    }
+
+    let Some(id_u64) = id_val.and_then(|v| v.as_u64()) else {
+        return AppServerEvent::Unknown;
+    };
+    let method = method_for_id(id_u64);
+    let result = msg.get("result");
+
+    match method.as_deref() {
+        Some("initialize") => AppServerEvent::InitializeResponse,
+        Some("thread/start") | Some("thread/resume") => {
+            let thread_id = result
+                .and_then(|r| r.get("thread"))
+                .and_then(|t| t.get("id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            match thread_id {
+                Some(tid) => AppServerEvent::ThreadResponse { thread_id: tid },
+                None => {
+                    warn!(
+                        method = method.as_deref(),
+                        "codex app-server: thread response missing thread.id"
+                    );
+                    AppServerEvent::Unknown
+                }
+            }
+        }
+        Some("turn/start") => {
+            let turn_id = result
+                .and_then(|r| r.get("turn"))
+                .and_then(|t| t.get("id"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            match turn_id {
+                Some(tid) => AppServerEvent::TurnResponse { turn_id: tid },
+                None => {
+                    warn!("codex app-server: turn/start response missing turn.id");
+                    AppServerEvent::Unknown
+                }
+            }
+        }
+        Some("turn/interrupt") => AppServerEvent::TurnInterruptResponse,
+        Some(other) => {
+            warn!(
+                method = other,
+                "codex app-server: response for unregistered method"
+            );
+            AppServerEvent::Unknown
+        }
+        None => {
+            warn!(
+                id = id_u64,
+                "codex app-server: response for unknown id — caller registry lookup failed"
+            );
+            AppServerEvent::Unknown
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -836,6 +963,104 @@ mod tests {
             }
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // parse_line_with_registry — id-agnostic response classification
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn registry_thread_start_response_uses_method() {
+        // id 42 is outside the legacy-id range (0/1/2+) but resolves via registry.
+        let line = r#"{"id":42,"result":{"thread":{"id":"thr_abc"}}}"#;
+        let ev = parse_line_with_registry(line, |id| {
+            assert_eq!(id, 42);
+            Some("thread/start".into())
+        });
+        match ev {
+            AppServerEvent::ThreadResponse { thread_id } => {
+                assert_eq!(thread_id, "thr_abc");
+            }
+            other => panic!("expected ThreadResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_thread_resume_is_same_variant() {
+        let line = r#"{"id":100,"result":{"thread":{"id":"thr_xyz"}}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("thread/resume".into()));
+        match ev {
+            AppServerEvent::ThreadResponse { thread_id } => {
+                assert_eq!(thread_id, "thr_xyz");
+            }
+            other => panic!("expected ThreadResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_turn_start_response() {
+        let line =
+            r#"{"id":7,"result":{"turn":{"id":"turn_99","status":"inProgress","items":[]}}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("turn/start".into()));
+        match ev {
+            AppServerEvent::TurnResponse { turn_id } => assert_eq!(turn_id, "turn_99"),
+            other => panic!("expected TurnResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_turn_interrupt_response() {
+        let line = r#"{"id":8,"result":{}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("turn/interrupt".into()));
+        assert!(matches!(ev, AppServerEvent::TurnInterruptResponse));
+    }
+
+    #[test]
+    fn registry_initialize_response() {
+        let line = r#"{"id":5,"result":{"protocolVersion":1}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("initialize".into()));
+        assert!(matches!(ev, AppServerEvent::InitializeResponse));
+    }
+
+    #[test]
+    fn registry_error_path_independent_of_method() {
+        let line = r#"{"id":9,"error":{"code":-32000,"message":"nope"}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("thread/start".into()));
+        match ev {
+            AppServerEvent::Error { message, .. } => assert_eq!(message, "nope"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_unknown_id_returns_unknown() {
+        // Registry lookup failure (unseen id) must produce Unknown rather
+        // than misclassifying by id heuristic.
+        let line = r#"{"id":999,"result":{"thread":{"id":"thr_abc"}}}"#;
+        let ev = parse_line_with_registry(line, |_| None);
+        assert!(
+            matches!(ev, AppServerEvent::Unknown),
+            "unknown id should yield Unknown, got {ev:?}"
+        );
+    }
+
+    #[test]
+    fn registry_forwards_notifications_unchanged() {
+        // Notifications have no id and should follow the notification path
+        // regardless of the registry closure (which should never be called).
+        let line = r#"{"method":"turn/completed","params":{"turn":{"id":"turn_x","status":"completed"}}}"#;
+        let ev = parse_line_with_registry(line, |_| panic!("registry must not be called"));
+        assert!(matches!(ev, AppServerEvent::TurnCompleted { .. }));
+    }
+
+    #[test]
+    fn registry_forwards_server_requests_unchanged() {
+        let line = r#"{"method":"item/commandExecution/requestApproval","id":42,"params":{"itemId":"item_1","threadId":"thr_x","turnId":"turn_y"}}"#;
+        let ev = parse_line_with_registry(line, |_| {
+            // server-initiated requests are classified by method name, not id
+            panic!("registry must not be called for server requests")
+        });
+        assert!(matches!(ev, AppServerEvent::CommandApproval { .. }));
     }
 
     #[test]
