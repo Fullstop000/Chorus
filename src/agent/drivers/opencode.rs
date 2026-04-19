@@ -1259,24 +1259,31 @@ async fn dispatch_line(
                 s.bootstrap_pending_prompt.take()
             };
 
+            let is_bootstrap = responder.is_none();
             if let Some(responder) = responder {
                 if responder.send(Ok(sid.clone())).is_err() {
                     // Caller dropped. That's okay — we already seeded state.
                 }
             }
 
-            // Always announce the attach on the shared event stream so UI
-            // consumers see it regardless of which path minted the session.
-            let _ = event_tx.try_send(DriverEvent::SessionAttached {
-                key: key.clone(),
-                session_id: sid.clone(),
-            });
-            let _ = event_tx.try_send(DriverEvent::Lifecycle {
-                key: key.clone(),
-                state: AgentState::Active {
+            // Only the bootstrap path announces the attach here. For the
+            // secondary path (`responder.is_some()`), the secondary handle's
+            // `start()` emits SessionAttached + Active itself — emitting here
+            // too would double-fire and desync `await_session_attached`-style
+            // consumers. Mirrors kimi's split: reader emits for warmup/
+            // bootstrap; handle.start() emits for secondary.
+            if is_bootstrap {
+                let _ = event_tx.try_send(DriverEvent::SessionAttached {
+                    key: key.clone(),
                     session_id: sid.clone(),
-                },
-            });
+                });
+                let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                    key: key.clone(),
+                    state: AgentState::Active {
+                        session_id: sid.clone(),
+                    },
+                });
+            }
 
             if let Some((prompt_id, prompt_text)) = deferred_prompt {
                 let run_id = RunId::new_v4();
@@ -1334,19 +1341,27 @@ async fn dispatch_line(
                     s.bootstrap_session_id = Some(sid.clone());
                 }
             }
+            let is_bootstrap = responder.is_none();
             if let Some(responder) = responder {
                 let _ = responder.send(Ok(sid.clone()));
             }
-            let _ = event_tx.try_send(DriverEvent::SessionAttached {
-                key: key.clone(),
-                session_id: sid.clone(),
-            });
-            let _ = event_tx.try_send(DriverEvent::Lifecycle {
-                key: key.clone(),
-                state: AgentState::Active {
+            // Only the bootstrap path announces the attach here. For the
+            // secondary resume path (`responder.is_some()`), the secondary
+            // handle's `start()` emits SessionAttached + Active itself.
+            // Mirrors kimi's split: reader emits for warmup/bootstrap;
+            // handle.start() emits for secondary.
+            if is_bootstrap {
+                let _ = event_tx.try_send(DriverEvent::SessionAttached {
+                    key: key.clone(),
                     session_id: sid.clone(),
-                },
-            });
+                });
+                let _ = event_tx.try_send(DriverEvent::Lifecycle {
+                    key: key.clone(),
+                    state: AgentState::Active {
+                        session_id: sid.clone(),
+                    },
+                });
+            }
         }
 
         ClassifiedFrame::PromptResponse { session_id, run_id } => {
@@ -2033,6 +2048,92 @@ mod tests {
         };
         let msg = format!("{err:#}");
         assert!(msg.contains("before attach"), "got: {msg}");
+    }
+
+    /// Regression: `DriverEvent::SessionAttached` must be emitted EXACTLY ONCE
+    /// per secondary `new_session`. Before the fix, the reader task in
+    /// `dispatch_line` emitted SessionAttached unconditionally on a
+    /// `NewSessionResponse`, AND the secondary `OpencodeHandle::start()` path
+    /// also emitted it — producing two events per secondary session. Bootstrap
+    /// minted a single event (its start path is different), so the asymmetry
+    /// broke `await_session_attached` consumers: draining one event left a
+    /// duplicate in the buffer that later consumers mistook for a different
+    /// session's attach. Mirrors kimi's split: reader emits for
+    /// warmup/bootstrap only; handle.start() emits for secondary.
+    #[tokio::test]
+    async fn session_attached_emitted_exactly_once_per_secondary_new_session() {
+        use crate::agent::drivers::StartOpts;
+
+        let (proc, mut stdin_rx, mut event_rx) =
+            build_test_process("agent-attach-once");
+
+        // Full secondary path: `request_new_session` drives the session/new
+        // RPC (whose response arrives via the reader path), then construct a
+        // secondary `OpencodeHandle` and call its `start()` — the same shape
+        // the driver's `new_session` entrypoint produces.
+        let proc_c = proc.clone();
+        let spec = test_spec();
+        let call =
+            tokio::spawn(async move { proc_c.request_new_session(&spec).await });
+
+        let line = stdin_rx.recv().await.expect("secondary session/new on stdin");
+        let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+        let id = req["id"].as_u64().unwrap();
+        assert_eq!(req["method"], "session/new");
+
+        // Response with `responder = Some(tx)` at this pending id → routes to
+        // the NewSessionResponse secondary arm. Under the fix, the reader
+        // must NOT emit SessionAttached here.
+        let sid = "sess-once";
+        let resp =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"{sid}"}}}}"#);
+        feed_line(&proc, &resp).await;
+
+        let got = call.await.unwrap().unwrap();
+        assert_eq!(got, sid);
+
+        // Build the secondary handle exactly as `OpencodeDriver::new_session`
+        // would, and run its `start()` — this is the OTHER emit site. With
+        // the fix, `start()` emits exactly once and the reader emits zero,
+        // so the fan-out sees a single SessionAttached for `sid`.
+        let mut handle = OpencodeHandle {
+            key: proc.key.clone(),
+            local_state: AgentState::Idle,
+            spec: test_spec(),
+            proc: Arc::clone(&proc),
+            preassigned_session_id: Some(sid.to_string()),
+            role: HandleRole::Secondary,
+        };
+        handle
+            .start(StartOpts::default(), None)
+            .await
+            .expect("secondary start()");
+
+        // Drain the event receiver and count SessionAttached events for
+        // `sid`. Before the fix this would be 2; with the fix it's 1.
+        let mut attached = 0;
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(150),
+                event_rx.recv(),
+            )
+            .await
+            {
+                Ok(Some(DriverEvent::SessionAttached { session_id, .. }))
+                    if session_id == sid =>
+                {
+                    attached += 1;
+                }
+                Ok(Some(_)) => {} // ignore other events
+                _ => break,        // timeout or channel closed
+            }
+        }
+        assert_eq!(
+            attached, 1,
+            "secondary new_session must emit SessionAttached exactly once \
+             (reader emits for bootstrap only; handle.start() emits for \
+             secondary); saw {attached}"
+        );
     }
 
     /// Regression for the Stage 2 ship-blocker: closing the bootstrap handle
