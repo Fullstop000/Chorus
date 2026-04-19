@@ -1102,6 +1102,23 @@ fn update_routing_from_response(
                 let _ = w.send(());
             }
         }
+        ("initialize", AppServerEvent::Error { message, code, .. }) => {
+            // Initialize failed. Drop every parked init waker so their
+            // `rx.await` resolves with `RecvError` — `ensure_process_started`
+            // converts that into an anyhow error via `.context(...)`. Without
+            // this the wakers would sit in the map forever and every handle
+            // that called `ensure_process_started` would block indefinitely.
+            warn!(
+                code = code,
+                message = %message,
+                "codex: initialize handshake failed; dropping init wakers"
+            );
+            let wakers = {
+                let mut s = proc.shared.lock().unwrap();
+                std::mem::take(&mut s.init_wakers)
+            };
+            drop(wakers);
+        }
         _ => {}
     }
 }

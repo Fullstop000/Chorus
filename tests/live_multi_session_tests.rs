@@ -388,21 +388,25 @@ async fn codex_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Re
             "secondary session_id must survive bootstrap close"
         );
 
-        // Probe: a second `resume_session(s2)` should succeed because the
-        // codex app-server child is still alive — the driver's shared
-        // process must not have been torn down by the bootstrap close.
-        let probe = driver
-            .resume_session(agent_key.clone(), spec.clone(), s2.clone())
+        // Probe: mint a tertiary via `new_session` — this only works if the
+        // codex app-server child and its reader loop survived the bootstrap
+        // close. `resume_session(s2)` would be a more direct liveness probe,
+        // but real codex rejects `thread/resume` on a thread that has never
+        // run a turn with `-32600 "no rollout found for thread id <id>"` (see
+        // `codex_multi_session_resume_turnless_thread_surfaces_error` for the
+        // driver-side coverage of that path). Minting a fresh thread via
+        // `thread/start` requires zero rollout state and zero LLM tokens,
+        // which makes this the cheapest "the shared process is still alive"
+        // check we can run.
+        let tertiary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
+        let mut tertiary = tertiary_attach.handle;
+        tertiary.start(StartOpts::default(), None).await?;
+        let s3 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
-            .context("resume_session on secondary id after bootstrap close")?;
-        let mut probe_handle = probe.handle;
-        probe_handle.start(StartOpts::default(), None).await?;
-        let probe_sid = probe_handle
-            .session_id()
-            .expect("resumed handle reports session id")
-            .to_string();
-        assert_eq!(probe_sid, s2, "resume preserves thread id");
-        probe_handle.close().await?;
+            .context("tertiary SessionAttached after bootstrap close")?;
+        assert_ne!(s3, s1, "tertiary thread id must differ from bootstrap");
+        assert_ne!(s3, s2, "tertiary thread id must differ from secondary");
+        tertiary.close().await?;
 
         // Close the secondary → registry prunes → a fresh attach on a new
         // key must succeed and spawn a fresh process.
@@ -680,8 +684,19 @@ async fn claude_multi_session_bootstrap_close_preserves_secondary() -> anyhow::R
     outcome
 }
 
-/// Codex: attach + start (no prompt) → capture s1 → close → resume_session(s1)
-/// in a fresh attach and confirm the thread id round-trips.
+/// Codex: attach + start with a trivial prompt (so the thread persists a
+/// rollout) → capture s1 → wait for turn completion → close →
+/// `resume_session(s1)` in a fresh attach and confirm the thread id
+/// round-trips.
+///
+/// The init prompt is required here: real codex 0.121+ rejects
+/// `thread/resume` for any thread that has never run a turn with
+/// `-32600 "no rollout found for thread id <id>"`. A turnless-resume hang
+/// used to deadlock this suite; see
+/// `codex_multi_session_resume_turnless_thread_surfaces_error` for the
+/// regression test that proves the error now surfaces. For this test we
+/// actually want resume to succeed, so we spend a few tokens to establish
+/// the rollout on disk.
 #[tokio::test]
 #[ignore = "requires codex binary + OpenAI auth (OPENAI_API_KEY or codex login)"]
 async fn codex_multi_session_resume_preserves_thread_id() -> anyhow::Result<()> {
@@ -698,16 +713,53 @@ async fn codex_multi_session_resume_preserves_thread_id() -> anyhow::Result<()> 
 
     let driver = CodexDriver;
 
+    let trivial_prompt = || PromptReq {
+        text: "reply with just ok".to_string(),
+        attachments: vec![],
+    };
+
     let s1 = {
         let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
         let mut rx = attach.events.subscribe();
         let mut handle = attach.handle;
 
         let result = async {
-            handle.start(StartOpts::default(), None).await?;
+            handle
+                .start(StartOpts::default(), Some(trivial_prompt()))
+                .await?;
             let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
                 .await
                 .context("initial SessionAttached")?;
+
+            // Wait for the turn to complete so the rollout gets flushed to
+            // disk — otherwise `thread/resume` on a fresh attach trips
+            // "no rollout found for thread id".
+            let completed_at =
+                tokio::time::Instant::now() + Duration::from_secs(90);
+            loop {
+                let remaining = completed_at.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return Err(anyhow!(
+                        "timed out waiting for Completed on initial turn"
+                    ));
+                }
+                match timeout(remaining, rx.recv()).await {
+                    Ok(Some(DriverEvent::Completed { .. })) => break,
+                    Ok(Some(DriverEvent::Failed { error, .. })) => {
+                        return Err(anyhow!(
+                            "turn failed while seeding rollout: {error:?}"
+                        ));
+                    }
+                    Ok(Some(_)) => continue,
+                    Ok(None) => {
+                        return Err(anyhow!("event stream closed before Completed"));
+                    }
+                    Err(_) => {
+                        return Err(anyhow!("timed out waiting for Completed on initial turn"));
+                    }
+                }
+            }
+
             handle.close().await?;
             Ok::<_, anyhow::Error>(s1)
         }
@@ -741,6 +793,97 @@ async fn codex_multi_session_resume_preserves_thread_id() -> anyhow::Result<()> 
             "resumed handle session_id matches"
         );
         resumed_handle.close().await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    env.bridge_ct.cancel();
+    outcome
+}
+
+/// Codex: attach + start (mints s1 with no turn ever run) → `resume_session(s1)`
+/// must surface the app-server's `-32600 "no rollout found for thread id"`
+/// error as a real `Err` rather than hanging forever.
+///
+/// This is the regression test for the wake-on-error fix in the Codex driver.
+/// Prior to the fix, `parse_response_by_method` short-circuited on the error
+/// branch before consulting the request registry, so the reader loop never
+/// removed the pending `thread/resume` entry and its `oneshot::Sender` stayed
+/// parked. `start_or_resume_thread`'s `rx.await` would block indefinitely and
+/// the whole `start()` call would hang. The fix makes the parser always call
+/// `method_for_id(id)` so the reader-loop closure removes the entry and fires
+/// the waker with `AppServerEvent::Error`, which `start_or_resume_thread`
+/// already translates into a typed `bail!`.
+///
+/// Why this shape: real codex 0.121+ rejects `thread/resume` on any thread
+/// that hasn't persisted a rollout (i.e. hasn't run a turn). A pristine
+/// `thread/start` followed by immediate `thread/resume` of that id is the
+/// cheapest way to trigger the error without spending tokens.
+#[tokio::test]
+#[ignore = "requires codex binary + OpenAI auth (OPENAI_API_KEY or codex login)"]
+async fn codex_multi_session_resume_turnless_thread_surfaces_error() -> anyhow::Result<()> {
+    if !binary_on_path("codex") {
+        eprintln!("SKIP: `codex` binary not found on PATH");
+        return Ok(());
+    }
+
+    let model = std::env::var("CHORUS_TEST_CODEX_MODEL").unwrap_or_else(|_| "gpt-5.4".to_string());
+    let env = make_live_env().await?;
+    let agent_key = "codex-turnless-resume-bot".to_string();
+    seed_agent(
+        &env.store,
+        &agent_key,
+        "Codex Turnless Resume Bot",
+        "codex",
+        &model,
+    )?;
+    let spec = make_spec("Codex Turnless Resume Bot", &model, &env);
+
+    let driver = CodexDriver;
+
+    // Mint s1 via bootstrap attach + start (no prompt → no turn → no rollout).
+    let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+    let mut rx = attach.events.subscribe();
+    let mut bootstrap = attach.handle;
+
+    let outcome = async {
+        bootstrap.start(StartOpts::default(), None).await?;
+        let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
+            .await
+            .context("bootstrap SessionAttached")?;
+
+        // Probe: attempt to resume s1. Against real codex this hits the
+        // "no rollout found for thread id" path and the driver MUST surface
+        // that error rather than hang. Bound the call in a 30 s timeout so a
+        // regression (driver hang) fails the test instead of the suite.
+        let resume_attach = driver
+            .resume_session(agent_key.clone(), spec.clone(), s1.clone())
+            .await?;
+        let mut resume_handle = resume_attach.handle;
+
+        let start_result = timeout(
+            Duration::from_secs(30),
+            resume_handle.start(StartOpts::default(), None),
+        )
+        .await
+        .context(
+            "resume_session start() timed out — driver still hangs on thread/resume error response",
+        )?;
+
+        let err = start_result.expect_err(
+            "turnless thread/resume must surface an error; driver accepted it or returned Ok",
+        );
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("no rollout") || msg.contains("thread id") || msg.contains("rejected"),
+            "unexpected error shape from turnless resume: {msg}"
+        );
+
+        // Cleanup. `close()` on a handle that failed to start must still be
+        // safe to call.
+        let _ = resume_handle.close().await;
+        bootstrap.close().await?;
+
         Ok::<_, anyhow::Error>(())
     }
     .await;

@@ -146,6 +146,14 @@ pub enum AppServerEvent {
     // Error
     Error {
         id: Option<Value>,
+        /// Method the caller registered for this request id, if any. Populated
+        /// by consulting the registry on the error path too — required so the
+        /// reader loop's closure always runs and removes the pending entry
+        /// from its map (otherwise the caller's waker is never fired).
+        /// `None` when the id was never registered or when the error has no id.
+        method: Option<String>,
+        /// JSON-RPC error code; `0` when absent.
+        code: i64,
         message: String,
     },
 
@@ -324,7 +332,16 @@ where
 {
     let id_val = msg.get("id");
 
+    // Always consult `method_for_id` for responses carrying a numeric id —
+    // including error responses. The reader loop's closure uses this call
+    // to remove the pending request from its map (and capture the waker).
+    // If we short-circuit here on the error path the pending entry leaks
+    // and the caller's `rx.await` blocks forever.
+    let id_u64 = id_val.and_then(|v| v.as_u64());
+    let method = id_u64.and_then(method_for_id);
+
     if let Some(err) = msg.get("error") {
+        let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
         let message = err
             .get("data")
             .and_then(|d| d.get("message"))
@@ -334,14 +351,15 @@ where
             .to_string();
         return AppServerEvent::Error {
             id: id_val.cloned(),
+            method,
+            code,
             message,
         };
     }
 
-    let Some(id_u64) = id_val.and_then(|v| v.as_u64()) else {
+    let Some(id_u64) = id_u64 else {
         return AppServerEvent::Unknown;
     };
-    let method = method_for_id(id_u64);
     let result = msg.get("result");
 
     match method.as_deref() {
@@ -845,6 +863,38 @@ mod tests {
         let ev = parse_line_with_registry(line, |_| Some("thread/start".into()));
         match ev {
             AppServerEvent::Error { message, .. } => assert_eq!(message, "nope"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_error_path_consults_method_for_id() {
+        // Regression: the error path MUST call `method_for_id(id)` so the
+        // reader-loop closure removes the pending entry and captures the
+        // waker. Prior to the fix this branch short-circuited before the
+        // closure ran, leaking the entry and leaving callers stuck on
+        // `rx.await` forever. Verify the closure fires and the method is
+        // populated on the resulting Error event.
+        use std::cell::Cell;
+        let called = Cell::new(false);
+        let line = r#"{"id":77,"error":{"code":-32600,"message":"no rollout found for thread id"}}"#;
+        let ev = parse_line_with_registry(line, |id| {
+            assert_eq!(id, 77);
+            called.set(true);
+            Some("thread/resume".into())
+        });
+        assert!(called.get(), "method_for_id must be called on error path");
+        match ev {
+            AppServerEvent::Error {
+                method,
+                code,
+                message,
+                ..
+            } => {
+                assert_eq!(method.as_deref(), Some("thread/resume"));
+                assert_eq!(code, -32600);
+                assert!(message.contains("no rollout"));
+            }
             other => panic!("expected Error, got {other:?}"),
         }
     }
