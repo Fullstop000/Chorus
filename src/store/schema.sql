@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS channel_members (
     PRIMARY KEY (channel_id, member_name)
 );
 
--- Read state for top-level conversation inbox.
+-- Read state for the conversation inbox.
 CREATE TABLE IF NOT EXISTS inbox_read_state (
     conversation_id TEXT NOT NULL, -- ID of the conversation/channel
     member_name TEXT NOT NULL, -- Name of the member
@@ -30,23 +30,10 @@ CREATE TABLE IF NOT EXISTS inbox_read_state (
     PRIMARY KEY (conversation_id, member_name)
 );
 
--- Read state for specific threads within a conversation.
-CREATE TABLE IF NOT EXISTS inbox_thread_read_state (
-    conversation_id TEXT NOT NULL, -- ID of the conversation/channel
-    thread_parent_id TEXT NOT NULL, -- ID of the parent message defining the thread
-    member_name TEXT NOT NULL, -- Name of the member
-    member_type TEXT NOT NULL, -- Type of member
-    last_read_seq INTEGER NOT NULL DEFAULT 0, -- Highest read sequence in the thread
-    last_read_message_id TEXT, -- ID of the last read message in the thread
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the read state was last updated
-    PRIMARY KEY (conversation_id, thread_parent_id, member_name)
-);
-
 -- Chat messages.
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY, -- Unique UUID for the message
     channel_id TEXT NOT NULL, -- ID of the channel where the message was sent
-    thread_parent_id TEXT, -- Optional ID of the parent message if this is a reply
     sender_name TEXT NOT NULL, -- Name of the sender
     sender_type TEXT NOT NULL, -- Type of sender: 'human', 'agent', or 'system'
     sender_deleted INTEGER NOT NULL DEFAULT 0, -- 1 if deleted by the sender, 0 otherwise
@@ -164,7 +151,6 @@ SELECT
     m.channel_id AS conversation_id,
     c.name AS conversation_name,
     c.channel_type AS conversation_type,
-    m.thread_parent_id AS thread_parent_id,
     m.sender_name AS sender_name,
     m.sender_type AS sender_type,
     m.sender_deleted AS sender_deleted,
@@ -177,47 +163,6 @@ SELECT
 FROM messages m
 JOIN channels c ON c.id = m.channel_id;
 
--- Thread summary reads projection view.
-DROP VIEW IF EXISTS thread_summaries_view;
-CREATE VIEW thread_summaries_view AS
-SELECT
-    parent.channel_id AS conversation_id,
-    parent.id AS parent_message_id,
-    COUNT(reply.id) AS reply_count,
-    (
-        SELECT reply_last.id
-        FROM messages reply_last
-        WHERE reply_last.channel_id = parent.channel_id
-          AND reply_last.thread_parent_id = parent.id
-        ORDER BY reply_last.seq DESC
-        LIMIT 1
-    ) AS last_reply_message_id,
-    (
-        SELECT reply_last.created_at
-        FROM messages reply_last
-        WHERE reply_last.channel_id = parent.channel_id
-          AND reply_last.thread_parent_id = parent.id
-        ORDER BY reply_last.seq DESC
-        LIMIT 1
-    ) AS last_reply_at,
-    (
-        SELECT COUNT(*)
-        FROM (
-            SELECT parent.sender_name AS participant_name
-            UNION
-            SELECT reply_participant.sender_name
-            FROM messages reply_participant
-            WHERE reply_participant.channel_id = parent.channel_id
-              AND reply_participant.thread_parent_id = parent.id
-        )
-    ) AS participant_count
-FROM messages parent
-LEFT JOIN messages reply
-  ON reply.channel_id = parent.channel_id
- AND reply.thread_parent_id = parent.id
-WHERE parent.thread_parent_id IS NULL
-GROUP BY parent.channel_id, parent.id;
-
 -- Inbox conversation state view
 DROP VIEW IF EXISTS inbox_conversation_state_view;
 CREATE VIEW inbox_conversation_state_view AS
@@ -229,58 +174,19 @@ SELECT
     cm.member_type AS member_type,
     COALESCE(irs.last_read_seq, 0) AS last_read_seq,
     irs.last_read_message_id AS last_read_message_id,
-    -- Channel-level unread count (top-level messages only, excludes thread replies
-    -- and system-authored messages, which are ambient markers, not unread signal).
+    -- Channel-level unread count (excludes system-authored messages, which are
+    -- ambient markers rather than unread signal).
     (
         SELECT COUNT(*)
-        FROM messages top_level
-        WHERE top_level.channel_id = cm.channel_id
-          AND top_level.thread_parent_id IS NULL
-          AND top_level.seq > COALESCE(irs.last_read_seq, 0)
-          AND top_level.sender_type != 'system'
+        FROM messages m
+        WHERE m.channel_id = cm.channel_id
+          AND m.seq > COALESCE(irs.last_read_seq, 0)
+          AND m.sender_type != 'system'
           AND NOT (
-            top_level.sender_name = cm.member_name
-            AND top_level.sender_type = cm.member_type
+            m.sender_name = cm.member_name
+            AND m.sender_type = cm.member_type
           )
-    ) AS unread_count,
-    -- Thread-level unread count (all accessible thread replies, shown in thread tab;
-    -- excludes system-authored replies for the same reason).
-    (
-        SELECT COUNT(*)
-        FROM messages reply
-        LEFT JOIN inbox_thread_read_state itrs
-          ON itrs.conversation_id = reply.channel_id
-         AND itrs.thread_parent_id = reply.thread_parent_id
-         AND itrs.member_name = cm.member_name
-        WHERE reply.channel_id = cm.channel_id
-          AND reply.thread_parent_id IS NOT NULL
-          AND reply.seq > COALESCE(itrs.last_read_seq, 0)
-          AND reply.sender_type != 'system'
-          AND NOT (
-            reply.sender_name = cm.member_name
-            AND reply.sender_type = cm.member_type
-          )
-          AND (
-            cm.member_type != 'agent'
-            OR EXISTS (
-                SELECT 1
-                FROM messages parent
-                WHERE parent.id = reply.thread_parent_id
-                  AND parent.channel_id = cm.channel_id
-                  AND parent.sender_type = 'agent'
-                  AND parent.sender_name = cm.member_name
-            )
-            OR EXISTS (
-                SELECT 1
-                FROM messages prior
-                WHERE prior.channel_id = cm.channel_id
-                  AND prior.thread_parent_id = reply.thread_parent_id
-                  AND prior.sender_type = 'agent'
-                  AND prior.sender_name = cm.member_name
-                  AND prior.seq < reply.seq
-            )
-          )
-    ) AS thread_unread_count
+    ) AS unread_count
 FROM channel_members cm
 JOIN channels c ON c.id = cm.channel_id
 LEFT JOIN inbox_read_state irs

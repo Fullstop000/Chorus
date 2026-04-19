@@ -12,7 +12,7 @@ use super::path_params::{resolve_public_agent, PublicResourceIdPath};
 use super::{app_err, ApiResult, AppState};
 use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
-use crate::store::inbox::{InboxConversationNotificationView, ThreadNotificationStateView};
+use crate::store::inbox::InboxConversationNotificationView;
 use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
 use crate::utils::error::internal_err;
@@ -39,8 +39,6 @@ pub struct PublicConversationMessagesParams {
     pub limit: Option<i64>,
     pub before: Option<i64>,
     pub after: Option<i64>,
-    #[serde(rename = "threadParentId")]
-    pub thread_parent_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -53,16 +51,12 @@ pub struct PublicConversationSendRequest {
     pub suppress_agent_delivery: bool,
     #[serde(default, rename = "suppressEvent")]
     pub suppress_event: bool,
-    #[serde(default, rename = "threadParentId")]
-    pub thread_parent_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PublicConversationReadCursorRequest {
     #[serde(rename = "lastReadSeq")]
     pub last_read_seq: i64,
-    #[serde(default, rename = "threadParentId")]
-    pub thread_parent_id: Option<String>,
 }
 
 // ── API DTOs ──
@@ -119,10 +113,7 @@ pub struct PublicInboxConversationNotification {
     pub conversation_type: String,
     pub latest_seq: i64,
     pub last_read_seq: i64,
-    /// Count of unread top-level messages (excludes thread replies).
     pub unread_count: i64,
-    /// Count of unread thread replies across all threads in this conversation.
-    pub thread_unread_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_read_message_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -140,7 +131,6 @@ impl From<&InboxConversationNotificationView> for PublicInboxConversationNotific
             latest_seq: v.latest_seq,
             last_read_seq: v.last_read_seq,
             unread_count: v.unread_count,
-            thread_unread_count: v.thread_unread_count,
             last_read_message_id: None,
             last_message_id: v.last_message_id.clone(),
             last_message_at: v.last_message_at.clone(),
@@ -150,76 +140,19 @@ impl From<&InboxConversationNotificationView> for PublicInboxConversationNotific
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PublicThreadNotificationRefresh {
-    pub conversation_id: String,
-    pub thread_parent_id: String,
-    pub latest_seq: i64,
-    pub last_read_seq: i64,
-    pub unread_count: i64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_reply_message_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_reply_at: Option<String>,
-}
-
-impl From<ThreadNotificationStateView> for PublicThreadNotificationRefresh {
-    fn from(t: ThreadNotificationStateView) -> Self {
-        Self {
-            conversation_id: t.conversation_id,
-            thread_parent_id: t.thread_parent_id,
-            latest_seq: t.latest_seq,
-            last_read_seq: t.last_read_seq,
-            unread_count: t.unread_count,
-            last_reply_message_id: t.last_reply_message_id,
-            last_reply_at: t.last_reply_at,
-        }
-    }
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ConversationInboxRefreshResponse {
     pub conversation: PublicInboxConversationNotification,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub thread: Option<PublicThreadNotificationRefresh>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct InboxNotificationQuery {
-    #[serde(default, rename = "threadParentId")]
-    pub thread_parent_id: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-pub struct ThreadsResponse {
-    #[serde(rename = "unreadCount")]
-    pub unread_count: i64,
-    pub threads: Vec<crate::store::ChannelThreadInboxEntry>,
 }
 
 #[derive(Debug, serde::Serialize)]
 pub struct ReadCursorResponse {
     pub ok: bool,
-    /// Count of unread top-level messages in the conversation (excludes thread replies).
-    /// Shown in the sidebar channel badge.
     #[serde(rename = "conversationUnreadCount")]
     pub conversation_unread_count: i64,
     #[serde(rename = "conversationLastReadSeq")]
     pub conversation_last_read_seq: i64,
     #[serde(rename = "conversationLatestSeq")]
     pub conversation_latest_seq: i64,
-    /// Count of unread thread replies across all threads in this conversation.
-    /// Shown in the thread tab badge, not in the sidebar.
-    #[serde(rename = "conversationThreadUnreadCount")]
-    pub conversation_thread_unread_count: i64,
-    #[serde(rename = "threadParentId", skip_serializing_if = "Option::is_none")]
-    pub thread_parent_id: Option<String>,
-    #[serde(rename = "threadUnreadCount", skip_serializing_if = "Option::is_none")]
-    pub thread_unread_count: Option<i64>,
-    #[serde(rename = "threadLastReadSeq", skip_serializing_if = "Option::is_none")]
-    pub thread_last_read_seq: Option<i64>,
-    #[serde(rename = "threadLatestSeq", skip_serializing_if = "Option::is_none")]
-    pub thread_latest_seq: Option<i64>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -249,15 +182,15 @@ fn resolve_history_target(
     store: &Store,
     agent_id: &str,
     channel_target: &str,
-) -> anyhow::Result<(String, Option<String>)> {
+) -> anyhow::Result<String> {
     if channel_target.starts_with('#') || channel_target.starts_with("dm:@") {
-        let (channel_id, thread_parent_id) = store.resolve_target(channel_target, agent_id)?;
+        let channel_id = store.resolve_target(channel_target, agent_id)?;
         let channel = store
             .get_channel_by_id(&channel_id)?
             .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel_target))?;
-        return Ok((channel.name, thread_parent_id));
+        return Ok(channel.name);
     }
-    Ok((channel_target.to_string(), None))
+    Ok(channel_target.to_string())
 }
 
 fn public_viewer_name() -> String {
@@ -304,13 +237,11 @@ fn load_channel_by_id(
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn history_for_channel(
     state: &AppState,
     actor_id: &str,
     channel: &Channel,
     denied_label: &str,
-    thread_parent_id: Option<&str>,
     limit: i64,
     before: Option<i64>,
     after: Option<i64>,
@@ -319,14 +250,7 @@ fn history_for_channel(
 
     let snapshot = state
         .store
-        .get_history_snapshot(
-            &channel.name,
-            actor_id,
-            thread_parent_id,
-            limit,
-            before,
-            after,
-        )
+        .get_history_snapshot(&channel.name, actor_id, limit, before, after)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     Ok(Json(HistoryResponse {
@@ -336,30 +260,11 @@ fn history_for_channel(
     }))
 }
 
-fn threads_for_channel(
-    state: &AppState,
-    actor_id: &str,
-    channel: &Channel,
-    denied_label: &str,
-) -> ApiResult<ThreadsResponse> {
-    require_channel_membership(state, actor_id, channel, denied_label)?;
-
-    let inbox = state
-        .store
-        .get_channel_thread_inbox(&channel.name, actor_id)
-        .map_err(internal_err)?;
-    Ok(Json(ThreadsResponse {
-        unread_count: inbox.unread_count,
-        threads: inbox.threads,
-    }))
-}
-
 fn update_read_cursor_for_channel(
     state: &AppState,
     actor_id: &str,
     channel: &Channel,
     denied_label: &str,
-    thread_parent_id: Option<&str>,
     last_read_seq: i64,
 ) -> ApiResult<ReadCursorResponse> {
     require_channel_membership(state, actor_id, channel, denied_label)?;
@@ -367,13 +272,7 @@ fn update_read_cursor_for_channel(
     let sender_type = sender_type_for_actor(&state.store, actor_id)?;
     state
         .store
-        .set_history_read_cursor(
-            &channel.name,
-            actor_id,
-            sender_type,
-            thread_parent_id,
-            last_read_seq,
-        )
+        .set_history_read_cursor(&channel.name, actor_id, sender_type, last_read_seq)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let notification = state
@@ -387,34 +286,18 @@ fn update_read_cursor_for_channel(
             )
         })?;
 
-    let thread_snapshot = if let Some(parent_id) = thread_parent_id {
-        state
-            .store
-            .get_thread_notification_state(&channel.name, parent_id, actor_id)
-            .map_err(internal_err)?
-    } else {
-        None
-    };
-
     Ok(Json(ReadCursorResponse {
         ok: true,
         conversation_unread_count: notification.unread_count,
         conversation_last_read_seq: notification.last_read_seq,
         conversation_latest_seq: notification.latest_seq,
-        conversation_thread_unread_count: notification.thread_unread_count,
-        thread_parent_id: thread_parent_id.map(str::to_string),
-        thread_unread_count: thread_snapshot.as_ref().map(|t| t.unread_count),
-        thread_last_read_seq: thread_snapshot.as_ref().map(|t| t.last_read_seq),
-        thread_latest_seq: thread_snapshot.as_ref().map(|t| t.latest_seq),
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
 async fn send_message_to_channel(
     state: &AppState,
     actor_id: &str,
     channel: &Channel,
-    thread_parent_id: Option<&str>,
     content: &str,
     attachment_ids: &[String],
     suppress_agent_delivery: bool,
@@ -431,16 +314,11 @@ async fn send_message_to_channel(
     };
 
     let preview = content_preview(content);
-    let target_label = match thread_parent_id {
-        Some(parent_id) => format!("#{}:{parent_id}", channel.name),
-        None => format!("#{}", channel.name),
-    };
-    info!(agent = %actor_id, target = %target_label, content = %preview, "send_message");
+    info!(agent = %actor_id, target = %format!("#{}", channel.name), content = %preview, "send_message");
 
     let message_id = store
         .create_message(CreateMessage {
             channel_name: &channel.name,
-            thread_parent_id,
             sender_name: actor_id,
             sender_type,
             content,
@@ -540,7 +418,7 @@ pub async fn handle_send(
     Json(req): Json<SendRequest>,
 ) -> ApiResult<SendResponse> {
     let store = &state.store;
-    let (channel_id, thread_parent_id) = store
+    let channel_id = store
         .resolve_target(&req.target, &agent_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
@@ -549,7 +427,6 @@ pub async fn handle_send(
         &state,
         &agent_id,
         &channel,
-        thread_parent_id.as_deref(),
         &req.content,
         &req.attachment_ids,
         req.suppress_agent_delivery,
@@ -632,9 +509,8 @@ pub async fn handle_history(
     }
 
     let store = &state.store;
-    let (channel_name, thread_parent_id) =
-        resolve_history_target(store, &agent_id, &channel_target)
-            .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let channel_name = resolve_history_target(store, &agent_id, &channel_target)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     let limit = params.limit.unwrap_or(50);
     let channel = store
         .get_channel_by_name(&channel_name)
@@ -645,7 +521,6 @@ pub async fn handle_history(
         &agent_id,
         &channel,
         &channel_target,
-        thread_parent_id.as_deref(),
         limit,
         params.before,
         params.after,
@@ -657,7 +532,7 @@ pub async fn handle_resolve_channel(
     Path(agent_id): Path<String>,
     Json(req): Json<ResolveChannelRequest>,
 ) -> ApiResult<ResolveChannelResponse> {
-    let (channel_id, _) = state
+    let channel_id = state
         .store
         .resolve_target(&req.target, &agent_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -692,7 +567,6 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
 pub async fn handle_public_conversation_inbox_notification(
     State(state): State<AppState>,
     Path(conversation_id): Path<String>,
-    Query(query): Query<InboxNotificationQuery>,
 ) -> ApiResult<ConversationInboxRefreshResponse> {
     let actor_id = public_viewer_name();
     if state
@@ -734,20 +608,7 @@ pub async fn handle_public_conversation_inbox_notification(
 
     let conversation = PublicInboxConversationNotification::from(&notification);
 
-    let thread = if let Some(ref parent_id) = query.thread_parent_id {
-        state
-            .store
-            .get_thread_notification_state(&channel.name, parent_id, &actor_id)
-            .map_err(internal_err)?
-            .map(PublicThreadNotificationRefresh::from)
-    } else {
-        None
-    };
-
-    Ok(Json(ConversationInboxRefreshResponse {
-        conversation,
-        thread,
-    }))
+    Ok(Json(ConversationInboxRefreshResponse { conversation }))
 }
 
 pub async fn handle_public_ensure_dm(
@@ -787,7 +648,7 @@ pub async fn handle_public_ensure_dm(
     }
 
     let target = format!("dm:@{}", peer_name);
-    let (channel_id, _) = state
+    let channel_id = state
         .store
         .resolve_target(&target, &actor_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -807,7 +668,6 @@ pub async fn handle_public_history(
         &actor_id,
         &channel,
         &conversation_id,
-        params.thread_parent_id.as_deref(),
         params.limit.unwrap_or(50),
         params.before,
         params.after,
@@ -825,22 +685,12 @@ pub async fn handle_public_send(
         &state,
         &actor_id,
         &channel,
-        req.thread_parent_id.as_deref(),
         &req.content,
         &req.attachment_ids,
         req.suppress_agent_delivery,
         req.suppress_event,
     )
     .await
-}
-
-pub async fn handle_public_threads(
-    State(state): State<AppState>,
-    Path(conversation_id): Path<String>,
-) -> ApiResult<ThreadsResponse> {
-    let actor_id = public_viewer_name();
-    let channel = load_channel_by_id(&state.store, &conversation_id)?;
-    threads_for_channel(&state, &actor_id, &channel, &conversation_id)
 }
 
 pub async fn handle_public_update_read_cursor(
@@ -855,7 +705,6 @@ pub async fn handle_public_update_read_cursor(
         &actor_id,
         &channel,
         &conversation_id,
-        req.thread_parent_id.as_deref(),
         req.last_read_seq,
     )
 }
@@ -867,12 +716,9 @@ pub(crate) async fn deliver_message_to_agents(
     sender_name: &str,
     message_id: &str,
 ) -> anyhow::Result<()> {
-    // Thread messages are scoped to implicit thread participants rather than
-    // every agent in the parent channel.
-    let recipients =
-        state
-            .store
-            .get_agent_message_recipients(channel_id, message_id, sender_name)?;
+    let recipients = state
+        .store
+        .get_agent_message_recipients(channel_id, sender_name)?;
     for recipient_name in recipients {
         let Some(agent) = state.store.get_agent(&recipient_name)? else {
             continue;

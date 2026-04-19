@@ -6,14 +6,13 @@ How unread counts, read cursors, and inbox state work end-to-end.
 
 ## Core Concepts
 
-| Concept               | Meaning                                                                         |
-| --------------------- | ------------------------------------------------------------------------------- |
-| **Conversation**      | A channel, DM, or team — identified by `conversationId`                         |
-| **Thread**            | A reply chain under a parent message — keyed by `conversationId:threadParentId` |
-| **`latestSeq`**       | Highest message sequence number in a conversation or thread                     |
-| **`lastReadSeq`**     | The viewer's read cursor — highest seq they've seen                             |
-| **Unread count**      | Derived: `latestSeq - lastReadSeq` (no separate counter)                        |
-| **Monotonic cursors** | Both `latestSeq` and `lastReadSeq` only advance forward, never backward         |
+| Concept               | Meaning                                                                 |
+| --------------------- | ----------------------------------------------------------------------- |
+| **Conversation**      | A channel, DM, or team — identified by `conversationId`                 |
+| **`latestSeq`**       | Highest message sequence number in a conversation                       |
+| **`lastReadSeq`**     | The viewer's read cursor — highest seq they've seen                     |
+| **Unread count**      | Derived: `latestSeq - lastReadSeq` (no separate counter)                |
+| **Monotonic cursors** | Both `latestSeq` and `lastReadSeq` only advance forward, never backward |
 
 ---
 
@@ -98,7 +97,6 @@ flowchart TB
 // Zustand store: useStore.getState().inboxState
 interface InboxState {
   conversations: Record<string, InboxConversationState>; // keyed by conversationId
-  threads: Record<string, ThreadInboxState>; // keyed by "convId:threadParentId"
 }
 
 interface InboxConversationState {
@@ -108,17 +106,8 @@ interface InboxConversationState {
   latestSeq: number;
   lastReadSeq: number;
   unreadCount: number; // server-provided on bootstrap; locally derived after
-  threadUnreadCount: number;
   lastMessageId?: string;
   lastMessageAt?: string;
-}
-
-interface ThreadInboxState {
-  conversationId: string;
-  threadParentId: string;
-  latestSeq: number;
-  lastReadSeq: number;
-  unreadCount: number;
 }
 ```
 
@@ -126,12 +115,11 @@ interface ThreadInboxState {
 
 ## Store Actions
 
-| Action                                            | Trigger                           | Effect                            |
-| ------------------------------------------------- | --------------------------------- | --------------------------------- |
-| `updateInboxState(fn)`                            | Bootstrap, mirrorChannels         | Bulk-replace entire inbox state   |
-| `advanceConversationLatestSeq(convId, seq)`       | Realtime message via `useHistory` | `latestSeq = max(current, seq)`   |
-| `advanceConversationLastReadSeq(convId, seq)`     | `reportVisibleSeq` in MessageList | `lastReadSeq = max(current, seq)` |
-| `advanceThreadLastReadSeq(convId, parentId, seq)` | `reportVisibleSeq` in thread view | `lastReadSeq = max(current, seq)` |
+| Action                                        | Trigger                           | Effect                            |
+| --------------------------------------------- | --------------------------------- | --------------------------------- |
+| `updateInboxState(fn)`                        | Bootstrap, mirrorChannels         | Bulk-replace entire inbox state   |
+| `advanceConversationLatestSeq(convId, seq)`   | Realtime message via `useHistory` | `latestSeq = max(current, seq)`   |
+| `advanceConversationLastReadSeq(convId, seq)` | `reportVisibleSeq` in MessageList | `lastReadSeq = max(current, seq)` |
 
 All advances are monotonic — they reject stale or duplicate seq values.
 
@@ -141,20 +129,18 @@ All advances are monotonic — they reject stale or duplicate seq values.
 
 ### Database Tables
 
-| Table                     | Purpose                                                                                     |
-| ------------------------- | ------------------------------------------------------------------------------------------- |
-| `messages`                | Message stream with `(channel_id, seq, id, thread_parent_id, ...)`                          |
-| `inbox_read_state`        | Per-member read cursor: `(conversation_id, member_name, last_read_seq)`                     |
-| `inbox_thread_read_state` | Per-member thread cursor: `(conversation_id, thread_parent_id, member_name, last_read_seq)` |
+| Table              | Purpose                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `messages`         | Message stream with `(channel_id, seq, id, ...)`                        |
+| `inbox_read_state` | Per-member read cursor: `(conversation_id, member_name, last_read_seq)` |
 
 ### API Endpoints
 
 | Endpoint                                         | Purpose                                                           |
 | ------------------------------------------------ | ----------------------------------------------------------------- |
 | `GET /api/inbox`                                 | All conversation notifications for the logged-in user (bootstrap) |
-| `GET /api/conversations/{id}/inbox-notification` | Single conversation + optional thread state (refresh)             |
-| `GET /api/conversations/{id}/threads`            | Thread preview list for threads tab                               |
-| `POST /api/conversations/{id}/read-cursor`       | Advance read cursor (`{ lastReadSeq, threadParentId? }`)          |
+| `GET /api/conversations/{id}/inbox-notification` | Single conversation state (refresh)                               |
+| `POST /api/conversations/{id}/read-cursor`       | Advance read cursor (`{ lastReadSeq }`)                           |
 
 The `POST /read-cursor` handler enforces monotonic writes — it will not move `last_read_seq` backward.
 
@@ -170,7 +156,7 @@ The read cursor flows through four stages:
 
 2. **Report** (`reportVisibleSeq` in MessageList) — Guards against moving backward (`seq > lastReadSeqRef`), stale channels (`activeTargetRef !== targetKey`), and loading states.
 
-3. **Optimistic update** — Immediately calls `advanceConversationLastReadSeq` (or `advanceThreadLastReadSeq` for threads) so the sidebar badge drops without waiting for the network.
+3. **Optimistic update** — Immediately calls `advanceConversationLastReadSeq` so the sidebar badge drops without waiting for the network.
 
 4. **Debounced HTTP** — A 150ms `setTimeout` batches rapid scroll events into a single `POST /read-cursor` call. The timer is cleared on each new report, so only the final position is persisted.
 
@@ -184,6 +170,5 @@ The read cursor flows through four stages:
 - Bootstrap runs exactly once per session (`bootstrappedRef` guard)
 - `ensureInboxConversations` fills zero-stubs for channels missing from the server response
 - Channel switches reset `lastReadSeqRef` and `pendingReadSeqRef` in MessageList to avoid cross-channel contamination
-- Thread keys use canonical format `"conversationId:threadParentId"`
 
 ---

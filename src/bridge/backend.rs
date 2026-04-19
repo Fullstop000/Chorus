@@ -208,34 +208,14 @@ impl Backend for ChorusBackend {
         }
 
         let message_id = data.get("messageId").and_then(|v| v.as_str()).unwrap_or("");
-        let short_id = if message_id.len() >= 8 {
-            &message_id[..8]
-        } else {
-            message_id
-        };
-        let reply_hint = if !short_id.is_empty() {
-            if target.contains(':') {
-                format!(
-                    " (to reply in this message's thread, use target \"{}\")",
-                    target
-                )
-            } else {
-                format!(
-                    " (to reply in this message's thread, use target \"{}:{}\")",
-                    target, short_id
-                )
-            }
-        } else {
-            String::new()
-        };
         let content_suffix = if !content.is_empty() {
             format!("\nSent: {}", content)
         } else {
             String::new()
         };
         Ok(format!(
-            "Message sent to {}. Message ID: {}{}{}",
-            target, message_id, reply_hint, content_suffix
+            "Message sent to {}. Message ID: {}{}",
+            target, message_id, content_suffix
         ))
     }
 

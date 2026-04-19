@@ -519,25 +519,10 @@ impl AgentLifecycle for AgentManager {
 }
 
 /// Convert the stored message shape into the human-facing target label used in
-/// prompts. For threads we preserve the exact reply target so restarted
-/// runtimes can respond in-place without reconstructing the short id.
+/// prompts.
 fn format_message_target(message: &ReceivedMessage) -> String {
     match message.channel_type.as_str() {
         "dm" => format!("dm:@{}", message.channel_name),
-        "thread" => {
-            let parent_name = message
-                .parent_channel_name
-                .as_deref()
-                .unwrap_or(&message.channel_name);
-            let short_id = message
-                .channel_name
-                .strip_prefix("thread-")
-                .unwrap_or(&message.channel_name);
-            match message.parent_channel_type.as_deref() {
-                Some("dm") => format!("dm:@{parent_name}:{short_id}"),
-                _ => format!("#{parent_name}:{short_id}"),
-            }
-        }
         _ => format!("#{}", message.channel_name),
     }
 }

@@ -409,7 +409,7 @@ async fn bridge_sends_message_to_chorus_server() {
     );
 
     // 6. Verify the message actually landed in the Chorus store.
-    let (messages, _has_more) = store.get_history("general", None, 100, None, None).unwrap();
+    let (messages, _has_more) = store.get_history("general", 100, None, None).unwrap();
     assert!(
         messages
             .iter()
@@ -650,7 +650,7 @@ async fn pairing_token_end_to_end_sends_message() {
     );
 
     // 5. Verify it landed in the store.
-    let (messages, _) = store.get_history("general", None, 100, None, None).unwrap();
+    let (messages, _) = store.get_history("general", 100, None, None).unwrap();
     assert!(
         messages
             .iter()

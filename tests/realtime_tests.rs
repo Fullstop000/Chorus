@@ -61,7 +61,6 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            thread_parent_id: None,
             sender_name: "alice",
             sender_type: SenderType::Human,
             content: "hello",
@@ -97,7 +96,6 @@ async fn test_realtime_skips_non_member_channel() {
     store
         .create_message(CreateMessage {
             channel_name: "private",
-            thread_parent_id: None,
             sender_name: "zoe",
             sender_type: SenderType::Human,
             content: "secret",
@@ -125,7 +123,6 @@ async fn test_realtime_member_receives_live_messages_without_subscribe_frame() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            thread_parent_id: None,
             sender_name: "alice",
             sender_type: SenderType::Human,
             content: "live",

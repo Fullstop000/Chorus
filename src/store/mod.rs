@@ -26,9 +26,8 @@ pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfi
 pub use humans::Human;
 pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
 pub use messages::{
-    ActivityMessage, AttachmentRef, ChannelThreadInbox, ChannelThreadInboxEntry,
-    ConversationMessageView, ForwardedFrom, HistoryMessage, HistorySnapshot, Message,
-    ReceivedMessage, SenderType, ThreadSummaryView,
+    ActivityMessage, AttachmentRef, ConversationMessageView, ForwardedFrom, HistoryMessage,
+    HistorySnapshot, Message, ReceivedMessage, SenderType,
 };
 pub use stream::StreamEvent;
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};

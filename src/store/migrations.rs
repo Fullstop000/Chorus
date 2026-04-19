@@ -10,6 +10,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_add_run_id_to_messages(conn)?;
     migrate_add_trace_summary_to_messages(conn)?;
     migrate_create_trace_events_table(conn)?;
+    migrate_drop_thread_artifacts(conn)?;
     Ok(())
 }
 
@@ -83,10 +84,6 @@ fn migrate_remove_legacy_shared_memory_channel(conn: &Connection) -> Result<()> 
         return Ok(());
     };
 
-    conn.execute(
-        "DELETE FROM inbox_thread_read_state WHERE conversation_id = ?1",
-        rusqlite::params![channel_id],
-    )?;
     conn.execute(
         "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
         rusqlite::params![channel_id],
@@ -194,5 +191,34 @@ fn migrate_create_trace_events_table(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq);",
     )?;
+    Ok(())
+}
+
+/// Drop legacy thread primitive: thread_parent_id column on messages,
+/// inbox_thread_read_state table, and thread_summaries_view.
+fn migrate_drop_thread_artifacts(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DROP VIEW IF EXISTS thread_summaries_view;
+         DROP TABLE IF EXISTS inbox_thread_read_state;",
+    )?;
+
+    let has_column = conn
+        .prepare("PRAGMA table_info(messages)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "thread_parent_id");
+    if has_column {
+        // SQLite ALTER TABLE DROP COLUMN requires 3.35+. Use it when available;
+        // fallback silently logs and leaves the column in place — nothing reads
+        // it anymore and the view has been rebuilt without it.
+        if let Err(err) = conn.execute_batch("ALTER TABLE messages DROP COLUMN thread_parent_id") {
+            tracing::warn!(
+                %err,
+                "could not drop thread_parent_id column; leaving it in place (safe: no readers)"
+            );
+        } else {
+            tracing::info!("migration: dropped thread_parent_id column from messages");
+        }
+    }
     Ok(())
 }

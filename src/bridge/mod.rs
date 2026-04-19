@@ -50,7 +50,7 @@ impl ChatBridge {
 #[tool_router]
 impl ChatBridge {
     #[tool(
-        description = "Send a message to a channel, DM, or thread. Use the target value from received messages to reply. Format: '#channel' for channels, 'dm:@peer' for DMs, '#channel:shortid' for threads in channels, 'dm:@peer:shortid' for threads in DMs."
+        description = "Send a message to a channel or DM. Use the target value from received messages to reply. Format: '#channel' for channels, 'dm:@peer' for DMs."
     )]
     async fn send_message(
         &self,
@@ -81,7 +81,7 @@ impl ChatBridge {
     }
 
     #[tool(
-        description = "Read message history for a channel, DM, or thread. Supports pagination with before/after seq numbers."
+        description = "Read message history for a channel or DM. Supports pagination with before/after seq numbers."
     )]
     async fn read_history(
         &self,
