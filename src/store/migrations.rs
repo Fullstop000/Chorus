@@ -10,7 +10,6 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_add_run_id_to_messages(conn)?;
     migrate_add_trace_summary_to_messages(conn)?;
     migrate_create_trace_events_table(conn)?;
-    migrate_drop_thread_artifacts(conn)?;
     Ok(())
 }
 
@@ -191,97 +190,5 @@ fn migrate_create_trace_events_table(conn: &Connection) -> Result<()> {
         );
         CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq);",
     )?;
-    Ok(())
-}
-
-/// Drop legacy thread primitive: thread_parent_id column on messages,
-/// inbox_thread_read_state table, and thread_summaries_view.
-///
-/// Before dropping `inbox_thread_read_state`, fold each member's read thread
-/// replies into the flat `inbox_read_state.last_read_seq` cursor. Without this,
-/// thread replies (which previously lived outside the top-level cursor) would
-/// appear unread on upgrade and `get_messages_for_agent` would redeliver them.
-fn migrate_drop_thread_artifacts(conn: &Connection) -> Result<()> {
-    // Only fold thread read state if the table still exists on this upgrade path.
-    let thread_table_exists: bool = conn
-        .query_row(
-            "SELECT COUNT(*) FROM sqlite_master
-             WHERE type = 'table' AND name = 'inbox_thread_read_state'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .map(|count| count > 0)
-        .unwrap_or(false);
-
-    if thread_table_exists {
-        // For every (conversation, member), raise inbox_read_state.last_read_seq to
-        // the highest message seq that was already acknowledged via either the flat
-        // cursor or a per-thread cursor. Rows missing from inbox_read_state are seeded
-        // at the max acknowledged seq so the cursor lands post-upgrade, not at zero.
-        conn.execute(
-            "INSERT INTO inbox_read_state (
-                conversation_id, member_name, member_type, last_read_seq, last_read_message_id
-             )
-             SELECT
-                itrs.conversation_id,
-                itrs.member_name,
-                itrs.member_type,
-                COALESCE((
-                    SELECT MAX(m.seq) FROM messages m
-                    WHERE m.channel_id = itrs.conversation_id
-                      AND m.seq <= itrs.last_read_seq
-                      AND m.thread_parent_id = itrs.thread_parent_id
-                ), 0) AS last_read_seq,
-                NULL
-             FROM inbox_thread_read_state itrs
-             WHERE NOT EXISTS (
-                SELECT 1 FROM inbox_read_state irs
-                WHERE irs.conversation_id = itrs.conversation_id
-                  AND irs.member_name = itrs.member_name
-             )
-             ON CONFLICT(conversation_id, member_name) DO NOTHING",
-            [],
-        )?;
-
-        conn.execute(
-            "UPDATE inbox_read_state
-             SET last_read_seq = MAX(
-                last_read_seq,
-                COALESCE((
-                    SELECT MAX(m.seq) FROM inbox_thread_read_state itrs
-                    JOIN messages m ON m.channel_id = itrs.conversation_id
-                        AND m.thread_parent_id = itrs.thread_parent_id
-                        AND m.seq <= itrs.last_read_seq
-                    WHERE itrs.conversation_id = inbox_read_state.conversation_id
-                      AND itrs.member_name = inbox_read_state.member_name
-                ), 0)
-             )",
-            [],
-        )?;
-    }
-
-    conn.execute_batch(
-        "DROP VIEW IF EXISTS thread_summaries_view;
-         DROP TABLE IF EXISTS inbox_thread_read_state;",
-    )?;
-
-    let has_column = conn
-        .prepare("PRAGMA table_info(messages)")?
-        .query_map([], |row| row.get::<_, String>(1))?
-        .filter_map(|r| r.ok())
-        .any(|col| col == "thread_parent_id");
-    if has_column {
-        // SQLite ALTER TABLE DROP COLUMN requires 3.35+. Use it when available;
-        // fallback silently logs and leaves the column in place — nothing reads
-        // it anymore and the view has been rebuilt without it.
-        if let Err(err) = conn.execute_batch("ALTER TABLE messages DROP COLUMN thread_parent_id") {
-            tracing::warn!(
-                %err,
-                "could not drop thread_parent_id column; leaving it in place (safe: no readers)"
-            );
-        } else {
-            tracing::info!("migration: dropped thread_parent_id column from messages");
-        }
-    }
     Ok(())
 }
