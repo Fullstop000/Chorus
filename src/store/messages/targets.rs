@@ -8,20 +8,10 @@ use crate::store::Store;
 
 impl Store {
     /// Resolve a `#channel` or `dm:@name` target into a `channel_id`.
-    ///
-    /// Legacy thread forms (`#channel:shortid`, `dm:@name:shortid`) are rejected
-    /// explicitly so stale clients do not silently misroute messages into a DM
-    /// with a peer whose name happens to match the full suffix.
     pub fn resolve_target(&self, target: &str, sender_name: &str) -> Result<String> {
         let conn = self.conn.lock().unwrap();
 
         if let Some(rest) = target.strip_prefix("dm:@") {
-            if rest.contains(':') {
-                return Err(anyhow!(
-                    "thread targets are no longer supported (got: {})",
-                    target
-                ));
-            }
             let other_name = rest;
 
             let mut names = [sender_name.to_string(), other_name.to_string()];
@@ -62,12 +52,6 @@ impl Store {
 
             Ok(channel.id)
         } else if let Some(rest) = target.strip_prefix('#') {
-            if rest.contains(':') {
-                return Err(anyhow!(
-                    "thread targets are no longer supported (got: {})",
-                    target
-                ));
-            }
             let channel = Self::get_channel_by_name_inner(&conn, rest)?
                 .ok_or_else(|| anyhow!("channel not found: {}", rest))?;
             Ok(channel.id)

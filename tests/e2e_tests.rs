@@ -354,7 +354,6 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
     assert!(preview["modifiedMs"].as_u64().is_some());
 }
 
-
 /// Test 6: Multi-agent communication
 #[tokio::test]
 async fn test_multi_agent_channel_communication() {
@@ -431,4 +430,3 @@ async fn test_multi_agent_channel_communication() {
         .unwrap();
     assert_eq!(resp["messages"].as_array().unwrap().len(), 1);
 }
-

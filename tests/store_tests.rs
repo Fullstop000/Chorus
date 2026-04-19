@@ -303,7 +303,7 @@ fn test_message_history_pagination() {
         store
             .create_message(CreateMessage {
                 channel_name: "general",
-                    sender_name: "alice",
+                sender_name: "alice",
                 sender_type: SenderType::Human,
                 content: &format!("msg {i}"),
                 attachment_ids: &[],
@@ -1038,44 +1038,6 @@ fn test_resolve_target() {
 
     let dm_id = store.resolve_target("dm:@alice", "bot1").unwrap();
     assert!(!dm_id.is_empty());
-}
-
-#[test]
-fn test_resolve_target_rejects_legacy_thread_suffixes() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel("general", None, ChannelType::Channel)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-
-    // Legacy DM thread target must NOT silently create a DM with peer
-    // "alice:abc123"; it must fail so stale clients get a loud error.
-    let err = store
-        .resolve_target("dm:@alice:abc123", "bot1")
-        .expect_err("legacy DM thread target should be rejected");
-    assert!(err.to_string().contains("thread targets are no longer supported"));
-
-    // Legacy channel thread target must also fail.
-    let err = store
-        .resolve_target("#general:abc123", "bot1")
-        .expect_err("legacy channel thread target should be rejected");
-    assert!(err.to_string().contains("thread targets are no longer supported"));
-
-    // Ensure nothing got created as a side effect.
-    let channels = store.get_channels().unwrap();
-    assert_eq!(channels.len(), 1, "no spurious channels from rejected targets");
 }
 
 #[test]
