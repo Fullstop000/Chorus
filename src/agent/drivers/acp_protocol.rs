@@ -406,41 +406,39 @@ fn parse_notification(method: &str, msg: &Value) -> AcpParsed {
     }
 
     let Some(params) = msg.get("params") else {
-        // No params at all — even more malformed than missing sessionId.
-        // Emit an empty SessionInit so the invariant "session/update items[0]
-        // is always SessionInit" holds for downstream drivers.
-        warn!("acp session/update missing params entirely — emitting empty SessionInit");
-        return AcpParsed::SessionUpdate {
-            items: vec![AcpUpdateItem::SessionInit {
-                session_id: String::new(),
-            }],
-        };
+        // No params at all — fully malformed frame. Return an empty items
+        // vec (no SessionInit) so drivers see a no-op rather than routing
+        // confusion. Emitting an empty-string SessionInit here would route
+        // the update to a nonexistent session (Kimi would insert "" as a
+        // session_id key; OpenCode would drop the update). The `warn!`
+        // surfaces the spec violation for triage.
+        warn!("acp session/update missing params entirely — emitting empty items vec");
+        return AcpParsed::SessionUpdate { items: vec![] };
     };
 
     // Per ACP spec (https://agentclientprotocol.com/protocol/session-setup),
-    // every `session/update` notification carries `params.sessionId`. We
-    // prepend an `AcpUpdateItem::SessionInit { session_id }` at position 0 so
-    // multi-session drivers can route deterministically by the first item
-    // rather than falling back to HashMap iteration order of in-flight
-    // sessions.
+    // every `session/update` notification carries `params.sessionId`. When
+    // present, we prepend an `AcpUpdateItem::SessionInit { session_id }` at
+    // position 0 so multi-session drivers can route deterministically by
+    // the first item rather than falling back to HashMap iteration order
+    // of in-flight sessions.
     //
-    // Missing sessionId is a malformed frame per spec. Rather than dropping
-    // the whole update (which would lose activity) or introducing a new
-    // error variant (which every driver would need to handle), we emit
-    // `SessionInit { session_id: "" }` and `warn!`. Drivers already treat
-    // the fallback path as "no specific session" — an empty string routes
-    // to the same fallback path without surprising them, while the `warn!`
+    // Missing/non-string sessionId is a malformed frame per spec. Rather
+    // than emitting a `SessionInit { session_id: "" }` (which would route
+    // the update to a nonexistent session), we omit the `SessionInit`
+    // entirely and return the body items alone. Drivers without a
+    // `SessionInit` at `items[0]` already fall back to their `pick_session`
+    // heuristics (with warn-on-ambiguity logging). The `warn!` here
     // surfaces the spec violation for triage.
     let session_id = params
         .get("sessionId")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            warn!(
-                "acp session/update missing params.sessionId — spec violation, emitting empty SessionInit"
-            );
-            String::new()
-        });
+        .map(|s| s.to_string());
+    if session_id.is_none() {
+        warn!(
+            "acp session/update missing params.sessionId — spec violation, emitting body items without SessionInit"
+        );
+    }
 
     // Some runtimes wrap updates in `params.update`; others put fields at the
     // top level of `params`. v1 handles both with a fallback.
@@ -523,11 +521,19 @@ fn parse_notification(method: &str, msg: &Value) -> AcpParsed {
         }
     };
 
-    // Prepend SessionInit at position 0. Drivers iterate and stop at the first
-    // SessionInit for routing — position is load-bearing.
-    let mut items = Vec::with_capacity(body_items.len() + 1);
-    items.push(AcpUpdateItem::SessionInit { session_id });
-    items.extend(body_items);
+    // When sessionId is present, prepend SessionInit at position 0. Drivers
+    // iterate and stop at the first SessionInit for routing — position is
+    // load-bearing. When sessionId is absent (malformed frame), we emit the
+    // body items only; drivers fall back to their `pick_session` heuristics.
+    let items = match session_id {
+        Some(session_id) => {
+            let mut items = Vec::with_capacity(body_items.len() + 1);
+            items.push(AcpUpdateItem::SessionInit { session_id });
+            items.extend(body_items);
+            items
+        }
+        None => body_items,
+    };
 
     AcpParsed::SessionUpdate { items }
 }
@@ -911,8 +917,6 @@ mod tests {
     #[test]
     fn parse_session_update_with_structured_tool_result_kimi_shape() {
         // kimi nested: content array where each item is {content: {text, type}, type}.
-        // Note: no params.sessionId in this frame — hits the malformed-frame
-        // path that emits SessionInit { session_id: "" } with a warn!.
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s1","update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","content":[{"content":{"type":"text","text":"line A"},"type":"content"},{"content":{"type":"text","text":"line B"},"type":"content"}]}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
@@ -1041,31 +1045,50 @@ mod tests {
     }
 
     #[test]
-    fn session_update_missing_session_id_emits_empty_session_init() {
+    fn session_update_missing_session_id_emits_no_session_init() {
         // Spec requires params.sessionId on every session/update. When absent,
-        // we treat it as a malformed frame: emit SessionInit { session_id: "" }
-        // and warn! (see parse_notification doc comment). An empty string routes
-        // to the drivers' existing "no specific session" fallback without
-        // introducing a new error variant every driver must handle.
+        // we treat it as a malformed frame: emit the body items without a
+        // prepended SessionInit and warn! (see parse_notification doc
+        // comment). Drivers without a SessionInit at items[0] fall back to
+        // their pick_session heuristics — emitting an empty-string
+        // SessionInit would instead route the update to a nonexistent
+        // session, breaking both Kimi (inserts "" as a session_id key) and
+        // OpenCode (drops the update entirely).
         let line = r#"{"jsonrpc":"2.0","method":"session/update","params":{"update":{"kind":"agentMessageChunk","chunk":"hello"}}}"#;
         match parse_line(line) {
             AcpParsed::SessionUpdate { items } => {
-                assert_eq!(items.len(), 2);
+                assert!(
+                    items
+                        .iter()
+                        .all(|i| !matches!(i, AcpUpdateItem::SessionInit { .. })),
+                    "missing sessionId must not produce any SessionInit: {items:?}"
+                );
+                assert_eq!(items.len(), 1, "expected body item only: {items:?}");
                 match &items[0] {
-                    AcpUpdateItem::SessionInit { session_id } => {
-                        assert_eq!(
-                            session_id, "",
-                            "missing sessionId should produce empty SessionInit"
-                        );
-                    }
-                    other => panic!("expected SessionInit at [0], got {other:?}"),
-                }
-                match &items[1] {
                     AcpUpdateItem::Text { text } => assert_eq!(text, "hello"),
-                    other => panic!("expected Text at [1], got {other:?}"),
+                    other => panic!("expected Text at [0], got {other:?}"),
                 }
             }
             other => panic!("expected SessionUpdate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn session_update_missing_params_entirely_returns_empty_items() {
+        // A session/update frame with no `params` key at all is fully
+        // malformed. Rather than emitting an empty-string SessionInit
+        // (which would route to a nonexistent session and cause Kimi /
+        // OpenCode to misbehave), parse_notification returns an empty
+        // items vec so drivers see a no-op.
+        let line = r#"{"jsonrpc":"2.0","method":"session/update"}"#;
+        match parse_line(line) {
+            AcpParsed::SessionUpdate { items } => {
+                assert!(
+                    items.is_empty(),
+                    "missing params must yield empty items vec: {items:?}"
+                );
+            }
+            other => panic!("expected SessionUpdate with empty items, got {other:?}"),
         }
     }
 
