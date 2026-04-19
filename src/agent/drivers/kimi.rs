@@ -382,6 +382,13 @@ struct SharedReaderState {
     /// agent (either by `close()` on the bootstrap handle, or the reader EOF
     /// path). Guards against duplicate emissions when both fire.
     closed_emitted: Arc<AtomicBool>,
+    /// Session id minted by the bootstrap warmup response. The bootstrap
+    /// handle doesn't locally track its session_id (secondary handles do),
+    /// so we stash it here when the reader sees the warmup response. Used
+    /// by `close()` on the bootstrap handle to identify *its* session slot
+    /// so it can drop it from `sessions` without accidentally taking out a
+    /// live secondary's entry.
+    bootstrap_session_id: Option<String>,
 }
 
 struct WarmupState {
@@ -602,6 +609,7 @@ impl KimiHandle {
                 pending_prompt: None,
             }),
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
 
         // Stdin writer task.
@@ -1002,23 +1010,36 @@ impl AgentSessionHandle for KimiHandle {
             return Ok(());
         }
 
-        // Remove this handle's session from shared state so `pick_session` /
-        // `pick_session_and_run` stop routing events to a dead handle. This
-        // applies equally to bootstrap and secondary — each handle owns one
-        // session entry and no one else gets to write to it. Mirror:
-        // opencode.rs:661-663.
+        // Drop this handle's session slot from shared state so `pick_session`
+        // / `pick_session_and_run` stop routing events to a dead handle.
         //
-        // Also check, under the same lock, whether every remaining session
-        // is Closed — if so, the bootstrap teardown path (below) must prune
-        // the registry entry so the shared Arc can finally Drop.
-        let (all_closed, shared_opt) = {
+        // Bootstrap subtlety: the bootstrap handle doesn't locally track its
+        // own session_id (secondary handles do, populated in start()). The
+        // reader task records the warmup-minted session id in
+        // `shared.bootstrap_session_id` so bootstrap close can drop *its*
+        // slot without taking out a live secondary's.
+        //
+        // Under the same lock, compute `all_sessions_closed` — true iff
+        // every remaining session entry is Closed (or the map is empty).
+        // Teardown of the shared child + fan-out + registry entry is gated
+        // on this regardless of role: a bootstrap close with a secondary
+        // still mid-prompt must NOT kill the child. The last session to
+        // close (either role) triggers teardown.
+        let (all_sessions_closed, shared_opt) = {
             let shared_opt = {
                 let inner = self.core.inner.lock().await;
                 inner.shared.clone()
             };
             if let Some(ref shared) = shared_opt {
                 let mut s = shared.lock().unwrap();
-                if let Some(ref sid) = self.session_id {
+                let sid_to_remove: Option<String> = if self.role.is_bootstrap() {
+                    self.session_id
+                        .clone()
+                        .or_else(|| s.bootstrap_session_id.clone())
+                } else {
+                    self.session_id.clone()
+                };
+                if let Some(ref sid) = sid_to_remove {
                     s.sessions.remove(sid);
                 }
                 let all_closed = s
@@ -1027,27 +1048,42 @@ impl AgentSessionHandle for KimiHandle {
                     .all(|slot| matches!(slot.state, AgentState::Closed));
                 (all_closed, Some(shared.clone()))
             } else {
-                // start() never completed; nothing to route to.
+                // start() never completed; nothing to route to. Treat as
+                // "all closed" so the teardown path still fires (the core
+                // has no live sessions to preserve).
                 (true, None)
             }
         };
 
         self.state = AgentState::Closed;
 
-        if self.role.is_bootstrap() {
-            // The bootstrap handle owns the child + reader tasks. Tear them
-            // down here and let the reader's EOF path NOT re-emit Closed.
-            // `closed_emitted` is flipped BEFORE SIGTERM so that if the
-            // reader races ahead of our abort() and reaches the EOF emission,
-            // it sees the flag and skips.
+        // Always emit a per-session Closed lifecycle event so subscribers
+        // see this handle retire — independent of whether the shared child
+        // teardown below fires.
+        self.emit(DriverEvent::Lifecycle {
+            key: self.core.key.clone(),
+            state: AgentState::Closed,
+        });
+
+        // Teardown of the shared child + fan-out + registry is gated on
+        // *all sessions closed*, regardless of role.
+        //
+        // - Single-session close (either role): sole session removed above
+        //   → map empty → all_sessions_closed=true → teardown fires.
+        // - Bootstrap close with a live secondary: secondary slot still
+        //   Active/PromptInFlight → all_sessions_closed=false → child +
+        //   fan-out + registry left intact so the secondary keeps running.
+        // - Last session to close after its sibling already closed: its
+        //   slot was the final non-Closed entry → all_sessions_closed=true
+        //   → teardown runs here.
+        if all_sessions_closed {
             if let Some(ref shared) = shared_opt {
                 let s = shared.lock().unwrap();
+                // Flip BEFORE SIGTERM so a reader racing our abort() toward
+                // the EOF `Lifecycle::Closed` emission sees the flag and
+                // skips (no double-emit).
                 s.closed_emitted.store(true, Ordering::SeqCst);
             }
-            self.emit(DriverEvent::Lifecycle {
-                key: self.core.key.clone(),
-                state: AgentState::Closed,
-            });
 
             let key = self.core.key.clone();
             {
@@ -1067,19 +1103,6 @@ impl AgentSessionHandle for KimiHandle {
             }
             self.core.events.close();
             registry_remove(&key);
-        } else {
-            // Secondary handle. Emit our per-session Closed lifecycle event
-            // (so subscribers see it go away), then — if we were the last
-            // remaining live session on this agent — prune the registry so
-            // the shared Arc can drop and SIGTERM the child via
-            // `KimiAgentCore::drop`.
-            self.emit(DriverEvent::Lifecycle {
-                key: self.core.key.clone(),
-                state: AgentState::Closed,
-            });
-            if all_closed {
-                registry_remove(&self.core.key);
-            }
         }
 
         Ok(())
@@ -1343,6 +1366,11 @@ async fn handle_response(
                 s.sessions
                     .entry(session_id.clone())
                     .or_insert_with(|| SessionState::new(&session_id));
+                // Record which session_id the bootstrap handle owns so its
+                // `close()` can drop exactly that slot (and no secondary's).
+                if s.bootstrap_session_id.is_none() {
+                    s.bootstrap_session_id = Some(session_id.clone());
+                }
                 s.warmup.as_mut().and_then(|w| w.pending_prompt.take())
             };
 
@@ -1826,6 +1854,7 @@ mod tests {
             pending: HashMap::new(),
             warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1880,6 +1909,7 @@ mod tests {
             pending: HashMap::new(),
             warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1921,6 +1951,7 @@ mod tests {
             pending: HashMap::new(),
             warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -2081,6 +2112,7 @@ mod tests {
             pending: HashMap::new(),
             warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -2131,6 +2163,7 @@ mod tests {
                 pending_prompt: Some("hello".to_string()),
             }),
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
         {
             let mut inner = core.inner.lock().await;
@@ -2184,6 +2217,7 @@ mod tests {
                 pending_prompt: None,
             }),
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -2226,6 +2260,7 @@ mod tests {
                 pending_prompt: Some("hi".to_string()),
             }),
             closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: None,
         }));
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(8);
 
@@ -2317,5 +2352,164 @@ mod tests {
             "registry_get must return a fresh core"
         );
         registry_remove(&key);
+    }
+
+    /// Regression for the Stage 2 ship-blocker: closing the bootstrap handle
+    /// while a secondary session is still live (and mid-prompt) must NOT
+    /// tear down the shared kimi child, its reader tasks, or the fan-out.
+    /// The old code hit SIGTERM / events.close() / registry_remove
+    /// unconditionally on bootstrap close — which cut the shared stdin out
+    /// from under the secondary, aborted its readers, and closed the fan-out
+    /// before any terminal event could reach subscribers. The fix gates the
+    /// teardown on "all sessions closed" regardless of role.
+    ///
+    /// Sequence:
+    ///   1. Seed a core as if attach + start completed: shared state has a
+    ///      bootstrap session (id recorded via bootstrap_session_id), a live
+    ///      stdin_tx, a live child sentinel, and reader handles.
+    ///   2. Mint a secondary handle and seed its session in shared.sessions
+    ///      as PromptInFlight (models the in-flight race).
+    ///   3. Close the bootstrap handle. Assert:
+    ///       - `stdin_tx` still present (shared child still reachable).
+    ///       - `events.inner.closing` still false (fan-out still serving).
+    ///       - Registry entry still present.
+    ///       - Reader handle count unchanged.
+    ///   4. Close the secondary handle. Assert teardown NOW fired:
+    ///       - `stdin_tx` cleared.
+    ///       - `events.inner.closing` true.
+    ///       - Registry entry pruned.
+    #[tokio::test]
+    async fn bootstrap_close_with_live_secondary_does_not_tear_down_shared_child() {
+        let key: AgentKey = format!("agent-bootstrap-live-secondary-{}", uuid::Uuid::new_v4());
+        let (events, event_tx) = EventFanOut::new();
+        let events_for_assert = events.clone();
+        let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        // Seed the core as if spawn_child completed and the warmup response
+        // landed with `bootstrap-sid`.
+        let bootstrap_sid = "sess-bootstrap".to_string();
+        let secondary_sid = "sess-secondary".to_string();
+        let secondary_run = RunId::new_v4();
+
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: {
+                let mut m = HashMap::new();
+                // Bootstrap: warmup complete, idle.
+                m.insert(bootstrap_sid.clone(), SessionState::new(&bootstrap_sid));
+                // Secondary: mid-prompt. This is the race the fix protects.
+                let mut sec = SessionState::new(&secondary_sid);
+                sec.run_id = Some(secondary_run);
+                sec.state = AgentState::PromptInFlight {
+                    run_id: secondary_run,
+                    session_id: secondary_sid.clone(),
+                };
+                m.insert(secondary_sid.clone(), sec);
+                m
+            },
+            pending: HashMap::new(),
+            warmup: None,
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+            bootstrap_session_id: Some(bootstrap_sid.clone()),
+        }));
+
+        // Fake stdin + reader handles to stand in for the shared child.
+        // `kill_child` in close() walks `inner.owned.child` / `inner.stdin_tx`
+        // / `inner.owned.reader_handles` — all we need is: stdin_tx presence,
+        // a parked reader JoinHandle, and no child (we can't spawn one in
+        // tests; SIGTERM sits behind an `if let Some(child)`).
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+        // A parked reader task: it awaits forever, so abort() is the only
+        // way it exits. Lets us observe post-close whether it was aborted.
+        let parked_reader = tokio::spawn(async {
+            let () = std::future::pending().await;
+        });
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared.clone());
+            inner.stdin_tx = Some(stdin_tx.clone());
+            inner.owned.reader_handles.push(parked_reader);
+            inner.next_request_id = 4;
+        }
+
+        // Register the core so close() can see it for registry_remove().
+        registry_insert(key.clone(), core.clone());
+
+        // Build handles.
+        let mut bootstrap = KimiHandle::new_bootstrap(core.clone());
+        let mut secondary = KimiHandle::new_secondary(core.clone());
+        secondary.session_id = Some(secondary_sid.clone());
+        secondary.state = AgentState::PromptInFlight {
+            run_id: secondary_run,
+            session_id: secondary_sid.clone(),
+        };
+
+        // ---- Close the bootstrap while the secondary is mid-prompt. ----
+        bootstrap.close().await.unwrap();
+
+        // Shared child bits must remain intact for the secondary.
+        {
+            let inner = core.inner.lock().await;
+            assert!(
+                inner.stdin_tx.is_some(),
+                "bootstrap close with a live secondary must NOT null out shared stdin_tx"
+            );
+            assert_eq!(
+                inner.owned.reader_handles.len(),
+                1,
+                "bootstrap close with a live secondary must NOT abort shared reader handles"
+            );
+            assert!(
+                !inner.owned.reader_handles[0].is_finished(),
+                "parked reader must still be running"
+            );
+        }
+        assert!(
+            !events_for_assert.inner.closing.load(Ordering::SeqCst),
+            "bootstrap close with a live secondary must NOT close the fan-out"
+        );
+        assert!(
+            kimi_registry().lock().unwrap().get(&key).is_some(),
+            "bootstrap close with a live secondary must NOT prune the registry entry"
+        );
+        // The bootstrap's session slot should be gone; the secondary's slot
+        // should still be present and still PromptInFlight.
+        {
+            let s = shared.lock().unwrap();
+            assert!(
+                !s.sessions.contains_key(&bootstrap_sid),
+                "bootstrap close must drop its own session slot"
+            );
+            assert!(
+                matches!(
+                    s.sessions.get(&secondary_sid).map(|slot| &slot.state),
+                    Some(AgentState::PromptInFlight { .. })
+                ),
+                "secondary slot must remain mid-prompt after bootstrap close"
+            );
+        }
+
+        // ---- Close the secondary. Now teardown fires. ----
+        secondary.close().await.unwrap();
+
+        {
+            let inner = core.inner.lock().await;
+            assert!(
+                inner.stdin_tx.is_none(),
+                "last-session close must null out shared stdin_tx"
+            );
+            assert!(
+                inner.owned.reader_handles.is_empty(),
+                "last-session close must drain shared reader handles"
+            );
+        }
+        assert!(
+            events_for_assert.inner.closing.load(Ordering::SeqCst),
+            "last-session close must signal the fan-out to drain"
+        );
+        assert!(
+            kimi_registry().lock().unwrap().get(&key).is_none(),
+            "last-session close must prune the registry entry"
+        );
     }
 }

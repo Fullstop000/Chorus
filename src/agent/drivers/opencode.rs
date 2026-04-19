@@ -371,6 +371,13 @@ struct SharedReaderState {
     /// Caller-supplied resume id for the initial handshake (id 2). If
     /// `session/load` omits `sessionId`, we fall back to this.
     bootstrap_requested_session_id: Option<String>,
+    /// Session id minted by (or loaded into) the bootstrap's id-2
+    /// `session/new` | `session/load` response. The bootstrap handle
+    /// doesn't locally track its session_id until after the response lands
+    /// on the reader, so we stash it here. `close()` on the bootstrap uses
+    /// this to drop exactly *its* slot from `sessions` without taking out
+    /// a live secondary's entry.
+    bootstrap_session_id: Option<String>,
 }
 
 impl SharedReaderState {
@@ -380,6 +387,7 @@ impl SharedReaderState {
             sessions: HashMap::new(),
             bootstrap_pending_prompt: None,
             bootstrap_requested_session_id: None,
+            bootstrap_session_id: None,
         }
     }
 }
@@ -718,16 +726,30 @@ impl AgentSessionHandle for OpencodeHandle {
             return Ok(());
         }
 
-        // Per-handle close: transition our local state and drop our session
-        // entry. The shared child is torn down only when the last handle
-        // drops — the `OpencodeAgentProcess::Drop` handler does that. In
-        // practice the agent-manager drives close for all handles when
-        // shutting an agent down, so this keeps the semantics predictable:
-        // `close` on any handle quiesces that session but doesn't force-kill
-        // sibling sessions' child.
-        if let Some(sid) = self.session_id().map(|s| s.to_string()) {
-            self.proc.shared.lock().unwrap().sessions.remove(&sid);
-        }
+        // Drop this handle's session slot from shared state and, under the
+        // same lock, determine whether any session is still live on the
+        // shared child.
+        //
+        // Bootstrap subtlety: the bootstrap handle's `session_id()` returns
+        // `None` until the id-2 `session/new` response lands on the reader
+        // and transitions `shared.sessions`. The reader records that minted
+        // id in `shared.bootstrap_session_id` specifically so a bootstrap
+        // close that happens *after* warmup but *before* any prompt can
+        // still locate its own slot.
+        let all_sessions_closed = {
+            let mut s = self.proc.shared.lock().unwrap();
+            let sid_to_remove: Option<String> = if self.role.is_bootstrap() {
+                self.session_id()
+                    .map(|s| s.to_string())
+                    .or_else(|| s.bootstrap_session_id.clone())
+            } else {
+                self.session_id().map(|s| s.to_string())
+            };
+            if let Some(ref sid) = sid_to_remove {
+                s.sessions.remove(sid);
+            }
+            s.sessions.is_empty()
+        };
 
         self.local_state = AgentState::Closed;
         self.emit(DriverEvent::Lifecycle {
@@ -735,10 +757,14 @@ impl AgentSessionHandle for OpencodeHandle {
             state: AgentState::Closed,
         });
 
-        // For the bootstrap handle, closing implies tearing down the shared
-        // process — that handle "owns" the lifecycle. This mirrors the v2
-        // single-session semantics the existing tests encode.
-        if self.role.is_bootstrap() {
+        // Teardown of the shared child + fan-out + registry is gated on
+        // *all sessions closed*, regardless of role. A bootstrap close with
+        // a live secondary (still Active or mid-prompt) must NOT kill the
+        // child — the secondary would lose its stdin, its reader task would
+        // be aborted mid-stream, and no terminal event would reach the
+        // caller. The last session to close (either role) triggers teardown
+        // here.
+        if all_sessions_closed {
             self.proc.kill_child();
             self.proc.events.close();
             {
@@ -1159,6 +1185,14 @@ async fn dispatch_line(
                 s.sessions
                     .entry(sid.clone())
                     .or_insert_with(|| SessionRuntimeState::active(&sid));
+                // `responder.is_none()` identifies the bootstrap path —
+                // secondary `new_session` calls always supply a responder.
+                // Record the bootstrap's minted session id so its `close()`
+                // can drop exactly that slot without taking out live
+                // secondaries.
+                if responder.is_none() && s.bootstrap_session_id.is_none() {
+                    s.bootstrap_session_id = Some(sid.clone());
+                }
                 s.bootstrap_pending_prompt.take()
             };
 
@@ -1230,6 +1264,12 @@ async fn dispatch_line(
                     .entry(sid.clone())
                     .or_insert_with(|| SessionRuntimeState::active(&sid));
                 s.bootstrap_requested_session_id = None;
+                // `responder.is_none()` identifies the bootstrap path
+                // (secondary `resume_session` supplies a responder). Record
+                // the bootstrap's session id for its `close()` teardown.
+                if responder.is_none() && s.bootstrap_session_id.is_none() {
+                    s.bootstrap_session_id = Some(sid.clone());
+                }
             }
             if let Some(responder) = responder {
                 let _ = responder.send(Ok(sid.clone()));
@@ -1930,5 +1970,144 @@ mod tests {
         };
         let msg = format!("{err:#}");
         assert!(msg.contains("before attach"), "got: {msg}");
+    }
+
+    /// Regression for the Stage 2 ship-blocker: closing the bootstrap handle
+    /// while a secondary session is still live (mid-prompt) must NOT tear
+    /// down the shared opencode child, its reader tasks, or the fan-out.
+    /// Before the fix, the bootstrap close path called `kill_child` +
+    /// `events.close()` + `agent_instances().remove()` unconditionally —
+    /// which SIGTERM'd the shared child, closed the fan-out, and pruned the
+    /// registry while a live secondary was still emitting events into both.
+    /// The fix gates teardown on "all sessions closed" regardless of role.
+    #[tokio::test]
+    async fn bootstrap_close_with_live_secondary_does_not_tear_down_shared_child() {
+        let driver = OpencodeDriver;
+        let key = format!("opencode-bootstrap-live-secondary-{}", uuid::Uuid::new_v4());
+
+        // Bring up a shared process via the driver (registers it + builds
+        // the fan-out). Also mark started so secondary construction works.
+        let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let proc = {
+            let g = agent_instances().lock().unwrap();
+            Arc::clone(g.get(&key).expect("registered"))
+        };
+        proc.started.store(true, Ordering::SeqCst);
+
+        // Seed a "live" shared child: a parked reader + a non-None child
+        // slot are the two things the teardown path would mutate. We can't
+        // spawn a real opencode, so we use a sleeping `sh` and a parked
+        // JoinHandle as stand-ins and verify the teardown either touches
+        // them (secondary close) or doesn't (bootstrap close with live
+        // secondary).
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+        *proc.stdin_tx.lock().unwrap() = Some(stdin_tx);
+        let parked_reader = tokio::spawn(async {
+            let () = std::future::pending().await;
+        });
+        proc.reader_handles.lock().unwrap().push(parked_reader);
+
+        // Seed two sessions in shared state:
+        //   - bootstrap_sid: recorded in `bootstrap_session_id` so bootstrap
+        //     close can identify its own slot.
+        //   - secondary_sid: PromptInFlight, modelling the race where the
+        //     user hits "close" on one tab while another tab's prompt is
+        //     still streaming.
+        let bootstrap_sid = "sess-bootstrap".to_string();
+        let secondary_sid = "sess-secondary".to_string();
+        let secondary_run = RunId::new_v4();
+        {
+            let mut s = proc.shared.lock().unwrap();
+            s.sessions
+                .insert(bootstrap_sid.clone(), SessionRuntimeState::active(&bootstrap_sid));
+            let mut sec = SessionRuntimeState::active(&secondary_sid);
+            sec.run_id = Some(secondary_run);
+            sec.agent_state = AgentState::PromptInFlight {
+                run_id: secondary_run,
+                session_id: secondary_sid.clone(),
+            };
+            s.sessions.insert(secondary_sid.clone(), sec);
+            s.bootstrap_session_id = Some(bootstrap_sid.clone());
+        }
+
+        let events_handle = attach.events.clone();
+        let mut bootstrap_handle = attach.handle;
+
+        // Build a secondary handle by hand (bypassing request_new_session,
+        // which would need a live reader to respond). Mirror what
+        // `new_session` produces: preassigned session id + Secondary role,
+        // plus the Active local_state the reader's SessionAttached handler
+        // would flip us into.
+        let mut secondary_handle = OpencodeHandle {
+            key: key.clone(),
+            local_state: AgentState::PromptInFlight {
+                run_id: secondary_run,
+                session_id: secondary_sid.clone(),
+            },
+            spec: test_spec(),
+            proc: Arc::clone(&proc),
+            preassigned_session_id: Some(secondary_sid.clone()),
+            role: HandleRole::Secondary,
+        };
+
+        // ---- Close the bootstrap while the secondary is mid-prompt. ----
+        bootstrap_handle.close().await.unwrap();
+
+        // Shared child bits must remain intact for the secondary. We
+        // couldn't install a real child (can't spawn opencode in tests),
+        // so the teardown signals we check are the ones `kill_child` +
+        // the post-kill cleanup mutate: reader_handles (aborted + drained),
+        // `events.closing` (fan-out drain flag), and the registry entry.
+        assert_eq!(
+            proc.reader_handles.lock().unwrap().len(),
+            1,
+            "bootstrap close with a live secondary must NOT abort the shared reader handles"
+        );
+        assert!(
+            !proc.reader_handles.lock().unwrap()[0].is_finished(),
+            "parked reader must still be running"
+        );
+        assert!(
+            !events_handle.inner.closing.load(Ordering::SeqCst),
+            "bootstrap close with a live secondary must NOT close the fan-out"
+        );
+        assert!(
+            agent_instances().lock().unwrap().get(&key).is_some(),
+            "bootstrap close with a live secondary must NOT prune the registry entry"
+        );
+        // The bootstrap slot should be gone; secondary slot still live.
+        {
+            let s = proc.shared.lock().unwrap();
+            assert!(
+                !s.sessions.contains_key(&bootstrap_sid),
+                "bootstrap close must drop its own session slot"
+            );
+            assert!(
+                matches!(
+                    s.sessions.get(&secondary_sid).map(|slot| &slot.agent_state),
+                    Some(AgentState::PromptInFlight { .. })
+                ),
+                "secondary slot must remain mid-prompt after bootstrap close"
+            );
+        }
+
+        // ---- Close the secondary. Now teardown fires. ----
+        secondary_handle.close().await.unwrap();
+
+        assert!(
+            proc.reader_handles.lock().unwrap().is_empty(),
+            "last-session close must drain shared reader handles"
+        );
+        assert!(
+            events_handle.inner.closing.load(Ordering::SeqCst),
+            "last-session close must signal the fan-out to drain"
+        );
+        assert!(
+            agent_instances().lock().unwrap().get(&key).is_none(),
+            "last-session close must prune the registry entry"
+        );
+
+        // Best-effort cleanup in case anything lingered.
+        agent_instances().lock().unwrap().remove(&key);
     }
 }

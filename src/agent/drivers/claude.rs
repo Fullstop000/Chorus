@@ -99,6 +99,7 @@ enum HandleRole {
 }
 
 impl HandleRole {
+    #[allow(dead_code)]
     fn is_bootstrap(&self) -> bool {
         matches!(self, Self::Bootstrap)
     }
@@ -433,6 +434,7 @@ pub struct ClaudeHandle {
     /// Shared state for this agent. Provides the [`EventStreamHandle`] every
     /// session writes into.
     proc: Arc<ClaudeAgentProcess>,
+    #[allow(dead_code)]
     role: HandleRole,
     /// Caller-supplied session id for the resume path. When set, `start()`
     /// passes `--resume <session_id>` to the CLI.
@@ -680,8 +682,9 @@ impl AgentSessionHandle for ClaudeHandle {
             return Ok(());
         }
 
-        // Terminate this handle's own child. Other sessions on the same
-        // agent are unaffected — their children are separate processes.
+        // Terminate this handle's own child. Unlike kimi/opencode, claude
+        // spawns one `claude -p` per session (the CLI can't multiplex), so
+        // this is strictly per-handle — no live sibling depends on it.
         if let Some(mut transport) = self.transport.lock().unwrap().take() {
             transport.terminate();
         }
@@ -709,15 +712,15 @@ impl AgentSessionHandle for ClaudeHandle {
             *self.proc.live_sessions.lock().unwrap()
         };
 
-        if self.role.is_bootstrap() {
-            // Bootstrap close drops the registry entry unconditionally and
-            // signals the fan-out to drain — the agent is done.
-            self.proc.closed.store(true, Ordering::SeqCst);
-            self.proc.events.close();
-            agent_instances().lock().unwrap().remove(&self.key);
-        } else if remaining == 0 {
-            // Secondary close with no live siblings: prune so the shared
-            // Arc refcount can reach zero.
+        // Shared-process teardown (fan-out drain + registry prune) is gated
+        // on `remaining == 0`, regardless of role. The bootstrap previously
+        // tore these down unconditionally even when secondaries were still
+        // mid-prompt — that closed the shared fan-out and removed the
+        // registry entry while live secondaries were still emitting events
+        // into both. The last session to close (either role) triggers
+        // teardown here; a bootstrap close with a live secondary just
+        // quiesces this handle's per-session child.
+        if remaining == 0 {
             self.proc.closed.store(true, Ordering::SeqCst);
             self.proc.events.close();
             agent_instances().lock().unwrap().remove(&self.key);
@@ -1611,5 +1614,101 @@ mod tests {
 
         h.close().await.unwrap();
         agent_instances().lock().unwrap().remove(&key);
+    }
+
+    /// Regression for the Stage 2 ship-blocker: closing the bootstrap handle
+    /// while a secondary session is still live (mid-prompt) must NOT close
+    /// the shared fan-out or prune the registry entry. Claude's per-session
+    /// child is already private — what bootstrap close tore down
+    /// unconditionally was the *shared* state (`proc.closed`, the fan-out,
+    /// and the `agent_instances` registry entry). With the fix, that
+    /// shared-state teardown is gated on `live_sessions == 0` regardless
+    /// of role.
+    #[tokio::test]
+    async fn bootstrap_close_with_live_secondary_does_not_tear_down_shared_child() {
+        let (bridge_url, _bridge) = spawn_mock_bridge().await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let driver = ClaudeDriver;
+        let key = format!("claude-bootstrap-live-secondary-{}", uuid::Uuid::new_v4());
+        agent_instances().lock().unwrap().remove(&key);
+
+        let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
+
+        // Bring the shared process online via the driver and install a fake
+        // transport factory so `start()` doesn't try to spawn real `claude -p`.
+        let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
+        let _factory = install_fake_factory(&driver.ensure_process(&key));
+        let proc = driver.ensure_process(&key);
+        let events_handle = attach.events.clone();
+
+        let new_sess = driver.new_session(key.clone(), spec.clone()).await.unwrap();
+
+        let mut bootstrap_handle = attach.handle;
+        let mut secondary_handle = new_sess.handle;
+
+        // Start both handles — each spawns its own (fake) `claude -p` child
+        // and bumps `live_sessions`. After this, live_sessions == 2.
+        bootstrap_handle.start(StartOpts::default(), None).await.unwrap();
+        secondary_handle.start(StartOpts::default(), None).await.unwrap();
+
+        assert_eq!(
+            *proc.live_sessions.lock().unwrap(),
+            2,
+            "start() on both handles should bring live_sessions to 2"
+        );
+
+        // Force secondary into PromptInFlight to model the race we're
+        // defending against: bootstrap close landing while the secondary
+        // is mid-stream. We don't have a real child piping events, so we
+        // manipulate the shared state directly — state() reads from here.
+        // (We down-cast via the concrete type via proc.live_sessions snapshot
+        // — the invariant we care about is shared-state teardown gating.)
+        //
+        // Note: we can't mutate secondary_handle.shared directly because
+        // AgentSessionHandle is a trait object. We rely on live_sessions
+        // instead, which is the actual teardown gate for this driver.
+
+        // ---- Close the bootstrap while the secondary is still started. ----
+        bootstrap_handle.close().await.unwrap();
+
+        assert_eq!(
+            *proc.live_sessions.lock().unwrap(),
+            1,
+            "bootstrap close should decrement live_sessions to 1"
+        );
+        assert!(
+            !proc.closed.load(Ordering::SeqCst),
+            "bootstrap close with a live secondary must NOT set proc.closed"
+        );
+        assert!(
+            !events_handle.inner.closing.load(Ordering::SeqCst),
+            "bootstrap close with a live secondary must NOT close the fan-out"
+        );
+        assert!(
+            agent_instances().lock().unwrap().get(&key).is_some(),
+            "bootstrap close with a live secondary must NOT prune the registry entry"
+        );
+
+        // ---- Close the secondary. Now teardown fires. ----
+        secondary_handle.close().await.unwrap();
+
+        assert_eq!(
+            *proc.live_sessions.lock().unwrap(),
+            0,
+            "last-session close should decrement live_sessions to 0"
+        );
+        assert!(
+            proc.closed.load(Ordering::SeqCst),
+            "last-session close must set proc.closed so a re-attach rebuilds"
+        );
+        assert!(
+            events_handle.inner.closing.load(Ordering::SeqCst),
+            "last-session close must signal the fan-out to drain"
+        );
+        assert!(
+            agent_instances().lock().unwrap().get(&key).is_none(),
+            "last-session close must prune the registry entry"
+        );
     }
 }
