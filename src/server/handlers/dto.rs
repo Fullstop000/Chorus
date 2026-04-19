@@ -23,6 +23,51 @@ pub struct ServerInfo {
     pub humans: Vec<HumanInfo>,
 }
 
+/// System diagnostics for the settings panel.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SystemInfo {
+    /// Root data directory (parent of the db `data/` subdir).
+    pub data_dir: String,
+    /// SQLite database file size in bytes, or null if inaccessible.
+    pub db_size_bytes: Option<u64>,
+    /// Structured config from config.toml (None if file missing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub config: Option<ConfigInfo>,
+}
+
+/// Serializable subset of ChorusConfig for the settings UI.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ConfigInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    pub agent_template: AgentTemplateInfo,
+    pub logs: LogsInfo,
+    pub runtimes: Vec<RuntimeInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AgentTemplateInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dir: Option<String>,
+    pub default: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LogsInfo {
+    pub level: String,
+    pub rotation: String,
+    pub retention: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RuntimeInfo {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub acp_adaptor: Option<String>,
+}
+
 /// Minimal payload for the UI shell before full server-info polling (sidebar bootstrap).
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UiShellInfo {
@@ -95,6 +140,9 @@ pub struct AgentInfo {
 pub struct HumanInfo {
     /// OS / login username used as human id.
     pub name: String,
+    /// Optional user-chosen display name.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
 }
 
 impl From<(&Channel, bool)> for ChannelInfo {
@@ -133,6 +181,9 @@ impl From<&Agent> for AgentInfo {
 
 impl From<Human> for HumanInfo {
     fn from(human: Human) -> Self {
-        Self { name: human.name }
+        Self {
+            name: human.name,
+            display_name: human.display_name,
+        }
     }
 }

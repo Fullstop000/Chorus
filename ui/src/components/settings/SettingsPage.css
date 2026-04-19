@@ -1,0 +1,244 @@
+.settings-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  background: var(--color-card);
+  border-left: 1px solid var(--color-border);
+}
+
+.settings-page-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 24px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-page-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.settings-close {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  transition: background 150ms ease-in-out, color 150ms ease-in-out;
+}
+
+.settings-close:hover {
+  background: var(--color-secondary);
+  color: var(--color-foreground);
+}
+
+.settings-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+.settings-nav {
+  width: 160px;
+  flex-shrink: 0;
+  border-right: 1px solid var(--color-border);
+  padding: 12px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-nav-item {
+  display: block;
+  width: 100%;
+  padding: 8px 20px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-align: left;
+  color: var(--color-muted-foreground);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background 150ms ease-in-out, color 150ms ease-in-out;
+}
+
+.settings-nav-item:hover {
+  background: var(--color-accent);
+  color: var(--color-foreground);
+}
+
+.settings-nav-item.is-active {
+  color: var(--color-foreground);
+  font-weight: 600;
+  background: var(--color-secondary);
+  border-right: 2px solid var(--color-foreground);
+}
+
+.settings-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px 32px;
+}
+
+.settings-section {
+  max-width: 480px;
+}
+
+.settings-section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 20px;
+}
+
+.settings-section-title {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.settings-section-desc {
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+.settings-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+/* System info grid */
+.settings-info-grid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px 16px;
+  font-size: 13px;
+}
+
+.settings-info-label {
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.settings-info-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* Log viewer */
+.settings-log-container {
+  flex: 1;
+  min-height: 200px;
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+  padding: 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--color-foreground);
+}
+
+.settings-log-line:hover {
+  background: var(--color-accent);
+}
+
+.settings-log-line.log-error {
+  color: #c43c3c;
+}
+
+.settings-log-line.log-warn {
+  color: #b58b2b;
+}
+
+.settings-log-line.log-info {
+  color: var(--color-foreground);
+}
+
+.settings-log-line.log-debug {
+  color: var(--color-muted-foreground);
+}
+
+.settings-log-line.log-trace {
+  color: var(--color-muted-foreground);
+  opacity: 0.7;
+}
+
+.settings-log-empty {
+  color: var(--color-muted-foreground);
+  font-style: italic;
+  padding: 20px;
+  text-align: center;
+}
+
+/* Config display */
+.settings-config {
+  margin-top: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-config-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-config-heading {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 4px;
+}
+
+.settings-runtime-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.settings-runtime-name {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-config-missing {
+  margin-top: 24px;
+  font-size: 13px;
+  color: var(--color-muted-foreground);
+}
+
+.settings-config-missing code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--color-muted);
+  padding: 1px 4px;
+}

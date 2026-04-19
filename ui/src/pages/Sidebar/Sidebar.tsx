@@ -50,7 +50,7 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const { currentUser, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent } = useStore()
+  const { currentUser, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings } = useStore()
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
   const humans = useHumans()
@@ -68,6 +68,7 @@ export function Sidebar() {
   const [humansCollapsed, setHumansCollapsed] = useState(false)
 
   const channels = loadedChannels.filter(isVisibleSidebarChannel)
+  const currentHumanInfo = humans.find((h) => h.name === currentUser)
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -332,7 +333,7 @@ export function Sidebar() {
                   {h.name[0]?.toUpperCase()}
                 </div>
                 <span className="sidebar-item-main">
-                  <span className="sidebar-item-text">{h.name}</span>
+                  <span className="sidebar-item-text">{h.display_name ?? h.name}</span>
                   <span className="sidebar-item-meta">:: human</span>
                 </span>
                 {h.name === currentUser && <span className="you-badge">you</span>}
@@ -361,10 +362,10 @@ export function Sidebar() {
             {currentUser[0]?.toUpperCase() ?? '?'}
           </div>
           <div className="sidebar-footer-main">
-            <span className="sidebar-footer-name">{currentUser}</span>
+            <span className="sidebar-footer-name">{currentHumanInfo?.display_name ?? currentUser}</span>
             <span className="sidebar-footer-meta">[operator::active]</span>
           </div>
-          <button className="sidebar-footer-cog" type="button" aria-label="Open settings">
+          <button className="sidebar-footer-cog" type="button" aria-label="Open settings" onClick={() => setShowSettings(!showSettings)}>
             <Settings2 size={15} />
           </button>
         </div>

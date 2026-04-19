@@ -26,6 +26,8 @@ interface UIState {
   shellBootstrapped: boolean
   /** Global toast notifications */
   toasts: ToastEntry[]
+  /** Whether the full-page Settings view is open */
+  showSettings: boolean
 }
 
 interface UIActions {
@@ -44,6 +46,7 @@ interface UIActions {
   resetUserSession: () => void
   pushToast: (entry: ToastEntry) => void
   dismissToast: (id: string) => void
+  setShowSettings: (show: boolean) => void
 }
 
 export type UIStore = UIState & UIActions
@@ -56,6 +59,7 @@ const initialState: UIState = {
   inboxState: createInboxState(),
   shellBootstrapped: false,
   toasts: [],
+  showSettings: false,
 }
 
 export const useStore = create<UIStore>((set) => ({
@@ -146,6 +150,8 @@ export const useStore = create<UIStore>((set) => ({
 
   dismissToast: (id: string) =>
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
+
+  setShowSettings: (showSettings: boolean) => set({ showSettings }),
 }))
 
 export function pushErrorToast(err: unknown) {

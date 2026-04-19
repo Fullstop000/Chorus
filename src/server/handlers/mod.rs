@@ -25,12 +25,14 @@ use std::sync::{Arc, Mutex};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use serde::Deserialize;
 use tracing::debug;
 
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
+use crate::config::ChorusConfig;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::store::Store;
 use dto::ServerInfo;
@@ -112,6 +114,98 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
     Ok(Json(serde_json::to_value(info).unwrap()))
 }
 
+pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto::SystemInfo> {
+    let data_dir = state
+        .store
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| state.store.data_dir())
+        .to_string_lossy()
+        .into_owned();
+    let data_dir_path = state
+        .store
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| state.store.data_dir())
+        .to_path_buf();
+    let db_size_bytes = std::fs::metadata(state.store.db_path())
+        .map(|m| m.len())
+        .ok();
+
+    let config = ChorusConfig::load(&data_dir_path)
+        .ok()
+        .flatten()
+        .map(|cfg| {
+            let mut runtimes = Vec::new();
+            let runtime_entries = [
+                ("claude", &cfg.claude),
+                ("codex", &cfg.codex),
+                ("kimi", &cfg.kimi),
+                ("opencode", &cfg.opencode),
+            ];
+            for (name, rt) in runtime_entries {
+                if rt.binary_path.is_some() || rt.acp_adaptor.is_some() {
+                    runtimes.push(dto::RuntimeInfo {
+                        name: name.to_string(),
+                        binary_path: rt.binary_path.clone(),
+                        acp_adaptor: rt.acp_adaptor.clone(),
+                    });
+                }
+            }
+            dto::ConfigInfo {
+                machine_id: cfg.machine_id,
+                agent_template: dto::AgentTemplateInfo {
+                    dir: cfg.agent_template.dir,
+                    default: cfg.agent_template.default,
+                },
+                logs: dto::LogsInfo {
+                    level: cfg.logs.level,
+                    rotation: cfg.logs.rotation,
+                    retention: cfg.logs.retention,
+                },
+                runtimes,
+            }
+        });
+
+    Ok(Json(dto::SystemInfo {
+        data_dir,
+        db_size_bytes,
+        config,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct LogsParams {
+    /// Number of lines to return from the end of the log. Default 200, max 2000.
+    pub tail: Option<usize>,
+}
+
+pub async fn handle_logs(
+    State(state): State<AppState>,
+    axum::extract::Query(params): axum::extract::Query<LogsParams>,
+) -> ApiResult<serde_json::Value> {
+    let tail = params.tail.unwrap_or(200).min(2000);
+    let logs_dir = state
+        .store
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| state.store.data_dir())
+        .join("logs");
+    let log_path = logs_dir.join("chorus.log");
+    let lines = match tokio::fs::read_to_string(&log_path).await {
+        Ok(content) => {
+            let all: Vec<&str> = content.lines().collect();
+            let start = all.len().saturating_sub(tail);
+            all[start..]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        }
+        Err(_) => vec![],
+    };
+    Ok(Json(serde_json::json!({ "lines": lines })))
+}
+
 pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<dto::HumanInfo>> {
     let humans = state
         .store
@@ -121,6 +215,54 @@ pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<
         .map(dto::HumanInfo::from)
         .collect();
     Ok(Json(humans))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateHumanRequest {
+    /// `Some(v)` sets the display name; `null` clears it; omitting the field is a no-op.
+    #[serde(default, deserialize_with = "deser_optional_field")]
+    pub display_name: Option<Option<String>>,
+}
+
+/// Deserializer that maps a present JSON field (including `null`) to `Some(...)`,
+/// and a missing field (via `#[serde(default)]`) to `None`.
+fn deser_optional_field<'de, T, D>(de: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    T::deserialize(de).map(Some)
+}
+
+pub async fn handle_update_human(
+    State(state): State<AppState>,
+    Path(name): Path<String>,
+    Json(body): Json<UpdateHumanRequest>,
+) -> ApiResult<dto::HumanInfo> {
+    // Field absent → no-op: return current state without touching the DB.
+    let Some(raw) = body.display_name else {
+        let human = state
+            .store
+            .get_humans()
+            .map_err(internal_err)?
+            .into_iter()
+            .find(|h| h.name == name)
+            .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "human not found"))?;
+        return Ok(Json(dto::HumanInfo::from(human)));
+    };
+    let display_name = raw.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    let human = state
+        .store
+        .update_human_display_name(&name, display_name)
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.to_ascii_lowercase().contains("not found") {
+                app_err!(StatusCode::NOT_FOUND, "human not found")
+            } else {
+                app_err!(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
+            }
+        })?;
+    Ok(Json(dto::HumanInfo::from(human)))
 }
 
 pub async fn handle_list_runtime_statuses(

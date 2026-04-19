@@ -21,6 +21,35 @@ export interface ChannelInfo {
 
 export interface HumanInfo {
   name: string
+  display_name?: string
+}
+
+export interface SystemInfo {
+  data_dir: string
+  db_size_bytes: number | null
+  config?: ConfigInfo
+}
+
+export interface ConfigInfo {
+  machine_id?: string
+  agent_template: {
+    dir?: string
+    default: string
+  }
+  logs: {
+    level: string
+    rotation: string
+    retention: number
+  }
+  runtimes: {
+    name: string
+    binary_path?: string
+    acp_adaptor?: string
+  }[]
+}
+
+export interface LogsResponse {
+  lines: string[]
 }
 
 export interface ChannelMemberInfo {
@@ -117,6 +146,18 @@ function putDm(peerName: string): Promise<ChannelInfo> {
 
 export function listHumans(): Promise<HumanInfo[]> {
   return get('/api/humans')
+}
+
+export function updateHuman(name: string, body: { display_name?: string | null }): Promise<HumanInfo> {
+  return patch(`/api/humans/${encodeURIComponent(name)}`, body)
+}
+
+export function getSystemInfo(): Promise<SystemInfo> {
+  return get('/api/system-info')
+}
+
+export function getLogs(tail = 200): Promise<LogsResponse> {
+  return get(`/api/logs?tail=${tail}`)
 }
 
 export function getServerInfo(): Promise<ServerInfo> {

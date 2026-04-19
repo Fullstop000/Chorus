@@ -355,6 +355,25 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let started = Instant::now();
     let interactive = !yes && std::io::stdin().is_terminal();
+
+    // Resolve the data dir early so we can check for an existing config.
+    let data_dir_str_early = data_dir.clone().unwrap_or_else(default_data_dir);
+    let data_dir_early = chorus::agent::templates::expand_tilde(&data_dir_str_early);
+    let config_path = data_dir_early.join("config.toml");
+
+    // Skip setup when config already exists and the caller didn't explicitly
+    // force it (e.g. via --yes in an automated context). This makes
+    // `chorus setup` safe to call from scripts without wrapping it in a
+    // `[ ! -f config.toml ]` guard.
+    if config_path.exists() && !yes {
+        println!(
+            "  {} config already exists at {}  (re-run with --yes to overwrite)",
+            style(OK).green(),
+            style(config_path.display()).cyan()
+        );
+        return Ok(());
+    }
+
     if !yes && !interactive {
         println!(
             "  {} stdin is not a terminal; running in non-interactive mode.",

@@ -59,7 +59,8 @@ qa/cases/playwright/test-results/
 .claude/
 docs/plans
 docs/handoffs
+docs/superpowers
 .playwright-cli/
 node_modules
 .worktrees/
-.superpowers/
+.superpowers

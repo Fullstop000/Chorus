@@ -24,6 +24,7 @@ import type {
   TeamResponse,
 } from "../components/channels/types";
 import { TeamSettings } from "../components/channels/TeamSettings";
+import { SettingsPage } from "../components/settings/SettingsPage";
 import {
   Dialog,
   DialogContent,
@@ -37,6 +38,7 @@ export function MainPanel() {
     activeTab,
     currentChannel,
     currentAgent,
+    showSettings,
   } = useStore();
   const agents = useAgents();
   const humans = useHumans();
@@ -78,6 +80,14 @@ export function MainPanel() {
     setShowTeamSettings(false);
 
   }, [channelId]);
+
+  // Close transient panels when settings page opens to avoid them reappearing on close.
+  useEffect(() => {
+    if (showSettings) {
+      setShowMembersPanel(false);
+      setShowTeamSettings(false);
+    }
+  }, [showSettings]);
 
   useEffect(() => {
     if (!channelId) {
@@ -168,9 +178,13 @@ export function MainPanel() {
         flexDirection: "column",
         overflow: "hidden",
         background: "transparent",
-        paddingTop: 10,
+        paddingTop: showSettings ? 0 : 10,
       }}
     >
+      {showSettings ? (
+        <SettingsPage />
+      ) : (
+        <>
       {showHeader && (
         <>
           <ChatHeader
@@ -291,6 +305,8 @@ export function MainPanel() {
             </DialogHeader>
           </DialogContent>
         </Dialog>
+      )}
+        </>
       )}
     </div>
   );
