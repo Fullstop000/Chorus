@@ -877,7 +877,8 @@ mod tests {
         // populated on the resulting Error event.
         use std::cell::Cell;
         let called = Cell::new(false);
-        let line = r#"{"id":77,"error":{"code":-32600,"message":"no rollout found for thread id"}}"#;
+        let line =
+            r#"{"id":77,"error":{"code":-32600,"message":"no rollout found for thread id"}}"#;
         let ev = parse_line_with_registry(line, |id| {
             assert_eq!(id, 77);
             called.set(true);
@@ -915,7 +916,8 @@ mod tests {
     fn registry_forwards_notifications_unchanged() {
         // Notifications have no id and should follow the notification path
         // regardless of the registry closure (which should never be called).
-        let line = r#"{"method":"turn/completed","params":{"turn":{"id":"turn_x","status":"completed"}}}"#;
+        let line =
+            r#"{"method":"turn/completed","params":{"turn":{"id":"turn_x","status":"completed"}}}"#;
         let ev = parse_line_with_registry(line, |_| panic!("registry must not be called"));
         assert!(matches!(ev, AppServerEvent::TurnCompleted { .. }));
     }

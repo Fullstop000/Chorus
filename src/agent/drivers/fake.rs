@@ -31,7 +31,8 @@ pub struct FakeDriver {
     /// Sessions on the same agent share the event stream, so consumers see all
     /// events from one channel and route by `session_id` (on Completed) or
     /// by an external `run_id → session_id` map.
-    agent_instances: Arc<std::sync::Mutex<std::collections::HashMap<AgentKey, Arc<FakeAgentProcess>>>>,
+    agent_instances:
+        Arc<std::sync::Mutex<std::collections::HashMap<AgentKey, Arc<FakeAgentProcess>>>>,
 }
 
 /// Simulated runtime process shared by all sessions on one agent. Holds the
@@ -137,31 +138,18 @@ impl RuntimeDriver for FakeDriver {
 
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
         let proc = self.ensure_process(&key);
-        let handle = (self.handle_factory)(
-            key,
-            spec,
-            proc.events.clone(),
-            proc.event_tx.clone(),
-        );
+        let handle = (self.handle_factory)(key, spec, proc.events.clone(), proc.event_tx.clone());
         Ok(AttachResult {
             handle: Box::new(handle),
             events: proc.events.clone(),
         })
     }
 
-    async fn new_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-    ) -> anyhow::Result<AttachResult> {
+    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
         let proc = self.ensure_process(&key);
         let session_id = proc.mint_session_id();
-        let mut handle = (self.handle_factory)(
-            key,
-            spec,
-            proc.events.clone(),
-            proc.event_tx.clone(),
-        );
+        let mut handle =
+            (self.handle_factory)(key, spec, proc.events.clone(), proc.event_tx.clone());
         // Pre-bind the session id so the handle behaves as if start() already
         // resumed onto this specific id. A future step/test may flip to Active
         // explicitly via start; for now, surface the id through session_id().
@@ -179,12 +167,8 @@ impl RuntimeDriver for FakeDriver {
         session_id: SessionId,
     ) -> anyhow::Result<AttachResult> {
         let proc = self.ensure_process(&key);
-        let mut handle = (self.handle_factory)(
-            key,
-            spec,
-            proc.events.clone(),
-            proc.event_tx.clone(),
-        );
+        let mut handle =
+            (self.handle_factory)(key, spec, proc.events.clone(), proc.event_tx.clone());
         handle.preassign_session(session_id);
         Ok(AttachResult {
             handle: Box::new(handle),
@@ -842,15 +826,24 @@ mod tests {
         // Prompt each in sequence. Within each prompt the default fake
         // response emits TurnEnd + Completed carrying the session id.
         s1.handle
-            .prompt(PromptReq { text: "s1 prompt".into(), attachments: vec![] })
+            .prompt(PromptReq {
+                text: "s1 prompt".into(),
+                attachments: vec![],
+            })
             .await
             .unwrap();
         s2.handle
-            .prompt(PromptReq { text: "s2 prompt".into(), attachments: vec![] })
+            .prompt(PromptReq {
+                text: "s2 prompt".into(),
+                attachments: vec![],
+            })
             .await
             .unwrap();
         s3.handle
-            .prompt(PromptReq { text: "s3 prompt".into(), attachments: vec![] })
+            .prompt(PromptReq {
+                text: "s3 prompt".into(),
+                attachments: vec![],
+            })
             .await
             .unwrap();
 

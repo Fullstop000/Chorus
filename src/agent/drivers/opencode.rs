@@ -230,11 +230,7 @@ impl RuntimeDriver for OpencodeDriver {
         })
     }
 
-    async fn new_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-    ) -> anyhow::Result<AttachResult> {
+    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
         let proc = self.ensure_process(&key);
         if !proc.started.load(Ordering::SeqCst) {
             bail!(
@@ -432,12 +428,18 @@ impl OpencodeAgentProcess {
             guard.clone()
         };
         let tx = tx.context("opencode: stdin not available — child not started")?;
-        tx.send(line).await.context("opencode: stdin channel closed")
+        tx.send(line)
+            .await
+            .context("opencode: stdin channel closed")
     }
 
     /// Register a pending response classifier under `id`.
     fn register_pending(&self, id: u64, kind: PendingKind) {
-        self.shared.lock().unwrap().pending_requests.insert(id, kind);
+        self.shared
+            .lock()
+            .unwrap()
+            .pending_requests
+            .insert(id, kind);
     }
 
     /// Send `session/new` and wait for the minted session id.
@@ -691,7 +693,9 @@ impl AgentSessionHandle for OpencodeHandle {
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
         let cancel_info = match &self.local_state {
-            AgentState::PromptInFlight { run_id, session_id } => Some((*run_id, session_id.clone())),
+            AgentState::PromptInFlight { run_id, session_id } => {
+                Some((*run_id, session_id.clone()))
+            }
             _ => None,
         };
         if let Some((run_id, session_id)) = cancel_info {
@@ -956,11 +960,7 @@ impl OpencodeHandle {
                 }
             }
         });
-        self.proc
-            .reader_handles
-            .lock()
-            .unwrap()
-            .push(stdin_handle);
+        self.proc.reader_handles.lock().unwrap().push(stdin_handle);
 
         // Stdout reader task.
         let key = self.key.clone();
@@ -989,14 +989,7 @@ impl OpencodeHandle {
                 // prompt responses by the shared parser.
                 let classified = classify_line(&line, &shared);
 
-                dispatch_line(
-                    classified,
-                    &key,
-                    &event_tx,
-                    &shared,
-                    &stdin_tx_for_reader,
-                )
-                .await;
+                dispatch_line(classified, &key, &event_tx, &shared, &stdin_tx_for_reader).await;
             }
 
             // EOF — runtime exited. Flush every session that had an
@@ -1028,11 +1021,7 @@ impl OpencodeHandle {
                 state: AgentState::Closed,
             });
         });
-        self.proc
-            .reader_handles
-            .lock()
-            .unwrap()
-            .push(stdout_handle);
+        self.proc.reader_handles.lock().unwrap().push(stdout_handle);
 
         // Stderr reader task.
         let key_err = self.key.clone();
@@ -1052,11 +1041,7 @@ impl OpencodeHandle {
                 }
             }
         });
-        self.proc
-            .reader_handles
-            .lock()
-            .unwrap()
-            .push(stderr_handle);
+        self.proc.reader_handles.lock().unwrap().push(stderr_handle);
 
         {
             let mut guard = self.proc.child.lock().unwrap();
@@ -1127,8 +1112,8 @@ fn classify_line(line: &str, shared: &Arc<Mutex<SharedReaderState>>) -> Classifi
         Err(_) => return ClassifiedFrame::PassThrough(AcpParsed::Unknown),
     };
 
-    let is_response = raw.get("id").is_some()
-        && (raw.get("result").is_some() || raw.get("error").is_some());
+    let is_response =
+        raw.get("id").is_some() && (raw.get("result").is_some() || raw.get("error").is_some());
     if !is_response {
         return ClassifiedFrame::PassThrough(acp_protocol::parse_line(line));
     }
@@ -1175,7 +1160,10 @@ fn classify_line(line: &str, shared: &Arc<Mutex<SharedReaderState>>) -> Classifi
             requested_session_id,
             responder,
         },
-        PendingKind::Prompt { session_id: s, run_id } => ClassifiedFrame::PromptResponse {
+        PendingKind::Prompt {
+            session_id: s,
+            run_id,
+        } => ClassifiedFrame::PromptResponse {
             session_id: s,
             run_id,
         },
@@ -1214,9 +1202,7 @@ async fn dispatch_line(
             let sid = match session_id {
                 Some(s) => s,
                 None => {
-                    warn!(
-                        "opencode: session/new response omitted sessionId (spec violation)"
-                    );
+                    warn!("opencode: session/new response omitted sessionId (spec violation)");
                     match responder {
                         Some(tx) => {
                             let _ = tx.send(Err(anyhow!(
@@ -1316,8 +1302,7 @@ async fn dispatch_line(
                     },
                 });
 
-                let req =
-                    acp_protocol::build_session_prompt_request(prompt_id, &sid, &prompt_text);
+                let req = acp_protocol::build_session_prompt_request(prompt_id, &sid, &prompt_text);
                 let _ = stdin_tx.try_send(req);
             }
         }
@@ -1736,14 +1721,7 @@ mod tests {
             let guard = proc.stdin_tx.lock().unwrap();
             guard.clone().expect("stdin present")
         };
-        dispatch_line(
-            frame,
-            &proc.key,
-            &proc.event_tx,
-            &proc.shared,
-            &stdin_tx,
-        )
-        .await;
+        dispatch_line(frame, &proc.key, &proc.event_tx, &proc.shared, &stdin_tx).await;
     }
 
     #[tokio::test]
@@ -1757,12 +1735,10 @@ mod tests {
         // response the test will fulfill by feeding back a response line.
         let proc_a = proc.clone();
         let spec_a = test_spec();
-        let new_a =
-            tokio::spawn(async move { proc_a.request_new_session(&spec_a).await });
+        let new_a = tokio::spawn(async move { proc_a.request_new_session(&spec_a).await });
         let proc_b = proc.clone();
         let spec_b = test_spec();
-        let new_b =
-            tokio::spawn(async move { proc_b.request_new_session(&spec_b).await });
+        let new_b = tokio::spawn(async move { proc_b.request_new_session(&spec_b).await });
 
         // Collect the two outgoing session/new requests and extract their ids.
         let line_a = stdin_rx.recv().await.expect("first session/new on stdin");
@@ -1777,12 +1753,10 @@ mod tests {
         assert!(id_a >= 3 && id_b >= 3, "post-handshake ids must be >= 3");
 
         // Feed responses back through the reader path.
-        let resp_a = format!(
-            r#"{{"jsonrpc":"2.0","id":{id_a},"result":{{"sessionId":"sess-A"}}}}"#
-        );
-        let resp_b = format!(
-            r#"{{"jsonrpc":"2.0","id":{id_b},"result":{{"sessionId":"sess-B"}}}}"#
-        );
+        let resp_a =
+            format!(r#"{{"jsonrpc":"2.0","id":{id_a},"result":{{"sessionId":"sess-A"}}}}"#);
+        let resp_b =
+            format!(r#"{{"jsonrpc":"2.0","id":{id_b},"result":{{"sessionId":"sess-B"}}}}"#);
         feed_line(&proc, &resp_a).await;
         feed_line(&proc, &resp_b).await;
 
@@ -1802,11 +1776,8 @@ mod tests {
 
         let proc_1 = proc.clone();
         let spec = test_spec();
-        let resume = tokio::spawn(async move {
-            proc_1
-                .request_load_session(&spec, "stored-xyz")
-                .await
-        });
+        let resume =
+            tokio::spawn(async move { proc_1.request_load_session(&spec, "stored-xyz").await });
 
         let line = stdin_rx.recv().await.expect("session/load on stdin");
         let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
@@ -1850,11 +1821,10 @@ mod tests {
         // Drive new_session on the existing process via the driver API.
         let driver_for_task = OpencodeDriver;
         let key_for_task = key.clone();
-        let new_task = tokio::spawn(async move {
-            driver_for_task
-                .new_session(key_for_task, test_spec())
-                .await
-        });
+        let new_task =
+            tokio::spawn(
+                async move { driver_for_task.new_session(key_for_task, test_spec()).await },
+            );
 
         // Fulfil the session/new response.
         let line = stdin_rx.recv().await.unwrap();
@@ -2023,7 +1993,10 @@ mod tests {
             id_b, reserved,
             "secondary new_session id must not collide with reserved deferred-prompt id"
         );
-        assert_ne!(id_a, id_b, "two concurrent new_session calls must use distinct ids");
+        assert_ne!(
+            id_a, id_b,
+            "two concurrent new_session calls must use distinct ids"
+        );
 
         // Drain the futures cleanly.
         let resp_a =
@@ -2064,8 +2037,7 @@ mod tests {
     async fn session_attached_emitted_exactly_once_per_secondary_new_session() {
         use crate::agent::drivers::StartOpts;
 
-        let (proc, mut stdin_rx, mut event_rx) =
-            build_test_process("agent-attach-once");
+        let (proc, mut stdin_rx, mut event_rx) = build_test_process("agent-attach-once");
 
         // Full secondary path: `request_new_session` drives the session/new
         // RPC (whose response arrives via the reader path), then construct a
@@ -2073,10 +2045,12 @@ mod tests {
         // the driver's `new_session` entrypoint produces.
         let proc_c = proc.clone();
         let spec = test_spec();
-        let call =
-            tokio::spawn(async move { proc_c.request_new_session(&spec).await });
+        let call = tokio::spawn(async move { proc_c.request_new_session(&spec).await });
 
-        let line = stdin_rx.recv().await.expect("secondary session/new on stdin");
+        let line = stdin_rx
+            .recv()
+            .await
+            .expect("secondary session/new on stdin");
         let req: serde_json::Value = serde_json::from_str(&line).unwrap();
         let id = req["id"].as_u64().unwrap();
         assert_eq!(req["method"], "session/new");
@@ -2085,8 +2059,7 @@ mod tests {
         // the NewSessionResponse secondary arm. Under the fix, the reader
         // must NOT emit SessionAttached here.
         let sid = "sess-once";
-        let resp =
-            format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"{sid}"}}}}"#);
+        let resp = format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"{sid}"}}}}"#);
         feed_line(&proc, &resp).await;
 
         let got = call.await.unwrap().unwrap();
@@ -2113,19 +2086,13 @@ mod tests {
         // `sid`. Before the fix this would be 2; with the fix it's 1.
         let mut attached = 0;
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(150),
-                event_rx.recv(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(150), event_rx.recv()).await
             {
-                Ok(Some(DriverEvent::SessionAttached { session_id, .. }))
-                    if session_id == sid =>
-                {
+                Ok(Some(DriverEvent::SessionAttached { session_id, .. })) if session_id == sid => {
                     attached += 1;
                 }
                 Ok(Some(_)) => {} // ignore other events
-                _ => break,        // timeout or channel closed
+                _ => break,       // timeout or channel closed
             }
         }
         assert_eq!(
@@ -2182,8 +2149,10 @@ mod tests {
         let secondary_run = RunId::new_v4();
         {
             let mut s = proc.shared.lock().unwrap();
-            s.sessions
-                .insert(bootstrap_sid.clone(), SessionRuntimeState::active(&bootstrap_sid));
+            s.sessions.insert(
+                bootstrap_sid.clone(),
+                SessionRuntimeState::active(&bootstrap_sid),
+            );
             let mut sec = SessionRuntimeState::active(&secondary_sid);
             sec.run_id = Some(secondary_run);
             sec.agent_state = AgentState::PromptInFlight {
@@ -2306,11 +2275,17 @@ mod tests {
                         matches!(error, AgentError::Protocol(_)),
                         "expected AgentError::Protocol, got {error:?}"
                     );
-                    assert_eq!(run_id, uuid::Uuid::nil(), "bootstrap failure carries nil RunId");
+                    assert_eq!(
+                        run_id,
+                        uuid::Uuid::nil(),
+                        "bootstrap failure carries nil RunId"
+                    );
                     saw_failed = true;
                 }
                 Ok(Some(DriverEvent::SessionAttached { .. })) => {
-                    panic!("must NOT emit SessionAttached for a spec-violating session/new response");
+                    panic!(
+                        "must NOT emit SessionAttached for a spec-violating session/new response"
+                    );
                 }
                 Ok(Some(DriverEvent::Lifecycle {
                     state: AgentState::Active { .. },
@@ -2322,7 +2297,10 @@ mod tests {
                 _ => break,
             }
         }
-        assert!(saw_failed, "bootstrap path must surface AgentError::Protocol via Failed");
+        assert!(
+            saw_failed,
+            "bootstrap path must surface AgentError::Protocol via Failed"
+        );
 
         // Shared state must not have seeded a bogus session entry.
         let s = proc.shared.lock().unwrap();

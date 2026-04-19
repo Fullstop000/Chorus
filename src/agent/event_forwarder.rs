@@ -326,13 +326,7 @@ pub(super) fn spawn_event_forwarder(
                 } => {
                     if let Some(buf) = pending_thinking.remove(session_id) {
                         if !buf.is_empty() {
-                            flush_thinking(
-                                &buf,
-                                key,
-                                &trace_store,
-                                &trace_tx,
-                                &activity_logs,
-                            );
+                            flush_thinking(&buf, key, &trace_store, &trace_tx, &activity_logs);
                         }
                     }
                     if let Some(buf) = pending_text.remove(session_id) {

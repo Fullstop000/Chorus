@@ -413,7 +413,13 @@ async fn codex_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Re
         secondary.close().await?;
 
         let fresh_key = "codex-multi-bot-fresh".to_string();
-        seed_agent(&env.store, &fresh_key, "Codex Multi Bot Fresh", "codex", &model)?;
+        seed_agent(
+            &env.store,
+            &fresh_key,
+            "Codex Multi Bot Fresh",
+            "codex",
+            &model,
+        )?;
         let fresh = driver.attach(fresh_key.clone(), spec.clone()).await?;
         let mut fresh_rx = fresh.events.subscribe();
         let mut fresh_handle = fresh.handle;
@@ -734,21 +740,16 @@ async fn codex_multi_session_resume_preserves_thread_id() -> anyhow::Result<()> 
             // Wait for the turn to complete so the rollout gets flushed to
             // disk — otherwise `thread/resume` on a fresh attach trips
             // "no rollout found for thread id".
-            let completed_at =
-                tokio::time::Instant::now() + Duration::from_secs(90);
+            let completed_at = tokio::time::Instant::now() + Duration::from_secs(90);
             loop {
                 let remaining = completed_at.saturating_duration_since(tokio::time::Instant::now());
                 if remaining.is_zero() {
-                    return Err(anyhow!(
-                        "timed out waiting for Completed on initial turn"
-                    ));
+                    return Err(anyhow!("timed out waiting for Completed on initial turn"));
                 }
                 match timeout(remaining, rx.recv()).await {
                     Ok(Some(DriverEvent::Completed { .. })) => break,
                     Ok(Some(DriverEvent::Failed { error, .. })) => {
-                        return Err(anyhow!(
-                            "turn failed while seeding rollout: {error:?}"
-                        ));
+                        return Err(anyhow!("turn failed while seeding rollout: {error:?}"));
                     }
                     Ok(Some(_)) => continue,
                     Ok(None) => {
@@ -908,7 +909,13 @@ async fn claude_multi_session_resume_preserves_session_id() -> anyhow::Result<()
     let model = std::env::var("CHORUS_TEST_CLAUDE_MODEL").unwrap_or_else(|_| "sonnet".to_string());
     let env = make_live_env().await?;
     let agent_key = "claude-resume-bot".to_string();
-    seed_agent(&env.store, &agent_key, "Claude Resume Bot", "claude", &model)?;
+    seed_agent(
+        &env.store,
+        &agent_key,
+        "Claude Resume Bot",
+        "claude",
+        &model,
+    )?;
     let spec = make_spec("Claude Resume Bot", &model, &env);
 
     let driver = ClaudeDriver;
@@ -1027,4 +1034,3 @@ mod harness_unit_tests {
         assert!(msg.contains("timed out"), "got: {msg}");
     }
 }
-

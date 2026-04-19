@@ -686,10 +686,7 @@ impl CodexHandle {
     /// Issue `thread/start` or `thread/resume` on the shared stdin and
     /// block until the response lands. Returns the thread id the server
     /// assigned (or confirmed, for resume).
-    async fn start_or_resume_thread(
-        &self,
-        resume_id: Option<String>,
-    ) -> anyhow::Result<String> {
+    async fn start_or_resume_thread(&self, resume_id: Option<String>) -> anyhow::Result<String> {
         let req_id = self.process.alloc_request_id();
         let (method, req_line) = match &resume_id {
             Some(tid) => (
@@ -874,10 +871,7 @@ impl AgentSessionHandle for CodexHandle {
             .send_line(turn_req)
             .context("codex: stdin channel closed")?;
 
-        self.state = AgentState::PromptInFlight {
-            run_id,
-            session_id,
-        };
+        self.state = AgentState::PromptInFlight { run_id, session_id };
         Ok(run_id)
     }
 
@@ -961,9 +955,10 @@ impl AgentSessionHandle for CodexHandle {
             // Don't tear down while a thread/start or thread/resume response
             // is pending — the caller is awaiting a new session that would
             // lose its backing process if we pruned now.
-            let no_pending_session_creation = !s.pending_requests.values().any(|pr| {
-                pr.method == "thread/start" || pr.method == "thread/resume"
-            });
+            let no_pending_session_creation = !s
+                .pending_requests
+                .values()
+                .any(|pr| pr.method == "thread/start" || pr.method == "thread/resume");
             all_closed && no_pending_session_creation
         };
 
@@ -993,10 +988,7 @@ impl AgentSessionHandle for CodexHandle {
 /// Consume lines from the child process's stdout and dispatch events to the
 /// shared fan-out. Owns response classification (via the request registry)
 /// and per-session state transitions.
-async fn reader_loop(
-    proc: Arc<CodexAgentProcess>,
-    stdout: Box<dyn AsyncBufRead + Send + Unpin>,
-) {
+async fn reader_loop(proc: Arc<CodexAgentProcess>, stdout: Box<dyn AsyncBufRead + Send + Unpin>) {
     let mut lines = stdout.lines();
 
     let emit = |ev: DriverEvent| {
@@ -1321,10 +1313,7 @@ async fn handle_event<F: Fn(DriverEvent)>(
                     .and_then(|id| s.item_to_thread.remove(id))
                     .or_else(|| s.last_in_flight_thread())
                     .unwrap_or_default();
-                let run_id = s
-                    .sessions
-                    .get(&thread_id)
-                    .and_then(|sess| sess.run_id);
+                let run_id = s.sessions.get(&thread_id).and_then(|sess| sess.run_id);
                 (run_id, thread_id)
             };
             if let Some(run_id) = run_id {
@@ -1391,10 +1380,7 @@ async fn handle_event<F: Fn(DriverEvent)>(
 /// Resolve the `(run_id, thread_id)` pair for an item-keyed event. First
 /// consults `item_to_thread`; falls back to the most-recently-started
 /// in-flight turn's thread.
-fn resolve_item_target(
-    proc: &CodexAgentProcess,
-    item_id: &str,
-) -> (Option<RunId>, String) {
+fn resolve_item_target(proc: &CodexAgentProcess, item_id: &str) -> (Option<RunId>, String) {
     let s = proc.shared.lock().unwrap();
     let thread_id = s
         .item_to_thread
@@ -1402,10 +1388,7 @@ fn resolve_item_target(
         .cloned()
         .or_else(|| s.last_in_flight_thread())
         .unwrap_or_default();
-    let run_id = s
-        .sessions
-        .get(&thread_id)
-        .and_then(|sess| sess.run_id);
+    let run_id = s.sessions.get(&thread_id).and_then(|sess| sess.run_id);
     (run_id, thread_id)
 }
 
@@ -1670,7 +1653,8 @@ mod multisession_tests {
         // and drives initialize → response → initialized. In tests we
         // short-circuit that: the simulator task ignores any `initialize`
         // line anyway.
-        proc.spawned.store(true, std::sync::atomic::Ordering::SeqCst);
+        proc.spawned
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         {
             let mut s = proc.shared.lock().unwrap();
             s.initialized = true;

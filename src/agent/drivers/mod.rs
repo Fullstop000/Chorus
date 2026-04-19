@@ -613,11 +613,7 @@ pub trait RuntimeDriver: Send + Sync + 'static {
     /// [`AgentSessionHandle`] for the spawned session. Drivers that support
     /// multiplexing reuse the existing process; drivers that do not should
     /// return an error (the caller may then fall back to a new `attach`).
-    async fn new_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-    ) -> anyhow::Result<AttachResult>;
+    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult>;
 
     /// Resume a previously-stored session. Same lifecycle as `new_session` but
     /// the returned handle is attached to `session_id` rather than a freshly

@@ -1007,7 +1007,9 @@ mod tests {
                         AcpUpdateItem::SessionInit { session_id } => {
                             assert_eq!(session_id, "s1", "kind {kind} session_id mismatch")
                         }
-                        other => panic!("expected SessionInit at [0] for kind {kind}, got {other:?}"),
+                        other => {
+                            panic!("expected SessionInit at [0] for kind {kind}, got {other:?}")
+                        }
                     }
                 }
                 other => panic!("expected SessionUpdate for kind {kind}, got {other:?}"),

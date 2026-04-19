@@ -455,9 +455,7 @@ enum PendingRequest {
     /// First-session warm-up path: session/new|load that the existing start()
     /// flow sent synchronously without a oneshot (id is hardcoded to 2). Same
     /// outcomes as SessionNew/SessionLoad but drives reader state directly.
-    WarmupSession {
-        expected_session_id: Option<String>,
-    },
+    WarmupSession { expected_session_id: Option<String> },
     /// Reservation slot for the bootstrap's deferred initial prompt at id 3.
     /// Inserted by `spawn_child` before any response can land so that
     /// [`alloc_id`] returning id >=4 for concurrent `new_session` callers
@@ -1533,7 +1531,8 @@ fn handle_session_update(
                     .or_insert_with(|| SessionState::new(&session_id));
             }
             AcpUpdateItem::Thinking { text } => {
-                if let (Some(sid), Some(run_id)) = pick_session_and_run(key, shared, sid_opt.as_deref())
+                if let (Some(sid), Some(run_id)) =
+                    pick_session_and_run(key, shared, sid_opt.as_deref())
                 {
                     let _ = event_tx.try_send(DriverEvent::Output {
                         key: key.clone(),
@@ -1544,7 +1543,8 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::Text { text } => {
-                if let (Some(sid), Some(run_id)) = pick_session_and_run(key, shared, sid_opt.as_deref())
+                if let (Some(sid), Some(run_id)) =
+                    pick_session_and_run(key, shared, sid_opt.as_deref())
                 {
                     let _ = event_tx.try_send(DriverEvent::Output {
                         key: key.clone(),
@@ -2198,7 +2198,10 @@ mod tests {
         // `handle_response` can replace/remove it deterministically.
         let s = shared.lock().unwrap();
         assert!(
-            matches!(s.pending.get(&3), Some(PendingRequest::WarmupPromptReserved)),
+            matches!(
+                s.pending.get(&3),
+                Some(PendingRequest::WarmupPromptReserved)
+            ),
             "id 3 pending slot must still hold WarmupPromptReserved"
         );
     }
@@ -2234,10 +2237,9 @@ mod tests {
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
         let key: AgentKey = "agent-w-noprompt".to_string();
-        let resp: Value = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-0"}}"#,
-        )
-        .unwrap();
+        let resp: Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-0"}}"#)
+                .unwrap();
         handle_response(&key, &event_tx, &shared, &stdin_tx, &resp).await;
 
         let s = shared.lock().unwrap();
@@ -2277,10 +2279,9 @@ mod tests {
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(8);
 
         let key: AgentKey = "agent-w-prompt".to_string();
-        let resp: Value = serde_json::from_str(
-            r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#,
-        )
-        .unwrap();
+        let resp: Value =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
+                .unwrap();
         handle_response(&key, &event_tx, &shared, &stdin_tx, &resp).await;
 
         // Reservation replaced with real Prompt entry.

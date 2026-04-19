@@ -219,8 +219,7 @@ pub struct ClaudeDriver;
 /// `resume_session` calls on the same key so every child under one agent
 /// writes into the same [`EventStreamHandle`].
 fn agent_instances() -> &'static Mutex<HashMap<AgentKey, Arc<ClaudeAgentProcess>>> {
-    static INSTANCES: OnceLock<Mutex<HashMap<AgentKey, Arc<ClaudeAgentProcess>>>> =
-        OnceLock::new();
+    static INSTANCES: OnceLock<Mutex<HashMap<AgentKey, Arc<ClaudeAgentProcess>>>> = OnceLock::new();
     INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1383,9 +1382,7 @@ mod tests {
 
         let app = Router::new().route(
             "/admin/pair",
-            post(|| async {
-                axum::Json(serde_json::json!({"token": "tok-test"}))
-            }),
+            post(|| async { axum::Json(serde_json::json!({"token": "tok-test"})) }),
         );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1447,10 +1444,7 @@ mod tests {
         agent_instances().lock().unwrap().remove(&key);
 
         let a1 = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let a2 = driver
-            .new_session(key.clone(), test_spec())
-            .await
-            .unwrap();
+        let a2 = driver.new_session(key.clone(), test_spec()).await.unwrap();
 
         // Both `EventStreamHandle`s point at the same `Arc<EventFanOut>`.
         assert!(
@@ -1479,10 +1473,7 @@ mod tests {
         let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
         let factory = install_fake_factory(&driver.ensure_process(&key));
 
-        let new_sess = driver
-            .new_session(key.clone(), spec.clone())
-            .await
-            .unwrap();
+        let new_sess = driver.new_session(key.clone(), spec.clone()).await.unwrap();
 
         let mut h1 = attach.handle;
         let mut h2 = new_sess.handle;
@@ -1743,8 +1734,14 @@ mod tests {
 
         // Start both handles — each spawns its own (fake) `claude -p` child
         // and bumps `live_sessions`. After this, live_sessions == 2.
-        bootstrap_handle.start(StartOpts::default(), None).await.unwrap();
-        secondary_handle.start(StartOpts::default(), None).await.unwrap();
+        bootstrap_handle
+            .start(StartOpts::default(), None)
+            .await
+            .unwrap();
+        secondary_handle
+            .start(StartOpts::default(), None)
+            .await
+            .unwrap();
 
         assert_eq!(
             *proc.live_sessions.lock().unwrap(),
