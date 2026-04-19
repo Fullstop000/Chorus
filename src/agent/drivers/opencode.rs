@@ -77,6 +77,7 @@ pub struct OpencodeDriver;
 ///
 /// Kept as a local enum — mirrored identically in `kimi.rs` — so that every
 /// `if bootstrap { ... }` branch reads as an intent rather than a boolean.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HandleRole {
     Bootstrap,
     Secondary,
