@@ -24,6 +24,15 @@ export interface HumanInfo {
   display_name?: string
 }
 
+export interface SystemInfo {
+  data_dir: string
+  db_size_bytes: number | null
+}
+
+export interface LogsResponse {
+  lines: string[]
+}
+
 export interface ChannelMemberInfo {
   memberName: string
   memberType: 'human' | 'agent'
@@ -122,6 +131,14 @@ export function listHumans(): Promise<HumanInfo[]> {
 
 export function updateHuman(name: string, body: { display_name?: string | null }): Promise<HumanInfo> {
   return patch(`/api/humans/${encodeURIComponent(name)}`, body)
+}
+
+export function getSystemInfo(): Promise<SystemInfo> {
+  return get('/api/system-info')
+}
+
+export function getLogs(tail = 200): Promise<LogsResponse> {
+  return get(`/api/logs?tail=${tail}`)
 }
 
 export function getServerInfo(): Promise<ServerInfo> {
