@@ -482,64 +482,57 @@ impl RuntimeDriver for KimiDriver {
         Ok(vec![])
     }
 
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        // Stale-gate the eviction: `get_or_evict_stale` already evicts cores
-        // whose writer task exited (`is_stale()` true). If it returns `Some`,
-        // the core is live — reuse it rather than orphaning its child + readers.
-        //
-        // Reuse semantics: the caller gets a fresh handle wired to the
-        // existing fan-out + shared state, so any live sessions on the core
-        // keep running. `start()` on the new handle calls `ensure_started()`
-        // which is a fast no-op on a live core (started flag already set).
-        if let Some(existing) = registry().get_or_evict_stale(&key) {
-            let events = existing.events.clone();
-            let handle = KimiHandle::new(existing, None);
-            return Ok(AttachResult {
-                handle: Box::new(handle),
-                events,
-            });
-        }
-
-        let (events, event_tx) = EventFanOut::new();
-        let core = KimiAgentCore::new(key.clone(), spec.clone(), events.clone(), event_tx);
-        registry().insert(key.clone(), core.clone());
-
-        let handle = KimiHandle::new(core, None);
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
-    }
-
-    async fn new_session(&self, key: AgentKey, _spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        let core = registry().get_or_evict_stale(&key).ok_or_else(|| {
-            anyhow!("kimi: new_session on unknown agent {key} — call attach first")
-        })?;
-
+    /// Native `open_session`: allocates a [`KimiHandle`] and stores the resume
+    /// intent from `intent`. Reuses an existing live core for `key`, or builds
+    /// a fresh one — removing the "must call attach first" requirement from
+    /// `new_session` / `resume_session`.
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<AttachResult> {
+        // Reuse a live core if one exists (stale entries are evicted).
+        // A fresh core is created and registered when none is present.
+        let core = if let Some(existing) = registry().get_or_evict_stale(&key) {
+            existing
+        } else {
+            let (events, event_tx) = EventFanOut::new();
+            let fresh = KimiAgentCore::new(key.clone(), spec.clone(), events, event_tx);
+            registry().insert(key.clone(), fresh.clone());
+            fresh
+        };
         let events = core.events.clone();
-        let handle = KimiHandle::new(core, None);
+        let preassigned = match intent {
+            SessionIntent::New => None,
+            SessionIntent::Resume(id) => Some(id),
+        };
+        let handle = KimiHandle::new(core, preassigned);
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
         })
     }
 
+    /// Compat shim — delegates to `open_session(New)`.
+    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
+        self.open_session(key, spec, SessionIntent::New).await
+    }
+
+    /// Compat shim — delegates to `open_session(New)`.
+    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
+        self.open_session(key, spec, SessionIntent::New).await
+    }
+
+    /// Compat shim — delegates to `open_session(Resume(session_id))`.
     async fn resume_session(
         &self,
         key: AgentKey,
-        _spec: AgentSpec,
+        spec: AgentSpec,
         session_id: SessionId,
     ) -> anyhow::Result<AttachResult> {
-        let core = registry().get_or_evict_stale(&key).ok_or_else(|| {
-            anyhow!("kimi: resume_session on unknown agent {key} — call attach first")
-        })?;
-
-        let events = core.events.clone();
-        let handle = KimiHandle::new(core, Some(session_id));
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
+        self.open_session(key, spec, SessionIntent::Resume(session_id))
+            .await
     }
 }
 
@@ -750,55 +743,18 @@ impl KimiHandle {
             .ok_or_else(|| anyhow!("kimi: shared reader state missing"))?;
         Ok((stdin_tx, shared, pairing_token))
     }
-}
 
-impl Drop for KimiHandle {
-    fn drop(&mut self) {
-        // Actual child termination is handled by KimiAgentCore::drop when
-        // the last Arc is released. We do not signal the child here — a
-        // handle may be dropped while sibling handles still hold Arcs to
-        // the core. Let the Arc reference count decide when to terminate.
-    }
-}
-
-#[async_trait]
-impl AgentSessionHandle for KimiHandle {
-    fn key(&self) -> &AgentKey {
-        &self.core.key
-    }
-
-    fn session_id(&self) -> Option<&str> {
-        match &self.state {
-            AgentState::Active { session_id } => Some(session_id.as_str()),
-            AgentState::PromptInFlight { session_id, .. } => Some(session_id.as_str()),
-            _ => self
-                .session_id
-                .as_deref()
-                .or(self.preassigned_session_id.as_deref()),
-        }
-    }
-
-    fn state(&self) -> AgentState {
-        self.state.clone()
-    }
-
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
+    /// Core session-startup logic. Reads `self.preassigned_session_id` (set by
+    /// `open_session(Resume)` or the `start` compat shim) to determine whether
+    /// to send `session/new` or `session/load`.
+    async fn run_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
         self.state = AgentState::Starting;
         self.emit(DriverEvent::Lifecycle {
             key: self.core.key.clone(),
             state: AgentState::Starting,
         });
 
-        // Apply resume override if present in opts.
-        if let Some(id) = opts.resume_session_id.clone() {
-            self.preassigned_session_id = Some(id);
-        }
-
-        // Lazy, race-safe bootstrap. The first handle to call start() spawns
+        // Lazy, race-safe bootstrap. The first handle to call run_inner() spawns
         // the child and sends `initialize`; all subsequent handles (including
         // concurrent ones) wait for the race-winner and then proceed directly
         // to session minting below.
@@ -843,6 +799,59 @@ impl AgentSessionHandle for KimiHandle {
         }
 
         Ok(())
+    }
+}
+
+impl Drop for KimiHandle {
+    fn drop(&mut self) {
+        // Actual child termination is handled by KimiAgentCore::drop when
+        // the last Arc is released. We do not signal the child here — a
+        // handle may be dropped while sibling handles still hold Arcs to
+        // the core. Let the Arc reference count decide when to terminate.
+    }
+}
+
+#[async_trait]
+impl AgentSessionHandle for KimiHandle {
+    fn key(&self) -> &AgentKey {
+        &self.core.key
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        match &self.state {
+            AgentState::Active { session_id } => Some(session_id.as_str()),
+            AgentState::PromptInFlight { session_id, .. } => Some(session_id.as_str()),
+            _ => self
+                .session_id
+                .as_deref()
+                .or(self.preassigned_session_id.as_deref()),
+        }
+    }
+
+    fn state(&self) -> AgentState {
+        self.state.clone()
+    }
+
+    /// Native `run`: reads `preassigned_session_id` stored by
+    /// `open_session(Resume)` and delegates to `run_inner`. For
+    /// `open_session(New)` the field is `None` and `run_inner` starts a fresh
+    /// session.
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        self.run_inner(init_prompt).await
+    }
+
+    /// Compat shim: threads `opts.resume_session_id` into
+    /// `preassigned_session_id` so `run_inner` picks it up, then calls
+    /// `run_inner`.
+    async fn start(
+        &mut self,
+        opts: StartOpts,
+        init_prompt: Option<PromptReq>,
+    ) -> anyhow::Result<()> {
+        if let Some(id) = opts.resume_session_id {
+            self.preassigned_session_id = Some(id);
+        }
+        self.run_inner(init_prompt).await
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -1883,30 +1892,41 @@ mod tests {
         ));
     }
 
-    /// Driver-level: `new_session` on an unknown agent must error (no prior
-    /// attach). Prevents accidental silent process spawn.
+    /// Driver-level: `new_session` and `resume_session` are now shims to
+    /// `open_session` which uses `get_or_init`, so they work standalone without
+    /// a prior `attach`. Both return a valid handle with shared event stream.
     #[tokio::test]
-    async fn new_session_errors_without_prior_attach() {
+    async fn new_session_and_resume_session_work_without_prior_attach() {
         let driver = KimiDriver;
-        let key = format!("agent-no-attach-{}", uuid::Uuid::new_v4());
-        // AttachResult doesn't implement Debug, so we can't use
-        // `expect_err(...)`. Match manually on the Result instead.
-        let err = match driver.new_session(key.clone(), test_spec()).await {
-            Err(e) => e,
-            Ok(_) => panic!("new_session should error without prior attach"),
-        };
-        let msg = format!("{err:#}");
-        assert!(msg.contains("unknown agent"), "got: {msg}");
 
-        let err = match driver
-            .resume_session(key, test_spec(), "sid".to_string())
-            .await
-        {
-            Err(e) => e,
-            Ok(_) => panic!("resume_session should error without prior attach"),
-        };
-        let msg = format!("{err:#}");
-        assert!(msg.contains("unknown agent"), "got: {msg}");
+        // new_session standalone — creates the core, returns an Idle handle.
+        let key_new = format!("agent-no-attach-new-{}", uuid::Uuid::new_v4());
+        let res = driver.new_session(key_new.clone(), test_spec()).await;
+        assert!(res.is_ok(), "new_session must succeed without prior attach");
+        let ar = res.unwrap();
+        assert!(
+            matches!(ar.handle.state(), AgentState::Idle),
+            "new_session must return an Idle handle"
+        );
+        registry().remove(&key_new);
+
+        // resume_session standalone — creates the core, returns a handle with
+        // the supplied session id pre-loaded.
+        let key_resume = format!("agent-no-attach-resume-{}", uuid::Uuid::new_v4());
+        let res = driver
+            .resume_session(key_resume.clone(), test_spec(), "stored-id-xyz".to_string())
+            .await;
+        assert!(
+            res.is_ok(),
+            "resume_session must succeed without prior attach"
+        );
+        let ar = res.unwrap();
+        assert_eq!(
+            ar.handle.session_id(),
+            Some("stored-id-xyz"),
+            "resume_session must expose the supplied session id"
+        );
+        registry().remove(&key_resume);
     }
 
     /// Driver-level: after attach(), `new_session` returns a handle that
@@ -2452,6 +2472,290 @@ mod tests {
             core.spawn_and_initialize_call_count_for_test(),
             2,
             "failure was sticky — spawn_and_initialize only ran once instead of twice"
+        );
+
+        registry().remove(&key);
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 7 — open_session/run behavioral tests
+    // -----------------------------------------------------------------------
+
+    /// `open_session(New)` produces an Idle handle with no preassigned session
+    /// id, and the underlying `run_inner` path (accessible via `run()`) would
+    /// send `session/new`. Verified here by:
+    ///   1. Seeding the core with a fake ACP state (post-ensure_started).
+    ///   2. Driving a `session/new` response through `handle_response`.
+    ///   3. Confirming `SessionAttached` is emitted with the server-minted id.
+    #[tokio::test]
+    async fn open_session_new_run_emits_session_attached() {
+        let driver = KimiDriver;
+        let key = format!("agent-open-new-run-{}", uuid::Uuid::new_v4());
+
+        let ar = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // The handle must start Idle with no preassigned id.
+        assert!(
+            matches!(ar.handle.state(), AgentState::Idle),
+            "open_session(New) must return Idle handle"
+        );
+        assert!(
+            ar.handle.session_id().is_none(),
+            "open_session(New) must return handle without preassigned session id"
+        );
+
+        // Subscribe before seeding the core so we catch the SessionAttached event.
+        let mut event_rx = ar.events.subscribe();
+
+        // Obtain the core and seed it as if ensure_started() completed
+        // (stdin_tx present, shared seeded, started=true) so run_inner
+        // can skip the real spawn.
+        let core = registry().get(&key).expect("core must be in registry");
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(16);
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: HashMap::new(),
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+        }));
+        {
+            let mut inner = core.inner.lock().await;
+            inner.stdin_tx = Some(stdin_tx.clone());
+            inner.shared = Some(shared.clone());
+            inner.next_request_id = 3;
+        }
+        core.started.store(true, Ordering::Release);
+        // Seed the pairing token so send_session_new doesn't error.
+        let _ = core.pairing_token.set("fake-token".to_string());
+
+        // Retrieve the handle (mutable) — AttachResult owns the Box<dyn …>.
+        // We need to call run() on it. Re-acquire a fresh handle via open_session
+        // since we consumed `ar.handle` by moving into Box.
+        let ar2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut handle = ar2.handle;
+
+        // Simulate the session/new response arriving while run_inner awaits.
+        // run_inner registers a pending SessionNew entry and blocks on the
+        // oneshot; we inject the response in a background task.
+        let key_bg = key.clone();
+        let shared_bg = shared.clone();
+        let core_bg = core.clone();
+        let bg = tokio::spawn(async move {
+            // Poll until run_inner registers its session/new pending entry.
+            loop {
+                let id = {
+                    let s = shared_bg.lock().unwrap();
+                    s.pending.keys().copied().find(|&id| {
+                        matches!(s.pending.get(&id), Some(PendingRequest::SessionNew { .. }))
+                    })
+                };
+                if let Some(id) = id {
+                    // Inject a session/new response with a synthetic session id.
+                    let resp: Value = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": { "sessionId": "new-sess-from-open-session" }
+                    });
+                    let (stdin_tx2, _) = mpsc::channel::<String>(1);
+                    handle_response(
+                        &key_bg,
+                        &core_bg.event_tx,
+                        &shared_bg,
+                        &stdin_tx2,
+                        &resp,
+                    )
+                    .await;
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        // run() must complete once the background task delivers the response.
+        timeout(Duration::from_millis(500), handle.run(None))
+            .await
+            .expect("run() timed out")
+            .expect("run() failed");
+
+        bg.await.expect("background task panicked");
+
+        // Drain events until we see SessionAttached.
+        let deadline = Duration::from_millis(500);
+        loop {
+            let ev = timeout(deadline, event_rx.recv())
+                .await
+                .expect("timed out waiting for SessionAttached")
+                .expect("event stream closed");
+            if let DriverEvent::SessionAttached { session_id, .. } = ev {
+                assert_eq!(session_id, "new-sess-from-open-session");
+                break;
+            }
+        }
+
+        registry().remove(&key);
+    }
+
+    /// `open_session(Resume(id))` produces an Idle handle with the caller-supplied
+    /// session id pre-loaded. `run()` sends `session/load` and emits `SessionAttached`
+    /// with that same id.
+    #[tokio::test]
+    async fn open_session_resume_run_emits_session_attached_with_supplied_id() {
+        let driver = KimiDriver;
+        let key = format!("agent-open-resume-run-{}", uuid::Uuid::new_v4());
+        let resume_id = "stored-session-abc".to_string();
+
+        let ar = driver
+            .open_session(
+                key.clone(),
+                test_spec(),
+                SessionIntent::Resume(resume_id.clone()),
+            )
+            .await
+            .unwrap();
+
+        // Handle must expose the resume id before run() fires.
+        assert_eq!(
+            ar.handle.session_id(),
+            Some(resume_id.as_str()),
+            "open_session(Resume) must expose the session id before run()"
+        );
+
+        let mut event_rx = ar.events.subscribe();
+
+        // Seed the core.
+        let core = registry().get(&key).expect("core must be in registry");
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(16);
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: HashMap::new(),
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+        }));
+        {
+            let mut inner = core.inner.lock().await;
+            inner.stdin_tx = Some(stdin_tx.clone());
+            inner.shared = Some(shared.clone());
+            inner.next_request_id = 3;
+        }
+        core.started.store(true, Ordering::Release);
+        let _ = core.pairing_token.set("fake-token".to_string());
+
+        // Re-acquire a handle with the resume intent.
+        let ar2 = driver
+            .open_session(
+                key.clone(),
+                test_spec(),
+                SessionIntent::Resume(resume_id.clone()),
+            )
+            .await
+            .unwrap();
+        let mut handle = ar2.handle;
+
+        // Background task: wait for session/load pending entry, inject response.
+        // session/load response — Kimi omits sessionId in result;
+        // the driver falls back to expected_session_id (set in the
+        // PendingRequest::SessionLoad entry by send_session_load).
+        let shared_bg = shared.clone();
+        let core_bg = core.clone();
+        let key_bg = key.clone();
+        let bg = tokio::spawn(async move {
+            loop {
+                let id = {
+                    let s = shared_bg.lock().unwrap();
+                    s.pending.keys().copied().find(|&id| {
+                        matches!(
+                            s.pending.get(&id),
+                            Some(PendingRequest::SessionLoad { .. })
+                        )
+                    })
+                };
+                if let Some(id) = id {
+                    // Inject session/load response — empty result; the driver
+                    // falls back to `expected_session_id` already in the pending
+                    // entry, which equals `resume_id`.
+                    let resp: Value = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": id,
+                        "result": {}
+                    });
+                    let (stdin_tx2, _) = mpsc::channel::<String>(1);
+                    handle_response(
+                        &key_bg,
+                        &core_bg.event_tx,
+                        &shared_bg,
+                        &stdin_tx2,
+                        &resp,
+                    )
+                    .await;
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        });
+
+        timeout(Duration::from_millis(500), handle.run(None))
+            .await
+            .expect("run() timed out")
+            .expect("run() failed");
+
+        bg.await.expect("background task panicked");
+
+        let deadline = Duration::from_millis(500);
+        loop {
+            let ev = timeout(deadline, event_rx.recv())
+                .await
+                .expect("timed out waiting for SessionAttached")
+                .expect("event stream closed");
+            if let DriverEvent::SessionAttached { session_id, .. } = ev {
+                assert_eq!(
+                    session_id, resume_id,
+                    "SessionAttached must carry the resumed session id"
+                );
+                break;
+            }
+        }
+
+        registry().remove(&key);
+    }
+
+    /// Two consecutive `open_session(New)` calls on the same key share the
+    /// same `KimiAgentCore` (one process). Verified via EventFanOut pointer
+    /// equality and `spawn_call_count` == 0 (no spawn attempted since both
+    /// handles are Idle when we check).
+    #[tokio::test]
+    async fn open_session_two_new_on_same_key_share_core() {
+        let driver = KimiDriver;
+        let key = format!("agent-open-two-new-{}", uuid::Uuid::new_v4());
+
+        let ar1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let ar2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // Both must share the same EventFanOut.
+        let ptr1 = Arc::as_ptr(&ar1.events.inner);
+        let ptr2 = Arc::as_ptr(&ar2.events.inner);
+        assert_eq!(
+            ptr1, ptr2,
+            "two open_session(New) calls on the same key must share the EventFanOut"
+        );
+
+        // `get_or_init` must not have spawned a new core for the second call.
+        let core = registry().get(&key).expect("core must exist");
+        assert_eq!(
+            core.spawn_and_initialize_call_count_for_test(),
+            0,
+            "no spawn_and_initialize should have run for idle handles"
         );
 
         registry().remove(&key);
