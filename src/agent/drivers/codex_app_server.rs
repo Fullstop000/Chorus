@@ -8,34 +8,13 @@
 //! do not include that field. The parser tolerates servers that do include
 //! it (for defensive compatibility).
 //!
-//! Response routing uses a fixed-id heuristic for the standard handshake:
-//!   id 0 → InitializeResponse
-//!   id 1 → ThreadResponse
-//!   id >= 2 with `result.turn.id` → TurnResponse
-//!   id >= 2 with empty/null result → TurnInterruptResponse
-//!
-//! Callers that send additional request types (like `model/list`) should use
-//! a `parse_line_with_registry` variant that accepts a caller-supplied
-//! `id → method` map. (TODO: implement `parse_line_with_registry`)
+//! Response routing is id-agnostic via [`parse_line_with_registry`]: it
+//! classifies responses by the method the caller associated with the
+//! request id rather than by id position. This supports multiplexing
+//! multiple threads over one connection.
 
 use serde_json::{json, Value};
 use tracing::{debug, warn};
-
-// ---------------------------------------------------------------------------
-// Phase state machine
-// ---------------------------------------------------------------------------
-
-/// Handshake phase for the app-server connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppServerPhase {
-    /// Sent `initialize`, waiting for the response.
-    AwaitingInitResponse,
-    /// Sent `initialized` notification + `thread/start` or `thread/resume`,
-    /// waiting for thread response.
-    AwaitingThreadResponse,
-    /// Handshake complete; can send `turn/start`.
-    Active,
-}
 
 // ---------------------------------------------------------------------------
 // Output types
@@ -167,6 +146,14 @@ pub enum AppServerEvent {
     // Error
     Error {
         id: Option<Value>,
+        /// Method the caller registered for this request id, if any. Populated
+        /// by consulting the registry on the error path too — required so the
+        /// reader loop's closure always runs and removes the pending entry
+        /// from its map (otherwise the caller's waker is never fired).
+        /// `None` when the id was never registered or when the error has no id.
+        method: Option<String>,
+        /// JSON-RPC error code; `0` when absent.
+        code: i64,
         message: String,
     },
 
@@ -276,7 +263,7 @@ pub fn build_turn_interrupt(id: u64, thread_id: &str, turn_id: &str) -> String {
 /// `decision` is a string like `"accept"`, `"decline"`, `"cancel"`.
 /// NOTE: This is a JSON-RPC result response — no `method` field.
 /// The bidirectional id spaces don't collide on the wire since this goes to
-/// stdin while `parse_line` reads from stdout.
+/// stdin while the reader task reads from stdout.
 pub fn build_approval_response(request_id: &Value, decision: &str) -> String {
     serde_json::to_string(&json!({
         "id": request_id,
@@ -289,19 +276,29 @@ pub fn build_approval_response(request_id: &Value, decision: &str) -> String {
 // Parse entry point
 // ---------------------------------------------------------------------------
 
-/// Parse one line of `codex app-server` stdout as a JSON-RPC message.
+/// Parse one line of `codex app-server` stdout with id-agnostic response
+/// routing. `method_for_id(id)` must return the method the caller
+/// associated with a given numeric request id (typically via a
+/// `HashMap<u64, _>`); notifications and server-initiated requests are
+/// classified by method name directly.
 ///
 /// Wire format: JSONL, no `"jsonrpc":"2.0"` header (omitted by app-server).
 /// Parser tolerates messages that include `jsonrpc` for defensive compatibility.
 ///
-/// Response routing uses a fixed-id heuristic for the standard handshake:
-///   id 0 → InitializeResponse
-///   id 1 → ThreadResponse
-///   id >= 2 with `result.turn.id` → TurnResponse
-///   id >= 2 with empty/null result → TurnInterruptResponse
-/// Callers that send additional request types should extend this by tracking
-/// their own id→method map (future: `parse_line_with_registry`).
-pub fn parse_line(line: &str) -> AppServerEvent {
+/// Recognized methods for response classification:
+///   * `"initialize"` → [`AppServerEvent::InitializeResponse`]
+///   * `"thread/start"` or `"thread/resume"` → [`AppServerEvent::ThreadResponse`]
+///   * `"turn/start"` → [`AppServerEvent::TurnResponse`]
+///   * `"turn/interrupt"` → [`AppServerEvent::TurnInterruptResponse`]
+///
+/// Responses whose id is absent from the registry, or whose registered
+/// method is unknown, return [`AppServerEvent::Unknown`]. Errors on a
+/// registered id always produce [`AppServerEvent::Error`] regardless of
+/// method.
+pub fn parse_line_with_registry<F>(line: &str, method_for_id: F) -> AppServerEvent
+where
+    F: FnOnce(u64) -> Option<String>,
+{
     let msg: Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(_) => return AppServerEvent::Unknown,
@@ -312,18 +309,15 @@ pub fn parse_line(line: &str) -> AppServerEvent {
     let has_error = msg.get("error").is_some();
     let has_method = msg.get("method").is_some();
 
-    // 1. Response: id present AND (result OR error)
     if has_id && (has_result || has_error) && !has_method {
-        return parse_response(&msg);
+        return parse_response_by_method(&msg, method_for_id);
     }
 
-    // 2. Server request: method present AND id present
     if has_method && has_id {
         let method = msg["method"].as_str().unwrap_or("");
         return parse_server_request(method, &msg);
     }
 
-    // 3. Notification: method present, no id
     if has_method {
         let method = msg["method"].as_str().unwrap_or("");
         return parse_notification(method, &msg);
@@ -332,17 +326,22 @@ pub fn parse_line(line: &str) -> AppServerEvent {
     AppServerEvent::Unknown
 }
 
-// ---------------------------------------------------------------------------
-// Internal parse helpers
-// ---------------------------------------------------------------------------
-
-fn parse_response(msg: &Value) -> AppServerEvent {
+fn parse_response_by_method<F>(msg: &Value, method_for_id: F) -> AppServerEvent
+where
+    F: FnOnce(u64) -> Option<String>,
+{
     let id_val = msg.get("id");
 
-    // Error response takes priority.
+    // Always consult `method_for_id` for responses carrying a numeric id —
+    // including error responses. The reader loop's closure uses this call
+    // to remove the pending request from its map (and capture the waker).
+    // If we short-circuit here on the error path the pending entry leaks
+    // and the caller's `rx.await` blocks forever.
+    let id_u64 = id_val.and_then(|v| v.as_u64());
+    let method = id_u64.and_then(method_for_id);
+
     if let Some(err) = msg.get("error") {
-        // Prefer `data.message` (codex-specific detail, e.g. usage_limit_exceeded) over
-        // the generic JSON-RPC `message` field which is often just "Internal error".
+        let code = err.get("code").and_then(|v| v.as_i64()).unwrap_or(0);
         let message = err
             .get("data")
             .and_then(|d| d.get("message"))
@@ -352,17 +351,20 @@ fn parse_response(msg: &Value) -> AppServerEvent {
             .to_string();
         return AppServerEvent::Error {
             id: id_val.cloned(),
+            method,
+            code,
             message,
         };
     }
 
-    let id = id_val.and_then(|v| v.as_u64()).unwrap_or(0);
+    let Some(id_u64) = id_u64 else {
+        return AppServerEvent::Unknown;
+    };
     let result = msg.get("result");
 
-    match id {
-        0 => AppServerEvent::InitializeResponse,
-        1 => {
-            // ThreadResponse: result should have thread.id
+    match method.as_deref() {
+        Some("initialize") => AppServerEvent::InitializeResponse,
+        Some("thread/start") | Some("thread/resume") => {
             let thread_id = result
                 .and_then(|r| r.get("thread"))
                 .and_then(|t| t.get("id"))
@@ -371,13 +373,15 @@ fn parse_response(msg: &Value) -> AppServerEvent {
             match thread_id {
                 Some(tid) => AppServerEvent::ThreadResponse { thread_id: tid },
                 None => {
-                    warn!("codex app-server: id=1 response missing thread.id");
+                    warn!(
+                        method = method.as_deref(),
+                        "codex app-server: thread response missing thread.id"
+                    );
                     AppServerEvent::Unknown
                 }
             }
         }
-        n if n >= 2 => {
-            // TurnResponse if result has turn.id, else TurnInterruptResponse
+        Some("turn/start") => {
             let turn_id = result
                 .and_then(|r| r.get("turn"))
                 .and_then(|t| t.get("id"))
@@ -385,12 +389,33 @@ fn parse_response(msg: &Value) -> AppServerEvent {
                 .map(|s| s.to_string());
             match turn_id {
                 Some(tid) => AppServerEvent::TurnResponse { turn_id: tid },
-                None => AppServerEvent::TurnInterruptResponse,
+                None => {
+                    warn!("codex app-server: turn/start response missing turn.id");
+                    AppServerEvent::Unknown
+                }
             }
         }
-        _ => unreachable!("u64 arms 0, 1, and n>=2 are exhaustive"),
+        Some("turn/interrupt") => AppServerEvent::TurnInterruptResponse,
+        Some(other) => {
+            warn!(
+                method = other,
+                "codex app-server: response for unregistered method"
+            );
+            AppServerEvent::Unknown
+        }
+        None => {
+            warn!(
+                id = id_u64,
+                "codex app-server: response for unknown id — caller registry lookup failed"
+            );
+            AppServerEvent::Unknown
+        }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Internal parse helpers
+// ---------------------------------------------------------------------------
 
 fn parse_notification(method: &str, msg: &Value) -> AppServerEvent {
     let params = msg.get("params").unwrap_or(&Value::Null);
@@ -518,7 +543,8 @@ fn parse_notification(method: &str, msg: &Value) -> AppServerEvent {
 }
 
 fn parse_server_request(method: &str, msg: &Value) -> AppServerEvent {
-    // Invariant: parse_line only calls this function when has_id is true.
+    // Invariant: parse_line_with_registry only calls this function when
+    // has_id is true.
     let Some(request_id) = msg.get("id").cloned() else {
         return AppServerEvent::Unknown;
     };
@@ -775,73 +801,141 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Parse tests
+    // parse_line_with_registry — id-agnostic response classification
     // -----------------------------------------------------------------------
 
     #[test]
-    fn parse_initialize_response_id0() {
-        let line = r#"{"id":0,"result":{"protocolVersion":1,"serverInfo":{"name":"codex"}}}"#;
-        let ev = parse_line(line);
-        assert!(matches!(ev, AppServerEvent::InitializeResponse));
-    }
-
-    #[test]
-    fn parse_initialize_response_tolerates_jsonrpc_field() {
-        let line = r#"{"jsonrpc":"2.0","id":0,"result":{}}"#;
-        let ev = parse_line(line);
-        assert!(matches!(ev, AppServerEvent::InitializeResponse));
-    }
-
-    #[test]
-    fn parse_thread_response() {
-        let line = r#"{"id":1,"result":{"thread":{"id":"thr_123"}}}"#;
-        let ev = parse_line(line);
+    fn registry_thread_start_response_uses_method() {
+        // id 42 is outside the legacy-id range (0/1/2+) but resolves via registry.
+        let line = r#"{"id":42,"result":{"thread":{"id":"thr_abc"}}}"#;
+        let ev = parse_line_with_registry(line, |id| {
+            assert_eq!(id, 42);
+            Some("thread/start".into())
+        });
         match ev {
             AppServerEvent::ThreadResponse { thread_id } => {
-                assert_eq!(thread_id, "thr_123");
+                assert_eq!(thread_id, "thr_abc");
             }
             other => panic!("expected ThreadResponse, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_turn_response() {
-        let line = r#"{"id":2,"result":{"turn":{"id":"turn_456","status":"inProgress","items":[],"error":null}}}"#;
-        let ev = parse_line(line);
+    fn registry_thread_resume_is_same_variant() {
+        let line = r#"{"id":100,"result":{"thread":{"id":"thr_xyz"}}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("thread/resume".into()));
         match ev {
-            AppServerEvent::TurnResponse { turn_id } => {
-                assert_eq!(turn_id, "turn_456");
+            AppServerEvent::ThreadResponse { thread_id } => {
+                assert_eq!(thread_id, "thr_xyz");
             }
+            other => panic!("expected ThreadResponse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_turn_start_response() {
+        let line =
+            r#"{"id":7,"result":{"turn":{"id":"turn_99","status":"inProgress","items":[]}}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("turn/start".into()));
+        match ev {
+            AppServerEvent::TurnResponse { turn_id } => assert_eq!(turn_id, "turn_99"),
             other => panic!("expected TurnResponse, got {other:?}"),
         }
     }
 
     #[test]
-    fn parse_turn_interrupt_response() {
-        let line = r#"{"id":3,"result":{}}"#;
-        let ev = parse_line(line);
-        assert!(
-            matches!(ev, AppServerEvent::TurnInterruptResponse),
-            "got {ev:?}"
-        );
+    fn registry_turn_interrupt_response() {
+        let line = r#"{"id":8,"result":{}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("turn/interrupt".into()));
+        assert!(matches!(ev, AppServerEvent::TurnInterruptResponse));
     }
 
     #[test]
-    fn parse_error_response() {
-        let line = r#"{"id":2,"error":{"code":123,"message":"bad"}}"#;
-        let ev = parse_line(line);
+    fn registry_initialize_response() {
+        let line = r#"{"id":5,"result":{"protocolVersion":1}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("initialize".into()));
+        assert!(matches!(ev, AppServerEvent::InitializeResponse));
+    }
+
+    #[test]
+    fn registry_error_path_independent_of_method() {
+        let line = r#"{"id":9,"error":{"code":-32000,"message":"nope"}}"#;
+        let ev = parse_line_with_registry(line, |_| Some("thread/start".into()));
         match ev {
-            AppServerEvent::Error { message, .. } => {
-                assert_eq!(message, "bad");
+            AppServerEvent::Error { message, .. } => assert_eq!(message, "nope"),
+            other => panic!("expected Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn registry_error_path_consults_method_for_id() {
+        // Regression: the error path MUST call `method_for_id(id)` so the
+        // reader-loop closure removes the pending entry and captures the
+        // waker. Prior to the fix this branch short-circuited before the
+        // closure ran, leaking the entry and leaving callers stuck on
+        // `rx.await` forever. Verify the closure fires and the method is
+        // populated on the resulting Error event.
+        use std::cell::Cell;
+        let called = Cell::new(false);
+        let line =
+            r#"{"id":77,"error":{"code":-32600,"message":"no rollout found for thread id"}}"#;
+        let ev = parse_line_with_registry(line, |id| {
+            assert_eq!(id, 77);
+            called.set(true);
+            Some("thread/resume".into())
+        });
+        assert!(called.get(), "method_for_id must be called on error path");
+        match ev {
+            AppServerEvent::Error {
+                method,
+                code,
+                message,
+                ..
+            } => {
+                assert_eq!(method.as_deref(), Some("thread/resume"));
+                assert_eq!(code, -32600);
+                assert!(message.contains("no rollout"));
             }
             other => panic!("expected Error, got {other:?}"),
         }
     }
 
     #[test]
+    fn registry_unknown_id_returns_unknown() {
+        // Registry lookup failure (unseen id) must produce Unknown rather
+        // than misclassifying by id heuristic.
+        let line = r#"{"id":999,"result":{"thread":{"id":"thr_abc"}}}"#;
+        let ev = parse_line_with_registry(line, |_| None);
+        assert!(
+            matches!(ev, AppServerEvent::Unknown),
+            "unknown id should yield Unknown, got {ev:?}"
+        );
+    }
+
+    #[test]
+    fn registry_forwards_notifications_unchanged() {
+        // Notifications have no id and should follow the notification path
+        // regardless of the registry closure (which should never be called).
+        let line =
+            r#"{"method":"turn/completed","params":{"turn":{"id":"turn_x","status":"completed"}}}"#;
+        let ev = parse_line_with_registry(line, |_| panic!("registry must not be called"));
+        assert!(matches!(ev, AppServerEvent::TurnCompleted { .. }));
+    }
+
+    #[test]
+    fn registry_forwards_server_requests_unchanged() {
+        let line = r#"{"method":"item/commandExecution/requestApproval","id":42,"params":{"itemId":"item_1","threadId":"thr_x","turnId":"turn_y"}}"#;
+        let ev = parse_line_with_registry(line, |_| {
+            // server-initiated requests are classified by method name, not id
+            panic!("registry must not be called for server requests")
+        });
+        assert!(matches!(ev, AppServerEvent::CommandApproval { .. }));
+    }
+
+    #[test]
     fn parse_thread_started_notification() {
         let line = r#"{"method":"thread/started","params":{"thread":{"id":"thr_123"}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ThreadStarted { thread_id } => {
                 assert_eq!(thread_id, "thr_123");
@@ -853,7 +947,7 @@ mod tests {
     #[test]
     fn parse_turn_started_notification() {
         let line = r#"{"method":"turn/started","params":{"turn":{"id":"turn_456"}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::TurnStarted { turn_id } => {
                 assert_eq!(turn_id, "turn_456");
@@ -865,7 +959,7 @@ mod tests {
     #[test]
     fn parse_turn_completed_natural() {
         let line = r#"{"method":"turn/completed","params":{"turn":{"id":"turn_456","status":"completed"}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::TurnCompleted { turn_id, status } => {
                 assert_eq!(turn_id, "turn_456");
@@ -878,7 +972,7 @@ mod tests {
     #[test]
     fn parse_turn_completed_interrupted() {
         let line = r#"{"method":"turn/completed","params":{"turn":{"id":"turn_456","status":"interrupted"}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::TurnCompleted { status, .. } => {
                 assert_eq!(status, TurnStatus::Interrupted);
@@ -890,7 +984,7 @@ mod tests {
     #[test]
     fn parse_turn_completed_failed() {
         let line = r#"{"method":"turn/completed","params":{"turn":{"id":"turn_456","status":"failed","error":{"message":"out of context"}}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::TurnCompleted { status, .. } => {
                 assert!(
@@ -904,7 +998,7 @@ mod tests {
     #[test]
     fn parse_item_started_agent_message() {
         let line = r#"{"method":"item/started","params":{"item":{"type":"agentMessage","id":"item_1","text":""}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ItemStarted {
                 item: ItemEvent::AgentMessage { id, .. },
@@ -918,7 +1012,7 @@ mod tests {
     #[test]
     fn parse_item_completed_command_execution() {
         let line = r#"{"method":"item/completed","params":{"item":{"type":"commandExecution","id":"item_2","command":"ls","exitCode":0}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ItemCompleted {
                 item: ItemEvent::CommandExecution { exit_code, .. },
@@ -932,7 +1026,7 @@ mod tests {
     #[test]
     fn parse_item_completed_file_change() {
         let line = r#"{"method":"item/completed","params":{"item":{"type":"fileChange","id":"item_3","changes":[{"path":"foo.rs","kind":"modify","diff":"..."}]}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ItemCompleted {
                 item: ItemEvent::FileChange { changes, .. },
@@ -949,7 +1043,7 @@ mod tests {
     #[test]
     fn parse_item_completed_mcp_tool_call() {
         let line = r#"{"method":"item/completed","params":{"item":{"type":"mcpToolCall","id":"item_4","server":"my-server","tool":"do_thing","arguments":{"k":"v"}}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ItemCompleted {
                 item: ItemEvent::McpToolCall { server, tool, .. },
@@ -964,7 +1058,7 @@ mod tests {
     #[test]
     fn parse_agent_message_delta() {
         let line = r#"{"method":"item/agentMessage/delta","params":{"itemId":"item_1","delta":{"value":"hello"}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::AgentMessageDelta { item_id, text } => {
                 assert_eq!(item_id, "item_1");
@@ -977,7 +1071,7 @@ mod tests {
     #[test]
     fn parse_reasoning_summary_delta() {
         let line = r#"{"method":"item/reasoning/summaryTextDelta","params":{"itemId":"item_1","delta":"think"}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ReasoningSummaryDelta { item_id, text } => {
                 assert_eq!(item_id, "item_1");
@@ -990,7 +1084,7 @@ mod tests {
     #[test]
     fn parse_command_output_delta() {
         let line = r#"{"method":"item/commandExecution/outputDelta","params":{"itemId":"item_1","output":"line\n"}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::CommandOutputDelta { item_id, text } => {
                 assert_eq!(item_id, "item_1");
@@ -1003,7 +1097,7 @@ mod tests {
     #[test]
     fn parse_command_approval_server_request() {
         let line = r#"{"method":"item/commandExecution/requestApproval","id":42,"params":{"itemId":"item_1","threadId":"thr_123","turnId":"turn_456"}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::CommandApproval {
                 request_id,
@@ -1023,7 +1117,7 @@ mod tests {
     #[test]
     fn parse_file_change_approval_server_request() {
         let line = r#"{"method":"item/fileChange/requestApproval","id":43,"params":{"itemId":"item_5","threadId":"thr_abc","turnId":"turn_xyz"}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::FileChangeApproval {
                 item_id,
@@ -1041,27 +1135,27 @@ mod tests {
 
     #[test]
     fn parse_empty_line() {
-        let ev = parse_line("");
+        let ev = parse_line_with_registry("", |_| None);
         assert!(matches!(ev, AppServerEvent::Unknown));
     }
 
     #[test]
     fn parse_invalid_json() {
-        let ev = parse_line("not json {{{");
+        let ev = parse_line_with_registry("not json {{{", |_| None);
         assert!(matches!(ev, AppServerEvent::Unknown));
     }
 
     #[test]
     fn parse_unknown_notification() {
         let line = r#"{"method":"some/unknown","params":{}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         assert!(matches!(ev, AppServerEvent::Unknown));
     }
 
     #[test]
     fn parse_item_other_type() {
         let line = r#"{"method":"item/completed","params":{"item":{"type":"collabToolCall","id":"item_9"}}}"#;
-        let ev = parse_line(line);
+        let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ItemCompleted {
                 item: ItemEvent::Other { item_type, .. },
@@ -1077,7 +1171,7 @@ mod tests {
         // "delta" can be a plain string instead of {"value": ...}
         let line =
             r#"{"method":"item/agentMessage/delta","params":{"itemId":"m1","delta":"hello text"}}"#;
-        match parse_line(line) {
+        match parse_line_with_registry(line, |_| None) {
             AppServerEvent::AgentMessageDelta { item_id, text } => {
                 assert_eq!(item_id, "m1");
                 assert_eq!(text, "hello text");
@@ -1090,7 +1184,7 @@ mod tests {
     fn test_parse_command_output_delta_fallback() {
         // falls back to "delta" field when "output" is absent
         let line = r#"{"method":"item/commandExecution/outputDelta","params":{"itemId":"cmd1","delta":"output text"}}"#;
-        match parse_line(line) {
+        match parse_line_with_registry(line, |_| None) {
             AppServerEvent::CommandOutputDelta { item_id, text } => {
                 assert_eq!(item_id, "cmd1");
                 assert_eq!(text, "output text");

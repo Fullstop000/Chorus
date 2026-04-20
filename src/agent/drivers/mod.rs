@@ -192,7 +192,6 @@ pub enum FinishReason {
 /// Result payload delivered alongside a [`DriverEvent::Completed`].
 #[derive(Debug, Clone)]
 pub struct RunResult {
-    pub session_id: SessionId,
     pub finish_reason: FinishReason,
 }
 
@@ -209,21 +208,25 @@ pub enum DriverEvent {
         key: AgentKey,
         session_id: SessionId,
     },
-    /// A single output item from an in-flight run.
+    /// A single output item from an in-flight run. `session_id` is the run's
+    /// parent session; runs are turns inside sessions.
     Output {
         key: AgentKey,
+        session_id: SessionId,
         run_id: RunId,
         item: AgentEventItem,
     },
     /// A run completed successfully.
     Completed {
         key: AgentKey,
+        session_id: SessionId,
         run_id: RunId,
         result: RunResult,
     },
     /// A run failed.
     Failed {
         key: AgentKey,
+        session_id: SessionId,
         run_id: RunId,
         error: AgentError,
     },
@@ -394,8 +397,8 @@ impl EventFanOut {
 /// Shareable handle to a driver's event fan-out.
 ///
 /// Cheap to clone (`Arc`). Subscribers obtain one of these from
-/// [`AttachResult`] and call [`EventStreamHandle::subscribe`] to register a
-/// listener; the AgentHandle implementation calls [`EventStreamHandle::close`]
+/// [`SessionAttachment`] and call [`EventStreamHandle::subscribe`] to register a
+/// listener; the Session implementation calls [`EventStreamHandle::close`]
 /// when the runtime shuts down.
 #[derive(Debug, Clone)]
 pub struct EventStreamHandle {
@@ -434,7 +437,7 @@ impl EventStreamHandle {
     }
 
     /// Signal the fan-out dispatcher to drain its inbound queue and exit
-    /// after the final event. Call this from `AgentHandle::close()` after
+    /// after the final event. Call this from `Session::close()` after
     /// emitting the terminal `Lifecycle::Closed` event. Idempotent.
     pub fn close(&self) {
         self.inner.closing.store(true, Ordering::SeqCst);
@@ -444,14 +447,6 @@ impl EventStreamHandle {
 // ---------------------------------------------------------------------------
 // Request / attachment payloads
 // ---------------------------------------------------------------------------
-
-/// Options passed to [`AgentHandle::start`].
-#[derive(Debug, Clone, Default)]
-pub struct StartOpts {
-    /// If set, the driver should resume the given session instead of minting
-    /// a new one. None means "start fresh via `new_session`".
-    pub resume_session_id: Option<SessionId>,
-}
 
 /// Attachment classification carried with a prompt.
 #[derive(Debug, Clone)]
@@ -469,14 +464,14 @@ pub struct PromptAttachment {
     pub bytes: Vec<u8>,
 }
 
-/// Prompt request sent to [`AgentHandle::prompt`].
+/// Prompt request sent to [`Session::prompt`].
 #[derive(Debug, Clone)]
 pub struct PromptReq {
     pub text: String,
     pub attachments: Vec<PromptAttachment>,
 }
 
-/// Outcome of a [`AgentHandle::cancel`] call.
+/// Outcome of a [`Session::cancel`] call.
 #[derive(Debug, Clone)]
 pub enum CancelOutcome {
     /// The in-flight run was aborted; the session remains usable.
@@ -560,9 +555,21 @@ pub struct AgentSpec {
     pub bridge_endpoint: String,
 }
 
-/// Return value of [`RuntimeDriver::attach`].
-pub struct AttachResult {
-    pub handle: Box<dyn AgentHandle>,
+/// Session intent: whether to start a new session or resume an existing one.
+///
+/// Used by [`RuntimeDriver::open_session`] to unify the `attach`, `new_session`,
+/// and `resume_session` verbs. During migration, the default impl delegates to
+/// the legacy methods.
+#[derive(Debug, Clone, Default)]
+pub enum SessionIntent {
+    #[default]
+    New,
+    Resume(SessionId),
+}
+
+/// Return value of [`RuntimeDriver::open_session`].
+pub struct SessionAttachment {
+    pub session: Box<dyn Session>,
     pub events: EventStreamHandle,
 }
 
@@ -572,9 +579,9 @@ pub struct AttachResult {
 
 /// Runtime-level factory.
 ///
-/// One instance per runtime (Claude, Codex, Kimi, OpenCode, Fake). Stateless
-/// with respect to individual agents — it probes the host, lists catalog
-/// data, and mints per-agent [`AgentHandle`]s on demand.
+/// One instance per runtime (Claude, Codex, Kimi, OpenCode, Fake). Session
+/// lifecycle lives here: [`open_session`] opens (new or resumed) sessions,
+/// each yielding a fresh [`Session`].
 ///
 /// `'static` so driver pointers can be stored in registries; `Send + Sync`
 /// because the agent manager holds them behind an `Arc`.
@@ -598,47 +605,51 @@ pub trait RuntimeDriver: Send + Sync + 'static {
     /// Enumerate runtime-advertised slash commands (if supported).
     async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>>;
 
-    /// Build a per-agent handle and its event stream for the given key/spec.
+    /// Open a session on an agent. Unified replacement for the legacy
+    /// `attach`, `new_session`, and `resume_session` verbs.
     ///
-    /// The returned handle is in [`AgentState::Idle`]; callers must invoke
-    /// `start` to bring it online.
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult>;
+    /// `SessionIntent::New` starts a fresh session; `SessionIntent::Resume(id)`
+    /// resumes the given stored session. The returned handle is in
+    /// [`AgentState::Idle`]; callers must invoke [`Session::run`] to
+    /// bring it online.
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<SessionAttachment>;
 }
 
-/// Per-agent lifecycle handle.
+/// Per-session lifecycle handle.
 ///
-/// Owns exactly one runtime process (or equivalent connection). Consumers
-/// drive it through `start` -> `prompt` -> `cancel`/`close` transitions and
+/// Represents one ACP session (or equivalent). Multiple session handles may
+/// coexist for a single agent when the driver supports multiplexing; each
+/// carries its own `session_id`, state, and event timeline. Consumers drive a
+/// session through `run` -> `prompt` -> `cancel`/`close` transitions and
 /// observe side effects on the paired [`EventStreamHandle`].
 ///
 /// `Send` only — handles may be moved across tasks but are not required to be
 /// `Sync`; serialization of concurrent access is the handle implementation's
-/// responsibility (typically via an internal actor loop landing in Task 11).
+/// responsibility (typically via an internal actor loop).
 #[async_trait]
-pub trait AgentHandle: Send {
-    /// The agent key this handle was attached under.
+pub trait Session: Send {
+    /// The agent key this session belongs to.
     fn key(&self) -> &AgentKey;
 
-    /// Current lifecycle state.
+    /// The session id this handle is attached to, if one has been assigned.
+    ///
+    /// `None` before `run` completes (or `run` resumes without a known id).
+    /// `Some` for every state downstream of `Active`.
+    fn session_id(&self) -> Option<&str>;
+
+    /// Current lifecycle state of this session.
     fn state(&self) -> AgentState;
 
-    /// Bring the runtime online.
-    ///
-    /// If `opts.resume_session_id` is set, resumes that session; otherwise
-    /// starts fresh. `init_prompt`, when present, is delivered as the first
-    /// prompt so some runtimes can perform session bootstrap in one turn.
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()>;
-
-    /// Start a new session on an already-started handle, replacing the
-    /// currently attached session.
-    async fn new_session(&mut self) -> anyhow::Result<SessionId>;
-
-    /// Resume a previously-stored session on an already-started handle.
-    async fn resume_session(&mut self, id: SessionId) -> anyhow::Result<()>;
+    /// Bring the session online. Resume intent is threaded in via
+    /// [`RuntimeDriver::open_session`]'s `SessionIntent`; `init_prompt`,
+    /// when present, is delivered as the first prompt so some runtimes can
+    /// perform session bootstrap in one turn.
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()>;
 
     /// Send a prompt to the live session. Returns the [`RunId`] assigned so
     /// callers can correlate subsequent events.
@@ -648,7 +659,8 @@ pub trait AgentHandle: Send {
     /// [`CancelOutcome`].
     async fn cancel(&mut self, run: RunId) -> anyhow::Result<CancelOutcome>;
 
-    /// Shut the runtime down and release all resources.
+    /// Shut this session down and release its resources. Does not tear down
+    /// the agent's shared runtime process when other sessions remain live.
     async fn close(&mut self) -> anyhow::Result<()>;
 }
 
@@ -693,6 +705,146 @@ pub async fn request_pairing_token(
 }
 
 // ---------------------------------------------------------------------------
+// Per-driver shared scaffolding
+// ---------------------------------------------------------------------------
+
+/// Try-send a [`DriverEvent`] into a driver's inbound fan-out channel.
+/// Drivers call this from their per-process / per-handle `emit` wrappers so
+/// every driver behaves identically under back-pressure: a dropped event is
+/// warn-logged with `agent` + `driver` fields rather than silently swallowed.
+///
+/// Before this helper existed, claude/codex logged `warn!` on Full while
+/// kimi/opencode/fake did `let _ = try_send(...)` — the four inbound queues
+/// had four different overload policies and debugging a stuck agent meant
+/// guessing which driver was silent.
+pub(crate) fn emit_driver_event(
+    tx: &mpsc::Sender<DriverEvent>,
+    event: DriverEvent,
+    agent: &AgentKey,
+    driver: &'static str,
+) {
+    if let Err(e) = tx.try_send(event) {
+        tracing::warn!(agent = %agent, driver, "dropped driver event: {e}");
+    }
+}
+/// Per-agent runtime process type. Implemented by each driver's
+/// `*AgentProcess` / `*AgentCore` struct so a generic [`AgentRegistry`] can
+/// cache instances of it and evict stale entries at attach time.
+pub(crate) trait AgentProcess: Send + Sync + 'static {
+    /// Short driver name used in registry debug logs, e.g. `"claude"`,
+    /// `"codex"`, `"kimi"`, `"opencode"`.
+    const DRIVER_NAME: &'static str;
+
+    /// True if the cached process can no longer serve a new attach — the
+    /// shared child has died, stdin has been closed, or the bootstrap's
+    /// `close()` has marked it torn down. The registry evicts stale entries
+    /// before returning them so `ensure_process` never hands callers a dead
+    /// Arc.
+    ///
+    /// A never-spawned process is NOT stale; the bootstrap path still needs
+    /// to be able to re-use a cached-but-un-started entry.
+    fn is_stale(&self) -> bool;
+}
+
+/// Process-global per-driver agent registry. Replaces the four near-identical
+/// `OnceLock<Mutex<HashMap<AgentKey, Arc<P>>>>` + `ensure_process` copies that
+/// each driver used to carry. Instantiated once per driver as a `static`.
+///
+/// All methods take `&self`; the map is lazily initialized inside a `OnceLock`
+/// so the type works as a `static`.
+pub(crate) struct AgentRegistry<P: AgentProcess> {
+    inner: std::sync::OnceLock<Mutex<std::collections::HashMap<AgentKey, Arc<P>>>>,
+}
+
+impl<P: AgentProcess> AgentRegistry<P> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            inner: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn map(&self) -> &Mutex<std::collections::HashMap<AgentKey, Arc<P>>> {
+        self.inner
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+    }
+
+    /// Return the cached process for `key`, building a fresh one via
+    /// `factory` if the slot is empty. A cached-but-stale entry is evicted
+    /// and `factory` runs anew. The lookup, eviction, and insert all happen
+    /// under the same critical section so two concurrent `attach`es on the
+    /// same key observe each other.
+    pub(crate) fn get_or_init<F>(&self, key: &AgentKey, factory: F) -> Arc<P>
+    where
+        F: FnOnce() -> Arc<P>,
+    {
+        let mut guard = self.map().lock().unwrap();
+        if let Some(existing) = guard.get(key) {
+            if existing.is_stale() {
+                tracing::debug!(
+                    agent = %key,
+                    driver = P::DRIVER_NAME,
+                    "evicting stale agent process before re-attach",
+                );
+                guard.remove(key);
+            } else {
+                return Arc::clone(existing);
+            }
+        }
+        let fresh = factory();
+        guard.insert(key.clone(), Arc::clone(&fresh));
+        fresh
+    }
+
+    /// Return the cached process for `key`, evicting it first if stale.
+    /// Used by drivers whose attach path constructs the process inline
+    /// and then calls [`AgentRegistry::insert`] separately (kimi).
+    pub(crate) fn get_or_evict_stale(&self, key: &AgentKey) -> Option<Arc<P>> {
+        let mut guard = self.map().lock().unwrap();
+        if let Some(existing) = guard.get(key) {
+            if existing.is_stale() {
+                tracing::debug!(
+                    agent = %key,
+                    driver = P::DRIVER_NAME,
+                    "evicting stale agent process from registry",
+                );
+                guard.remove(key);
+                return None;
+            }
+            return Some(Arc::clone(existing));
+        }
+        None
+    }
+
+    /// Raw read — does NOT evict stale entries. Used by tests that inspect
+    /// registry state without mutating it, and by driver code that needs the
+    /// `Arc` handle itself rather than building or evicting one.
+    #[allow(dead_code)]
+    pub(crate) fn get(&self, key: &AgentKey) -> Option<Arc<P>> {
+        self.map().lock().unwrap().get(key).cloned()
+    }
+
+    /// Raw insert. Overwrites any existing entry without a stale check.
+    pub(crate) fn insert(&self, key: AgentKey, proc: Arc<P>) {
+        self.map().lock().unwrap().insert(key, proc);
+    }
+
+    /// Raw remove.
+    pub(crate) fn remove(&self, key: &AgentKey) {
+        self.map().lock().unwrap().remove(key);
+    }
+
+    /// Escape hatch: lock the underlying map for multi-step operations
+    /// (e.g., `Arc::strong_count` checks in tests). Most callers should
+    /// use the per-method helpers above.
+    #[allow(dead_code)]
+    pub(crate) fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<AgentKey, Arc<P>>> {
+        self.map().lock().unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -702,6 +854,21 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::timeout;
+
+    // ---- SessionIntent ----
+
+    #[test]
+    fn session_intent_default_is_new() {
+        assert!(matches!(SessionIntent::default(), SessionIntent::New));
+    }
+
+    #[test]
+    fn session_intent_resume_carries_id() {
+        match SessionIntent::Resume("sess_abc".to_string()) {
+            SessionIntent::Resume(id) => assert_eq!(id, "sess_abc"),
+            _ => panic!("expected Resume"),
+        }
+    }
 
     /// Minimal `DriverEvent` helper used across tests. Uses `Lifecycle` with
     /// a cheap-to-clone `Idle` state so the fan-out dispatcher isn't

@@ -13,7 +13,7 @@ use crate::agent::drivers::codex::CodexDriver;
 use crate::agent::drivers::kimi::KimiDriver;
 use crate::agent::drivers::opencode::OpencodeDriver;
 use crate::agent::drivers::{
-    AgentHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, StartOpts,
+    AgentSpec, AgentState, PromptReq, RuntimeDriver, Session, SessionIntent,
 };
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
@@ -22,7 +22,7 @@ use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
-/// Managed agent backed by a [`RuntimeDriver`] + [`AgentHandle`].
+/// Managed agent backed by a [`RuntimeDriver`] + [`Session`].
 ///
 /// Visible to the sibling `event_forwarder` module (not exported beyond
 /// the `agent` crate) because the forwarder's `Completed` arm and the
@@ -30,7 +30,7 @@ use crate::store::Store;
 /// pending-count field. No other module should reach into these fields;
 /// prefer `deliver_pending_notification` for the shared delivery path.
 pub(super) struct ManagedAgent {
-    pub(super) handle: Box<dyn AgentHandle>,
+    pub(super) handle: Box<dyn Session>,
     pub(super) _event_tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Debounce counter for stdin-style notification batching.
     pub(super) pending_notification_count: u32,
@@ -188,26 +188,25 @@ impl AgentManager {
             bridge_endpoint,
         };
 
-        let attach_result = driver.attach(agent_name.to_string(), spec).await?;
-        let mut handle = attach_result.handle;
+        let intent = match agent.session_id.clone() {
+            Some(id) => SessionIntent::Resume(id),
+            None => SessionIntent::New,
+        };
+        let attach_result = driver
+            .open_session(agent_name.to_string(), spec, intent)
+            .await?;
+        let mut handle = attach_result.session;
         let events = attach_result.events;
-
-        // Subscribe BEFORE start so we don't miss early events.
-        let event_rx = events.subscribe();
+        let event_rx = events.subscribe(); // subscribe BEFORE run
 
         let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
-
         let init_prompt_text = build_start_prompt(
             &agent.display_name,
             is_resume,
             &unread_summary,
             wake_message.as_ref(),
         );
-
-        let start_opts = StartOpts {
-            resume_session_id: agent.session_id.clone(),
-        };
 
         self.store
             .update_agent_status(agent_name, AgentStatus::Active)?;
@@ -224,13 +223,10 @@ impl AgentManager {
         );
 
         handle
-            .start(
-                start_opts,
-                Some(PromptReq {
-                    text: init_prompt_text,
-                    attachments: vec![],
-                }),
-            )
+            .run(Some(PromptReq {
+                text: init_prompt_text,
+                attachments: vec![],
+            }))
             .await?;
 
         let forwarder = super::event_forwarder::spawn_event_forwarder(

@@ -26,6 +26,36 @@ pub struct FakeDriver {
             + Send
             + Sync,
     >,
+    /// Per-agent shared process state, keyed by agent key. Each entry represents
+    /// one simulated driver process that can host multiple concurrent sessions.
+    /// Sessions on the same agent share the event stream, so consumers see all
+    /// events from one channel and route on the `session_id` carried directly
+    /// on every run-scoped event (`Output`, `Completed`, `Failed`) — no
+    /// external `run_id → session_id` map is needed.
+    agent_instances:
+        Arc<std::sync::Mutex<std::collections::HashMap<AgentKey, Arc<FakeAgentProcess>>>>,
+}
+
+/// Simulated runtime process shared by all sessions on one agent. Holds the
+/// event channel both attach and new_session sessions write into, plus a
+/// next-session counter so session ids are monotonically unique per agent.
+pub struct FakeAgentProcess {
+    key: AgentKey,
+    events: EventStreamHandle,
+    event_tx: mpsc::Sender<DriverEvent>,
+    next_session: std::sync::Mutex<u32>,
+}
+
+impl FakeAgentProcess {
+    fn mint_session_id(&self) -> SessionId {
+        // Counter starts at 1 and increments before format, so the first
+        // mint produces `fake-session-2`. This reserves `fake-session-1`
+        // for the hardcoded attach-path default in `FakeHandle::start()`,
+        // guaranteeing mint ids can't collide with it.
+        let mut n = self.next_session.lock().unwrap();
+        *n += 1;
+        format!("fake-session-{}", *n)
+    }
 }
 
 impl FakeDriver {
@@ -41,6 +71,7 @@ impl FakeDriver {
             handle_factory: Arc::new(|key, _spec, events, event_tx| {
                 FakeHandle::new(key, events, event_tx)
             }),
+            agent_instances: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         }
     }
 
@@ -63,6 +94,27 @@ impl FakeDriver {
     {
         self.handle_factory = Arc::new(f);
         self
+    }
+
+    /// Look up or create the simulated process for this agent. Returns the
+    /// shared process Arc; sessions share the process's event channel.
+    fn ensure_process(&self, key: &AgentKey) -> Arc<FakeAgentProcess> {
+        let mut guard = self.agent_instances.lock().unwrap();
+        if let Some(existing) = guard.get(key) {
+            return Arc::clone(existing);
+        }
+        let (events, event_tx) = EventFanOut::new();
+        let proc = Arc::new(FakeAgentProcess {
+            key: key.clone(),
+            events,
+            event_tx,
+            // Start at 1 so `mint_session_id` first produces "fake-session-2"
+            // and the attach-path default literal "fake-session-1" can never
+            // collide with a minted id.
+            next_session: std::sync::Mutex::new(1),
+        });
+        guard.insert(key.clone(), Arc::clone(&proc));
+        proc
     }
 }
 
@@ -92,12 +144,36 @@ impl RuntimeDriver for FakeDriver {
         Ok(vec![])
     }
 
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        let (events, event_tx) = EventFanOut::new();
-        let handle = (self.handle_factory)(key, spec, events.clone(), event_tx);
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
+    /// Allocates a handle, stores the intent's session id on
+    /// `resumed_session_id` (for `Resume`) or leaves it `None` (for `New`).
+    /// Replaces the three legacy verbs as the single allocation path.
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<SessionAttachment> {
+        let proc = self.ensure_process(&key);
+        let mut handle =
+            (self.handle_factory)(key, spec, proc.events.clone(), proc.event_tx.clone());
+        match intent {
+            SessionIntent::New => {
+                // Mint a fresh session id so the handle can report it before
+                // run() is called (mirrors legacy new_session behaviour).
+                let session_id = proc.mint_session_id();
+                handle.preassign_session(session_id);
+            }
+            SessionIntent::Resume(id) => {
+                // Both fields are set: preassigned keeps session_id() working
+                // before run(); resumed_session_id threads into run() so the
+                // run() path sees the resume intent.
+                handle.preassign_session(id.clone());
+                handle.resumed_session_id = Some(id);
+            }
+        }
+        Ok(SessionAttachment {
+            session: Box::new(handle),
+            events: proc.events.clone(),
         })
     }
 }
@@ -112,7 +188,14 @@ pub struct FakeHandle {
     events: EventStreamHandle,
     event_tx: mpsc::Sender<DriverEvent>,
     prompt_responses: VecDeque<Vec<DriverEvent>>,
-    next_session: u32,
+    /// If Some, `start` will attach this session id instead of minting the
+    /// default `fake-session-1`. Set by `FakeDriver::new_session` /
+    /// `resume_session` to hand the handle a pre-assigned id so the caller
+    /// can run multiple sessions concurrently on the same agent.
+    preassigned_session_id: Option<SessionId>,
+    /// Session id set by `open_session(Resume(id))`. Threaded into `run()`
+    /// so `run()` uses the resume intent set at open_session time.
+    resumed_session_id: Option<SessionId>,
 }
 
 impl FakeHandle {
@@ -127,7 +210,8 @@ impl FakeHandle {
             events,
             event_tx,
             prompt_responses: VecDeque::new(),
-            next_session: 1,
+            preassigned_session_id: None,
+            resumed_session_id: None,
         }
     }
 
@@ -136,33 +220,24 @@ impl FakeHandle {
         self
     }
 
+    /// Pre-bind a session id so `start` attaches to it rather than minting
+    /// the default. Used by `FakeDriver::new_session` / `resume_session` to
+    /// give each spawned handle its own session id while sharing the agent's
+    /// process event stream.
+    pub(super) fn preassign_session(&mut self, id: SessionId) {
+        self.preassigned_session_id = Some(id);
+    }
+
     fn emit(&self, event: DriverEvent) {
         // Best-effort send; tests subscribe before driving the handle.
         let _ = self.event_tx.try_send(event);
     }
 
-    fn session_id(&self) -> Option<&str> {
-        match &self.state {
-            AgentState::Active { session_id } => Some(session_id),
-            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
-            _ => None,
-        }
-    }
-}
-
-#[async_trait]
-impl AgentHandle for FakeHandle {
-    fn key(&self) -> &AgentKey {
-        &self.key
-    }
-
-    fn state(&self) -> AgentState {
-        self.state.clone()
-    }
-
-    async fn start(
+    /// Core run body. Accepts the resolved session id (computed by `run()` from
+    /// `resumed_session_id` or `preassigned_session_id`).
+    async fn run_inner(
         &mut self,
-        opts: StartOpts,
+        session_id: String,
         init_prompt: Option<PromptReq>,
     ) -> anyhow::Result<()> {
         self.state = AgentState::Starting;
@@ -170,10 +245,6 @@ impl AgentHandle for FakeHandle {
             key: self.key.clone(),
             state: AgentState::Starting,
         });
-
-        let session_id = opts
-            .resume_session_id
-            .unwrap_or_else(|| "fake-session-1".to_string());
 
         self.emit(DriverEvent::SessionAttached {
             key: self.key.clone(),
@@ -196,44 +267,35 @@ impl AgentHandle for FakeHandle {
 
         Ok(())
     }
+}
 
-    async fn new_session(&mut self) -> anyhow::Result<SessionId> {
-        self.next_session += 1;
-        let id = format!("fake-session-{}", self.next_session);
-
-        self.emit(DriverEvent::SessionAttached {
-            key: self.key.clone(),
-            session_id: id.clone(),
-        });
-        self.state = AgentState::Active {
-            session_id: id.clone(),
-        };
-        self.emit(DriverEvent::Lifecycle {
-            key: self.key.clone(),
-            state: AgentState::Active {
-                session_id: id.clone(),
-            },
-        });
-
-        Ok(id)
+#[async_trait]
+impl Session for FakeHandle {
+    fn key(&self) -> &AgentKey {
+        &self.key
     }
 
-    async fn resume_session(&mut self, id: SessionId) -> anyhow::Result<()> {
-        self.emit(DriverEvent::SessionAttached {
-            key: self.key.clone(),
-            session_id: id.clone(),
-        });
-        self.state = AgentState::Active {
-            session_id: id.clone(),
-        };
-        self.emit(DriverEvent::Lifecycle {
-            key: self.key.clone(),
-            state: AgentState::Active {
-                session_id: id.clone(),
-            },
-        });
+    fn session_id(&self) -> Option<&str> {
+        match &self.state {
+            AgentState::Active { session_id } => Some(session_id),
+            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
+            _ => self.preassigned_session_id.as_deref(),
+        }
+    }
 
-        Ok(())
+    fn state(&self) -> AgentState {
+        self.state.clone()
+    }
+
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        // Precedence: resumed_session_id (from open_session/Resume) >
+        // preassigned (from open_session/New) > default literal.
+        let session_id = self
+            .resumed_session_id
+            .take()
+            .or_else(|| self.preassigned_session_id.clone())
+            .unwrap_or_else(|| "fake-session-1".to_string());
+        self.run_inner(session_id, init_prompt).await
     }
 
     async fn prompt(&mut self, _req: PromptReq) -> anyhow::Result<RunId> {
@@ -263,6 +325,7 @@ impl AgentHandle for FakeHandle {
         } else {
             self.emit(DriverEvent::Output {
                 key: self.key.clone(),
+                session_id: session_id.clone(),
                 run_id,
                 item: AgentEventItem::Text {
                     text: "fake response".to_string(),
@@ -270,14 +333,15 @@ impl AgentHandle for FakeHandle {
             });
             self.emit(DriverEvent::Output {
                 key: self.key.clone(),
+                session_id: session_id.clone(),
                 run_id,
                 item: AgentEventItem::TurnEnd,
             });
             self.emit(DriverEvent::Completed {
                 key: self.key.clone(),
+                session_id: session_id.clone(),
                 run_id,
                 result: RunResult {
-                    session_id: session_id.clone(),
                     finish_reason: FinishReason::Natural,
                 },
             });
@@ -303,9 +367,9 @@ impl AgentHandle for FakeHandle {
 
             self.emit(DriverEvent::Completed {
                 key: self.key.clone(),
+                session_id: session_id.clone(),
                 run_id,
                 result: RunResult {
-                    session_id: session_id.clone(),
                     finish_reason: FinishReason::Cancelled,
                 },
             });
@@ -367,29 +431,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_fake_driver_attach_returns_idle_handle() {
+    async fn test_fake_driver_open_session_returns_idle_handle() {
         let driver = FakeDriver::new(AgentRuntime::Claude);
         let result = driver
-            .attach("agent-1".to_string(), test_spec())
+            .open_session("agent-1".to_string(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Idle));
+        assert!(matches!(result.session.state(), AgentState::Idle));
     }
 
     #[tokio::test]
-    async fn test_fake_handle_start_lifecycle() {
+    async fn test_fake_handle_run_lifecycle() {
         let driver = FakeDriver::new(AgentRuntime::Claude);
         let mut result = driver
-            .attach("agent-1".to_string(), test_spec())
+            .open_session("agent-1".to_string(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result
-            .handle
-            .start(StartOpts::default(), None)
-            .await
-            .unwrap();
+        result.session.run(None).await.unwrap();
 
         // Starting lifecycle
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -424,7 +484,7 @@ mod tests {
             }
         ));
 
-        assert!(matches!(result.handle.state(), AgentState::Active { .. }));
+        assert!(matches!(result.session.state(), AgentState::Active { .. }));
     }
 
     #[tokio::test]
@@ -434,6 +494,7 @@ mod tests {
                 FakeHandle::new(key, events, event_tx).with_prompt_responses(vec![vec![
                     DriverEvent::Output {
                         key: "agent-1".to_string(),
+                        session_id: "fake-session-1".to_string(),
                         run_id: RunId::new_v4(),
                         item: AgentEventItem::Text {
                             text: "custom response".to_string(),
@@ -444,18 +505,14 @@ mod tests {
         );
 
         let mut result = driver
-            .attach("agent-1".to_string(), test_spec())
+            .open_session("agent-1".to_string(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result
-            .handle
-            .start(StartOpts::default(), None)
-            .await
-            .unwrap();
+        result.session.run(None).await.unwrap();
 
-        // Drain the start lifecycle events (Starting, SessionAttached, Active)
+        // Drain the run lifecycle events (Starting, SessionAttached, Active)
         for _ in 0..3 {
             timeout(Duration::from_millis(500), rx.recv())
                 .await
@@ -467,7 +524,7 @@ mod tests {
             text: "hello".to_string(),
             attachments: vec![],
         };
-        result.handle.prompt(req).await.unwrap();
+        result.session.prompt(req).await.unwrap();
 
         // PromptInFlight lifecycle
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -515,34 +572,30 @@ mod tests {
     async fn test_fake_handle_close_idempotent() {
         let driver = FakeDriver::new(AgentRuntime::Claude);
         let mut result = driver
-            .attach("agent-1".to_string(), test_spec())
+            .open_session("agent-1".to_string(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
 
-        result.handle.close().await.unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Closed));
+        result.session.close().await.unwrap();
+        assert!(matches!(result.session.state(), AgentState::Closed));
 
         // Second close is a no-op
-        result.handle.close().await.unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Closed));
+        result.session.close().await.unwrap();
+        assert!(matches!(result.session.state(), AgentState::Closed));
     }
 
     #[tokio::test]
     async fn test_fake_handle_prompt_default_response() {
         let driver = FakeDriver::new(AgentRuntime::Claude);
         let mut result = driver
-            .attach("agent-1".to_string(), test_spec())
+            .open_session("agent-1".to_string(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result
-            .handle
-            .start(StartOpts::default(), None)
-            .await
-            .unwrap();
+        result.session.run(None).await.unwrap();
 
-        // Drain start events
+        // Drain run events
         for _ in 0..3 {
             timeout(Duration::from_millis(500), rx.recv())
                 .await
@@ -554,7 +607,7 @@ mod tests {
             text: "hello".to_string(),
             attachments: vec![],
         };
-        result.handle.prompt(req).await.unwrap();
+        result.session.prompt(req).await.unwrap();
 
         // PromptInFlight
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -621,5 +674,347 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Multi-session tests
+    //
+    // These tests prove the 2-tier architecture: RuntimeDriver mints sessions
+    // via open_session(), each returning its own Session. Multiple
+    // handles for the same agent share one simulated process and its event
+    // stream; each session is independent in state and can be prompted without
+    // cross-contamination.
+    // -----------------------------------------------------------------------
+
+    /// Session ids minted by `open_session(New)` must be distinct and
+    /// sequential per agent.
+    #[tokio::test]
+    async fn multi_session_new_session_returns_distinct_session_ids() {
+        let driver = FakeDriver::new(AgentRuntime::Claude);
+        let key = "agent-1".to_string();
+
+        let s1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let s2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        let id1 = s1.session.session_id().expect("preassigned");
+        let id2 = s2.session.session_id().expect("preassigned");
+        assert_ne!(
+            id1, id2,
+            "two open_session(New) calls must yield distinct ids"
+        );
+        assert!(id1.starts_with("fake-session-"));
+        assert!(id2.starts_with("fake-session-"));
+    }
+
+    /// Events from all sessions on one agent flow through the same event
+    /// stream — proving the "one driver process, many sessions" invariant.
+    #[tokio::test]
+    async fn multi_session_all_sessions_share_agent_event_stream() {
+        let driver = FakeDriver::new(AgentRuntime::Claude);
+        let key = "agent-1".to_string();
+
+        // First session mints the process + its event channel.
+        let s1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut rx = s1.events.subscribe();
+
+        // Second session on same agent should write into the SAME channel.
+        let mut s2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // Running s2 should emit events that arrive on the original rx.
+        s2.session.run(None).await.unwrap();
+
+        let ev = timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("s2.run events must reach the shared stream")
+            .expect("stream closed");
+        assert!(matches!(
+            ev,
+            DriverEvent::Lifecycle {
+                state: AgentState::Starting,
+                ..
+            }
+        ));
+    }
+
+    /// Prompting session A must not affect session B's state. This is the
+    /// core isolation invariant: claiming task-42 and task-50 on the same
+    /// agent should give the LLM two independent contexts.
+    #[tokio::test]
+    async fn multi_session_sessions_have_isolated_state() {
+        let driver = FakeDriver::new(AgentRuntime::Claude);
+        let key = "agent-1".to_string();
+
+        let mut s1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut s2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // Run both.
+        s1.session.run(None).await.unwrap();
+        s2.session.run(None).await.unwrap();
+
+        let id1 = s1.session.session_id().unwrap().to_string();
+        let id2 = s2.session.session_id().unwrap().to_string();
+        assert_ne!(id1, id2);
+
+        // Prompt s1. s2's state should remain Active (not PromptInFlight).
+        s1.session
+            .prompt(PromptReq {
+                text: "work on task 42".to_string(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+
+        // After prompt returns, s1 went PromptInFlight → back to Active.
+        // s2 was never touched.
+        match s2.session.state() {
+            AgentState::Active { session_id } => {
+                assert_eq!(session_id, id2, "s2 must still hold its own session id");
+            }
+            other => panic!("s2 must remain Active after s1.prompt; got {other:?}"),
+        }
+    }
+
+    /// `open_session(Resume)` attaches a handle to a caller-supplied session
+    /// id. Useful when restoring across a restart.
+    #[tokio::test]
+    async fn multi_session_resume_session_preserves_supplied_id() {
+        let driver = FakeDriver::new(AgentRuntime::Claude);
+        let key = "agent-1".to_string();
+
+        let resumed = driver
+            .open_session(
+                key,
+                test_spec(),
+                SessionIntent::Resume("stored-session-xyz".to_string()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resumed.session.session_id(), Some("stored-session-xyz"));
+    }
+
+    // -----------------------------------------------------------------------
+    // open_session / run behavioral tests
+    // -----------------------------------------------------------------------
+
+    /// `open_session(Resume("sess_xyz"))` → `run()` → first event after
+    /// Starting is `SessionAttached { session_id: "sess_xyz" }`.
+    #[tokio::test]
+    async fn open_session_resume_run_first_event_is_session_attached() {
+        let driver = FakeDriver::new(AgentRuntime::Claude);
+        let key = "agent-1".to_string();
+
+        let mut result = driver
+            .open_session(
+                key,
+                test_spec(),
+                SessionIntent::Resume("sess_xyz".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // Verify handle already reports the resumed id before run() fires.
+        assert_eq!(
+            result.session.session_id(),
+            Some("sess_xyz"),
+            "session_id() must reflect the resume intent before run()"
+        );
+
+        let mut rx = result.events.subscribe();
+
+        result.session.run(None).await.unwrap();
+
+        // First event: Starting lifecycle.
+        let ev = timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("timeout waiting for Starting")
+            .expect("stream closed");
+        assert!(
+            matches!(
+                ev,
+                DriverEvent::Lifecycle {
+                    state: AgentState::Starting,
+                    ..
+                }
+            ),
+            "expected Starting lifecycle, got {ev:?}"
+        );
+
+        // Second event: SessionAttached carrying the resumed id.
+        let ev = timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("timeout waiting for SessionAttached")
+            .expect("stream closed");
+        match &ev {
+            DriverEvent::SessionAttached { session_id, .. } => {
+                assert_eq!(
+                    session_id, "sess_xyz",
+                    "SessionAttached must carry the resumed session id"
+                );
+            }
+            other => panic!("expected SessionAttached, got {other:?}"),
+        }
+
+        // Handle is now Active with the correct session id.
+        match result.session.state() {
+            AgentState::Active { session_id } => {
+                assert_eq!(session_id, "sess_xyz");
+            }
+            other => panic!("expected Active after run(), got {other:?}"),
+        }
+    }
+
+    /// `open_session(New)` → `run()` → first event after Starting is
+    /// `SessionAttached` carrying the minted id.
+    #[tokio::test]
+    async fn open_session_new_run_emits_session_attached() {
+        let driver = FakeDriver::new(AgentRuntime::Claude);
+        let key = "agent-1".to_string();
+
+        let mut result = driver
+            .open_session(key, test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // A fresh session id was minted.
+        let preassigned_id = result
+            .session
+            .session_id()
+            .expect("new intent must preassign a session id")
+            .to_string();
+        assert!(preassigned_id.starts_with("fake-session-"));
+
+        let mut rx = result.events.subscribe();
+        result.session.run(None).await.unwrap();
+
+        // Drain Starting.
+        let _ = timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("timeout")
+            .expect("closed");
+
+        // SessionAttached carries the same minted id.
+        let ev = timeout(Duration::from_millis(500), rx.recv())
+            .await
+            .expect("timeout waiting for SessionAttached")
+            .expect("stream closed");
+        match &ev {
+            DriverEvent::SessionAttached { session_id, .. } => {
+                assert_eq!(
+                    session_id, &preassigned_id,
+                    "SessionAttached must carry the minted session id"
+                );
+            }
+            other => panic!("expected SessionAttached, got {other:?}"),
+        }
+    }
+
+    /// End-to-end: three concurrent sessions under one agent, each gets its
+    /// own `session_id` on the Completed event, and the `run_id`s never
+    /// collide. This is the invariant that proves multiplexing actually works
+    /// for the Controlled Session list design.
+    #[tokio::test]
+    async fn multi_session_three_concurrent_prompts_with_distinct_completed_events() {
+        let driver = FakeDriver::new(AgentRuntime::Claude);
+        let key = "agent-1".to_string();
+
+        // Subscribe BEFORE spawning sessions so we see their lifecycle events.
+        let s0 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut rx = s0.events.subscribe();
+
+        let mut s1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut s2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut s3 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        s1.session.run(None).await.unwrap();
+        s2.session.run(None).await.unwrap();
+        s3.session.run(None).await.unwrap();
+
+        let id1 = s1.session.session_id().unwrap().to_string();
+        let id2 = s2.session.session_id().unwrap().to_string();
+        let id3 = s3.session.session_id().unwrap().to_string();
+
+        // Collect these so the test can assert at the end.
+        let expected_ids = std::collections::HashSet::from([id1.clone(), id2.clone(), id3.clone()]);
+        assert_eq!(expected_ids.len(), 3, "three distinct session ids");
+
+        // Prompt each in sequence. Within each prompt the default fake
+        // response emits TurnEnd + Completed carrying the session id.
+        s1.session
+            .prompt(PromptReq {
+                text: "s1 prompt".into(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+        s2.session
+            .prompt(PromptReq {
+                text: "s2 prompt".into(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+        s3.session
+            .prompt(PromptReq {
+                text: "s3 prompt".into(),
+                attachments: vec![],
+            })
+            .await
+            .unwrap();
+
+        // Drain events until we see 3 Completed events. Assert each carries
+        // the correct session_id and the set matches what we minted.
+        let mut seen_completed_session_ids: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let drain_deadline = Duration::from_secs(2);
+        while seen_completed_session_ids.len() < 3 {
+            let ev = timeout(drain_deadline, rx.recv())
+                .await
+                .expect("timed out waiting for 3 Completed events")
+                .expect("stream closed");
+            if let DriverEvent::Completed { session_id, .. } = ev {
+                assert!(
+                    expected_ids.contains(&session_id),
+                    "Completed carried unexpected session_id {:?}",
+                    session_id
+                );
+                seen_completed_session_ids.insert(session_id);
+            }
+        }
+
+        assert_eq!(
+            seen_completed_session_ids, expected_ids,
+            "every minted session must emit a Completed event carrying its own id"
+        );
     }
 }
