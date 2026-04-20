@@ -187,82 +187,100 @@ impl RuntimeDriver for OpencodeDriver {
         Ok(vec![])
     }
 
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
+    /// Native unified factory. Bootstrap path (no live child yet): allocates
+    /// handle only, zero wire I/O. Secondary path (live child): does eager
+    /// wire I/O to mint/load the session id, but emits **no** `DriverEvent`s
+    /// — that contract belongs to `run`.
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<AttachResult> {
         let proc = self.ensure_process(&key);
-        let handle = OpencodeHandle {
-            key,
-            local_state: AgentState::Idle,
-            spec,
-            proc: Arc::clone(&proc),
-            preassigned_session_id: None,
-            role: HandleRole::Bootstrap,
-        };
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events: proc.events.clone(),
-        })
+        if proc.started.load(Ordering::SeqCst) {
+            // Secondary path: child is live. Do wire I/O in factory;
+            // do NOT emit any DriverEvent here.
+            let session_id = match &intent {
+                SessionIntent::New => proc
+                    .request_new_session(&spec)
+                    .await
+                    .context("opencode: session/new request failed")?,
+                SessionIntent::Resume(id) => proc
+                    .request_load_session(&spec, id)
+                    .await
+                    .context("opencode: session/load request failed")?,
+            };
+            let handle = OpencodeHandle {
+                key,
+                local_state: AgentState::Idle,
+                spec,
+                proc: Arc::clone(&proc),
+                preassigned_session_id: Some(session_id),
+                role: HandleRole::Secondary,
+            };
+            Ok(AttachResult {
+                handle: Box::new(handle),
+                events: proc.events.clone(),
+            })
+        } else {
+            // Bootstrap path: allocate handle only, no wire I/O.
+            let preassigned = match intent {
+                SessionIntent::New => None,
+                SessionIntent::Resume(id) => Some(id),
+            };
+            let handle = OpencodeHandle {
+                key,
+                local_state: AgentState::Idle,
+                spec,
+                proc: Arc::clone(&proc),
+                preassigned_session_id: preassigned,
+                role: HandleRole::Bootstrap,
+            };
+            Ok(AttachResult {
+                handle: Box::new(handle),
+                events: proc.events.clone(),
+            })
+        }
     }
 
+    /// Compat shim — delegates to `open_session(New)`.
+    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
+        self.open_session(key, spec, SessionIntent::New).await
+    }
+
+    /// Compat shim — preserves loud-fail on stale key (child not started).
     async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        let proc = self.ensure_process(&key);
-        if !proc.started.load(Ordering::SeqCst) {
+        if !agent_instances()
+            .get(&key)
+            .is_some_and(|p| p.started.load(Ordering::SeqCst))
+        {
             bail!(
                 "opencode: new_session called before attach().start() brought the child online \
                  (agent {key})"
             );
         }
-
-        // Send session/new on the live child; wait for its response.
-        let session_id = proc
-            .request_new_session(&spec)
-            .await
-            .context("opencode: session/new request failed")?;
-
-        let handle = OpencodeHandle {
-            key,
-            local_state: AgentState::Idle,
-            spec,
-            proc: Arc::clone(&proc),
-            preassigned_session_id: Some(session_id),
-            role: HandleRole::Secondary,
-        };
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events: proc.events.clone(),
-        })
+        self.open_session(key, spec, SessionIntent::New).await
     }
 
+    /// Compat shim — preserves loud-fail on stale key (child not started).
     async fn resume_session(
         &self,
         key: AgentKey,
         spec: AgentSpec,
         session_id: SessionId,
     ) -> anyhow::Result<AttachResult> {
-        let proc = self.ensure_process(&key);
-        if !proc.started.load(Ordering::SeqCst) {
+        if !agent_instances()
+            .get(&key)
+            .is_some_and(|p| p.started.load(Ordering::SeqCst))
+        {
             bail!(
                 "opencode: resume_session called before attach().start() brought the child online \
                  (agent {key})"
             );
         }
-
-        let resumed_id = proc
-            .request_load_session(&spec, &session_id)
+        self.open_session(key, spec, SessionIntent::Resume(session_id))
             .await
-            .context("opencode: session/load request failed")?;
-
-        let handle = OpencodeHandle {
-            key,
-            local_state: AgentState::Idle,
-            spec,
-            proc: Arc::clone(&proc),
-            preassigned_session_id: Some(resumed_id),
-            role: HandleRole::Secondary,
-        };
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events: proc.events.clone(),
-        })
     }
 }
 
@@ -574,56 +592,28 @@ impl AgentSessionHandle for OpencodeHandle {
         self.local_state.clone()
     }
 
+    /// Native implementation. Bootstrap → `run_bootstrap`; Secondary → `run_secondary`.
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        match self.role {
+            HandleRole::Bootstrap => self.run_bootstrap(init_prompt).await,
+            HandleRole::Secondary => self.run_secondary(init_prompt).await,
+        }
+    }
+
+    /// Compat shim: threads `opts.resume_session_id` into `preassigned_session_id`
+    /// (Bootstrap branch only; Secondary already has its id minted by the factory),
+    /// then calls `run`.
     async fn start(
         &mut self,
         opts: StartOpts,
         init_prompt: Option<PromptReq>,
     ) -> anyhow::Result<()> {
-        self.local_state = AgentState::Starting;
-        self.emit(DriverEvent::Lifecycle {
-            key: self.key.clone(),
-            state: AgentState::Starting,
-        });
-
         if self.role.is_bootstrap() {
-            // First-attach path: spawn the child, drive handshake, emit
-            // SessionAttached + Active when the id-2 response lands.
-            self.start_bootstrap_child(opts, init_prompt).await?;
-        } else {
-            // new_session / resume_session path: child is already live, our
-            // session id was minted before we were handed back to the caller.
-            let session_id = self
-                .preassigned_session_id
-                .clone()
-                .context("opencode: handle spawned without preassigned session id")?;
-
-            // Seed per-session runtime state and announce the attach.
-            {
-                let mut s = self.proc.shared.lock().unwrap();
-                s.sessions
-                    .entry(session_id.clone())
-                    .or_insert_with(|| SessionRuntimeState::active(&session_id));
-            }
-            self.local_state = AgentState::Active {
-                session_id: session_id.clone(),
-            };
-            self.emit(DriverEvent::SessionAttached {
-                key: self.key.clone(),
-                session_id: session_id.clone(),
-            });
-            self.emit(DriverEvent::Lifecycle {
-                key: self.key.clone(),
-                state: AgentState::Active {
-                    session_id: session_id.clone(),
-                },
-            });
-
-            if let Some(req) = init_prompt {
-                self.prompt(req).await?;
+            if let Some(id) = opts.resume_session_id {
+                self.preassigned_session_id = Some(id);
             }
         }
-
-        Ok(())
+        self.run(init_prompt).await
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -782,13 +772,70 @@ impl AgentSessionHandle for OpencodeHandle {
 }
 
 impl OpencodeHandle {
-    /// Spawn the child, write the handshake, and set up the reader tasks.
-    /// Only called on the bootstrap handle returned from `attach`.
-    async fn start_bootstrap_child(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
+    /// Bootstrap run path: emit Starting lifecycle, spawn the child, write the
+    /// handshake, and set up the reader tasks. Reads `self.preassigned_session_id`
+    /// for resume (set by `start` shim from `opts.resume_session_id`, or by
+    /// `open_session(Resume(id))` directly).
+    async fn run_bootstrap(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        self.local_state = AgentState::Starting;
+        self.emit(DriverEvent::Lifecycle {
+            key: self.key.clone(),
+            state: AgentState::Starting,
+        });
+        self.run_bootstrap_inner(init_prompt).await
+    }
+
+    /// Secondary run path: child is already live, session id was minted by
+    /// `open_session`. Emit Starting, seed per-session state, emit
+    /// SessionAttached + Active, then deliver init_prompt if present.
+    async fn run_secondary(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        self.local_state = AgentState::Starting;
+        self.emit(DriverEvent::Lifecycle {
+            key: self.key.clone(),
+            state: AgentState::Starting,
+        });
+
+        // `preassigned_session_id` was set by `open_session` (Secondary path
+        // does eager wire I/O in the factory).
+        let session_id = self
+            .preassigned_session_id
+            .clone()
+            .context("opencode: handle spawned without preassigned session id")?;
+
+        // Seed per-session runtime state and announce the attach.
+        {
+            let mut s = self.proc.shared.lock().unwrap();
+            s.sessions
+                .entry(session_id.clone())
+                .or_insert_with(|| SessionRuntimeState::active(&session_id));
+        }
+        self.local_state = AgentState::Active {
+            session_id: session_id.clone(),
+        };
+        self.emit(DriverEvent::SessionAttached {
+            key: self.key.clone(),
+            session_id: session_id.clone(),
+        });
+        self.emit(DriverEvent::Lifecycle {
+            key: self.key.clone(),
+            state: AgentState::Active {
+                session_id: session_id.clone(),
+            },
+        });
+
+        if let Some(req) = init_prompt {
+            self.prompt(req).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Inner bootstrap implementation: spawn the child, write the handshake,
+    /// and set up the reader tasks. Only called from `run_bootstrap`.
+    async fn run_bootstrap_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        // Read resume id from preassigned_session_id (set by start shim or open_session).
+        let resume_session_id = self.preassigned_session_id.clone();
+
         let wd = &self.spec.working_directory;
         let model_id = match &self.spec.reasoning_effort {
             Some(variant) if !variant.is_empty() => {
@@ -868,7 +915,7 @@ impl OpencodeHandle {
             // bootstrap handle observes the minted session id through the
             // emitted `SessionAttached` event on the shared fan-out, not a
             // direct oneshot.
-            if let Some(ref sid) = opts.resume_session_id {
+            if let Some(ref sid) = resume_session_id {
                 s.bootstrap_requested_session_id = Some(sid.clone());
                 s.pending_requests.insert(
                     2,
@@ -905,7 +952,7 @@ impl OpencodeHandle {
             "cwd": self.spec.working_directory,
             "mcpServers": []
         });
-        let session_req = if let Some(ref sid) = opts.resume_session_id {
+        let session_req = if let Some(ref sid) = resume_session_id {
             acp_protocol::build_session_load_request(2, sid, session_new_params)
         } else {
             acp_protocol::build_session_new_request(2, session_new_params)
@@ -1044,7 +1091,7 @@ impl OpencodeHandle {
         // Defer local_state transition to `Active` until the reader observes
         // the session response. Callers who need the session id block on
         // SessionAttached events through the event stream.
-        if let Some(ref sid) = opts.resume_session_id {
+        if let Some(ref sid) = resume_session_id {
             // Pre-populate local mirror optimistically; the reader will
             // confirm by emitting SessionAttached / Active.
             self.local_state = AgentState::Active {
@@ -2435,5 +2482,230 @@ mod tests {
             s.sessions.is_empty(),
             "no session slot was seeded before the write — must stay empty"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Task 6 behavioral tests: open_session + run
+    // -----------------------------------------------------------------------
+
+    /// open_session(New) on no-child-yet → Bootstrap path.
+    /// Contract:
+    ///   - session_id() == None (no wire I/O, nothing minted)
+    ///   - mock stdin saw zero writes
+    ///   - no DriverEvent emitted
+    #[tokio::test]
+    async fn open_session_new_on_no_child_bootstrap_path() {
+        let driver = OpencodeDriver;
+        let key = format!("oc-open-no-child-{}", uuid::Uuid::new_v4());
+
+        let result = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // session_id() must be None — no wire I/O happened.
+        assert!(
+            result.handle.session_id().is_none(),
+            "bootstrap open_session(New) must return handle with session_id == None"
+        );
+
+        // No events should have been emitted by the factory.
+        let mut event_rx = result.events.subscribe();
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            event_rx.recv(),
+        )
+        .await
+        {
+            Err(_timeout) => {} // expected: no events
+            Ok(Some(ev)) => panic!(
+                "open_session must not emit any DriverEvent; got: {:?}",
+                std::mem::discriminant(&ev)
+            ),
+            Ok(None) => {} // channel closed before any event — also fine
+        }
+
+        // Clean up registry entry.
+        agent_instances().remove(&key);
+    }
+
+    /// open_session(New) on live child → Secondary path.
+    /// Contract:
+    ///   - session_id().is_some() (factory minted it via session/new wire RPC)
+    ///   - mock stdin saw exactly one session/new request
+    ///   - no DriverEvent emitted by the factory call itself
+    #[tokio::test]
+    async fn open_session_new_on_live_child_secondary_path() {
+        let (proc, mut stdin_rx, mut event_rx) = build_test_process("oc-open-live");
+
+        let driver = OpencodeDriver;
+        let key = proc.key.clone();
+
+        // Register the process in the global registry so `ensure_process` finds
+        // it (required for the driver's open_session to reach it).
+        agent_instances().get_or_init(&key, || Arc::clone(&proc));
+
+        // Launch open_session in a task — it will block waiting for the
+        // session/new response.
+        let key_c = key.clone();
+        let open_task = tokio::spawn(async move {
+            driver
+                .open_session(key_c, test_spec(), SessionIntent::New)
+                .await
+        });
+
+        // Factory must have written exactly one session/new to stdin.
+        let line = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stdin_rx.recv(),
+        )
+        .await
+        .expect("open_session must write session/new to stdin within 2s")
+        .expect("stdin channel open");
+
+        let req: serde_json::Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(req["method"], "session/new", "first stdin write must be session/new");
+
+        // No more stdin writes should arrive before we respond.
+        match tokio::time::timeout(std::time::Duration::from_millis(50), stdin_rx.recv()).await {
+            Err(_) => {} // expected: only one write
+            Ok(msg) => panic!("unexpected stdin write from open_session factory: {msg:?}"),
+        }
+
+        // Feed back the session/new response to unblock open_session.
+        let id = req["id"].as_u64().unwrap();
+        let resp =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"live-sess-1"}}}}"#);
+        feed_line(&proc, &resp).await;
+
+        let result = open_task.await.unwrap().unwrap();
+
+        // session_id() must be Some — factory minted it.
+        assert_eq!(
+            result.handle.session_id(),
+            Some("live-sess-1"),
+            "Secondary open_session(New) must return handle with minted session_id"
+        );
+
+        // No DriverEvent must have been emitted by the factory.
+        // (The reader does emit events when it processes the session/new
+        // response for the bootstrap path, but for Secondary with a responder
+        // it must NOT emit SessionAttached — that's run()'s job.)
+        loop {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                event_rx.recv(),
+            )
+            .await
+            {
+                Err(_) => break, // no events: good
+                Ok(Some(DriverEvent::SessionAttached { .. })) => {
+                    panic!("open_session Secondary factory must NOT emit SessionAttached");
+                }
+                Ok(Some(DriverEvent::Lifecycle {
+                    state: AgentState::Active { .. },
+                    ..
+                })) => {
+                    panic!("open_session Secondary factory must NOT emit Active lifecycle");
+                }
+                Ok(Some(_other)) => {} // ignore other events (e.g. unrelated Lifecycle)
+                Ok(None) => break,
+            }
+        }
+
+        agent_instances().remove(&key);
+    }
+
+    /// After run() on the live-child (Secondary) case:
+    ///   - first emitted event is SessionAttached
+    ///   - mock stdin saw NO second session/new (factory already did it)
+    #[tokio::test]
+    async fn run_secondary_emits_session_attached_no_second_session_new() {
+        let (proc, mut stdin_rx, mut event_rx) = build_test_process("oc-run-secondary");
+
+        let driver = OpencodeDriver;
+        let key = proc.key.clone();
+        agent_instances().get_or_init(&key, || Arc::clone(&proc));
+
+        // Open a secondary session (blocks on session/new response).
+        let key_c = key.clone();
+        let open_task = tokio::spawn(async move {
+            driver
+                .open_session(key_c, test_spec(), SessionIntent::New)
+                .await
+        });
+
+        // Drain the factory's session/new write and respond.
+        let line = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            stdin_rx.recv(),
+        )
+        .await
+        .expect("open_session must write session/new")
+        .expect("stdin open");
+        let id = serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        let resp = format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"sess-run-sec"}}}}"#
+        );
+        feed_line(&proc, &resp).await;
+
+        let result = open_task.await.unwrap().unwrap();
+        let mut handle = result.handle;
+
+        // Now call run() — this is the Secondary run path.
+        handle.run(None).await.expect("run() must succeed");
+
+        // First meaningful event after run() must be SessionAttached.
+        let ev = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            event_rx.recv(),
+        )
+        .await
+        .expect("run() must emit at least one event")
+        .expect("channel open");
+
+        // Skip any Starting lifecycle that run() emits first.
+        let first_meaningful = if let DriverEvent::Lifecycle {
+            state: AgentState::Starting,
+            ..
+        } = &ev
+        {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                event_rx.recv(),
+            )
+            .await
+            .expect("run() must emit SessionAttached after Starting")
+            .expect("channel open")
+        } else {
+            ev
+        };
+
+        assert!(
+            matches!(
+                first_meaningful,
+                DriverEvent::SessionAttached { ref session_id, .. } if session_id == "sess-run-sec"
+            ),
+            "first non-Starting event after run() must be SessionAttached for 'sess-run-sec'; got: {:?}",
+            std::mem::discriminant(&first_meaningful)
+        );
+
+        // No second session/new must have been written to stdin.
+        match tokio::time::timeout(std::time::Duration::from_millis(100), stdin_rx.recv()).await {
+            Err(_) => {} // expected: no extra writes
+            Ok(Some(msg)) => {
+                let val: serde_json::Value =
+                    serde_json::from_str(&msg).unwrap_or(serde_json::Value::Null);
+                if val.get("method") == Some(&serde_json::Value::String("session/new".to_string())) {
+                    panic!("run() Secondary must NOT send a second session/new; stdin got: {msg}");
+                }
+                // Other writes (e.g. session/prompt from init_prompt) are fine.
+            }
+            Ok(None) => {} // channel closed: fine
+        }
+
+        agent_instances().remove(&key);
     }
 }
