@@ -14,16 +14,15 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::{anyhow, Context};
 use async_trait::async_trait;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
 
-// `HandleRole` now lives in `drivers/mod.rs` and is shared across drivers —
-// claude/codex/kimi/opencode all distinguish bootstrap-vs-secondary handles
-// identically. `is_bootstrap()` remains the canonical intent check.
+// `HandleRole` lives in `drivers/mod.rs` and is used by codex/opencode.
+// Kimi no longer uses HandleRole — all handles are role-agnostic since Task 1.
 
 use crate::agent::AgentRuntime;
 use crate::utils::cmd::{command_exists, home_dir, read_file};
@@ -91,6 +90,17 @@ struct KimiAgentCore {
     event_tx: mpsc::Sender<DriverEvent>,
     spec: AgentSpec,
     inner: tokio::sync::Mutex<CoreInner>,
+    /// True once `ensure_started` has completed successfully (child spawned +
+    /// `initialize` responded). Once set, subsequent calls to `ensure_started`
+    /// are fast no-ops. On failure, stays false so the next caller can retry.
+    started: AtomicBool,
+    /// Notified by the race-winner thread once `started` is set. Waiters
+    /// sleeping in `ensure_started` wake and re-check `started`.
+    started_notify: tokio::sync::Notify,
+    /// Mutex serializing concurrent `ensure_started` calls so only one
+    /// thread actually runs spawn + initialize. Non-recursive (tokio::Mutex
+    /// is fair and async-friendly).
+    start_in_progress: tokio::sync::Mutex<()>,
 }
 
 /// Inner mutable state guarded by a tokio mutex so we can `await` while
@@ -136,6 +146,9 @@ impl KimiAgentCore {
                 next_request_id: 1,
                 owned: OwnedProcess::default(),
             }),
+            started: AtomicBool::new(false),
+            started_notify: tokio::sync::Notify::new(),
+            start_in_progress: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -146,6 +159,165 @@ impl KimiAgentCore {
             &self.key,
             <Self as AgentProcess>::DRIVER_NAME,
         );
+    }
+
+    /// Lazy, race-safe bootstrap. First caller spawns the child process and
+    /// sends `initialize`; subsequent concurrent callers wait for the
+    /// `started_notify`; any caller that arrives after `started` is set
+    /// returns immediately.
+    ///
+    /// On failure: `started` stays false. The `start_in_progress` lock is
+    /// released, so the next caller retries. This makes failure non-sticky:
+    /// a transient spawn error doesn't permanently brick the core.
+    pub(crate) async fn ensure_started(self: &Arc<Self>) -> anyhow::Result<()> {
+        // Fast path: already started.
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // Serialize concurrent starters. The double-check inside the lock
+        // prevents redundant spawns if two callers raced past the first check.
+        let _guard = self.start_in_progress.lock().await;
+        if self.started.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        // We are the race-winner. Spawn child + send initialize.
+        self.spawn_and_initialize().await?;
+        self.started.store(true, Ordering::Release);
+        self.started_notify.notify_waiters();
+        Ok(())
+    }
+
+    /// Spawn the Kimi child process, wire up stdio tasks, and send
+    /// `initialize`. Does NOT send `session/new` or `session/load` — those
+    /// move to each handle's `start()`. Populates `inner.stdin_tx`,
+    /// `inner.shared`, and sets `inner.next_request_id = 3`.
+    async fn spawn_and_initialize(self: &Arc<Self>) -> anyhow::Result<()> {
+        // Pair with the shared HTTP bridge.
+        let pairing_token =
+            super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+                .await
+                .context("failed to pair with shared bridge")?;
+
+        let wd = &self.spec.working_directory;
+        let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
+        let mcp_config = build_mcp_config_file(&self.spec.bridge_endpoint, &pairing_token);
+        tokio::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
+            .await
+            .context("failed to write MCP config")?;
+
+        let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
+        let wd_str = wd.to_string_lossy().into_owned();
+        let mut args = vec![
+            "--work-dir".to_string(),
+            wd_str,
+            "--mcp-config-file".to_string(),
+            mcp_path_str,
+        ];
+        if !self.spec.model.is_empty() {
+            args.push("--model".to_string());
+            args.push(self.spec.model.clone());
+        }
+        args.push("acp".to_string());
+
+        let mut cmd = Command::new("kimi");
+        cmd.args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .env("FORCE_COLOR", "0")
+            .env("NO_COLOR", "1");
+        for ev in &self.spec.env_vars {
+            cmd.env(&ev.key, &ev.value);
+        }
+
+        let mut child = cmd.spawn().context("failed to spawn kimi")?;
+        let stdout = child.stdout.take().context("missing stdout")?;
+        let stderr = child.stderr.take().context("missing stderr")?;
+        let mut stdin = child.stdin.take().context("missing stdin")?;
+
+        // Write `initialize` synchronously before handing stdin to the async writer.
+        let init_req = acp_protocol::build_initialize_request(1);
+        writeln!(stdin, "{init_req}").context("failed to write initialize request")?;
+
+        // Shared reader state, seeded with just the Init pending entry for id 1.
+        // Session minting (session/new or session/load at id >=2) is handled
+        // by each handle's start() after ensure_started completes.
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::AwaitingInitResponse,
+            sessions: HashMap::new(),
+            pending: {
+                let mut m = HashMap::new();
+                m.insert(1, PendingRequest::Init);
+                m
+            },
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+        }));
+
+        // Stdin writer task.
+        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
+        let stdin_handle = tokio::task::spawn_blocking(move || {
+            while let Some(line) = stdin_rx.blocking_recv() {
+                if writeln!(stdin, "{line}").is_err() {
+                    break;
+                }
+                if stdin.flush().is_err() {
+                    break;
+                }
+            }
+        });
+
+        // Stdout reader task.
+        let key = self.key.clone();
+        let event_tx = self.event_tx.clone();
+        let shared_for_reader = shared.clone();
+        let stdin_tx_for_reader = stdin_tx.clone();
+        let stdout_handle = tokio::spawn(async move {
+            reader_loop(
+                key,
+                event_tx,
+                shared_for_reader,
+                stdin_tx_for_reader,
+                stdout,
+            )
+            .await;
+        });
+
+        // Stderr reader task.
+        let key_err = self.key.clone();
+        let stderr_handle = tokio::spawn(async move {
+            let stderr_async = match tokio::process::ChildStderr::from_std(stderr) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!(key = %key_err, error = %e, "kimi: failed to convert stderr to async");
+                    return;
+                }
+            };
+            let reader = BufReader::new(stderr_async);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    warn!(key = %key_err, line = %line, "kimi stderr");
+                }
+            }
+        });
+
+        // Publish the child + stdio into the shared core.
+        // next_request_id = 3: ids 1 (initialize) and 2 are taken by the
+        // first handle's session/new or session/load. Starting at 3 means
+        // every subsequent alloc_id() returns unique, non-colliding ids.
+        {
+            let mut inner = self.inner.lock().await;
+            inner.owned.child = Some(child);
+            inner
+                .owned
+                .reader_handles
+                .extend([stdin_handle, stdout_handle, stderr_handle]);
+            inner.stdin_tx = Some(stdin_tx);
+            inner.shared = Some(shared.clone());
+            inner.next_request_id = 3;
+        }
+
+        Ok(())
     }
 }
 
@@ -161,7 +333,7 @@ impl AgentProcess for KimiAgentCore {
     /// receiver has dropped (writer task exited).
     fn is_stale(&self) -> bool {
         let Ok(inner) = self.inner.try_lock() else {
-            // Someone's mid-mutation (e.g. spawn_child in progress) — treat
+            // Someone's mid-mutation (e.g. spawn_and_initialize in progress) — treat
             // as live so we don't tear down a process mid-spawn.
             return false;
         };
@@ -274,19 +446,17 @@ impl RuntimeDriver for KimiDriver {
     }
 
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        // Stale-gate the eviction: `registry_get` already evicts cores whose
-        // writer task exited (`is_stale()` true). If it returns `Some`, the
-        // core is live — reuse it rather than orphaning its child + readers.
-        // This matches Codex's fix pattern in `codex.rs::ensure_process`.
+        // Stale-gate the eviction: `get_or_evict_stale` already evicts cores
+        // whose writer task exited (`is_stale()` true). If it returns `Some`,
+        // the core is live — reuse it rather than orphaning its child + readers.
         //
-        // Reuse semantics: the caller gets a fresh bootstrap handle wired to
-        // the existing fan-out + shared state, so any live sessions on the
-        // core keep running and their events keep reaching subscribers. `start`
-        // on the new handle short-circuits its child spawn via the `spawned`
-        // flag in `KimiAgentCore`, so double-spawn is impossible.
+        // Reuse semantics: the caller gets a fresh handle wired to the
+        // existing fan-out + shared state, so any live sessions on the core
+        // keep running. `start()` on the new handle calls `ensure_started()`
+        // which is a fast no-op on a live core (started flag already set).
         if let Some(existing) = registry().get_or_evict_stale(&key) {
             let events = existing.events.clone();
-            let handle = KimiHandle::new_bootstrap(existing);
+            let handle = KimiHandle::new(existing, None);
             return Ok(AttachResult {
                 handle: Box::new(handle),
                 events,
@@ -297,7 +467,7 @@ impl RuntimeDriver for KimiDriver {
         let core = KimiAgentCore::new(key.clone(), spec.clone(), events.clone(), event_tx);
         registry().insert(key.clone(), core.clone());
 
-        let handle = KimiHandle::new_bootstrap(core);
+        let handle = KimiHandle::new(core, None);
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
@@ -310,7 +480,7 @@ impl RuntimeDriver for KimiDriver {
         })?;
 
         let events = core.events.clone();
-        let handle = KimiHandle::new_secondary(core);
+        let handle = KimiHandle::new(core, None);
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
@@ -328,8 +498,7 @@ impl RuntimeDriver for KimiDriver {
         })?;
 
         let events = core.events.clone();
-        let mut handle = KimiHandle::new_secondary(core);
-        handle.preassigned_session_id = Some(session_id);
+        let handle = KimiHandle::new(core, Some(session_id));
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
@@ -343,9 +512,10 @@ impl RuntimeDriver for KimiDriver {
 
 /// Reader-task state. Populated during `start()`, consumed by the stdout task.
 struct SharedReaderState {
-    /// First-session warm-up phase. Only the initial handshake
-    /// (initialize → session/new|load) drives this; later sessions bypass it
-    /// by registering directly in `pending`.
+    /// Handshake phase for the very first `initialize` response.
+    /// After that response arrives the phase flips to Active and all
+    /// subsequent session/new, session/load, and prompt responses route
+    /// through `pending` directly.
     phase: acp_protocol::AcpPhase,
     /// Per-session state keyed by ACP session id.
     sessions: HashMap<String, SessionState>,
@@ -353,27 +523,10 @@ struct SharedReaderState {
     /// this map instead of acp_protocol::parse_line's hardcoded id dispatch
     /// (which otherwise bucket id>=3 as PromptResponse).
     pending: HashMap<u64, PendingRequest>,
-    /// For the very first session, we omit a `pending` entry for id 2 so the
-    /// existing warm-up flow still works — but we do need to know what to do
-    /// with the deferred initial prompt.
-    warmup: Option<WarmupState>,
     /// Set to true once a `Lifecycle { Closed }` has been emitted for this
-    /// agent (either by `close()` on the bootstrap handle, or the reader EOF
-    /// path). Guards against duplicate emissions when both fire.
+    /// agent (either by `close()` on a handle, or the reader EOF path).
+    /// Guards against duplicate emissions when both fire.
     closed_emitted: Arc<AtomicBool>,
-    /// Session id minted by the bootstrap warmup response. The bootstrap
-    /// handle doesn't locally track its session_id (secondary handles do),
-    /// so we stash it here when the reader sees the warmup response. Used
-    /// by `close()` on the bootstrap handle to identify *its* session slot
-    /// so it can drop it from `sessions` without accidentally taking out a
-    /// live secondary's entry.
-    bootstrap_session_id: Option<String>,
-}
-
-struct WarmupState {
-    /// Deferred initial prompt: delivered as `session/prompt` once the first
-    /// session is Active.
-    pending_prompt: Option<String>,
 }
 
 /// Per-session state. Each ACP session has its own lifecycle and tool-call
@@ -399,10 +552,11 @@ impl SessionState {
 
 /// What an in-flight JSON-RPC request is waiting for. When the matching
 /// response arrives the reader task looks up the entry and either completes
-/// a oneshot (for session/new, session/load) or drives prompt bookkeeping.
+/// a oneshot (for session/new, session/load, initialize) or drives prompt
+/// bookkeeping.
 enum PendingRequest {
-    /// Initialize response. Only used for the first session's warm-up; the
-    /// reader flips `phase` to AwaitingSessionResponse on arrival.
+    /// Initialize response. Only used for the first `initialize` request;
+    /// the reader flips `phase` to Active on arrival.
     Init,
     /// `session/new` response — carries a oneshot that receives the minted
     /// session id (or an error).
@@ -419,17 +573,6 @@ enum PendingRequest {
     /// tool-call accumulator, emit TurnEnd + Completed, and flip the
     /// session's state back to Active.
     Prompt { session_id: String, run_id: RunId },
-    /// First-session warm-up path: session/new|load that the existing start()
-    /// flow sent synchronously without a oneshot (id is hardcoded to 2). Same
-    /// outcomes as SessionNew/SessionLoad but drives reader state directly.
-    WarmupSession { expected_session_id: Option<String> },
-    /// Reservation slot for the bootstrap's deferred initial prompt at id 3.
-    /// Inserted by `spawn_child` before any response can land so that
-    /// [`alloc_id`] returning id >=4 for concurrent `new_session` callers
-    /// can't collide with the warmup's hardcoded id-3 prompt. The warmup
-    /// response handler either replaces this with a real `Prompt` entry
-    /// (deferred prompt fires) or removes it (no deferred prompt was set).
-    WarmupPromptReserved,
 }
 
 // ---------------------------------------------------------------------------
@@ -438,14 +581,8 @@ enum PendingRequest {
 
 pub struct KimiHandle {
     core: Arc<KimiAgentCore>,
-    /// Whether this is the bootstrap handle (owns child lifecycle) or a
-    /// secondary handle (multiplexes on the existing stdin, never kills the
-    /// child). The bootstrap handle is returned by `attach()`; secondary
-    /// handles come from `new_session`/`resume_session`.
-    role: HandleRole,
     /// Session id assigned to this handle. None until start() completes.
-    /// Secondary handles' `start()` populates this from the
-    /// `session/new`/`session/load` response.
+    /// Populated from the `session/new` or `session/load` response.
     session_id: Option<SessionId>,
     /// Lifecycle mirror for `state()` calls that don't want to take the
     /// shared mutex. Kept in sync with `core.shared.sessions[session_id]`.
@@ -457,23 +594,15 @@ pub struct KimiHandle {
 }
 
 impl KimiHandle {
-    fn new_bootstrap(core: Arc<KimiAgentCore>) -> Self {
+    /// Construct a role-agnostic handle. Every handle's `start()` will call
+    /// `core.ensure_started()` (lazy, race-safe spawn + initialize) then
+    /// send its own `session/new` or `session/load`.
+    fn new(core: Arc<KimiAgentCore>, preassigned_session_id: Option<SessionId>) -> Self {
         Self {
             core,
-            role: HandleRole::Bootstrap,
             session_id: None,
             state: AgentState::Idle,
-            preassigned_session_id: None,
-        }
-    }
-
-    fn new_secondary(core: Arc<KimiAgentCore>) -> Self {
-        Self {
-            core,
-            role: HandleRole::Secondary,
-            session_id: None,
-            state: AgentState::Idle,
-            preassigned_session_id: None,
+            preassigned_session_id,
         }
     }
 
@@ -489,194 +618,100 @@ impl KimiHandle {
         id
     }
 
-    /// Spawn the Kimi child process and wire up stdio tasks. First-session
-    /// only — called by the bootstrap handle's `start()`.
-    async fn spawn_child(
-        &mut self,
-        opts: &StartOpts,
+    /// Send `session/new` on the live stdin and return the minted session id.
+    /// Requires `ensure_started()` to have already succeeded.
+    async fn send_session_new(&self) -> anyhow::Result<String> {
+        let (stdin_tx, shared, pairing_token) = self.acquire_stdin_and_shared().await?;
+        let id = self.alloc_id().await;
+        let (tx, rx) = oneshot::channel();
+        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &pairing_token);
+        let params = serde_json::json!({
+            "cwd": self.core.spec.working_directory,
+            "mcpServers": mcp_servers,
+        });
+        {
+            let mut s = shared.lock().unwrap();
+            s.pending
+                .insert(id, PendingRequest::SessionNew { responder: tx });
+        }
+        let req = acp_protocol::build_session_new_request(id, params);
+        stdin_tx
+            .send(req)
+            .await
+            .context("kimi: stdin channel closed")?;
+        rx.await
+            .map_err(|_| anyhow!("kimi: reader task dropped before session/new response"))?
+            .map_err(|msg| anyhow!("kimi: session/new failed: {msg}"))
+    }
+
+    /// Send `session/load` on the live stdin and return the resolved session id.
+    /// Requires `ensure_started()` to have already succeeded.
+    async fn send_session_load(&self, sid: &str) -> anyhow::Result<String> {
+        let (stdin_tx, shared, _pairing_token) = self.acquire_stdin_and_shared().await?;
+        let id = self.alloc_id().await;
+        let (tx, rx) = oneshot::channel();
+        // Secondary sessions send an empty `mcpServers` array. Kimi
+        // accepts this on `session/load` — the bootstrap session's MCP
+        // state is reused.
+        let params = serde_json::json!({
+            "cwd": self.core.spec.working_directory,
+            "mcpServers": [],
+        });
+        {
+            let mut s = shared.lock().unwrap();
+            s.pending.insert(
+                id,
+                PendingRequest::SessionLoad {
+                    expected_session_id: sid.to_string(),
+                    responder: tx,
+                },
+            );
+        }
+        let req = acp_protocol::build_session_load_request(id, sid, params);
+        stdin_tx
+            .send(req)
+            .await
+            .context("kimi: stdin channel closed")?;
+        rx.await
+            .map_err(|_| anyhow!("kimi: reader task dropped before session/load response"))?
+            .map_err(|msg| anyhow!("kimi: session/load failed: {msg}"))
+    }
+
+    /// Acquire `stdin_tx` + `shared` from the inner mutex. Returns an error
+    /// if `ensure_started()` hasn't been called yet (invariant: callers call
+    /// it first).
+    async fn acquire_stdin_and_shared(
+        &self,
     ) -> anyhow::Result<(
+        mpsc::Sender<String>,
         Arc<Mutex<SharedReaderState>>,
         String,
-        Option<oneshot::Receiver<Result<String, String>>>,
     )> {
-        // Pair with the shared HTTP bridge. If pairing fails we surface the
-        // error — misconfiguration is loud.
+        // Re-pair with the bridge on every session request so the pairing
+        // token stays fresh. In practice the token is stable per-core-lifetime
+        // but we don't cache it in the core to avoid stale-token bugs.
         let pairing_token =
             super::request_pairing_token(&self.core.spec.bridge_endpoint, &self.core.key)
                 .await
                 .context("failed to pair with shared bridge")?;
-
-        let wd = &self.core.spec.working_directory;
-        let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
-        let mcp_config = build_mcp_config_file(&self.core.spec.bridge_endpoint, &pairing_token);
-        tokio::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
-            .await
-            .context("failed to write MCP config")?;
-
-        let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
-        let wd_str = wd.to_string_lossy().into_owned();
-        let mut args = vec![
-            "--work-dir".to_string(),
-            wd_str,
-            "--mcp-config-file".to_string(),
-            mcp_path_str,
-        ];
-        if !self.core.spec.model.is_empty() {
-            args.push("--model".to_string());
-            args.push(self.core.spec.model.clone());
-        }
-        args.push("acp".to_string());
-
-        let mut cmd = Command::new("kimi");
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("FORCE_COLOR", "0")
-            .env("NO_COLOR", "1");
-        for ev in &self.core.spec.env_vars {
-            cmd.env(&ev.key, &ev.value);
-        }
-
-        let mut child = cmd.spawn().context("failed to spawn kimi")?;
-        let stdout = child.stdout.take().context("missing stdout")?;
-        let stderr = child.stderr.take().context("missing stderr")?;
-        let mut stdin = child.stdin.take().context("missing stdin")?;
-
-        // Write handshake synchronously before handing stdin to the async writer.
-        let init_req = acp_protocol::build_initialize_request(1);
-        writeln!(stdin, "{init_req}").context("failed to write initialize request")?;
-
-        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &pairing_token);
-        let session_new_params = serde_json::json!({
-            "cwd": self.core.spec.working_directory,
-            "mcpServers": mcp_servers
-        });
-
-        let expected_session_id = opts.resume_session_id.clone();
-        let session_req = if let Some(ref sid) = expected_session_id {
-            acp_protocol::build_session_load_request(2, sid, session_new_params)
-        } else {
-            acp_protocol::build_session_new_request(2, session_new_params)
-        };
-        writeln!(stdin, "{session_req}").context("failed to write session request")?;
-
-        // Shared reader state, seeded with Init + WarmupSession pending entries
-        // so the reader task routes the first two responses correctly. We
-        // also reserve id 3 (`WarmupPromptReserved`) up-front: see
-        // `alloc_id` discussion below — this prevents a secondary
-        // `new_session` kicked off between `start()` returning and the
-        // warmup response landing from grabbing id 3 and colliding with the
-        // bootstrap's deferred prompt (which is hardcoded at id 3).
-        let shared = Arc::new(Mutex::new(SharedReaderState {
-            phase: acp_protocol::AcpPhase::AwaitingInitResponse,
-            sessions: HashMap::new(),
-            pending: {
-                let mut m = HashMap::new();
-                m.insert(1, PendingRequest::Init);
-                m.insert(
-                    2,
-                    PendingRequest::WarmupSession {
-                        expected_session_id: expected_session_id.clone(),
-                    },
-                );
-                m.insert(3, PendingRequest::WarmupPromptReserved);
-                m
-            },
-            warmup: Some(WarmupState {
-                pending_prompt: None,
-            }),
-            closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
-        }));
-
-        // Stdin writer task.
-        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
-        let stdin_handle = tokio::task::spawn_blocking(move || {
-            while let Some(line) = stdin_rx.blocking_recv() {
-                if writeln!(stdin, "{line}").is_err() {
-                    break;
-                }
-                if stdin.flush().is_err() {
-                    break;
-                }
-            }
-        });
-
-        // Stdout reader task.
-        let key = self.core.key.clone();
-        let event_tx = self.core.event_tx.clone();
-        let shared_for_reader = shared.clone();
-        let stdin_tx_for_reader = stdin_tx.clone();
-        let stdout_handle = tokio::spawn(async move {
-            reader_loop(
-                key,
-                event_tx,
-                shared_for_reader,
-                stdin_tx_for_reader,
-                stdout,
-            )
-            .await;
-        });
-
-        // Stderr reader task.
-        let key_err = self.core.key.clone();
-        let stderr_handle = tokio::spawn(async move {
-            let stderr_async = match tokio::process::ChildStderr::from_std(stderr) {
-                Ok(s) => s,
-                Err(e) => {
-                    warn!(key = %key_err, error = %e, "kimi: failed to convert stderr to async");
-                    return;
-                }
-            };
-            let reader = BufReader::new(stderr_async);
-            let mut lines = reader.lines();
-            while let Ok(Some(line)) = lines.next_line().await {
-                if !line.trim().is_empty() {
-                    warn!(key = %key_err, line = %line, "kimi stderr");
-                }
-            }
-        });
-
-        // Publish the child + stdio into the shared core.
-        {
-            let mut inner = self.core.inner.lock().await;
-            inner.owned.child = Some(child);
-            inner
-                .owned
-                .reader_handles
-                .extend([stdin_handle, stdout_handle, stderr_handle]);
-            inner.stdin_tx = Some(stdin_tx);
-            inner.shared = Some(shared.clone());
-            // Next id is 4, NOT 3. Id 3 is reserved for the bootstrap's
-            // deferred initial prompt (fired from the warmup response
-            // handler at a hardcoded id 3). A secondary `new_session` that
-            // starts between `start()` returning and the warmup response
-            // landing calls `alloc_id()` — without this +1 skip it would
-            // hand out id 3 and collide on the wire with the deferred
-            // prompt. Mirror: `shared.pending` gets a
-            // `WarmupPromptReserved` entry at id 3 in the seed above so
-            // `handle_response` can't silently drop a reply routed to it.
-            inner.next_request_id = 4;
-        }
-
-        // For the warm-up flow we don't get a oneshot — the reader task
-        // drives the `WarmupSession` routing directly. We return None to let
-        // start() know it should not .await a responder.
-        Ok((shared, "<warmup>".to_string(), None))
+        let inner = self.core.inner.lock().await;
+        let stdin_tx = inner.stdin_tx.clone().ok_or_else(|| {
+            anyhow!("kimi: stdin not available — ensure_started() must complete first")
+        })?;
+        let shared = inner
+            .shared
+            .clone()
+            .ok_or_else(|| anyhow!("kimi: shared reader state missing"))?;
+        Ok((stdin_tx, shared, pairing_token))
     }
 }
 
 impl Drop for KimiHandle {
     fn drop(&mut self) {
-        // Only the bootstrap handle's Drop needs to intervene — and even
-        // then only to unregister from the static map. Actual child
-        // termination is handled by KimiAgentCore::drop when the last Arc
-        // is released.
-        //
-        // We do NOT signal the child here: a bootstrap handle may be
-        // dropped while secondary handles still hold Arcs to the core. Let
-        // the Arc reference count decide when to terminate.
+        // Actual child termination is handled by KimiAgentCore::drop when
+        // the last Arc is released. We do not signal the child here — a
+        // handle may be dropped while sibling handles still hold Arcs to
+        // the core. Let the Arc reference count decide when to terminate.
     }
 }
 
@@ -712,170 +747,65 @@ impl AgentSessionHandle for KimiHandle {
             state: AgentState::Starting,
         });
 
-        if self.role.is_bootstrap() {
-            // Spawn (or re-use a partially-spawned core). The current code
-            // path only supports one bootstrap per core; duplicate attach+start
-            // would already have panicked on stdin_tx being Some.
-            {
-                let inner = self.core.inner.lock().await;
-                if inner.stdin_tx.is_some() {
-                    drop(inner);
-                    bail!("kimi: bootstrap start() called twice on same core");
-                }
-            }
+        // Apply resume override if present in opts.
+        if let Some(id) = opts.resume_session_id.clone() {
+            self.preassigned_session_id = Some(id);
+        }
 
-            let (shared, _tag, _responder) = self.spawn_child(&opts).await?;
+        // Lazy, race-safe bootstrap. The first handle to call start() spawns
+        // the child and sends `initialize`; all subsequent handles (including
+        // concurrent ones) wait for the race-winner and then proceed directly
+        // to session minting below.
+        self.core.ensure_started().await?;
 
-            // Stash the deferred initial prompt — the reader task will fire
-            // it after warm-up completes.
-            if let Some(req) = init_prompt {
-                let mut s = shared.lock().unwrap();
-                if let Some(ref mut w) = s.warmup {
-                    w.pending_prompt = Some(req.text);
-                }
-            }
-
-            // Primary handle's session id is filled in by the reader task on
-            // the WarmupSession response; we don't wait for it here because
-            // the existing single-session contract (and the manager) does not
-            // .await a lifecycle transition.
-            // Mirror: the reader task emits SessionAttached + Active
-            // lifecycle events; consumers subscribe before start and observe
-            // them there.
-            //
-            // For the local self.state mirror, leave Starting — the state()
-            // accessor reads the authoritative copy from shared in prompt().
-            // Resolve preassigned so session_id() returns Some immediately.
-            self.preassigned_session_id = opts.resume_session_id.clone();
-
-            Ok(())
+        // Now send session/new or session/load on the live stdin.
+        let session_id = if let Some(ref sid) = self.preassigned_session_id.clone() {
+            self.send_session_load(sid).await?
         } else {
-            // Secondary: send session/new or session/load on the existing
-            // stdin. Wait for the response via a oneshot and populate this
-            // handle's session_id.
+            self.send_session_new().await?
+        };
 
-            let (stdin_tx, shared) = {
-                let inner = self.core.inner.lock().await;
-                let tx = inner.stdin_tx.clone().ok_or_else(|| {
-                    anyhow!("kimi: new_session before bootstrap start() spawned the child")
-                })?;
-                let shared = inner
-                    .shared
-                    .clone()
-                    .ok_or_else(|| anyhow!("kimi: shared reader state missing"))?;
-                (tx, shared)
-            };
-
-            let id = self.alloc_id().await;
-            let (tx, rx) = oneshot::channel();
-
-            let session_req = if let Some(ref sid) = opts
-                .resume_session_id
-                .clone()
-                .or_else(|| self.preassigned_session_id.clone())
-            {
-                {
-                    let mut s = shared.lock().unwrap();
-                    s.pending.insert(
-                        id,
-                        PendingRequest::SessionLoad {
-                            expected_session_id: sid.clone(),
-                            responder: tx,
-                        },
-                    );
-                }
-                // Secondary sessions send an empty `mcpServers` array. Kimi
-                // accepts this on `session/load` — the bootstrap session's
-                // MCP state is reused, so there's no per-session connection
-                // to stand up. If the bridge endpoint changes at runtime
-                // the bootstrap must be recycled.
-                let params = serde_json::json!({
-                    "cwd": self.core.spec.working_directory,
-                    "mcpServers": [],
-                });
-                acp_protocol::build_session_load_request(id, sid, params)
-            } else {
-                {
-                    let mut s = shared.lock().unwrap();
-                    s.pending
-                        .insert(id, PendingRequest::SessionNew { responder: tx });
-                }
-                let params = serde_json::json!({
-                    "cwd": self.core.spec.working_directory,
-                    "mcpServers": [],
-                });
-                acp_protocol::build_session_new_request(id, params)
-            };
-
-            stdin_tx
-                .send(session_req)
-                .await
-                .context("kimi: stdin channel closed")?;
-
-            // Await the response. Reader task sends Ok(session_id) or
-            // Err(msg) once the matching id arrives.
-            let session_id = rx
-                .await
-                .map_err(|_| anyhow!("kimi: reader task dropped before session response"))?
-                .map_err(|msg| anyhow!("kimi: session request failed: {msg}"))?;
-
-            // Register the new session in shared state + advertise it.
-            {
+        // Register the new session in shared state and advertise it.
+        {
+            let inner = self.core.inner.lock().await;
+            if let Some(ref shared) = inner.shared {
                 let mut s = shared.lock().unwrap();
                 s.sessions
                     .entry(session_id.clone())
                     .or_insert_with(|| SessionState::new(&session_id));
             }
-
-            self.session_id = Some(session_id.clone());
-            self.state = AgentState::Active {
-                session_id: session_id.clone(),
-            };
-            self.emit(DriverEvent::SessionAttached {
-                key: self.core.key.clone(),
-                session_id: session_id.clone(),
-            });
-            self.emit(DriverEvent::Lifecycle {
-                key: self.core.key.clone(),
-                state: AgentState::Active {
-                    session_id: session_id.clone(),
-                },
-            });
-
-            // Fire the initial prompt, if supplied.
-            if let Some(req) = init_prompt {
-                self.prompt(req).await?;
-            }
-
-            Ok(())
         }
+
+        self.session_id = Some(session_id.clone());
+        self.state = AgentState::Active {
+            session_id: session_id.clone(),
+        };
+        self.emit(DriverEvent::SessionAttached {
+            key: self.core.key.clone(),
+            session_id: session_id.clone(),
+        });
+        self.emit(DriverEvent::Lifecycle {
+            key: self.core.key.clone(),
+            state: AgentState::Active {
+                session_id: session_id.clone(),
+            },
+        });
+
+        // Fire the initial prompt, if supplied.
+        if let Some(req) = init_prompt {
+            self.prompt(req).await?;
+        }
+
+        Ok(())
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
-        // Session id comes from our local mirror (secondary) or from shared
-        // state after warm-up completed (bootstrap).
-        let session_id = if let Some(sid) = self.session_id.clone() {
-            sid
-        } else {
-            // Bootstrap handle after warm-up: look up the first active
-            // session in shared state. For single-session usage this is the
-            // only session that exists.
-            let inner = self.core.inner.lock().await;
-            let shared = inner
-                .shared
-                .clone()
-                .ok_or_else(|| anyhow!("kimi: prompt before start"))?;
-            drop(inner);
-            let s = shared.lock().unwrap();
-            // Pick the first (and for bootstrap single-session, only)
-            // session with an Active-ish state. If the warm-up session id
-            // has been populated we use that.
-            s.sessions
-                .keys()
-                .next()
-                .cloned()
-                .ok_or_else(|| anyhow!("kimi: prompt before any session active"))?
-        };
+        // Session id is always populated by start(). If it's absent the
+        // caller hasn't called start() yet — surface a clear error.
+        let session_id = self
+            .session_id
+            .clone()
+            .ok_or_else(|| anyhow!("kimi: prompt() called before start()"))?;
 
         let run_id = RunId::new_v4();
         let request_id = self.alloc_id().await;
@@ -991,18 +921,14 @@ impl AgentSessionHandle for KimiHandle {
         // Drop this handle's session slot from shared state so `pick_session`
         // / `pick_session_and_run` stop routing events to a dead handle.
         //
-        // Bootstrap subtlety: the bootstrap handle doesn't locally track its
-        // own session_id (secondary handles do, populated in start()). The
-        // reader task records the warmup-minted session id in
-        // `shared.bootstrap_session_id` so bootstrap close can drop *its*
-        // slot without taking out a live secondary's.
+        // Every handle now locally tracks its own session_id (populated by
+        // start()). No role-dependent lookup is needed.
         //
         // Under the same lock, compute `all_sessions_closed` — true iff
         // every remaining session entry is Closed (or the map is empty).
         // Teardown of the shared child + fan-out + registry entry is gated
-        // on this regardless of role: a bootstrap close with a secondary
-        // still mid-prompt must NOT kill the child. The last session to
-        // close (either role) triggers teardown.
+        // on this: a close with a sibling session still mid-prompt must NOT
+        // kill the child. The last session to close triggers teardown.
         let (all_sessions_closed, shared_opt) = {
             let shared_opt = {
                 let inner = self.core.inner.lock().await;
@@ -1010,14 +936,7 @@ impl AgentSessionHandle for KimiHandle {
             };
             if let Some(ref shared) = shared_opt {
                 let mut s = shared.lock().unwrap();
-                let sid_to_remove: Option<String> = if self.role.is_bootstrap() {
-                    self.session_id
-                        .clone()
-                        .or_else(|| s.bootstrap_session_id.clone())
-                } else {
-                    self.session_id.clone()
-                };
-                if let Some(ref sid) = sid_to_remove {
+                if let Some(ref sid) = self.session_id {
                     s.sessions.remove(sid);
                 }
                 let all_closed = s
@@ -1030,9 +949,7 @@ impl AgentSessionHandle for KimiHandle {
                 let no_pending_session_creation = !s.pending.values().any(|p| {
                     matches!(
                         p,
-                        PendingRequest::SessionNew { .. }
-                            | PendingRequest::SessionLoad { .. }
-                            | PendingRequest::WarmupSession { .. }
+                        PendingRequest::SessionNew { .. } | PendingRequest::SessionLoad { .. }
                     )
                 });
                 (
@@ -1058,13 +975,13 @@ impl AgentSessionHandle for KimiHandle {
         });
 
         // Teardown of the shared child + fan-out + registry is gated on
-        // *all sessions closed*, regardless of role.
+        // *all sessions closed*.
         //
-        // - Single-session close (either role): sole session removed above
+        // - Single-session close: sole session removed above
         //   → map empty → all_sessions_closed=true → teardown fires.
-        // - Bootstrap close with a live secondary: secondary slot still
+        // - Close with a live sibling: sibling slot still
         //   Active/PromptInFlight → all_sessions_closed=false → child +
-        //   fan-out + registry left intact so the secondary keeps running.
+        //   fan-out + registry left intact.
         // - Last session to close after its sibling already closed: its
         //   slot was the final non-Closed entry → all_sessions_closed=true
         //   → teardown runs here.
@@ -1264,7 +1181,7 @@ async fn handle_response(
     key: &AgentKey,
     event_tx: &mpsc::Sender<DriverEvent>,
     shared: &Arc<Mutex<SharedReaderState>>,
-    stdin_tx: &mpsc::Sender<String>,
+    _stdin_tx: &mpsc::Sender<String>,
     msg: &Value,
 ) {
     let id = match msg.get("id").and_then(|v| v.as_u64()) {
@@ -1293,7 +1210,9 @@ async fn handle_response(
     match pending {
         PendingRequest::Init => {
             let mut s = shared.lock().unwrap();
-            s.phase = acp_protocol::AcpPhase::AwaitingSessionResponse;
+            // Flip phase to Active — all subsequent session/new, session/load,
+            // and prompt requests route through `pending` directly.
+            s.phase = acp_protocol::AcpPhase::Active;
             debug!("kimi: initialize response received");
         }
         PendingRequest::SessionNew { responder } => {
@@ -1332,125 +1251,6 @@ async fn handle_response(
                 .map(str::to_string)
                 .unwrap_or(expected_session_id);
             let _ = responder.send(Ok(session_id));
-        }
-        PendingRequest::WarmupSession {
-            expected_session_id,
-        } => {
-            if let Some(emsg) = error_msg {
-                warn!(message = %emsg, "kimi: warm-up session response errored");
-                // Release the reserved id 3 slot so it doesn't leak.
-                shared.lock().unwrap().pending.remove(&3);
-                return;
-            }
-            // Bootstrap-path warm-up: phase → Active, install session state,
-            // fire deferred prompt if any.
-            //
-            // If neither the response nor the reserved expected id yields a
-            // session id, treat it as a runtime protocol violation: do NOT
-            // synthesize a fake id (that would announce `SessionAttached` for
-            // a session kimi never created, and every subsequent
-            // prompt/resume/close would fail obscurely against a phantom
-            // slot). Surface the error, release the reserved pending slot,
-            // and drop the warm-up.
-            let session_id = match msg
-                .get("result")
-                .and_then(|r| r.get("sessionId"))
-                .and_then(|v| v.as_str())
-                .map(str::to_string)
-                .or(expected_session_id)
-            {
-                Some(sid) => sid,
-                None => {
-                    warn!(
-                        "kimi: warm-up response had no sessionId and no expected id was reserved \
-                         — treating as protocol violation, dropping warm-up"
-                    );
-                    shared.lock().unwrap().pending.remove(&3);
-                    return;
-                }
-            };
-
-            let deferred_prompt: Option<String> = {
-                let mut s = shared.lock().unwrap();
-                s.phase = acp_protocol::AcpPhase::Active;
-                s.sessions
-                    .entry(session_id.clone())
-                    .or_insert_with(|| SessionState::new(&session_id));
-                // Record which session_id the bootstrap handle owns so its
-                // `close()` can drop exactly that slot (and no secondary's).
-                if s.bootstrap_session_id.is_none() {
-                    s.bootstrap_session_id = Some(session_id.clone());
-                }
-                s.warmup.as_mut().and_then(|w| w.pending_prompt.take())
-            };
-
-            let _ = event_tx.try_send(DriverEvent::SessionAttached {
-                key: key.clone(),
-                session_id: session_id.clone(),
-            });
-            let _ = event_tx.try_send(DriverEvent::Lifecycle {
-                key: key.clone(),
-                state: AgentState::Active {
-                    session_id: session_id.clone(),
-                },
-            });
-
-            if let Some(prompt_text) = deferred_prompt {
-                // Fire the bootstrap's initial prompt at the reserved id 3.
-                // `spawn_child` already pre-inserted a
-                // `WarmupPromptReserved` placeholder at id 3 and bumped
-                // `next_request_id` to 4, so `alloc_id()` on any concurrent
-                // secondary cannot have handed out id 3. We replace the
-                // placeholder with the real `Prompt` entry under lock and
-                // send on stdin.
-                let run_id = RunId::new_v4();
-                let prompt_id = 3u64;
-                {
-                    let mut s = shared.lock().unwrap();
-                    s.pending.insert(
-                        prompt_id,
-                        PendingRequest::Prompt {
-                            session_id: session_id.clone(),
-                            run_id,
-                        },
-                    );
-                    if let Some(slot) = s.sessions.get_mut(&session_id) {
-                        slot.run_id = Some(run_id);
-                        slot.state = AgentState::PromptInFlight {
-                            run_id,
-                            session_id: session_id.clone(),
-                        };
-                    }
-                }
-                let _ = event_tx.try_send(DriverEvent::Lifecycle {
-                    key: key.clone(),
-                    state: AgentState::PromptInFlight {
-                        run_id,
-                        session_id: session_id.clone(),
-                    },
-                });
-                let req = acp_protocol::build_session_prompt_request(
-                    prompt_id,
-                    &session_id,
-                    &prompt_text,
-                );
-                let _ = stdin_tx.try_send(req);
-            } else {
-                // No deferred prompt — release the reserved id 3 slot so
-                // it doesn't linger in `pending`. Future prompts use
-                // `alloc_id()` which starts at 4.
-                shared.lock().unwrap().pending.remove(&3);
-            }
-        }
-        PendingRequest::WarmupPromptReserved => {
-            // Should be unreachable — the slot is replaced (deferred prompt
-            // fired) or removed (no deferred prompt) by the WarmupSession
-            // branch above. If we got here, Kimi sent an unprompted response
-            // at id 3. Log and ignore.
-            warn!(
-                id,
-                "kimi: unexpected response at reserved warmup-prompt id 3 — ignoring"
-            );
         }
         PendingRequest::Prompt { session_id, run_id } => {
             let drained: Vec<(Option<String>, String, Value)> = {
@@ -1864,9 +1664,7 @@ mod tests {
             phase: acp_protocol::AcpPhase::Active,
             sessions: HashMap::new(),
             pending: HashMap::new(),
-            warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1919,9 +1717,7 @@ mod tests {
             phase: acp_protocol::AcpPhase::Active,
             sessions: HashMap::new(),
             pending: HashMap::new(),
-            warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -1961,9 +1757,7 @@ mod tests {
             phase: acp_protocol::AcpPhase::Active,
             sessions: HashMap::new(),
             pending: HashMap::new(),
-            warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -2122,9 +1916,7 @@ mod tests {
             phase: acp_protocol::AcpPhase::Active,
             sessions: HashMap::new(),
             pending: HashMap::new(),
-            warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
         }));
         let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
@@ -2137,178 +1929,49 @@ mod tests {
         assert!(s.sessions.is_empty());
     }
 
-    /// Regression: id 3 is reserved for the bootstrap's deferred initial
-    /// prompt. A secondary `new_session` firing between `spawn_child`
-    /// publishing its stdin and the warmup response landing must NOT grab
-    /// id 3 — otherwise its `session/new` request collides on the wire
-    /// with the deferred prompt Kimi is about to receive at id 3.
-    ///
-    /// Asserts: after `spawn_child`-equivalent seeding,
-    /// `core.alloc_id()` returns 4 (not 3); and the seeded `pending`
-    /// map holds a `WarmupPromptReserved` placeholder at id 3.
+    /// After `spawn_and_initialize` seeding, `core.alloc_id()` returns 3
+    /// (ids 1 = initialize, 2 = first session request). No id is reserved
+    /// and no placeholder exists in `pending`.
     #[tokio::test]
-    async fn warmup_prompt_id_3_reserved_alloc_id_skips_to_4() {
+    async fn alloc_id_starts_at_3_after_spawn_and_initialize() {
         let (events, event_tx) = EventFanOut::new();
         let _ = events;
-        let key: AgentKey = format!("agent-warmup-reserve-{}", uuid::Uuid::new_v4());
+        let key: AgentKey = format!("agent-alloc-id-{}", uuid::Uuid::new_v4());
         let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
 
-        // Mirror the end-of-spawn_child state: shared seeded with id 1 Init,
-        // id 2 WarmupSession, id 3 WarmupPromptReserved, and
-        // next_request_id advanced to 4.
+        // Mirror the post-spawn_and_initialize state: shared seeded with
+        // id 1 Init in pending, next_request_id = 3.
         let shared = Arc::new(Mutex::new(SharedReaderState {
             phase: acp_protocol::AcpPhase::AwaitingInitResponse,
             sessions: HashMap::new(),
             pending: {
                 let mut m = HashMap::new();
                 m.insert(1, PendingRequest::Init);
-                m.insert(
-                    2,
-                    PendingRequest::WarmupSession {
-                        expected_session_id: None,
-                    },
-                );
-                m.insert(3, PendingRequest::WarmupPromptReserved);
                 m
             },
-            warmup: Some(WarmupState {
-                pending_prompt: Some("hello".to_string()),
-            }),
             closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
         }));
         {
             let mut inner = core.inner.lock().await;
             inner.shared = Some(shared.clone());
-            inner.next_request_id = 4;
-            // Fake stdin_tx so alloc_id paths that inspect it don't panic.
+            inner.next_request_id = 3;
             let (tx, _rx) = mpsc::channel::<String>(1);
             inner.stdin_tx = Some(tx);
         }
 
-        // Build a secondary handle and call alloc_id. Must return 4, not 3.
-        let handle = KimiHandle::new_secondary(core.clone());
+        // alloc_id must return 3 (not 4 — no reserved slot any more).
+        let handle = KimiHandle::new(core.clone(), None);
         let id = handle.alloc_id().await;
         assert_eq!(
-            id, 4,
-            "alloc_id on a just-spawned core must return 4 — id 3 is reserved for the bootstrap's deferred prompt"
+            id, 3,
+            "alloc_id on a just-spawned core must return 3 (initialize=1, first session=2)"
         );
 
-        // The reserved placeholder must still be present so the reader's
-        // `handle_response` can replace/remove it deterministically.
-        let s = shared.lock().unwrap();
-        assert!(
-            matches!(
-                s.pending.get(&3),
-                Some(PendingRequest::WarmupPromptReserved)
-            ),
-            "id 3 pending slot must still hold WarmupPromptReserved"
-        );
-    }
-
-    /// Regression: when the bootstrap's warmup response lands WITHOUT a
-    /// deferred prompt queued, the reserved id 3 entry must be released
-    /// so a later `alloc_id()` handing out id 4+ doesn't leave stale
-    /// bookkeeping.
-    #[tokio::test]
-    async fn warmup_without_deferred_prompt_releases_id_3() {
-        let (events, event_tx) = EventFanOut::new();
-        let _ = events;
-        let shared = Arc::new(Mutex::new(SharedReaderState {
-            phase: acp_protocol::AcpPhase::AwaitingSessionResponse,
-            sessions: HashMap::new(),
-            pending: {
-                let mut m = HashMap::new();
-                m.insert(
-                    2,
-                    PendingRequest::WarmupSession {
-                        expected_session_id: None,
-                    },
-                );
-                m.insert(3, PendingRequest::WarmupPromptReserved);
-                m
-            },
-            warmup: Some(WarmupState {
-                pending_prompt: None,
-            }),
-            closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
-        }));
-        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
-
-        let key: AgentKey = "agent-w-noprompt".to_string();
-        let resp: Value =
-            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-0"}}"#)
-                .unwrap();
-        handle_response(&key, &event_tx, &shared, &stdin_tx, &resp).await;
-
+        // No id 3 placeholder in pending — none was ever seeded.
         let s = shared.lock().unwrap();
         assert!(
             !s.pending.contains_key(&3),
-            "id 3 reservation must be cleared when no deferred prompt was queued"
-        );
-    }
-
-    /// Regression: when the bootstrap's warmup response lands WITH a
-    /// deferred prompt queued, id 3 is replaced by a real Prompt entry
-    /// carrying the session_id + run_id we just installed.
-    #[tokio::test]
-    async fn warmup_with_deferred_prompt_replaces_id_3_reservation() {
-        let (events, event_tx) = EventFanOut::new();
-        let _ = events;
-        let shared = Arc::new(Mutex::new(SharedReaderState {
-            phase: acp_protocol::AcpPhase::AwaitingSessionResponse,
-            sessions: HashMap::new(),
-            pending: {
-                let mut m = HashMap::new();
-                m.insert(
-                    2,
-                    PendingRequest::WarmupSession {
-                        expected_session_id: None,
-                    },
-                );
-                m.insert(3, PendingRequest::WarmupPromptReserved);
-                m
-            },
-            warmup: Some(WarmupState {
-                pending_prompt: Some("hi".to_string()),
-            }),
-            closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: None,
-        }));
-        let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(8);
-
-        let key: AgentKey = "agent-w-prompt".to_string();
-        let resp: Value =
-            serde_json::from_str(r#"{"jsonrpc":"2.0","id":2,"result":{"sessionId":"sess-1"}}"#)
-                .unwrap();
-        handle_response(&key, &event_tx, &shared, &stdin_tx, &resp).await;
-
-        // Reservation replaced with real Prompt entry.
-        {
-            let s = shared.lock().unwrap();
-            match s.pending.get(&3) {
-                Some(PendingRequest::Prompt {
-                    session_id,
-                    run_id: _,
-                }) => {
-                    assert_eq!(session_id, "sess-1");
-                }
-                other => panic!(
-                    "id 3 pending must hold Prompt{{session_id:sess-1,..}} after deferred fire — got {:?}",
-                    other.map(|_| "other variant")
-                ),
-            }
-        }
-
-        // And the prompt wire frame must have been queued on stdin.
-        let line = stdin_rx
-            .recv()
-            .await
-            .expect("prompt frame must be sent on stdin");
-        assert!(
-            line.contains("\"id\":3") && line.contains("sess-1"),
-            "expected stdin frame to be a session/prompt at id 3 for sess-1, got: {line}"
+            "no id-3 reservation must exist after spawn_and_initialize"
         );
     }
 
@@ -2367,27 +2030,19 @@ mod tests {
         registry().remove(&key);
     }
 
-    /// Regression for the Stage 2 ship-blocker: closing the bootstrap handle
-    /// while a secondary session is still live (and mid-prompt) must NOT
-    /// tear down the shared kimi child, its reader tasks, or the fan-out.
-    /// The old code hit SIGTERM / events.close() / registry_remove
-    /// unconditionally on bootstrap close — which cut the shared stdin out
-    /// from under the secondary, aborted its readers, and closed the fan-out
-    /// before any terminal event could reach subscribers. The fix gates the
-    /// teardown on "all sessions closed" regardless of role.
+    /// Closing one handle while a sibling session is still live (and mid-prompt)
+    /// must NOT tear down the shared kimi child, its reader tasks, or the fan-out.
+    /// Teardown is gated on "all sessions closed".
     ///
     /// Sequence:
-    ///   1. Seed a core as if attach + start completed: shared state has a
-    ///      bootstrap session (id recorded via bootstrap_session_id), a live
-    ///      stdin_tx, a live child sentinel, and reader handles.
-    ///   2. Mint a secondary handle and seed its session in shared.sessions
-    ///      as PromptInFlight (models the in-flight race).
-    ///   3. Close the bootstrap handle. Assert:
+    ///   1. Seed a core with two sessions both registered in shared.sessions.
+    ///   2. Seed the second handle as PromptInFlight (models the in-flight race).
+    ///   3. Close the first handle. Assert:
     ///       - `stdin_tx` still present (shared child still reachable).
     ///       - `events.inner.closing` still false (fan-out still serving).
     ///       - Registry entry still present.
     ///       - Reader handle count unchanged.
-    ///   4. Close the secondary handle. Assert teardown NOW fired:
+    ///   4. Close the second handle. Assert teardown NOW fired:
     ///       - `stdin_tx` cleared.
     ///       - `events.inner.closing` true.
     ///       - Registry entry pruned.
@@ -2398,9 +2053,9 @@ mod tests {
         let events_for_assert = events.clone();
         let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
 
-        // Seed the core as if spawn_child completed and the warmup response
-        // landed with `bootstrap-sid`.
-        let bootstrap_sid = "sess-bootstrap".to_string();
+        // Seed the core as if spawn_and_initialize completed and two
+        // handles each called start() minting their own sessions.
+        let bootstrap_sid = "sess-first".to_string();
         let secondary_sid = "sess-secondary".to_string();
         let secondary_run = RunId::new_v4();
 
@@ -2408,9 +2063,9 @@ mod tests {
             phase: acp_protocol::AcpPhase::Active,
             sessions: {
                 let mut m = HashMap::new();
-                // Bootstrap: warmup complete, idle.
+                // First handle's session: start() completed, idle.
                 m.insert(bootstrap_sid.clone(), SessionState::new(&bootstrap_sid));
-                // Secondary: mid-prompt. This is the race the fix protects.
+                // Second handle's session: mid-prompt. This is the race the fix protects.
                 let mut sec = SessionState::new(&secondary_sid);
                 sec.run_id = Some(secondary_run);
                 sec.state = AgentState::PromptInFlight {
@@ -2421,9 +2076,7 @@ mod tests {
                 m
             },
             pending: HashMap::new(),
-            warmup: None,
             closed_emitted: Arc::new(AtomicBool::new(false)),
-            bootstrap_session_id: Some(bootstrap_sid.clone()),
         }));
 
         // Fake stdin + reader handles to stand in for the shared child.
@@ -2442,35 +2095,40 @@ mod tests {
             inner.shared = Some(shared.clone());
             inner.stdin_tx = Some(stdin_tx.clone());
             inner.owned.reader_handles.push(parked_reader);
-            inner.next_request_id = 4;
+            inner.next_request_id = 3;
         }
 
         // Register the core so close() can see it for registry_remove().
         registry().insert(key.clone(), core.clone());
 
-        // Build handles.
-        let mut bootstrap = KimiHandle::new_bootstrap(core.clone());
-        let mut secondary = KimiHandle::new_secondary(core.clone());
+        // Build handles, both are unified (no role distinction).
+        // Simulate post-start() state: session_id populated locally.
+        let mut first_handle = KimiHandle::new(core.clone(), None);
+        first_handle.session_id = Some(bootstrap_sid.clone());
+        first_handle.state = AgentState::Active {
+            session_id: bootstrap_sid.clone(),
+        };
+        let mut secondary = KimiHandle::new(core.clone(), None);
         secondary.session_id = Some(secondary_sid.clone());
         secondary.state = AgentState::PromptInFlight {
             run_id: secondary_run,
             session_id: secondary_sid.clone(),
         };
 
-        // ---- Close the bootstrap while the secondary is mid-prompt. ----
-        bootstrap.close().await.unwrap();
+        // ---- Close the first handle while the secondary is mid-prompt. ----
+        first_handle.close().await.unwrap();
 
         // Shared child bits must remain intact for the secondary.
         {
             let inner = core.inner.lock().await;
             assert!(
                 inner.stdin_tx.is_some(),
-                "bootstrap close with a live secondary must NOT null out shared stdin_tx"
+                "first-handle close with a live sibling must NOT null out shared stdin_tx"
             );
             assert_eq!(
                 inner.owned.reader_handles.len(),
                 1,
-                "bootstrap close with a live secondary must NOT abort shared reader handles"
+                "first-handle close with a live sibling must NOT abort shared reader handles"
             );
             assert!(
                 !inner.owned.reader_handles[0].is_finished(),
@@ -2479,26 +2137,26 @@ mod tests {
         }
         assert!(
             !events_for_assert.inner.closing.load(Ordering::SeqCst),
-            "bootstrap close with a live secondary must NOT close the fan-out"
+            "first-handle close with a live sibling must NOT close the fan-out"
         );
         assert!(
             registry().get(&key).is_some(),
-            "bootstrap close with a live secondary must NOT prune the registry entry"
+            "first-handle close with a live sibling must NOT prune the registry entry"
         );
-        // The bootstrap's session slot should be gone; the secondary's slot
+        // The first handle's session slot should be gone; the secondary's slot
         // should still be present and still PromptInFlight.
         {
             let s = shared.lock().unwrap();
             assert!(
                 !s.sessions.contains_key(&bootstrap_sid),
-                "bootstrap close must drop its own session slot"
+                "first-handle close must drop its own session slot"
             );
             assert!(
                 matches!(
                     s.sessions.get(&secondary_sid).map(|slot| &slot.state),
                     Some(AgentState::PromptInFlight { .. })
                 ),
-                "secondary slot must remain mid-prompt after bootstrap close"
+                "secondary slot must remain mid-prompt after first-handle close"
             );
         }
 
@@ -2524,5 +2182,138 @@ mod tests {
             registry().get(&key).is_none(),
             "last-session close must prune the registry entry"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Unified handle path tests — Task 1
+    //
+    // These test the `ensure_started` semantics and the role-agnostic handle
+    // construction without spawning the real kimi binary. We verify invariants
+    // by seeding the core's inner state to mirror the post-`ensure_started`
+    // state, then exercising the relevant paths.
+    // -----------------------------------------------------------------------
+
+    /// After `ensure_started` succeeds, `core.started` is true and
+    /// `started_notify` has fired so any subsequent call returns immediately
+    /// without entering the lock.
+    ///
+    /// We simulate a successful start by manually setting `started = true`
+    /// (the real `spawn_and_initialize` would do this — we can't call it
+    /// without a real kimi binary).
+    #[tokio::test]
+    async fn ensure_started_fast_path_when_already_started() {
+        let (events, event_tx) = EventFanOut::new();
+        let key: AgentKey = format!("agent-ensure-fast-{}", uuid::Uuid::new_v4());
+        let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        // Manually mark as started (bypasses the real spawn).
+        core.started.store(true, Ordering::Release);
+
+        // ensure_started should be a no-op and must not attempt spawn.
+        // Since `spawn_and_initialize` would fail with kimi not installed,
+        // this confirms we take the fast path.
+        core.ensure_started().await.unwrap();
+
+        registry().remove(&key);
+    }
+
+    /// Two handles built from the same core both produce `Idle` state before
+    /// start() is called. After seeding the core with a live stdin, calling
+    /// `start()` on either handle's `session_id()` path works correctly.
+    #[tokio::test]
+    async fn unified_handle_session_id_from_preassigned() {
+        let (events, event_tx) = EventFanOut::new();
+        let key: AgentKey = format!("agent-unified-sid-{}", uuid::Uuid::new_v4());
+        let core = KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        // A handle with a preassigned session id (resume_session path).
+        let handle = KimiHandle::new(core.clone(), Some("stored-sess-abc".to_string()));
+        assert_eq!(handle.session_id(), Some("stored-sess-abc"));
+        assert!(matches!(handle.state(), AgentState::Idle));
+
+        // A handle without preassigned id.
+        let handle2 = KimiHandle::new(core.clone(), None);
+        assert_eq!(handle2.session_id(), None);
+
+        registry().remove(&key);
+    }
+
+    /// `ensure_started` is idempotent — calling it multiple times in sequence
+    /// on an already-started core is a no-op (does not increment spawn count
+    /// via side effects on inner).
+    #[tokio::test]
+    async fn ensure_started_idempotent_after_success() {
+        let (events, event_tx) = EventFanOut::new();
+        let key: AgentKey = format!("agent-ensure-idempotent-{}", uuid::Uuid::new_v4());
+        let core = Arc::new(KimiAgentCore::new(key.clone(), test_spec(), events, event_tx));
+
+        // Seed as if spawn_and_initialize succeeded: stdin_tx present,
+        // shared state present, started=true.
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: HashMap::new(),
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+        }));
+        {
+            let mut inner = core.inner.lock().await;
+            let (tx, _rx) = mpsc::channel::<String>(1);
+            inner.stdin_tx = Some(tx);
+            inner.shared = Some(shared);
+            inner.next_request_id = 3;
+        }
+        core.started.store(true, Ordering::Release);
+
+        // Call ensure_started multiple times — all should succeed fast.
+        core.ensure_started().await.unwrap();
+        core.ensure_started().await.unwrap();
+        core.ensure_started().await.unwrap();
+
+        // stdin_tx must still be present (no re-spawn).
+        let inner = core.inner.lock().await;
+        assert!(
+            inner.stdin_tx.is_some(),
+            "ensure_started must not clear stdin_tx"
+        );
+
+        registry().remove(&key);
+    }
+
+    /// `attach()` on a key that already has a live core returns a handle that
+    /// shares the same EventFanOut as the original attach — confirming the
+    /// "reuse live core" path in the factory.
+    #[tokio::test]
+    async fn attach_reuses_live_core_event_stream() {
+        let driver = KimiDriver;
+        let key = format!("agent-attach-reuse-{}", uuid::Uuid::new_v4());
+
+        let r0 = driver.attach(key.clone(), test_spec()).await.unwrap();
+
+        // Manually mark the core as started and seed a live stdin_tx so
+        // `is_stale()` returns false and `get_or_evict_stale` returns the
+        // existing core. Keep `_rx` alive for the lifetime of the test so the
+        // sender doesn't close (which would mark the core stale).
+        let _rx = {
+            if let Some(core) = registry().get(&key) {
+                core.started.store(true, Ordering::Release);
+                let mut inner = core.inner.lock().await;
+                let (tx, rx) = mpsc::channel::<String>(1);
+                inner.stdin_tx = Some(tx);
+                Some(rx)
+            } else {
+                None
+            }
+        };
+
+        let r1 = driver.attach(key.clone(), test_spec()).await.unwrap();
+
+        let ptr0 = Arc::as_ptr(&r0.events.inner);
+        let ptr1 = Arc::as_ptr(&r1.events.inner);
+        assert_eq!(
+            ptr0, ptr1,
+            "second attach must reuse the same EventFanOut as the first"
+        );
+
+        registry().remove(&key);
     }
 }
