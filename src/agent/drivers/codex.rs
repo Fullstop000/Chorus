@@ -232,43 +232,48 @@ impl RuntimeDriver for CodexDriver {
         Ok(vec![])
     }
 
+    /// Native `open_session`: allocates a [`CodexHandle`] and stores the
+    /// resume intent from `intent`. For `SessionIntent::Resume(id)` the
+    /// `resume_session_id` field is set, letting `run_inner` pick it up
+    /// without going through `StartOpts`. `session_id()` returns the
+    /// pre-assigned id before `run()` fires so callers can inspect it.
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<AttachResult> {
+        let proc = self.ensure_process(&key);
+        let events = proc.events.clone();
+        let mut handle = CodexHandle::new(key, spec, Arc::clone(&proc));
+        if let SessionIntent::Resume(id) = intent {
+            handle.resume_session_id = Some(id);
+        }
+        Ok(AttachResult {
+            handle: Box::new(handle),
+            events,
+        })
+    }
+
+    /// Compat shim — delegates to `open_session(New)`.
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        let proc = self.ensure_process(&key);
-        let events = proc.events.clone();
-        let handle = CodexHandle::new(key, spec, Arc::clone(&proc));
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
+        self.open_session(key, spec, SessionIntent::New).await
     }
 
+    /// Compat shim — delegates to `open_session(New)`.
     async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        // Reuse the agent's shared process. Every session's events land on
-        // the same fan-out; subscribers disambiguate by `session_id` on the
-        // event.
-        let proc = self.ensure_process(&key);
-        let events = proc.events.clone();
-        let handle = CodexHandle::new(key, spec, Arc::clone(&proc));
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
+        self.open_session(key, spec, SessionIntent::New).await
     }
 
+    /// Compat shim — delegates to `open_session(Resume(session_id))`.
     async fn resume_session(
         &self,
         key: AgentKey,
         spec: AgentSpec,
         session_id: SessionId,
     ) -> anyhow::Result<AttachResult> {
-        let proc = self.ensure_process(&key);
-        let events = proc.events.clone();
-        let mut handle = CodexHandle::new(key, spec, Arc::clone(&proc));
-        handle.resume_session_id = Some(session_id);
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
+        self.open_session(key, spec, SessionIntent::Resume(session_id))
+            .await
     }
 }
 
@@ -723,33 +728,11 @@ impl CodexHandle {
             other => bail!("codex: unexpected response to thread request: {other:?}"),
         }
     }
-}
 
-#[async_trait]
-impl AgentSessionHandle for CodexHandle {
-    fn key(&self) -> &AgentKey {
-        &self.key
-    }
-
-    fn session_id(&self) -> Option<&str> {
-        self.session_id.as_deref()
-    }
-
-    fn state(&self) -> AgentState {
-        if let Some(ref sid) = self.session_id {
-            let s = self.process.shared.lock().unwrap();
-            if let Some(session) = s.sessions.get(sid) {
-                return session.agent_state.clone();
-            }
-        }
-        self.state.clone()
-    }
-
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
+    /// Core session-start logic. Reads `self.resume_session_id` (set by
+    /// `open_session(Resume)` or the `start` compat shim) to decide whether
+    /// to send `thread/resume` or `thread/start` to the app-server.
+    async fn run_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
         if !matches!(self.state, AgentState::Idle) {
             bail!("codex: start called in non-idle state");
         }
@@ -764,11 +747,9 @@ impl AgentSessionHandle for CodexHandle {
         // agent; otherwise wait for the initialize handshake to finish.
         self.ensure_process_started().await?;
 
-        // Request a thread id (fresh or resumed). StartOpts takes precedence
-        // over the resume id stashed on this handle via resume_session().
-        let resume_id = opts
-            .resume_session_id
-            .or_else(|| self.resume_session_id.clone());
+        // Use the native resume_session_id field set by open_session(Resume)
+        // or the start compat shim.
+        let resume_id = self.resume_session_id.take();
         let thread_id = self.start_or_resume_thread(resume_id).await?;
         self.session_id = Some(thread_id.clone());
 
@@ -806,6 +787,55 @@ impl AgentSessionHandle for CodexHandle {
         }
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentSessionHandle for CodexHandle {
+    fn key(&self) -> &AgentKey {
+        &self.key
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        // After run() completes, self.session_id holds the thread id assigned
+        // (or confirmed) by the server. Before run(), fall back to
+        // resume_session_id so callers that call open_session(Resume(id)) can
+        // read the intent back immediately.
+        self.session_id
+            .as_deref()
+            .or(self.resume_session_id.as_deref())
+    }
+
+    fn state(&self) -> AgentState {
+        if let Some(ref sid) = self.session_id {
+            let s = self.process.shared.lock().unwrap();
+            if let Some(session) = s.sessions.get(sid) {
+                return session.agent_state.clone();
+            }
+        }
+        self.state.clone()
+    }
+
+    /// Native `run`: reads `resume_session_id` stored by `open_session(Resume)`
+    /// and delegates to `run_inner`. For `open_session(New)` the field is `None`
+    /// and `run_inner` starts a fresh thread.
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        self.run_inner(init_prompt).await
+    }
+
+    /// Compat shim: threads `opts.resume_session_id` into `resume_session_id`
+    /// so `run_inner` picks it up, then calls `run_inner`.
+    async fn start(
+        &mut self,
+        opts: StartOpts,
+        init_prompt: Option<PromptReq>,
+    ) -> anyhow::Result<()> {
+        // StartOpts takes precedence over any resume id already on the handle
+        // (e.g. from a legacy resume_session call). Mirror the old behaviour.
+        if let Some(id) = opts.resume_session_id {
+            self.resume_session_id = Some(id);
+        }
+        self.run_inner(init_prompt).await
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -2003,5 +2033,99 @@ mod multisession_tests {
             h2.session_id().is_some(),
             "re-attached handle must obtain a thread_id"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // open_session / run behavioral tests (Stage 1 – Task 5)
+    // -----------------------------------------------------------------------
+
+    /// `open_session(New)` → `session_id()` is `None` before `run()`.
+    /// The codex driver sets no pre-assigned id for `New` intent, so the
+    /// handle should report `None` until `run_inner` completes the
+    /// `thread/start` RPC.
+    #[tokio::test]
+    async fn open_session_new_session_id_none_before_run() {
+        let driver = CodexDriver;
+        let key = format!("codex-os-new-{}", uuid::Uuid::new_v4());
+        agent_instances().remove(&key);
+
+        let result = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // Before run(): session_id() must be None (no preassigned id).
+        assert_eq!(
+            result.handle.session_id(),
+            None,
+            "open_session(New): session_id() must be None before run()"
+        );
+
+        agent_instances().remove(&key);
+    }
+
+    /// `open_session(Resume("thr_resume_xyz"))` → `session_id()` returns
+    /// `Some("thr_resume_xyz")` before `run()`. After `run()` the simulator
+    /// echoes back that same id (via `thread/resume`), so `session_id()` still
+    /// returns `Some("thr_resume_xyz")` and the simulator's recorded thread ids
+    /// confirm a `thread/resume` was sent (not `thread/start`).
+    #[tokio::test]
+    async fn open_session_resume_session_id_before_and_after_run() {
+        let driver = CodexDriver;
+        let key = format!("codex-os-resume-{}", uuid::Uuid::new_v4());
+        agent_instances().remove(&key);
+
+        let resume_id = "thr_resume_xyz".to_string();
+
+        let result = driver
+            .open_session(
+                key.clone(),
+                test_spec(),
+                SessionIntent::Resume(resume_id.clone()),
+            )
+            .await
+            .unwrap();
+
+        // Before run(): session_id() must return Some(resume_id) because
+        // open_session(Resume) sets resume_session_id.
+        assert_eq!(
+            result.handle.session_id(),
+            Some(resume_id.as_str()),
+            "open_session(Resume): session_id() must return Some(id) before run()"
+        );
+
+        // Wire a fake transport so run() doesn't need a real codex binary.
+        let proc = process_for(&driver, &key);
+        let sim = install_fake_transport(&proc);
+
+        let mut handle = result.handle;
+        handle.run(None).await.unwrap();
+
+        // After run(): session_id() must still return the resumed id (the
+        // simulator echoes it back verbatim for thread/resume).
+        assert_eq!(
+            handle.session_id(),
+            Some(resume_id.as_str()),
+            "open_session(Resume): session_id() must still return Some(id) after run()"
+        );
+
+        // The simulator must have recorded a thread/resume (not thread/start)
+        // carrying our resume_id.
+        {
+            let assigned = sim.thread_ids_assigned.lock().unwrap().clone();
+            assert_eq!(
+                assigned.len(),
+                1,
+                "run() must produce exactly one thread response, got {assigned:?}"
+            );
+            assert_eq!(
+                assigned[0], resume_id,
+                "thread/resume must carry the supplied resume_id, got: {:?}",
+                assigned[0]
+            );
+        }
+
+        handle.close().await.unwrap();
+        agent_instances().remove(&key);
     }
 }
