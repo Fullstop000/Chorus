@@ -76,9 +76,8 @@ pub struct OpencodeDriver;
 /// hanging the caller.
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-// `HandleRole` now lives in `drivers/mod.rs` — shared with kimi/codex so
-// the "is this the bootstrap handle?" branch reads the same across the
-// three multiplexing drivers.
+// `FactoryPath` is private to this module — only opencode branches on
+// bootstrap-vs-secondary at the handle level.
 
 /// Process-global registry: agent key -> shared runtime process. Populated
 /// by `attach`; reused by subsequent `new_session` / `resume_session` calls
@@ -217,7 +216,7 @@ impl RuntimeDriver for OpencodeDriver {
                 spec,
                 proc: Arc::clone(&proc),
                 preassigned_session_id: Some(session_id),
-                role: HandleRole::Secondary,
+                factory_path: FactoryPath::Secondary,
             };
             Ok(SessionAttachment {
                 session: Box::new(handle),
@@ -235,7 +234,7 @@ impl RuntimeDriver for OpencodeDriver {
                 spec,
                 proc: Arc::clone(&proc),
                 preassigned_session_id: preassigned,
-                role: HandleRole::Bootstrap,
+                factory_path: FactoryPath::Bootstrap,
             };
             Ok(SessionAttachment {
                 session: Box::new(handle),
@@ -506,6 +505,26 @@ impl Drop for OpencodeAgentProcess {
 // OpencodeHandle
 // ---------------------------------------------------------------------------
 
+/// Which path the `open_session` factory took when constructing this handle.
+///
+/// `Bootstrap` — no live child yet; this handle will spawn the child and
+/// drive the initialize + session/new handshake when `run()` is called.
+///
+/// `Secondary` — child is already live; the factory did the wire I/O to
+/// mint/load a session id before returning. `run()` only needs to seed
+/// per-session state and emit lifecycle events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FactoryPath {
+    Bootstrap,
+    Secondary,
+}
+
+impl FactoryPath {
+    fn is_bootstrap(self) -> bool {
+        matches!(self, Self::Bootstrap)
+    }
+}
+
 pub struct OpencodeHandle {
     key: AgentKey,
     /// Local view of this handle's lifecycle. Authoritative state for a
@@ -518,10 +537,9 @@ pub struct OpencodeHandle {
     /// Set by `new_session` / `resume_session` so `start` knows this handle
     /// is attaching to an already-minted session id on the shared child.
     preassigned_session_id: Option<SessionId>,
-    /// `Bootstrap` for the handle returned from `attach` (owns process
-    /// spawn + handshake); `Secondary` for ones from `new_session` /
-    /// `resume_session` that join the already-live child.
-    role: HandleRole,
+    /// Which factory path created this handle. `Bootstrap` owns process
+    /// spawn + handshake; `Secondary` joins an already-live child.
+    factory_path: FactoryPath,
 }
 
 impl OpencodeHandle {
@@ -554,9 +572,9 @@ impl Session for OpencodeHandle {
     }
 
     async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        match self.role {
-            HandleRole::Bootstrap => self.run_bootstrap(init_prompt).await,
-            HandleRole::Secondary => self.run_secondary(init_prompt).await,
+        match self.factory_path {
+            FactoryPath::Bootstrap => self.run_bootstrap(init_prompt).await,
+            FactoryPath::Secondary => self.run_secondary(init_prompt).await,
         }
     }
 
@@ -658,7 +676,7 @@ impl Session for OpencodeHandle {
         // still locate its own slot.
         let all_sessions_closed = {
             let mut s = self.proc.shared.lock().unwrap();
-            let sid_to_remove: Option<String> = if self.role.is_bootstrap() {
+            let sid_to_remove: Option<String> = if self.factory_path.is_bootstrap() {
                 self.session_id()
                     .map(|s| s.to_string())
                     .or_else(|| s.bootstrap_session_id.clone())
@@ -2085,7 +2103,7 @@ mod tests {
             spec: test_spec(),
             proc: Arc::clone(&proc),
             preassigned_session_id: Some(sid.to_string()),
-            role: HandleRole::Secondary,
+            factory_path: FactoryPath::Secondary,
         };
         handle.run(None).await.expect("secondary run()");
 
@@ -2187,7 +2205,7 @@ mod tests {
             spec: test_spec(),
             proc: Arc::clone(&proc),
             preassigned_session_id: Some(secondary_sid.clone()),
-            role: HandleRole::Secondary,
+            factory_path: FactoryPath::Secondary,
         };
 
         // ---- Close the bootstrap while the secondary is mid-prompt. ----

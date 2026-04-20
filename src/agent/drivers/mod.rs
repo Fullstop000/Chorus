@@ -727,35 +727,6 @@ pub(crate) fn emit_driver_event(
         tracing::warn!(agent = %agent, driver, "dropped driver event: {e}");
     }
 }
-//
-// Stage 2 gave every real driver a shared per-agent process registry and a
-// bootstrap-vs-secondary handle distinction. Those two patterns were
-// previously re-implemented in claude/codex/kimi/opencode with near-identical
-// bodies (same `OnceLock<Mutex<HashMap<_, Arc<_>>>>` shape, same eviction
-// policy, same HandleRole enum). The types below are the shared version.
-// Drivers that genuinely differ stay opaque behind the `AgentProcess` trait.
-
-/// Role a handle plays on its agent's shared runtime process.
-///
-/// The bootstrap handle — returned by the first [`RuntimeDriver::open_session`]
-/// call — brings the shared child process online. Subsequent
-/// `open_session` calls produce secondary handles that multiplex sessions onto
-/// the already-live child. For claude specifically, every handle owns its own
-/// per-session child and the distinction is currently unused (see the note in
-/// `claude.rs`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HandleRole {
-    Bootstrap,
-    Secondary,
-}
-
-impl HandleRole {
-    #[allow(dead_code)]
-    pub(crate) fn is_bootstrap(&self) -> bool {
-        matches!(self, Self::Bootstrap)
-    }
-}
-
 /// Per-agent runtime process type. Implemented by each driver's
 /// `*AgentProcess` / `*AgentCore` struct so a generic [`AgentRegistry`] can
 /// cache instances of it and evict stale entries at attach time.

@@ -76,13 +76,11 @@ fn build_mcp_config(bridge_endpoint: &str, token: &str) -> serde_json::Value {
     })
 }
 
-// Note on bootstrap-vs-secondary: Claude does not branch on handle role
+// Note on bootstrap-vs-secondary: Claude does not branch on factory path
 // anywhere — `close()` gates shared-process teardown on `live_sessions == 0`
-// regardless of role, and every handle owns its own per-session child (no
-// shared-process lifecycle difference). The kimi.rs / opencode.rs
-// `HandleRole` enum exists because those drivers genuinely differ between
-// roles (bootstrap owns the shared child, secondaries don't); reintroduce
-// one here only if Claude grows a real bootstrap-only path.
+// regardless, and every handle owns its own per-session child (no
+// shared-process lifecycle difference). Reintroduce a `FactoryPath`-style
+// enum here only if Claude grows a real bootstrap-only code path.
 
 // ---------------------------------------------------------------------------
 // Transport abstraction — lets tests inject a fake stdin/stdout pair

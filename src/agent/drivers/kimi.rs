@@ -21,7 +21,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
 
-// Kimi handles are role-agnostic; HandleRole is not imported here.
+// Kimi handles are role-agnostic; no factory-path branching needed here.
 
 use crate::agent::AgentRuntime;
 use crate::utils::cmd::{command_exists, home_dir, read_file};
