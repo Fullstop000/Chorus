@@ -563,6 +563,18 @@ pub struct AgentSpec {
     pub bridge_endpoint: String,
 }
 
+/// Session intent: whether to start a new session or resume an existing one.
+///
+/// Used by [`RuntimeDriver::open_session`] to unify the `attach`, `new_session`,
+/// and `resume_session` verbs. During migration, the default impl delegates to
+/// the legacy methods.
+#[derive(Debug, Clone, Default)]
+pub enum SessionIntent {
+    #[default]
+    New,
+    Resume(SessionId),
+}
+
 /// Return value of [`RuntimeDriver::attach`] / `new_session` / `resume_session`.
 pub struct AttachResult {
     pub handle: Box<dyn AgentSessionHandle>,
@@ -624,6 +636,23 @@ pub trait RuntimeDriver: Send + Sync + 'static {
         spec: AgentSpec,
         session_id: SessionId,
     ) -> anyhow::Result<AttachResult>;
+
+    /// Open a session on an agent. Unified replacement for `attach`, `new_session`,
+    /// and `resume_session`. During migration this has a default impl that
+    /// delegates to the legacy verbs. Drivers override with native impls in
+    /// subsequent tasks. Task 10 removes this default and the legacy verbs
+    /// together.
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<AttachResult> {
+        match intent {
+            SessionIntent::New => self.attach(key, spec).await,
+            SessionIntent::Resume(id) => self.resume_session(key, spec, id).await,
+        }
+    }
 }
 
 /// Per-session lifecycle handle.
@@ -673,6 +702,15 @@ pub trait AgentSessionHandle: Send {
     /// Shut this session down and release its resources. Does not tear down
     /// the agent's shared runtime process when other sessions remain live.
     async fn close(&mut self) -> anyhow::Result<()>;
+
+    /// Bring the session online. Replaces `start`. During migration this has a
+    /// default impl that delegates to `start(StartOpts::default(), init_prompt)`.
+    /// Drivers that need to thread resume info must override this (and also
+    /// their `open_session` in the driver trait). Task 10 removes this default
+    /// and `start` together.
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        self.start(StartOpts::default(), init_prompt).await
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -894,6 +932,21 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::timeout;
+
+    // ---- SessionIntent ----
+
+    #[test]
+    fn session_intent_default_is_new() {
+        assert!(matches!(SessionIntent::default(), SessionIntent::New));
+    }
+
+    #[test]
+    fn session_intent_resume_carries_id() {
+        match SessionIntent::Resume("sess_abc".to_string()) {
+            SessionIntent::Resume(id) => assert_eq!(id, "sess_abc"),
+            _ => panic!("expected Resume"),
+        }
+    }
 
     /// Minimal `DriverEvent` helper used across tests. Uses `Lifecycle` with
     /// a cheap-to-clone `Idle` state so the fan-out dispatcher isn't
