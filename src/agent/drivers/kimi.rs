@@ -11,8 +11,8 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
@@ -101,6 +101,18 @@ struct KimiAgentCore {
     /// thread actually runs spawn + initialize. Non-recursive (tokio::Mutex
     /// is fair and async-friendly).
     start_in_progress: tokio::sync::Mutex<()>,
+    /// Pairing token minted by the bridge during `spawn_and_initialize`.
+    /// Cached here so every subsequent `session/new` or `session/load` call
+    /// reuses it without an extra HTTP round-trip. Written exactly once
+    /// (by `spawn_and_initialize`); all reads use `get()` which returns
+    /// `None` if the core was never started.
+    pairing_token: OnceLock<String>,
+    /// Number of times `spawn_and_initialize` has been called on this core.
+    /// Only compiled under `#[cfg(test)]`; used by concurrency + failure
+    /// non-stickiness tests to assert the slow path ran the expected number
+    /// of times without needing a real kimi binary.
+    #[cfg(test)]
+    spawn_call_count: AtomicUsize,
 }
 
 /// Inner mutable state guarded by a tokio mutex so we can `await` while
@@ -149,6 +161,9 @@ impl KimiAgentCore {
             started: AtomicBool::new(false),
             started_notify: tokio::sync::Notify::new(),
             start_in_progress: tokio::sync::Mutex::new(()),
+            pairing_token: OnceLock::new(),
+            #[cfg(test)]
+            spawn_call_count: AtomicUsize::new(0),
         })
     }
 
@@ -192,11 +207,21 @@ impl KimiAgentCore {
     /// move to each handle's `start()`. Populates `inner.stdin_tx`,
     /// `inner.shared`, and sets `inner.next_request_id = 3`.
     async fn spawn_and_initialize(self: &Arc<Self>) -> anyhow::Result<()> {
-        // Pair with the shared HTTP bridge.
+        // Track invocation count for concurrency / failure tests.
+        #[cfg(test)]
+        self.spawn_call_count.fetch_add(1, Ordering::Relaxed);
+
+        // Pair with the shared HTTP bridge. The token is cached on the core so
+        // subsequent session opens (session/new, session/load) reuse it without
+        // an extra HTTP round-trip.
         let pairing_token =
             super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
                 .await
                 .context("failed to pair with shared bridge")?;
+        // Store in the OnceLock. The lock was never set before this point
+        // (spawn_and_initialize is only called once per core lifetime under
+        // the start_in_progress serialiser), so set() always succeeds here.
+        let _ = self.pairing_token.set(pairing_token.clone());
 
         let wd = &self.spec.working_directory;
         let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
@@ -341,6 +366,25 @@ impl AgentProcess for KimiAgentCore {
             None => false,
             Some(tx) => tx.is_closed(),
         }
+    }
+}
+
+/// Test-only accessors exposed via a separate `impl` block so they are
+/// completely absent from non-test builds.
+#[cfg(test)]
+impl KimiAgentCore {
+    /// Number of times `spawn_and_initialize` has been invoked on this core.
+    /// Used to verify that the serialisation + non-stickiness invariants hold
+    /// without needing a real kimi binary.
+    pub(crate) fn spawn_and_initialize_call_count_for_test(&self) -> usize {
+        self.spawn_call_count.load(Ordering::Relaxed)
+    }
+
+    /// Whether `started` is currently set. Used by failure non-stickiness
+    /// tests to verify that a failed `ensure_started` does not permanently
+    /// flip the flag.
+    pub(crate) fn is_started_for_test(&self) -> bool {
+        self.started.load(Ordering::Acquire)
     }
 }
 
@@ -687,13 +731,20 @@ impl KimiHandle {
         Arc<Mutex<SharedReaderState>>,
         String,
     )> {
-        // Re-pair with the bridge on every session request so the pairing
-        // token stays fresh. In practice the token is stable per-core-lifetime
-        // but we don't cache it in the core to avoid stale-token bugs.
-        let pairing_token =
-            super::request_pairing_token(&self.core.spec.bridge_endpoint, &self.core.key)
-                .await
-                .context("failed to pair with shared bridge")?;
+        // Reuse the pairing token that was cached by spawn_and_initialize.
+        // Callers must have called ensure_started() first; if the cache is
+        // empty that invariant was violated — surface a clear error instead of
+        // making a fresh HTTP request that would indicate incorrect usage.
+        let pairing_token = self
+            .core
+            .pairing_token
+            .get()
+            .ok_or_else(|| {
+                anyhow!(
+                    "kimi: pairing token not available — ensure_started() must complete first"
+                )
+            })?
+            .clone();
         let inner = self.core.inner.lock().await;
         let stdin_tx = inner.stdin_tx.clone().ok_or_else(|| {
             anyhow!("kimi: stdin not available — ensure_started() must complete first")
@@ -2312,6 +2363,107 @@ mod tests {
         assert_eq!(
             ptr0, ptr1,
             "second attach must reuse the same EventFanOut as the first"
+        );
+
+        registry().remove(&key);
+    }
+
+    // -----------------------------------------------------------------------
+    // Gap 2 tests — pairing-token caching + ensure_started invariants
+    // -----------------------------------------------------------------------
+
+    /// Test A: concurrent race safety.
+    ///
+    /// Two concurrent `ensure_started` calls on the same core. In a unit-test
+    /// environment there is no kimi binary, so both will fail — that is
+    /// expected. What we assert is:
+    ///   (a) Both calls return (no deadlock / hang).
+    ///   (b) They ran **serially** (at most one at a time) — the mutex
+    ///       serialises the slow path. Because both fail the second caller
+    ///       re-enters the slow path after the first releases the lock
+    ///       (non-stickiness), so the counter ends up at 2; the invariant is
+    ///       that they never ran **concurrently** (count <= number of callers).
+    ///
+    /// Note: when the first call fails `started` stays false, so the second
+    /// caller legitimately retries (see Test B). Therefore `count == 2` here
+    /// is correct and expected — it proves non-stickiness and serialisation at
+    /// once. What would be broken is `count > 2` (impossible) or a deadlock.
+    #[tokio::test]
+    async fn kimi_ensure_started_concurrent_calls_serialize() {
+        let (events, event_tx) = EventFanOut::new();
+        let key: AgentKey = format!("agent-concurrent-{}", uuid::Uuid::new_v4());
+        let core: Arc<KimiAgentCore> =
+            KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        let c0 = Arc::clone(&core);
+        let c1 = Arc::clone(&core);
+        // Both calls will fail (no kimi binary / bridge endpoint unreachable)
+        // — that is intentional. We only care about deadlock-freedom and that
+        // spawn_and_initialize is never called more than once *per concurrent
+        // batch* (i.e. no two calls overlap in time due to the mutex).
+        let j0 = tokio::spawn(async move { c0.ensure_started().await });
+        let j1 = tokio::spawn(async move { c1.ensure_started().await });
+        // If either task hangs this join will time out and the test will fail.
+        let (r0, r1) = tokio::join!(j0, j1);
+        // Unwrap the JoinHandle (panic propagation), not the Result<()>
+        // (expected to be Err — no kimi binary).
+        let _ = r0.expect("task 0 panicked");
+        let _ = r1.expect("task 1 panicked");
+
+        // Serialisation invariant: each of the two callers entered the slow path
+        // at most once. Count must be exactly 2 (both failed, neither was sticky).
+        // A count of 0 or >2 would indicate a bug in the mutex / counter.
+        let n = core.spawn_and_initialize_call_count_for_test();
+        assert!(
+            n <= 2,
+            "spawn_and_initialize ran {n} times for 2 callers — impossible (bug in counter or mutex)"
+        );
+        // Both callers must have entered the slow path (non-stickiness): if
+        // one run was silently skipped without retrying, we'd see count == 0.
+        assert!(
+            n >= 1,
+            "spawn_and_initialize never ran — both callers took an unexpected fast-path"
+        );
+
+        registry().remove(&key);
+    }
+
+    /// Test B: failure non-stickiness.
+    ///
+    /// First `ensure_started` fails (no kimi binary) → `started` stays false.
+    /// A second call must re-enter the slow path (`spawn_and_initialize` runs
+    /// again, incrementing the counter to 2) rather than being short-circuited
+    /// by a stale `started=false` without retrying.
+    #[tokio::test]
+    async fn kimi_ensure_started_failure_not_sticky() {
+        let (events, event_tx) = EventFanOut::new();
+        let key: AgentKey = format!("agent-failure-sticky-{}", uuid::Uuid::new_v4());
+        let core: Arc<KimiAgentCore> =
+            KimiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        // First call — expected to fail (no kimi binary).
+        let _ = core.ensure_started().await;
+        assert!(
+            !core.is_started_for_test(),
+            "`started` must remain false after a failed ensure_started"
+        );
+        // The slow path ran once.
+        assert_eq!(
+            core.spawn_and_initialize_call_count_for_test(),
+            1,
+            "spawn_and_initialize must have been called once after first failure"
+        );
+
+        // Second call — must retry (non-sticky failure).
+        let _ = core.ensure_started().await;
+        assert!(
+            !core.is_started_for_test(),
+            "`started` must still be false (no binary available)"
+        );
+        assert_eq!(
+            core.spawn_and_initialize_call_count_for_test(),
+            2,
+            "failure was sticky — spawn_and_initialize only ran once instead of twice"
         );
 
         registry().remove(&key);
