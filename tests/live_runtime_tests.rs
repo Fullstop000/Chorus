@@ -71,7 +71,7 @@ use chorus::agent::drivers::claude::ClaudeDriver;
 use chorus::agent::drivers::codex::CodexDriver;
 use chorus::agent::drivers::kimi::KimiDriver;
 use chorus::agent::drivers::opencode::OpencodeDriver;
-use chorus::agent::drivers::{AgentSpec, PromptReq, RuntimeDriver, StartOpts};
+use chorus::agent::drivers::{AgentSpec, PromptReq, RuntimeDriver, SessionIntent};
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
@@ -494,10 +494,12 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         bridge_endpoint: bridge_url.clone(),
     };
 
-    // 6. Attach + start the runtime, deferring the first prompt so it's
-    //    delivered once the ACP session is active.
+    // 6. Open a new session and run the runtime, deferring the first prompt so
+    //    it's delivered once the ACP session is active.
     let driver = OpencodeDriver;
-    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let attach_result = driver
+        .open_session(agent_key.to_string(), spec, SessionIntent::New)
+        .await?;
     let mut handle = attach_result.handle;
 
     let prompt = PromptReq {
@@ -510,7 +512,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         attachments: vec![],
     };
 
-    handle.start(StartOpts::default(), Some(prompt)).await?;
+    handle.run(Some(prompt)).await?;
 
     // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -625,9 +627,11 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         bridge_endpoint: bridge_url.clone(),
     };
 
-    // 6. Attach + start the runtime with initial prompt.
+    // 6. Open a new session and run the runtime with initial prompt.
     let driver = ClaudeDriver;
-    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let attach_result = driver
+        .open_session(agent_key.to_string(), spec, SessionIntent::New)
+        .await?;
     let mut handle = attach_result.handle;
 
     let prompt = PromptReq {
@@ -640,7 +644,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         attachments: vec![],
     };
 
-    handle.start(StartOpts::default(), Some(prompt)).await?;
+    handle.run(Some(prompt)).await?;
 
     // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -759,13 +763,15 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         bridge_endpoint: bridge_url.clone(),
     };
 
-    // 6. Attach + start the runtime with initial prompt.
+    // 6. Open a new session and run the runtime with initial prompt.
     //    Codex uses the `app-server` native protocol; the driver passes
     //    `-c mcp_servers.chat.url=…` flags to wire up the HTTP bridge.
     //    (Codex app-server doesn't write a log file — its only signal is
     //    stdout JSON-RPC. The Iron Rule helper will note this on failure.)
     let driver = CodexDriver;
-    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let attach_result = driver
+        .open_session(agent_key.to_string(), spec, SessionIntent::New)
+        .await?;
     let mut handle = attach_result.handle;
 
     let prompt = PromptReq {
@@ -778,7 +784,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         attachments: vec![],
     };
 
-    handle.start(StartOpts::default(), Some(prompt)).await?;
+    handle.run(Some(prompt)).await?;
 
     // 7. Poll the store for up to 120s waiting for the agent's reply.
     //    Codex on gpt-5.4 via WebSocket + MCP tool round-trip can exceed 60s
@@ -898,12 +904,14 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         bridge_endpoint: bridge_url.clone(),
     };
 
-    // 6. Attach + start the runtime with initial prompt.
+    // 6. Open a new session and run the runtime with initial prompt.
     //    Kimi uses ACP over stdio (`kimi acp`). The driver writes a
     //    `.chorus-kimi-mcp.json` config file AND embeds the bridge URL in the
     //    ACP `session/new` params — both touch points are exercised here.
     let driver = KimiDriver;
-    let attach_result = driver.attach(agent_key.to_string(), spec).await?;
+    let attach_result = driver
+        .open_session(agent_key.to_string(), spec, SessionIntent::New)
+        .await?;
     let mut handle = attach_result.handle;
 
     let prompt = PromptReq {
@@ -916,7 +924,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         attachments: vec![],
     };
 
-    handle.start(StartOpts::default(), Some(prompt)).await?;
+    handle.run(Some(prompt)).await?;
 
     // 7. Poll the store for up to 60 seconds waiting for the agent's reply.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(60);

@@ -80,7 +80,7 @@ use chorus::agent::drivers::kimi::KimiDriver;
 use chorus::agent::drivers::opencode::OpencodeDriver;
 use chorus::agent::drivers::{
     AgentKey, AgentSpec, DriverEvent, EventStreamHandle, PromptReq, RuntimeDriver, SessionId,
-    StartOpts,
+    SessionIntent,
 };
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
@@ -357,21 +357,25 @@ async fn codex_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Re
     let spec = make_spec("Codex Multi Bot", &model, &env);
 
     let driver = CodexDriver;
-    let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+    let attach = driver
+        .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+        .await?;
     let events: EventStreamHandle = attach.events.clone();
     let mut rx = events.subscribe();
     let mut bootstrap = attach.handle;
 
     // Guard spawned processes so Drop tears them down even on panic.
     let outcome = async {
-        bootstrap.start(StartOpts::default(), None).await?;
+        bootstrap.run(None).await?;
         let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("bootstrap SessionAttached")?;
 
-        let secondary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
+        let secondary_attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut secondary = secondary_attach.handle;
-        secondary.start(StartOpts::default(), None).await?;
+        secondary.run(None).await?;
         let s2 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("secondary SessionAttached")?;
@@ -398,9 +402,11 @@ async fn codex_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Re
         // `thread/start` requires zero rollout state and zero LLM tokens,
         // which makes this the cheapest "the shared process is still alive"
         // check we can run.
-        let tertiary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
+        let tertiary_attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut tertiary = tertiary_attach.handle;
-        tertiary.start(StartOpts::default(), None).await?;
+        tertiary.run(None).await?;
         let s3 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("tertiary SessionAttached after bootstrap close")?;
@@ -408,8 +414,8 @@ async fn codex_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Re
         assert_ne!(s3, s2, "tertiary thread id must differ from secondary");
         tertiary.close().await?;
 
-        // Close the secondary → registry prunes → a fresh attach on a new
-        // key must succeed and spawn a fresh process.
+        // Close the secondary → registry prunes → a fresh open_session on a
+        // new key must succeed and spawn a fresh process.
         secondary.close().await?;
 
         let fresh_key = "codex-multi-bot-fresh".to_string();
@@ -420,10 +426,12 @@ async fn codex_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Re
             "codex",
             &model,
         )?;
-        let fresh = driver.attach(fresh_key.clone(), spec.clone()).await?;
+        let fresh = driver
+            .open_session(fresh_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut fresh_rx = fresh.events.subscribe();
         let mut fresh_handle = fresh.handle;
-        fresh_handle.start(StartOpts::default(), None).await?;
+        fresh_handle.run(None).await?;
         let _ = await_session_attached(&mut fresh_rx, Duration::from_secs(30), &fresh_key)
             .await
             .context("fresh attach SessionAttached")?;
@@ -456,20 +464,24 @@ async fn kimi_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Res
     let spec = make_spec("Kimi Multi Bot", &model, &env);
 
     let driver = KimiDriver;
-    let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+    let attach = driver
+        .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+        .await?;
     let events = attach.events.clone();
     let mut rx = events.subscribe();
     let mut bootstrap = attach.handle;
 
     let outcome = async {
-        bootstrap.start(StartOpts::default(), None).await?;
+        bootstrap.run(None).await?;
         let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("bootstrap SessionAttached (kimi warmup)")?;
 
-        let secondary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
+        let secondary_attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut secondary = secondary_attach.handle;
-        secondary.start(StartOpts::default(), None).await?;
+        secondary.run(None).await?;
         let s2 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("secondary SessionAttached")?;
@@ -490,12 +502,13 @@ async fn kimi_multi_session_bootstrap_close_preserves_secondary() -> anyhow::Res
         );
 
         // Confirm the child process + ACP connection are still alive by
-        // opening a third session via new_session on the SAME key. This
-        // only works if the driver's shared state persisted past the
-        // bootstrap close.
-        let tertiary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
+        // opening a third session on the SAME key. This only works if the
+        // driver's shared state persisted past the bootstrap close.
+        let tertiary_attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut tertiary = tertiary_attach.handle;
-        tertiary.start(StartOpts::default(), None).await?;
+        tertiary.run(None).await?;
         let s3 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("tertiary SessionAttached after bootstrap close")?;
@@ -538,20 +551,24 @@ async fn opencode_multi_session_bootstrap_close_preserves_secondary() -> anyhow:
     let spec = make_spec("OpenCode Multi Bot", &model, &env);
 
     let driver = OpencodeDriver;
-    let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+    let attach = driver
+        .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+        .await?;
     let events = attach.events.clone();
     let mut rx = events.subscribe();
     let mut bootstrap = attach.handle;
 
     let outcome = async {
-        bootstrap.start(StartOpts::default(), None).await?;
+        bootstrap.run(None).await?;
         let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("bootstrap SessionAttached")?;
 
-        let secondary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
+        let secondary_attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut secondary = secondary_attach.handle;
-        secondary.start(StartOpts::default(), None).await?;
+        secondary.run(None).await?;
         let s2 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("secondary SessionAttached")?;
@@ -571,9 +588,11 @@ async fn opencode_multi_session_bootstrap_close_preserves_secondary() -> anyhow:
 
         // Probe secondary liveness: spawn a tertiary — only works if the
         // underlying opencode child + ACP connection persisted.
-        let tertiary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
+        let tertiary_attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut tertiary = tertiary_attach.handle;
-        tertiary.start(StartOpts::default(), None).await?;
+        tertiary.run(None).await?;
         let s3 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("tertiary SessionAttached after bootstrap close")?;
@@ -617,7 +636,9 @@ async fn claude_multi_session_bootstrap_close_preserves_secondary() -> anyhow::R
     let spec = make_spec("Claude Multi Bot", &model, &env);
 
     let driver = ClaudeDriver;
-    let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+    let attach = driver
+        .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+        .await?;
     let events = attach.events.clone();
     let mut rx = events.subscribe();
     let mut bootstrap = attach.handle;
@@ -628,18 +649,16 @@ async fn claude_multi_session_bootstrap_close_preserves_secondary() -> anyhow::R
     };
 
     let outcome = async {
-        bootstrap
-            .start(StartOpts::default(), Some(trivial_prompt()))
-            .await?;
+        bootstrap.run(Some(trivial_prompt())).await?;
         let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("bootstrap SessionAttached (requires init prompt for claude -p)")?;
 
-        let secondary_attach = driver.new_session(agent_key.clone(), spec.clone()).await?;
-        let mut secondary = secondary_attach.handle;
-        secondary
-            .start(StartOpts::default(), Some(trivial_prompt()))
+        let secondary_attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
             .await?;
+        let mut secondary = secondary_attach.handle;
+        secondary.run(Some(trivial_prompt())).await?;
         let s2 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("secondary SessionAttached")?;
@@ -661,7 +680,7 @@ async fn claude_multi_session_bootstrap_close_preserves_secondary() -> anyhow::R
         // still Some and we can close it cleanly.
         secondary.close().await?;
 
-        // After all handles close, a fresh attach on a new key should
+        // After all handles close, a fresh open_session on a new key should
         // succeed (registry pruned).
         let fresh_key = "claude-multi-bot-fresh".to_string();
         seed_agent(
@@ -671,12 +690,12 @@ async fn claude_multi_session_bootstrap_close_preserves_secondary() -> anyhow::R
             "claude",
             &model,
         )?;
-        let fresh = driver.attach(fresh_key.clone(), spec.clone()).await?;
+        let fresh = driver
+            .open_session(fresh_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut fresh_rx = fresh.events.subscribe();
         let mut fresh_handle = fresh.handle;
-        fresh_handle
-            .start(StartOpts::default(), Some(trivial_prompt()))
-            .await?;
+        fresh_handle.run(Some(trivial_prompt())).await?;
         let _ = await_session_attached(&mut fresh_rx, Duration::from_secs(30), &fresh_key)
             .await
             .context("fresh attach SessionAttached")?;
@@ -725,14 +744,14 @@ async fn codex_multi_session_resume_preserves_thread_id() -> anyhow::Result<()> 
     };
 
     let s1 = {
-        let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+        let attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut rx = attach.events.subscribe();
         let mut handle = attach.handle;
 
         let result = async {
-            handle
-                .start(StartOpts::default(), Some(trivial_prompt()))
-                .await?;
+            handle.run(Some(trivial_prompt())).await?;
             let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
                 .await
                 .context("initial SessionAttached")?;
@@ -769,18 +788,18 @@ async fn codex_multi_session_resume_preserves_thread_id() -> anyhow::Result<()> 
         result?
     };
 
-    // Round trip: attach fresh + resume_session with s1.
-    let attach2 = driver.attach(agent_key.clone(), spec.clone()).await?;
-    let mut rx2 = attach2.events.subscribe();
-    let _bootstrap2 = attach2.handle; // keep alive; not starting it
-
-    let resumed = driver
-        .resume_session(agent_key.clone(), spec.clone(), s1.clone())
+    // Round trip: open_session(Resume) with s1. The default open_session impl
+    // delegates to resume_session; no throwaway bootstrap handle needed
+    // because core-eviction policy keeps the entry alive until all sessions
+    // close (and the bootstrap above already fully closed).
+    let resumed_result = driver
+        .open_session(agent_key.clone(), spec.clone(), SessionIntent::Resume(s1.clone()))
         .await?;
-    let mut resumed_handle = resumed.handle;
+    let mut rx2 = resumed_result.events.subscribe();
+    let mut resumed_handle = resumed_result.handle;
 
     let outcome = async {
-        resumed_handle.start(StartOpts::default(), None).await?;
+        resumed_handle.run(None).await?;
         let s1_again = await_session_attached(&mut rx2, Duration::from_secs(30), &agent_key)
             .await
             .context("resumed SessionAttached")?;
@@ -842,13 +861,15 @@ async fn codex_multi_session_resume_turnless_thread_surfaces_error() -> anyhow::
 
     let driver = CodexDriver;
 
-    // Mint s1 via bootstrap attach + start (no prompt → no turn → no rollout).
-    let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+    // Mint s1 via bootstrap open_session + run (no prompt → no turn → no rollout).
+    let attach = driver
+        .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+        .await?;
     let mut rx = attach.events.subscribe();
     let mut bootstrap = attach.handle;
 
     let outcome = async {
-        bootstrap.start(StartOpts::default(), None).await?;
+        bootstrap.run(None).await?;
         let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
             .await
             .context("bootstrap SessionAttached")?;
@@ -858,17 +879,17 @@ async fn codex_multi_session_resume_turnless_thread_surfaces_error() -> anyhow::
         // that error rather than hang. Bound the call in a 30 s timeout so a
         // regression (driver hang) fails the test instead of the suite.
         let resume_attach = driver
-            .resume_session(agent_key.clone(), spec.clone(), s1.clone())
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::Resume(s1.clone()))
             .await?;
         let mut resume_handle = resume_attach.handle;
 
         let start_result = timeout(
             Duration::from_secs(30),
-            resume_handle.start(StartOpts::default(), None),
+            resume_handle.run(None),
         )
         .await
         .context(
-            "resume_session start() timed out — driver still hangs on thread/resume error response",
+            "open_session(Resume) run() timed out — driver still hangs on thread/resume error response",
         )?;
 
         let err = start_result.expect_err(
@@ -925,14 +946,14 @@ async fn claude_multi_session_resume_preserves_session_id() -> anyhow::Result<()
     };
 
     let s1 = {
-        let attach = driver.attach(agent_key.clone(), spec.clone()).await?;
+        let attach = driver
+            .open_session(agent_key.clone(), spec.clone(), SessionIntent::New)
+            .await?;
         let mut rx = attach.events.subscribe();
         let mut handle = attach.handle;
 
         let result = async {
-            handle
-                .start(StartOpts::default(), Some(trivial_prompt()))
-                .await?;
+            handle.run(Some(trivial_prompt())).await?;
             let s1 = await_session_attached(&mut rx, Duration::from_secs(30), &agent_key)
                 .await
                 .context("initial SessionAttached (claude requires init prompt)")?;
@@ -947,21 +968,18 @@ async fn claude_multi_session_resume_preserves_session_id() -> anyhow::Result<()
         result?
     };
 
-    // Round trip: attach fresh + resume_session with s1.
-    let attach2 = driver.attach(agent_key.clone(), spec.clone()).await?;
-    let mut rx2 = attach2.events.subscribe();
-    let _bootstrap2 = attach2.handle;
-
-    let resumed = driver
-        .resume_session(agent_key.clone(), spec.clone(), s1.clone())
+    // Round trip: open_session(Resume) with s1. No throwaway bootstrap
+    // handle needed — each Claude handle owns its own child, and the
+    // bootstrap above fully closed before we reach this point.
+    let resumed_result = driver
+        .open_session(agent_key.clone(), spec.clone(), SessionIntent::Resume(s1.clone()))
         .await?;
-    let mut resumed_handle = resumed.handle;
+    let mut rx2 = resumed_result.events.subscribe();
+    let mut resumed_handle = resumed_result.handle;
 
     let outcome = async {
         // Resume still needs stdin input to emit init; send a trivial prompt.
-        resumed_handle
-            .start(StartOpts::default(), Some(trivial_prompt()))
-            .await?;
+        resumed_handle.run(Some(trivial_prompt())).await?;
         let s1_again = await_session_attached(&mut rx2, Duration::from_secs(30), &agent_key)
             .await
             .context("resumed SessionAttached")?;
