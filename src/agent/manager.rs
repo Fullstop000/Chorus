@@ -13,7 +13,7 @@ use crate::agent::drivers::codex::CodexDriver;
 use crate::agent::drivers::kimi::KimiDriver;
 use crate::agent::drivers::opencode::OpencodeDriver;
 use crate::agent::drivers::{
-    AgentSessionHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, StartOpts,
+    AgentSessionHandle, AgentSpec, AgentState, PromptReq, RuntimeDriver, SessionIntent,
 };
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
@@ -188,50 +188,30 @@ impl AgentManager {
             bridge_endpoint,
         };
 
-        let attach_result = driver.attach(agent_name.to_string(), spec).await?;
+        let intent = match agent.session_id.clone() {
+            Some(id) => SessionIntent::Resume(id),
+            None => SessionIntent::New,
+        };
+        let attach_result = driver
+            .open_session(agent_name.to_string(), spec, intent)
+            .await?;
         let mut handle = attach_result.handle;
         let events = attach_result.events;
-
-        // Subscribe BEFORE start so we don't miss early events.
-        let event_rx = events.subscribe();
+        let event_rx = events.subscribe();  // subscribe BEFORE run
 
         let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
-
         let init_prompt_text = build_start_prompt(
-            &agent.display_name,
-            is_resume,
-            &unread_summary,
-            wake_message.as_ref(),
+            &agent.display_name, is_resume, &unread_summary, wake_message.as_ref(),
         );
 
-        let start_opts = StartOpts {
-            resume_session_id: agent.session_id.clone(),
-        };
-
-        self.store
-            .update_agent_status(agent_name, AgentStatus::Active)?;
-        activity_log::set_activity_state(
-            &self.activity_logs,
-            agent_name,
-            ACTIVITY_WORKING,
-            "Starting\u{2026}",
-        );
+        self.store.update_agent_status(agent_name, AgentStatus::Active)?;
+        activity_log::set_activity_state(&self.activity_logs, agent_name, ACTIVITY_WORKING, "Starting\u{2026}");
         activity_log::push_activity(
-            &self.activity_logs,
-            agent_name,
-            ActivityEntry::Start { is_resume },
+            &self.activity_logs, agent_name, ActivityEntry::Start { is_resume },
         );
 
-        handle
-            .start(
-                start_opts,
-                Some(PromptReq {
-                    text: init_prompt_text,
-                    attachments: vec![],
-                }),
-            )
-            .await?;
+        handle.run(Some(PromptReq { text: init_prompt_text, attachments: vec![] })).await?;
 
         let forwarder = super::event_forwarder::spawn_event_forwarder(
             event_rx,
