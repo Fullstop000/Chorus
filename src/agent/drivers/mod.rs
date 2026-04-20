@@ -397,8 +397,8 @@ impl EventFanOut {
 /// Shareable handle to a driver's event fan-out.
 ///
 /// Cheap to clone (`Arc`). Subscribers obtain one of these from
-/// [`AttachResult`] and call [`EventStreamHandle::subscribe`] to register a
-/// listener; the AgentSessionHandle implementation calls [`EventStreamHandle::close`]
+/// [`SessionAttachment`] and call [`EventStreamHandle::subscribe`] to register a
+/// listener; the Session implementation calls [`EventStreamHandle::close`]
 /// when the runtime shuts down.
 #[derive(Debug, Clone)]
 pub struct EventStreamHandle {
@@ -437,7 +437,7 @@ impl EventStreamHandle {
     }
 
     /// Signal the fan-out dispatcher to drain its inbound queue and exit
-    /// after the final event. Call this from `AgentSessionHandle::close()` after
+    /// after the final event. Call this from `Session::close()` after
     /// emitting the terminal `Lifecycle::Closed` event. Idempotent.
     pub fn close(&self) {
         self.inner.closing.store(true, Ordering::SeqCst);
@@ -464,14 +464,14 @@ pub struct PromptAttachment {
     pub bytes: Vec<u8>,
 }
 
-/// Prompt request sent to [`AgentSessionHandle::prompt`].
+/// Prompt request sent to [`Session::prompt`].
 #[derive(Debug, Clone)]
 pub struct PromptReq {
     pub text: String,
     pub attachments: Vec<PromptAttachment>,
 }
 
-/// Outcome of a [`AgentSessionHandle::cancel`] call.
+/// Outcome of a [`Session::cancel`] call.
 #[derive(Debug, Clone)]
 pub enum CancelOutcome {
     /// The in-flight run was aborted; the session remains usable.
@@ -568,8 +568,8 @@ pub enum SessionIntent {
 }
 
 /// Return value of [`RuntimeDriver::open_session`].
-pub struct AttachResult {
-    pub handle: Box<dyn AgentSessionHandle>,
+pub struct SessionAttachment {
+    pub session: Box<dyn Session>,
     pub events: EventStreamHandle,
 }
 
@@ -581,7 +581,7 @@ pub struct AttachResult {
 ///
 /// One instance per runtime (Claude, Codex, Kimi, OpenCode, Fake). Session
 /// lifecycle lives here: [`open_session`] opens (new or resumed) sessions,
-/// each yielding a fresh [`AgentSessionHandle`].
+/// each yielding a fresh [`Session`].
 ///
 /// `'static` so driver pointers can be stored in registries; `Send + Sync`
 /// because the agent manager holds them behind an `Arc`.
@@ -610,14 +610,14 @@ pub trait RuntimeDriver: Send + Sync + 'static {
     ///
     /// `SessionIntent::New` starts a fresh session; `SessionIntent::Resume(id)`
     /// resumes the given stored session. The returned handle is in
-    /// [`AgentState::Idle`]; callers must invoke [`AgentSessionHandle::run`] to
+    /// [`AgentState::Idle`]; callers must invoke [`Session::run`] to
     /// bring it online.
     async fn open_session(
         &self,
         key: AgentKey,
         spec: AgentSpec,
         intent: SessionIntent,
-    ) -> anyhow::Result<AttachResult>;
+    ) -> anyhow::Result<SessionAttachment>;
 }
 
 /// Per-session lifecycle handle.
@@ -632,7 +632,7 @@ pub trait RuntimeDriver: Send + Sync + 'static {
 /// `Sync`; serialization of concurrent access is the handle implementation's
 /// responsibility (typically via an internal actor loop).
 #[async_trait]
-pub trait AgentSessionHandle: Send {
+pub trait Session: Send {
     /// The agent key this session belongs to.
     fn key(&self) -> &AgentKey;
 

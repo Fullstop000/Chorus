@@ -241,19 +241,18 @@ impl RuntimeDriver for CodexDriver {
         key: AgentKey,
         spec: AgentSpec,
         intent: SessionIntent,
-    ) -> anyhow::Result<AttachResult> {
+    ) -> anyhow::Result<SessionAttachment> {
         let proc = self.ensure_process(&key);
         let events = proc.events.clone();
         let mut handle = CodexHandle::new(key, spec, Arc::clone(&proc));
         if let SessionIntent::Resume(id) = intent {
             handle.resume_session_id = Some(id);
         }
-        Ok(AttachResult {
-            handle: Box::new(handle),
+        Ok(SessionAttachment {
+            session: Box::new(handle),
             events,
         })
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -519,7 +518,7 @@ impl SharedReaderState {
 }
 
 // ---------------------------------------------------------------------------
-// CodexHandle — AgentSessionHandle
+// CodexHandle — Session
 // ---------------------------------------------------------------------------
 
 pub struct CodexHandle {
@@ -769,7 +768,7 @@ impl CodexHandle {
 }
 
 #[async_trait]
-impl AgentSessionHandle for CodexHandle {
+impl Session for CodexHandle {
     fn key(&self) -> &AgentKey {
         &self.key
     }
@@ -1463,7 +1462,7 @@ mod tests {
             .open_session("agent-codex-1".into(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Idle));
+        assert!(matches!(result.session.state(), AgentState::Idle));
     }
 
     #[tokio::test]
@@ -1474,7 +1473,7 @@ mod tests {
             .open_session("agent-codex-3".into(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Idle));
+        assert!(matches!(result.session.state(), AgentState::Idle));
     }
 
     // ---- build_codex_mcp_args tests ----
@@ -1799,7 +1798,7 @@ mod multisession_tests {
             .unwrap();
         let mut rx = s0.events.subscribe();
 
-        let mut primary = s0.handle;
+        let mut primary = s0.session;
         let sim = install_fake_transport(&process_for(&driver, &key));
 
         primary.run(None).await.expect("primary run");
@@ -1808,12 +1807,12 @@ mod multisession_tests {
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap()
-            .handle;
+            .session;
         let mut s2 = driver
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap()
-            .handle;
+            .session;
 
         s1.run(None).await.expect("s1 run");
         s2.run(None).await.expect("s2 run");
@@ -1864,7 +1863,7 @@ mod multisession_tests {
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        let mut primary = s0.handle;
+        let mut primary = s0.session;
         let _sim = install_fake_transport(&process_for(&driver, &key));
         primary.run(None).await.unwrap();
 
@@ -1877,7 +1876,7 @@ mod multisession_tests {
             )
             .await
             .unwrap()
-            .handle;
+            .session;
         resumed.run(None).await.unwrap();
         assert_eq!(
             resumed.session_id(),
@@ -1922,7 +1921,7 @@ mod multisession_tests {
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        let mut primary = s0.handle;
+        let mut primary = s0.session;
         let sim = install_fake_transport(&process_for(&driver, &key));
         primary.run(None).await.unwrap();
 
@@ -1934,7 +1933,7 @@ mod multisession_tests {
                 .open_session(key.clone(), test_spec(), SessionIntent::New)
                 .await
                 .unwrap()
-                .handle;
+                .session;
             h.run(None).await.unwrap();
         }
 
@@ -1968,7 +1967,7 @@ mod multisession_tests {
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        let mut h1 = s1.handle;
+        let mut h1 = s1.session;
         let _sim1 = install_fake_transport(&process_for(&driver, &key));
         h1.run(None).await.unwrap();
 
@@ -1994,7 +1993,7 @@ mod multisession_tests {
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        let mut h2 = s2.handle;
+        let mut h2 = s2.session;
 
         let proc_v2 = process_for(&driver, &key);
         let proc_v2_addr = Arc::as_ptr(&proc_v2) as usize;
@@ -2041,7 +2040,7 @@ mod multisession_tests {
 
         // Before run(): session_id() must be None (no preassigned id).
         assert_eq!(
-            result.handle.session_id(),
+            result.session.session_id(),
             None,
             "open_session(New): session_id() must be None before run()"
         );
@@ -2074,7 +2073,7 @@ mod multisession_tests {
         // Before run(): session_id() must return Some(resume_id) because
         // open_session(Resume) sets resume_session_id.
         assert_eq!(
-            result.handle.session_id(),
+            result.session.session_id(),
             Some(resume_id.as_str()),
             "open_session(Resume): session_id() must return Some(id) before run()"
         );
@@ -2083,7 +2082,7 @@ mod multisession_tests {
         let proc = process_for(&driver, &key);
         let sim = install_fake_transport(&proc);
 
-        let mut handle = result.handle;
+        let mut handle = result.session;
         handle.run(None).await.unwrap();
 
         // After run(): session_id() must still return the resumed id (the

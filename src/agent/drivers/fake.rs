@@ -152,7 +152,7 @@ impl RuntimeDriver for FakeDriver {
         key: AgentKey,
         spec: AgentSpec,
         intent: SessionIntent,
-    ) -> anyhow::Result<AttachResult> {
+    ) -> anyhow::Result<SessionAttachment> {
         let proc = self.ensure_process(&key);
         let mut handle =
             (self.handle_factory)(key, spec, proc.events.clone(), proc.event_tx.clone());
@@ -171,8 +171,8 @@ impl RuntimeDriver for FakeDriver {
                 handle.resumed_session_id = Some(id);
             }
         }
-        Ok(AttachResult {
-            handle: Box::new(handle),
+        Ok(SessionAttachment {
+            session: Box::new(handle),
             events: proc.events.clone(),
         })
     }
@@ -270,7 +270,7 @@ impl FakeHandle {
 }
 
 #[async_trait]
-impl AgentSessionHandle for FakeHandle {
+impl Session for FakeHandle {
     fn key(&self) -> &AgentKey {
         &self.key
     }
@@ -437,7 +437,7 @@ mod tests {
             .open_session("agent-1".to_string(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Idle));
+        assert!(matches!(result.session.state(), AgentState::Idle));
     }
 
     #[tokio::test]
@@ -449,7 +449,7 @@ mod tests {
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result.handle.run(None).await.unwrap();
+        result.session.run(None).await.unwrap();
 
         // Starting lifecycle
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -484,7 +484,7 @@ mod tests {
             }
         ));
 
-        assert!(matches!(result.handle.state(), AgentState::Active { .. }));
+        assert!(matches!(result.session.state(), AgentState::Active { .. }));
     }
 
     #[tokio::test]
@@ -510,7 +510,7 @@ mod tests {
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result.handle.run(None).await.unwrap();
+        result.session.run(None).await.unwrap();
 
         // Drain the run lifecycle events (Starting, SessionAttached, Active)
         for _ in 0..3 {
@@ -524,7 +524,7 @@ mod tests {
             text: "hello".to_string(),
             attachments: vec![],
         };
-        result.handle.prompt(req).await.unwrap();
+        result.session.prompt(req).await.unwrap();
 
         // PromptInFlight lifecycle
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -576,12 +576,12 @@ mod tests {
             .await
             .unwrap();
 
-        result.handle.close().await.unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Closed));
+        result.session.close().await.unwrap();
+        assert!(matches!(result.session.state(), AgentState::Closed));
 
         // Second close is a no-op
-        result.handle.close().await.unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Closed));
+        result.session.close().await.unwrap();
+        assert!(matches!(result.session.state(), AgentState::Closed));
     }
 
     #[tokio::test]
@@ -593,7 +593,7 @@ mod tests {
             .unwrap();
         let mut rx = result.events.subscribe();
 
-        result.handle.run(None).await.unwrap();
+        result.session.run(None).await.unwrap();
 
         // Drain run events
         for _ in 0..3 {
@@ -607,7 +607,7 @@ mod tests {
             text: "hello".to_string(),
             attachments: vec![],
         };
-        result.handle.prompt(req).await.unwrap();
+        result.session.prompt(req).await.unwrap();
 
         // PromptInFlight
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -680,7 +680,7 @@ mod tests {
     // Multi-session tests
     //
     // These tests prove the 2-tier architecture: RuntimeDriver mints sessions
-    // via open_session(), each returning its own AgentSessionHandle. Multiple
+    // via open_session(), each returning its own Session. Multiple
     // handles for the same agent share one simulated process and its event
     // stream; each session is independent in state and can be prompted without
     // cross-contamination.
@@ -702,9 +702,12 @@ mod tests {
             .await
             .unwrap();
 
-        let id1 = s1.handle.session_id().expect("preassigned");
-        let id2 = s2.handle.session_id().expect("preassigned");
-        assert_ne!(id1, id2, "two open_session(New) calls must yield distinct ids");
+        let id1 = s1.session.session_id().expect("preassigned");
+        let id2 = s2.session.session_id().expect("preassigned");
+        assert_ne!(
+            id1, id2,
+            "two open_session(New) calls must yield distinct ids"
+        );
         assert!(id1.starts_with("fake-session-"));
         assert!(id2.starts_with("fake-session-"));
     }
@@ -730,7 +733,7 @@ mod tests {
             .unwrap();
 
         // Running s2 should emit events that arrive on the original rx.
-        s2.handle.run(None).await.unwrap();
+        s2.session.run(None).await.unwrap();
 
         let ev = timeout(Duration::from_millis(500), rx.recv())
             .await
@@ -763,15 +766,15 @@ mod tests {
             .unwrap();
 
         // Run both.
-        s1.handle.run(None).await.unwrap();
-        s2.handle.run(None).await.unwrap();
+        s1.session.run(None).await.unwrap();
+        s2.session.run(None).await.unwrap();
 
-        let id1 = s1.handle.session_id().unwrap().to_string();
-        let id2 = s2.handle.session_id().unwrap().to_string();
+        let id1 = s1.session.session_id().unwrap().to_string();
+        let id2 = s2.session.session_id().unwrap().to_string();
         assert_ne!(id1, id2);
 
         // Prompt s1. s2's state should remain Active (not PromptInFlight).
-        s1.handle
+        s1.session
             .prompt(PromptReq {
                 text: "work on task 42".to_string(),
                 attachments: vec![],
@@ -781,7 +784,7 @@ mod tests {
 
         // After prompt returns, s1 went PromptInFlight → back to Active.
         // s2 was never touched.
-        match s2.handle.state() {
+        match s2.session.state() {
             AgentState::Active { session_id } => {
                 assert_eq!(session_id, id2, "s2 must still hold its own session id");
             }
@@ -805,7 +808,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resumed.handle.session_id(), Some("stored-session-xyz"));
+        assert_eq!(resumed.session.session_id(), Some("stored-session-xyz"));
     }
 
     // -----------------------------------------------------------------------
@@ -820,20 +823,24 @@ mod tests {
         let key = "agent-1".to_string();
 
         let mut result = driver
-            .open_session(key, test_spec(), SessionIntent::Resume("sess_xyz".to_string()))
+            .open_session(
+                key,
+                test_spec(),
+                SessionIntent::Resume("sess_xyz".to_string()),
+            )
             .await
             .unwrap();
 
         // Verify handle already reports the resumed id before run() fires.
         assert_eq!(
-            result.handle.session_id(),
+            result.session.session_id(),
             Some("sess_xyz"),
             "session_id() must reflect the resume intent before run()"
         );
 
         let mut rx = result.events.subscribe();
 
-        result.handle.run(None).await.unwrap();
+        result.session.run(None).await.unwrap();
 
         // First event: Starting lifecycle.
         let ev = timeout(Duration::from_millis(500), rx.recv())
@@ -841,7 +848,13 @@ mod tests {
             .expect("timeout waiting for Starting")
             .expect("stream closed");
         assert!(
-            matches!(ev, DriverEvent::Lifecycle { state: AgentState::Starting, .. }),
+            matches!(
+                ev,
+                DriverEvent::Lifecycle {
+                    state: AgentState::Starting,
+                    ..
+                }
+            ),
             "expected Starting lifecycle, got {ev:?}"
         );
 
@@ -861,7 +874,7 @@ mod tests {
         }
 
         // Handle is now Active with the correct session id.
-        match result.handle.state() {
+        match result.session.state() {
             AgentState::Active { session_id } => {
                 assert_eq!(session_id, "sess_xyz");
             }
@@ -883,14 +896,14 @@ mod tests {
 
         // A fresh session id was minted.
         let preassigned_id = result
-            .handle
+            .session
             .session_id()
             .expect("new intent must preassign a session id")
             .to_string();
         assert!(preassigned_id.starts_with("fake-session-"));
 
         let mut rx = result.events.subscribe();
-        result.handle.run(None).await.unwrap();
+        result.session.run(None).await.unwrap();
 
         // Drain Starting.
         let _ = timeout(Duration::from_millis(500), rx.recv())
@@ -943,13 +956,13 @@ mod tests {
             .await
             .unwrap();
 
-        s1.handle.run(None).await.unwrap();
-        s2.handle.run(None).await.unwrap();
-        s3.handle.run(None).await.unwrap();
+        s1.session.run(None).await.unwrap();
+        s2.session.run(None).await.unwrap();
+        s3.session.run(None).await.unwrap();
 
-        let id1 = s1.handle.session_id().unwrap().to_string();
-        let id2 = s2.handle.session_id().unwrap().to_string();
-        let id3 = s3.handle.session_id().unwrap().to_string();
+        let id1 = s1.session.session_id().unwrap().to_string();
+        let id2 = s2.session.session_id().unwrap().to_string();
+        let id3 = s3.session.session_id().unwrap().to_string();
 
         // Collect these so the test can assert at the end.
         let expected_ids = std::collections::HashSet::from([id1.clone(), id2.clone(), id3.clone()]);
@@ -957,21 +970,21 @@ mod tests {
 
         // Prompt each in sequence. Within each prompt the default fake
         // response emits TurnEnd + Completed carrying the session id.
-        s1.handle
+        s1.session
             .prompt(PromptReq {
                 text: "s1 prompt".into(),
                 attachments: vec![],
             })
             .await
             .unwrap();
-        s2.handle
+        s2.session
             .prompt(PromptReq {
                 text: "s2 prompt".into(),
                 attachments: vec![],
             })
             .await
             .unwrap();
-        s3.handle
+        s3.session
             .prompt(PromptReq {
                 text: "s3 prompt".into(),
                 attachments: vec![],

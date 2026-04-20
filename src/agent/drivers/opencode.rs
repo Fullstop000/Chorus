@@ -196,7 +196,7 @@ impl RuntimeDriver for OpencodeDriver {
         key: AgentKey,
         spec: AgentSpec,
         intent: SessionIntent,
-    ) -> anyhow::Result<AttachResult> {
+    ) -> anyhow::Result<SessionAttachment> {
         let proc = self.ensure_process(&key);
         if proc.started.load(Ordering::SeqCst) {
             // Secondary path: child is live. Do wire I/O in factory;
@@ -219,8 +219,8 @@ impl RuntimeDriver for OpencodeDriver {
                 preassigned_session_id: Some(session_id),
                 role: HandleRole::Secondary,
             };
-            Ok(AttachResult {
-                handle: Box::new(handle),
+            Ok(SessionAttachment {
+                session: Box::new(handle),
                 events: proc.events.clone(),
             })
         } else {
@@ -237,13 +237,12 @@ impl RuntimeDriver for OpencodeDriver {
                 preassigned_session_id: preassigned,
                 role: HandleRole::Bootstrap,
             };
-            Ok(AttachResult {
-                handle: Box::new(handle),
+            Ok(SessionAttachment {
+                session: Box::new(handle),
                 events: proc.events.clone(),
             })
         }
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -537,7 +536,7 @@ impl OpencodeHandle {
 }
 
 #[async_trait]
-impl AgentSessionHandle for OpencodeHandle {
+impl Session for OpencodeHandle {
     fn key(&self) -> &AgentKey {
         &self.key
     }
@@ -1664,7 +1663,7 @@ mod tests {
             .open_session(key, test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Idle));
+        assert!(matches!(result.session.state(), AgentState::Idle));
     }
 
     #[test]
@@ -1830,7 +1829,7 @@ mod tests {
         // Drive the second open_session (Secondary path) via the driver API.
         let driver_for_task = OpencodeDriver;
         let key_for_task = key.clone();
-        let new_task: tokio::task::JoinHandle<anyhow::Result<AttachResult>> =
+        let new_task: tokio::task::JoinHandle<anyhow::Result<SessionAttachment>> =
             tokio::spawn(async move {
                 driver_for_task
                     .open_session(key_for_task, test_spec(), SessionIntent::New)
@@ -2030,7 +2029,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(result.handle.state(), AgentState::Idle),
+            matches!(result.session.state(), AgentState::Idle),
             "expected Idle handle before child is started"
         );
         agent_instances().remove(&key);
@@ -2088,10 +2087,7 @@ mod tests {
             preassigned_session_id: Some(sid.to_string()),
             role: HandleRole::Secondary,
         };
-        handle
-            .run(None)
-            .await
-            .expect("secondary run()");
+        handle.run(None).await.expect("secondary run()");
 
         // Drain the event receiver and count SessionAttached events for
         // `sid`. Before the fix this would be 2; with the fix it's 1.
@@ -2175,7 +2171,7 @@ mod tests {
         }
 
         let events_handle = s0.events.clone();
-        let mut bootstrap_handle = s0.handle;
+        let mut bootstrap_handle = s0.session;
 
         // Build a secondary handle by hand (bypassing request_new_session,
         // which would need a live reader to respond). Mirror what
@@ -2464,18 +2460,13 @@ mod tests {
 
         // session_id() must be None — no wire I/O happened.
         assert!(
-            result.handle.session_id().is_none(),
+            result.session.session_id().is_none(),
             "bootstrap open_session(New) must return handle with session_id == None"
         );
 
         // No events should have been emitted by the factory.
         let mut event_rx = result.events.subscribe();
-        match tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            event_rx.recv(),
-        )
-        .await
-        {
+        match tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv()).await {
             Err(_timeout) => {} // expected: no events
             Ok(Some(ev)) => panic!(
                 "open_session must not emit any DriverEvent; got: {:?}",
@@ -2514,16 +2505,16 @@ mod tests {
         });
 
         // Factory must have written exactly one session/new to stdin.
-        let line = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            stdin_rx.recv(),
-        )
-        .await
-        .expect("open_session must write session/new to stdin within 2s")
-        .expect("stdin channel open");
+        let line = tokio::time::timeout(std::time::Duration::from_secs(2), stdin_rx.recv())
+            .await
+            .expect("open_session must write session/new to stdin within 2s")
+            .expect("stdin channel open");
 
         let req: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(req["method"], "session/new", "first stdin write must be session/new");
+        assert_eq!(
+            req["method"], "session/new",
+            "first stdin write must be session/new"
+        );
 
         // No more stdin writes should arrive before we respond.
         match tokio::time::timeout(std::time::Duration::from_millis(50), stdin_rx.recv()).await {
@@ -2541,7 +2532,7 @@ mod tests {
 
         // session_id() must be Some — factory minted it.
         assert_eq!(
-            result.handle.session_id(),
+            result.session.session_id(),
             Some("live-sess-1"),
             "Secondary open_session(New) must return handle with minted session_id"
         );
@@ -2551,11 +2542,7 @@ mod tests {
         // response for the bootstrap path, but for Secondary with a responder
         // it must NOT emit SessionAttached — that's run()'s job.)
         loop {
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                event_rx.recv(),
-            )
-            .await
+            match tokio::time::timeout(std::time::Duration::from_millis(100), event_rx.recv()).await
             {
                 Err(_) => break, // no events: good
                 Ok(Some(DriverEvent::SessionAttached { .. })) => {
@@ -2595,35 +2582,28 @@ mod tests {
         });
 
         // Drain the factory's session/new write and respond.
-        let line = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            stdin_rx.recv(),
-        )
-        .await
-        .expect("open_session must write session/new")
-        .expect("stdin open");
+        let line = tokio::time::timeout(std::time::Duration::from_secs(2), stdin_rx.recv())
+            .await
+            .expect("open_session must write session/new")
+            .expect("stdin open");
         let id = serde_json::from_str::<serde_json::Value>(&line).unwrap()["id"]
             .as_u64()
             .unwrap();
-        let resp = format!(
-            r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"sess-run-sec"}}}}"#
-        );
+        let resp =
+            format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"sess-run-sec"}}}}"#);
         feed_line(&proc, &resp).await;
 
         let result = open_task.await.unwrap().unwrap();
-        let mut handle = result.handle;
+        let mut handle = result.session;
 
         // Now call run() — this is the Secondary run path.
         handle.run(None).await.expect("run() must succeed");
 
         // First meaningful event after run() must be SessionAttached.
-        let ev = tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            event_rx.recv(),
-        )
-        .await
-        .expect("run() must emit at least one event")
-        .expect("channel open");
+        let ev = tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+            .await
+            .expect("run() must emit at least one event")
+            .expect("channel open");
 
         // Skip any Starting lifecycle that run() emits first.
         let first_meaningful = if let DriverEvent::Lifecycle {
@@ -2631,13 +2611,10 @@ mod tests {
             ..
         } = &ev
         {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                event_rx.recv(),
-            )
-            .await
-            .expect("run() must emit SessionAttached after Starting")
-            .expect("channel open")
+            tokio::time::timeout(std::time::Duration::from_secs(1), event_rx.recv())
+                .await
+                .expect("run() must emit SessionAttached after Starting")
+                .expect("channel open")
         } else {
             ev
         };
@@ -2657,7 +2634,8 @@ mod tests {
             Ok(Some(msg)) => {
                 let val: serde_json::Value =
                     serde_json::from_str(&msg).unwrap_or(serde_json::Value::Null);
-                if val.get("method") == Some(&serde_json::Value::String("session/new".to_string())) {
+                if val.get("method") == Some(&serde_json::Value::String("session/new".to_string()))
+                {
                     panic!("run() Secondary must NOT send a second session/new; stdin got: {msg}");
                 }
                 // Other writes (e.g. session/prompt from init_prompt) are fine.

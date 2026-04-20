@@ -500,7 +500,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let attach_result = driver
         .open_session(agent_key.to_string(), spec, SessionIntent::New)
         .await?;
-    let mut handle = attach_result.handle;
+    let mut handle = attach_result.session;
 
     let prompt = PromptReq {
         text: format!(
@@ -632,7 +632,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let attach_result = driver
         .open_session(agent_key.to_string(), spec, SessionIntent::New)
         .await?;
-    let mut handle = attach_result.handle;
+    let mut handle = attach_result.session;
 
     let prompt = PromptReq {
         text: format!(
@@ -772,7 +772,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let attach_result = driver
         .open_session(agent_key.to_string(), spec, SessionIntent::New)
         .await?;
-    let mut handle = attach_result.handle;
+    let mut handle = attach_result.session;
 
     let prompt = PromptReq {
         text: format!(
@@ -912,7 +912,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let attach_result = driver
         .open_session(agent_key.to_string(), spec, SessionIntent::New)
         .await?;
-    let mut handle = attach_result.handle;
+    let mut handle = attach_result.session;
 
     let prompt = PromptReq {
         text: format!(

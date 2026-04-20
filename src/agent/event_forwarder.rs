@@ -6,7 +6,7 @@
 //!   3. `store.agent_sessions` — persisted session ID for resume.
 //!
 //! Runs as a detached `tokio::spawn` per agent for the lifetime of the
-//! agent's `AgentSessionHandle`. The task exits when the driver drops its side of
+//! agent's `Session`. The task exits when the driver drops its side of
 //! the `mpsc::Sender<DriverEvent>` (e.g. on `stop_agent`). The returned
 //! `JoinHandle` is stored on the agent's `ManagedAgent` so it's dropped
 //! when the agent is removed from the manager's map.

@@ -114,33 +114,50 @@ Gates 1–3 are complete when you can answer without guessing:
 
 ---
 
-### Step 1: Implement `AcpRuntime`
+### Step 1: Implement `RuntimeDriver` + `Session`
 
 Create `src/agent/drivers/<runtime>.rs`. Every decision here should come from Gates 1–3.
 
+The new driver API uses two traits (see `docs/DRIVERS.md`):
+
+- `RuntimeDriver::open_session(key, spec, intent)` — allocates the session handle, requests a bridge pairing token, optionally sends the ACP `session/new` wire message. Must not emit `DriverEvent`s.
+- `Session::run(init_prompt)` — spawns the child process, sends the ACP `initialize` + `session/new` sequence, emits `SessionAttached` and `Lifecycle::Active`. All `DriverEvent`s flow from `run` and `prompt`.
+
 ```rust
-impl AcpRuntime for MyRuntime {
-    fn runtime(&self) -> AgentRuntime { AgentRuntime::MyRuntime }
-    fn binary_name(&self) -> &str { "myruntime" }
-
-    fn spawn_args(&self, ctx: &SpawnContext) -> Vec<String> {
-        // Only include flags verified to work in ACP subcommand mode (Gate 2).
-        vec!["acp".to_string()]
+// Sketch — adapt field names from Gates 1–3 for your runtime.
+impl RuntimeDriver for MyDriver {
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<SessionAttachment> {
+        let (events, event_tx) = EventFanOut::new();
+        let handle = MyHandle { key, spec, intent, event_tx };
+        Ok(SessionAttachment { session: Box::new(handle), events })
     }
+    // ...
+}
 
-    fn session_new_params(&self, ctx: &SpawnContext) -> serde_json::Value {
-        // Field names from agent source or reference trace (Gates 1/2).
-        // Format validated against schema (Gate 3).
-        json!({
-            "cwd": ctx.working_directory,
-            "mcpServers": [{ "name": "chat", "command": ctx.mcp_command, "args": ctx.mcp_args, "env": [] }]
-        })
+impl Session for MyHandle {
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        // spawn binary, send initialize + session/new with field names from Gates 1–3
+        // emit Lifecycle::Active
+        // if init_prompt is Some, issue it as first prompt
+        Ok(())
     }
+    // ...
+}
+```
 
-    fn requires_session_id_in_prompt(&self) -> bool {
-        // Determined from agent's session/prompt handler (Gate 2).
-        true
-    }
+**Spawn args:** only include flags verified to work in ACP subcommand mode (Gate 2).
+
+**`session/new` params:** use field names from agent source or reference trace (Gates 1/2), validated against schema (Gate 3):
+
+```json
+{
+  "cwd": "<working_directory>",
+  "mcpServers": [{ "name": "chat", "command": "<mcp_command>", "args": [], "env": [] }]
 }
 ```
 

@@ -6,7 +6,7 @@
 //! command — each child process exits after its turn completes and cannot
 //! multiplex multiple sessions like Codex's `thread/start` or Kimi/OpenCode's
 //! `session/new` do. Phase 0.9 Stage 2 therefore runs **one `tokio::process::Child`
-//! per [`AgentSessionHandle`]**.
+//! per [`Session`]**.
 //!
 //! What's shared across an agent's sessions:
 //!
@@ -295,7 +295,7 @@ impl RuntimeDriver for ClaudeDriver {
         key: AgentKey,
         spec: AgentSpec,
         intent: SessionIntent,
-    ) -> anyhow::Result<AttachResult> {
+    ) -> anyhow::Result<SessionAttachment> {
         let proc = self.ensure_process(&key);
         let events = proc.events_handle().clone();
         let mut handle = ClaudeHandle::new(key, spec, Arc::clone(&proc));
@@ -303,12 +303,11 @@ impl RuntimeDriver for ClaudeDriver {
             handle.preassigned_session_id = Some(id.clone());
             handle.resumed_session_id = Some(id);
         }
-        Ok(AttachResult {
-            handle: Box::new(handle),
+        Ok(SessionAttachment {
+            session: Box::new(handle),
             events,
         })
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -403,7 +402,7 @@ impl ClaudeAgentProcess {
 }
 
 // ---------------------------------------------------------------------------
-// ClaudeHandle — AgentSessionHandle
+// ClaudeHandle — Session
 // ---------------------------------------------------------------------------
 
 pub struct ClaudeHandle {
@@ -604,7 +603,7 @@ impl ClaudeHandle {
 }
 
 #[async_trait]
-impl AgentSessionHandle for ClaudeHandle {
+impl Session for ClaudeHandle {
     fn key(&self) -> &AgentKey {
         &self.key
     }
@@ -1132,7 +1131,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Idle));
+        assert!(matches!(result.session.state(), AgentState::Idle));
     }
 
     // ---- build_mcp_config tests ----
@@ -1508,8 +1507,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut h1 = s1.handle;
-        let mut h2 = s2.handle;
+        let mut h1 = s1.session;
+        let mut h2 = s2.session;
 
         h1.run(None).await.unwrap();
         h2.run(None).await.unwrap();
@@ -1563,7 +1562,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut hr = resumed.handle;
+        let mut hr = resumed.session;
         hr.run(None).await.unwrap();
 
         // Find the --resume flag in the captured spawn args.
@@ -1586,7 +1585,7 @@ mod tests {
 
         hr.close().await.unwrap();
         // Close s1 too to clean up the registry.
-        let mut h1 = s1.handle;
+        let mut h1 = s1.session;
         h1.close().await.unwrap();
         agent_instances().remove(&key);
     }
@@ -1607,7 +1606,7 @@ mod tests {
             .unwrap();
         let proc_v1_addr = Arc::as_ptr(&driver.ensure_process(&key)) as usize;
         let events_v1 = a1.events.clone();
-        let mut h1 = a1.handle;
+        let mut h1 = a1.session;
         h1.close().await.unwrap();
 
         // Registry entry must be gone so re-open builds a fresh proc.
@@ -1632,7 +1631,7 @@ mod tests {
         );
 
         // Clean up.
-        let mut h2 = a2.handle;
+        let mut h2 = a2.session;
         h2.close().await.unwrap();
         agent_instances().remove(&key);
     }
@@ -1658,7 +1657,7 @@ mod tests {
 
         let mut sub = result.events.subscribe();
 
-        let mut h = result.handle;
+        let mut h = result.session;
         h.run(None).await.unwrap();
 
         // Instance id 0 is the first spawn. Inject system.init.
@@ -1716,7 +1715,7 @@ mod tests {
             .unwrap();
         let factory = install_fake_factory(&driver.ensure_process(&key));
 
-        let mut h = result.handle;
+        let mut h = result.session;
 
         // Before run(): no id to report (open_session(New) does not preassign
         // a session id for claude — each child mints its own via system.init).
@@ -1788,8 +1787,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut bootstrap_handle = s1.handle;
-        let mut secondary_handle = s2.handle;
+        let mut bootstrap_handle = s1.session;
+        let mut secondary_handle = s2.session;
 
         // Run both handles — each spawns its own (fake) `claude -p` child
         // and bumps `live_sessions`. After this, live_sessions == 2.
@@ -1810,7 +1809,7 @@ mod tests {
         // — the invariant we care about is shared-state teardown gating.)
         //
         // Note: we can't mutate secondary_handle.shared directly because
-        // AgentSessionHandle is a trait object. We rely on live_sessions
+        // Session is a trait object. We rely on live_sessions
         // instead, which is the actual teardown gate for this driver.
 
         // ---- Close the bootstrap while the secondary is still started. ----
@@ -1876,7 +1875,7 @@ mod tests {
 
         // Before run(): session_id() must be None (no preassigned id).
         assert_eq!(
-            result.handle.session_id(),
+            result.session.session_id(),
             None,
             "open_session(New): session_id() must be None before run()"
         );
@@ -1910,14 +1909,14 @@ mod tests {
         // Before run(): session_id() must return Some("sess_xyz") because
         // open_session(Resume) sets preassigned_session_id.
         assert_eq!(
-            result.handle.session_id(),
+            result.session.session_id(),
             Some("sess_xyz"),
             "open_session(Resume): session_id() must return Some(id) before run()"
         );
 
         // Install fake factory so run() doesn't spawn a real `claude -p`.
         let factory = install_fake_factory(&driver.ensure_process(&key));
-        let mut handle = result.handle;
+        let mut handle = result.session;
 
         handle.run(None).await.unwrap();
 

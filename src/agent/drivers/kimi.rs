@@ -2,7 +2,7 @@
 //!
 //! Multi-session: one Kimi child process per agent, N ACP sessions multiplexed
 //! through its stdio. The first session is brought online by
-//! [`RuntimeDriver::attach`] + [`AgentSessionHandle::start`]; subsequent
+//! [`RuntimeDriver::attach`] + [`Session::start`]; subsequent
 //! sessions are minted by [`RuntimeDriver::new_session`] (fresh `session/new`)
 //! or [`RuntimeDriver::resume_session`] (`session/load`) on the existing
 //! stdin. All sessions share the same [`EventStreamHandle`]; callers route by
@@ -80,7 +80,7 @@ fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Valu
 /// belonging to the same agent key.
 ///
 /// The core is constructed at [`RuntimeDriver::attach`] time (empty, no child
-/// yet). [`AgentSessionHandle::start`] on the first handle spawns the child
+/// yet). [`Session::start`] on the first handle spawns the child
 /// and starts the stdio tasks; later [`RuntimeDriver::new_session`] /
 /// [`RuntimeDriver::resume_session`] reuse it.
 struct KimiAgentCore {
@@ -207,10 +207,9 @@ impl KimiAgentCore {
         // Pair with the shared HTTP bridge. The token is cached on the core so
         // subsequent session opens (session/new, session/load) reuse it without
         // an extra HTTP round-trip.
-        let pairing_token =
-            super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
-                .await
-                .context("failed to pair with shared bridge")?;
+        let pairing_token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
+            .await
+            .context("failed to pair with shared bridge")?;
         // Store in the OnceLock. The lock was never set before this point
         // (spawn_and_initialize is only called once per core lifetime under
         // the start_in_progress serialiser), so set() always succeeds here.
@@ -491,7 +490,7 @@ impl RuntimeDriver for KimiDriver {
         key: AgentKey,
         spec: AgentSpec,
         intent: SessionIntent,
-    ) -> anyhow::Result<AttachResult> {
+    ) -> anyhow::Result<SessionAttachment> {
         // Reuse a live core if one exists (stale entries are evicted).
         // A fresh core is created and registered when none is present.
         let core = if let Some(existing) = registry().get_or_evict_stale(&key) {
@@ -508,12 +507,11 @@ impl RuntimeDriver for KimiDriver {
             SessionIntent::Resume(id) => Some(id),
         };
         let handle = KimiHandle::new(core, preassigned);
-        Ok(AttachResult {
-            handle: Box::new(handle),
+        Ok(SessionAttachment {
+            session: Box::new(handle),
             events,
         })
     }
-
 }
 
 // ---------------------------------------------------------------------------
@@ -694,11 +692,7 @@ impl KimiHandle {
     /// it first).
     async fn acquire_stdin_and_shared(
         &self,
-    ) -> anyhow::Result<(
-        mpsc::Sender<String>,
-        Arc<Mutex<SharedReaderState>>,
-        String,
-    )> {
+    ) -> anyhow::Result<(mpsc::Sender<String>, Arc<Mutex<SharedReaderState>>, String)> {
         // Reuse the pairing token that was cached by spawn_and_initialize.
         // Callers must have called ensure_started() first; if the cache is
         // empty that invariant was violated — surface a clear error instead of
@@ -708,9 +702,7 @@ impl KimiHandle {
             .pairing_token
             .get()
             .ok_or_else(|| {
-                anyhow!(
-                    "kimi: pairing token not available — ensure_started() must complete first"
-                )
+                anyhow!("kimi: pairing token not available — ensure_started() must complete first")
             })?
             .clone();
         let inner = self.core.inner.lock().await;
@@ -792,7 +784,7 @@ impl Drop for KimiHandle {
 }
 
 #[async_trait]
-impl AgentSessionHandle for KimiHandle {
+impl Session for KimiHandle {
     fn key(&self) -> &AgentKey {
         &self.core.key
     }
@@ -1611,7 +1603,7 @@ mod tests {
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.handle.state(), AgentState::Idle));
+        assert!(matches!(result.session.state(), AgentState::Idle));
         registry().remove(&key);
     }
 
@@ -1873,10 +1865,13 @@ mod tests {
         let res = driver
             .open_session(key_new.clone(), test_spec(), SessionIntent::New)
             .await;
-        assert!(res.is_ok(), "open_session(New) must succeed without prior call");
+        assert!(
+            res.is_ok(),
+            "open_session(New) must succeed without prior call"
+        );
         let ar = res.unwrap();
         assert!(
-            matches!(ar.handle.state(), AgentState::Idle),
+            matches!(ar.session.state(), AgentState::Idle),
             "open_session(New) must return an Idle handle"
         );
         registry().remove(&key_new);
@@ -1897,7 +1892,7 @@ mod tests {
         );
         let ar = res.unwrap();
         assert_eq!(
-            ar.handle.session_id(),
+            ar.session.session_id(),
             Some("stored-id-xyz"),
             "open_session(Resume) must expose the supplied session id"
         );
@@ -1925,7 +1920,10 @@ mod tests {
         // must share the SAME Arc — verify by pointer equality on the Arc.
         let ptr1 = Arc::as_ptr(&s1.events.inner);
         let ptr2 = Arc::as_ptr(&s2.events.inner);
-        assert_eq!(ptr1, ptr2, "open_session calls must share the same EventFanOut");
+        assert_eq!(
+            ptr1, ptr2,
+            "open_session calls must share the same EventFanOut"
+        );
 
         registry().remove(&key);
     }
@@ -1946,7 +1944,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(resumed.handle.session_id(), Some("stored-sess-xyz"));
+        assert_eq!(resumed.session.session_id(), Some("stored-sess-xyz"));
 
         registry().remove(&key);
     }
@@ -2291,7 +2289,12 @@ mod tests {
     async fn ensure_started_idempotent_after_success() {
         let (events, event_tx) = EventFanOut::new();
         let key: AgentKey = format!("agent-ensure-idempotent-{}", uuid::Uuid::new_v4());
-        let core = Arc::new(KimiAgentCore::new(key.clone(), test_spec(), events, event_tx));
+        let core = Arc::new(KimiAgentCore::new(
+            key.clone(),
+            test_spec(),
+            events,
+            event_tx,
+        ));
 
         // Seed as if spawn_and_initialize succeeded: stdin_tx present,
         // shared state present, started=true.
@@ -2485,11 +2488,11 @@ mod tests {
 
         // The handle must start Idle with no preassigned id.
         assert!(
-            matches!(ar.handle.state(), AgentState::Idle),
+            matches!(ar.session.state(), AgentState::Idle),
             "open_session(New) must return Idle handle"
         );
         assert!(
-            ar.handle.session_id().is_none(),
+            ar.session.session_id().is_none(),
             "open_session(New) must return handle without preassigned session id"
         );
 
@@ -2517,14 +2520,14 @@ mod tests {
         // Seed the pairing token so send_session_new doesn't error.
         let _ = core.pairing_token.set("fake-token".to_string());
 
-        // Retrieve the handle (mutable) — AttachResult owns the Box<dyn …>.
+        // Retrieve the handle (mutable) — SessionAttachment owns the Box<dyn …>.
         // We need to call run() on it. Re-acquire a fresh handle via open_session
-        // since we consumed `ar.handle` by moving into Box.
+        // since we consumed `ar.session` by moving into Box.
         let ar2 = driver
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        let mut handle = ar2.handle;
+        let mut handle = ar2.session;
 
         // Simulate the session/new response arriving while run_inner awaits.
         // run_inner registers a pending SessionNew entry and blocks on the
@@ -2549,14 +2552,8 @@ mod tests {
                         "result": { "sessionId": "new-sess-from-open-session" }
                     });
                     let (stdin_tx2, _) = mpsc::channel::<String>(1);
-                    handle_response(
-                        &key_bg,
-                        &core_bg.event_tx,
-                        &shared_bg,
-                        &stdin_tx2,
-                        &resp,
-                    )
-                    .await;
+                    handle_response(&key_bg, &core_bg.event_tx, &shared_bg, &stdin_tx2, &resp)
+                        .await;
                     break;
                 }
                 tokio::task::yield_now().await;
@@ -2607,7 +2604,7 @@ mod tests {
 
         // Handle must expose the resume id before run() fires.
         assert_eq!(
-            ar.handle.session_id(),
+            ar.session.session_id(),
             Some(resume_id.as_str()),
             "open_session(Resume) must expose the session id before run()"
         );
@@ -2641,7 +2638,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let mut handle = ar2.handle;
+        let mut handle = ar2.session;
 
         // Background task: wait for session/load pending entry, inject response.
         // session/load response — Kimi omits sessionId in result;
@@ -2655,10 +2652,7 @@ mod tests {
                 let id = {
                     let s = shared_bg.lock().unwrap();
                     s.pending.keys().copied().find(|&id| {
-                        matches!(
-                            s.pending.get(&id),
-                            Some(PendingRequest::SessionLoad { .. })
-                        )
+                        matches!(s.pending.get(&id), Some(PendingRequest::SessionLoad { .. }))
                     })
                 };
                 if let Some(id) = id {
@@ -2671,14 +2665,8 @@ mod tests {
                         "result": {}
                     });
                     let (stdin_tx2, _) = mpsc::channel::<String>(1);
-                    handle_response(
-                        &key_bg,
-                        &core_bg.event_tx,
-                        &shared_bg,
-                        &stdin_tx2,
-                        &resp,
-                    )
-                    .await;
+                    handle_response(&key_bg, &core_bg.event_tx, &shared_bg, &stdin_tx2, &resp)
+                        .await;
                     break;
                 }
                 tokio::task::yield_now().await;
