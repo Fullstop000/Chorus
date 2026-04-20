@@ -29,8 +29,9 @@ pub struct FakeDriver {
     /// Per-agent shared process state, keyed by agent key. Each entry represents
     /// one simulated driver process that can host multiple concurrent sessions.
     /// Sessions on the same agent share the event stream, so consumers see all
-    /// events from one channel and route by `session_id` (on Completed) or
-    /// by an external `run_id → session_id` map.
+    /// events from one channel and route on the `session_id` carried directly
+    /// on every run-scoped event (`Output`, `Completed`, `Failed`) — no
+    /// external `run_id → session_id` map is needed.
     agent_instances:
         Arc<std::sync::Mutex<std::collections::HashMap<AgentKey, Arc<FakeAgentProcess>>>>,
 }
@@ -47,6 +48,10 @@ pub struct FakeAgentProcess {
 
 impl FakeAgentProcess {
     fn mint_session_id(&self) -> SessionId {
+        // Counter starts at 1 and increments before format, so the first
+        // mint produces `fake-session-2`. This reserves `fake-session-1`
+        // for the hardcoded attach-path default in `FakeHandle::start()`,
+        // guaranteeing mint ids can't collide with it.
         let mut n = self.next_session.lock().unwrap();
         *n += 1;
         format!("fake-session-{}", *n)
@@ -103,7 +108,10 @@ impl FakeDriver {
             key: key.clone(),
             events,
             event_tx,
-            next_session: std::sync::Mutex::new(0),
+            // Start at 1 so `mint_session_id` first produces "fake-session-2"
+            // and the attach-path default literal "fake-session-1" can never
+            // collide with a minted id.
+            next_session: std::sync::Mutex::new(1),
         });
         guard.insert(key.clone(), Arc::clone(&proc));
         proc

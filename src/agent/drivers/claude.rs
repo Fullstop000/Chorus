@@ -38,7 +38,6 @@
 //! [`ClaudeAgentProcess`] (new `EventStreamHandle`, new `event_tx`). Secondary
 //! handles prune only when they were the last live session on the agent.
 
-use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -77,33 +76,13 @@ fn build_mcp_config(bridge_endpoint: &str, token: &str) -> serde_json::Value {
     })
 }
 
-// ---------------------------------------------------------------------------
-// Handle role
-// ---------------------------------------------------------------------------
-
-/// Which slot a [`ClaudeHandle`] fills on its agent's shared process.
-///
-/// The `Bootstrap` handle — returned by [`RuntimeDriver::attach`] — owns the
-/// agent's registry entry: its `close()` unconditionally prunes the entry so
-/// the next `attach` rebuilds a fresh [`ClaudeAgentProcess`]. `Secondary`
-/// handles (from `new_session` / `resume_session`) prune only if they were
-/// the last live session.
-///
-/// Mirrors the `HandleRole` shape in `kimi.rs` and `opencode.rs` so every
-/// "is this the bootstrap handle?" branch reads as intent rather than a
-/// boolean.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HandleRole {
-    Bootstrap,
-    Secondary,
-}
-
-impl HandleRole {
-    #[allow(dead_code)]
-    fn is_bootstrap(&self) -> bool {
-        matches!(self, Self::Bootstrap)
-    }
-}
+// Note on bootstrap-vs-secondary: Claude does not branch on handle role
+// anywhere — `close()` gates shared-process teardown on `live_sessions == 0`
+// regardless of role, and every handle owns its own per-session child (no
+// shared-process lifecycle difference). The kimi.rs / opencode.rs
+// `HandleRole` enum exists because those drivers genuinely differ between
+// roles (bootstrap owns the shared child, secondaries don't); reintroduce
+// one here only if Claude grows a real bootstrap-only path.
 
 // ---------------------------------------------------------------------------
 // Transport abstraction — lets tests inject a fake stdin/stdout pair
@@ -175,7 +154,13 @@ fn spawn_real_transport(
     cmd.args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        // Kill the child if the `tokio::process::Child` is dropped without
+        // an explicit close — covers the narrow window between spawn and
+        // `self.transport.lock() = Some(transport)` where a panic could
+        // otherwise orphan `claude -p`. `terminate()` on `close()` still
+        // does the graceful SIGTERM path first.
+        .kill_on_drop(true);
 
     // Env: remove CLAUDECODE (prevents nested invocation detection)
     cmd.env_remove("CLAUDECODE");
@@ -218,40 +203,27 @@ pub struct ClaudeDriver;
 /// Populated by `attach`; reused by subsequent `new_session` /
 /// `resume_session` calls on the same key so every child under one agent
 /// writes into the same [`EventStreamHandle`].
-fn agent_instances() -> &'static Mutex<HashMap<AgentKey, Arc<ClaudeAgentProcess>>> {
-    static INSTANCES: OnceLock<Mutex<HashMap<AgentKey, Arc<ClaudeAgentProcess>>>> = OnceLock::new();
-    INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
+fn agent_instances() -> &'static AgentRegistry<ClaudeAgentProcess> {
+    static INSTANCES: AgentRegistry<ClaudeAgentProcess> = AgentRegistry::new();
+    &INSTANCES
 }
 
 impl ClaudeDriver {
     /// Return the existing shared process for `key`, or create one if it's
-    /// the first `attach` for this agent. Evicts a stale cached entry whose
-    /// `closed` flag was flipped by a prior bootstrap close so the new
-    /// attach builds a fresh process.
+    /// the first `attach` for this agent. Stale-entry eviction happens
+    /// inside [`AgentRegistry::get_or_init`].
     fn ensure_process(&self, key: &AgentKey) -> Arc<ClaudeAgentProcess> {
-        let mut guard = agent_instances().lock().unwrap();
-        if let Some(existing) = guard.get(key) {
-            if existing.is_stale() {
-                debug!(
-                    agent = %key,
-                    "claude: evicting stale agent process (closed) before re-attach"
-                );
-                guard.remove(key);
-            } else {
-                return Arc::clone(existing);
-            }
-        }
-        let (events, event_tx) = EventFanOut::new();
-        let proc = Arc::new(ClaudeAgentProcess {
-            key: key.clone(),
-            events,
-            event_tx,
-            closed: AtomicBool::new(false),
-            live_sessions: Mutex::new(0),
-            transport_factory: Mutex::new(Arc::new(spawn_real_transport)),
-        });
-        guard.insert(key.clone(), Arc::clone(&proc));
-        proc
+        agent_instances().get_or_init(key, || {
+            let (events, event_tx) = EventFanOut::new();
+            Arc::new(ClaudeAgentProcess {
+                key: key.clone(),
+                events,
+                event_tx,
+                closed: AtomicBool::new(false),
+                live_sessions: Mutex::new(0),
+                transport_factory: Mutex::new(Arc::new(spawn_real_transport)),
+            })
+        })
     }
 }
 
@@ -317,7 +289,7 @@ impl RuntimeDriver for ClaudeDriver {
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
         let proc = self.ensure_process(&key);
         let events = proc.events.clone();
-        let handle = ClaudeHandle::new(key, spec, proc, HandleRole::Bootstrap);
+        let handle = ClaudeHandle::new(key, spec, proc);
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
@@ -331,7 +303,7 @@ impl RuntimeDriver for ClaudeDriver {
         // `session_id` on the event.
         let proc = self.ensure_process(&key);
         let events = proc.events.clone();
-        let handle = ClaudeHandle::new(key, spec, proc, HandleRole::Secondary);
+        let handle = ClaudeHandle::new(key, spec, proc);
         Ok(AttachResult {
             handle: Box::new(handle),
             events,
@@ -346,7 +318,7 @@ impl RuntimeDriver for ClaudeDriver {
     ) -> anyhow::Result<AttachResult> {
         let proc = self.ensure_process(&key);
         let events = proc.events.clone();
-        let mut handle = ClaudeHandle::new(key, spec, proc, HandleRole::Secondary);
+        let mut handle = ClaudeHandle::new(key, spec, proc);
         handle.preassigned_session_id = Some(session_id);
         Ok(AttachResult {
             handle: Box::new(handle),
@@ -381,18 +353,22 @@ struct ClaudeAgentProcess {
     transport_factory: Mutex<TransportFactory>,
 }
 
+impl AgentProcess for ClaudeAgentProcess {
+    const DRIVER_NAME: &'static str = "claude";
+
+    /// True once the bootstrap's `close()` has marked this process as dead.
+    /// The registry evicts stale entries so the next attach builds a fresh
+    /// [`EventFanOut`].
+    fn is_stale(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+}
+
 impl ClaudeAgentProcess {
     fn emit(&self, event: DriverEvent) {
         if let Err(e) = self.event_tx.try_send(event) {
             warn!(agent = %self.key, "claude v2: failed to emit event: {e}");
         }
-    }
-
-    /// True once the bootstrap's `close()` has marked this process as dead.
-    /// [`ClaudeDriver::ensure_process`] evicts stale entries so the next
-    /// attach builds a fresh [`EventFanOut`].
-    fn is_stale(&self) -> bool {
-        self.closed.load(Ordering::SeqCst)
     }
 
     fn incr_live(&self) {
@@ -433,8 +409,6 @@ pub struct ClaudeHandle {
     /// Shared state for this agent. Provides the [`EventStreamHandle`] every
     /// session writes into.
     proc: Arc<ClaudeAgentProcess>,
-    #[allow(dead_code)]
-    role: HandleRole,
     /// Caller-supplied session id for the resume path. When set, `start()`
     /// passes `--resume <session_id>` to the CLI.
     preassigned_session_id: Option<SessionId>,
@@ -453,6 +427,10 @@ pub struct ClaudeHandle {
     /// `system.init` emission. Shared with the reader task via `Arc`.
     session_id: Arc<OnceLock<String>>,
     reader_handles: Vec<tokio::task::JoinHandle<()>>,
+    /// Per-start MCP config file path. Set by `start()`, removed by
+    /// `close()`. Each session has its own file so concurrent `new_session`
+    /// calls on one agent can't overwrite each other's pairing token.
+    mcp_config_path: Option<std::path::PathBuf>,
     /// `true` once `start()` has successfully spun up the child and we've
     /// bumped the proc's live-session counter. Guards against double
     /// decrement in `close()`.
@@ -467,24 +445,19 @@ struct SharedReaderState {
 }
 
 impl ClaudeHandle {
-    fn new(
-        key: AgentKey,
-        spec: AgentSpec,
-        proc: Arc<ClaudeAgentProcess>,
-        role: HandleRole,
-    ) -> Self {
+    fn new(key: AgentKey, spec: AgentSpec, proc: Arc<ClaudeAgentProcess>) -> Self {
         Self {
             key,
             state: AgentState::Idle,
             spec,
             proc,
-            role,
             preassigned_session_id: None,
             transport: Mutex::new(None),
             stdin_tx: None,
             shared: None,
             session_id: Arc::new(OnceLock::new()),
             reader_handles: Vec::new(),
+            mcp_config_path: None,
             started: false,
         }
     }
@@ -543,15 +516,27 @@ impl AgentSessionHandle for ClaudeHandle {
             state: AgentState::Starting,
         });
 
-        // Write MCP config file
+        // Write a per-start MCP config file. Claude is the only runtime
+        // that spawns a separate `claude -p` child per session (the other
+        // three multiplex within one child), so each start() needs its own
+        // pairing token. Sharing one filename across sessions on the same
+        // agent lets concurrent `new_session` calls clobber each other's
+        // token on disk, so child B ends up reading child A's token and
+        // pairs to the wrong session on the bridge. Tagging with a UUID
+        // per start gives each child its own file.
         let wd = &self.spec.working_directory;
-        let mcp_config_path = wd.join(".chorus-claude-mcp.json");
+        let mcp_nonce = uuid::Uuid::new_v4().simple().to_string();
+        let mcp_config_path = wd.join(format!(".chorus-claude-mcp-{}.json", mcp_nonce));
         let token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
             .await
             .context("failed to pair with shared bridge")?;
         let mcp_config = build_mcp_config(&self.spec.bridge_endpoint, &token);
         std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
             .context("failed to write MCP config")?;
+        // Remember the path so close() can clean it up — each session spawns
+        // one file, so a long-lived agent with many new_session calls would
+        // otherwise leave a growing pile of `.chorus-claude-mcp-*.json`.
+        self.mcp_config_path = Some(mcp_config_path.clone());
 
         // Determine which session id (if any) to resume. Prefer the
         // handle-level preassigned id over the per-call opts, but support
@@ -712,6 +697,23 @@ impl AgentSessionHandle for ClaudeHandle {
             handle.abort();
         }
 
+        // Remove this session's per-start MCP config file. Best-effort —
+        // if the file is already gone or removal fails we don't want to
+        // block the close path on it.
+        if let Some(ref path) = self.mcp_config_path {
+            if let Err(e) = std::fs::remove_file(path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    debug!(
+                        key = %self.key,
+                        path = %path.display(),
+                        error = %e,
+                        "claude: failed to remove per-session MCP config file"
+                    );
+                }
+            }
+        }
+        self.mcp_config_path = None;
+
         if let Some(ref shared) = self.shared {
             shared.lock().unwrap().agent_state = AgentState::Closed;
         }
@@ -742,7 +744,7 @@ impl AgentSessionHandle for ClaudeHandle {
         if remaining == 0 {
             self.proc.closed.store(true, Ordering::SeqCst);
             self.proc.events.close();
-            agent_instances().lock().unwrap().remove(&self.key);
+            agent_instances().remove(&self.key);
         }
 
         Ok(())
@@ -1058,6 +1060,7 @@ fn spawn_stdin_writer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
     use std::path::PathBuf;
     use std::time::Duration;
     use tokio::io::{duplex, AsyncWriteExt, DuplexStream};
@@ -1103,10 +1106,7 @@ mod tests {
     async fn test_claude_driver_attach_returns_idle() {
         let driver = ClaudeDriver;
         // Ensure no leftover registry entry from another test with the same key.
-        agent_instances()
-            .lock()
-            .unwrap()
-            .remove("agent-claude-attach-returns-idle");
+        agent_instances().remove(&"agent-claude-attach-returns-idle".to_string());
         let result = driver
             .attach("agent-claude-attach-returns-idle".into(), test_spec())
             .await
@@ -1441,7 +1441,7 @@ mod tests {
         let driver = ClaudeDriver;
         let key = "agent-claude-share-stream".to_string();
         // Scrub any leftover entry.
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
 
         let a1 = driver.attach(key.clone(), test_spec()).await.unwrap();
         let a2 = driver.new_session(key.clone(), test_spec()).await.unwrap();
@@ -1453,7 +1453,7 @@ mod tests {
         );
 
         // Clean up registry for subsequent tests.
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
     }
 
     /// Test: each session spawns its own `claude -p` child. The fake factory
@@ -1466,7 +1466,7 @@ mod tests {
 
         let driver = ClaudeDriver;
         let key = "agent-claude-distinct-children".to_string();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
@@ -1497,7 +1497,7 @@ mod tests {
         // Tear down.
         h1.close().await.unwrap();
         h2.close().await.unwrap();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
     }
 
     /// Test: `resume_session("sess_xyz")` + `start` passes `--resume
@@ -1509,7 +1509,7 @@ mod tests {
 
         let driver = ClaudeDriver;
         let key = "agent-claude-resume-flag".to_string();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
@@ -1548,7 +1548,7 @@ mod tests {
         // Also close the bootstrap to clean up the registry.
         let mut ha = attach.handle;
         ha.close().await.unwrap();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
     }
 
     /// Regression test: attach → close (bootstrap) → re-attach on same key
@@ -1558,7 +1558,7 @@ mod tests {
     async fn attach_close_reattach_spawns_fresh_process() {
         let driver = ClaudeDriver;
         let key = "agent-claude-reattach".to_string();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
 
         // --- round 1 ---
         let a1 = driver.attach(key.clone(), test_spec()).await.unwrap();
@@ -1569,7 +1569,7 @@ mod tests {
 
         // Registry entry must be gone so re-attach builds a fresh proc.
         assert!(
-            agent_instances().lock().unwrap().get(&key).is_none(),
+            agent_instances().get(&key).is_none(),
             "bootstrap close must prune the registry"
         );
 
@@ -1588,7 +1588,7 @@ mod tests {
         // Clean up.
         let mut h2 = a2.handle;
         h2.close().await.unwrap();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
     }
 
     /// Test: starting a child and feeding it a SystemInit with session_id
@@ -1601,7 +1601,7 @@ mod tests {
 
         let driver = ClaudeDriver;
         let key = "agent-claude-session-attached".to_string();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
         let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
@@ -1637,7 +1637,7 @@ mod tests {
         );
 
         h.close().await.unwrap();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
     }
 
     /// Regression guard for the Stage 2 bug where `ClaudeHandle::session_id()`
@@ -1658,7 +1658,7 @@ mod tests {
 
         let driver = ClaudeDriver;
         let key = format!("agent-claude-sid-after-init-{}", uuid::Uuid::new_v4());
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
         let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
@@ -1698,7 +1698,7 @@ mod tests {
         );
 
         h.close().await.unwrap();
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
     }
 
     /// Regression for the Stage 2 ship-blocker: closing the bootstrap handle
@@ -1716,7 +1716,7 @@ mod tests {
 
         let driver = ClaudeDriver;
         let key = format!("claude-bootstrap-live-secondary-{}", uuid::Uuid::new_v4());
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
@@ -1777,7 +1777,7 @@ mod tests {
             "bootstrap close with a live secondary must NOT close the fan-out"
         );
         assert!(
-            agent_instances().lock().unwrap().get(&key).is_some(),
+            agent_instances().get(&key).is_some(),
             "bootstrap close with a live secondary must NOT prune the registry entry"
         );
 
@@ -1798,7 +1798,7 @@ mod tests {
             "last-session close must signal the fan-out to drain"
         );
         assert!(
-            agent_instances().lock().unwrap().get(&key).is_none(),
+            agent_instances().get(&key).is_none(),
             "last-session close must prune the registry entry"
         );
     }

@@ -71,74 +71,47 @@ fn build_mcp_chat_config(bridge_endpoint: &str, token: &str) -> serde_json::Valu
 /// the same `OpencodeAgentProcess` the `attach` on that key created.
 pub struct OpencodeDriver;
 
-/// Role of a handle relative to the shared child process. The bootstrap
-/// handle spawns the child and owns the process lifecycle; secondary handles
-/// multiplex sessions onto the already-live child.
-///
-/// Kept as a local enum — mirrored identically in `kimi.rs` — so that every
-/// `if bootstrap { ... }` branch reads as an intent rather than a boolean.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HandleRole {
-    Bootstrap,
-    Secondary,
-}
+/// Timeout for ACP `session/new` and `session/load` responses from the
+/// opencode child. If the runtime never answers, fail loudly rather than
+/// hanging the caller.
+const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
-impl HandleRole {
-    fn is_bootstrap(&self) -> bool {
-        matches!(self, Self::Bootstrap)
-    }
-}
+// `HandleRole` now lives in `drivers/mod.rs` — shared with kimi/codex so
+// the "is this the bootstrap handle?" branch reads the same across the
+// three multiplexing drivers.
 
 /// Process-global registry: agent key -> shared runtime process. Populated
 /// by `attach`; reused by subsequent `new_session` / `resume_session` calls
-/// on the same key. Returning an `Arc` keeps the inner `Mutex` held only
-/// briefly.
-fn agent_instances() -> &'static Mutex<HashMap<AgentKey, Arc<OpencodeAgentProcess>>> {
-    static INSTANCES: std::sync::OnceLock<Mutex<HashMap<AgentKey, Arc<OpencodeAgentProcess>>>> =
-        std::sync::OnceLock::new();
-    INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
+/// on the same key.
+fn agent_instances() -> &'static AgentRegistry<OpencodeAgentProcess> {
+    static INSTANCES: AgentRegistry<OpencodeAgentProcess> = AgentRegistry::new();
+    &INSTANCES
 }
 
 impl OpencodeDriver {
     /// Return the existing shared process for `key`, or create one if it's
-    /// the first `attach` for this agent.
-    ///
-    /// If a cached entry's child has died (e.g. after a prior close → child
-    /// exit → SIGTERM) it is evicted here so the caller rebuilds a fresh
-    /// process. This is belt-and-suspenders for the case where close-time
-    /// registry pruning races a subsequent attach.
+    /// the first `attach` for this agent. Stale-entry eviction happens
+    /// inside [`AgentRegistry::get_or_init`].
     fn ensure_process(&self, key: &AgentKey) -> Arc<OpencodeAgentProcess> {
-        let mut guard = agent_instances().lock().unwrap();
-        if let Some(existing) = guard.get(key) {
-            if existing.is_stale() {
-                debug!(
-                    agent = %key,
-                    "opencode: evicting stale agent process (child exited) before re-attach"
-                );
-                guard.remove(key);
-            } else {
-                return Arc::clone(existing);
-            }
-        }
-        let (events, event_tx) = EventFanOut::new();
-        let proc = Arc::new(OpencodeAgentProcess {
-            key: key.clone(),
-            events,
-            event_tx,
-            child: Mutex::new(None),
-            stdin_tx: Mutex::new(None),
-            shared: Arc::new(Mutex::new(SharedReaderState::new())),
-            // Starts at 3: ids 1 (initialize) and 2 (first session request)
-            // are reserved by `start_bootstrap_child`. If an init prompt is
-            // present, `start_bootstrap_child` immediately calls `alloc_id()`
-            // to reserve id 3 for the deferred prompt before any secondary
-            // `new_session` can race it.
-            next_request_id: AtomicU64::new(3),
-            reader_handles: Mutex::new(Vec::new()),
-            started: std::sync::atomic::AtomicBool::new(false),
-        });
-        guard.insert(key.clone(), Arc::clone(&proc));
-        proc
+        agent_instances().get_or_init(key, || {
+            let (events, event_tx) = EventFanOut::new();
+            Arc::new(OpencodeAgentProcess {
+                key: key.clone(),
+                events,
+                event_tx,
+                child: Mutex::new(None),
+                stdin_tx: Mutex::new(None),
+                shared: Arc::new(Mutex::new(SharedReaderState::new())),
+                // Starts at 3: ids 1 (initialize) and 2 (first session request)
+                // are reserved by `start_bootstrap_child`. If an init prompt
+                // is present, `start_bootstrap_child` immediately calls
+                // `alloc_id()` to reserve id 3 for the deferred prompt before
+                // any secondary `new_session` can race it.
+                next_request_id: AtomicU64::new(3),
+                reader_handles: Mutex::new(Vec::new()),
+                started: std::sync::atomic::AtomicBool::new(false),
+            })
+        })
     }
 }
 
@@ -461,8 +434,8 @@ impl OpencodeAgentProcess {
         self.send_line(req).await?;
 
         // Guard against a stuck child: if the runtime never answers, fail
-        // loudly rather than hang the caller. 30s matches typical ACP timeouts.
-        let res = tokio::time::timeout(Duration::from_secs(30), rx)
+        // loudly rather than hang the caller.
+        let res = tokio::time::timeout(SESSION_REQUEST_TIMEOUT, rx)
             .await
             .context("opencode: timed out waiting for session/new response")?
             .context("opencode: session/new responder dropped")?;
@@ -494,7 +467,7 @@ impl OpencodeAgentProcess {
         let req = acp_protocol::build_session_load_request(id, session_id, params);
         self.send_line(req).await?;
 
-        let res = tokio::time::timeout(Duration::from_secs(30), rx)
+        let res = tokio::time::timeout(SESSION_REQUEST_TIMEOUT, rx)
             .await
             .context("opencode: timed out waiting for session/load response")?
             .context("opencode: session/load responder dropped")?;
@@ -515,11 +488,15 @@ impl OpencodeAgentProcess {
         }
         *guard = None;
     }
+}
+
+impl AgentProcess for OpencodeAgentProcess {
+    const DRIVER_NAME: &'static str = "opencode";
 
     /// Returns `true` once the shared child has gone away — either the
     /// process exited (stdin writer dropped the receiver) or was never
-    /// wired up. Used by `ensure_process` to evict a cached entry whose
-    /// child is dead so the next `attach` rebuilds from scratch.
+    /// wired up. The [`AgentRegistry`] evicts stale entries so the next
+    /// `attach` rebuilds from scratch.
     fn is_stale(&self) -> bool {
         if !self.started.load(Ordering::SeqCst) {
             // Never spawned — not stale, just fresh.
@@ -752,7 +729,16 @@ impl AgentSessionHandle for OpencodeHandle {
             if let Some(ref sid) = sid_to_remove {
                 s.sessions.remove(sid);
             }
-            s.sessions.is_empty()
+            // Don't tear down while a session/new or session/load response
+            // is pending — the caller is awaiting a session that would lose
+            // its backing child if we killed it now. Mirrors codex's guard.
+            let no_pending_session_creation = !s.pending_requests.values().any(|p| {
+                matches!(
+                    p,
+                    PendingKind::NewSession { .. } | PendingKind::LoadSession { .. }
+                )
+            });
+            s.sessions.is_empty() && no_pending_session_creation
         };
 
         self.local_state = AgentState::Closed;
@@ -783,7 +769,7 @@ impl AgentSessionHandle for OpencodeHandle {
             // check would catch it anyway, but dropping the map entry also
             // lets the `OpencodeAgentProcess` ref drop when the last handle
             // releases it.
-            agent_instances().lock().unwrap().remove(&self.key);
+            agent_instances().remove(&self.key);
         }
 
         Ok(())
@@ -1489,11 +1475,17 @@ async fn handle_session_update(
     shared: &Arc<Mutex<SharedReaderState>>,
 ) {
     // Determine the target session id for these items. `session/update`
-    // frames may carry a top-level sessionId we lost in parsing, so we
-    // re-route by looking for any session in PromptInFlight. When multiple
-    // sessions have prompts in flight, we prefer the most recently started
-    // run; ties are broken arbitrarily (sessions on one agent usually run
-    // one prompt at a time in practice).
+    // frames should carry a `sessionId` that `acp_protocol::parse_line`
+    // prepends as `SessionInit { session_id }` at `items[0]`. If that is
+    // missing the frame is either malformed or from an older spec — we
+    // fall back to routing heuristics below.
+    //
+    // Fallback policy: safe only when there is at most one in-flight
+    // session. With 2+ sessions in flight and no SessionInit, we cannot
+    // attribute the update without guessing — HashMap iteration order is
+    // nondeterministic, so a guess silently cross-contaminates runs. In
+    // that case we drop the update with a loud warn and let higher layers
+    // notice the gap rather than mis-route.
     let (target_session_id, run_id_opt): (Option<String>, Option<RunId>) = {
         let s = shared.lock().unwrap();
         // Pull any SessionInit item first — if present, it's authoritative.
@@ -1505,11 +1497,27 @@ async fn handle_session_update(
             let run_id = s.sessions.get(&sid).and_then(|st| st.run_id);
             (Some(sid), run_id)
         } else {
-            // Fall back to any in-flight session.
-            s.sessions
+            let in_flight: Vec<(String, RunId)> = s
+                .sessions
                 .iter()
-                .find_map(|(sid, st)| st.run_id.map(|r| (Some(sid.clone()), Some(r))))
-                .unwrap_or((None, None))
+                .filter_map(|(sid, st)| st.run_id.map(|r| (sid.clone(), r)))
+                .collect();
+            match in_flight.len() {
+                0 => (None, None),
+                1 => {
+                    let (sid, run_id) = in_flight.into_iter().next().unwrap();
+                    (Some(sid), Some(run_id))
+                }
+                n => {
+                    warn!(
+                        agent = %key,
+                        in_flight = n,
+                        "opencode: session/update missing SessionInit with multiple \
+                         in-flight sessions — dropping update (cannot attribute safely)"
+                    );
+                    (None, None)
+                }
+            }
         }
     };
 
@@ -1803,10 +1811,7 @@ mod tests {
 
         let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
         // Find the underlying process from the global registry.
-        let proc1 = {
-            let g = agent_instances().lock().unwrap();
-            Arc::clone(g.get(&key).expect("registered"))
-        };
+        let proc1 = agent_instances().get(&key).expect("registered");
 
         // Mark started so new_session doesn't bail on the "child online" guard.
         // We can't actually spawn opencode in tests, but the invariant we
@@ -1837,10 +1842,7 @@ mod tests {
         let new_attach = new_task.await.unwrap().unwrap();
 
         // Second lookup: same process.
-        let proc2 = {
-            let g = agent_instances().lock().unwrap();
-            Arc::clone(g.get(&key).expect("registered"))
-        };
+        let proc2 = agent_instances().get(&key).expect("registered");
         assert!(
             Arc::ptr_eq(&proc1, &proc2),
             "same agent key must map to the same OpencodeAgentProcess"
@@ -2119,10 +2121,7 @@ mod tests {
         // Bring up a shared process via the driver (registers it + builds
         // the fan-out). Also mark started so secondary construction works.
         let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let proc = {
-            let g = agent_instances().lock().unwrap();
-            Arc::clone(g.get(&key).expect("registered"))
-        };
+        let proc = agent_instances().get(&key).expect("registered");
         proc.started.store(true, Ordering::SeqCst);
 
         // Seed a "live" shared child: a parked reader + a non-None child
@@ -2205,7 +2204,7 @@ mod tests {
             "bootstrap close with a live secondary must NOT close the fan-out"
         );
         assert!(
-            agent_instances().lock().unwrap().get(&key).is_some(),
+            agent_instances().get(&key).is_some(),
             "bootstrap close with a live secondary must NOT prune the registry entry"
         );
         // The bootstrap slot should be gone; secondary slot still live.
@@ -2236,12 +2235,12 @@ mod tests {
             "last-session close must signal the fan-out to drain"
         );
         assert!(
-            agent_instances().lock().unwrap().get(&key).is_none(),
+            agent_instances().get(&key).is_none(),
             "last-session close must prune the registry entry"
         );
 
         // Best-effort cleanup in case anything lingered.
-        agent_instances().lock().unwrap().remove(&key);
+        agent_instances().remove(&key);
     }
 
     /// Regression: bootstrap `session/new` response that omits `sessionId`

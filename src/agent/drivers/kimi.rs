@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Context};
 use async_trait::async_trait;
@@ -21,28 +21,9 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
 
-// ---------------------------------------------------------------------------
-// Handle role
-// ---------------------------------------------------------------------------
-
-/// Which slot a [`KimiHandle`] fills in the per-agent core.
-///
-/// The `Bootstrap` handle — produced by [`RuntimeDriver::attach`] — owns the
-/// child-process lifecycle: its `start()` spawns the child and its `close()`
-/// signals SIGTERM + unregisters from the static registry. `Secondary` handles
-/// (from `new_session` / `resume_session`) multiplex on top of the same
-/// process and never kill it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HandleRole {
-    Bootstrap,
-    Secondary,
-}
-
-impl HandleRole {
-    fn is_bootstrap(&self) -> bool {
-        matches!(self, Self::Bootstrap)
-    }
-}
+// `HandleRole` now lives in `drivers/mod.rs` and is shared across drivers —
+// claude/codex/kimi/opencode all distinguish bootstrap-vs-secondary handles
+// identically. `is_bootstrap()` remains the canonical intent check.
 
 use crate::agent::AgentRuntime;
 use crate::utils::cmd::{command_exists, home_dir, read_file};
@@ -161,6 +142,10 @@ impl KimiAgentCore {
     fn emit(&self, event: DriverEvent) {
         let _ = self.event_tx.try_send(event);
     }
+}
+
+impl AgentProcess for KimiAgentCore {
+    const DRIVER_NAME: &'static str = "kimi";
 
     /// True when the cached core's child is no longer usable. Happens when
     /// `close()` SIGTERMed the child and aborted the writer task, but the
@@ -208,37 +193,14 @@ impl Drop for KimiAgentCore {
 // Static per-process registry
 // ---------------------------------------------------------------------------
 
-/// Per-agent `KimiAgentCore` registry. `KimiDriver` is constructed as a unit
-/// struct at multiple call sites (manager + tests pass `Arc::new(KimiDriver)`)
-/// which precludes storing state on the driver itself. A module-level static
-/// map gives us a single source of truth without forcing a signature change.
-fn kimi_registry() -> &'static Mutex<HashMap<AgentKey, Arc<KimiAgentCore>>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<AgentKey, Arc<KimiAgentCore>>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-/// Get the cached core for `key`, evicting it first if the cached entry is
-/// stale (dead child / closed stdin). Returns `None` when no entry exists or
-/// the existing entry was evicted.
-fn registry_get(key: &AgentKey) -> Option<Arc<KimiAgentCore>> {
-    let mut guard = kimi_registry().lock().unwrap();
-    if let Some(core) = guard.get(key) {
-        if core.is_stale() {
-            debug!(agent = %key, "kimi: evicting stale core (child exited) from registry");
-            guard.remove(key);
-            return None;
-        }
-        return Some(core.clone());
-    }
-    None
-}
-
-fn registry_insert(key: AgentKey, core: Arc<KimiAgentCore>) {
-    kimi_registry().lock().unwrap().insert(key, core);
-}
-
-fn registry_remove(key: &AgentKey) {
-    kimi_registry().lock().unwrap().remove(key);
+/// Per-agent `KimiAgentCore` registry. `KimiDriver` is a unit struct
+/// (manager + tests pass `Arc::new(KimiDriver)`) so per-agent state lives
+/// in this static. Returning `None` from `get_or_evict_stale` on a stale
+/// entry makes the driver rebuild the core; `registry_insert` is called
+/// from the attach path once the fresh core is wired up.
+fn registry() -> &'static AgentRegistry<KimiAgentCore> {
+    static REGISTRY: AgentRegistry<KimiAgentCore> = AgentRegistry::new();
+    &REGISTRY
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +279,7 @@ impl RuntimeDriver for KimiDriver {
         // core keep running and their events keep reaching subscribers. `start`
         // on the new handle short-circuits its child spawn via the `spawned`
         // flag in `KimiAgentCore`, so double-spawn is impossible.
-        if let Some(existing) = registry_get(&key) {
+        if let Some(existing) = registry().get_or_evict_stale(&key) {
             let events = existing.events.clone();
             let handle = KimiHandle::new_bootstrap(existing);
             return Ok(AttachResult {
@@ -328,7 +290,7 @@ impl RuntimeDriver for KimiDriver {
 
         let (events, event_tx) = EventFanOut::new();
         let core = KimiAgentCore::new(key.clone(), spec.clone(), events.clone(), event_tx);
-        registry_insert(key.clone(), core.clone());
+        registry().insert(key.clone(), core.clone());
 
         let handle = KimiHandle::new_bootstrap(core);
         Ok(AttachResult {
@@ -338,7 +300,7 @@ impl RuntimeDriver for KimiDriver {
     }
 
     async fn new_session(&self, key: AgentKey, _spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        let core = registry_get(&key).ok_or_else(|| {
+        let core = registry().get_or_evict_stale(&key).ok_or_else(|| {
             anyhow!("kimi: new_session on unknown agent {key} — call attach first")
         })?;
 
@@ -356,7 +318,7 @@ impl RuntimeDriver for KimiDriver {
         _spec: AgentSpec,
         session_id: SessionId,
     ) -> anyhow::Result<AttachResult> {
-        let core = registry_get(&key).ok_or_else(|| {
+        let core = registry().get_or_evict_stale(&key).ok_or_else(|| {
             anyhow!("kimi: resume_session on unknown agent {key} — call attach first")
         })?;
 
@@ -1056,7 +1018,21 @@ impl AgentSessionHandle for KimiHandle {
                     .sessions
                     .values()
                     .all(|slot| matches!(slot.state, AgentState::Closed));
-                (all_closed, Some(shared.clone()))
+                // Don't tear down while a session/new or session/load response
+                // is pending — the caller is awaiting a new session that
+                // would lose its backing child if we killed it now.
+                let no_pending_session_creation = !s.pending.values().any(|p| {
+                    matches!(
+                        p,
+                        PendingRequest::SessionNew { .. }
+                            | PendingRequest::SessionLoad { .. }
+                            | PendingRequest::WarmupSession { .. }
+                    )
+                });
+                (
+                    all_closed && no_pending_session_creation,
+                    Some(shared.clone()),
+                )
             } else {
                 // start() never completed; nothing to route to. Treat as
                 // "all closed" so the teardown path still fires (the core
@@ -1112,7 +1088,7 @@ impl AgentSessionHandle for KimiHandle {
                 }
             }
             self.core.events.close();
-            registry_remove(&key);
+            registry().remove(&key);
         }
 
         Ok(())
@@ -1362,13 +1338,31 @@ async fn handle_response(
             }
             // Bootstrap-path warm-up: phase → Active, install session state,
             // fire deferred prompt if any.
-            let session_id = msg
+            //
+            // If neither the response nor the reserved expected id yields a
+            // session id, treat it as a runtime protocol violation: do NOT
+            // synthesize a fake id (that would announce `SessionAttached` for
+            // a session kimi never created, and every subsequent
+            // prompt/resume/close would fail obscurely against a phantom
+            // slot). Surface the error, release the reserved pending slot,
+            // and drop the warm-up.
+            let session_id = match msg
                 .get("result")
                 .and_then(|r| r.get("sessionId"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string)
                 .or(expected_session_id)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            {
+                Some(sid) => sid,
+                None => {
+                    warn!(
+                        "kimi: warm-up response had no sessionId and no expected id was reserved \
+                         — treating as protocol violation, dropping warm-up"
+                    );
+                    shared.lock().unwrap().pending.remove(&3);
+                    return;
+                }
+            };
 
             let deferred_prompt: Option<String> = {
                 let mut s = shared.lock().unwrap();
@@ -1788,7 +1782,7 @@ mod tests {
         let key = format!("kimi-agent-idle-{}", uuid::Uuid::new_v4());
         let result = driver.attach(key.clone(), test_spec()).await.unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
-        registry_remove(&key);
+        registry().remove(&key);
     }
 
     // ---- build_mcp_config_file tests ----
@@ -2089,7 +2083,7 @@ mod tests {
             "new_session must share attach's EventFanOut"
         );
 
-        registry_remove(&key);
+        registry().remove(&key);
     }
 
     /// Driver-level: `resume_session` preserves the caller-supplied session
@@ -2108,7 +2102,7 @@ mod tests {
 
         assert_eq!(resumed.handle.session_id(), Some("stored-sess-xyz"));
 
-        registry_remove(&key);
+        registry().remove(&key);
     }
 
     /// Regression guard: if a response arrives for an id that's not in the
@@ -2333,14 +2327,14 @@ mod tests {
         }
         assert!(core.is_stale(), "closed stdin must mark core stale");
 
-        registry_insert(key.clone(), core);
+        registry().insert(key.clone(), core);
         assert!(
-            registry_get(&key).is_none(),
+            registry().get_or_evict_stale(&key).is_none(),
             "registry_get must evict the stale entry and return None"
         );
         // Ensure it was actually removed from the map.
         assert!(
-            kimi_registry().lock().unwrap().get(&key).is_none(),
+            registry().get(&key).is_none(),
             "stale entry must have been pruned from the registry"
         );
     }
@@ -2359,12 +2353,12 @@ mod tests {
             !core.is_stale(),
             "a never-spawned core must not be reported as stale"
         );
-        registry_insert(key.clone(), core);
+        registry().insert(key.clone(), core);
         assert!(
-            registry_get(&key).is_some(),
+            registry().get_or_evict_stale(&key).is_some(),
             "registry_get must return a fresh core"
         );
-        registry_remove(&key);
+        registry().remove(&key);
     }
 
     /// Regression for the Stage 2 ship-blocker: closing the bootstrap handle
@@ -2446,7 +2440,7 @@ mod tests {
         }
 
         // Register the core so close() can see it for registry_remove().
-        registry_insert(key.clone(), core.clone());
+        registry().insert(key.clone(), core.clone());
 
         // Build handles.
         let mut bootstrap = KimiHandle::new_bootstrap(core.clone());
@@ -2482,7 +2476,7 @@ mod tests {
             "bootstrap close with a live secondary must NOT close the fan-out"
         );
         assert!(
-            kimi_registry().lock().unwrap().get(&key).is_some(),
+            registry().get(&key).is_some(),
             "bootstrap close with a live secondary must NOT prune the registry entry"
         );
         // The bootstrap's session slot should be gone; the secondary's slot
@@ -2521,7 +2515,7 @@ mod tests {
             "last-session close must signal the fan-out to drain"
         );
         assert!(
-            kimi_registry().lock().unwrap().get(&key).is_none(),
+            registry().get(&key).is_none(),
             "last-session close must prune the registry entry"
         );
     }

@@ -136,54 +136,39 @@ impl CodexTransport for SpawnedTransport {
 /// singleton.
 pub struct CodexDriver;
 
+/// Bound on `SharedReaderState::recent_turn_ids`. The deque feeds
+/// `last_in_flight_thread()`, which attributes `item/*` notifications whose
+/// underlying protocol frame carries no `threadId`. 32 is generous — in
+/// practice very few turns are truly concurrent on one `codex app-server`.
+const RECENT_TURN_IDS_CAP: usize = 32;
+
 /// Process-global per-agent state map. Keyed by [`AgentKey`].
-///
-/// We use a `OnceLock<Mutex<HashMap<_, _>>>` rather than per-driver state
-/// so that `CodexDriver` stays a unit struct and is constructible via
-/// `Arc::new(CodexDriver)` in `manager.rs`.
-fn agent_instances() -> &'static Mutex<HashMap<AgentKey, Arc<CodexAgentProcess>>> {
-    static INSTANCES: std::sync::OnceLock<Mutex<HashMap<AgentKey, Arc<CodexAgentProcess>>>> =
-        std::sync::OnceLock::new();
-    INSTANCES.get_or_init(|| Mutex::new(HashMap::new()))
+fn agent_instances() -> &'static AgentRegistry<CodexAgentProcess> {
+    static INSTANCES: AgentRegistry<CodexAgentProcess> = AgentRegistry::new();
+    &INSTANCES
 }
 
 impl CodexDriver {
     /// Look up or create the shared process state for an agent. The first
     /// call seeds the entry; subsequent `new_session`/`resume_session` calls
     /// return the same `Arc` so every handle writes into the same stdin and
-    /// reads from the same event stream.
-    ///
-    /// If a cached entry's child has died (e.g. after a prior close → child
-    /// exit → SIGTERM) it is evicted here so the caller rebuilds a fresh
-    /// process. This is belt-and-suspenders for the case where close-time
-    /// registry pruning races a subsequent attach.
+    /// reads from the same event stream. Stale-entry eviction happens inside
+    /// [`AgentRegistry::get_or_init`].
     fn ensure_process(&self, key: &AgentKey) -> Arc<CodexAgentProcess> {
-        let mut guard = agent_instances().lock().unwrap();
-        if let Some(existing) = guard.get(key) {
-            if existing.is_stale() {
-                debug!(
-                    agent = %key,
-                    "codex: evicting stale agent process (child exited) before re-attach"
-                );
-                guard.remove(key);
-            } else {
-                return Arc::clone(existing);
-            }
-        }
-        let (events, event_tx) = EventFanOut::new();
-        let proc = Arc::new(CodexAgentProcess {
-            key: key.clone(),
-            events,
-            event_tx,
-            shared: Arc::new(Mutex::new(SharedReaderState::new())),
-            stdin_tx: Mutex::new(None),
-            next_request_id: AtomicU64::new(0),
-            spawned: AtomicBool::new(false),
-            child: Mutex::new(None),
-            reader_handles: Mutex::new(Vec::new()),
-        });
-        guard.insert(key.clone(), Arc::clone(&proc));
-        proc
+        agent_instances().get_or_init(key, || {
+            let (events, event_tx) = EventFanOut::new();
+            Arc::new(CodexAgentProcess {
+                key: key.clone(),
+                events,
+                event_tx,
+                shared: Arc::new(Mutex::new(SharedReaderState::new())),
+                stdin_tx: Mutex::new(None),
+                next_request_id: AtomicU64::new(0),
+                spawned: AtomicBool::new(false),
+                child: Mutex::new(None),
+                reader_handles: Mutex::new(Vec::new()),
+            })
+        })
     }
 }
 
@@ -399,12 +384,15 @@ impl CodexAgentProcess {
             warn!("codex v2: failed to emit event: {e}");
         }
     }
+}
+
+impl AgentProcess for CodexAgentProcess {
+    const DRIVER_NAME: &'static str = "codex";
 
     /// Returns `true` once the shared transport has gone away — either the
     /// child exited (writer task dropped the receiver) or the process was
-    /// never wired up yet. Used by [`CodexDriver::ensure_process`] to evict
-    /// a cached entry whose underlying child is dead so the next `attach`
-    /// rebuilds from scratch.
+    /// never wired up yet. The [`AgentRegistry`] evicts stale entries so a
+    /// subsequent `attach` rebuilds from scratch.
     fn is_stale(&self) -> bool {
         if !self.spawned.load(Ordering::SeqCst) {
             // Never spawned — not stale, just fresh.
@@ -524,9 +512,8 @@ impl SharedReaderState {
         self.turn_to_thread.insert(turn_id.clone(), thread_id);
         self.recent_turn_ids.push_back(turn_id);
         // Keep the deque bounded so it doesn't grow unbounded across a long
-        // session. 32 entries is generous — in practice very few turns are
-        // truly concurrent.
-        while self.recent_turn_ids.len() > 32 {
+        // session. See `RECENT_TURN_IDS_CAP`.
+        while self.recent_turn_ids.len() > RECENT_TURN_IDS_CAP {
             self.recent_turn_ids.pop_front();
         }
     }
@@ -968,7 +955,7 @@ impl AgentSessionHandle for CodexHandle {
             // process alive until every handle is dropped. Once they are,
             // `Drop for CodexAgentProcess` fires: SIGTERM to the child +
             // abort for the reader tasks.
-            agent_instances().lock().unwrap().remove(&self.key);
+            agent_instances().remove(&self.key);
         }
 
         self.state = AgentState::Closed;
@@ -1144,8 +1131,26 @@ async fn handle_event<F: Fn(DriverEvent)>(
             let (thread_id, run_id) = {
                 let mut s = proc.shared.lock().unwrap();
                 let thread_id = s.turn_to_thread.remove(&turn_id).unwrap_or_default();
-                // Drain accumulated command output to prevent unbounded growth.
-                s.cmd_output_buf.clear();
+                // Drain command-output entries that belong to this turn's
+                // thread. An older implementation called `cmd_output_buf.clear()`
+                // unconditionally here, which wiped buffers owned by sibling
+                // sessions whose turns were still in flight — a multi-session
+                // correctness bug. Now we only release items attributed to the
+                // completing thread (ItemCompleted already removes cleanly on
+                // the happy path; this is belt-and-suspenders cleanup for
+                // items whose completion we never saw).
+                if !thread_id.is_empty() {
+                    let drop_items: Vec<String> = s
+                        .item_to_thread
+                        .iter()
+                        .filter(|(_, t)| t.as_str() == thread_id.as_str())
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    for id in &drop_items {
+                        s.cmd_output_buf.remove(id);
+                        s.item_to_thread.remove(id);
+                    }
+                }
                 let run_id = if !thread_id.is_empty() {
                     if let Some(session) = s.sessions.get_mut(&thread_id) {
                         let rid = session.run_id.take();
@@ -1556,7 +1561,9 @@ mod tests {
         // All four Arcs (attach + 2 new + 1 resume) should point at the same
         // CodexAgentProcess — observed via strong_count == 4 on the driver
         // map entry (driver holds one, each handle holds one).
-        let guard = agent_instances().lock().unwrap();
+        // Use the raw-lock escape hatch: `get()` would clone the Arc and
+        // bump the strong count by one, breaking the count assertion.
+        let guard = agent_instances().lock();
         let arc = guard.get(&key).expect("agent instance recorded");
         assert_eq!(
             Arc::strong_count(arc),
@@ -1953,7 +1960,7 @@ mod multisession_tests {
         // Snapshot the Arc identity so we can prove the post-reattach Arc is
         // a different allocation.
         let proc_v1_addr = {
-            let guard = agent_instances().lock().unwrap();
+            let guard = agent_instances().lock();
             let proc = guard.get(&key).expect("entry present after attach");
             Arc::as_ptr(proc) as usize
         };
@@ -1962,13 +1969,10 @@ mod multisession_tests {
 
         // Registry entry must have been removed — otherwise `ensure_process`
         // on re-attach would hand back the dead Arc.
-        {
-            let guard = agent_instances().lock().unwrap();
-            assert!(
-                guard.get(&key).is_none(),
-                "close on the last live session must prune the agent from the registry"
-            );
-        }
+        assert!(
+            agent_instances().get(&key).is_none(),
+            "close on the last live session must prune the agent from the registry"
+        );
 
         // --- round 2: re-attach on the same key ---
         let attach2 = driver.attach(key.clone(), test_spec()).await.unwrap();

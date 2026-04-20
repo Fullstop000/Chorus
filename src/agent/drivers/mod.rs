@@ -716,6 +716,155 @@ pub async fn request_pairing_token(
 }
 
 // ---------------------------------------------------------------------------
+// Per-driver shared scaffolding
+// ---------------------------------------------------------------------------
+//
+// Stage 2 gave every real driver a shared per-agent process registry and a
+// bootstrap-vs-secondary handle distinction. Those two patterns were
+// previously re-implemented in claude/codex/kimi/opencode with near-identical
+// bodies (same `OnceLock<Mutex<HashMap<_, Arc<_>>>>` shape, same eviction
+// policy, same HandleRole enum). The types below are the shared version.
+// Drivers that genuinely differ stay opaque behind the `AgentProcess` trait.
+
+/// Role a handle plays on its agent's shared runtime process.
+///
+/// The bootstrap handle — returned by [`RuntimeDriver::attach`] — brings the
+/// shared child process online. Subsequent [`RuntimeDriver::new_session`] and
+/// [`RuntimeDriver::resume_session`] calls produce secondary handles that
+/// multiplex sessions onto the already-live child. For claude specifically,
+/// every handle owns its own per-session child and the distinction is
+/// currently unused (see the note in `claude.rs`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HandleRole {
+    Bootstrap,
+    Secondary,
+}
+
+impl HandleRole {
+    #[allow(dead_code)]
+    pub(crate) fn is_bootstrap(&self) -> bool {
+        matches!(self, Self::Bootstrap)
+    }
+}
+
+/// Per-agent runtime process type. Implemented by each driver's
+/// `*AgentProcess` / `*AgentCore` struct so a generic [`AgentRegistry`] can
+/// cache instances of it and evict stale entries at attach time.
+pub(crate) trait AgentProcess: Send + Sync + 'static {
+    /// Short driver name used in registry debug logs, e.g. `"claude"`,
+    /// `"codex"`, `"kimi"`, `"opencode"`.
+    const DRIVER_NAME: &'static str;
+
+    /// True if the cached process can no longer serve a new attach — the
+    /// shared child has died, stdin has been closed, or the bootstrap's
+    /// `close()` has marked it torn down. The registry evicts stale entries
+    /// before returning them so `ensure_process` never hands callers a dead
+    /// Arc.
+    ///
+    /// A never-spawned process is NOT stale; the bootstrap path still needs
+    /// to be able to re-use a cached-but-un-started entry.
+    fn is_stale(&self) -> bool;
+}
+
+/// Process-global per-driver agent registry. Replaces the four near-identical
+/// `OnceLock<Mutex<HashMap<AgentKey, Arc<P>>>>` + `ensure_process` copies that
+/// each driver used to carry. Instantiated once per driver as a `static`.
+///
+/// All methods take `&self`; the map is lazily initialized inside a `OnceLock`
+/// so the type works as a `static`.
+pub(crate) struct AgentRegistry<P: AgentProcess> {
+    inner: std::sync::OnceLock<Mutex<std::collections::HashMap<AgentKey, Arc<P>>>>,
+}
+
+impl<P: AgentProcess> AgentRegistry<P> {
+    pub(crate) const fn new() -> Self {
+        Self {
+            inner: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn map(&self) -> &Mutex<std::collections::HashMap<AgentKey, Arc<P>>> {
+        self.inner
+            .get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+    }
+
+    /// Return the cached process for `key`, building a fresh one via
+    /// `factory` if the slot is empty. A cached-but-stale entry is evicted
+    /// and `factory` runs anew. The lookup, eviction, and insert all happen
+    /// under the same critical section so two concurrent `attach`es on the
+    /// same key observe each other.
+    pub(crate) fn get_or_init<F>(&self, key: &AgentKey, factory: F) -> Arc<P>
+    where
+        F: FnOnce() -> Arc<P>,
+    {
+        let mut guard = self.map().lock().unwrap();
+        if let Some(existing) = guard.get(key) {
+            if existing.is_stale() {
+                tracing::debug!(
+                    agent = %key,
+                    driver = P::DRIVER_NAME,
+                    "evicting stale agent process before re-attach",
+                );
+                guard.remove(key);
+            } else {
+                return Arc::clone(existing);
+            }
+        }
+        let fresh = factory();
+        guard.insert(key.clone(), Arc::clone(&fresh));
+        fresh
+    }
+
+    /// Return the cached process for `key`, evicting it first if stale.
+    /// Used by drivers whose attach path constructs the process inline
+    /// and then calls [`AgentRegistry::insert`] separately (kimi).
+    pub(crate) fn get_or_evict_stale(&self, key: &AgentKey) -> Option<Arc<P>> {
+        let mut guard = self.map().lock().unwrap();
+        if let Some(existing) = guard.get(key) {
+            if existing.is_stale() {
+                tracing::debug!(
+                    agent = %key,
+                    driver = P::DRIVER_NAME,
+                    "evicting stale agent process from registry",
+                );
+                guard.remove(key);
+                return None;
+            }
+            return Some(Arc::clone(existing));
+        }
+        None
+    }
+
+    /// Raw read — does NOT evict stale entries. Used by tests that inspect
+    /// registry state without mutating it, and by driver code that needs the
+    /// `Arc` handle itself rather than building or evicting one.
+    #[allow(dead_code)]
+    pub(crate) fn get(&self, key: &AgentKey) -> Option<Arc<P>> {
+        self.map().lock().unwrap().get(key).cloned()
+    }
+
+    /// Raw insert. Overwrites any existing entry without a stale check.
+    pub(crate) fn insert(&self, key: AgentKey, proc: Arc<P>) {
+        self.map().lock().unwrap().insert(key, proc);
+    }
+
+    /// Raw remove.
+    pub(crate) fn remove(&self, key: &AgentKey) {
+        self.map().lock().unwrap().remove(key);
+    }
+
+    /// Escape hatch: lock the underlying map for multi-step operations
+    /// (e.g., `Arc::strong_count` checks in tests). Most callers should
+    /// use the per-method helpers above.
+    #[allow(dead_code)]
+    pub(crate) fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<AgentKey, Arc<P>>> {
+        self.map().lock().unwrap()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
