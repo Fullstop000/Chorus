@@ -286,44 +286,53 @@ impl RuntimeDriver for ClaudeDriver {
         Ok(vec![])
     }
 
+    /// Native `open_session`: allocates a [`ClaudeHandle`] and stores the
+    /// resume intent from `intent`. For `SessionIntent::Resume(id)` both
+    /// `preassigned_session_id` and `resumed_session_id` are set: the former
+    /// lets `session_id()` return `Some(id)` before `run()` fires; the latter
+    /// threads into `run_inner` so the native path doesn't need `StartOpts`.
+    async fn open_session(
+        &self,
+        key: AgentKey,
+        spec: AgentSpec,
+        intent: SessionIntent,
+    ) -> anyhow::Result<AttachResult> {
+        let proc = self.ensure_process(&key);
+        let events = proc.events_handle().clone();
+        let mut handle = ClaudeHandle::new(key, spec, Arc::clone(&proc));
+        if let SessionIntent::Resume(id) = intent {
+            handle.preassigned_session_id = Some(id.clone());
+            handle.resumed_session_id = Some(id);
+        }
+        Ok(AttachResult {
+            handle: Box::new(handle),
+            events,
+        })
+    }
+
+    /// Compat shim — delegates to `open_session(New)`.
     async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        let proc = self.ensure_process(&key);
-        let events = proc.events.clone();
-        let handle = ClaudeHandle::new(key, spec, proc);
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
+        // attach historically did not pre-assign a session id (the handle
+        // starts with session_id() == None until run/start fires). The native
+        // open_session(New) also leaves preassigned_session_id = None, so
+        // the behaviour is identical.
+        self.open_session(key, spec, SessionIntent::New).await
     }
 
+    /// Compat shim — delegates to `open_session(New)`.
     async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        // Reuse the agent's shared process so events land on the same
-        // fan-out. Each secondary handle spawns its own `claude -p` child on
-        // `start()` (process-per-session); subscribers disambiguate by
-        // `session_id` on the event.
-        let proc = self.ensure_process(&key);
-        let events = proc.events.clone();
-        let handle = ClaudeHandle::new(key, spec, proc);
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
+        self.open_session(key, spec, SessionIntent::New).await
     }
 
+    /// Compat shim — delegates to `open_session(Resume(session_id))`.
     async fn resume_session(
         &self,
         key: AgentKey,
         spec: AgentSpec,
         session_id: SessionId,
     ) -> anyhow::Result<AttachResult> {
-        let proc = self.ensure_process(&key);
-        let events = proc.events.clone();
-        let mut handle = ClaudeHandle::new(key, spec, proc);
-        handle.preassigned_session_id = Some(session_id);
-        Ok(AttachResult {
-            handle: Box::new(handle),
-            events,
-        })
+        self.open_session(key, spec, SessionIntent::Resume(session_id))
+            .await
     }
 }
 
@@ -372,6 +381,10 @@ impl ClaudeAgentProcess {
             &self.key,
             <Self as AgentProcess>::DRIVER_NAME,
         );
+    }
+
+    fn events_handle(&self) -> &EventStreamHandle {
+        &self.events
     }
 
     fn incr_live(&self) {
@@ -426,8 +439,13 @@ pub struct ClaudeHandle {
     /// session writes into.
     proc: Arc<ClaudeAgentProcess>,
     /// Caller-supplied session id for the resume path. When set, `start()`
-    /// passes `--resume <session_id>` to the CLI.
+    /// passes `--resume <session_id>` to the CLI. Also used by `session_id()`
+    /// to expose the resume intent before `run()` fires.
     preassigned_session_id: Option<SessionId>,
+    /// Session id stored by `open_session(Resume(id))`. Threaded into
+    /// `run_inner` so the native `open_session`/`run` path can carry the
+    /// resume intent without going through `start`'s `StartOpts`.
+    resumed_session_id: Option<SessionId>,
     /// Transport for this handle's `claude -p` child. Held in an Option so
     /// `close()` can take+drop it to trigger the Drop impl's SIGTERM.
     transport: Mutex<Option<Box<dyn ClaudeTransport>>>,
@@ -468,6 +486,7 @@ impl ClaudeHandle {
             spec,
             proc,
             preassigned_session_id: None,
+            resumed_session_id: None,
             transport: Mutex::new(None),
             stdin_tx: None,
             shared: None,
@@ -481,47 +500,11 @@ impl ClaudeHandle {
     fn emit(&self, event: DriverEvent) {
         self.proc.emit(event);
     }
-}
 
-#[async_trait]
-impl AgentSessionHandle for ClaudeHandle {
-    fn key(&self) -> &AgentKey {
-        &self.key
-    }
-
-    fn session_id(&self) -> Option<&str> {
-        // The stdout reader writes the minted session id into `self.session_id`
-        // on `system.init` (see `spawn_stdout_reader`). `self.state` is NOT a
-        // reliable source here — it's advanced to `Starting`/`PromptInFlight`/
-        // `Closed` from the handle's own methods but never to `Active`, because
-        // the transition to `Active` lives in the reader task under
-        // `shared.agent_state`. Reading from the `OnceLock` lets us return a
-        // borrow without the lifetime-vs-mutex-guard tangle, and `OnceLock`
-        // matches the semantics: Claude's session id is assigned exactly once
-        // per handle (new or resumed — both land on `system.init`).
-        //
-        // Fall back to the pre-assigned id for the resume path when callers
-        // inspect the handle before `start()` runs and the reader has produced
-        // its first `system.init` line.
-        self.session_id
-            .get()
-            .map(String::as_str)
-            .or(self.preassigned_session_id.as_deref())
-    }
-
-    fn state(&self) -> AgentState {
-        if let Some(ref shared) = self.shared {
-            shared.lock().unwrap().agent_state.clone()
-        } else {
-            self.state.clone()
-        }
-    }
-
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
+    /// Core spawn logic. Reads `self.resumed_session_id` (set by
+    /// `open_session(Resume)` or the `start` compat shim) to determine
+    /// whether to pass `--resume <id>` to the CLI.
+    async fn run_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
         if !matches!(self.state, AgentState::Idle) {
             bail!("claude v2: start called in non-idle state");
         }
@@ -555,13 +538,14 @@ impl AgentSessionHandle for ClaudeHandle {
         // otherwise leave a growing pile of `.chorus-claude-mcp-*.json`.
         self.mcp_config_path = Some(mcp_config_path.clone());
 
-        // Determine which session id (if any) to resume. Prefer the
-        // handle-level preassigned id over the per-call opts, but support
-        // both entry points for symmetry with the other drivers.
+        // Determine which session id (if any) to resume. Use the native
+        // `resumed_session_id` field set by `open_session(Resume)` or the
+        // `start` compat shim. Fall back to the legacy `preassigned_session_id`
+        // for callers that still go through `resume_session` → `start` directly.
         let resume_id = self
-            .preassigned_session_id
-            .clone()
-            .or(opts.resume_session_id);
+            .resumed_session_id
+            .take()
+            .or_else(|| self.preassigned_session_id.clone());
 
         // Build CLI args
         let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
@@ -642,6 +626,61 @@ impl AgentSessionHandle for ClaudeHandle {
         self.started = true;
 
         Ok(())
+    }
+}
+
+#[async_trait]
+impl AgentSessionHandle for ClaudeHandle {
+    fn key(&self) -> &AgentKey {
+        &self.key
+    }
+
+    fn session_id(&self) -> Option<&str> {
+        // The stdout reader writes the minted session id into `self.session_id`
+        // on `system.init` (see `spawn_stdout_reader`). `self.state` is NOT a
+        // reliable source here — it's advanced to `Starting`/`PromptInFlight`/
+        // `Closed` from the handle's own methods but never to `Active`, because
+        // the transition to `Active` lives in the reader task under
+        // `shared.agent_state`. Reading from the `OnceLock` lets us return a
+        // borrow without the lifetime-vs-mutex-guard tangle, and `OnceLock`
+        // matches the semantics: Claude's session id is assigned exactly once
+        // per handle (new or resumed — both land on `system.init`).
+        //
+        // Fall back to the pre-assigned id for the resume path when callers
+        // inspect the handle before `start()` runs and the reader has produced
+        // its first `system.init` line.
+        self.session_id
+            .get()
+            .map(String::as_str)
+            .or(self.preassigned_session_id.as_deref())
+    }
+
+    fn state(&self) -> AgentState {
+        if let Some(ref shared) = self.shared {
+            shared.lock().unwrap().agent_state.clone()
+        } else {
+            self.state.clone()
+        }
+    }
+
+    /// Native `run`: reads `resumed_session_id` stored by `open_session(Resume)`
+    /// and delegates to `run_inner`. For `open_session(New)` the field is `None`
+    /// and `run_inner` starts a fresh session.
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
+        self.run_inner(init_prompt).await
+    }
+
+    /// Compat shim: threads `opts.resume_session_id` into `resumed_session_id`
+    /// so `run_inner` picks it up, then calls `run_inner`.
+    async fn start(
+        &mut self,
+        opts: StartOpts,
+        init_prompt: Option<PromptReq>,
+    ) -> anyhow::Result<()> {
+        if let Some(id) = opts.resume_session_id {
+            self.resumed_session_id = Some(id);
+        }
+        self.run_inner(init_prompt).await
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -1818,5 +1857,88 @@ mod tests {
             agent_instances().get(&key).is_none(),
             "last-session close must prune the registry entry"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // open_session / run behavioral tests (Stage 1 – Task 4)
+    // -----------------------------------------------------------------------
+
+    /// `open_session(New)` → `session_id()` is `None` before `run()`.
+    /// After `run()` + a `system.init` feed, `session_id()` returns the
+    /// id the fake process emitted.
+    #[tokio::test]
+    async fn open_session_new_session_id_none_before_run() {
+        let driver = ClaudeDriver;
+        let key = format!("claude-os-new-{}", uuid::Uuid::new_v4());
+        agent_instances().remove(&key);
+
+        let result = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+
+        // Before run(): session_id() must be None (no preassigned id).
+        assert_eq!(
+            result.handle.session_id(),
+            None,
+            "open_session(New): session_id() must be None before run()"
+        );
+
+        agent_instances().remove(&key);
+    }
+
+    /// `open_session(Resume("sess_xyz"))` → `session_id()` returns `Some("sess_xyz")`
+    /// before `run()`, and after `run()` + fake spawn, `--resume sess_xyz` is
+    /// present in the captured args.
+    #[tokio::test]
+    async fn open_session_resume_session_id_and_resume_flag() {
+        let (bridge_url, _bridge) = spawn_mock_bridge().await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let driver = ClaudeDriver;
+        let key = format!("claude-os-resume-{}", uuid::Uuid::new_v4());
+        agent_instances().remove(&key);
+
+        let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
+
+        let result = driver
+            .open_session(
+                key.clone(),
+                spec.clone(),
+                SessionIntent::Resume("sess_xyz".to_string()),
+            )
+            .await
+            .unwrap();
+
+        // Before run(): session_id() must return Some("sess_xyz") because
+        // open_session(Resume) sets preassigned_session_id.
+        assert_eq!(
+            result.handle.session_id(),
+            Some("sess_xyz"),
+            "open_session(Resume): session_id() must return Some(id) before run()"
+        );
+
+        // Install fake factory so run() doesn't spawn a real `claude -p`.
+        let factory = install_fake_factory(&driver.ensure_process(&key));
+        let mut handle = result.handle;
+
+        handle.run(None).await.unwrap();
+
+        // Verify --resume sess_xyz appears in the spawned args.
+        {
+            let state = factory.lock().unwrap();
+            assert_eq!(state.spawns.len(), 1, "run() must spawn exactly one child");
+            let args = &state.spawns[0].args;
+            let found = args
+                .windows(2)
+                .any(|w| w[0] == "--resume" && w[1] == "sess_xyz");
+            assert!(
+                found,
+                "expected --resume sess_xyz in spawn args, got: {args:?}"
+            );
+        }
+
+        handle.close().await.unwrap();
+        agent_instances().remove(&key);
     }
 }
