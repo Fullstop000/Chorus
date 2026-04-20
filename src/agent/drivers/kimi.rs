@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, Context};
@@ -21,8 +21,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
 
-// `HandleRole` lives in `drivers/mod.rs` and is used by codex/opencode.
-// Kimi no longer uses HandleRole — all handles are role-agnostic since Task 1.
+// Kimi handles are role-agnostic; HandleRole is not imported here.
 
 use crate::agent::AgentRuntime;
 use crate::utils::cmd::{command_exists, home_dir, read_file};
@@ -94,9 +93,6 @@ struct KimiAgentCore {
     /// `initialize` responded). Once set, subsequent calls to `ensure_started`
     /// are fast no-ops. On failure, stays false so the next caller can retry.
     started: AtomicBool,
-    /// Notified by the race-winner thread once `started` is set. Waiters
-    /// sleeping in `ensure_started` wake and re-check `started`.
-    started_notify: tokio::sync::Notify,
     /// Mutex serializing concurrent `ensure_started` calls so only one
     /// thread actually runs spawn + initialize. Non-recursive (tokio::Mutex
     /// is fair and async-friendly).
@@ -112,7 +108,7 @@ struct KimiAgentCore {
     /// non-stickiness tests to assert the slow path ran the expected number
     /// of times without needing a real kimi binary.
     #[cfg(test)]
-    spawn_call_count: AtomicUsize,
+    spawn_call_count: std::sync::atomic::AtomicUsize,
 }
 
 /// Inner mutable state guarded by a tokio mutex so we can `await` while
@@ -159,11 +155,10 @@ impl KimiAgentCore {
                 owned: OwnedProcess::default(),
             }),
             started: AtomicBool::new(false),
-            started_notify: tokio::sync::Notify::new(),
             start_in_progress: tokio::sync::Mutex::new(()),
             pairing_token: OnceLock::new(),
             #[cfg(test)]
-            spawn_call_count: AtomicUsize::new(0),
+            spawn_call_count: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -177,9 +172,8 @@ impl KimiAgentCore {
     }
 
     /// Lazy, race-safe bootstrap. First caller spawns the child process and
-    /// sends `initialize`; subsequent concurrent callers wait for the
-    /// `started_notify`; any caller that arrives after `started` is set
-    /// returns immediately.
+    /// sends `initialize`; subsequent concurrent callers are serialized by
+    /// `start_in_progress` and return immediately after the flag is set.
     ///
     /// On failure: `started` stays false. The `start_in_progress` lock is
     /// released, so the next caller retries. This makes failure non-sticky:
@@ -198,7 +192,6 @@ impl KimiAgentCore {
         // We are the race-winner. Spawn child + send initialize.
         self.spawn_and_initialize().await?;
         self.started.store(true, Ordering::Release);
-        self.started_notify.notify_waiters();
         Ok(())
     }
 
@@ -691,6 +684,8 @@ impl KimiHandle {
     /// Send `session/load` on the live stdin and return the resolved session id.
     /// Requires `ensure_started()` to have already succeeded.
     async fn send_session_load(&self, sid: &str) -> anyhow::Result<String> {
+        // Note: pairing_token is only needed for session/new (MCP re-pair on new sessions).
+        // session/load reuses the bootstrap session's MCP state with mcpServers=[].
         let (stdin_tx, shared, _pairing_token) = self.acquire_stdin_and_shared().await?;
         let id = self.alloc_id().await;
         let (tx, rx) = oneshot::channel();
@@ -2410,19 +2405,12 @@ mod tests {
         let _ = r0.expect("task 0 panicked");
         let _ = r1.expect("task 1 panicked");
 
-        // Serialisation invariant: each of the two callers entered the slow path
-        // at most once. Count must be exactly 2 (both failed, neither was sticky).
-        // A count of 0 or >2 would indicate a bug in the mutex / counter.
+        // Serialisation invariant: each of the two callers entered the slow path.
+        // Count must be exactly 2 (both failed, neither was sticky).
         let n = core.spawn_and_initialize_call_count_for_test();
-        assert!(
-            n <= 2,
-            "spawn_and_initialize ran {n} times for 2 callers — impossible (bug in counter or mutex)"
-        );
-        // Both callers must have entered the slow path (non-stickiness): if
-        // one run was silently skipped without retrying, we'd see count == 0.
-        assert!(
-            n >= 1,
-            "spawn_and_initialize never ran — both callers took an unexpected fast-path"
+        assert_eq!(
+            n, 2,
+            "spawn_and_initialize ran {n} times for 2 callers — expected exactly 2"
         );
 
         registry().remove(&key);
