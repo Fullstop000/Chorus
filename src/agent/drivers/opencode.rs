@@ -547,7 +547,12 @@ pub struct OpencodeHandle {
 
 impl OpencodeHandle {
     fn emit(&self, event: DriverEvent) {
-        let _ = self.proc.event_tx.try_send(event);
+        super::emit_driver_event(
+            &self.proc.event_tx,
+            event,
+            &self.key,
+            <OpencodeAgentProcess as AgentProcess>::DRIVER_NAME,
+        );
     }
 }
 
@@ -813,10 +818,11 @@ impl OpencodeHandle {
                 "chat": mcp_chat,
             }
         });
-        std::fs::write(
+        tokio::fs::write(
             &config_path,
             serde_json::to_string_pretty(&opencode_config)?,
         )
+        .await
         .context("failed to write opencode.json")?;
 
         let args = vec!["acp".to_string()];

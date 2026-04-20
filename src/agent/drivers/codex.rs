@@ -380,9 +380,12 @@ impl CodexAgentProcess {
     }
 
     fn emit(&self, event: DriverEvent) {
-        if let Err(e) = self.event_tx.try_send(event) {
-            warn!("codex v2: failed to emit event: {e}");
-        }
+        super::emit_driver_event(
+            &self.event_tx,
+            event,
+            &self.key,
+            <Self as AgentProcess>::DRIVER_NAME,
+        );
     }
 }
 

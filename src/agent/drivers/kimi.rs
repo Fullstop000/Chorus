@@ -140,7 +140,12 @@ impl KimiAgentCore {
     }
 
     fn emit(&self, event: DriverEvent) {
-        let _ = self.event_tx.try_send(event);
+        super::emit_driver_event(
+            &self.event_tx,
+            event,
+            &self.key,
+            <Self as AgentProcess>::DRIVER_NAME,
+        );
     }
 }
 
@@ -504,7 +509,8 @@ impl KimiHandle {
         let wd = &self.core.spec.working_directory;
         let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
         let mcp_config = build_mcp_config_file(&self.core.spec.bridge_endpoint, &pairing_token);
-        std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
+        tokio::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
+            .await
             .context("failed to write MCP config")?;
 
         let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();

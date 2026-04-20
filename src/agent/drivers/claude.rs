@@ -39,7 +39,7 @@
 //! handles prune only when they were the last live session on the agent.
 
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{anyhow, bail, Context};
@@ -220,7 +220,7 @@ impl ClaudeDriver {
                 events,
                 event_tx,
                 closed: AtomicBool::new(false),
-                live_sessions: Mutex::new(0),
+                live_sessions: AtomicUsize::new(0),
                 transport_factory: Mutex::new(Arc::new(spawn_real_transport)),
             })
         })
@@ -346,7 +346,7 @@ struct ClaudeAgentProcess {
     closed: AtomicBool,
     /// Count of handles whose `start()` has completed and whose `close()`
     /// hasn't. Pruning on a secondary close only fires when this reaches 0.
-    live_sessions: Mutex<usize>,
+    live_sessions: AtomicUsize,
     /// Factory used to spawn a transport for each session's `start()`. In
     /// production points at [`spawn_real_transport`]; tests swap this for a
     /// fake factory via [`Self::set_transport_factory`].
@@ -366,22 +366,38 @@ impl AgentProcess for ClaudeAgentProcess {
 
 impl ClaudeAgentProcess {
     fn emit(&self, event: DriverEvent) {
-        if let Err(e) = self.event_tx.try_send(event) {
-            warn!(agent = %self.key, "claude v2: failed to emit event: {e}");
-        }
+        super::emit_driver_event(
+            &self.event_tx,
+            event,
+            &self.key,
+            <Self as AgentProcess>::DRIVER_NAME,
+        );
     }
 
     fn incr_live(&self) {
-        *self.live_sessions.lock().unwrap() += 1;
+        self.live_sessions.fetch_add(1, Ordering::SeqCst);
     }
 
     /// Decrement the live-session counter. Returns the remaining count.
+    /// Saturates at 0 to guard against double-decrement in pathological
+    /// close paths (a stale counter is strictly less harmful than an
+    /// underflow that wraps to `usize::MAX` and defeats the teardown gate).
     fn decr_live(&self) -> usize {
-        let mut guard = self.live_sessions.lock().unwrap();
-        if *guard > 0 {
-            *guard -= 1;
+        let mut prev = self.live_sessions.load(Ordering::SeqCst);
+        loop {
+            if prev == 0 {
+                return 0;
+            }
+            match self.live_sessions.compare_exchange(
+                prev,
+                prev - 1,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => return prev - 1,
+                Err(actual) => prev = actual,
+            }
         }
-        *guard
     }
 
     /// Install a fake transport factory on an existing shared process. Test
@@ -531,7 +547,8 @@ impl AgentSessionHandle for ClaudeHandle {
             .await
             .context("failed to pair with shared bridge")?;
         let mcp_config = build_mcp_config(&self.spec.bridge_endpoint, &token);
-        std::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
+        tokio::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
+            .await
             .context("failed to write MCP config")?;
         // Remember the path so close() can clean it up — each session spawns
         // one file, so a long-lived agent with many new_session calls would
@@ -730,7 +747,7 @@ impl AgentSessionHandle for ClaudeHandle {
             self.started = false;
             self.proc.decr_live()
         } else {
-            *self.proc.live_sessions.lock().unwrap()
+            self.proc.live_sessions.load(Ordering::SeqCst)
         };
 
         // Shared-process teardown (fan-out drain + registry prune) is gated
@@ -1744,7 +1761,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            *proc.live_sessions.lock().unwrap(),
+            proc.live_sessions.load(Ordering::SeqCst),
             2,
             "start() on both handles should bring live_sessions to 2"
         );
@@ -1764,7 +1781,7 @@ mod tests {
         bootstrap_handle.close().await.unwrap();
 
         assert_eq!(
-            *proc.live_sessions.lock().unwrap(),
+            proc.live_sessions.load(Ordering::SeqCst),
             1,
             "bootstrap close should decrement live_sessions to 1"
         );
@@ -1785,7 +1802,7 @@ mod tests {
         secondary_handle.close().await.unwrap();
 
         assert_eq!(
-            *proc.live_sessions.lock().unwrap(),
+            proc.live_sessions.load(Ordering::SeqCst),
             0,
             "last-session close should decrement live_sessions to 0"
         );

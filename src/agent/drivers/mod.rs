@@ -718,6 +718,26 @@ pub async fn request_pairing_token(
 // ---------------------------------------------------------------------------
 // Per-driver shared scaffolding
 // ---------------------------------------------------------------------------
+
+/// Try-send a [`DriverEvent`] into a driver's inbound fan-out channel.
+/// Drivers call this from their per-process / per-handle `emit` wrappers so
+/// every driver behaves identically under back-pressure: a dropped event is
+/// warn-logged with `agent` + `driver` fields rather than silently swallowed.
+///
+/// Before this helper existed, claude/codex logged `warn!` on Full while
+/// kimi/opencode/fake did `let _ = try_send(...)` — the four inbound queues
+/// had four different overload policies and debugging a stuck agent meant
+/// guessing which driver was silent.
+pub(crate) fn emit_driver_event(
+    tx: &mpsc::Sender<DriverEvent>,
+    event: DriverEvent,
+    agent: &AgentKey,
+    driver: &'static str,
+) {
+    if let Err(e) = tx.try_send(event) {
+        tracing::warn!(agent = %agent, driver, "dropped driver event: {e}");
+    }
+}
 //
 // Stage 2 gave every real driver a shared per-agent process registry and a
 // bootstrap-vs-secondary handle distinction. Those two patterns were
