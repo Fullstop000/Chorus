@@ -232,11 +232,10 @@ impl RuntimeDriver for CodexDriver {
         Ok(vec![])
     }
 
-    /// Native `open_session`: allocates a [`CodexHandle`] and stores the
-    /// resume intent from `intent`. For `SessionIntent::Resume(id)` the
-    /// `resume_session_id` field is set, letting `run_inner` pick it up
-    /// without going through `StartOpts`. `session_id()` returns the
-    /// pre-assigned id before `run()` fires so callers can inspect it.
+    /// Allocates a [`CodexHandle`] for the given intent. For
+    /// `SessionIntent::Resume(id)` the `resume_session_id` field is set,
+    /// letting `run_inner` send `thread/resume` instead of `thread/start`.
+    /// `session_id()` returns the pre-assigned id before `run()` fires.
     async fn open_session(
         &self,
         key: AgentKey,
@@ -255,26 +254,6 @@ impl RuntimeDriver for CodexDriver {
         })
     }
 
-    /// Compat shim — delegates to `open_session(New)`.
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — delegates to `open_session(New)`.
-    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — delegates to `open_session(Resume(session_id))`.
-    async fn resume_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-        session_id: SessionId,
-    ) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::Resume(session_id))
-            .await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -552,9 +531,8 @@ pub struct CodexHandle {
     process: Arc<CodexAgentProcess>,
     /// The `thread_id` this handle is attached to, filled by `start()`.
     session_id: Option<SessionId>,
-    /// Set by `resume_session` to instruct `start()` to send `thread/resume`
-    /// instead of `thread/start`. Takes precedence over
-    /// [`StartOpts::resume_session_id`] passed to `start()`.
+    /// Set by `open_session(Resume(id))` to instruct `run_inner()` to send
+    /// `thread/resume` instead of `thread/start`.
     resume_session_id: Option<SessionId>,
 }
 
@@ -820,21 +798,6 @@ impl AgentSessionHandle for CodexHandle {
     /// and delegates to `run_inner`. For `open_session(New)` the field is `None`
     /// and `run_inner` starts a fresh thread.
     async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        self.run_inner(init_prompt).await
-    }
-
-    /// Compat shim: threads `opts.resume_session_id` into `resume_session_id`
-    /// so `run_inner` picks it up, then calls `run_inner`.
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
-        // StartOpts takes precedence over any resume id already on the handle
-        // (e.g. from a legacy resume_session call). Mirror the old behaviour.
-        if let Some(id) = opts.resume_session_id {
-            self.resume_session_id = Some(id);
-        }
         self.run_inner(init_prompt).await
     }
 
@@ -1494,21 +1457,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_codex_driver_attach_returns_idle() {
+    async fn test_codex_driver_open_session_returns_idle() {
         let driver = CodexDriver;
         let result = driver
-            .attach("agent-codex-1".into(), test_spec())
+            .open_session("agent-codex-1".into(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
     }
 
     #[tokio::test]
-    async fn test_codex_handle_shared_is_none_before_start() {
-        // Before start(), state() falls back to self.state which is Idle.
+    async fn test_codex_handle_shared_is_none_before_run() {
+        // Before run(), state() falls back to self.state which is Idle.
         let driver = CodexDriver;
         let result = driver
-            .attach("agent-codex-3".into(), test_spec())
+            .open_session("agent-codex-3".into(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
@@ -1577,21 +1540,31 @@ mod tests {
     // ---- ensure_process: shared process invariant ----
 
     #[tokio::test]
-    async fn attach_and_new_session_share_process() {
-        // Proves that attach + two new_session calls on the same key all
-        // reference the same CodexAgentProcess — a.k.a. "one agent, one
-        // child". We don't actually spawn a child in this test (no real
-        // `codex` binary); we only inspect the bookkeeping.
+    async fn open_session_calls_share_process() {
+        // Proves that three open_session calls on the same key all reference
+        // the same CodexAgentProcess — a.k.a. "one agent, one child".
+        // We don't actually spawn a child in this test (no real `codex`
+        // binary); we only inspect the bookkeeping.
         let driver = CodexDriver;
         let key = "agent-share-probe".to_string();
-        let _a = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let _b = driver.new_session(key.clone(), test_spec()).await.unwrap();
+        let _a = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let _b = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
         let _c = driver
-            .resume_session(key.clone(), test_spec(), "thr_stored".into())
+            .open_session(
+                key.clone(),
+                test_spec(),
+                SessionIntent::Resume("thr_stored".into()),
+            )
             .await
             .unwrap();
 
-        // All four Arcs (attach + 2 new + 1 resume) should point at the same
+        // All four Arcs (registry + 3 handles) should point at the same
         // CodexAgentProcess — observed via strong_count == 4 on the driver
         // map entry (driver holds one, each handle holds one).
         // Use the raw-lock escape hatch: `get()` would clone the Arc and
@@ -1601,7 +1574,7 @@ mod tests {
         assert_eq!(
             Arc::strong_count(arc),
             4,
-            "driver map + 3 handles must share one process"
+            "registry + 3 handles must share one process"
         );
     }
 }
@@ -1812,7 +1785,7 @@ mod multisession_tests {
         driver.ensure_process(key)
     }
 
-    /// End-to-end multi-session: attach + two new_session calls on the same
+    /// End-to-end multi-session: three open_session(New) calls on the same
     /// agent. Asserts distinct thread ids per session and that the events
     /// carry the correct session_id.
     #[tokio::test]
@@ -1820,34 +1793,30 @@ mod multisession_tests {
         let driver = CodexDriver;
         let key = "agent-multi-1".to_string();
 
-        let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let mut rx = attach.events.subscribe();
+        let s0 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut rx = s0.events.subscribe();
 
-        let mut primary = attach.handle;
+        let mut primary = s0.handle;
         let sim = install_fake_transport(&process_for(&driver, &key));
 
-        primary
-            .start(StartOpts::default(), None)
-            .await
-            .expect("primary start");
+        primary.run(None).await.expect("primary run");
 
         let mut s1 = driver
-            .new_session(key.clone(), test_spec())
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap()
             .handle;
         let mut s2 = driver
-            .new_session(key.clone(), test_spec())
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap()
             .handle;
 
-        s1.start(StartOpts::default(), None)
-            .await
-            .expect("s1 start");
-        s2.start(StartOpts::default(), None)
-            .await
-            .expect("s2 start");
+        s1.run(None).await.expect("s1 run");
+        s2.run(None).await.expect("s2 run");
 
         let id_primary = primary.session_id().expect("primary id").to_string();
         let id1 = s1.session_id().expect("s1 id").to_string();
@@ -1883,26 +1852,33 @@ mod multisession_tests {
         assert!(seen.contains(&id2));
     }
 
-    /// `resume_session` attaches the handle to a caller-supplied thread id.
-    /// Prompts on the resumed handle must flow to that same thread (the
+    /// `open_session(Resume)` attaches the handle to a caller-supplied thread
+    /// id. Prompts on the resumed handle must flow to that same thread (the
     /// `PromptInFlight` state carries the supplied id).
     #[tokio::test]
     async fn resume_session_preserves_thread_id_on_prompt() {
         let driver = CodexDriver;
         let key = "agent-resume-1".to_string();
 
-        let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let mut primary = attach.handle;
+        let s0 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut primary = s0.handle;
         let _sim = install_fake_transport(&process_for(&driver, &key));
-        primary.start(StartOpts::default(), None).await.unwrap();
+        primary.run(None).await.unwrap();
 
         let stored_id = "thr_stored_42".to_string();
         let mut resumed = driver
-            .resume_session(key.clone(), test_spec(), stored_id.clone())
+            .open_session(
+                key.clone(),
+                test_spec(),
+                SessionIntent::Resume(stored_id.clone()),
+            )
             .await
             .unwrap()
             .handle;
-        resumed.start(StartOpts::default(), None).await.unwrap();
+        resumed.run(None).await.unwrap();
         assert_eq!(
             resumed.session_id(),
             Some(stored_id.as_str()),
@@ -1935,28 +1911,31 @@ mod multisession_tests {
         }
     }
 
-    /// Sanity: multiple `new_session` calls do NOT spawn additional
+    /// Sanity: multiple `open_session(New)` calls do NOT spawn additional
     /// transports. One child, many threads.
     #[tokio::test]
     async fn new_session_reuses_child_process() {
         let driver = CodexDriver;
         let key = "agent-shared-1".to_string();
 
-        let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let mut primary = attach.handle;
+        let s0 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut primary = s0.handle;
         let sim = install_fake_transport(&process_for(&driver, &key));
-        primary.start(StartOpts::default(), None).await.unwrap();
+        primary.run(None).await.unwrap();
 
         let proc = driver.ensure_process(&key);
         assert!(proc.spawned.load(Ordering::SeqCst));
 
         for _ in 0..3 {
             let mut h = driver
-                .new_session(key.clone(), test_spec())
+                .open_session(key.clone(), test_spec(), SessionIntent::New)
                 .await
                 .unwrap()
                 .handle;
-            h.start(StartOpts::default(), None).await.unwrap();
+            h.run(None).await.unwrap();
         }
 
         // Four thread/start responses went through ONE transport — proved
@@ -1975,20 +1954,23 @@ mod multisession_tests {
         );
     }
 
-    /// Regression: attach → close → re-attach on the same key must return a
-    /// fresh `CodexAgentProcess`, not the dead cached one. Guards against
+    /// Regression: open_session → close → re-open on the same key must return
+    /// a fresh `CodexAgentProcess`, not the dead cached one. Guards against
     /// the "registry never pruned" bug where close left the old Arc in the
-    /// global map and the next attach wrote into a closed stdin channel.
+    /// global map and the next open_session wrote into a closed stdin channel.
     #[tokio::test]
     async fn attach_close_reattach_spawns_fresh_process() {
         let driver = CodexDriver;
         let key = "agent-reattach-1".to_string();
 
-        // --- round 1: attach, start, close ---
-        let attach1 = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let mut h1 = attach1.handle;
+        // --- round 1: open, run, close ---
+        let s1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut h1 = s1.handle;
         let _sim1 = install_fake_transport(&process_for(&driver, &key));
-        h1.start(StartOpts::default(), None).await.unwrap();
+        h1.run(None).await.unwrap();
 
         // Snapshot the Arc identity so we can prove the post-reattach Arc is
         // a different allocation.
@@ -2001,21 +1983,24 @@ mod multisession_tests {
         h1.close().await.expect("close succeeds");
 
         // Registry entry must have been removed — otherwise `ensure_process`
-        // on re-attach would hand back the dead Arc.
+        // on re-open would hand back the dead Arc.
         assert!(
             agent_instances().get(&key).is_none(),
             "close on the last live session must prune the agent from the registry"
         );
 
-        // --- round 2: re-attach on the same key ---
-        let attach2 = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let mut h2 = attach2.handle;
+        // --- round 2: re-open on the same key ---
+        let s2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let mut h2 = s2.handle;
 
         let proc_v2 = process_for(&driver, &key);
         let proc_v2_addr = Arc::as_ptr(&proc_v2) as usize;
         assert_ne!(
             proc_v1_addr, proc_v2_addr,
-            "re-attach must build a fresh CodexAgentProcess, not recycle the stale one"
+            "re-open must build a fresh CodexAgentProcess, not recycle the stale one"
         );
         assert!(
             !proc_v2.spawned.load(Ordering::SeqCst),
@@ -2026,17 +2011,17 @@ mod multisession_tests {
         // thread/start round-trip. Proves the new handle is functionally
         // live, not just structurally fresh.
         let _sim2 = install_fake_transport(&proc_v2);
-        h2.start(StartOpts::default(), None)
+        h2.run(None)
             .await
-            .expect("start on re-attached handle must succeed via fresh transport");
+            .expect("run on re-opened handle must succeed via fresh transport");
         assert!(
             h2.session_id().is_some(),
-            "re-attached handle must obtain a thread_id"
+            "re-opened handle must obtain a thread_id"
         );
     }
 
     // -----------------------------------------------------------------------
-    // open_session / run behavioral tests (Stage 1 – Task 5)
+    // open_session / run behavioral tests
     // -----------------------------------------------------------------------
 
     /// `open_session(New)` → `session_id()` is `None` before `run()`.

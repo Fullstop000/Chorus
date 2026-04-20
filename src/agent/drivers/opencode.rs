@@ -244,44 +244,6 @@ impl RuntimeDriver for OpencodeDriver {
         }
     }
 
-    /// Compat shim — delegates to `open_session(New)`.
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — preserves loud-fail on stale key (child not started).
-    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        if !agent_instances()
-            .get(&key)
-            .is_some_and(|p| p.started.load(Ordering::SeqCst))
-        {
-            bail!(
-                "opencode: new_session called before attach().start() brought the child online \
-                 (agent {key})"
-            );
-        }
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — preserves loud-fail on stale key (child not started).
-    async fn resume_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-        session_id: SessionId,
-    ) -> anyhow::Result<AttachResult> {
-        if !agent_instances()
-            .get(&key)
-            .is_some_and(|p| p.started.load(Ordering::SeqCst))
-        {
-            bail!(
-                "opencode: resume_session called before attach().start() brought the child online \
-                 (agent {key})"
-            );
-        }
-        self.open_session(key, spec, SessionIntent::Resume(session_id))
-            .await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -592,28 +554,11 @@ impl AgentSessionHandle for OpencodeHandle {
         self.local_state.clone()
     }
 
-    /// Native implementation. Bootstrap → `run_bootstrap`; Secondary → `run_secondary`.
     async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
         match self.role {
             HandleRole::Bootstrap => self.run_bootstrap(init_prompt).await,
             HandleRole::Secondary => self.run_secondary(init_prompt).await,
         }
-    }
-
-    /// Compat shim: threads `opts.resume_session_id` into `preassigned_session_id`
-    /// (Bootstrap branch only; Secondary already has its id minted by the factory),
-    /// then calls `run`.
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
-        if self.role.is_bootstrap() {
-            if let Some(id) = opts.resume_session_id {
-                self.preassigned_session_id = Some(id);
-            }
-        }
-        self.run(init_prompt).await
     }
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
@@ -1709,13 +1654,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_opencode_driver_attach_returns_idle() {
+    async fn test_opencode_driver_open_session_returns_idle() {
         let driver = OpencodeDriver;
         // Unique key: the driver's shared registry is process-global, so
         // re-running this test with the same key would re-bind to a stale
         // `OpencodeAgentProcess` from a previous case.
-        let key = format!("opencode-test-attach-{}", uuid::Uuid::new_v4());
-        let result = driver.attach(key, test_spec()).await.unwrap();
+        let key = format!("opencode-test-open-session-{}", uuid::Uuid::new_v4());
+        let result = driver
+            .open_session(key, test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
     }
 
@@ -1857,18 +1805,21 @@ mod tests {
 
     #[tokio::test]
     async fn child_process_is_reused_across_sessions() {
-        // `attach` creates the shared process; repeated `attach` + `new_session`
-        // on the same key must hand back the same `Arc<OpencodeAgentProcess>`.
+        // Two `open_session` calls on the same key must hand back the same
+        // `Arc<OpencodeAgentProcess>`.
         let driver = OpencodeDriver;
         let key = format!("opencode-test-reuse-{}", uuid::Uuid::new_v4());
 
-        let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let s1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
         // Find the underlying process from the global registry.
         let proc1 = agent_instances().get(&key).expect("registered");
 
-        // Mark started so new_session doesn't bail on the "child online" guard.
-        // We can't actually spawn opencode in tests, but the invariant we
-        // care about here is registry identity.
+        // Mark started so the second open_session's request_new_session can
+        // proceed. We can't actually spawn opencode in tests, but the invariant
+        // we care about here is registry identity.
         proc1.started.store(true, Ordering::SeqCst);
 
         // Pre-wire a stdin_tx so request_new_session can write and we can
@@ -1876,13 +1827,15 @@ mod tests {
         let (stdin_tx, mut stdin_rx) = mpsc::channel::<String>(64);
         *proc1.stdin_tx.lock().unwrap() = Some(stdin_tx);
 
-        // Drive new_session on the existing process via the driver API.
+        // Drive the second open_session (Secondary path) via the driver API.
         let driver_for_task = OpencodeDriver;
         let key_for_task = key.clone();
-        let new_task =
-            tokio::spawn(
-                async move { driver_for_task.new_session(key_for_task, test_spec()).await },
-            );
+        let new_task: tokio::task::JoinHandle<anyhow::Result<AttachResult>> =
+            tokio::spawn(async move {
+                driver_for_task
+                    .open_session(key_for_task, test_spec(), SessionIntent::New)
+                    .await
+            });
 
         // Fulfil the session/new response.
         let line = stdin_rx.recv().await.unwrap();
@@ -1892,7 +1845,7 @@ mod tests {
         let resp =
             format!(r#"{{"jsonrpc":"2.0","id":{id},"result":{{"sessionId":"sess-reuse"}}}}"#);
         feed_line(&proc1, &resp).await;
-        let new_attach = new_task.await.unwrap().unwrap();
+        let s2 = new_task.await.unwrap().unwrap();
 
         // Second lookup: same process.
         let proc2 = agent_instances().get(&key).expect("registered");
@@ -1901,15 +1854,15 @@ mod tests {
             "same agent key must map to the same OpencodeAgentProcess"
         );
 
-        // Event stream identity: both attach and new_session results share
-        // the same fan-out — and therefore the same underlying child.
+        // Event stream identity: both open_session results share the same
+        // fan-out — and therefore the same underlying child.
         assert!(
-            Arc::ptr_eq(&attach.events.inner, &proc1.events.inner),
-            "attach.events must share fan-out with the shared process"
+            Arc::ptr_eq(&s1.events.inner, &proc1.events.inner),
+            "s1.events must share fan-out with the shared process"
         );
         assert!(
-            Arc::ptr_eq(&new_attach.events.inner, &proc1.events.inner),
-            "new_session.events must share fan-out with the shared process"
+            Arc::ptr_eq(&s2.events.inner, &proc1.events.inner),
+            "s2.events must share fan-out with the shared process"
         );
     }
 
@@ -2065,17 +2018,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_session_before_child_started_errors_loudly() {
-        // Guard: new_session without a live child (attach.start() wasn't
-        // called) should bail with an actionable message, not hang.
+    async fn open_session_new_before_child_started_returns_bootstrap_handle() {
+        // `open_session(New)` when no child is running returns a Bootstrap
+        // Idle handle — callers must call `run()` to bring the child online.
+        // (The old `new_session` shim would error here; `open_session` is
+        // intentionally lenient so the caller decides the lifecycle.)
         let driver = OpencodeDriver;
         let key = format!("opencode-test-no-child-{}", uuid::Uuid::new_v4());
-        let err = match driver.new_session(key, test_spec()).await {
-            Ok(_) => panic!("new_session should fail before start"),
-            Err(e) => e,
-        };
-        let msg = format!("{err:#}");
-        assert!(msg.contains("before attach"), "got: {msg}");
+        let result = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        assert!(
+            matches!(result.handle.state(), AgentState::Idle),
+            "expected Idle handle before child is started"
+        );
+        agent_instances().remove(&key);
     }
 
     /// Regression: `DriverEvent::SessionAttached` must be emitted EXACTLY ONCE
@@ -2087,17 +2045,15 @@ mod tests {
     /// broke `await_session_attached` consumers: draining one event left a
     /// duplicate in the buffer that later consumers mistook for a different
     /// session's attach. Mirrors kimi's split: reader emits for
-    /// warmup/bootstrap only; handle.start() emits for secondary.
+    /// warmup/bootstrap only; handle.run() emits for secondary.
     #[tokio::test]
     async fn session_attached_emitted_exactly_once_per_secondary_new_session() {
-        use crate::agent::drivers::StartOpts;
-
         let (proc, mut stdin_rx, mut event_rx) = build_test_process("agent-attach-once");
 
         // Full secondary path: `request_new_session` drives the session/new
         // RPC (whose response arrives via the reader path), then construct a
-        // secondary `OpencodeHandle` and call its `start()` — the same shape
-        // the driver's `new_session` entrypoint produces.
+        // secondary `OpencodeHandle` and call its `run()` — the same shape
+        // the driver's `open_session` entrypoint produces.
         let proc_c = proc.clone();
         let spec = test_spec();
         let call = tokio::spawn(async move { proc_c.request_new_session(&spec).await });
@@ -2133,9 +2089,9 @@ mod tests {
             role: HandleRole::Secondary,
         };
         handle
-            .start(StartOpts::default(), None)
+            .run(None)
             .await
-            .expect("secondary start()");
+            .expect("secondary run()");
 
         // Drain the event receiver and count SessionAttached events for
         // `sid`. Before the fix this would be 2; with the fix it's 1.
@@ -2152,8 +2108,8 @@ mod tests {
         }
         assert_eq!(
             attached, 1,
-            "secondary new_session must emit SessionAttached exactly once \
-             (reader emits for bootstrap only; handle.start() emits for \
+            "secondary open_session must emit SessionAttached exactly once \
+             (reader emits for bootstrap only; handle.run() emits for \
              secondary); saw {attached}"
         );
     }
@@ -2173,7 +2129,10 @@ mod tests {
 
         // Bring up a shared process via the driver (registers it + builds
         // the fan-out). Also mark started so secondary construction works.
-        let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let s0 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
         let proc = agent_instances().get(&key).expect("registered");
         proc.started.store(true, Ordering::SeqCst);
 
@@ -2215,8 +2174,8 @@ mod tests {
             s.bootstrap_session_id = Some(bootstrap_sid.clone());
         }
 
-        let events_handle = attach.events.clone();
-        let mut bootstrap_handle = attach.handle;
+        let events_handle = s0.events.clone();
+        let mut bootstrap_handle = s0.handle;
 
         // Build a secondary handle by hand (bypassing request_new_session,
         // which would need a live reader to respond). Mirror what

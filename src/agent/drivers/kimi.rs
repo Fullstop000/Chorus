@@ -514,26 +514,6 @@ impl RuntimeDriver for KimiDriver {
         })
     }
 
-    /// Compat shim — delegates to `open_session(New)`.
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — delegates to `open_session(New)`.
-    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — delegates to `open_session(Resume(session_id))`.
-    async fn resume_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-        session_id: SessionId,
-    ) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::Resume(session_id))
-            .await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -837,20 +817,6 @@ impl AgentSessionHandle for KimiHandle {
     /// `open_session(New)` the field is `None` and `run_inner` starts a fresh
     /// session.
     async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        self.run_inner(init_prompt).await
-    }
-
-    /// Compat shim: threads `opts.resume_session_id` into
-    /// `preassigned_session_id` so `run_inner` picks it up, then calls
-    /// `run_inner`.
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
-        if let Some(id) = opts.resume_session_id {
-            self.preassigned_session_id = Some(id);
-        }
         self.run_inner(init_prompt).await
     }
 
@@ -1638,10 +1604,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_kimi_driver_attach_returns_idle() {
+    async fn test_kimi_driver_open_session_returns_idle() {
         let driver = KimiDriver;
         let key = format!("kimi-agent-idle-{}", uuid::Uuid::new_v4());
-        let result = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let result = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
         registry().remove(&key);
     }
@@ -1892,77 +1861,88 @@ mod tests {
         ));
     }
 
-    /// Driver-level: `new_session` and `resume_session` are now shims to
-    /// `open_session` which uses `get_or_init`, so they work standalone without
-    /// a prior `attach`. Both return a valid handle with shared event stream.
+    /// Driver-level: `open_session` uses `get_or_init`, so it works standalone
+    /// without a prior call on the same key. Both New and Resume return a valid
+    /// handle with shared event stream.
     #[tokio::test]
-    async fn new_session_and_resume_session_work_without_prior_attach() {
+    async fn open_session_works_without_prior_call() {
         let driver = KimiDriver;
 
-        // new_session standalone — creates the core, returns an Idle handle.
+        // New standalone — creates the core, returns an Idle handle.
         let key_new = format!("agent-no-attach-new-{}", uuid::Uuid::new_v4());
-        let res = driver.new_session(key_new.clone(), test_spec()).await;
-        assert!(res.is_ok(), "new_session must succeed without prior attach");
+        let res = driver
+            .open_session(key_new.clone(), test_spec(), SessionIntent::New)
+            .await;
+        assert!(res.is_ok(), "open_session(New) must succeed without prior call");
         let ar = res.unwrap();
         assert!(
             matches!(ar.handle.state(), AgentState::Idle),
-            "new_session must return an Idle handle"
+            "open_session(New) must return an Idle handle"
         );
         registry().remove(&key_new);
 
-        // resume_session standalone — creates the core, returns a handle with
-        // the supplied session id pre-loaded.
+        // Resume standalone — creates the core, returns a handle with the
+        // supplied session id pre-loaded.
         let key_resume = format!("agent-no-attach-resume-{}", uuid::Uuid::new_v4());
         let res = driver
-            .resume_session(key_resume.clone(), test_spec(), "stored-id-xyz".to_string())
+            .open_session(
+                key_resume.clone(),
+                test_spec(),
+                SessionIntent::Resume("stored-id-xyz".to_string()),
+            )
             .await;
         assert!(
             res.is_ok(),
-            "resume_session must succeed without prior attach"
+            "open_session(Resume) must succeed without prior call"
         );
         let ar = res.unwrap();
         assert_eq!(
             ar.handle.session_id(),
             Some("stored-id-xyz"),
-            "resume_session must expose the supplied session id"
+            "open_session(Resume) must expose the supplied session id"
         );
         registry().remove(&key_resume);
     }
 
-    /// Driver-level: after attach(), `new_session` returns a handle that
-    /// shares the same event stream (proving the "one process, many
-    /// sessions" invariant — we reuse the core registered at attach).
+    /// Driver-level: two `open_session` calls on the same key share the same
+    /// event stream (proving the "one process, many sessions" invariant —
+    /// we reuse the core registered on the first call).
     #[tokio::test]
-    async fn new_session_reuses_attached_core() {
+    async fn open_session_twice_shares_core() {
         let driver = KimiDriver;
         let key = format!("agent-reuse-{}", uuid::Uuid::new_v4());
 
-        let attach = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let new_res = driver.new_session(key.clone(), test_spec()).await.unwrap();
+        let s1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let s2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
 
         // EventStreamHandle is Clone via Arc<EventFanOut>. The two handles
         // must share the SAME Arc — verify by pointer equality on the Arc.
-        let attach_ptr = Arc::as_ptr(&attach.events.inner);
-        let new_ptr = Arc::as_ptr(&new_res.events.inner);
-        assert_eq!(
-            attach_ptr, new_ptr,
-            "new_session must share attach's EventFanOut"
-        );
+        let ptr1 = Arc::as_ptr(&s1.events.inner);
+        let ptr2 = Arc::as_ptr(&s2.events.inner);
+        assert_eq!(ptr1, ptr2, "open_session calls must share the same EventFanOut");
 
         registry().remove(&key);
     }
 
-    /// Driver-level: `resume_session` preserves the caller-supplied session
-    /// id on the returned handle before start() is called. Mirrors fake.rs
-    /// `multi_session_resume_session_preserves_supplied_id`.
+    /// Driver-level: `open_session(Resume)` preserves the caller-supplied
+    /// session id on the returned handle before run() is called.
     #[tokio::test]
-    async fn resume_session_preserves_supplied_id_before_start() {
+    async fn open_session_resume_preserves_supplied_id_before_run() {
         let driver = KimiDriver;
         let key = format!("agent-resume-{}", uuid::Uuid::new_v4());
 
-        let _attach = driver.attach(key.clone(), test_spec()).await.unwrap();
         let resumed = driver
-            .resume_session(key.clone(), test_spec(), "stored-sess-xyz".to_string())
+            .open_session(
+                key.clone(),
+                test_spec(),
+                SessionIntent::Resume("stored-sess-xyz".to_string()),
+            )
             .await
             .unwrap();
 
@@ -2345,15 +2325,18 @@ mod tests {
         registry().remove(&key);
     }
 
-    /// `attach()` on a key that already has a live core returns a handle that
-    /// shares the same EventFanOut as the original attach — confirming the
+    /// `open_session` on a key that already has a live core returns a handle
+    /// that shares the same EventFanOut as the original call — confirming the
     /// "reuse live core" path in the factory.
     #[tokio::test]
-    async fn attach_reuses_live_core_event_stream() {
+    async fn open_session_reuses_live_core_event_stream() {
         let driver = KimiDriver;
         let key = format!("agent-attach-reuse-{}", uuid::Uuid::new_v4());
 
-        let r0 = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let r0 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
 
         // Manually mark the core as started and seed a live stdin_tx so
         // `is_stale()` returns false and `get_or_evict_stale` returns the
@@ -2371,13 +2354,16 @@ mod tests {
             }
         };
 
-        let r1 = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let r1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
 
         let ptr0 = Arc::as_ptr(&r0.events.inner);
         let ptr1 = Arc::as_ptr(&r1.events.inner);
         assert_eq!(
             ptr0, ptr1,
-            "second attach must reuse the same EventFanOut as the first"
+            "second open_session must reuse the same EventFanOut as the first"
         );
 
         registry().remove(&key);

@@ -448,14 +448,6 @@ impl EventStreamHandle {
 // Request / attachment payloads
 // ---------------------------------------------------------------------------
 
-/// Options passed to [`AgentSessionHandle::start`].
-#[derive(Debug, Clone, Default)]
-pub struct StartOpts {
-    /// If set, the driver should resume the given session instead of minting
-    /// a new one. None means "start fresh via `new_session`".
-    pub resume_session_id: Option<SessionId>,
-}
-
 /// Attachment classification carried with a prompt.
 #[derive(Debug, Clone)]
 pub enum AttachmentKind {
@@ -575,7 +567,7 @@ pub enum SessionIntent {
     Resume(SessionId),
 }
 
-/// Return value of [`RuntimeDriver::attach`] / `new_session` / `resume_session`.
+/// Return value of [`RuntimeDriver::open_session`].
 pub struct AttachResult {
     pub handle: Box<dyn AgentSessionHandle>,
     pub events: EventStreamHandle,
@@ -588,9 +580,8 @@ pub struct AttachResult {
 /// Runtime-level factory.
 ///
 /// One instance per runtime (Claude, Codex, Kimi, OpenCode, Fake). Session
-/// lifecycle lives here: `attach` brings the first session online; further
-/// sessions on the same agent are spawned via `new_session` or resumed via
-/// `resume_session`, each yielding a fresh [`AgentSessionHandle`].
+/// lifecycle lives here: [`open_session`] opens (new or resumed) sessions,
+/// each yielding a fresh [`AgentSessionHandle`].
 ///
 /// `'static` so driver pointers can be stored in registries; `Send + Sync`
 /// because the agent manager holds them behind an `Arc`.
@@ -614,45 +605,19 @@ pub trait RuntimeDriver: Send + Sync + 'static {
     /// Enumerate runtime-advertised slash commands (if supported).
     async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>>;
 
-    /// Build a per-agent session handle and its event stream for the given
-    /// key/spec.
+    /// Open a session on an agent. Unified replacement for the legacy
+    /// `attach`, `new_session`, and `resume_session` verbs.
     ///
-    /// This is the initial attach. The returned handle is in
-    /// [`AgentState::Idle`]; callers must invoke `start` to bring it online.
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult>;
-
-    /// Spawn an additional session on an already-attached agent. Yields a new
-    /// [`AgentSessionHandle`] for the spawned session. Drivers that support
-    /// multiplexing reuse the existing process; drivers that do not should
-    /// return an error (the caller may then fall back to a new `attach`).
-    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult>;
-
-    /// Resume a previously-stored session. Same lifecycle as `new_session` but
-    /// the returned handle is attached to `session_id` rather than a freshly
-    /// minted one.
-    async fn resume_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-        session_id: SessionId,
-    ) -> anyhow::Result<AttachResult>;
-
-    /// Open a session on an agent. Unified replacement for `attach`, `new_session`,
-    /// and `resume_session`. During migration this has a default impl that
-    /// delegates to the legacy verbs. Drivers override with native impls in
-    /// subsequent tasks. Task 10 removes this default and the legacy verbs
-    /// together.
+    /// `SessionIntent::New` starts a fresh session; `SessionIntent::Resume(id)`
+    /// resumes the given stored session. The returned handle is in
+    /// [`AgentState::Idle`]; callers must invoke [`AgentSessionHandle::run`] to
+    /// bring it online.
     async fn open_session(
         &self,
         key: AgentKey,
         spec: AgentSpec,
         intent: SessionIntent,
-    ) -> anyhow::Result<AttachResult> {
-        match intent {
-            SessionIntent::New => self.attach(key, spec).await,
-            SessionIntent::Resume(id) => self.resume_session(key, spec, id).await,
-        }
-    }
+    ) -> anyhow::Result<AttachResult>;
 }
 
 /// Per-session lifecycle handle.
@@ -660,7 +625,7 @@ pub trait RuntimeDriver: Send + Sync + 'static {
 /// Represents one ACP session (or equivalent). Multiple session handles may
 /// coexist for a single agent when the driver supports multiplexing; each
 /// carries its own `session_id`, state, and event timeline. Consumers drive a
-/// session through `start` -> `prompt` -> `cancel`/`close` transitions and
+/// session through `run` -> `prompt` -> `cancel`/`close` transitions and
 /// observe side effects on the paired [`EventStreamHandle`].
 ///
 /// `Send` only — handles may be moved across tasks but are not required to be
@@ -673,23 +638,18 @@ pub trait AgentSessionHandle: Send {
 
     /// The session id this handle is attached to, if one has been assigned.
     ///
-    /// `None` before `start` completes (or `start` resumes without a known
-    /// id). `Some` for every state downstream of `Active`.
+    /// `None` before `run` completes (or `run` resumes without a known id).
+    /// `Some` for every state downstream of `Active`.
     fn session_id(&self) -> Option<&str>;
 
     /// Current lifecycle state of this session.
     fn state(&self) -> AgentState;
 
-    /// Bring the session online.
-    ///
-    /// If `opts.resume_session_id` is set, resumes that session; otherwise
-    /// starts fresh. `init_prompt`, when present, is delivered as the first
-    /// prompt so some runtimes can perform session bootstrap in one turn.
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()>;
+    /// Bring the session online. Resume intent is threaded in via
+    /// [`RuntimeDriver::open_session`]'s `SessionIntent`; `init_prompt`,
+    /// when present, is delivered as the first prompt so some runtimes can
+    /// perform session bootstrap in one turn.
+    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()>;
 
     /// Send a prompt to the live session. Returns the [`RunId`] assigned so
     /// callers can correlate subsequent events.
@@ -702,15 +662,6 @@ pub trait AgentSessionHandle: Send {
     /// Shut this session down and release its resources. Does not tear down
     /// the agent's shared runtime process when other sessions remain live.
     async fn close(&mut self) -> anyhow::Result<()>;
-
-    /// Bring the session online. Replaces `start`. During migration this has a
-    /// default impl that delegates to `start(StartOpts::default(), init_prompt)`.
-    /// Drivers that need to thread resume info must override this (and also
-    /// their `open_session` in the driver trait). Task 10 removes this default
-    /// and `start` together.
-    async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        self.start(StartOpts::default(), init_prompt).await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -786,12 +737,12 @@ pub(crate) fn emit_driver_event(
 
 /// Role a handle plays on its agent's shared runtime process.
 ///
-/// The bootstrap handle — returned by [`RuntimeDriver::attach`] — brings the
-/// shared child process online. Subsequent [`RuntimeDriver::new_session`] and
-/// [`RuntimeDriver::resume_session`] calls produce secondary handles that
-/// multiplex sessions onto the already-live child. For claude specifically,
-/// every handle owns its own per-session child and the distinction is
-/// currently unused (see the note in `claude.rs`).
+/// The bootstrap handle — returned by the first [`RuntimeDriver::open_session`]
+/// call — brings the shared child process online. Subsequent
+/// `open_session` calls produce secondary handles that multiplex sessions onto
+/// the already-live child. For claude specifically, every handle owns its own
+/// per-session child and the distinction is currently unused (see the note in
+/// `claude.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HandleRole {
     Bootstrap,

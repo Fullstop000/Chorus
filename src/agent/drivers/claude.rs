@@ -286,11 +286,10 @@ impl RuntimeDriver for ClaudeDriver {
         Ok(vec![])
     }
 
-    /// Native `open_session`: allocates a [`ClaudeHandle`] and stores the
-    /// resume intent from `intent`. For `SessionIntent::Resume(id)` both
-    /// `preassigned_session_id` and `resumed_session_id` are set: the former
-    /// lets `session_id()` return `Some(id)` before `run()` fires; the latter
-    /// threads into `run_inner` so the native path doesn't need `StartOpts`.
+    /// Allocates a [`ClaudeHandle`] and stores the resume intent from `intent`.
+    /// For `SessionIntent::Resume(id)` both `preassigned_session_id` and
+    /// `resumed_session_id` are set: the former lets `session_id()` return
+    /// `Some(id)` before `run()` fires; the latter threads into `run_inner`.
     async fn open_session(
         &self,
         key: AgentKey,
@@ -310,30 +309,6 @@ impl RuntimeDriver for ClaudeDriver {
         })
     }
 
-    /// Compat shim — delegates to `open_session(New)`.
-    async fn attach(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        // attach historically did not pre-assign a session id (the handle
-        // starts with session_id() == None until run/start fires). The native
-        // open_session(New) also leaves preassigned_session_id = None, so
-        // the behaviour is identical.
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — delegates to `open_session(New)`.
-    async fn new_session(&self, key: AgentKey, spec: AgentSpec) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::New).await
-    }
-
-    /// Compat shim — delegates to `open_session(Resume(session_id))`.
-    async fn resume_session(
-        &self,
-        key: AgentKey,
-        spec: AgentSpec,
-        session_id: SessionId,
-    ) -> anyhow::Result<AttachResult> {
-        self.open_session(key, spec, SessionIntent::Resume(session_id))
-            .await
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -443,8 +418,7 @@ pub struct ClaudeHandle {
     /// to expose the resume intent before `run()` fires.
     preassigned_session_id: Option<SessionId>,
     /// Session id stored by `open_session(Resume(id))`. Threaded into
-    /// `run_inner` so the native `open_session`/`run` path can carry the
-    /// resume intent without going through `start`'s `StartOpts`.
+    /// `run_inner` so `run()` passes `--resume <id>` to the child.
     resumed_session_id: Option<SessionId>,
     /// Transport for this handle's `claude -p` child. Held in an Option so
     /// `close()` can take+drop it to trigger the Drop impl's SIGTERM.
@@ -663,23 +637,10 @@ impl AgentSessionHandle for ClaudeHandle {
         }
     }
 
-    /// Native `run`: reads `resumed_session_id` stored by `open_session(Resume)`
-    /// and delegates to `run_inner`. For `open_session(New)` the field is `None`
+    /// Reads `resumed_session_id` stored by `open_session(Resume)` and
+    /// delegates to `run_inner`. For `open_session(New)` the field is `None`
     /// and `run_inner` starts a fresh session.
     async fn run(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        self.run_inner(init_prompt).await
-    }
-
-    /// Compat shim: threads `opts.resume_session_id` into `resumed_session_id`
-    /// so `run_inner` picks it up, then calls `run_inner`.
-    async fn start(
-        &mut self,
-        opts: StartOpts,
-        init_prompt: Option<PromptReq>,
-    ) -> anyhow::Result<()> {
-        if let Some(id) = opts.resume_session_id {
-            self.resumed_session_id = Some(id);
-        }
         self.run_inner(init_prompt).await
     }
 
@@ -1159,12 +1120,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_claude_driver_attach_returns_idle() {
+    async fn test_claude_driver_open_session_returns_idle() {
         let driver = ClaudeDriver;
         // Ensure no leftover registry entry from another test with the same key.
-        agent_instances().remove(&"agent-claude-attach-returns-idle".to_string());
+        agent_instances().remove(&"agent-claude-open-session-returns-idle".to_string());
         let result = driver
-            .attach("agent-claude-attach-returns-idle".into(), test_spec())
+            .open_session(
+                "agent-claude-open-session-returns-idle".into(),
+                test_spec(),
+                SessionIntent::New,
+            )
             .await
             .unwrap();
         assert!(matches!(result.handle.state(), AgentState::Idle));
@@ -1490,22 +1455,28 @@ mod tests {
     // Multi-session tests
     // -----------------------------------------------------------------------
 
-    /// Test: `attach` + `new_session` wire both handles to the same shared
+    /// Test: two `open_session` calls wire both handles to the same shared
     /// `EventStreamHandle` so every session's events land on one timeline.
     #[tokio::test]
-    async fn attach_and_new_session_share_event_stream() {
+    async fn open_session_twice_shares_event_stream() {
         let driver = ClaudeDriver;
         let key = "agent-claude-share-stream".to_string();
         // Scrub any leftover entry.
         agent_instances().remove(&key);
 
-        let a1 = driver.attach(key.clone(), test_spec()).await.unwrap();
-        let a2 = driver.new_session(key.clone(), test_spec()).await.unwrap();
+        let a1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
+        let a2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
 
         // Both `EventStreamHandle`s point at the same `Arc<EventFanOut>`.
         assert!(
             Arc::ptr_eq(&a1.events.inner, &a2.events.inner),
-            "attach and new_session must share the same EventFanOut Arc"
+            "two open_session calls must share the same EventFanOut Arc"
         );
 
         // Clean up registry for subsequent tests.
@@ -1513,7 +1484,7 @@ mod tests {
     }
 
     /// Test: each session spawns its own `claude -p` child. The fake factory
-    /// records one `SpawnedRecord` per `start()`; two distinct starts yield
+    /// records one `SpawnedRecord` per `run()`; two distinct runs yield
     /// two distinct records with different `instance_id`s.
     #[tokio::test]
     async fn new_session_spawns_a_distinct_child() {
@@ -1526,23 +1497,29 @@ mod tests {
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
-        let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
+        let s1 = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
         let factory = install_fake_factory(&driver.ensure_process(&key));
 
-        let new_sess = driver.new_session(key.clone(), spec.clone()).await.unwrap();
+        let s2 = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
 
-        let mut h1 = attach.handle;
-        let mut h2 = new_sess.handle;
+        let mut h1 = s1.handle;
+        let mut h2 = s2.handle;
 
-        h1.start(StartOpts::default(), None).await.unwrap();
-        h2.start(StartOpts::default(), None).await.unwrap();
+        h1.run(None).await.unwrap();
+        h2.run(None).await.unwrap();
 
         {
             let state = factory.lock().unwrap();
             assert_eq!(
                 state.spawns.len(),
                 2,
-                "two start() calls must spawn two children"
+                "two run() calls must spawn two children"
             );
             assert_ne!(
                 state.spawns[0].instance_id, state.spawns[1].instance_id,
@@ -1556,7 +1533,7 @@ mod tests {
         agent_instances().remove(&key);
     }
 
-    /// Test: `resume_session("sess_xyz")` + `start` passes `--resume
+    /// Test: `open_session(Resume("sess_xyz"))` + `run` passes `--resume
     /// sess_xyz` to the spawned child's command line.
     #[tokio::test]
     async fn resume_session_passes_resume_flag() {
@@ -1569,18 +1546,25 @@ mod tests {
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
-        // Bring the agent online first with an attach so the registry has an
-        // entry we can install the fake factory on.
-        let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
+        // Bring the agent online first so the registry has an entry we can
+        // install the fake factory on.
+        let s1 = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
         let factory = install_fake_factory(&driver.ensure_process(&key));
 
         let resumed = driver
-            .resume_session(key.clone(), spec.clone(), "sess_xyz".to_string())
+            .open_session(
+                key.clone(),
+                spec.clone(),
+                SessionIntent::Resume("sess_xyz".to_string()),
+            )
             .await
             .unwrap();
 
         let mut hr = resumed.handle;
-        hr.start(StartOpts::default(), None).await.unwrap();
+        hr.run(None).await.unwrap();
 
         // Find the --resume flag in the captured spawn args.
         {
@@ -1601,13 +1585,13 @@ mod tests {
         }
 
         hr.close().await.unwrap();
-        // Also close the bootstrap to clean up the registry.
-        let mut ha = attach.handle;
-        ha.close().await.unwrap();
+        // Close s1 too to clean up the registry.
+        let mut h1 = s1.handle;
+        h1.close().await.unwrap();
         agent_instances().remove(&key);
     }
 
-    /// Regression test: attach → close (bootstrap) → re-attach on same key
+    /// Regression test: open_session → close → re-open on same key
     /// must build a fresh `ClaudeAgentProcess` with a fresh
     /// `EventStreamHandle`, not recycle the torn-down Arc.
     #[tokio::test]
@@ -1617,28 +1601,34 @@ mod tests {
         agent_instances().remove(&key);
 
         // --- round 1 ---
-        let a1 = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let a1 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
         let proc_v1_addr = Arc::as_ptr(&driver.ensure_process(&key)) as usize;
         let events_v1 = a1.events.clone();
         let mut h1 = a1.handle;
         h1.close().await.unwrap();
 
-        // Registry entry must be gone so re-attach builds a fresh proc.
+        // Registry entry must be gone so re-open builds a fresh proc.
         assert!(
             agent_instances().get(&key).is_none(),
-            "bootstrap close must prune the registry"
+            "close must prune the registry"
         );
 
         // --- round 2 ---
-        let a2 = driver.attach(key.clone(), test_spec()).await.unwrap();
+        let a2 = driver
+            .open_session(key.clone(), test_spec(), SessionIntent::New)
+            .await
+            .unwrap();
         let proc_v2_addr = Arc::as_ptr(&driver.ensure_process(&key)) as usize;
         assert_ne!(
             proc_v1_addr, proc_v2_addr,
-            "re-attach must build a fresh ClaudeAgentProcess"
+            "re-open must build a fresh ClaudeAgentProcess"
         );
         assert!(
             !Arc::ptr_eq(&events_v1.inner, &a2.events.inner),
-            "re-attach must build a fresh EventFanOut"
+            "re-open must build a fresh EventFanOut"
         );
 
         // Clean up.
@@ -1660,13 +1650,16 @@ mod tests {
         agent_instances().remove(&key);
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
-        let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
+        let result = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
         let factory = install_fake_factory(&driver.ensure_process(&key));
 
-        let mut sub = attach.events.subscribe();
+        let mut sub = result.events.subscribe();
 
-        let mut h = attach.handle;
-        h.start(StartOpts::default(), None).await.unwrap();
+        let mut h = result.handle;
+        h.run(None).await.unwrap();
 
         // Instance id 0 is the first spawn. Inject system.init.
         feed_system_init(&factory, 0, "sess_abc").await;
@@ -1717,19 +1710,23 @@ mod tests {
         agent_instances().remove(&key);
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
-        let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
+        let result = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
         let factory = install_fake_factory(&driver.ensure_process(&key));
 
-        let mut h = attach.handle;
+        let mut h = result.handle;
 
-        // Before start(): no id to report.
+        // Before run(): no id to report (open_session(New) does not preassign
+        // a session id for claude — each child mints its own via system.init).
         assert_eq!(
             h.session_id(),
             None,
-            "session_id() must be None before start() runs the reader"
+            "session_id() must be None before run() runs the reader"
         );
 
-        h.start(StartOpts::default(), None).await.unwrap();
+        h.run(None).await.unwrap();
 
         // Inject system.init for instance 0 — the reader publishes the id
         // into the handle's OnceLock cache.
@@ -1777,32 +1774,32 @@ mod tests {
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
         // Bring the shared process online via the driver and install a fake
-        // transport factory so `start()` doesn't try to spawn real `claude -p`.
-        let attach = driver.attach(key.clone(), spec.clone()).await.unwrap();
+        // transport factory so `run()` doesn't try to spawn real `claude -p`.
+        let s1 = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
         let _factory = install_fake_factory(&driver.ensure_process(&key));
         let proc = driver.ensure_process(&key);
-        let events_handle = attach.events.clone();
+        let events_handle = s1.events.clone();
 
-        let new_sess = driver.new_session(key.clone(), spec.clone()).await.unwrap();
+        let s2 = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
 
-        let mut bootstrap_handle = attach.handle;
-        let mut secondary_handle = new_sess.handle;
+        let mut bootstrap_handle = s1.handle;
+        let mut secondary_handle = s2.handle;
 
-        // Start both handles — each spawns its own (fake) `claude -p` child
+        // Run both handles — each spawns its own (fake) `claude -p` child
         // and bumps `live_sessions`. After this, live_sessions == 2.
-        bootstrap_handle
-            .start(StartOpts::default(), None)
-            .await
-            .unwrap();
-        secondary_handle
-            .start(StartOpts::default(), None)
-            .await
-            .unwrap();
+        bootstrap_handle.run(None).await.unwrap();
+        secondary_handle.run(None).await.unwrap();
 
         assert_eq!(
             proc.live_sessions.load(Ordering::SeqCst),
             2,
-            "start() on both handles should bring live_sessions to 2"
+            "run() on both handles should bring live_sessions to 2"
         );
 
         // Force secondary into PromptInFlight to model the race we're
