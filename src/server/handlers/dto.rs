@@ -104,8 +104,8 @@ pub struct AgentInfo {
     pub id: String,
     /// Unique agent login name.
     pub name: String,
-    /// Persisted lifecycle: `active`, `sleeping`, or `inactive`.
-    pub status: String,
+    /// Derived user-facing status: Working / Ready / Asleep / Failed.
+    pub status: crate::agent::process_status::Status,
     /// Shown label in the UI.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -160,12 +160,14 @@ impl From<(&Channel, bool)> for ChannelInfo {
 }
 
 impl From<&Agent> for AgentInfo {
-    /// Base agent row for list/detail; activity fields are filled by handlers when needed.
+    /// Default conversion assumes no live process. Handlers with
+    /// AgentManager access MUST override `status` via
+    /// `derive_status(state.lifecycle.process_state(name).await.as_ref())`.
     fn from(agent: &Agent) -> Self {
         Self {
             id: agent.id.clone(),
             name: agent.name.clone(),
-            status: agent.status.as_str().to_string(),
+            status: crate::agent::process_status::Status::Asleep,
             display_name: Some(agent.display_name.clone()),
             description: agent.description.clone(),
             system_prompt: agent.system_prompt.clone(),

@@ -1478,7 +1478,7 @@ async fn test_create_kimi_agent_via_api() {
     );
     let agent = store.get_agent(&name).unwrap().expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
-    assert_eq!(payload["status"], "active");
+    assert_eq!(payload["status"], "working");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);

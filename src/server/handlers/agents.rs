@@ -201,6 +201,12 @@ pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<
         .iter()
         .map(AgentInfo::from)
         .collect();
+
+    for info in &mut agents {
+        let ps = state.lifecycle.process_state(&info.name).await;
+        info.status = crate::agent::process_status::derive_status(ps.as_ref());
+    }
+
     let activity_states = state.lifecycle.get_all_agent_activity_states();
     for agent in &mut agents {
         if let Some((_, activity, detail)) = activity_states
@@ -276,7 +282,7 @@ pub async fn handle_create_agent(
     Ok(Json(serde_json::json!({
         "id": result.id,
         "name": result.name,
-        "status": AgentStatus::Active.as_str(),
+        "status": serde_json::to_value(crate::agent::process_status::Status::Working).unwrap(),
     })))
 }
 
@@ -364,8 +370,11 @@ pub async fn handle_get_agent(
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentDetailResponse> {
     let agent = resolve_public_agent_with_env(&state, &id)?;
+    let mut agent_info = AgentInfo::from(&agent);
+    let ps = state.lifecycle.process_state(&agent_info.name).await;
+    agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
     Ok(Json(AgentDetailResponse {
-        agent: AgentInfo::from(&agent),
+        agent: agent_info,
         env_vars: agent
             .env_vars
             .iter()
