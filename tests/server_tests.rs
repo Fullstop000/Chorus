@@ -16,10 +16,10 @@ use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use harness::{build_router, build_router_with_lifecycle};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::collections::HashSet;
 use std::sync::Mutex;
 
 use chorus::agent::activity_log::{self, ActivityLogMap};
@@ -140,6 +140,14 @@ impl MockLifecycle {
     fn stopped_names(&self) -> Vec<String> {
         self.stopped.lock().unwrap().clone()
     }
+
+    /// Simulate an already-running managed process. Subsequent
+    /// `process_state` calls will return `Active` for this agent,
+    /// mirroring what the real manager would report when a process
+    /// is alive and idle.
+    fn mark_running(&self, agent_name: &str) {
+        self.running.lock().unwrap().insert(agent_name.to_string());
+    }
 }
 
 impl AgentLifecycle for MockLifecycle {
@@ -153,10 +161,7 @@ impl AgentLifecycle for MockLifecycle {
                 .lock()
                 .unwrap()
                 .push((agent_name.to_string(), wake_message));
-            self.running
-                .lock()
-                .unwrap()
-                .insert(agent_name.to_string());
+            self.running.lock().unwrap().insert(agent_name.to_string());
             Ok(())
         })
     }
@@ -177,10 +182,7 @@ impl AgentLifecycle for MockLifecycle {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             self.stopped.lock().unwrap().push(agent_name.to_string());
-            self.running
-                .lock()
-                .unwrap()
-                .remove(agent_name);
+            self.running.lock().unwrap().remove(agent_name);
             Ok(())
         })
     }
@@ -188,7 +190,8 @@ impl AgentLifecycle for MockLifecycle {
     fn process_state<'a>(
         &'a self,
         agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>>
+    {
         let is_running = self.running.lock().unwrap().contains(agent_name);
         Box::pin(async move {
             if is_running {
@@ -240,7 +243,8 @@ impl AgentLifecycle for FailStartLifecycle {
     fn process_state<'a>(
         &'a self,
         _agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>>
+    {
         Box::pin(async { None })
     }
 
@@ -504,6 +508,7 @@ async fn test_send_notifies_active_agent_without_restart() {
     store
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
+    lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "stay online" });
     let response = app
@@ -1806,6 +1811,9 @@ async fn test_dm_send_notifies_active_agent() {
     store
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
+    // Runtime liveness is the manager HashMap, not the DB column:
+    // mark the agent as having a live managed process.
+    lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey active bot1 via dm" });
     let resp = app
@@ -1828,12 +1836,52 @@ async fn test_dm_send_notifies_active_agent() {
     );
 }
 
+/// Regression: persisted `AgentStatus::Active` does not mean the
+/// runtime has a managed process. Delivery must route on the
+/// manager HashMap (`process_state`), not the DB column, so an
+/// agent whose row says Active but whose process is absent still
+/// gets woken via `start_agent`.
+#[tokio::test]
+async fn delivery_starts_agent_when_no_process_managed_even_if_db_says_active() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    // DB column lies: says Active, but manager HashMap is empty.
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
+    // Deliberately DO NOT call lifecycle.mark_running("bot1").
+
+    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "wake up despite drift" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        lifecycle.started_names(),
+        vec!["bot1".to_string()],
+        "delivery must route on process_state, not the persisted AgentStatus column",
+    );
+    assert!(
+        lifecycle.notified_names().is_empty(),
+        "no live process means notify_agent must not be called",
+    );
+}
+
 #[tokio::test]
 async fn test_send_notifies_active_agents() {
     let (store, app, lifecycle) = setup_with_lifecycle();
     store
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
+    lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "ping active bot" });
     let resp = app
@@ -2423,6 +2471,8 @@ async fn test_at_mention_forwards_to_team_channel() {
     store
         .update_agent_status("bot2", AgentStatus::Active)
         .unwrap();
+    lifecycle.mark_running("bot1");
+    lifecycle.mark_running("bot2");
     let team_id = store
         .create_team("eng-team", "Engineering", "leader_operators", Some("bot1"))
         .unwrap();
