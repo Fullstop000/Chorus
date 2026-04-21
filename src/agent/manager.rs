@@ -95,7 +95,6 @@ pub struct AgentManager {
     /// Test-only override for the bridge endpoint. Production code leaves this
     /// `None` and discovery reads `~/.chorus/bridge.json`; tests set it to a
     /// synthetic URL so they don't depend on a real bridge being up.
-    #[cfg(test)]
     bridge_endpoint_override: Option<String>,
 }
 
@@ -117,7 +116,6 @@ impl AgentManager {
             trace_store: Arc::new(AgentTraceStore::new()),
             store,
             data_dir,
-            #[cfg(test)]
             bridge_endpoint_override: None,
         }
     }
@@ -373,10 +371,30 @@ impl AgentManager {
         self.agents.lock().await.keys().cloned().collect()
     }
 
+    /// Returns the runtime [`ProcessState`] for `agent_name` if a process is
+    /// currently managed, else `None`. Single source of truth for runtime
+    /// liveness; replaces reads of any persisted column in subsequent tasks.
+    pub async fn process_state(
+        &self,
+        agent_name: &str,
+    ) -> Option<crate::agent::drivers::ProcessState> {
+        let agents = self.agents.lock().await;
+        agents.get(agent_name).map(|m| m.handle.process_state())
+    }
+
+    /// Test-only constructor: builds an [`AgentManager`] with an empty driver
+    /// registry and a synthetic bridge endpoint override, so no real runtimes
+    /// or bridge process are required. Register drivers explicitly after
+    /// construction via [`register_driver`] if the test needs to start agents.
+    pub fn new_for_test(store: Arc<Store>, data_dir: std::path::PathBuf) -> Self {
+        let mut mgr = AgentManager::new(store, data_dir);
+        mgr.bridge_endpoint_override = Some("http://127.0.0.1:1".to_string());
+        mgr
+    }
+
     /// Resolve the shared bridge endpoint. Fails loudly if no bridge is
     /// running — there is no stdio fallback anymore.
     fn resolve_bridge_endpoint(&self) -> anyhow::Result<String> {
-        #[cfg(test)]
         if let Some(override_url) = &self.bridge_endpoint_override {
             return Ok(override_url.clone());
         }
