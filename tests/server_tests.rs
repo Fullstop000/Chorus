@@ -1496,6 +1496,10 @@ async fn test_get_and_update_agent_via_api() {
     store
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
+    // Runtime liveness is the manager HashMap, not the DB column:
+    // mark the agent as having a live managed process so a config
+    // edit that requires restart will actually restart.
+    lifecycle.mark_running("bot1");
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     let detail_resp = app
@@ -1556,6 +1560,9 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
     store
         .update_agent_status("bot1", AgentStatus::Active)
         .unwrap();
+    // Mark the agent as having a live managed process so a config
+    // edit that requires restart will actually restart.
+    lifecycle.mark_running("bot1");
     store
         .update_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -1601,6 +1608,55 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
     assert_eq!(agent.env_vars[0].key, "DEBUG");
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
+}
+
+/// Regression: a config-edit PATCH must not trigger a restart when the
+/// manager has no live process for the agent, even if the persisted
+/// `agents.status` column says `Active`. Runtime liveness is the
+/// manager HashMap via `process_state`, not the DB column.
+#[tokio::test]
+async fn config_edit_does_not_restart_when_no_process_managed_despite_db_active() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    // DB column lies: says Active, but manager HashMap is empty.
+    store
+        .update_agent_status("bot1", AgentStatus::Active)
+        .unwrap();
+    // Deliberately DO NOT call lifecycle.mark_running("bot1").
+
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    let update_req = serde_json::json!({
+        "display_name": "Bot 1",
+        "description": "Replies in Chorus",
+        "runtime": "claude",
+        "model": "different-model",
+        "envVars": []
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/agents/{}", bot1.id))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["restarted"], false,
+        "config-edit must not restart when manager has no process, regardless of DB status"
+    );
+    assert!(
+        lifecycle.stopped_names().is_empty(),
+        "no managed process means nothing to stop"
+    );
+    assert!(
+        lifecycle.started_names().is_empty(),
+        "no managed process means nothing to restart"
+    );
 }
 
 #[tokio::test]

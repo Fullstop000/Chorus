@@ -13,7 +13,7 @@ use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
-use crate::store::agents::{AgentEnvVar, AgentStatus};
+use crate::store::agents::AgentEnvVar;
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
 use crate::utils::error::internal_err;
@@ -428,16 +428,17 @@ pub async fn handle_update_agent(
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    if existing.status == AgentStatus::Active && requires_restart {
+    let ps = state.lifecycle.process_state(&name).await;
+    let was_running = crate::agent::process_status::derive_status(ps.as_ref())
+        != crate::agent::process_status::Status::Asleep;
+
+    if was_running && requires_restart {
         state
             .lifecycle
             .stop_agent(&name)
             .await
             .map_err(internal_err)?;
         if let Err(err) = state.lifecycle.start_agent(&name, None).await {
-            let _ = state
-                .store
-                .update_agent_status(&name, AgentStatus::Inactive);
             return Err(app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent updated but restart failed: {err}"
@@ -446,7 +447,7 @@ pub async fn handle_update_agent(
     }
     Ok(Json(serde_json::json!({
         "ok": true,
-        "restarted": existing.status == AgentStatus::Active && requires_restart
+        "restarted": was_running && requires_restart
     })))
 }
 
@@ -490,9 +491,6 @@ pub async fn handle_restart_agent(
     }
 
     if let Err(err) = state.lifecycle.start_agent(&name, None).await {
-        let _ = state
-            .store
-            .update_agent_status(&name, AgentStatus::Inactive);
         return Err(app_err!(
             AppErrorCode::AgentRestartFailed,
             "restart failed: {err}"
