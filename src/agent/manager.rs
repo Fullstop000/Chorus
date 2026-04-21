@@ -122,16 +122,34 @@ impl AgentManager {
 
     /// Start an agent process. Creates the workspace, writes `MEMORY.md`, and
     /// optionally threads through the message that caused the wake-up.
+    // TODO(per-agent-lock): start_agent races with concurrent stop/sleep/start.
+    // See plan task 3.0 for documented interleavings. Fix deferred.
     pub async fn start_agent(
         &self,
         agent_name: &str,
         wake_message: Option<ReceivedMessage>,
     ) -> anyhow::Result<()> {
-        // Already running?
+        // Already running? Inspect the existing handle's state — only
+        // bail if it's truly live. Closed/Failed/Idle handles get evicted
+        // so the recovery path can spin a fresh process. The eviction set
+        // matches the "not really running" mapping in derive_status:
+        //   - Closed/Idle map to Status::Asleep.
+        //   - Failed maps to Status::Failed but Phase 3 routes Failed
+        //     through start_agent for one retry per inbound message.
+        // Active/Starting/PromptInFlight are genuinely live; short-circuit.
         {
-            let agents = self.agents.lock().await;
-            if agents.contains_key(agent_name) {
-                return Ok(());
+            let mut agents = self.agents.lock().await;
+            if let Some(existing) = agents.get(agent_name) {
+                use crate::agent::drivers::ProcessState::*;
+                match existing.handle.process_state() {
+                    Active { .. } | PromptInFlight { .. } | Starting => {
+                        return Ok(());
+                    }
+                    Idle | Closed | Failed(_) => {
+                        debug!(agent = %agent_name, "evicting dead handle before fresh start");
+                        agents.remove(agent_name);
+                    }
+                }
             }
         }
 
@@ -421,6 +439,27 @@ impl AgentManager {
     #[cfg(test)]
     pub(crate) fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
         self.bridge_endpoint_override = Some(url.into());
+    }
+
+    /// Test-only: insert a pre-built [`Session`] handle into the agent map so
+    /// tests can verify eviction behaviour without going through `start_agent`'s
+    /// full driver path. The inserted `ManagedAgent` has no event tasks and a
+    /// zero pending-notification count — sufficient for eviction tests.
+    #[cfg(test)]
+    pub(crate) async fn inject_session_for_test(
+        &self,
+        agent_name: impl Into<String>,
+        handle: Box<dyn crate::agent::drivers::Session>,
+    ) {
+        let mut agents = self.agents.lock().await;
+        agents.insert(
+            agent_name.into(),
+            ManagedAgent {
+                handle,
+                _event_tasks: vec![],
+                pending_notification_count: 0,
+            },
+        );
     }
 }
 
@@ -755,6 +794,134 @@ mod tests {
                 "registry should contain {:?}",
                 rt
             );
+        }
+    }
+
+    // ── Task 3.0: dead-handle eviction ──────────────────────────────────────
+
+    /// Verify that start_agent evicts a Failed handle and falls through to a
+    /// fresh start rather than short-circuiting with Ok(()) as it did before
+    /// this fix.
+    ///
+    /// We inject a FakeHandle in ProcessState::Failed into the manager's
+    /// HashMap, then call start_agent. Assertions:
+    ///   - The call does NOT short-circuit: it evicts the Failed handle and
+    ///     reaches the driver path, resulting in ProcessState::Active.
+    ///   - The old Failed entry is no longer present.
+    #[tokio::test]
+    async fn start_agent_replaces_failed_handle() {
+        use crate::agent::drivers::fake::FakeHandle;
+        use crate::agent::drivers::{AgentError, EventFanOut, ProcessState};
+
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+
+        store
+            .create_agent_record(&AgentRecordUpsert {
+                name: "recovery-bot",
+                display_name: "Recovery Bot",
+                description: Some("test agent for eviction"),
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-fake",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
+            .unwrap();
+
+        let manager = make_test_manager(store, dir.path());
+
+        // Inject a Failed handle simulating a previous run that crashed.
+        let (events, event_tx) = EventFanOut::new();
+        let failed_handle =
+            FakeHandle::new("recovery-bot".to_string(), events, event_tx).with_state(
+                ProcessState::Failed(AgentError::Transport(
+                    "simulated transport failure".to_string(),
+                )),
+            );
+        manager
+            .inject_session_for_test("recovery-bot", Box::new(failed_handle))
+            .await;
+
+        // Precondition: Failed handle is present.
+        let pre_state = manager.process_state("recovery-bot").await;
+        assert!(
+            matches!(pre_state, Some(ProcessState::Failed(_))),
+            "precondition: handle should be Failed before start_agent, got {pre_state:?}",
+        );
+
+        // Before the fix this returned Ok(()) immediately (contains_key hit).
+        // After the fix it must evict and restart.
+        let result = manager.start_agent("recovery-bot", None).await;
+        assert!(
+            result.is_ok(),
+            "start_agent should succeed after evicting a Failed handle: {result:?}",
+        );
+
+        // The handle must now be Active (FakeDriver completed a fresh start).
+        let post_state = manager.process_state("recovery-bot").await;
+        assert!(
+            matches!(post_state, Some(ProcessState::Active { .. })),
+            "after start_agent the handle should be Active, got {post_state:?}",
+        );
+
+        let _ = manager.stop_agent("recovery-bot").await;
+    }
+
+    /// Verify that start_agent short-circuits without eviction when the handle
+    /// is genuinely live (ProcessState::Active). The injected session id must
+    /// survive the call unchanged.
+    #[tokio::test]
+    async fn start_agent_noop_when_handle_is_active() {
+        use crate::agent::drivers::fake::FakeHandle;
+        use crate::agent::drivers::{EventFanOut, ProcessState};
+
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+
+        store
+            .create_agent_record(&AgentRecordUpsert {
+                name: "live-bot",
+                display_name: "Live Bot",
+                description: Some("test agent for no-op check"),
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-fake",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
+            .unwrap();
+
+        let manager = make_test_manager(store, dir.path());
+
+        // Inject an Active handle. start_agent must NOT replace it.
+        let (events, event_tx) = EventFanOut::new();
+        let active_handle =
+            FakeHandle::new("live-bot".to_string(), events, event_tx).with_state(
+                ProcessState::Active {
+                    session_id: "existing-session".to_string(),
+                },
+            );
+        manager
+            .inject_session_for_test("live-bot", Box::new(active_handle))
+            .await;
+
+        let result = manager.start_agent("live-bot", None).await;
+        assert!(
+            result.is_ok(),
+            "start_agent on an Active agent should be Ok: {result:?}",
+        );
+
+        // Session id must still be the one we injected — not replaced.
+        let post_state = manager.process_state("live-bot").await;
+        match post_state {
+            Some(ProcessState::Active { ref session_id }) => {
+                assert_eq!(
+                    session_id, "existing-session",
+                    "Active handle must not have been replaced",
+                );
+            }
+            other => panic!("expected Active(existing-session), got {other:?}"),
         }
     }
 }

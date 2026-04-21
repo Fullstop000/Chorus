@@ -220,6 +220,14 @@ impl FakeHandle {
         self
     }
 
+    /// Override the initial state. Used by tests that need a handle already in
+    /// a specific [`ProcessState`] (e.g. `Failed` or `Closed`) without going
+    /// through the full `run()` lifecycle.
+    pub fn with_state(mut self, state: ProcessState) -> Self {
+        self.state = state;
+        self
+    }
+
     /// Pre-bind a session id so `start` attaches to it rather than minting
     /// the default. Used by `FakeDriver::new_session` / `resume_session` to
     /// give each spawned handle its own session id while sharing the agent's
