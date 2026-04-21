@@ -290,7 +290,6 @@ impl AgentManager {
             self.trace_store.end_run(agent_name);
             self.store
                 .update_agent_status(agent_name, AgentStatus::Inactive)?;
-            let _ = self.store.update_agent_session(agent_name, None);
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
@@ -311,7 +310,6 @@ impl AgentManager {
             }
             self.store
                 .update_agent_status(agent_name, AgentStatus::Sleeping)?;
-            let _ = self.store.update_agent_session(agent_name, None);
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
@@ -445,8 +443,8 @@ impl AgentManager {
     /// tests can verify eviction behaviour without going through `start_agent`'s
     /// full driver path. The inserted `ManagedAgent` has no event tasks and a
     /// zero pending-notification count — sufficient for eviction tests.
-    #[cfg(test)]
-    pub(crate) async fn inject_session_for_test(
+    #[doc(hidden)]
+    pub async fn inject_session_for_test(
         &self,
         agent_name: impl Into<String>,
         handle: Box<dyn crate::agent::drivers::Session>,
