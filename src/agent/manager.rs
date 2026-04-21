@@ -13,7 +13,7 @@ use crate::agent::drivers::codex::CodexDriver;
 use crate::agent::drivers::kimi::KimiDriver;
 use crate::agent::drivers::opencode::OpencodeDriver;
 use crate::agent::drivers::{
-    AgentSpec, AgentState, PromptReq, RuntimeDriver, Session, SessionIntent,
+    AgentSpec, ProcessState, PromptReq, RuntimeDriver, Session, SessionIntent,
 };
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
@@ -313,7 +313,7 @@ impl AgentManager {
             agent.pending_notification_count += 1;
             let count = agent.pending_notification_count;
 
-            let is_active = matches!(agent.handle.state(), AgentState::Active { .. });
+            let is_active = matches!(agent.handle.process_state(), ProcessState::Active { .. });
             if !is_active {
                 // Agent is mid-run (e.g. init turn or processing another message).
                 // The event forwarder will deliver the notification immediately
@@ -338,7 +338,7 @@ impl AgentManager {
                     // the newer debounce task will be authoritative. Bow out.
                     return;
                 }
-                if !matches!(agent.handle.state(), AgentState::Active { .. }) {
+                if !matches!(agent.handle.process_state(), ProcessState::Active { .. }) {
                     debug!(agent = %name, "agent no longer Active after debounce, skipping");
                     agent.pending_notification_count = 0;
                     return;

@@ -184,7 +184,7 @@ impl RuntimeDriver for FakeDriver {
 
 pub struct FakeHandle {
     key: AgentKey,
-    state: AgentState,
+    state: ProcessState,
     events: EventStreamHandle,
     event_tx: mpsc::Sender<DriverEvent>,
     prompt_responses: VecDeque<Vec<DriverEvent>>,
@@ -206,7 +206,7 @@ impl FakeHandle {
     ) -> Self {
         Self {
             key,
-            state: AgentState::Idle,
+            state: ProcessState::Idle,
             events,
             event_tx,
             prompt_responses: VecDeque::new(),
@@ -240,10 +240,10 @@ impl FakeHandle {
         session_id: String,
         init_prompt: Option<PromptReq>,
     ) -> anyhow::Result<()> {
-        self.state = AgentState::Starting;
+        self.state = ProcessState::Starting;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Starting,
+            state: ProcessState::Starting,
         });
 
         self.emit(DriverEvent::SessionAttached {
@@ -251,12 +251,12 @@ impl FakeHandle {
             session_id: session_id.clone(),
         });
 
-        self.state = AgentState::Active {
+        self.state = ProcessState::Active {
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Active {
+            state: ProcessState::Active {
                 session_id: session_id.clone(),
             },
         });
@@ -277,13 +277,13 @@ impl Session for FakeHandle {
 
     fn session_id(&self) -> Option<&str> {
         match &self.state {
-            AgentState::Active { session_id } => Some(session_id),
-            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
+            ProcessState::Active { session_id } => Some(session_id),
+            ProcessState::PromptInFlight { session_id, .. } => Some(session_id),
             _ => self.preassigned_session_id.as_deref(),
         }
     }
 
-    fn state(&self) -> AgentState {
+    fn process_state(&self) -> ProcessState {
         self.state.clone()
     }
 
@@ -300,19 +300,19 @@ impl Session for FakeHandle {
 
     async fn prompt(&mut self, _req: PromptReq) -> anyhow::Result<RunId> {
         let session_id = match &self.state {
-            AgentState::Active { session_id } => session_id.clone(),
+            ProcessState::Active { session_id } => session_id.clone(),
             _ => bail!("not active"),
         };
 
         let run_id = RunId::new_v4();
 
-        self.state = AgentState::PromptInFlight {
+        self.state = ProcessState::PromptInFlight {
             run_id,
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::PromptInFlight {
+            state: ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             },
@@ -347,12 +347,12 @@ impl Session for FakeHandle {
             });
         }
 
-        self.state = AgentState::Active {
+        self.state = ProcessState::Active {
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Active {
+            state: ProcessState::Active {
                 session_id: session_id.clone(),
             },
         });
@@ -361,7 +361,7 @@ impl Session for FakeHandle {
     }
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
-        if let AgentState::PromptInFlight { run_id, session_id } = &self.state {
+        if let ProcessState::PromptInFlight { run_id, session_id } = &self.state {
             let run_id = *run_id;
             let session_id = session_id.clone();
 
@@ -374,7 +374,7 @@ impl Session for FakeHandle {
                 },
             });
 
-            self.state = AgentState::Active { session_id };
+            self.state = ProcessState::Active { session_id };
             Ok(CancelOutcome::Aborted)
         } else {
             Ok(CancelOutcome::NotInFlight)
@@ -382,14 +382,14 @@ impl Session for FakeHandle {
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
-        if matches!(self.state, AgentState::Closed) {
+        if matches!(self.state, ProcessState::Closed) {
             return Ok(());
         }
 
-        self.state = AgentState::Closed;
+        self.state = ProcessState::Closed;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Closed,
+            state: ProcessState::Closed,
         });
         self.events.close();
 
@@ -437,7 +437,7 @@ mod tests {
             .open_session("agent-1".to_string(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.session.state(), AgentState::Idle));
+        assert!(matches!(result.session.process_state(), ProcessState::Idle));
     }
 
     #[tokio::test]
@@ -459,7 +459,7 @@ mod tests {
         assert!(matches!(
             ev,
             DriverEvent::Lifecycle {
-                state: AgentState::Starting,
+                state: ProcessState::Starting,
                 ..
             }
         ));
@@ -479,12 +479,12 @@ mod tests {
         assert!(matches!(
             ev,
             DriverEvent::Lifecycle {
-                state: AgentState::Active { .. },
+                state: ProcessState::Active { .. },
                 ..
             }
         ));
 
-        assert!(matches!(result.session.state(), AgentState::Active { .. }));
+        assert!(matches!(result.session.process_state(), ProcessState::Active { .. }));
     }
 
     #[tokio::test]
@@ -534,7 +534,7 @@ mod tests {
         assert!(matches!(
             ev,
             DriverEvent::Lifecycle {
-                state: AgentState::PromptInFlight { .. },
+                state: ProcessState::PromptInFlight { .. },
                 ..
             }
         ));
@@ -562,7 +562,7 @@ mod tests {
         assert!(matches!(
             ev,
             DriverEvent::Lifecycle {
-                state: AgentState::Active { .. },
+                state: ProcessState::Active { .. },
                 ..
             }
         ));
@@ -577,11 +577,11 @@ mod tests {
             .unwrap();
 
         result.session.close().await.unwrap();
-        assert!(matches!(result.session.state(), AgentState::Closed));
+        assert!(matches!(result.session.process_state(), ProcessState::Closed));
 
         // Second close is a no-op
         result.session.close().await.unwrap();
-        assert!(matches!(result.session.state(), AgentState::Closed));
+        assert!(matches!(result.session.process_state(), ProcessState::Closed));
     }
 
     #[tokio::test]
@@ -617,7 +617,7 @@ mod tests {
         assert!(matches!(
             ev,
             DriverEvent::Lifecycle {
-                state: AgentState::PromptInFlight { .. },
+                state: ProcessState::PromptInFlight { .. },
                 ..
             }
         ));
@@ -670,7 +670,7 @@ mod tests {
         assert!(matches!(
             ev,
             DriverEvent::Lifecycle {
-                state: AgentState::Active { .. },
+                state: ProcessState::Active { .. },
                 ..
             }
         ));
@@ -742,7 +742,7 @@ mod tests {
         assert!(matches!(
             ev,
             DriverEvent::Lifecycle {
-                state: AgentState::Starting,
+                state: ProcessState::Starting,
                 ..
             }
         ));
@@ -784,8 +784,8 @@ mod tests {
 
         // After prompt returns, s1 went PromptInFlight → back to Active.
         // s2 was never touched.
-        match s2.session.state() {
-            AgentState::Active { session_id } => {
+        match s2.session.process_state() {
+            ProcessState::Active { session_id } => {
                 assert_eq!(session_id, id2, "s2 must still hold its own session id");
             }
             other => panic!("s2 must remain Active after s1.prompt; got {other:?}"),
@@ -851,7 +851,7 @@ mod tests {
             matches!(
                 ev,
                 DriverEvent::Lifecycle {
-                    state: AgentState::Starting,
+                    state: ProcessState::Starting,
                     ..
                 }
             ),
@@ -874,8 +874,8 @@ mod tests {
         }
 
         // Handle is now Active with the correct session id.
-        match result.session.state() {
-            AgentState::Active { session_id } => {
+        match result.session.process_state() {
+            ProcessState::Active { session_id } => {
                 assert_eq!(session_id, "sess_xyz");
             }
             other => panic!("expected Active after run(), got {other:?}"),

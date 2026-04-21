@@ -27,7 +27,7 @@ use crate::agent::activity_log::{
     self, ActivityEntry, ActivityLogMap, ACTIVITY_ERROR, ACTIVITY_OFFLINE, ACTIVITY_ONLINE,
     ACTIVITY_THINKING, ACTIVITY_WORKING,
 };
-use crate::agent::drivers::{AgentEventItem, AgentState, DriverEvent};
+use crate::agent::drivers::{AgentEventItem, ProcessState, DriverEvent};
 use crate::agent::manager::ManagedAgent;
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::store::Store;
@@ -152,7 +152,7 @@ pub(super) fn spawn_event_forwarder(
                 }
 
                 DriverEvent::Lifecycle { ref key, ref state } => match state {
-                    AgentState::Starting => {
+                    ProcessState::Starting => {
                         activity_log::set_activity_state(
                             &activity_logs,
                             key,
@@ -160,7 +160,7 @@ pub(super) fn spawn_event_forwarder(
                             "Starting\u{2026}",
                         );
                     }
-                    AgentState::Active { .. } => {
+                    ProcessState::Active { .. } => {
                         activity_log::set_activity_state(
                             &activity_logs,
                             key,
@@ -168,7 +168,7 @@ pub(super) fn spawn_event_forwarder(
                             "Idle",
                         );
                     }
-                    AgentState::Closed => {
+                    ProcessState::Closed => {
                         activity_log::set_activity_state(
                             &activity_logs,
                             key,

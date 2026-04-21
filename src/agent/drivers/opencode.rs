@@ -212,7 +212,7 @@ impl RuntimeDriver for OpencodeDriver {
             };
             let handle = OpencodeHandle {
                 key,
-                local_state: AgentState::Idle,
+                local_state: ProcessState::Idle,
                 spec,
                 proc: Arc::clone(&proc),
                 preassigned_session_id: Some(session_id),
@@ -230,7 +230,7 @@ impl RuntimeDriver for OpencodeDriver {
             };
             let handle = OpencodeHandle {
                 key,
-                local_state: AgentState::Idle,
+                local_state: ProcessState::Idle,
                 spec,
                 proc: Arc::clone(&proc),
                 preassigned_session_id: preassigned,
@@ -288,7 +288,7 @@ struct SessionRuntimeState {
     accumulator: ToolCallAccumulator,
     /// Latest state this session has transitioned into. Mirrors what was
     /// emitted on the shared event stream.
-    agent_state: AgentState,
+    agent_state: ProcessState,
 }
 
 impl SessionRuntimeState {
@@ -296,7 +296,7 @@ impl SessionRuntimeState {
         Self {
             run_id: None,
             accumulator: ToolCallAccumulator::new(),
-            agent_state: AgentState::Active {
+            agent_state: ProcessState::Active {
                 session_id: session_id.to_string(),
             },
         }
@@ -531,7 +531,7 @@ pub struct OpencodeHandle {
     /// session lives in `proc.shared.sessions[session_id]`; this mirror is
     /// used for synchronous read methods (`session_id`, `state`) without
     /// taking the shared lock.
-    local_state: AgentState,
+    local_state: ProcessState,
     spec: AgentSpec,
     proc: Arc<OpencodeAgentProcess>,
     /// Set by `new_session` / `resume_session` so `start` knows this handle
@@ -561,13 +561,13 @@ impl Session for OpencodeHandle {
 
     fn session_id(&self) -> Option<&str> {
         match &self.local_state {
-            AgentState::Active { session_id } => Some(session_id),
-            AgentState::PromptInFlight { session_id, .. } => Some(session_id),
+            ProcessState::Active { session_id } => Some(session_id),
+            ProcessState::PromptInFlight { session_id, .. } => Some(session_id),
             _ => self.preassigned_session_id.as_deref(),
         }
     }
 
-    fn state(&self) -> AgentState {
+    fn process_state(&self) -> ProcessState {
         self.local_state.clone()
     }
 
@@ -580,7 +580,7 @@ impl Session for OpencodeHandle {
 
     async fn prompt(&mut self, req: PromptReq) -> anyhow::Result<RunId> {
         let session_id = match &self.local_state {
-            AgentState::Active { session_id } => session_id.clone(),
+            ProcessState::Active { session_id } => session_id.clone(),
             _ => bail!("cannot prompt: handle not in Active state"),
         };
 
@@ -599,20 +599,20 @@ impl Session for OpencodeHandle {
             );
             if let Some(sess) = s.sessions.get_mut(&session_id) {
                 sess.run_id = Some(run_id);
-                sess.agent_state = AgentState::PromptInFlight {
+                sess.agent_state = ProcessState::PromptInFlight {
                     run_id,
                     session_id: session_id.clone(),
                 };
             }
         }
 
-        self.local_state = AgentState::PromptInFlight {
+        self.local_state = ProcessState::PromptInFlight {
             run_id,
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::PromptInFlight {
+            state: ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             },
@@ -627,7 +627,7 @@ impl Session for OpencodeHandle {
 
     async fn cancel(&mut self, _run: RunId) -> anyhow::Result<CancelOutcome> {
         let cancel_info = match &self.local_state {
-            AgentState::PromptInFlight { run_id, session_id } => {
+            ProcessState::PromptInFlight { run_id, session_id } => {
                 Some((*run_id, session_id.clone()))
             }
             _ => None,
@@ -637,7 +637,7 @@ impl Session for OpencodeHandle {
                 let mut s = self.proc.shared.lock().unwrap();
                 if let Some(sess) = s.sessions.get_mut(&session_id) {
                     sess.run_id = None;
-                    sess.agent_state = AgentState::Active {
+                    sess.agent_state = ProcessState::Active {
                         session_id: session_id.clone(),
                     };
                 }
@@ -652,7 +652,7 @@ impl Session for OpencodeHandle {
                 },
             });
 
-            self.local_state = AgentState::Active { session_id };
+            self.local_state = ProcessState::Active { session_id };
             Ok(CancelOutcome::Aborted)
         } else {
             Ok(CancelOutcome::NotInFlight)
@@ -660,7 +660,7 @@ impl Session for OpencodeHandle {
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
-        if matches!(self.local_state, AgentState::Closed) {
+        if matches!(self.local_state, ProcessState::Closed) {
             return Ok(());
         }
 
@@ -698,10 +698,10 @@ impl Session for OpencodeHandle {
             s.sessions.is_empty() && no_pending_session_creation
         };
 
-        self.local_state = AgentState::Closed;
+        self.local_state = ProcessState::Closed;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Closed,
+            state: ProcessState::Closed,
         });
 
         // Teardown of the shared child + fan-out + registry is gated on
@@ -739,10 +739,10 @@ impl OpencodeHandle {
     /// for resume (set by `start` shim from `opts.resume_session_id`, or by
     /// `open_session(Resume(id))` directly).
     async fn run_bootstrap(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        self.local_state = AgentState::Starting;
+        self.local_state = ProcessState::Starting;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Starting,
+            state: ProcessState::Starting,
         });
         self.run_bootstrap_inner(init_prompt).await
     }
@@ -751,10 +751,10 @@ impl OpencodeHandle {
     /// `open_session`. Emit Starting, seed per-session state, emit
     /// SessionAttached + Active, then deliver init_prompt if present.
     async fn run_secondary(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        self.local_state = AgentState::Starting;
+        self.local_state = ProcessState::Starting;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Starting,
+            state: ProcessState::Starting,
         });
 
         // `preassigned_session_id` was set by `open_session` (Secondary path
@@ -771,7 +771,7 @@ impl OpencodeHandle {
                 .entry(session_id.clone())
                 .or_insert_with(|| SessionRuntimeState::active(&session_id));
         }
-        self.local_state = AgentState::Active {
+        self.local_state = ProcessState::Active {
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::SessionAttached {
@@ -780,7 +780,7 @@ impl OpencodeHandle {
         });
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Active {
+            state: ProcessState::Active {
                 session_id: session_id.clone(),
             },
         });
@@ -1019,7 +1019,7 @@ impl OpencodeHandle {
             }
             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                 key: key.clone(),
-                state: AgentState::Closed,
+                state: ProcessState::Closed,
             });
         });
         self.proc.reader_handles.lock().unwrap().push(stdout_handle);
@@ -1056,7 +1056,7 @@ impl OpencodeHandle {
         if let Some(ref sid) = resume_session_id {
             // Pre-populate local mirror optimistically; the reader will
             // confirm by emitting SessionAttached / Active.
-            self.local_state = AgentState::Active {
+            self.local_state = ProcessState::Active {
                 session_id: sid.clone(),
             };
         }
@@ -1266,7 +1266,7 @@ async fn dispatch_line(
                 });
                 let _ = event_tx.try_send(DriverEvent::Lifecycle {
                     key: key.clone(),
-                    state: AgentState::Active {
+                    state: ProcessState::Active {
                         session_id: sid.clone(),
                     },
                 });
@@ -1278,7 +1278,7 @@ async fn dispatch_line(
                     let mut s = shared.lock().unwrap();
                     if let Some(sess) = s.sessions.get_mut(&sid) {
                         sess.run_id = Some(run_id);
-                        sess.agent_state = AgentState::PromptInFlight {
+                        sess.agent_state = ProcessState::PromptInFlight {
                             run_id,
                             session_id: sid.clone(),
                         };
@@ -1297,7 +1297,7 @@ async fn dispatch_line(
                 }
                 let _ = event_tx.try_send(DriverEvent::Lifecycle {
                     key: key.clone(),
-                    state: AgentState::PromptInFlight {
+                    state: ProcessState::PromptInFlight {
                         run_id,
                         session_id: sid.clone(),
                     },
@@ -1343,7 +1343,7 @@ async fn dispatch_line(
                 });
                 let _ = event_tx.try_send(DriverEvent::Lifecycle {
                     key: key.clone(),
-                    state: AgentState::Active {
+                    state: ProcessState::Active {
                         session_id: sid.clone(),
                     },
                 });
@@ -1357,7 +1357,7 @@ async fn dispatch_line(
                 let mut s = shared.lock().unwrap();
                 if let Some(sess) = s.sessions.get_mut(&session_id) {
                     sess.run_id = None;
-                    sess.agent_state = AgentState::Active {
+                    sess.agent_state = ProcessState::Active {
                         session_id: session_id.clone(),
                     };
                     sess.accumulator.drain()
@@ -1389,7 +1389,7 @@ async fn dispatch_line(
             });
             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                 key: key.clone(),
-                state: AgentState::Active { session_id },
+                state: ProcessState::Active { session_id },
             });
         }
 
@@ -1405,7 +1405,7 @@ async fn dispatch_line(
                     // downstream consumers observe the failure.
                     let _ = event_tx.try_send(DriverEvent::Lifecycle {
                         key: key.clone(),
-                        state: AgentState::Closed,
+                        state: ProcessState::Closed,
                     });
                     // Clear per-session state so a subsequent attach on this
                     // key can proceed cleanly; the `is_stale` check in
@@ -1430,7 +1430,7 @@ async fn dispatch_line(
                         let mut s = shared.lock().unwrap();
                         if let Some(sess) = s.sessions.get_mut(&session_id) {
                             sess.run_id = None;
-                            sess.agent_state = AgentState::Active {
+                            sess.agent_state = ProcessState::Active {
                                 session_id: session_id.clone(),
                             };
                         }
@@ -1681,7 +1681,7 @@ mod tests {
             .open_session(key, test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.session.state(), AgentState::Idle));
+        assert!(matches!(result.session.process_state(), ProcessState::Idle));
     }
 
     #[test]
@@ -1906,14 +1906,14 @@ mod tests {
             let mut s = proc.shared.lock().unwrap();
             let mut st_a = SessionRuntimeState::active("sess-A");
             st_a.run_id = Some(run_a);
-            st_a.agent_state = AgentState::PromptInFlight {
+            st_a.agent_state = ProcessState::PromptInFlight {
                 run_id: run_a,
                 session_id: "sess-A".to_string(),
             };
             s.sessions.insert("sess-A".to_string(), st_a);
             let mut st_b = SessionRuntimeState::active("sess-B");
             st_b.run_id = Some(run_b);
-            st_b.agent_state = AgentState::PromptInFlight {
+            st_b.agent_state = ProcessState::PromptInFlight {
                 run_id: run_b,
                 session_id: "sess-B".to_string(),
             };
@@ -2047,7 +2047,7 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            matches!(result.session.state(), AgentState::Idle),
+            matches!(result.session.process_state(), ProcessState::Idle),
             "expected Idle handle before child is started"
         );
         agent_instances().remove(&key);
@@ -2099,7 +2099,7 @@ mod tests {
         // so the fan-out sees a single SessionAttached for `sid`.
         let mut handle = OpencodeHandle {
             key: proc.key.clone(),
-            local_state: AgentState::Idle,
+            local_state: ProcessState::Idle,
             spec: test_spec(),
             proc: Arc::clone(&proc),
             preassigned_session_id: Some(sid.to_string()),
@@ -2180,7 +2180,7 @@ mod tests {
             );
             let mut sec = SessionRuntimeState::active(&secondary_sid);
             sec.run_id = Some(secondary_run);
-            sec.agent_state = AgentState::PromptInFlight {
+            sec.agent_state = ProcessState::PromptInFlight {
                 run_id: secondary_run,
                 session_id: secondary_sid.clone(),
             };
@@ -2198,7 +2198,7 @@ mod tests {
         // would flip us into.
         let mut secondary_handle = OpencodeHandle {
             key: key.clone(),
-            local_state: AgentState::PromptInFlight {
+            local_state: ProcessState::PromptInFlight {
                 run_id: secondary_run,
                 session_id: secondary_sid.clone(),
             },
@@ -2243,7 +2243,7 @@ mod tests {
             assert!(
                 matches!(
                     s.sessions.get(&secondary_sid).map(|slot| &slot.agent_state),
-                    Some(AgentState::PromptInFlight { .. })
+                    Some(ProcessState::PromptInFlight { .. })
                 ),
                 "secondary slot must remain mid-prompt after bootstrap close"
             );
@@ -2313,7 +2313,7 @@ mod tests {
                     );
                 }
                 Ok(Some(DriverEvent::Lifecycle {
-                    state: AgentState::Active { .. },
+                    state: ProcessState::Active { .. },
                     ..
                 })) => {
                     panic!("must NOT transition to Active on a missing sessionId");
@@ -2567,7 +2567,7 @@ mod tests {
                     panic!("open_session Secondary factory must NOT emit SessionAttached");
                 }
                 Ok(Some(DriverEvent::Lifecycle {
-                    state: AgentState::Active { .. },
+                    state: ProcessState::Active { .. },
                     ..
                 })) => {
                     panic!("open_session Secondary factory must NOT emit Active lifecycle");
@@ -2625,7 +2625,7 @@ mod tests {
 
         // Skip any Starting lifecycle that run() emits first.
         let first_meaningful = if let DriverEvent::Lifecycle {
-            state: AgentState::Starting,
+            state: ProcessState::Starting,
             ..
         } = &ev
         {

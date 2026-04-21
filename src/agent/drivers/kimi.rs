@@ -541,7 +541,7 @@ struct SharedReaderState {
 /// accumulator so interleaved `session/update` notifications from different
 /// sessions don't cross-contaminate.
 struct SessionState {
-    state: AgentState,
+    state: ProcessState,
     run_id: Option<RunId>,
     tool_accumulator: ToolCallAccumulator,
 }
@@ -549,7 +549,7 @@ struct SessionState {
 impl SessionState {
     fn new(session_id: &str) -> Self {
         Self {
-            state: AgentState::Active {
+            state: ProcessState::Active {
                 session_id: session_id.to_string(),
             },
             run_id: None,
@@ -594,7 +594,7 @@ pub struct KimiHandle {
     session_id: Option<SessionId>,
     /// Lifecycle mirror for `state()` calls that don't want to take the
     /// shared mutex. Kept in sync with `core.shared.sessions[session_id]`.
-    state: AgentState,
+    state: ProcessState,
     /// For resume paths, the caller supplies this up-front via
     /// `resume_session` or `start(resume_session_id=Some(_))`. The handle's
     /// start() sends `session/load` with this id.
@@ -609,7 +609,7 @@ impl KimiHandle {
         Self {
             core,
             session_id: None,
-            state: AgentState::Idle,
+            state: ProcessState::Idle,
             preassigned_session_id,
         }
     }
@@ -720,10 +720,10 @@ impl KimiHandle {
     /// `open_session(Resume)` or the `start` compat shim) to determine whether
     /// to send `session/new` or `session/load`.
     async fn run_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        self.state = AgentState::Starting;
+        self.state = ProcessState::Starting;
         self.emit(DriverEvent::Lifecycle {
             key: self.core.key.clone(),
-            state: AgentState::Starting,
+            state: ProcessState::Starting,
         });
 
         // Lazy, race-safe bootstrap. The first handle to call run_inner() spawns
@@ -751,7 +751,7 @@ impl KimiHandle {
         }
 
         self.session_id = Some(session_id.clone());
-        self.state = AgentState::Active {
+        self.state = ProcessState::Active {
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::SessionAttached {
@@ -760,7 +760,7 @@ impl KimiHandle {
         });
         self.emit(DriverEvent::Lifecycle {
             key: self.core.key.clone(),
-            state: AgentState::Active {
+            state: ProcessState::Active {
                 session_id: session_id.clone(),
             },
         });
@@ -791,8 +791,8 @@ impl Session for KimiHandle {
 
     fn session_id(&self) -> Option<&str> {
         match &self.state {
-            AgentState::Active { session_id } => Some(session_id.as_str()),
-            AgentState::PromptInFlight { session_id, .. } => Some(session_id.as_str()),
+            ProcessState::Active { session_id } => Some(session_id.as_str()),
+            ProcessState::PromptInFlight { session_id, .. } => Some(session_id.as_str()),
             _ => self
                 .session_id
                 .as_deref()
@@ -800,7 +800,7 @@ impl Session for KimiHandle {
         }
     }
 
-    fn state(&self) -> AgentState {
+    fn process_state(&self) -> ProcessState {
         self.state.clone()
     }
 
@@ -851,19 +851,19 @@ impl Session for KimiHandle {
                 .entry(session_id.clone())
                 .or_insert_with(|| SessionState::new(&session_id));
             slot.run_id = Some(run_id);
-            slot.state = AgentState::PromptInFlight {
+            slot.state = ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             };
         }
 
-        self.state = AgentState::PromptInFlight {
+        self.state = ProcessState::PromptInFlight {
             run_id,
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.core.key.clone(),
-            state: AgentState::PromptInFlight {
+            state: ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             },
@@ -900,11 +900,11 @@ impl Session for KimiHandle {
                 None => return Ok(CancelOutcome::NotInFlight),
             };
             match &slot.state {
-                AgentState::PromptInFlight { run_id, session_id } => {
+                ProcessState::PromptInFlight { run_id, session_id } => {
                     let rid = *run_id;
                     let psid = session_id.clone();
                     slot.run_id = None;
-                    slot.state = AgentState::Active {
+                    slot.state = ProcessState::Active {
                         session_id: psid.clone(),
                     };
                     (rid, psid)
@@ -922,12 +922,12 @@ impl Session for KimiHandle {
             },
         });
 
-        self.state = AgentState::Active { session_id };
+        self.state = ProcessState::Active { session_id };
         Ok(CancelOutcome::Aborted)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
-        if matches!(self.state, AgentState::Closed) {
+        if matches!(self.state, ProcessState::Closed) {
             return Ok(());
         }
 
@@ -955,7 +955,7 @@ impl Session for KimiHandle {
                 let all_closed = s
                     .sessions
                     .values()
-                    .all(|slot| matches!(slot.state, AgentState::Closed));
+                    .all(|slot| matches!(slot.state, ProcessState::Closed));
                 // Don't tear down while a session/new or session/load response
                 // is pending — the caller is awaiting a new session that
                 // would lose its backing child if we killed it now.
@@ -977,14 +977,14 @@ impl Session for KimiHandle {
             }
         };
 
-        self.state = AgentState::Closed;
+        self.state = ProcessState::Closed;
 
         // Always emit a per-session Closed lifecycle event so subscribers
         // see this handle retire — independent of whether the shared child
         // teardown below fires.
         self.emit(DriverEvent::Lifecycle {
             key: self.core.key.clone(),
-            state: AgentState::Closed,
+            state: ProcessState::Closed,
         });
 
         // Teardown of the shared child + fan-out + registry is gated on
@@ -1124,12 +1124,12 @@ async fn reader_loop(
                 let target = s
                     .sessions
                     .iter()
-                    .find(|(_, st)| matches!(st.state, AgentState::PromptInFlight { .. }))
+                    .find(|(_, st)| matches!(st.state, ProcessState::PromptInFlight { .. }))
                     .map(|(sid, st)| (sid.clone(), st.run_id));
                 if let Some((sid, Some(run_id))) = target {
                     let slot = s.sessions.get_mut(&sid).unwrap();
                     slot.run_id = None;
-                    slot.state = AgentState::Active {
+                    slot.state = ProcessState::Active {
                         session_id: sid.clone(),
                     };
                     let _ = event_tx.try_send(DriverEvent::Failed {
@@ -1178,14 +1178,14 @@ async fn reader_loop(
         if !shared_emitted.swap(true, Ordering::SeqCst) {
             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                 key: key.clone(),
-                state: AgentState::Closed,
+                state: ProcessState::Closed,
             });
         }
     }
     {
         let mut s = shared.lock().unwrap();
         for st in s.sessions.values_mut() {
-            st.state = AgentState::Closed;
+            st.state = ProcessState::Closed;
         }
     }
 }
@@ -1271,7 +1271,7 @@ async fn handle_response(
                 if let Some(slot) = s.sessions.get_mut(&session_id) {
                     let drained = slot.tool_accumulator.drain();
                     slot.run_id = None;
-                    slot.state = AgentState::Active {
+                    slot.state = ProcessState::Active {
                         session_id: session_id.clone(),
                     };
                     drained
@@ -1303,7 +1303,7 @@ async fn handle_response(
             });
             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                 key: key.clone(),
-                state: AgentState::Active {
+                state: ProcessState::Active {
                     session_id: session_id.clone(),
                 },
             });
@@ -1603,7 +1603,7 @@ mod tests {
             .open_session(key.clone(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.session.state(), AgentState::Idle));
+        assert!(matches!(result.session.process_state(), ProcessState::Idle));
         registry().remove(&key);
     }
 
@@ -1785,7 +1785,7 @@ mod tests {
             s.sessions.insert(
                 "sess-A".to_string(),
                 SessionState {
-                    state: AgentState::PromptInFlight {
+                    state: ProcessState::PromptInFlight {
                         run_id: run_a,
                         session_id: "sess-A".to_string(),
                     },
@@ -1796,7 +1796,7 @@ mod tests {
             s.sessions.insert(
                 "sess-B".to_string(),
                 SessionState {
-                    state: AgentState::PromptInFlight {
+                    state: ProcessState::PromptInFlight {
                         run_id: run_b,
                         session_id: "sess-B".to_string(),
                     },
@@ -1849,7 +1849,7 @@ mod tests {
         assert!(s.sessions.get("sess-A").unwrap().run_id.is_none());
         assert!(matches!(
             s.sessions.get("sess-A").unwrap().state,
-            AgentState::Active { .. }
+            ProcessState::Active { .. }
         ));
     }
 
@@ -1871,7 +1871,7 @@ mod tests {
         );
         let ar = res.unwrap();
         assert!(
-            matches!(ar.session.state(), AgentState::Idle),
+            matches!(ar.session.process_state(), ProcessState::Idle),
             "open_session(New) must return an Idle handle"
         );
         registry().remove(&key_new);
@@ -2112,7 +2112,7 @@ mod tests {
                 // Second handle's session: mid-prompt. This is the race the fix protects.
                 let mut sec = SessionState::new(&secondary_sid);
                 sec.run_id = Some(secondary_run);
-                sec.state = AgentState::PromptInFlight {
+                sec.state = ProcessState::PromptInFlight {
                     run_id: secondary_run,
                     session_id: secondary_sid.clone(),
                 };
@@ -2149,12 +2149,12 @@ mod tests {
         // Simulate post-start() state: session_id populated locally.
         let mut first_handle = KimiHandle::new(core.clone(), None);
         first_handle.session_id = Some(bootstrap_sid.clone());
-        first_handle.state = AgentState::Active {
+        first_handle.state = ProcessState::Active {
             session_id: bootstrap_sid.clone(),
         };
         let mut secondary = KimiHandle::new(core.clone(), None);
         secondary.session_id = Some(secondary_sid.clone());
-        secondary.state = AgentState::PromptInFlight {
+        secondary.state = ProcessState::PromptInFlight {
             run_id: secondary_run,
             session_id: secondary_sid.clone(),
         };
@@ -2198,7 +2198,7 @@ mod tests {
             assert!(
                 matches!(
                     s.sessions.get(&secondary_sid).map(|slot| &slot.state),
-                    Some(AgentState::PromptInFlight { .. })
+                    Some(ProcessState::PromptInFlight { .. })
                 ),
                 "secondary slot must remain mid-prompt after first-handle close"
             );
@@ -2273,7 +2273,7 @@ mod tests {
         // A handle with a preassigned session id (resume_session path).
         let handle = KimiHandle::new(core.clone(), Some("stored-sess-abc".to_string()));
         assert_eq!(handle.session_id(), Some("stored-sess-abc"));
-        assert!(matches!(handle.state(), AgentState::Idle));
+        assert!(matches!(handle.process_state(), ProcessState::Idle));
 
         // A handle without preassigned id.
         let handle2 = KimiHandle::new(core.clone(), None);
@@ -2488,7 +2488,7 @@ mod tests {
 
         // The handle must start Idle with no preassigned id.
         assert!(
-            matches!(ar.session.state(), AgentState::Idle),
+            matches!(ar.session.process_state(), ProcessState::Idle),
             "open_session(New) must return Idle handle"
         );
         assert!(

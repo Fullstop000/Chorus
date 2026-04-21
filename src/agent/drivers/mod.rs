@@ -128,9 +128,9 @@ pub enum AgentError {
     RuntimeReported(String),
 }
 
-/// Lifecycle state of an agent handle as observed by the manager.
+/// Lifecycle state of an agent's runtime process as observed by the manager.
 #[derive(Debug, Clone)]
-pub enum AgentState {
+pub enum ProcessState {
     /// Handle constructed but not yet started.
     Idle,
     /// Handle is spinning up the runtime process.
@@ -202,7 +202,7 @@ pub struct RunResult {
 #[derive(Debug, Clone)]
 pub enum DriverEvent {
     /// Handle transitioned to a new lifecycle state.
-    Lifecycle { key: AgentKey, state: AgentState },
+    Lifecycle { key: AgentKey, state: ProcessState },
     /// A session was attached (either new or resumed) for this key.
     SessionAttached {
         key: AgentKey,
@@ -610,7 +610,7 @@ pub trait RuntimeDriver: Send + Sync + 'static {
     ///
     /// `SessionIntent::New` starts a fresh session; `SessionIntent::Resume(id)`
     /// resumes the given stored session. The returned handle is in
-    /// [`AgentState::Idle`]; callers must invoke [`Session::run`] to
+    /// [`ProcessState::Idle`]; callers must invoke [`Session::run`] to
     /// bring it online.
     async fn open_session(
         &self,
@@ -643,7 +643,7 @@ pub trait Session: Send {
     fn session_id(&self) -> Option<&str>;
 
     /// Current lifecycle state of this session.
-    fn state(&self) -> AgentState;
+    fn process_state(&self) -> ProcessState;
 
     /// Bring the session online. Resume intent is threaded in via
     /// [`RuntimeDriver::open_session`]'s `SessionIntent`; `init_prompt`,
@@ -876,7 +876,7 @@ mod tests {
     fn test_event(key: &str) -> DriverEvent {
         DriverEvent::Lifecycle {
             key: key.to_string(),
-            state: AgentState::Idle,
+            state: ProcessState::Idle,
         }
     }
 

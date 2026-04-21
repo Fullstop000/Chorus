@@ -1032,7 +1032,7 @@ mod harness_unit_tests {
         let mut rx = events.subscribe();
         tx.send(DriverEvent::Lifecycle {
             key: "k".into(),
-            state: chorus::agent::drivers::AgentState::Starting,
+            state: chorus::agent::drivers::ProcessState::Starting,
         })
         .await
         .unwrap();
