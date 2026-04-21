@@ -50,6 +50,13 @@ impl AgentLifecycle for NoopLifecycle {
         }
     }
 
+    fn process_state<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         vec![]
     }

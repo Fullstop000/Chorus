@@ -511,6 +511,13 @@ impl AgentLifecycle for AgentManager {
         Box::pin(AgentManager::stop_agent(self, agent_name))
     }
 
+    fn process_state<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<crate::agent::drivers::ProcessState>> + Send + 'a>> {
+        Box::pin(AgentManager::process_state(self, agent_name))
+    }
+
     fn get_activity_log_data(
         &self,
         agent_name: &str,

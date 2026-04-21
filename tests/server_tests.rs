@@ -19,6 +19,7 @@ use harness::{build_router, build_router_with_lifecycle};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::collections::HashSet;
 use std::sync::Mutex;
 
 use chorus::agent::activity_log::{self, ActivityLogMap};
@@ -89,6 +90,9 @@ struct MockLifecycle {
     stopped: Mutex<Vec<String>>,
     notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
+    /// Tracks which agents are currently "running" so that process_state,
+    /// start_agent, and stop_agent share one source of truth.
+    running: Mutex<HashSet<String>>,
 }
 
 struct MockRuntimeStatusProvider {
@@ -149,6 +153,10 @@ impl AgentLifecycle for MockLifecycle {
                 .lock()
                 .unwrap()
                 .push((agent_name.to_string(), wake_message));
+            self.running
+                .lock()
+                .unwrap()
+                .insert(agent_name.to_string());
             Ok(())
         })
     }
@@ -169,7 +177,27 @@ impl AgentLifecycle for MockLifecycle {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             self.stopped.lock().unwrap().push(agent_name.to_string());
+            self.running
+                .lock()
+                .unwrap()
+                .remove(agent_name);
             Ok(())
+        })
+    }
+
+    fn process_state<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>> {
+        let is_running = self.running.lock().unwrap().contains(agent_name);
+        Box::pin(async move {
+            if is_running {
+                Some(chorus::agent::drivers::ProcessState::Active {
+                    session_id: "test".into(),
+                })
+            } else {
+                None
+            }
         })
     }
 
@@ -207,6 +235,13 @@ impl AgentLifecycle for FailStartLifecycle {
         _agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn process_state<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>> {
+        Box::pin(async { None })
     }
 
     fn get_activity_log_data(

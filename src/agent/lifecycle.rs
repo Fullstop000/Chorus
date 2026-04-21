@@ -23,6 +23,15 @@ pub trait AgentLifecycle: Send + Sync {
         agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+    /// Returns the runtime `ProcessState` for `agent_name` if a managed
+    /// process exists, else `None`. Single source of truth for runtime
+    /// liveness; replaces every read of the persisted `agents.status`
+    /// column from this phase onward.
+    fn process_state<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<crate::agent::drivers::ProcessState>> + Send + 'a>>;
+
     fn get_activity_log_data(
         &self,
         agent_name: &str,
