@@ -545,6 +545,16 @@ impl GeminiHandle {
         Ok((tx, shared, token))
     }
 
+    async fn register_session_in_shared_state(&self, session_id: &str) {
+        let inner = self.core.inner.lock().await;
+        if let Some(ref shared) = inner.shared {
+            let mut s = shared.lock().unwrap();
+            s.sessions
+                .entry(session_id.to_string())
+                .or_insert_with(|| SessionState::new(session_id));
+        }
+    }
+
     async fn run_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
         self.core.ensure_started().await?;
 
@@ -554,6 +564,7 @@ impl GeminiHandle {
             self.send_session_new().await?
         };
 
+        self.register_session_in_shared_state(&sid).await;
         self.session_id = Some(sid.clone());
         self.state = AgentState::Active {
             session_id: sid.clone(),
@@ -722,7 +733,7 @@ impl Session for GeminiHandle {
             return Ok(());
         }
 
-        let (all_sessions_closed, _shared_opt) = {
+        let (all_sessions_closed, shared_opt) = {
             let shared_opt = {
                 let inner = self.core.inner.lock().await;
                 inner.shared.clone()
@@ -752,8 +763,19 @@ impl Session for GeminiHandle {
         };
 
         self.state = AgentState::Closed;
+        self.emit(DriverEvent::Lifecycle {
+            key: self.core.key.clone(),
+            state: AgentState::Closed,
+        });
 
         if all_sessions_closed {
+            if let Some(ref shared) = shared_opt {
+                let s = shared.lock().unwrap();
+                // Flip before terminating transport tasks so a racing EOF path
+                // can't emit a second Closed lifecycle event.
+                s.closed_emitted.store(true, Ordering::SeqCst);
+            }
+
             let key = self.core.key.clone();
             // Tear down the shared core: kill child + abort reader tasks.
             // The core's Drop will SIGTERM the child; we additionally close
@@ -775,11 +797,6 @@ impl Session for GeminiHandle {
             self.core.events.close();
             registry().remove(&key);
         }
-
-        self.emit(DriverEvent::Lifecycle {
-            key: self.core.key.clone(),
-            state: AgentState::Closed,
-        });
 
         Ok(())
     }
@@ -926,7 +943,7 @@ async fn handle_response(
     key: &AgentKey,
     event_tx: &mpsc::Sender<DriverEvent>,
     shared: &Arc<Mutex<SharedReaderState>>,
-    _stdin_tx: &mpsc::Sender<String>,
+    stdin_tx: &mpsc::Sender<String>,
     msg: &Value,
 ) {
     let id = match msg.get("id").and_then(|v| v.as_u64()) {
@@ -959,7 +976,7 @@ async fn handle_response(
             // Gemini ACP requires the `initialized` notification after the
             // `initialize` response. Send it now before proceeding.
             if let Some(notif) = s.initialized_notification.take() {
-                let _ = _stdin_tx.try_send(notif);
+                let _ = stdin_tx.try_send(notif);
             }
             debug!("gemini: initialize response received, initialized notification sent");
         }
@@ -1443,6 +1460,144 @@ mod tests {
 
         handle.close().await.unwrap();
 
+        assert!(
+            registry().get(&key).is_none(),
+            "last-session close must prune the registry entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn register_session_in_shared_state_tracks_new_handle_session() {
+        let (events, event_tx) = EventFanOut::new();
+        let core = GeminiAgentCore::new(
+            "agent-register-session".into(),
+            test_spec(),
+            events,
+            event_tx,
+        );
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: HashMap::new(),
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+            initialized_notification: None,
+        }));
+
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared.clone());
+        }
+
+        let handle = GeminiHandle::new(core, None);
+        handle
+            .register_session_in_shared_state("sess-registered")
+            .await;
+
+        let s = shared.lock().unwrap();
+        assert!(
+            s.sessions.contains_key("sess-registered"),
+            "run_inner must register each opened session in shared state"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_with_live_secondary_does_not_tear_down_shared_child() {
+        let key: AgentKey = format!("agent-live-secondary-{}", uuid::Uuid::new_v4());
+        let (events, event_tx) = EventFanOut::new();
+        let events_for_assert = events.clone();
+        let core = GeminiAgentCore::new(key.clone(), test_spec(), events, event_tx);
+
+        let first_sid = "sess-first".to_string();
+        let secondary_sid = "sess-secondary".to_string();
+        let secondary_run = RunId::new_v4();
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: {
+                let mut sessions = HashMap::new();
+                sessions.insert(first_sid.clone(), SessionState::new(&first_sid));
+                let mut secondary = SessionState::new(&secondary_sid);
+                secondary.run_id = Some(secondary_run);
+                secondary.state = AgentState::PromptInFlight {
+                    run_id: secondary_run,
+                    session_id: secondary_sid.clone(),
+                };
+                sessions.insert(secondary_sid.clone(), secondary);
+                sessions
+            },
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+            initialized_notification: None,
+        }));
+
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+        let parked_reader = tokio::spawn(async {
+            let () = std::future::pending().await;
+        });
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared.clone());
+            inner.stdin_tx = Some(stdin_tx);
+            inner.owned.reader_handles.push(parked_reader);
+            inner.next_request_id = 3;
+        }
+        registry().insert(key.clone(), core.clone());
+
+        let mut first_handle = GeminiHandle::new(core.clone(), None);
+        first_handle.session_id = Some(first_sid.clone());
+        first_handle.state = AgentState::Active {
+            session_id: first_sid.clone(),
+        };
+        let mut secondary_handle = GeminiHandle::new(core.clone(), None);
+        secondary_handle.session_id = Some(secondary_sid.clone());
+        secondary_handle.state = AgentState::PromptInFlight {
+            run_id: secondary_run,
+            session_id: secondary_sid.clone(),
+        };
+
+        first_handle.close().await.unwrap();
+
+        {
+            let inner = core.inner.lock().await;
+            assert!(
+                inner.stdin_tx.is_some(),
+                "closing one live handle must not tear down shared stdin while a sibling is active"
+            );
+            assert_eq!(
+                inner.owned.reader_handles.len(),
+                1,
+                "closing one live handle must not abort shared reader tasks"
+            );
+            assert!(
+                !inner.owned.reader_handles[0].is_finished(),
+                "parked reader must still be running"
+            );
+        }
+        assert!(
+            !events_for_assert.inner.closing.load(Ordering::SeqCst),
+            "closing one live handle must not close the fan-out"
+        );
+        assert!(
+            registry().get(&key).is_some(),
+            "closing one live handle must not prune the shared registry entry"
+        );
+
+        secondary_handle.close().await.unwrap();
+
+        {
+            let inner = core.inner.lock().await;
+            assert!(
+                inner.stdin_tx.is_none(),
+                "last-session close must clear shared stdin"
+            );
+            assert!(
+                inner.owned.reader_handles.is_empty(),
+                "last-session close must drain shared reader tasks"
+            );
+        }
+        assert!(
+            events_for_assert.inner.closing.load(Ordering::SeqCst),
+            "last-session close must signal the fan-out to drain"
+        );
         assert!(
             registry().get(&key).is_none(),
             "last-session close must prune the registry entry"
