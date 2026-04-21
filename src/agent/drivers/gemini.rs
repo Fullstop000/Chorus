@@ -577,12 +577,9 @@ impl GeminiHandle {
 
 impl Drop for GeminiHandle {
     fn drop(&mut self) {
-        if let Some(ref _sid) = self.session_id {
-            self.emit(DriverEvent::Lifecycle {
-                key: self.core.key.clone(),
-                state: AgentState::Closed,
-            });
-        }
+        // `Session::close()` is the authoritative lifecycle shutdown path.
+        // A dropped handle may follow an explicit close(), so emitting here
+        // duplicates the terminal Closed event.
     }
 }
 
@@ -1449,6 +1446,61 @@ mod tests {
         assert!(
             registry().get(&key).is_none(),
             "last-session close must prune the registry entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn close_emits_closed_lifecycle_only_once_even_after_drop() {
+        let key: AgentKey = format!("agent-close-single-closed-{}", uuid::Uuid::new_v4());
+        let (events, event_tx) = EventFanOut::new();
+        let mut rx = events.subscribe();
+        let core = GeminiAgentCore::new(key, test_spec(), events, event_tx);
+        let session_id = "sess-closed-once".to_string();
+
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: {
+                let mut sessions = HashMap::new();
+                sessions.insert(session_id.clone(), SessionState::new(&session_id));
+                sessions
+            },
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+            initialized_notification: None,
+        }));
+
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared);
+            inner.stdin_tx = Some(stdin_tx);
+            inner.next_request_id = 3;
+        }
+        core.started.store(true, Ordering::Release);
+
+        let mut handle = GeminiHandle::new(core, None);
+        handle.session_id = Some(session_id.clone());
+        handle.state = AgentState::Active { session_id };
+
+        handle.close().await.unwrap();
+        drop(handle);
+
+        let mut closed_count = 0usize;
+        while let Ok(Some(event)) = timeout(Duration::from_millis(100), rx.recv()).await {
+            if matches!(
+                event,
+                DriverEvent::Lifecycle {
+                    state: AgentState::Closed,
+                    ..
+                }
+            ) {
+                closed_count += 1;
+            }
+        }
+
+        assert_eq!(
+            closed_count, 1,
+            "closing then dropping the handle must emit exactly one Closed lifecycle event"
         );
     }
 }
