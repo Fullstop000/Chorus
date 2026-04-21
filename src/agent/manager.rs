@@ -10,6 +10,7 @@ use crate::agent::activity_log::{
 };
 use crate::agent::drivers::claude::ClaudeDriver;
 use crate::agent::drivers::codex::CodexDriver;
+use crate::agent::drivers::gemini::GeminiDriver;
 use crate::agent::drivers::kimi::KimiDriver;
 use crate::agent::drivers::opencode::OpencodeDriver;
 use crate::agent::drivers::{
@@ -105,6 +106,7 @@ pub fn build_driver_registry() -> HashMap<AgentRuntime, Arc<dyn RuntimeDriver>> 
     registry.insert(AgentRuntime::Codex, Arc::new(CodexDriver));
     registry.insert(AgentRuntime::Kimi, Arc::new(KimiDriver));
     registry.insert(AgentRuntime::Opencode, Arc::new(OpencodeDriver));
+    registry.insert(AgentRuntime::Gemini, Arc::new(GeminiDriver));
     registry
 }
 
@@ -718,12 +720,13 @@ mod tests {
     #[tokio::test]
     async fn driver_registry_has_all_runtimes() {
         let registry = build_driver_registry();
-        assert_eq!(registry.len(), 4, "should have all four runtimes");
+        assert_eq!(registry.len(), 5, "should have all five runtimes");
         for rt in [
             AgentRuntime::Claude,
             AgentRuntime::Codex,
             AgentRuntime::Kimi,
             AgentRuntime::Opencode,
+            AgentRuntime::Gemini,
         ] {
             assert!(
                 registry.contains_key(&rt),

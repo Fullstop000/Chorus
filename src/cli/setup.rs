@@ -437,6 +437,11 @@ pub async fn run(
             AcpStatus::Native,
         ),
         check_runtime("opencode", "https://opencode.ai", AcpStatus::Native),
+        check_runtime(
+            "gemini",
+            "https://github.com/google-gemini/gemini-cli",
+            AcpStatus::Native,
+        ),
     ];
     for r in &runtimes {
         render_runtime(r);
@@ -528,6 +533,7 @@ pub async fn run(
     fill_resolved_path(&mut cfg.codex.acp_adaptor, "codex-acp");
     fill_binary_path(&mut cfg.kimi.binary_path, "kimi", interactive);
     fill_binary_path(&mut cfg.opencode.binary_path, "opencode", interactive);
+    fill_binary_path(&mut cfg.gemini.binary_path, "gemini", interactive);
 
     let cfg_path = cfg.save(&data_dir)?;
 

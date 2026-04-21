@@ -165,6 +165,7 @@ pub(crate) fn default_model_for_runtime(runtime: &str) -> &str {
     match AgentRuntime::parse(runtime) {
         Some(AgentRuntime::Codex) => "gpt-5.4",
         Some(AgentRuntime::Kimi) => "kimi-code/kimi-for-coding",
+        Some(AgentRuntime::Gemini) => "gemini-3.1-pro-preview",
         _ => "sonnet",
     }
 }

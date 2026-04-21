@@ -142,6 +142,7 @@ pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto:
                 ("codex", &cfg.codex),
                 ("kimi", &cfg.kimi),
                 ("opencode", &cfg.opencode),
+                ("gemini", &cfg.gemini),
             ];
             for (name, rt) in runtime_entries {
                 if rt.binary_path.is_some() || rt.acp_adaptor.is_some() {

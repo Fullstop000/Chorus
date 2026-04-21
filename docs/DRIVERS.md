@@ -1,6 +1,6 @@
 # Driver Architecture
 
-Runtime driver abstraction for Chorus. Each agent runtime (Claude, Codex, Kimi, OpenCode) is backed by a pair of traits defined in `src/agent/drivers/mod.rs`.
+Runtime driver abstraction for Chorus. Each agent runtime (Claude, Codex, Gemini, Kimi, OpenCode) is backed by a pair of traits defined in `src/agent/drivers/mod.rs`.
 
 ---
 
@@ -133,7 +133,7 @@ Fan-out dispatcher: transport tasks write `DriverEvent`s into a single inbound `
 
 ### `AgentRegistry<P>`
 
-Process-global per-driver agent registry (`static`). Replaces the four near-identical `OnceLock<Mutex<HashMap>>` copies that each driver used to carry. Evicts stale entries on re-attach. Drivers use `get_or_init` (build-if-missing) or `get_or_evict_stale` + `insert` (kimi pattern).
+Process-global per-driver agent registry (`static`). Replaces the near-identical `OnceLock<Mutex<HashMap>>` copies that each driver used to carry. Evicts stale entries on re-attach. Drivers use `get_or_init` (build-if-missing) or `get_or_evict_stale` + `insert` (kimi pattern).
 
 ### `emit_driver_event`
 
@@ -147,6 +147,7 @@ Helper that wraps `try_send` with uniform warn-on-drop logging. All drivers call
 |--------|------|-----------|
 | Claude | `src/agent/drivers/claude.rs` | `StreamJson` — bespoke streaming JSON |
 | Codex | `src/agent/drivers/codex.rs` | `CodexAppServer` — JSONL over stdio |
+| Gemini | `src/agent/drivers/gemini.rs` | `AcpNative` — `gemini --acp` subprocess |
 | Kimi | `src/agent/drivers/kimi.rs` | `AcpNative` — `kimi acp` subprocess |
 | OpenCode | `src/agent/drivers/opencode.rs` | `HttpAppServer` — OpenCode daemon |
 | Fake | `src/agent/drivers/fake.rs` | In-memory test double |
