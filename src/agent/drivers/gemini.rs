@@ -37,6 +37,27 @@ fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Valu
     }])
 }
 
+fn build_gemini_command(spec: &AgentSpec) -> Command {
+    let mut args = vec!["--acp".to_string()];
+    if !spec.model.is_empty() {
+        args.push("--model".to_string());
+        args.push(spec.model.clone());
+    }
+
+    let mut cmd = Command::new("gemini");
+    cmd.args(&args)
+        .current_dir(&spec.working_directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("FORCE_COLOR", "0")
+        .env("NO_COLOR", "1");
+    for ev in &spec.env_vars {
+        cmd.env(&ev.key, &ev.value);
+    }
+    cmd
+}
+
 // ---------------------------------------------------------------------------
 // Per-agent shared core
 // ---------------------------------------------------------------------------
@@ -124,27 +145,7 @@ impl GeminiAgentCore {
             .context("failed to pair with shared bridge")?;
         let _ = self.pairing_token.set(pairing_token.clone());
 
-        let wd = &self.spec.working_directory;
-        let wd_str = wd.to_string_lossy().into_owned();
-        let mut args = vec!["--acp".to_string()];
-        if !self.spec.model.is_empty() {
-            args.push("--model".to_string());
-            args.push(self.spec.model.clone());
-        }
-        args.push("--work-dir".to_string());
-        args.push(wd_str);
-
-        let mut cmd = Command::new("gemini");
-        cmd.args(&args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .env("FORCE_COLOR", "0")
-            .env("NO_COLOR", "1");
-        for ev in &self.spec.env_vars {
-            cmd.env(&ev.key, &ev.value);
-        }
-
+        let mut cmd = build_gemini_command(&self.spec);
         let mut child = cmd.spawn().context("failed to spawn gemini")?;
         let stdout = child.stdout.take().context("missing stdout")?;
         let stderr = child.stderr.take().context("missing stderr")?;
@@ -1302,6 +1303,26 @@ mod tests {
     fn gemini_runtime_variant_parses() {
         assert_eq!(AgentRuntime::parse("gemini"), Some(AgentRuntime::Gemini));
         assert_eq!(AgentRuntime::Gemini.as_str(), "gemini");
+    }
+
+    #[test]
+    fn build_gemini_command_uses_current_dir_not_work_dir_flag() {
+        let spec = test_spec();
+        let cmd = build_gemini_command(&spec);
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(args, vec!["--acp", "--model", "gemini-3.1-pro-preview"]);
+        assert_eq!(
+            cmd.get_current_dir(),
+            Some(spec.working_directory.as_path())
+        );
+        assert!(
+            !args.iter().any(|arg| arg == "--work-dir"),
+            "Gemini CLI 0.38.x rejects --work-dir; use process current_dir instead"
+        );
     }
 
     #[tokio::test]

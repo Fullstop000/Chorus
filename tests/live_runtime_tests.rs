@@ -25,6 +25,7 @@
 //! ```bash
 //! cargo test --test live_runtime_tests claude_agent_replies -- --ignored --nocapture
 //! cargo test --test live_runtime_tests codex_agent_replies -- --ignored --nocapture
+//! cargo test --test live_runtime_tests gemini_agent_replies -- --ignored --nocapture
 //! cargo test --test live_runtime_tests kimi_agent_replies  -- --ignored --nocapture
 //! ```
 //!
@@ -39,6 +40,7 @@
 //! | `opencode_agent_replies_through_shared_bridge`| `opencode`| `opencode auth login` (OAuth); no API key needed                                  | `OPENCODE_MODEL` (optional, default `opencode/gpt-5-nano`) |
 //! | `claude_agent_replies_through_shared_bridge`  | `claude`  | `ANTHROPIC_API_KEY` env var **or** OAuth via `claude login`                       | `CHORUS_TEST_CLAUDE_MODEL`  (optional, default `sonnet`) |
 //! | `codex_agent_replies_through_shared_bridge`   | `codex`   | `OPENAI_API_KEY` env var **or** `codex login`; note: HTTP MCP may be unstable in some Codex versions (see RUNTIME_MCP_SUPPORT.md) | `CHORUS_TEST_CODEX_MODEL` (optional, default `gpt-5.4`) |
+//! | `gemini_agent_replies_through_shared_bridge`  | `gemini`  | OAuth via `gemini auth login` stored in `~/.gemini/oauth_creds.json` or `GEMINI_API_KEY` | `CHORUS_TEST_GEMINI_MODEL` (optional, default `gemini-2.5-flash`) |
 //! | `kimi_agent_replies_through_shared_bridge`    | `kimi`    | Moonshot credentials in `~/.kimi/credentials/kimi-code.json`                     | `CHORUS_TEST_KIMI_MODEL` (optional, default `kimi-code/kimi-for-coding`) |
 //!
 //! # Debugging
@@ -69,6 +71,7 @@ use std::time::Duration;
 
 use chorus::agent::drivers::claude::ClaudeDriver;
 use chorus::agent::drivers::codex::CodexDriver;
+use chorus::agent::drivers::gemini::GeminiDriver;
 use chorus::agent::drivers::kimi::KimiDriver;
 use chorus::agent::drivers::opencode::OpencodeDriver;
 use chorus::agent::drivers::{AgentSpec, PromptReq, RuntimeDriver, SessionIntent};
@@ -826,6 +829,125 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         anyhow::bail!(
             "agent did not send a reply containing 'hello world' within {}s{}",
             codex_deadline_secs,
+            diagnostics
+        );
+    }
+
+    Ok(())
+}
+
+/// Live round-trip: spawn a real `gemini` runtime, send it a prompt, verify
+/// its reply lands in the Chorus store via the shared bridge.
+///
+/// Requires:
+///   - `gemini` binary on PATH
+///   - OAuth credentials in `~/.gemini/oauth_creds.json` via `gemini auth login`
+///     or `GEMINI_API_KEY` in the environment
+///   - Optional: `CHORUS_TEST_GEMINI_MODEL` env var (defaults to
+///     `gemini-2.5-flash`)
+///
+/// What it proves:
+///   - `GeminiDriver::open_session` + `run` with `bridge_endpoint = bridge_url`
+///     spawns `gemini --acp` successfully and wires the runtime to the shared
+///     HTTP MCP bridge.
+///   - The runtime's `send_message` MCP tool call routes through the bridge
+///     into the Chorus store under the agent's identity.
+#[tokio::test]
+#[ignore = "requires gemini binary + auth (~/.gemini/oauth_creds.json or GEMINI_API_KEY)"]
+async fn gemini_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
+    if !binary_on_path("gemini") {
+        eprintln!("SKIP: `gemini` binary not found on PATH");
+        return Ok(());
+    }
+
+    let model = std::env::var("CHORUS_TEST_GEMINI_MODEL")
+        .unwrap_or_else(|_| "gemini-2.5-flash".to_string());
+
+    let (server_url, store) = start_chorus_server().await?;
+    let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
+
+    let agent_key = "gemini-live-bot";
+    store.create_agent_record(&AgentRecordUpsert {
+        name: agent_key,
+        display_name: "Gemini Live Bot",
+        description: None,
+        system_prompt: None,
+        runtime: "gemini",
+        model: &model,
+        reasoning_effort: None,
+        env_vars: &[],
+    })?;
+    store.join_channel("general", agent_key, SenderType::Agent)?;
+
+    store.create_message(CreateMessage {
+        channel_name: "general",
+        sender_name: "tester",
+        sender_type: SenderType::Human,
+        content: "@gemini-live-bot please reply to everyone",
+        attachment_ids: &[],
+        suppress_event: false,
+        run_id: None,
+    })?;
+
+    let tmpdir = tempfile::tempdir()?;
+    let spec = AgentSpec {
+        display_name: "Gemini Live Bot".to_string(),
+        description: None,
+        system_prompt: None,
+        model: model.clone(),
+        reasoning_effort: None,
+        env_vars: vec![],
+        working_directory: tmpdir.path().to_path_buf(),
+        bridge_endpoint: bridge_url.clone(),
+    };
+
+    let driver = GeminiDriver;
+    let attach_result = driver
+        .open_session(agent_key.to_string(), spec, SessionIntent::New)
+        .await?;
+    let mut handle = attach_result.session;
+
+    let prompt = PromptReq {
+        text: format!(
+            "You are an agent named `{agent_key}` in a chat channel. \
+             Use the `send_message` tool to post the exact text \
+             `hello world` to the channel `#general`. Do not include any \
+             other commentary — just call the tool once and stop."
+        ),
+        attachments: vec![],
+    };
+
+    handle.run(Some(prompt)).await?;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let mut found = false;
+    while tokio::time::Instant::now() < deadline {
+        let (messages, _) = store.get_history("general", 100, None, None)?;
+        if messages
+            .iter()
+            .any(|m| m.sender_name == agent_key && m.content.to_lowercase().contains("hello world"))
+        {
+            found = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
+    let _ = handle.close().await;
+    bridge_ct.cancel();
+
+    if !found {
+        let (messages, _) = store.get_history("general", 100, None, None)?;
+        let history_str = format!(
+            "{:#?}",
+            messages
+                .iter()
+                .map(|m| (&m.sender_name, &m.content))
+                .collect::<Vec<_>>()
+        );
+        let diagnostics = collect_failure_diagnostics("gemini", None, tmpdir.path(), &history_str);
+        anyhow::bail!(
+            "agent did not send a reply containing 'hello world' within 60s{}",
             diagnostics
         );
     }
