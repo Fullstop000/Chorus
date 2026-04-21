@@ -228,7 +228,7 @@ export function ProfilePanel() {
                 : agent.status === "ready"
                   ? "var(--status-online)"
                   : agent.status === "failed"
-                    ? "var(--status-inactive)"
+                    ? "var(--status-failed)"
                     : "var(--status-inactive)",
             }}
           >

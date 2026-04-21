@@ -26,6 +26,7 @@ function agentDotClass(status: string, activity?: string): string {
     if (activity === 'thinking' || activity === 'working') return activity
     return 'online'
   }
+  if (status === 'failed') return 'failed'
   return 'offline'
 }
 
