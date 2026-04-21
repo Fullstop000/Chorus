@@ -122,6 +122,8 @@ pub struct ChorusConfig {
     pub kimi: AgentRuntimeConfig,
     #[serde(default)]
     pub opencode: AgentRuntimeConfig,
+    #[serde(default)]
+    pub gemini: AgentRuntimeConfig,
 }
 
 impl ChorusConfig {
@@ -155,6 +157,7 @@ impl ChorusConfig {
             &mut cfg.codex,
             &mut cfg.kimi,
             &mut cfg.opencode,
+            &mut cfg.gemini,
         ] {
             if runtime.binary_path.as_deref() == Some("") {
                 runtime.binary_path = None;
@@ -246,7 +249,7 @@ mod tests {
         cfg.save(tmp.path()).unwrap();
         let raw = std::fs::read_to_string(ChorusConfig::path_for(tmp.path())).unwrap();
         // All four runtime sections are present.
-        for runtime in ["claude", "codex", "kimi", "opencode"] {
+        for runtime in ["claude", "codex", "kimi", "opencode", "gemini"] {
             // With all-None fields, toml serializes empty tables as `[runtime]`
             // only when the section is non-empty. The sections are emitted because
             // the struct fields themselves are always present in ChorusConfig.
