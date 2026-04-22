@@ -294,6 +294,7 @@ export function TaskDetail() {
           conversationId={subChannelId}
           history={history}
           hideCreateTaskCheckbox
+          placeholder={`Message task #${currentTaskDetail.taskNumber}`}
         />
       )}
     </div>

@@ -27,6 +27,12 @@ interface Props {
    * the checkbox entirely.
    */
   hideCreateTaskCheckbox?: boolean;
+  /**
+   * Override the default "Message {target}" placeholder. Used by TaskDetail
+   * so the user sees "Message task #7" instead of the internal sub-channel
+   * slug `pr-72-polish__task-7`, which leaks the backfill naming scheme.
+   */
+  placeholder?: string;
 }
 
 export function MessageInput({
@@ -34,6 +40,7 @@ export function MessageInput({
   conversationId,
   history,
   hideCreateTaskCheckbox = false,
+  placeholder: placeholderOverride,
 }: Props) {
   const { currentUser, currentChannel } = useStore();
   const pushToast = useStore((s) => s.pushToast);
@@ -80,9 +87,11 @@ export function MessageInput({
 
   const placeholder = isReadOnlySystem
     ? `${target} is read-only — agent breadcrumbs only`
-    : target
-      ? `Message ${target}`
-      : "Select a channel to message";
+    : placeholderOverride
+      ? placeholderOverride
+      : target
+        ? `Message ${target}`
+        : "Select a channel to message";
 
   async function handleSend() {
     if (
