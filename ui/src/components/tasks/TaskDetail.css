@@ -67,25 +67,44 @@
   color: var(--color-foreground);
 }
 
+/* Primary CTA of the task-detail view. Mirrors `.message-input-send`'s recipe
+   (solid primary fill, inner embossed border, uppercase mono) so the advance
+   action reads as the main step forward, not as a sibling of the ghost meta
+   chips. Pushed to the right with margin-left:auto. */
 .task-detail__advance {
+  margin-left: auto;
+  position: relative;
+  min-height: 24px;
+  padding: 0 12px;
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  border: 1px solid var(--color-primary);
+  border-radius: 0;
   font-family: var(--font-mono);
   font-size: 11px;
-  letter-spacing: 0.07em;
-  text-transform: lowercase;
-  color: var(--color-foreground);
-  background: transparent;
-  border: 1px solid var(--color-border);
-  padding: 2px 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
   cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.task-detail__advance::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  pointer-events: none;
 }
 
 .task-detail__advance:hover:not(:disabled) {
-  border-color: var(--color-foreground);
+  background: #34312b;
 }
 
 .task-detail__advance:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.45;
 }
 
 .task-detail__loading,
