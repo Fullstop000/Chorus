@@ -59,10 +59,11 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             let client = chorus::utils::http::client();
             let list_res = client.get(format!("{server_url}/api/agents")).send().await?;
             let list_status = list_res.status();
-            let agents: Vec<serde_json::Value> = list_res.json().await?;
             if !list_status.is_success() {
-                anyhow::bail!("server returned {list_status} while listing agents");
+                let body = list_res.text().await.unwrap_or_default();
+                anyhow::bail!("server returned {list_status} while listing agents: {body}");
             }
+            let agents: Vec<serde_json::Value> = list_res.json().await?;
             let agent_id = find_agent_id_by_name(&agents, &name)
                 .ok_or_else(|| anyhow::anyhow!("agent not found: {name}"))?;
             let res = client
