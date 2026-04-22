@@ -129,6 +129,7 @@ export function TaskDetail() {
           target={subChannelName}
           conversationId={subChannelId}
           history={history}
+          hideCreateTaskCheckbox
         />
       )}
     </div>
