@@ -115,7 +115,7 @@ fn check_auth(name: &str) -> ProbeAuth {
 }
 
 fn check_claude_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("claude").args(&["auth", "status"]).output() else {
+    let Ok(output) = Command::new("claude").args(["auth", "status"]).output() else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -134,7 +134,7 @@ fn check_claude_auth() -> ProbeAuth {
 }
 
 fn check_codex_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("codex").args(&["login", "status"]).output() else {
+    let Ok(output) = Command::new("codex").args(["login", "status"]).output() else {
         return ProbeAuth::Unauthed;
     };
     let combined = format!(
@@ -152,13 +152,13 @@ fn check_codex_auth() -> ProbeAuth {
 
 fn check_kimi_auth() -> ProbeAuth {
     let has_access = Command::new("kimi")
-        .args(&["config", "get", "auth.access_token"])
+        .args(["config", "get", "auth.access_token"])
         .output()
         .ok()
         .filter(|o| o.status.success())
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
     let has_refresh = Command::new("kimi")
-        .args(&["config", "get", "auth.refresh_token"])
+        .args(["config", "get", "auth.refresh_token"])
         .output()
         .ok()
         .filter(|o| o.status.success())
@@ -171,10 +171,7 @@ fn check_kimi_auth() -> ProbeAuth {
 }
 
 fn check_opencode_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("opencode")
-        .args(&["auth", "status"])
-        .output()
-    else {
+    let Ok(output) = Command::new("opencode").args(["auth", "status"]).output() else {
         return ProbeAuth::Unauthed;
     };
     if output.status.success() {
@@ -188,10 +185,7 @@ fn check_gemini_auth() -> ProbeAuth {
     if std::env::var("GEMINI_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
         return ProbeAuth::Authed;
     }
-    let Ok(output) = Command::new("gemini")
-        .args(&["auth", "status"])
-        .output()
-    else {
+    let Ok(output) = Command::new("gemini").args(["auth", "status"]).output() else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -389,11 +383,7 @@ fn render_runtime(r: &RuntimeReport) {
             format!("{} {}", style("·").dim(), style("logged in").dim())
         }
         ProbeAuth::Unauthed => {
-            format!(
-                "{} {}",
-                style("·").dim(),
-                style("not logged in").dim()
-            )
+            format!("{} {}", style("·").dim(), style("not logged in").dim())
         }
         ProbeAuth::NotInstalled => String::new(),
     };

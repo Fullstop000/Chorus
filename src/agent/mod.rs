@@ -16,7 +16,7 @@ pub use lifecycle::AgentLifecycle;
 use serde::{Deserialize, Serialize};
 
 /// Supported local agent runtimes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntime {
     Claude,
