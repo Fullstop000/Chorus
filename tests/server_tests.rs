@@ -1662,10 +1662,10 @@ async fn config_edit_does_not_restart_when_no_process_managed_despite_db_active(
 #[tokio::test]
 async fn test_restart_agent_reset_session_preserves_workspace() {
     let (store, _app, dir) = setup_with_data_dir();
-    store
-        .update_agent_session("bot1", Some("thread-123"))
-        .unwrap();
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    store
+        .record_session(&bot1.id, "thread-123", &bot1.runtime)
+        .unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
@@ -1685,8 +1685,10 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let agent = store.get_agent("bot1").unwrap().unwrap();
-    assert_eq!(agent.session_id, None);
+    assert!(
+        store.get_active_session(&bot1.id).unwrap().is_none(),
+        "reset_session must clear the active agent_sessions row"
+    );
     assert!(workspace_dir.join("plan.md").exists());
 }
 

@@ -204,8 +204,10 @@ impl AgentManager {
             bridge_endpoint,
         };
 
-        let intent = match agent.session_id.clone() {
-            Some(id) => SessionIntent::Resume(id),
+        let active = self.store.get_active_session(&agent.id)?;
+        let is_resume = active.is_some();
+        let intent = match active {
+            Some(s) => SessionIntent::Resume(s.session_id),
             None => SessionIntent::New,
         };
         let attach_result = driver
@@ -214,8 +216,6 @@ impl AgentManager {
         let mut handle = attach_result.session;
         let events = attach_result.events;
         let event_rx = events.subscribe(); // subscribe BEFORE run
-
-        let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
         let init_prompt_text = build_start_prompt(
             &agent.display_name,

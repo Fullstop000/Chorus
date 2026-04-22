@@ -20,7 +20,7 @@ use chorus::agent::manager::AgentManager;
 use chorus::store::{AgentRecordUpsert, Store};
 use tempfile::tempdir;
 
-fn seed_agent_with_session(store: &Store, name: &str, session_id: &str) {
+fn seed_agent_with_session(store: &Store, name: &str, session_id: &str) -> String {
     store
         .create_agent_record(&AgentRecordUpsert {
             name,
@@ -33,9 +33,11 @@ fn seed_agent_with_session(store: &Store, name: &str, session_id: &str) {
             env_vars: &[],
         })
         .unwrap();
+    let agent_id = store.get_agent(name).unwrap().unwrap().id;
     store
-        .update_agent_session(name, Some(session_id))
+        .record_session(&agent_id, session_id, "codex")
         .unwrap();
+    agent_id
 }
 
 #[tokio::test]
@@ -47,7 +49,7 @@ async fn stop_agent_preserves_session_id() {
 
     let name = "persist-bot";
     let seeded_session = "sess-stop-123";
-    seed_agent_with_session(&store, name, seeded_session);
+    let agent_id = seed_agent_with_session(&store, name, seeded_session);
 
     let manager = AgentManager::new_for_test(store.clone(), dir.path().to_path_buf());
 
@@ -65,14 +67,13 @@ async fn stop_agent_preserves_session_id() {
 
     manager.stop_agent(name).await.unwrap();
 
-    let row = store.get_agent(name).unwrap().unwrap();
+    let after = store.get_active_session(&agent_id).unwrap();
     assert_eq!(
-        row.session_id.as_deref(),
+        after.as_ref().map(|s| s.session_id.as_str()),
         Some(seeded_session),
-        "stop_agent must not clear the persisted session_id — the next \
+        "stop_agent must not clear the persisted session — the next \
          start_agent needs it to issue a Resume intent. If this assertion \
-         fails, someone re-introduced `update_agent_session(name, None)` in \
-         the stop path.",
+         fails, someone re-introduced session-clearing in the stop path.",
     );
 }
 
@@ -85,7 +86,7 @@ async fn sleep_agent_preserves_session_id() {
 
     let name = "sleepy-bot";
     let seeded_session = "sess-sleep-456";
-    seed_agent_with_session(&store, name, seeded_session);
+    let agent_id = seed_agent_with_session(&store, name, seeded_session);
 
     let manager = AgentManager::new_for_test(store.clone(), dir.path().to_path_buf());
 
@@ -101,11 +102,11 @@ async fn sleep_agent_preserves_session_id() {
 
     manager.sleep_agent(name).await.unwrap();
 
-    let row = store.get_agent(name).unwrap().unwrap();
+    let after = store.get_active_session(&agent_id).unwrap();
     assert_eq!(
-        row.session_id.as_deref(),
+        after.as_ref().map(|s| s.session_id.as_str()),
         Some(seeded_session),
-        "sleep_agent must not clear the persisted session_id — drivers like \
+        "sleep_agent must not clear the persisted session — drivers like \
          claude-code and codex keep server-side conversation state across \
          process restarts, and resuming depends on this id surviving sleep.",
     );

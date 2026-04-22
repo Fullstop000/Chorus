@@ -473,13 +473,13 @@ pub async fn handle_restart_agent(
         RestartMode::ResetSession => {
             state
                 .store
-                .update_agent_session(&name, None)
+                .clear_active_session(&agent.id)
                 .map_err(internal_err)?;
         }
         RestartMode::FullReset => {
             state
                 .store
-                .update_agent_session(&name, None)
+                .clear_active_session(&agent.id)
                 .map_err(internal_err)?;
             workspace.delete_if_exists(&name).map_err(|e| {
                 app_err!(

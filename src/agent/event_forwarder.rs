@@ -147,7 +147,9 @@ pub(super) fn spawn_event_forwarder(
                     ref session_id,
                 } => {
                     info!(agent = %key, session = %session_id, "session attached");
-                    let _ = store.update_agent_session(key, Some(session_id));
+                    if let Ok(Some(a)) = store.get_agent(key) {
+                        let _ = store.record_session(&a.id, session_id, &a.runtime);
+                    }
                     activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ONLINE, "Ready");
                 }
 
@@ -339,7 +341,9 @@ pub(super) fn spawn_event_forwarder(
                     last_tool_raw_name.remove(session_id);
                     info!(agent = %key, reason = ?result.finish_reason, "run completed");
                     if !session_id.is_empty() {
-                        let _ = store.update_agent_session(key, Some(session_id));
+                        if let Ok(Some(a)) = store.get_agent(key) {
+                            let _ = store.record_session(&a.id, session_id, &a.runtime);
+                        }
                     }
                     trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
                     trace_store.end_run(key);
