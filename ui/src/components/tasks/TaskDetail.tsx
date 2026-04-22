@@ -190,14 +190,29 @@ export function TaskDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTaskDetail]);
 
+  // Stable identity key for the current task target. Used to distinguish a
+  // "switching to a different task" change (where we should wipe stale state
+  // so users don't see the previous task's title/status/chat flash) from a
+  // "refreshing the same task after an advance" change (where the stale
+  // display is the correct display until the fetch resolves).
+  const targetKey = currentTaskDetail
+    ? `${currentTaskDetail.parentChannelId}#${currentTaskDetail.taskNumber}`
+    : null;
+
+  // Wipe task + per-task error state the instant the target changes. Runs
+  // before the fetch effect so the UI flips to the loading state immediately.
+  useEffect(() => {
+    setTask(null);
+    setError(null);
+    setAdvanceError(null);
+    setAdvancing(false);
+  }, [targetKey]);
+
   useEffect(() => {
     if (!currentTaskDetail) {
-      setTask(null);
-      setError(null);
       return;
     }
     let alive = true;
-    setError(null);
     getTaskDetail(currentTaskDetail.parentChannelId, currentTaskDetail.taskNumber)
       .then((t) => {
         if (!alive) return;
