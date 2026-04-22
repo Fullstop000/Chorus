@@ -95,12 +95,6 @@ fn extract_version(s: &str) -> Option<String> {
     re.find(s).map(|m| m.as_str().to_string())
 }
 
-/// Resolve an executable's absolute path by walking `$PATH`, the same way
-/// `which <name>` does. Returns `None` if the binary isn't found.
-fn which_tool(name: &str) -> Option<std::path::PathBuf> {
-    which_all(name).into_iter().next()
-}
-
 /// Return every absolute path where `name` is found on `$PATH`, deduped,
 /// in discovery order. Empty vec if nothing found.
 fn which_all(name: &str) -> Vec<std::path::PathBuf> {
@@ -123,21 +117,9 @@ fn which_all_in(name: &str, path_var: Option<&std::ffi::OsStr>) -> Vec<std::path
         .collect()
 }
 
-/// Fill `target` with the resolved absolute path for `name` iff `target`
-/// is currently unset or empty. Preserves any non-empty user-pinned value
-/// across re-runs. `Some("")` is treated as unset to handle legacy configs
-/// that stored an empty string instead of omitting the field.
-/// Always uses the first match; intended for ACP adapters where a silent
-/// choice is fine.
-fn fill_resolved_path(target: &mut Option<String>, name: &str) {
-    if target.as_deref().unwrap_or("").is_empty() {
-        if let Some(p) = which_tool(name) {
-            *target = Some(p.to_string_lossy().into_owned());
-        }
-    }
-}
-
-/// Like `fill_resolved_path`, but when multiple matches exist and we're in
+/// Fill `target` with the resolved absolute path for `name` when multiple
+/// matches exist and we're in interactive mode, ask the user to pick one.
+/// Non-interactive mode falls back to the first match.
 /// interactive mode, ask the user to pick one. Non-interactive mode falls
 /// back to the first match (current behavior).
 fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) {
@@ -424,12 +406,12 @@ pub async fn run(
         check_runtime(
             "claude",
             "https://docs.claude.com/en/docs/claude-code",
-            AcpStatus::AdapterMissing("claude-agent-acp"),
+            AcpStatus::Native,
         ),
         check_runtime(
             "codex",
             "https://github.com/openai/codex",
-            AcpStatus::AdapterMissing("codex-acp"),
+            AcpStatus::Native,
         ),
         check_runtime(
             "kimi",
@@ -528,9 +510,7 @@ pub async fn run(
     // AND /usr/local/bin), prompt interactively. ACP adapters always use
     // the first match — they're less likely to ship multiple versions.
     fill_binary_path(&mut cfg.claude.binary_path, "claude", interactive);
-    fill_resolved_path(&mut cfg.claude.acp_adaptor, "claude-agent-acp");
     fill_binary_path(&mut cfg.codex.binary_path, "codex", interactive);
-    fill_resolved_path(&mut cfg.codex.acp_adaptor, "codex-acp");
     fill_binary_path(&mut cfg.kimi.binary_path, "kimi", interactive);
     fill_binary_path(&mut cfg.opencode.binary_path, "opencode", interactive);
     fill_binary_path(&mut cfg.gemini.binary_path, "gemini", interactive);
