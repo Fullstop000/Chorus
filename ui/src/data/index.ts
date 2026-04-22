@@ -104,6 +104,7 @@ export {
 
 export {
   getTasks,
+  getTaskDetail,
   createTasks,
   claimTasks,
   unclaimTask,

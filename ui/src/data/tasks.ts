@@ -20,6 +20,10 @@ export interface TaskInfo {
   claimedByName?: string
   createdByName?: string
   createdAt?: string
+  /** Child task sub-channel id; null for legacy rows before sub-channels existed. */
+  subChannelId?: string | null
+  /** Child task sub-channel name for deep-linking. Mirrors `subChannelId`. */
+  subChannelName?: string | null
 }
 
 export interface TasksResponse {
@@ -37,6 +41,13 @@ export function getTasks(
   status: 'all' | TaskStatus = 'all'
 ): Promise<TasksResponse> {
   return get(`${conversationPath(conversationId, '/tasks')}${queryString({ status })}`)
+}
+
+export function getTaskDetail(
+  conversationId: string,
+  taskNumber: number,
+): Promise<TaskInfo> {
+  return get(conversationPath(conversationId, `/tasks/${taskNumber}`))
 }
 
 export function createTasks(conversationId: string, titles: string[]): Promise<TasksResponse> {
