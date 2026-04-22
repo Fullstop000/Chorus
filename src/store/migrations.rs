@@ -11,6 +11,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_add_trace_summary_to_messages(conn)?;
     migrate_create_trace_events_table(conn)?;
     migrate_add_display_name_to_humans(conn)?;
+    migrate_create_agent_sessions_table(conn)?;
     Ok(())
 }
 
@@ -205,5 +206,24 @@ fn migrate_add_display_name_to_humans(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE humans ADD COLUMN display_name TEXT")?;
         tracing::info!("migration: added display_name column to humans");
     }
+    Ok(())
+}
+
+/// Create the agent_sessions table that backs the 1:N Agent:Session relationship.
+fn migrate_create_agent_sessions_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+            session_id TEXT NOT NULL,
+            runtime TEXT NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            last_used_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(agent_id, session_id)
+         );
+         CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
+            ON agent_sessions(agent_id, is_active);",
+    )?;
     Ok(())
 }
