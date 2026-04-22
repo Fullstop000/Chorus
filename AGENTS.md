@@ -35,6 +35,7 @@ Use this doc index before touching a subsystem or workflow:
 | Doc | Covers | Read Before |
 | --- | --- | --- |
 | `[docs/DEV.md](docs/DEV.md)` | Setup, prerequisites, run/test/build loops, and local troubleshooting | First local run, environment setup, or when local tooling is acting up |
+| `[docs/CLI.md](docs/CLI.md)` | CLI command reference — flags, exit codes, environment variables | Adding or changing a CLI command |
 | `[qa/README.md](qa/README.md)` | Authoritative QA SOP: run modes, Playwright workflow, failure classification, evidence handling | Running QA, debugging QA failures, or updating QA process |
 | `[qa/QA_CASES.md](qa/QA_CASES.md)` | Static case catalog index and area-by-area case map | Choosing coverage for a change or mapping a failure to an existing case |
 | `[docs/BACKEND.md](docs/BACKEND.md)` | Rust — error handling, enums, logging, schema/views, tests, Axum handlers | Any backend change |

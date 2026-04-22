@@ -29,8 +29,11 @@ export interface AgentEnvVar {
 
 export type ProbeAuth = 'not_installed' | 'unauthed' | 'authed'
 
-export interface RuntimeStatusInfo {
+export interface RuntimeCatalogEntry {
   runtime: 'claude' | 'codex' | 'kimi' | 'opencode' | string
+  label?: string
+  order?: number
+  reasoning_efforts?: string[]
   auth: ProbeAuth
 }
 
@@ -136,7 +139,7 @@ export function deleteAgent(
   return post(`/api/agents/${encodeURIComponent(agentId)}/delete`, { mode } as DeleteAgentRequest)
 }
 
-export function listRuntimeStatuses(): Promise<RuntimeStatusInfo[]> {
+export function listRuntimeStatuses(): Promise<RuntimeCatalogEntry[]> {
   return get('/api/runtimes')
 }
 

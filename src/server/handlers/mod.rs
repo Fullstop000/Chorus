@@ -272,7 +272,7 @@ pub async fn handle_update_human(
 
 pub async fn handle_list_runtime_statuses(
     State(state): State<AppState>,
-) -> ApiResult<Vec<dto::RuntimeStatusInfo>> {
+) -> ApiResult<Vec<dto::RuntimeCatalogEntry>> {
     let statuses = state
         .runtime_status_provider
         .list_statuses()

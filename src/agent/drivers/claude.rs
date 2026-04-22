@@ -536,6 +536,9 @@ impl ClaudeHandle {
             mcp_path_str,
         ];
         if !self.spec.model.is_empty() {
+            // TODO: Honor `self.spec.reasoning_effort` once the Claude CLI
+            // exposes a stable session-level knob instead of advertising the
+            // value only via the runtime catalog.
             args.push("--model".into());
             args.push(self.spec.model.clone());
         }

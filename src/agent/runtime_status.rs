@@ -5,20 +5,41 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::drivers::{ProbeAuth, RuntimeDriver};
+use crate::agent::runtime_catalog::runtime_metadata;
 use crate::agent::AgentRuntime;
 
-/// HTTP/UI response shape for one supported runtime.
+/// HTTP/UI response shape for one runtime catalog entry plus local auth probe.
 /// Returned by [`RuntimeStatusProvider::list_statuses`] and serialized directly to JSON.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RuntimeStatusInfo {
+pub struct RuntimeCatalogEntry {
     pub runtime: String,
+    pub label: String,
+    pub order: u32,
+    pub reasoning_efforts: Vec<String>,
     pub auth: ProbeAuth,
+}
+
+impl RuntimeCatalogEntry {
+    pub fn new(runtime: AgentRuntime, auth: ProbeAuth) -> Self {
+        let metadata = runtime_metadata(runtime);
+        Self {
+            runtime: runtime.as_str().to_string(),
+            label: metadata.label.to_string(),
+            order: metadata.order,
+            reasoning_efforts: metadata
+                .reasoning_efforts
+                .iter()
+                .map(|effort| (*effort).to_string())
+                .collect(),
+            auth,
+        }
+    }
 }
 
 /// Backend service used by HTTP handlers to query local runtime availability.
 #[async_trait::async_trait]
 pub trait RuntimeStatusProvider: Send + Sync {
-    async fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatusInfo>>;
+    async fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeCatalogEntry>>;
     async fn list_models(&self, runtime: AgentRuntime) -> anyhow::Result<Vec<String>>;
 }
 
@@ -38,15 +59,13 @@ impl SystemRuntimeStatusProvider {
 
 #[async_trait::async_trait]
 impl RuntimeStatusProvider for SystemRuntimeStatusProvider {
-    async fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatusInfo>> {
+    async fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeCatalogEntry>> {
         let mut statuses = Vec::with_capacity(self.drivers.len());
         for (runtime, driver) in &self.drivers {
             let probe = driver.probe().await?;
-            statuses.push(RuntimeStatusInfo {
-                runtime: runtime.as_str().to_string(),
-                auth: probe.auth,
-            });
+            statuses.push(RuntimeCatalogEntry::new(*runtime, probe.auth));
         }
+        statuses.sort_by_key(|status| status.order);
         Ok(statuses)
     }
 

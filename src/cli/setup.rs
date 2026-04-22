@@ -5,6 +5,7 @@
 //! lets the user pick between duplicate binaries on `$PATH`). Passes `--yes`
 //! to skip all prompts and accept defaults.
 
+use chorus::agent::drivers::ProbeAuth;
 use chorus::config::ChorusConfig;
 use chorus::store::Store;
 use console::{style, Emoji};
@@ -95,10 +96,114 @@ fn extract_version(s: &str) -> Option<String> {
     re.find(s).map(|m| m.as_str().to_string())
 }
 
-/// Resolve an executable's absolute path by walking `$PATH`, the same way
-/// `which <name>` does. Returns `None` if the binary isn't found.
-fn which_tool(name: &str) -> Option<std::path::PathBuf> {
-    which_all(name).into_iter().next()
+// ---------------------------------------------------------------------------
+// Auth probing — mirrors each driver's RuntimeDriver::probe() logic
+// ---------------------------------------------------------------------------
+
+/// Probe a runtime's authentication state synchronously.
+/// Mirrors the logic in each runtime's `RuntimeDriver::probe()` but blocks
+/// so it can run inside the synchronous setup doctor.
+fn check_auth(name: &str) -> ProbeAuth {
+    match name {
+        "claude" => check_claude_auth(),
+        "codex" => check_codex_auth(),
+        "kimi" => check_kimi_auth(),
+        "opencode" => check_opencode_auth(),
+        "gemini" => check_gemini_auth(),
+        _ => ProbeAuth::NotInstalled,
+    }
+}
+
+fn check_claude_auth() -> ProbeAuth {
+    let Ok(output) = Command::new("claude").args(["auth", "status"]).output() else {
+        return ProbeAuth::Unauthed;
+    };
+    if !output.status.success() {
+        return ProbeAuth::Unauthed;
+    }
+    let payload: serde_json::Value =
+        match serde_json::from_str(&String::from_utf8_lossy(&output.stdout)) {
+            Ok(v) => v,
+            Err(_) => return ProbeAuth::Unauthed,
+        };
+    if payload["loggedIn"].as_bool().unwrap_or(false) {
+        ProbeAuth::Authed
+    } else {
+        ProbeAuth::Unauthed
+    }
+}
+
+fn check_codex_auth() -> ProbeAuth {
+    let Ok(output) = Command::new("codex").args(["login", "status"]).output() else {
+        return ProbeAuth::Unauthed;
+    };
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_ascii_lowercase();
+    if output.status.success() && combined.contains("logged in") {
+        ProbeAuth::Authed
+    } else {
+        ProbeAuth::Unauthed
+    }
+}
+
+fn check_kimi_auth() -> ProbeAuth {
+    let has_access = Command::new("kimi")
+        .args(["config", "get", "auth.access_token"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
+    let has_refresh = Command::new("kimi")
+        .args(["config", "get", "auth.refresh_token"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
+    if has_access || has_refresh {
+        ProbeAuth::Authed
+    } else {
+        ProbeAuth::Unauthed
+    }
+}
+
+fn check_opencode_auth() -> ProbeAuth {
+    let Ok(output) = Command::new("opencode").args(["auth", "status"]).output() else {
+        return ProbeAuth::Unauthed;
+    };
+    if output.status.success() {
+        ProbeAuth::Authed
+    } else {
+        ProbeAuth::Unauthed
+    }
+}
+
+fn check_gemini_auth() -> ProbeAuth {
+    if std::env::var("GEMINI_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
+        return ProbeAuth::Authed;
+    }
+    let Ok(output) = Command::new("gemini").args(["auth", "status"]).output() else {
+        return ProbeAuth::Unauthed;
+    };
+    if !output.status.success() {
+        return ProbeAuth::Unauthed;
+    }
+    let payload: serde_json::Value =
+        match serde_json::from_str(&String::from_utf8_lossy(&output.stdout)) {
+            Ok(v) => v,
+            Err(_) => return ProbeAuth::Unauthed,
+        };
+    if payload["accessToken"]
+        .as_str()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        ProbeAuth::Authed
+    } else {
+        ProbeAuth::Unauthed
+    }
 }
 
 /// Return every absolute path where `name` is found on `$PATH`, deduped,
@@ -123,23 +228,9 @@ fn which_all_in(name: &str, path_var: Option<&std::ffi::OsStr>) -> Vec<std::path
         .collect()
 }
 
-/// Fill `target` with the resolved absolute path for `name` iff `target`
-/// is currently unset or empty. Preserves any non-empty user-pinned value
-/// across re-runs. `Some("")` is treated as unset to handle legacy configs
-/// that stored an empty string instead of omitting the field.
-/// Always uses the first match; intended for ACP adapters where a silent
-/// choice is fine.
-fn fill_resolved_path(target: &mut Option<String>, name: &str) {
-    if target.as_deref().unwrap_or("").is_empty() {
-        if let Some(p) = which_tool(name) {
-            *target = Some(p.to_string_lossy().into_owned());
-        }
-    }
-}
-
-/// Like `fill_resolved_path`, but when multiple matches exist and we're in
-/// interactive mode, ask the user to pick one. Non-interactive mode falls
-/// back to the first match (current behavior).
+/// Fill `target` with the resolved absolute path for `name`. When multiple
+/// matches exist and we're in interactive mode, ask the user to pick one.
+/// Non-interactive mode falls back to the first match.
 fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) {
     // Treat Some("") as unset — normalizes legacy String-based configs.
     if !target.as_deref().unwrap_or("").is_empty() {
@@ -209,6 +300,7 @@ struct RuntimeReport {
     hint: &'static str,
     version: Option<String>,
     acp: AcpStatus,
+    auth: ProbeAuth,
 }
 
 fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> RuntimeReport {
@@ -230,21 +322,29 @@ fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> Runt
         }
         AcpStatus::Native => AcpStatus::Native,
     };
+    let auth = if version.is_some() {
+        check_auth(name)
+    } else {
+        ProbeAuth::NotInstalled
+    };
     RuntimeReport {
         name,
         hint,
         version,
         acp,
+        auth,
     }
 }
 
 fn render_runtime(r: &RuntimeReport) {
-    let (glyph, glyph_style): (Emoji<'_, '_>, _) = match &r.version {
-        Some(_) => (OK, "green"),
-        None => (BAD, "red"),
+    let (glyph, glyph_style): (Emoji<'_, '_>, _) = match (&r.version, &r.auth) {
+        (None, _) => (BAD, "red"),
+        (Some(_), ProbeAuth::Authed) => (OK, "green"),
+        (Some(_), _) => (WARN, "yellow"),
     };
     let glyph_styled = match glyph_style {
         "green" => style(glyph).green(),
+        "yellow" => style(glyph).yellow(),
         _ => style(glyph).red(),
     };
     let name = style(format!("{:<12}", r.name)).bold();
@@ -278,7 +378,21 @@ fn render_runtime(r: &RuntimeReport) {
             format!("{} {}", style("·").dim(), style("native ACP").dim())
         }
     };
-    println!("  {}{} {} {}", glyph_styled, name, version, acp_detail);
+    let auth_detail = match r.auth {
+        ProbeAuth::Authed => {
+            format!("{} {}", style("·").dim(), style("logged in").dim())
+        }
+        ProbeAuth::Unauthed => {
+            format!("{} {}", style("·").dim(), style("not logged in").dim())
+        }
+        ProbeAuth::NotInstalled => String::new(),
+    };
+    let detail = if auth_detail.is_empty() {
+        acp_detail
+    } else {
+        format!("{} {}", acp_detail, auth_detail)
+    };
+    println!("  {}{} {} {}", glyph_styled, name, version, detail);
 }
 
 fn check_template_dir(dir: &std::path::Path) -> (usize, usize) {
@@ -424,12 +538,12 @@ pub async fn run(
         check_runtime(
             "claude",
             "https://docs.claude.com/en/docs/claude-code",
-            AcpStatus::AdapterMissing("claude-agent-acp"),
+            AcpStatus::Native,
         ),
         check_runtime(
             "codex",
             "https://github.com/openai/codex",
-            AcpStatus::AdapterMissing("codex-acp"),
+            AcpStatus::Native,
         ),
         check_runtime(
             "kimi",
@@ -445,17 +559,6 @@ pub async fn run(
     ];
     for r in &runtimes {
         render_runtime(r);
-    }
-    let any_adapter_missing = runtimes
-        .iter()
-        .any(|r| r.version.is_some() && matches!(r.acp, AcpStatus::AdapterMissing(_)));
-    if any_adapter_missing {
-        println!(
-            "  {} {} {}",
-            style(" ").dim(),
-            style("ACP adaptors:").dim(),
-            style("https://github.com/openclaw/acpx").dim().italic()
-        );
     }
     let detected_runtimes: Vec<&str> = runtimes
         .iter()
@@ -528,9 +631,7 @@ pub async fn run(
     // AND /usr/local/bin), prompt interactively. ACP adapters always use
     // the first match — they're less likely to ship multiple versions.
     fill_binary_path(&mut cfg.claude.binary_path, "claude", interactive);
-    fill_resolved_path(&mut cfg.claude.acp_adaptor, "claude-agent-acp");
     fill_binary_path(&mut cfg.codex.binary_path, "codex", interactive);
-    fill_resolved_path(&mut cfg.codex.acp_adaptor, "codex-acp");
     fill_binary_path(&mut cfg.kimi.binary_path, "kimi", interactive);
     fill_binary_path(&mut cfg.opencode.binary_path, "opencode", interactive);
     fill_binary_path(&mut cfg.gemini.binary_path, "gemini", interactive);

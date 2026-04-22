@@ -667,6 +667,9 @@ impl CodexHandle {
             ),
             None => (
                 "thread/start".to_string(),
+                // TODO: Thread start currently ignores `self.spec.reasoning_effort`.
+                // Plumb the validated catalog value through once Codex app-server
+                // exposes a first-class reasoning-effort field for new threads.
                 codex_app_server::build_thread_start(
                     req_id,
                     &self.spec.model,

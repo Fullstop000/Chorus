@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { LoaderCircle } from "lucide-react";
-import type { AgentEnvVar, RuntimeStatusInfo } from "./types";
+import type { AgentEnvVar, RuntimeCatalogEntry } from "./types";
 import { useRuntimeModels } from "../../hooks/useRuntimeModels";
 import {
   Select,
@@ -25,7 +25,18 @@ export const REASONING_EFFORTS = [
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
   { value: "xhigh", label: "Extra High" },
+  { value: "max", label: "Max" },
 ];
+
+const DEFAULT_REASONING_OPTION = REASONING_EFFORTS[0];
+
+export const RUNTIME_OPTIONS = [
+  { value: "claude", label: "Claude Code" },
+  { value: "codex", label: "Codex CLI" },
+  { value: "kimi", label: "Kimi CLI" },
+  { value: "opencode", label: "OpenCode" },
+  { value: "gemini", label: "Gemini CLI" },
+] as const;
 
 export interface AgentConfigState {
   name: string;
@@ -40,43 +51,118 @@ export interface AgentConfigState {
 
 interface Props {
   state: AgentConfigState;
-  runtimeStatuses?: RuntimeStatusInfo[];
+  runtimeStatuses?: RuntimeCatalogEntry[];
   runtimeStatusError?: string | null;
   onChange: (next: AgentConfigState) => void;
 }
 
+function findRuntimeStatus(
+  runtime: string,
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
+): RuntimeCatalogEntry | undefined {
+  return runtimeStatuses.find((entry) => entry.runtime === runtime);
+}
+
+function fallbackRuntimeLabel(runtime: string): string {
+  return (
+    RUNTIME_OPTIONS.find((option) => option.value === runtime)?.label ?? runtime
+  );
+}
+
+function reasoningEffortLabel(value: string): string {
+  return (
+    REASONING_EFFORTS.find((option) => option.value === value)?.label ?? value
+  );
+}
+
+export function runtimeCatalog(
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
+): Array<{ value: string; label: string }> {
+  if (runtimeStatuses.length === 0) {
+    return RUNTIME_OPTIONS.map((runtime) => ({ ...runtime }));
+  }
+
+  return [...runtimeStatuses]
+    .sort(
+      (left, right) =>
+        (left.order ?? Number.MAX_SAFE_INTEGER) -
+        (right.order ?? Number.MAX_SAFE_INTEGER),
+    )
+    .map((runtimeStatus) => ({
+      value: runtimeStatus.runtime,
+      label: runtimeStatus.label ?? fallbackRuntimeLabel(runtimeStatus.runtime),
+    }));
+}
+
+export function runtimeReasoningEffortValues(
+  runtime: string,
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
+): string[] {
+  return findRuntimeStatus(runtime, runtimeStatuses)?.reasoning_efforts ?? [];
+}
+
+export function runtimeSupportsReasoningEffort(
+  runtime: string,
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
+): boolean {
+  return runtimeReasoningEffortValues(runtime, runtimeStatuses).length > 0;
+}
+
+export function runtimeReasoningEffortOptions(
+  runtime: string,
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
+): Array<{ value: string; label: string }> {
+  const efforts = runtimeReasoningEffortValues(runtime, runtimeStatuses);
+  if (efforts.length === 0) {
+    return [];
+  }
+
+  return [
+    DEFAULT_REASONING_OPTION,
+    ...efforts.map((value) => ({ value, label: reasoningEffortLabel(value) })),
+  ];
+}
+
+export function normalizeRuntimeReasoningEffort(
+  runtime: string,
+  reasoningEffort: string | null,
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
+): string | null {
+  const efforts = runtimeReasoningEffortValues(runtime, runtimeStatuses);
+  if (efforts.length === 0) {
+    return null;
+  }
+
+  return reasoningEffort && efforts.includes(reasoningEffort)
+    ? reasoningEffort
+    : null;
+}
+
 export function runtimeOptionLabel(
   runtime: string,
-  runtimeStatuses: RuntimeStatusInfo[] = [],
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
 ): string {
-  const baseLabel =
-    runtime === "claude"
-      ? "Claude Code"
-      : runtime === "codex"
-        ? "Codex CLI"
-        : runtime === "opencode"
-          ? "OpenCode"
-          : "Kimi CLI";
-  const status = runtimeStatuses.find((entry) => entry.runtime === runtime);
+  const status = findRuntimeStatus(runtime, runtimeStatuses);
+  const baseLabel = status?.label ?? fallbackRuntimeLabel(runtime);
   if (!status) return `${baseLabel} · status unavailable`;
-  if (status.auth === 'not_installed') return `${baseLabel} · not installed`;
-  if (status.auth === 'authed') return `${baseLabel} · signed in`;
+  if (status.auth === "not_installed") return `${baseLabel} · not installed`;
+  if (status.auth === "authed") return `${baseLabel} · signed in`;
   return `${baseLabel} · not signed in`;
 }
 
 export function isRuntimeAvailable(
   runtime: string,
-  runtimeStatuses: RuntimeStatusInfo[] = [],
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
 ): boolean {
-  const status = runtimeStatuses.find((entry) => entry.runtime === runtime);
-  return status?.auth !== 'not_installed' && status?.auth !== undefined;
+  const status = findRuntimeStatus(runtime, runtimeStatuses);
+  return status?.auth !== "not_installed" && status?.auth !== undefined;
 }
 
 export function runtimeStatusSummary(
   runtime: string,
-  runtimeStatuses: RuntimeStatusInfo[] = [],
+  runtimeStatuses: RuntimeCatalogEntry[] = [],
 ): { tone: "ok" | "warn" | "muted"; title: string; detail: string } {
-  const status = runtimeStatuses.find((entry) => entry.runtime === runtime);
+  const status = findRuntimeStatus(runtime, runtimeStatuses);
   if (!status) {
     return {
       tone: "muted",
@@ -84,14 +170,14 @@ export function runtimeStatusSummary(
       detail: "The local runtime probe did not return a status for this CLI.",
     };
   }
-  if (status.auth === 'not_installed') {
+  if (status.auth === "not_installed") {
     return {
       tone: "warn",
       title: "Not installed",
       detail: "This runtime is not available on the local machine yet.",
     };
   }
-  if (status.auth === 'authed') {
+  if (status.auth === "authed") {
     return {
       tone: "ok",
       title: "Signed in",
@@ -142,7 +228,9 @@ export function AgentConfigForm({
   runtimeStatusError = null,
   onChange,
 }: Props) {
-  const { runtimeModels, runtimeModelsError, isLoading } = useRuntimeModels(state.runtime);
+  const { runtimeModels, runtimeModelsError, isLoading } = useRuntimeModels(
+    state.runtime,
+  );
 
   useEffect(() => {
     if (runtimeModels.length === 0 || runtimeModels.includes(state.model)) {
@@ -177,6 +265,11 @@ export function AgentConfigForm({
   }
 
   const runtimeSummary = runtimeStatusSummary(state.runtime, runtimeStatuses);
+  const runtimeOptions = runtimeCatalog(runtimeStatuses);
+  const reasoningOptions = runtimeReasoningEffortOptions(
+    state.runtime,
+    runtimeStatuses,
+  );
   const modelLabel = modelSelectDisplayLabel({
     selectedModel: state.model,
     runtimeModels,
@@ -237,10 +330,11 @@ export function AgentConfigForm({
                   ...state,
                   runtime,
                   model: "",
-                  reasoningEffort:
-                    runtime === "codex" || runtime === "opencode"
-                      ? (state.reasoningEffort ?? "default")
-                      : null,
+                  reasoningEffort: normalizeRuntimeReasoningEffort(
+                    runtime,
+                    state.reasoningEffort,
+                    runtimeStatuses,
+                  ),
                 });
               }}
             >
@@ -248,30 +342,17 @@ export function AgentConfigForm({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem
-                  value="claude"
-                  disabled={!isRuntimeAvailable("claude", runtimeStatuses)}
-                >
-                  {runtimeOptionLabel("claude", runtimeStatuses)}
-                </SelectItem>
-                <SelectItem
-                  value="codex"
-                  disabled={!isRuntimeAvailable("codex", runtimeStatuses)}
-                >
-                  {runtimeOptionLabel("codex", runtimeStatuses)}
-                </SelectItem>
-                <SelectItem
-                  value="kimi"
-                  disabled={!isRuntimeAvailable("kimi", runtimeStatuses)}
-                >
-                  {runtimeOptionLabel("kimi", runtimeStatuses)}
-                </SelectItem>
-                <SelectItem
-                  value="opencode"
-                  disabled={!isRuntimeAvailable("opencode", runtimeStatuses)}
-                >
-                  {runtimeOptionLabel("opencode", runtimeStatuses)}
-                </SelectItem>
+                {runtimeOptions.map((runtime) => (
+                  <SelectItem
+                    key={runtime.value}
+                    value={runtime.value}
+                    disabled={
+                      !isRuntimeAvailable(runtime.value, runtimeStatuses)
+                    }
+                  >
+                    {runtimeOptionLabel(runtime.value, runtimeStatuses)}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
             <div
@@ -297,7 +378,10 @@ export function AgentConfigForm({
               <SelectTrigger aria-label="Model">
                 {isLoading ? (
                   <span className="select-trigger-loading">
-                    <LoaderCircle size={14} className="select-trigger-spinner" />
+                    <LoaderCircle
+                      size={14}
+                      className="select-trigger-spinner"
+                    />
                     <span>{modelLabel}</span>
                   </span>
                 ) : (
@@ -326,7 +410,7 @@ export function AgentConfigForm({
             )}
           </FormField>
 
-          {(state.runtime === "codex" || state.runtime === "opencode") && (
+          {reasoningOptions.length > 0 && (
             <FormField>
               <Label>Reasoning</Label>
               <Select
@@ -342,7 +426,7 @@ export function AgentConfigForm({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {REASONING_EFFORTS.map((effort) => (
+                  {reasoningOptions.map((effort) => (
                     <SelectItem key={effort.value} value={effort.value}>
                       {effort.label}
                     </SelectItem>

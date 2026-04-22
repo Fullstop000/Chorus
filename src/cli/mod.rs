@@ -7,6 +7,7 @@
 
 mod agent;
 mod channel;
+mod check;
 mod send;
 mod serve;
 mod setup;
@@ -102,6 +103,11 @@ enum Commands {
         /// Agent key to pair (matches the Chorus agent name).
         #[arg(long)]
         agent: String,
+    },
+    /// Read-only environment diagnostic
+    Check {
+        #[arg(long)]
+        data_dir: Option<String>,
     },
     /// Alias for `start --no-open` (kept for backward compatibility)
     #[command(hide = true)]
@@ -247,6 +253,8 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::Channel { cmd, server_url }) => channel::run(server_url, cmd).await,
 
         Some(Commands::Agent { cmd }) => agent::run(cmd).await,
+
+        Some(Commands::Check { data_dir }) => check::run(data_dir).await,
 
         Some(Commands::Serve {
             port,

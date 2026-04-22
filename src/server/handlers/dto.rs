@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-pub use crate::agent::runtime_status::RuntimeStatusInfo;
+pub use crate::agent::runtime_status::RuntimeCatalogEntry;
 use crate::store::agents::Agent;
 use crate::store::channels::Channel;
 use crate::store::humans::Human;

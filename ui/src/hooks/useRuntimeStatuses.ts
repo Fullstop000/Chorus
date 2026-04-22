@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { listRuntimeStatuses } from '../data'
-import type { RuntimeStatusInfo } from '../data'
+import type { RuntimeCatalogEntry } from '../data'
 
 export function useRuntimeStatuses(enabled = true): {
-  runtimeStatuses: RuntimeStatusInfo[]
+  runtimeStatuses: RuntimeCatalogEntry[]
   runtimeStatusError: string | null
 } {
-  const [runtimeStatuses, setRuntimeStatuses] = useState<RuntimeStatusInfo[]>([])
+  const [runtimeStatuses, setRuntimeStatuses] = useState<RuntimeCatalogEntry[]>([])
   const [runtimeStatusError, setRuntimeStatusError] = useState<string | null>(null)
 
   useEffect(() => {

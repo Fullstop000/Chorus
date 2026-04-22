@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Bridge discovery info written on startup, read by drivers.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BridgeInfo {
     pub port: u16,
     pub pid: u32,
@@ -95,6 +95,21 @@ pub fn write_bridge_info_to(path: &std::path::Path, info: &BridgeInfo) -> std::i
     Ok(())
 }
 
+/// Detailed status returned by [`read_bridge_status`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BridgeStatus {
+    /// Discovery file is missing.
+    Missing,
+    /// Discovery file exists but cannot be read (e.g., permission denied).
+    Unreadable { reason: String },
+    /// Discovery file is readable but contains invalid JSON.
+    Invalid { reason: String },
+    /// Discovery file is readable and valid, but the recorded PID is dead.
+    Stale { info: BridgeInfo },
+    /// Discovery file is readable, valid, and the recorded PID is alive.
+    Live { info: BridgeInfo },
+}
+
 /// Read bridge info from the default discovery file. Returns None if:
 /// - File doesn't exist
 /// - File can't be parsed
@@ -114,6 +129,41 @@ pub fn read_bridge_info_from(path: &std::path::Path) -> Option<BridgeInfo> {
         return None;
     }
     Some(info)
+}
+
+/// Read bridge status from the default discovery file with detailed error
+/// classification. This is the richer sibling of [`read_bridge_info`] used by
+/// diagnostics that need to distinguish "missing", "corrupt", and "stale".
+pub fn read_bridge_status() -> BridgeStatus {
+    read_bridge_status_from(&default_discovery_path())
+}
+
+/// Read bridge status from a specific path with detailed error classification.
+pub fn read_bridge_status_from(path: &std::path::Path) -> BridgeStatus {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return BridgeStatus::Missing,
+        Err(e) => {
+            return BridgeStatus::Unreadable {
+                reason: format!("cannot read discovery file: {e}"),
+            }
+        }
+    };
+
+    let info: BridgeInfo = match serde_json::from_str(&contents) {
+        Ok(i) => i,
+        Err(e) => {
+            return BridgeStatus::Invalid {
+                reason: format!("invalid JSON: {e}"),
+            }
+        }
+    };
+
+    if !is_pid_alive(info.pid) {
+        BridgeStatus::Stale { info }
+    } else {
+        BridgeStatus::Live { info }
+    }
 }
 
 /// Remove the discovery file (called on graceful shutdown).
@@ -370,6 +420,81 @@ mod tests {
         assert_eq!(read_back.port, fresh.port);
         assert_eq!(read_back.pid, fresh.pid);
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // -----------------------------------------------------------------------
+    // read_bridge_status_from tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn read_bridge_status_missing() {
+        let path = tmp_path("status_missing.json");
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(read_bridge_status_from(&path), BridgeStatus::Missing);
+    }
+
+    #[test]
+    fn read_bridge_status_corrupt_json() {
+        let path = tmp_path("status_corrupt.json");
+        std::fs::write(&path, b"not json").unwrap();
+        let status = read_bridge_status_from(&path);
+        assert!(
+            matches!(&status, BridgeStatus::Invalid { reason } if reason.contains("invalid JSON")),
+            "expected Invalid with JSON reason, got {status:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_bridge_status_corrupt_unreadable() {
+        // Write valid JSON to a path, then make it unreadable (Unix only).
+        let path = tmp_path("status_unreadable.json");
+        let info = sample_info();
+        std::fs::write(&path, serde_json::to_string(&info).unwrap()).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            let status = read_bridge_status_from(&path);
+            assert!(
+                matches!(&status, BridgeStatus::Unreadable { reason } if reason.contains("cannot read")),
+                "expected Unreadable with read reason, got {status:?}"
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_bridge_status_stale() {
+        let path = tmp_path("status_stale.json");
+        let stale = BridgeInfo {
+            port: 9500,
+            pid: 999_999_999,
+            started_at: "2026-04-16T00:00:00Z".to_string(),
+        };
+        std::fs::write(&path, serde_json::to_string(&stale).unwrap()).unwrap();
+        let status = read_bridge_status_from(&path);
+        assert!(
+            matches!(&status, BridgeStatus::Stale { info } if info.pid == 999_999_999),
+            "expected Stale, got {status:?}"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn read_bridge_status_live() {
+        let path = tmp_path("status_live.json");
+        let info = sample_info(); // uses our own PID, which is alive
+        std::fs::write(&path, serde_json::to_string(&info).unwrap()).unwrap();
+        let status = read_bridge_status_from(&path);
+        assert!(
+            matches!(&status, BridgeStatus::Live { info: i } if i.pid == info.pid),
+            "expected Live, got {status:?}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -11,13 +11,15 @@ import type {
   AgentDetailResponse,
   DeleteMode,
   RestartMode,
-  RuntimeStatusInfo,
+  RuntimeCatalogEntry,
 } from "../../../data";
 import { useRuntimeStatuses } from "../../../hooks/useRuntimeStatuses";
 import { useStore } from "../../../store";
 import { useRefresh } from "../../../hooks/data";
 import {
   AgentConfigForm,
+  normalizeRuntimeReasoningEffort,
+  runtimeReasoningEffortOptions,
   runtimeStatusSummary,
   type AgentConfigState,
 } from "../AgentConfigForm";
@@ -108,6 +110,10 @@ export function ProfilePanel() {
   const envVars = detail?.envVars ?? [];
   const reasoningEffort =
     agent.reasoningEffort ?? detail?.agent.reasoningEffort ?? null;
+  const reasoningOptions = runtimeReasoningEffortOptions(
+    agent.runtime ?? "claude",
+    runtimeStatuses,
+  );
   const runtimeSummary = runtimeStatusSummary(
     agent.runtime ?? "claude",
     runtimeStatuses,
@@ -209,11 +215,13 @@ export function ProfilePanel() {
           </span>
           <span className="profile-config-key">Auth</span>
           <span className="badge">
-            {runtimeStatuses.find((s) => s.runtime === (agent.runtime ?? "claude"))?.auth ?? "unknown"}
+            {runtimeStatuses.find(
+              (s) => s.runtime === (agent.runtime ?? "claude"),
+            )?.auth ?? "unknown"}
           </span>
           <span className="profile-config-key">Model</span>
           <span className="badge">{agent.model ?? "sonnet"}</span>
-          {agent.runtime === "codex" && (
+          {reasoningOptions.length > 0 && (
             <>
               <span className="profile-config-key">Reasoning</span>
               <span className="badge">{reasoningEffort ?? "default"}</span>
@@ -223,13 +231,14 @@ export function ProfilePanel() {
           <span
             className="badge"
             style={{
-              background: agent.status === "working"
-                ? "var(--status-sleeping)"
-                : agent.status === "ready"
-                  ? "var(--status-online)"
-                  : agent.status === "failed"
-                    ? "var(--status-failed)"
-                    : "var(--status-inactive)",
+              background:
+                agent.status === "working"
+                  ? "var(--status-sleeping)"
+                  : agent.status === "ready"
+                    ? "var(--status-online)"
+                    : agent.status === "failed"
+                      ? "var(--status-failed)"
+                      : "var(--status-inactive)",
             }}
           >
             {agent.status}
@@ -276,10 +285,11 @@ export function ProfilePanel() {
             systemPrompt: detail.agent.systemPrompt ?? null,
             runtime: detail.agent.runtime ?? "claude",
             model: detail.agent.model ?? "sonnet",
-            reasoningEffort:
-              detail.agent.runtime === "codex"
-                ? (detail.agent.reasoningEffort ?? "default")
-                : null,
+            reasoningEffort: normalizeRuntimeReasoningEffort(
+              detail.agent.runtime ?? "claude",
+              detail.agent.reasoningEffort ?? null,
+              runtimeStatuses,
+            ),
             envVars: detail.envVars,
           }}
           runtimeStatuses={runtimeStatuses}
@@ -332,7 +342,7 @@ function EditAgentModal({
   agentId: string;
   agentName: string;
   initialState: AgentConfigState;
-  runtimeStatuses: RuntimeStatusInfo[];
+  runtimeStatuses: RuntimeCatalogEntry[];
   runtimeStatusError: string | null;
   onOpenChange: (open: boolean) => void;
   onSaved: () => Promise<void>;
@@ -353,10 +363,11 @@ function EditAgentModal({
         description: state.description,
         runtime: state.runtime,
         model: state.model,
-        reasoningEffort:
-          state.runtime === "codex" || state.runtime === "opencode"
-            ? state.reasoningEffort
-            : null,
+        reasoningEffort: normalizeRuntimeReasoningEffort(
+          state.runtime,
+          state.reasoningEffort,
+          runtimeStatuses,
+        ),
         envVars: state.envVars.filter(
           (envVar) => envVar.key.trim() || envVar.value,
         ),

@@ -65,3 +65,4 @@ node_modules
 .worktrees/
 .superpowers
 .codex
+.context/

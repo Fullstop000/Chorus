@@ -1,139 +1,165 @@
-import { useState, useEffect } from 'react'
-import { ArrowLeft } from 'lucide-react'
-import { post } from '@/data/client'
-import { useRuntimeStatuses } from '../../hooks/useRuntimeStatuses'
-import { useTemplates } from '../../hooks/useTemplates'
-import { AgentConfigForm, type AgentConfigState } from './AgentConfigForm'
-import { TemplateGallery, TemplatePreview } from './TemplateGallery'
-import { LaunchTrio } from './LaunchTrio'
-import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription, DialogClose } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
-import { FormError } from '@/components/ui/form'
-import type { AgentTemplate } from '../../hooks/useTemplates'
-import './CreateAgentModal.css'
+import { useState, useEffect } from "react";
+import { ArrowLeft } from "lucide-react";
+import { post } from "@/data/client";
+import { useRuntimeStatuses } from "../../hooks/useRuntimeStatuses";
+import { useTemplates } from "../../hooks/useTemplates";
+import {
+  AgentConfigForm,
+  runtimeCatalog,
+  runtimeSupportsReasoningEffort,
+  type AgentConfigState,
+} from "./AgentConfigForm";
+import { TemplateGallery, TemplatePreview } from "./TemplateGallery";
+import { LaunchTrio } from "./LaunchTrio";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogFooter,
+  DialogTitle,
+  DialogDescription,
+  DialogClose,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+import { FormError } from "@/components/ui/form";
+import type { AgentTemplate } from "../../hooks/useTemplates";
+import "./CreateAgentModal.css";
 
 interface Props {
-  open: boolean
-  onOpenChange: (open: boolean) => void
-  onCreated: () => void
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onCreated: () => void;
 }
 
 const EMPTY_CONFIG: AgentConfigState = {
-  name: '',
-  display_name: '',
-  description: '',
+  name: "",
+  display_name: "",
+  description: "",
   systemPrompt: null,
-  runtime: 'claude',
-  model: '',
+  runtime: "claude",
+  model: "",
   reasoningEffort: null,
   envVars: [],
-}
+};
 
-const RUNTIME_ORDER = ['claude', 'codex', 'kimi', 'opencode']
-
-type Step = 'browse' | 'configure'
+type Step = "browse" | "configure";
 
 export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
-  const [step, setStep] = useState<Step>('browse')
-  const [config, setConfig] = useState<AgentConfigState>({ ...EMPTY_CONFIG })
-  const [selectedTemplate, setSelectedTemplate] = useState<AgentTemplate | null>(null)
-  const [creating, setCreating] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses(open)
-  const { categories, allTemplates, isLoading: templatesLoading } = useTemplates(open)
+  const [step, setStep] = useState<Step>("browse");
+  const [config, setConfig] = useState<AgentConfigState>({ ...EMPTY_CONFIG });
+  const [selectedTemplate, setSelectedTemplate] =
+    useState<AgentTemplate | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const { runtimeStatuses, runtimeStatusError } = useRuntimeStatuses(open);
+  const {
+    categories,
+    allTemplates,
+    isLoading: templatesLoading,
+  } = useTemplates(open);
 
-  const hasTemplates = !templatesLoading && allTemplates.length > 0
+  const hasTemplates = !templatesLoading && allTemplates.length > 0;
 
   function handleTemplateSelect(template: AgentTemplate | null) {
-    if (!template) return
-    setSelectedTemplate(template)
+    if (!template) return;
+    setSelectedTemplate(template);
     setConfig({
-      name: '',
+      name: "",
       display_name: template.name,
-      description: template.description ?? '',
+      description: template.description ?? "",
       systemPrompt: template.prompt_body,
       runtime: template.suggested_runtime,
-      model: '',
+      model: "",
       reasoningEffort: null,
       envVars: [],
-    })
-    setStep('configure')
+    });
+    setStep("configure");
   }
 
   function handleFromScratch() {
-    setSelectedTemplate(null)
-    setConfig({ ...EMPTY_CONFIG })
-    setStep('configure')
+    setSelectedTemplate(null);
+    setConfig({ ...EMPTY_CONFIG });
+    setStep("configure");
   }
 
   function handleBack() {
-    setSelectedTemplate(null)
-    setConfig({ ...EMPTY_CONFIG })
-    setStep('browse')
+    setSelectedTemplate(null);
+    setConfig({ ...EMPTY_CONFIG });
+    setStep("browse");
   }
 
   function handleTrioLaunched(_channelId: string) {
-    onCreated()
+    onCreated();
   }
 
   // Reset everything when modal closes.
   useEffect(() => {
     if (!open) {
-      setStep('browse')
-      setConfig({ ...EMPTY_CONFIG })
-      setSelectedTemplate(null)
-      setError(null)
+      setStep("browse");
+      setConfig({ ...EMPTY_CONFIG });
+      setSelectedTemplate(null);
+      setError(null);
     }
-  }, [open])
+  }, [open]);
 
   // If no templates, skip straight to configure step.
   useEffect(() => {
     if (open && !templatesLoading && !hasTemplates) {
-      setStep('configure')
+      setStep("configure");
     }
-  }, [open, templatesLoading, hasTemplates])
+  }, [open, templatesLoading, hasTemplates]);
 
   // Default to the first installed ACP runtime once statuses load.
   // `display_name` is the now-sole proxy for "the user has a template
   // or has started filling in the form" and must not be overwritten.
   useEffect(() => {
-    if (runtimeStatuses.length === 0 || config.display_name !== '') return
-    const acpRuntime = RUNTIME_ORDER.find((rt) =>
-      runtimeStatuses.find((s) => s.runtime === rt && s.auth === 'authed'),
-    )
+    if (runtimeStatuses.length === 0 || config.display_name !== "") return;
+    const acpRuntime = runtimeCatalog(runtimeStatuses).find(({ value }) =>
+      runtimeStatuses.find(
+        (status) => status.runtime === value && status.auth === "authed",
+      ),
+    )?.value;
     if (acpRuntime && acpRuntime !== config.runtime) {
-      setConfig((prev) => ({ ...prev, runtime: acpRuntime, model: '' }))
+      setConfig((prev) => ({ ...prev, runtime: acpRuntime, model: "" }));
     }
-  }, [runtimeStatuses]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [runtimeStatuses]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function handleCreate() {
     if (!config.display_name.trim()) {
-      setError('Name is required')
-      return
+      setError("Name is required");
+      return;
     }
-    setCreating(true)
-    setError(null)
+    setCreating(true);
+    setError(null);
     try {
       if (!config.model.trim()) {
-        throw new Error('Model is required')
+        throw new Error("Model is required");
       }
-      await post<{ name: string; status: string; warning?: string }>('/api/agents', {
+      await post<{ name: string; status: string; warning?: string }>(
+        "/api/agents",
+        {
           // Slug derivation lives on the server; we send the human-facing
           // name only and let the backend produce `{base}-{hex4}`.
-          name: '',
+          name: "",
           display_name: config.display_name.trim(),
           description: config.description,
           systemPrompt: config.systemPrompt || null,
           runtime: config.runtime,
           model: config.model,
-          reasoningEffort: config.runtime === 'codex' || config.runtime === 'opencode' ? config.reasoningEffort : null,
+          reasoningEffort: runtimeSupportsReasoningEffort(
+            config.runtime,
+            runtimeStatuses,
+          )
+            ? config.reasoningEffort
+            : null,
           envVars: config.envVars,
-        })
-      onCreated()
+        },
+      );
+      onCreated();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e))
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setCreating(false)
+      setCreating(false);
     }
   }
 
@@ -143,7 +169,9 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
         <DialogHeader>
           <div className="flex flex-col gap-1">
             <DialogTitle>
-              {step === 'browse' ? 'Create Agent' : (
+              {step === "browse" ? (
+                "Create Agent"
+              ) : (
                 <span className="modal-title-with-back">
                   <button
                     onClick={handleBack}
@@ -157,14 +185,20 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
               )}
             </DialogTitle>
             <DialogDescription>
-              {step === 'browse' ? '[agent::new]' : (selectedTemplate ? selectedTemplate.name : '[from scratch]')}
+              {step === "browse"
+                ? "[agent::new]"
+                : selectedTemplate
+                  ? selectedTemplate.name
+                  : "[from scratch]"}
             </DialogDescription>
           </div>
-          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">×</DialogClose>
+          <DialogClose className="h-8 w-8 grid place-items-center text-muted-foreground hover:bg-secondary hover:text-foreground">
+            ×
+          </DialogClose>
         </DialogHeader>
 
         {/* Step 1: Browse templates */}
-        {step === 'browse' && (
+        {step === "browse" && (
           <>
             <LaunchTrio
               allTemplates={allTemplates}
@@ -173,7 +207,9 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
 
             <div className="system-message-divider">
               <div className="system-message-divider__line" />
-              <span className="system-message-divider__label">or choose a template</span>
+              <span className="system-message-divider__label">
+                or choose a template
+              </span>
               <div className="system-message-divider__line" />
             </div>
 
@@ -184,7 +220,9 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
             />
 
             <DialogFooter>
-              <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
               <Button variant="outline" onClick={handleFromScratch}>
                 Create from scratch
               </Button>
@@ -193,9 +231,11 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
         )}
 
         {/* Step 2: Configure agent */}
-        {step === 'configure' && (
+        {step === "configure" && (
           <>
-            {selectedTemplate && <TemplatePreview template={selectedTemplate} />}
+            {selectedTemplate && (
+              <TemplatePreview template={selectedTemplate} />
+            )}
 
             <AgentConfigForm
               state={config}
@@ -208,19 +248,27 @@ export function CreateAgentModal({ open, onOpenChange, onCreated }: Props) {
 
             <DialogFooter>
               {hasTemplates && (
-                <Button variant="outline" onClick={handleBack}>Back</Button>
+                <Button variant="outline" onClick={handleBack}>
+                  Back
+                </Button>
               )}
-              <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
+              <Button variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
               <Button
                 onClick={handleCreate}
-                disabled={creating || !config.display_name.trim() || !config.model.trim()}
+                disabled={
+                  creating ||
+                  !config.display_name.trim() ||
+                  !config.model.trim()
+                }
               >
-                {creating ? 'Creating...' : 'Create Agent'}
+                {creating ? "Creating..." : "Create Agent"}
               </Button>
             </DialogFooter>
           </>
         )}
       </DialogContent>
     </Dialog>
-  )
+  );
 }

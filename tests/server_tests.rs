@@ -4,7 +4,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::ActivityLogResponse;
 use chorus::agent::drivers::ProbeAuth;
-use chorus::agent::runtime_status::{RuntimeStatusInfo, RuntimeStatusProvider};
+use chorus::agent::runtime_status::{RuntimeCatalogEntry, RuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::agent::AgentRuntime;
 use chorus::server::dto::ChannelInfo;
@@ -95,7 +95,7 @@ struct MockLifecycle {
 }
 
 struct MockRuntimeStatusProvider {
-    statuses: Vec<RuntimeStatusInfo>,
+    statuses: Vec<RuntimeCatalogEntry>,
     models_by_runtime: Vec<(String, Vec<String>)>,
 }
 
@@ -103,7 +103,7 @@ struct FailStartLifecycle;
 
 #[async_trait::async_trait]
 impl RuntimeStatusProvider for MockRuntimeStatusProvider {
-    async fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeStatusInfo>> {
+    async fn list_statuses(&self) -> anyhow::Result<Vec<RuntimeCatalogEntry>> {
         Ok(self.statuses.clone())
     }
 
@@ -294,7 +294,7 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
 }
 
 fn setup_with_runtime_statuses(
-    statuses: Vec<RuntimeStatusInfo>,
+    statuses: Vec<RuntimeCatalogEntry>,
     models_by_runtime: Vec<(String, Vec<String>)>,
 ) -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
@@ -1318,18 +1318,9 @@ async fn test_whoami() {
 async fn test_list_runtime_statuses() {
     let (_store, app, _lifecycle) = setup_with_runtime_statuses(
         vec![
-            RuntimeStatusInfo {
-                runtime: "claude".to_string(),
-                auth: ProbeAuth::Authed,
-            },
-            RuntimeStatusInfo {
-                runtime: "codex".to_string(),
-                auth: ProbeAuth::Unauthed,
-            },
-            RuntimeStatusInfo {
-                runtime: "kimi".to_string(),
-                auth: ProbeAuth::NotInstalled,
-            },
+            RuntimeCatalogEntry::new(AgentRuntime::Claude, ProbeAuth::Authed),
+            RuntimeCatalogEntry::new(AgentRuntime::Codex, ProbeAuth::Unauthed),
+            RuntimeCatalogEntry::new(AgentRuntime::Kimi, ProbeAuth::NotInstalled),
         ],
         vec![],
     );
@@ -1354,10 +1345,25 @@ async fn test_list_runtime_statuses() {
         .expect("runtimes payload should be an array");
     assert_eq!(runtimes.len(), 3);
     assert_eq!(runtimes[0]["runtime"], "claude");
+    assert_eq!(runtimes[0]["label"], "Claude Code");
+    assert_eq!(runtimes[0]["order"], 0);
+    assert_eq!(
+        runtimes[0]["reasoning_efforts"],
+        serde_json::json!(["low", "medium", "high", "xhigh", "max"])
+    );
     assert_eq!(runtimes[0]["auth"], "authed");
     assert_eq!(runtimes[1]["runtime"], "codex");
+    assert_eq!(runtimes[1]["label"], "Codex CLI");
+    assert_eq!(runtimes[1]["order"], 1);
+    assert_eq!(
+        runtimes[1]["reasoning_efforts"],
+        serde_json::json!(["low", "medium", "high", "xhigh"])
+    );
     assert_eq!(runtimes[1]["auth"], "unauthed");
     assert_eq!(runtimes[2]["runtime"], "kimi");
+    assert_eq!(runtimes[2]["label"], "Kimi CLI");
+    assert_eq!(runtimes[2]["order"], 2);
+    assert_eq!(runtimes[2]["reasoning_efforts"], serde_json::json!([]));
     assert_eq!(runtimes[2]["auth"], "not_installed");
 }
 

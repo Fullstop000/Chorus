@@ -77,6 +77,19 @@ chorus bridge-smoke-test
 See `docs/BRIDGE_MIGRATION.md` for the full architecture and driver implementation
 guide.
 
+### CLI commands
+
+See [`docs/CLI.md`](CLI.md) for the full command reference. Quick cheatsheet:
+
+```bash
+chorus setup                    # first-run initializer
+chorus check                    # read-only environment diagnostic
+chorus start --port 3001        # start server + open browser
+chorus serve --port 3001        # start server, no browser
+chorus bridge-serve ...         # standalone MCP bridge
+chorus bridge-pair --agent ...  # mint pairing token
+```
+
 ---
 
 ## Testing
