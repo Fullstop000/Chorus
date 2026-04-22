@@ -57,7 +57,10 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         AgentCommands::Stop { name, server_url } => {
             tracing::info!("Stopping agent @{name}...");
             let client = chorus::utils::http::client();
-            let list_res = client.get(format!("{server_url}/api/agents")).send().await?;
+            let list_res = client
+                .get(format!("{server_url}/api/agents"))
+                .send()
+                .await?;
             let list_status = list_res.status();
             if !list_status.is_success() {
                 let body = list_res.text().await.unwrap_or_default();

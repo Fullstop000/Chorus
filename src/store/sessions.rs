@@ -40,12 +40,7 @@ impl Store {
     /// inserts (or refreshes) the named one as active. Atomic — if the
     /// insert/upsert fails, the deactivation is rolled back so the agent
     /// is never left with zero active sessions.
-    pub fn record_session(
-        &self,
-        agent_id: &str,
-        session_id: &str,
-        runtime: &str,
-    ) -> Result<()> {
+    pub fn record_session(&self, agent_id: &str, session_id: &str, runtime: &str) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         tx.execute(

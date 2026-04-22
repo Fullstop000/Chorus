@@ -43,9 +43,7 @@ fn seed_agent_with_session(store: &Store, name: &str, session_id: &str) -> Strin
 #[tokio::test]
 async fn stop_agent_preserves_session_id() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap(),
-    );
+    let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
 
     let name = "persist-bot";
     let seeded_session = "sess-stop-123";
@@ -56,11 +54,10 @@ async fn stop_agent_preserves_session_id() {
     // Inject an Active handle so stop_agent's `if let Some(mut agent) = ...`
     // branch runs — that's the branch that used to clear session_id.
     let (events, event_tx) = EventFanOut::new();
-    let handle = FakeHandle::new(name.to_string(), events, event_tx).with_state(
-        ProcessState::Active {
+    let handle =
+        FakeHandle::new(name.to_string(), events, event_tx).with_state(ProcessState::Active {
             session_id: seeded_session.to_string(),
-        },
-    );
+        });
     manager
         .inject_session_for_test(name, Box::new(handle))
         .await;
@@ -80,9 +77,7 @@ async fn stop_agent_preserves_session_id() {
 #[tokio::test]
 async fn sleep_agent_preserves_session_id() {
     let dir = tempdir().unwrap();
-    let store = Arc::new(
-        Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap(),
-    );
+    let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
 
     let name = "sleepy-bot";
     let seeded_session = "sess-sleep-456";
@@ -91,11 +86,10 @@ async fn sleep_agent_preserves_session_id() {
     let manager = AgentManager::new_for_test(store.clone(), dir.path().to_path_buf());
 
     let (events, event_tx) = EventFanOut::new();
-    let handle = FakeHandle::new(name.to_string(), events, event_tx).with_state(
-        ProcessState::Active {
+    let handle =
+        FakeHandle::new(name.to_string(), events, event_tx).with_state(ProcessState::Active {
             session_id: seeded_session.to_string(),
-        },
-    );
+        });
     manager
         .inject_session_for_test(name, Box::new(handle))
         .await;

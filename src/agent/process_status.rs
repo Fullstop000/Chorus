@@ -56,7 +56,10 @@ mod tests {
 
     #[test]
     fn starting_and_in_flight_are_working() {
-        assert_eq!(derive_status(Some(&ProcessState::Starting)), Status::Working);
+        assert_eq!(
+            derive_status(Some(&ProcessState::Starting)),
+            Status::Working
+        );
         assert_eq!(
             derive_status(Some(&ProcessState::PromptInFlight {
                 run_id: uuid::Uuid::nil(),
@@ -69,7 +72,9 @@ mod tests {
     #[test]
     fn active_is_ready() {
         assert_eq!(
-            derive_status(Some(&ProcessState::Active { session_id: "s".into() })),
+            derive_status(Some(&ProcessState::Active {
+                session_id: "s".into()
+            })),
             Status::Ready
         );
     }

@@ -492,7 +492,10 @@ mod tests {
             }
         ));
 
-        assert!(matches!(result.session.process_state(), ProcessState::Active { .. }));
+        assert!(matches!(
+            result.session.process_state(),
+            ProcessState::Active { .. }
+        ));
     }
 
     #[tokio::test]
@@ -585,11 +588,17 @@ mod tests {
             .unwrap();
 
         result.session.close().await.unwrap();
-        assert!(matches!(result.session.process_state(), ProcessState::Closed));
+        assert!(matches!(
+            result.session.process_state(),
+            ProcessState::Closed
+        ));
 
         // Second close is a no-op
         result.session.close().await.unwrap();
-        assert!(matches!(result.session.process_state(), ProcessState::Closed));
+        assert!(matches!(
+            result.session.process_state(),
+            ProcessState::Closed
+        ));
     }
 
     #[tokio::test]

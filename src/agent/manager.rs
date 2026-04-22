@@ -563,7 +563,13 @@ impl AgentLifecycle for AgentManager {
     fn process_state<'a>(
         &'a self,
         agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<crate::agent::drivers::ProcessState>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Option<crate::agent::drivers::ProcessState>>
+                + Send
+                + 'a,
+        >,
+    > {
         Box::pin(AgentManager::process_state(self, agent_name))
     }
 
@@ -842,12 +848,10 @@ mod tests {
 
         // Inject a Failed handle simulating a previous run that crashed.
         let (events, event_tx) = EventFanOut::new();
-        let failed_handle =
-            FakeHandle::new("recovery-bot".to_string(), events, event_tx).with_state(
-                ProcessState::Failed(AgentError::Transport(
-                    "simulated transport failure".to_string(),
-                )),
-            );
+        let failed_handle = FakeHandle::new("recovery-bot".to_string(), events, event_tx)
+            .with_state(ProcessState::Failed(AgentError::Transport(
+                "simulated transport failure".to_string(),
+            )));
         manager
             .inject_session_for_test("recovery-bot", Box::new(failed_handle))
             .await;
@@ -905,12 +909,11 @@ mod tests {
 
         // Inject an Active handle. start_agent must NOT replace it.
         let (events, event_tx) = EventFanOut::new();
-        let active_handle =
-            FakeHandle::new("live-bot".to_string(), events, event_tx).with_state(
-                ProcessState::Active {
-                    session_id: "existing-session".to_string(),
-                },
-            );
+        let active_handle = FakeHandle::new("live-bot".to_string(), events, event_tx).with_state(
+            ProcessState::Active {
+                session_id: "existing-session".to_string(),
+            },
+        );
         manager
             .inject_session_for_test("live-bot", Box::new(active_handle))
             .await;

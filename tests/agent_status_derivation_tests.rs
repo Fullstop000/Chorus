@@ -176,7 +176,11 @@ async fn list_agents_returns_ready_for_running_agent() {
 
     // Manually insert into the running set (simulates start_agent having been
     // called, and the process reaching the Active/idle state).
-    lifecycle.running.lock().unwrap().insert("bot-running".to_string());
+    lifecycle
+        .running
+        .lock()
+        .unwrap()
+        .insert("bot-running".to_string());
 
     let resp = app
         .oneshot(
