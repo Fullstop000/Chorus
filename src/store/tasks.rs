@@ -397,14 +397,24 @@ impl Store {
         requester_name: &str,
         new_status: TaskStatus,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        // `transaction()` needs `&mut Connection`. The status UPDATE and the
+        // sub-channel archive (when `new_status == Done`) must commit together
+        // so an observer never sees a task marked Done whose sub-channel is
+        // still active (or vice versa).
+        let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        let tx = conn.transaction()?;
 
-        let (current_status_str, claimed_by): (String, Option<String>) = conn.query_row(
-            "SELECT status, claimed_by FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
+        let (current_status_str, claimed_by, sub_channel_id): (
+            String,
+            Option<String>,
+            Option<String>,
+        ) = tx.query_row(
+            "SELECT status, claimed_by, sub_channel_id FROM tasks \
+             WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
 
         let current_status = TaskStatus::from_status_str(&current_status_str)
@@ -421,10 +431,26 @@ impl Store {
             ));
         }
 
-        conn.execute(
+        tx.execute(
             "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE channel_id = ?2 AND task_number = ?3",
             params![new_status.as_str(), channel.id, task_number],
         )?;
+
+        // `Done` is terminal (`can_transition_to` has no outbound edges from
+        // `Done`), so archiving here is safe — there is no path back that would
+        // need to un-archive. Bypasses the `archive_channel` guard on purpose:
+        // that guard rejects direct callers; the task lifecycle is the sole
+        // path that may archive a task sub-channel.
+        if new_status == TaskStatus::Done {
+            if let Some(sub_id) = sub_channel_id {
+                tx.execute(
+                    "UPDATE channels SET archived = 1 WHERE id = ?1",
+                    params![sub_id],
+                )?;
+            }
+        }
+
+        tx.commit()?;
         Ok(())
     }
 }
@@ -670,6 +696,61 @@ mod sub_channel_tests {
         assert!(
             store.channel_member_exists(&sub_id, "alice").unwrap(),
             "creator stays"
+        );
+    }
+
+    #[test]
+    fn status_done_archives_sub_channel() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+        store.create_tasks("eng", "alice", &["Ship it"]).unwrap();
+        store.update_tasks_claim("eng", "bob", &[1]).unwrap();
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::InReview)
+            .unwrap();
+
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::Done)
+            .unwrap();
+
+        let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
+        let sub_id = sub_id.expect("task has sub_channel_id");
+        let archived: i64 = {
+            let conn = store.conn_for_test();
+            conn.query_row(
+                "SELECT archived FROM channels WHERE id = ?1",
+                params![&sub_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(archived, 1, "sub-channel must be archived on Done");
+    }
+
+    #[test]
+    fn user_cannot_manually_archive_task_sub_channel() {
+        // The existing `archive_channel` guard only allows user/team channels.
+        // Task sub-channels must archive exclusively via the `Done` transition
+        // in `update_task_status`, never by direct caller request.
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        store.create_tasks("eng", "alice", &["x"]).unwrap();
+
+        let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
+        let sub_id = sub_id.expect("task has sub_channel_id");
+
+        let err = store.archive_channel(&sub_id).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("only user and team channels can be archived"),
+            "expected guard message, got: {err}"
         );
     }
 }
