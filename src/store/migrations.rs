@@ -309,7 +309,29 @@ fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     for (task_id, parent_id, parent_name, task_number, creator_name) in orphans {
         let sub_id = uuid::Uuid::new_v4().to_string();
-        let sub_name = format!("{}__task-{}", parent_name, task_number);
+        // Preferred name mirrors what live `create_tasks` would spawn. Channel
+        // names are user-controlled and globally unique, so an existing row
+        // like `eng__task-1` (created manually before upgrade) would fail this
+        // INSERT on the UNIQUE constraint and block startup. Fall back to a
+        // uuid-suffixed name in that case — uglier but guaranteed collision-free
+        // and still traceable via `tasks.sub_channel_id → channels.id`.
+        let preferred = format!("{}__task-{}", parent_name, task_number);
+        let name_taken: bool = tx
+            .prepare("SELECT 1 FROM channels WHERE name = ?1")?
+            .exists(rusqlite::params![preferred])?;
+        let sub_name = if name_taken {
+            let short = sub_id.split('-').next().unwrap_or("bk");
+            let fallback = format!("{}__task-{}-{}", parent_name, task_number, short);
+            tracing::warn!(
+                task_id = %task_id,
+                preferred = %preferred,
+                fallback = %fallback,
+                "backfill name collision — using uuid-suffixed fallback"
+            );
+            fallback
+        } else {
+            preferred
+        };
         let creator_type = {
             let is_agent: bool = tx
                 .prepare("SELECT 1 FROM agents WHERE name = ?1")?
@@ -491,6 +513,58 @@ mod backfill_tests {
             )
             .unwrap();
         assert_eq!(member_type, "agent");
+    }
+
+    #[test]
+    fn backfill_tolerates_name_collision() {
+        // Regression: if a user manually created a channel with the exact
+        // preferred backfill name before upgrading, the backfill INSERT would
+        // hit the UNIQUE(name) constraint and crash startup. Must fall back
+        // to a uuid-suffixed name and still link the task.
+        let conn = bootstrap_pre_migration_db();
+        // Pre-squat the preferred name as a regular channel.
+        conn.execute(
+            "INSERT INTO channels (id, name, channel_type) VALUES ('squat', 'eng__task-1', 'channel')",
+            [],
+        )
+        .unwrap();
+
+        migrate_add_parent_channel_id(&conn).unwrap();
+        migrate_add_task_sub_channel_id(&conn).unwrap();
+
+        // Task 1 still got a sub-channel (fallback name), and the pre-squatted
+        // regular channel is untouched.
+        let sub_id: String = conn
+            .query_row(
+                "SELECT sub_channel_id FROM tasks WHERE id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let sub_name: String = conn
+            .query_row("SELECT name FROM channels WHERE id = ?1", [&sub_id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_ne!(
+            sub_name, "eng__task-1",
+            "must pick a different name when preferred is taken"
+        );
+        assert!(
+            sub_name.starts_with("eng__task-1-"),
+            "fallback name should preserve the task-number prefix, got: {}",
+            sub_name
+        );
+
+        // Pre-squatted channel is still a regular channel, not a task child.
+        let squat_type: String = conn
+            .query_row(
+                "SELECT channel_type FROM channels WHERE id = 'squat'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(squat_type, "channel");
     }
 
     #[test]
