@@ -268,6 +268,11 @@ impl Store {
         let tx = conn.transaction()?;
 
         let mut results = Vec::new();
+        // Batch semantics: all claims commit together or none do. A hard SQL
+        // error on claim N rolls back successful claims 1..N-1. "Soft"
+        // rejections (task already claimed / not in todo / stolen mid-flight)
+        // push a `ClaimResult { success: false, .. }` and continue; they still
+        // commit as a no-op batch.
         for &tn in task_numbers {
             let task: Option<(String, Option<String>, Option<String>)> = tx
                 .query_row(
@@ -281,10 +286,22 @@ impl Store {
                 Some((status, claimed_by, sub_channel_id))
                     if status == "todo" && claimed_by.is_none() =>
                 {
-                    tx.execute(
-                        "UPDATE tasks SET claimed_by = ?1, status = 'in_progress', updated_at = datetime('now') WHERE channel_id = ?2 AND task_number = ?3",
+                    // Defense in depth: WHERE-guard on the precondition we
+                    // just read. If another writer won the race between the
+                    // SELECT and this UPDATE, `rows == 0` and we soft-fail.
+                    let rows = tx.execute(
+                        "UPDATE tasks SET claimed_by = ?1, status = 'in_progress', updated_at = datetime('now') \
+                         WHERE channel_id = ?2 AND task_number = ?3 AND status = 'todo' AND claimed_by IS NULL",
                         params![claimer_name, channel.id, tn],
                     )?;
+                    if rows != 1 {
+                        results.push(ClaimResult {
+                            task_number: tn,
+                            success: false,
+                            reason: Some("task was claimed by another writer".to_string()),
+                        });
+                        continue;
+                    }
                     // Sync sub-channel membership: claimer joins. `INSERT OR
                     // IGNORE` keeps the operation idempotent when the claimer
                     // is already a member (e.g. they also created the task).
@@ -334,7 +351,11 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let (claimed_by, sub_channel_id): (Option<String>, Option<String>) = conn.query_row(
+        let tx = conn.transaction()?;
+
+        // tx-scoped read closes the TOCTOU window — another writer can't
+        // reassign `claimed_by` between the check and the UPDATE.
+        let (claimed_by, sub_channel_id): (Option<String>, Option<String>) = tx.query_row(
             "SELECT claimed_by, sub_channel_id FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -344,11 +365,21 @@ impl Store {
             return Err(anyhow!("task not claimed by {}", claimer_name));
         }
 
-        let tx = conn.transaction()?;
-        tx.execute(
-            "UPDATE tasks SET claimed_by = NULL, status = 'todo', updated_at = datetime('now') WHERE channel_id = ?1 AND task_number = ?2",
-            params![channel.id, task_number],
+        // Defense in depth: WHERE-guard on the claimer. If `rows != 1` the
+        // claim was stolen mid-flight despite the tx-scoped read — surface it.
+        let rows = tx.execute(
+            "UPDATE tasks SET claimed_by = NULL, status = 'todo', updated_at = datetime('now') \
+             WHERE channel_id = ?1 AND task_number = ?2 AND claimed_by = ?3",
+            params![channel.id, task_number, claimer_name],
         )?;
+        if rows != 1 {
+            return Err(anyhow!(
+                "task {} no longer claimed by {}",
+                task_number,
+                claimer_name
+            ));
+        }
+
         if let Some(sub_id) = sub_channel_id {
             tx.execute(
                 "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
@@ -581,6 +612,38 @@ mod sub_channel_tests {
         assert!(
             store.channel_member_exists(&sub_id, "alice").unwrap(),
             "creator must remain a member"
+        );
+    }
+
+    #[test]
+    fn unclaim_rejects_when_claim_was_stolen() {
+        // A writer outside the unclaim tx reassigns `claimed_by`. The
+        // tx-scoped read + WHERE-guarded UPDATE must surface the stolen
+        // claim instead of silently NULL-ing out carol's hold.
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+        seed_agent(&store, "carol");
+        store.create_tasks("eng", "alice", &["ship it"]).unwrap();
+        store.update_tasks_claim("eng", "bob", &[1]).unwrap();
+
+        // Simulate a write that re-assigns the claim outside of bob's control.
+        {
+            let conn = store.conn_for_test();
+            conn.execute(
+                "UPDATE tasks SET claimed_by = 'carol' WHERE task_number = 1",
+                [],
+            )
+            .unwrap();
+        }
+
+        let err = store.update_task_unclaim("eng", "bob", 1).unwrap_err();
+        assert!(
+            err.to_string().contains("not claimed by bob"),
+            "expected stolen-claim error, got: {err}"
         );
     }
 
