@@ -201,6 +201,47 @@ impl Store {
         Ok(result)
     }
 
+    /// Fetch a single task by `(channel_name, task_number)`. Returns `Ok(None)`
+    /// when the task doesn't exist so the HTTP handler can map it to 404 —
+    /// a missing channel still surfaces as an error (real misconfiguration).
+    pub fn get_task_info(
+        &self,
+        channel_name: &str,
+        task_number: i64,
+    ) -> Result<Option<TaskInfo>> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+
+        let row = conn
+            .query_row(
+                "SELECT t.task_number, t.title, t.status, t.claimed_by, t.created_by, \
+                        t.sub_channel_id, c.name \
+                 FROM tasks t \
+                 LEFT JOIN channels c ON c.id = t.sub_channel_id \
+                 WHERE t.channel_id = ?1 AND t.task_number = ?2 \
+                 LIMIT 1",
+                params![channel.id, task_number],
+                |row| {
+                    Ok(TaskInfo {
+                        task_number: row.get(0)?,
+                        title: row.get(1)?,
+                        status: row.get(2)?,
+                        claimed_by_name: row.get(3)?,
+                        created_by_name: row.get(4)?,
+                        sub_channel_id: row.get(5)?,
+                        sub_channel_name: row.get(6)?,
+                    })
+                },
+            )
+            .map(Some)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(None),
+                other => Err(other),
+            })?;
+        Ok(row)
+    }
+
     pub fn get_tasks(
         &self,
         channel_name: &str,

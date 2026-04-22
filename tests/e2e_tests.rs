@@ -430,3 +430,67 @@ async fn test_multi_agent_channel_communication() {
         .unwrap();
     assert_eq!(resp["messages"].as_array().unwrap().len(), 1);
 }
+
+/// Task 5 — the task board list response carries the task's sub-channel info
+/// so the UI can deep-link from each row into its child channel.
+#[tokio::test]
+async fn list_tasks_returns_sub_channel_info() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    // Create tasks directly in the store so the creator name is stable across
+    // machines (the public endpoint stamps `whoami::username()`, which isn't
+    // useful for an assertion).
+    store.create_human("alice").unwrap();
+    store.create_tasks("general", "alice", &["Ship it"]).unwrap();
+
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    let resp: serde_json::Value = client
+        .get(format!("{url}/api/conversations/{channel_id}/tasks"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let tasks = resp["tasks"].as_array().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0]["subChannelName"], "general__task-1");
+    assert!(tasks[0]["subChannelId"].is_string());
+    assert_eq!(tasks[0]["createdByName"], "alice");
+}
+
+/// Task 5 — `GET /api/conversations/{id}/tasks/{n}` returns a single task with
+/// the full `TaskInfo` payload, including its sub-channel fields.
+#[tokio::test]
+async fn get_task_detail_returns_task_and_sub_channel() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    store.create_human("alice").unwrap();
+    store.create_tasks("general", "alice", &["Ship it"]).unwrap();
+
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    let resp = client
+        .get(format!("{url}/api/conversations/{channel_id}/tasks/1"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["taskNumber"], 1);
+    assert_eq!(body["title"], "Ship it");
+    assert_eq!(body["subChannelName"], "general__task-1");
+    assert!(body["subChannelId"].is_string());
+    assert_eq!(body["createdByName"], "alice");
+
+    // Unknown task number → 404, not 500.
+    let resp = client
+        .get(format!("{url}/api/conversations/{channel_id}/tasks/999"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}

@@ -5,7 +5,7 @@ use serde::Deserialize;
 
 use super::{app_err, ApiResult, AppState};
 use crate::store::channels::Channel;
-use crate::store::tasks::TaskStatus;
+use crate::store::tasks::{TaskInfo, TaskStatus};
 
 // ── Inline query structs ──
 
@@ -205,6 +205,23 @@ pub async fn handle_public_unclaim_task(
         .update_task_unclaim(&channel.name, &actor_id, req.task_number)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// `GET /api/conversations/{conversation_id}/tasks/{task_number}` — return one
+/// task as `TaskInfo` (already carries `subChannelId` / `subChannelName`).
+/// Missing task → 404; missing channel → 400 (same shape as sibling task
+/// handlers via `load_channel_by_id`).
+pub async fn handle_get_task_detail(
+    State(state): State<AppState>,
+    Path((conversation_id, task_number)): Path<(String, i64)>,
+) -> ApiResult<TaskInfo> {
+    let channel = load_channel_by_id(&state, &conversation_id)?;
+    let info = state
+        .store
+        .get_task_info(&channel.name, task_number)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "task not found"))?;
+    Ok(Json(info))
 }
 
 pub async fn handle_public_update_task_status(
