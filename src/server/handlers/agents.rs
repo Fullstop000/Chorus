@@ -284,7 +284,7 @@ pub async fn handle_create_agent(
     Ok(Json(serde_json::json!({
         "id": result.id,
         "name": result.name,
-        "status": serde_json::to_value(status).unwrap(),
+        "status": status,
     })))
 }
 
