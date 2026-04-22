@@ -213,6 +213,17 @@ describe("currentTaskDetail store behaviour", () => {
     expect(useStore.getState().currentTaskDetail).toBeNull();
   });
 
+  it("preserves the returnToTab field when round-tripping through the store", () => {
+    useStore.getState().setActiveTab("chat");
+    useStore.getState().setCurrentTaskDetail({
+      parentChannelId: "cid-r",
+      parentSlug: "routes",
+      taskNumber: 42,
+      returnToTab: "chat",
+    });
+    expect(useStore.getState().currentTaskDetail?.returnToTab).toBe("chat");
+  });
+
   it("re-selecting the same parent channel preserves the open task detail", () => {
     useStore.getState().setCurrentTaskDetail({
       parentChannelId: "cid-keep",

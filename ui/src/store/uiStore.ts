@@ -15,11 +15,15 @@ export interface ToastEntry {
  * Identifies a task currently rendered in the task-detail view.
  * Parent channel id/slug are carried along so breadcrumbs and data
  * fetching don't have to re-derive them from the tasks board.
+ * `returnToTab` captures which tab the user was on when they opened the
+ * detail, so the back button can restore that context rather than dumping
+ * everyone on Tasks.
  */
 export interface TaskDetailTarget {
   parentChannelId: string
   parentSlug: string
   taskNumber: number
+  returnToTab?: ActiveTab
 }
 
 interface UIState {

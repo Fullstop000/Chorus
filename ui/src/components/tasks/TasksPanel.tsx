@@ -23,15 +23,20 @@ function TaskCard({
   parentSlug: string;
 }) {
   const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
+  const activeTab = useStore((s) => s.activeTab);
 
   // Primary click opens the task detail view. Status advancement (previously
   // auto-advance on card click) moves to affordances inside the detail page
   // in Task 9 — clicking a row is now pure navigation.
+  //
+  // `returnToTab` snapshots the tab the user was on so the back button / Esc
+  // can restore it instead of always dropping users on Tasks.
   function openDetail() {
     setCurrentTaskDetail({
       parentChannelId,
       parentSlug,
       taskNumber: task.taskNumber,
+      returnToTab: activeTab,
     });
   }
 

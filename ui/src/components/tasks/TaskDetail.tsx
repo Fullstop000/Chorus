@@ -162,6 +162,30 @@ export function TaskDetail() {
   // one place instead of duplicating it inside the advance handler.
   const [refreshTick, setRefreshTick] = useState(0);
 
+  // Single close path — used by the back button and by Esc. Restores whatever
+  // tab the user came from (falls back to Tasks when the target didn't stash one,
+  // e.g. deep-linked or programmatic opens).
+  function handleClose() {
+    setActiveTab(currentTaskDetail?.returnToTab ?? "tasks");
+    setCurrentTaskDetail(null);
+  }
+
+  // Esc should back out of the detail overlay (keyboard a11y — Dialogs and
+  // overlay panels in Chorus use this pattern).
+  useEffect(() => {
+    if (!currentTaskDetail) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleClose();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // handleClose is defined in the same closure; re-registering per change is safe.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTaskDetail]);
+
   useEffect(() => {
     if (!currentTaskDetail) {
       setTask(null);
@@ -230,12 +254,7 @@ export function TaskDetail() {
         error={error}
         advanceError={advanceError}
         advancing={advancing}
-        onBack={() => {
-          // Return to the parent channel's Tasks tab (the user came from the
-          // board). Without this the MainPanel would drop them on Chat.
-          setActiveTab("tasks");
-          setCurrentTaskDetail(null);
-        }}
+        onBack={handleClose}
         onAdvance={handleAdvance}
         canAdvance={canAdvance}
         advanceLabel={advanceLabel}
