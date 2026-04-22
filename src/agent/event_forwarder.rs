@@ -108,6 +108,43 @@ fn flush_text(
     );
 }
 
+/// Best-effort session persistence with structured logging on failure.
+/// Resume continuity depends on this row; if it silently disappears the
+/// next start_agent issues `SessionIntent::New` and the user loses history.
+/// `site` is a short tag ("attach" / "completed") distinguishing the caller.
+fn persist_session(store: &Store, agent_name: &str, session_id: &str, site: &str) {
+    match store.get_agent(agent_name) {
+        Ok(Some(agent)) => {
+            if let Err(err) = store.record_session(&agent.id, session_id, &agent.runtime) {
+                warn!(
+                    agent = %agent_name,
+                    session = %session_id,
+                    site,
+                    err = %err,
+                    "failed to persist session"
+                );
+            }
+        }
+        Ok(None) => {
+            warn!(
+                agent = %agent_name,
+                session = %session_id,
+                site,
+                "agent row missing while persisting session"
+            );
+        }
+        Err(err) => {
+            warn!(
+                agent = %agent_name,
+                session = %session_id,
+                site,
+                err = %err,
+                "failed to load agent while persisting session"
+            );
+        }
+    }
+}
+
 /// Spawn the per-agent event-forwarder task. Returns the `JoinHandle` of
 /// the spawned task — store it on the agent's `ManagedAgent` so it's
 /// dropped (and the task aborted) when the agent is removed.
@@ -147,9 +184,7 @@ pub(super) fn spawn_event_forwarder(
                     ref session_id,
                 } => {
                     info!(agent = %key, session = %session_id, "session attached");
-                    if let Ok(Some(a)) = store.get_agent(key) {
-                        let _ = store.record_session(&a.id, session_id, &a.runtime);
-                    }
+                    persist_session(&store, key, session_id, "attach");
                     activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ONLINE, "Ready");
                 }
 
@@ -341,9 +376,7 @@ pub(super) fn spawn_event_forwarder(
                     last_tool_raw_name.remove(session_id);
                     info!(agent = %key, reason = ?result.finish_reason, "run completed");
                     if !session_id.is_empty() {
-                        if let Ok(Some(a)) = store.get_agent(key) {
-                            let _ = store.record_session(&a.id, session_id, &a.runtime);
-                        }
+                        persist_session(&store, key, session_id, "completed");
                     }
                     trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
                     trace_store.end_run(key);
