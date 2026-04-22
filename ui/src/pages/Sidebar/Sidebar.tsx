@@ -58,6 +58,7 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 
 export function Sidebar() {
   const { currentUser, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings } = useStore()
+  const showConversationIds = useStore((s) => s.showConversationIds)
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
   const humans = useHumans()
@@ -160,7 +161,7 @@ export function Sidebar() {
                   <span className="sidebar-item-hash">#</span>
                   <span className="sidebar-item-main">
                     <span className="sidebar-item-text">{ch.name}</span>
-                    {ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
+                    {showConversationIds && ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
                   </span>
                   {showUnreadBadge && (
                     <span className="sidebar-unread-badge">{unreadCount}</span>
@@ -192,7 +193,7 @@ export function Sidebar() {
                     <span className="sidebar-item-main">
                       <span className="sidebar-item-text">{ch.name}</span>
                       {ch.description && <span className="sidebar-item-meta">{ch.description}</span>}
-                      {ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
+                      {showConversationIds && ch.id && <span className="sidebar-item-meta sidebar-item-id">{ch.id}</span>}
                     </span>
                     {showUnreadBadge && (
                       <span className="sidebar-unread-badge">{unreadCount}</span>
@@ -294,7 +295,7 @@ export function Sidebar() {
                   <span className="sidebar-item-main">
                     <span className="sidebar-item-text">{agent.display_name ?? agent.name}</span>
                     <span className="sidebar-item-meta">:: {agent.runtime ?? 'agent'}</span>
-                    {conversationId && (
+                    {showConversationIds && conversationId && (
                       <span className="sidebar-item-meta sidebar-item-id">{conversationId}</span>
                     )}
                   </span>

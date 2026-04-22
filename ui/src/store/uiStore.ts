@@ -5,6 +5,34 @@ import { createInboxState } from './inbox'
 
 export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
+/** localStorage key for persisted display preferences. */
+const PREFS_KEY = 'chorus:ui-prefs:v1'
+
+interface PersistedPrefs {
+  showConversationIds: boolean
+}
+
+function readPersistedPrefs(): PersistedPrefs {
+  if (typeof localStorage === 'undefined') return { showConversationIds: false }
+  try {
+    const raw = localStorage.getItem(PREFS_KEY)
+    if (!raw) return { showConversationIds: false }
+    const parsed = JSON.parse(raw) as Partial<PersistedPrefs>
+    return { showConversationIds: !!parsed.showConversationIds }
+  } catch {
+    return { showConversationIds: false }
+  }
+}
+
+function writePersistedPrefs(prefs: PersistedPrefs): void {
+  if (typeof localStorage === 'undefined') return
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    // Storage quota or disabled — the in-memory value still applies for this session.
+  }
+}
+
 export interface ToastEntry {
   id: string
   message: string
@@ -45,6 +73,12 @@ interface UIState {
   showSettings: boolean
   /** When non-null, MainPanel renders the task-detail view for this task */
   currentTaskDetail: TaskDetailTarget | null
+  /**
+   * Display preference: when true, sidebar channel/agent rows show their
+   * underlying UUID as a trailing caption. Off by default — UUIDs are
+   * routing identifiers, not user content. Persisted to localStorage.
+   */
+  showConversationIds: boolean
 }
 
 interface UIActions {
@@ -65,6 +99,7 @@ interface UIActions {
   dismissToast: (id: string) => void
   setShowSettings: (show: boolean) => void
   setCurrentTaskDetail: (target: TaskDetailTarget | null) => void
+  setShowConversationIds: (show: boolean) => void
 }
 
 export type UIStore = UIState & UIActions
@@ -79,6 +114,7 @@ const initialState: UIState = {
   toasts: [],
   showSettings: false,
   currentTaskDetail: null,
+  showConversationIds: readPersistedPrefs().showConversationIds,
 }
 
 export const useStore = create<UIStore>((set) => ({
@@ -187,6 +223,11 @@ export const useStore = create<UIStore>((set) => ({
 
   setCurrentTaskDetail: (currentTaskDetail: TaskDetailTarget | null) =>
     set({ currentTaskDetail }),
+
+  setShowConversationIds: (showConversationIds: boolean) => {
+    writePersistedPrefs({ showConversationIds })
+    set({ showConversationIds })
+  },
 }))
 
 export function pushErrorToast(err: unknown) {
