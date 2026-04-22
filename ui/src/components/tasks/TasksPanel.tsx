@@ -42,23 +42,15 @@ function TaskCard({
   }
 
   return (
-    <div
+    <button
+      type="button"
       className="task-card"
       onClick={openDetail}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          openDetail();
-        }
-      }}
       title={`Open task #${task.taskNumber}`}
-      style={{ cursor: "pointer" }}
     >
-      <div className="task-card-number">#{task.taskNumber}</div>
-      <div className="task-card-title">{task.title}</div>
-      <div className="task-card-meta">
+      <span className="task-card-number">#{task.taskNumber}</span>
+      <span className="task-card-title">{task.title}</span>
+      <span className="task-card-meta">
         {task.claimedByName && (
           <span className="task-card-claimed">
             <User size={11} aria-hidden="true" />
@@ -68,8 +60,8 @@ function TaskCard({
         {!task.claimedByName && task.createdByName && (
           <span>by {task.createdByName}</span>
         )}
-      </div>
-    </div>
+      </span>
+    </button>
   );
 }
 

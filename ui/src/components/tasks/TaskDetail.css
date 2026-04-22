@@ -125,3 +125,26 @@
   overflow: hidden;
   min-height: 0;
 }
+
+/* Rendered when a legacy row has no sub-channel (backfill miss). Uses the
+   mono/muted empty-state recipe from docs/DESIGN.md so it reads as an
+   ambient system notice, not an error toast. */
+.task-detail__legacy-notice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 56px 20px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-muted-foreground);
+}
+
+.task-detail__legacy-notice p {
+  margin: 0;
+  max-width: 52ch;
+}

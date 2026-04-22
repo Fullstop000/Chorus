@@ -94,6 +94,18 @@
 }
 
 .task-card {
+  /* Native <button> so we inherit the global focus-visible ring and
+     don't fake interactivity on a plain div. Reset the browser defaults
+     (inline layout, centered text, inherited system font) so the three
+     rows (#N / title / meta) stack as they did when this was a div. */
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  color: inherit;
   background: var(--color-popover);
   border: 1px solid var(--color-border);
   border-radius: 0;
@@ -109,6 +121,11 @@
   box-shadow: none;
 }
 
+.task-card-number,
+.task-card-title {
+  display: block;
+}
+
 .task-card-number {
   color: var(--color-muted-foreground);
   margin-bottom: 4px;
@@ -121,6 +138,10 @@
 }
 
 .task-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
   margin-top: 5px;
   color: var(--color-muted-foreground);
 }
@@ -144,10 +165,13 @@
   font-family: var(--font-mono);
 }
 
+/* Per-column status colors reuse Chorus's existing status/semantic tokens
+   instead of introducing new cool-palette hexes. `docs/DESIGN.md` forbids
+   inline colors without a token, and the app's palette is warm-leaning. */
 .task-column[data-status="todo"] .task-column-header { color: var(--color-muted-foreground); }
-.task-column[data-status="in_progress"] .task-column-header { color: #355d8a; }
-.task-column[data-status="in_review"] .task-column-header { color: #9f6a2b; }
-.task-column[data-status="done"] .task-column-header { color: #2f7b44; }
+.task-column[data-status="in_progress"] .task-column-header { color: var(--color-accent-foreground); }
+.task-column[data-status="in_review"] .task-column-header { color: var(--color-warning); }
+.task-column[data-status="done"] .task-column-header { color: var(--status-online); }
 
 .new-task-row {
   display: flex;

@@ -52,7 +52,11 @@ describe("TaskDetailView", () => {
     );
 
     expect(html).toContain("wire up the bridge");
-    expect(html).toContain("in_progress");
+    // Status enum is formatted for display (underscore → space) so the badge
+    // reads "in progress", matching the board column headers and advance
+    // button vocabulary instead of leaking the raw API enum.
+    expect(html).toContain("in progress");
+    expect(html).not.toContain("in_progress");
     expect(html).toContain("claimed by alice");
     expect(html).toContain("created by bob");
   });
@@ -139,7 +143,7 @@ describe("TaskDetailView", () => {
     expect(html).toMatch(/before sub-channels existed/i);
   });
 
-  it("hides the advance button when user cannot advance", () => {
+  it("renders the advance button disabled with an owner tooltip when a non-claimer views the task", () => {
     const task: TaskInfo = {
       taskNumber: 7,
       title: "claimed by someone else",
@@ -157,7 +161,12 @@ describe("TaskDetailView", () => {
         advanceLabel="Submit for review"
       />,
     );
-    expect(html).not.toContain("task-detail__advance");
+    // Button stays visible so non-claimers can see the next step exists and
+    // who owns it. Hiding silently leaves them with no signal about the
+    // permission model (Codex review C4).
+    expect(html).toContain("task-detail__advance");
+    expect(html).toContain("disabled");
+    expect(html).toContain("Only alice can advance this task.");
   });
 
   it("shows advanceError banner when present", () => {

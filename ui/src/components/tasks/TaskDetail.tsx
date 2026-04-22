@@ -37,6 +37,19 @@ const ADVANCE_LABEL: Record<TaskStatus, string | null> = {
 };
 
 /**
+ * Display label for the status badge. The API returns the enum verbatim
+ * (`in_progress`, `in_review`) which reads as code. Map to space-separated
+ * words so the badge matches the board column headers ("in progress",
+ * "in review") and the advance button vocabulary.
+ */
+const STATUS_LABEL: Record<TaskStatus, string> = {
+  todo: "todo",
+  in_progress: "in progress",
+  in_review: "in review",
+  done: "done",
+};
+
+/**
  * Pure permission check: can `currentUser` advance `task`? Claim-on-start is
  * allowed for anyone when the task is unclaimed Todo; subsequent transitions
  * require the current user to be the claimer. Mirrors the historical
@@ -80,17 +93,24 @@ export function TaskDetailView({
   canAdvance,
   advanceLabel,
 }: TaskDetailViewProps) {
-  // Advance button is shown whenever the task can advance and the user has
-  // permission. For legacy pre-backfill rows (`sub_channel_id` null/undefined)
-  // we render a disabled button with a tooltip explaining why — silent hide
-  // leaves the user stuck with no signal about what's wrong.
-  const showAdvance = !!task && !!advanceLabel && canAdvance;
+  // Show the advance button for every non-terminal status so the workflow is
+  // always legible. When the current user cannot advance (claimed by someone
+  // else, or legacy pre-backfill row), render it disabled with an explanatory
+  // title — hiding it silently leaves non-claimers with no signal about who
+  // owns the task or why they can't move it.
+  const showAdvance = !!task && !!advanceLabel;
   const hasSubChannel =
     !!task && task.subChannelId !== null && task.subChannelId !== undefined;
-  const advanceDisabled = advancing || !hasSubChannel;
-  const advanceTitle = hasSubChannel
-    ? undefined
-    : "This task was created before sub-channels existed and cannot be advanced. Create a new task to collaborate.";
+  const advanceDisabled = advancing || !hasSubChannel || !canAdvance;
+  // Priority: legacy failure first (the more surprising blocker), then
+  // permission. Both titles are displayed on hover via the native `title`.
+  let advanceTitle: string | undefined;
+  if (!hasSubChannel) {
+    advanceTitle =
+      "This task was created before sub-channels existed and cannot be advanced. Create a new task to collaborate.";
+  } else if (!canAdvance && task?.claimedByName) {
+    advanceTitle = `Only ${task.claimedByName} can advance this task.`;
+  }
 
   return (
     <header className="task-detail__header">
@@ -111,7 +131,7 @@ export function TaskDetailView({
         <>
           <h1 className="task-detail__title">{task.title}</h1>
           <div className="task-detail__meta">
-            <span className="task-detail__status">{task.status}</span>
+            <span className="task-detail__status">{STATUS_LABEL[task.status]}</span>
             {task.claimedByName && (
               <span>claimed by {task.claimedByName}</span>
             )}
@@ -265,6 +285,15 @@ export function TaskDetail() {
   const advanceLabel = task ? ADVANCE_LABEL[task.status] : null;
   const canAdvance = task ? canAdvanceTask(task, currentUser) : false;
 
+  // Legacy rows predate the task=sub-channel primitive: backfill tried to
+  // spawn a child channel and for some reason didn't. The chat surface has
+  // nothing to render, and MessageInput would have no target, so we replace
+  // both with a visible explanation instead of leaking a generic "select a
+  // channel" empty state from ChatPanel.
+  const hasLoadedTask = !!task;
+  const hasSubChannel =
+    hasLoadedTask && subChannelId !== null && subChannelName !== null;
+
   return (
     <div data-testid="task-detail" className="task-detail">
       <TaskDetailView
@@ -278,24 +307,36 @@ export function TaskDetail() {
         canAdvance={canAdvance}
         advanceLabel={advanceLabel}
       />
-      <div className="task-detail__body">
-        <ChatPanel
-          target={subChannelName}
-          conversationId={subChannelId}
-          messages={history.messages}
-          loading={history.loading}
-          lastReadSeq={history.lastReadSeq}
-          emptyLabel="No updates on this task yet. Post the first one below."
-        />
-      </div>
-      {subChannelId && subChannelName && (
-        <MessageInput
-          target={subChannelName}
-          conversationId={subChannelId}
-          history={history}
-          hideCreateTaskCheckbox
-          placeholder={`Message task #${currentTaskDetail.taskNumber}`}
-        />
+      {hasLoadedTask && !hasSubChannel ? (
+        <div className="task-detail__legacy-notice" role="note">
+          <p>
+            This task predates the task = sub-channel primitive and has no
+            collaboration surface.
+          </p>
+          <p>Create a new task to discuss or hand it off.</p>
+        </div>
+      ) : (
+        <>
+          <div className="task-detail__body">
+            <ChatPanel
+              target={subChannelName}
+              conversationId={subChannelId}
+              messages={history.messages}
+              loading={history.loading}
+              lastReadSeq={history.lastReadSeq}
+              emptyLabel="No updates on this task yet. Post the first one below."
+            />
+          </div>
+          {subChannelId && subChannelName && (
+            <MessageInput
+              target={subChannelName}
+              conversationId={subChannelId}
+              history={history}
+              hideCreateTaskCheckbox
+              placeholder={`Message task #${currentTaskDetail.taskNumber}`}
+            />
+          )}
+        </>
       )}
     </div>
   );
