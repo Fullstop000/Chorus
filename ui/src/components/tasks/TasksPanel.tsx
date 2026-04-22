@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { User } from "lucide-react";
 import { useStore } from "../../store";
 import { useTasks } from "../../hooks/useTasks";
 import { createTasks } from "../../data";
@@ -59,7 +60,10 @@ function TaskCard({
       <div className="task-card-title">{task.title}</div>
       <div className="task-card-meta">
         {task.claimedByName && (
-          <span className="task-card-claimed">⚡ {task.claimedByName}</span>
+          <span className="task-card-claimed">
+            <User size={11} aria-hidden="true" />
+            {task.claimedByName}
+          </span>
         )}
         {!task.claimedByName && task.createdByName && (
           <span>by {task.createdByName}</span>
