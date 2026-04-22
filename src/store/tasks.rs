@@ -256,26 +256,45 @@ impl Store {
         claimer_name: &str,
         task_numbers: &[i64],
     ) -> Result<Vec<ClaimResult>> {
-        let conn = self.conn.lock().unwrap();
+        // `transaction()` needs `&mut Connection`. Every successful claim in
+        // this batch must atomically UPDATE the task row AND add the claimer
+        // to the task's sub-channel — otherwise a crash between the two
+        // writes leaves membership and task state out of sync.
+        let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
+        let claimer_type = crate::store::resolve_sender_type_inner(&conn, claimer_name)?;
+        let tx = conn.transaction()?;
+
         let mut results = Vec::new();
         for &tn in task_numbers {
-            let task: Option<(String, Option<String>)> = conn
+            let task: Option<(String, Option<String>, Option<String>)> = tx
                 .query_row(
-                    "SELECT status, claimed_by FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
+                    "SELECT status, claimed_by, sub_channel_id FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
                     params![channel.id, tn],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
                 )
                 .ok();
 
             match task {
-                Some((status, claimed_by)) if status == "todo" && claimed_by.is_none() => {
-                    conn.execute(
+                Some((status, claimed_by, sub_channel_id))
+                    if status == "todo" && claimed_by.is_none() =>
+                {
+                    tx.execute(
                         "UPDATE tasks SET claimed_by = ?1, status = 'in_progress', updated_at = datetime('now') WHERE channel_id = ?2 AND task_number = ?3",
                         params![claimer_name, channel.id, tn],
                     )?;
+                    // Sync sub-channel membership: claimer joins. `INSERT OR
+                    // IGNORE` keeps the operation idempotent when the claimer
+                    // is already a member (e.g. they also created the task).
+                    if let Some(sub_id) = sub_channel_id {
+                        tx.execute(
+                            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
+                             VALUES (?1, ?2, ?3, 0)",
+                            params![sub_id, claimer_name, claimer_type.as_str()],
+                        )?;
+                    }
                     results.push(ClaimResult {
                         task_number: tn,
                         success: true,
@@ -298,6 +317,7 @@ impl Store {
                 }
             }
         }
+        tx.commit()?;
         Ok(results)
     }
 
@@ -307,24 +327,35 @@ impl Store {
         claimer_name: &str,
         task_number: i64,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        // Atomic: UPDATE the task row and DELETE the claimer's sub-channel
+        // membership in one transaction. The creator is never touched — only
+        // the caller's own membership row is removed.
+        let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let claimed_by: Option<String> = conn.query_row(
-            "SELECT claimed_by FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
+        let (claimed_by, sub_channel_id): (Option<String>, Option<String>) = conn.query_row(
+            "SELECT claimed_by, sub_channel_id FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
 
         if claimed_by.as_deref() != Some(claimer_name) {
             return Err(anyhow!("task not claimed by {}", claimer_name));
         }
 
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE tasks SET claimed_by = NULL, status = 'todo', updated_at = datetime('now') WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
         )?;
+        if let Some(sub_id) = sub_channel_id {
+            tx.execute(
+                "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
+                params![sub_id, claimer_name],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -371,7 +402,22 @@ impl Store {
 mod sub_channel_tests {
     use super::*;
     use crate::store::channels::ChannelType;
-    use crate::store::Store;
+    use crate::store::{AgentRecordUpsert, Store};
+
+    fn seed_agent(store: &Store, name: &str) {
+        store
+            .create_agent_record(&AgentRecordUpsert {
+                name,
+                display_name: name,
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
+            .unwrap();
+    }
 
     /// Read a task's `(channel_id, sub_channel_id)` without requiring a
     /// high-level accessor. Keeps tests focused on store-layer guarantees.
@@ -509,6 +555,58 @@ mod sub_channel_tests {
         assert_eq!(
             orphan_members, 0,
             "failed create_tasks must not leave an orphan membership row"
+        );
+    }
+
+    #[test]
+    fn claim_task_adds_claimer_to_sub_channel() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+        store.create_tasks("eng", "alice", &["Ship it"]).unwrap();
+
+        let results = store.update_tasks_claim("eng", "bob", &[1]).unwrap();
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success, "claim must succeed");
+
+        let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
+        let sub_id = sub_id.expect("task has sub_channel_id");
+        assert!(
+            store.channel_member_exists(&sub_id, "bob").unwrap(),
+            "claimer must join sub-channel"
+        );
+        assert!(
+            store.channel_member_exists(&sub_id, "alice").unwrap(),
+            "creator must remain a member"
+        );
+    }
+
+    #[test]
+    fn unclaim_removes_claimer_but_retains_creator() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+        store.create_tasks("eng", "alice", &["Ship it"]).unwrap();
+        let claim = store.update_tasks_claim("eng", "bob", &[1]).unwrap();
+        assert!(claim[0].success);
+
+        store.update_task_unclaim("eng", "bob", 1).unwrap();
+
+        let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
+        let sub_id = sub_id.expect("task has sub_channel_id");
+        assert!(
+            !store.channel_member_exists(&sub_id, "bob").unwrap(),
+            "unclaimer must leave sub-channel"
+        );
+        assert!(
+            store.channel_member_exists(&sub_id, "alice").unwrap(),
+            "creator stays"
         );
     }
 }
