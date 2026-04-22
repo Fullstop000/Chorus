@@ -266,6 +266,7 @@ export function TaskDetail() {
           messages={history.messages}
           loading={history.loading}
           lastReadSeq={history.lastReadSeq}
+          emptyLabel="No updates on this task yet. Post the first one below."
         />
       </div>
       {subChannelId && subChannelName && (
