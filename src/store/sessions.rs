@@ -37,26 +37,31 @@ impl Store {
     }
 
     /// Upsert: marks all other sessions for this agent inactive and
-    /// inserts (or refreshes) the named one as active.
+    /// inserts (or refreshes) the named one as active. Atomic — if the
+    /// insert/upsert fails, the deactivation is rolled back so the agent
+    /// is never left with zero active sessions.
     pub fn record_session(
         &self,
         agent_id: &str,
         session_id: &str,
         runtime: &str,
     ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute(
             "UPDATE agent_sessions SET is_active = 0 WHERE agent_id = ?1",
             params![agent_id],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO agent_sessions (agent_id, session_id, runtime, is_active, created_at, last_used_at)
              VALUES (?1, ?2, ?3, 1, datetime('now'), datetime('now'))
              ON CONFLICT(agent_id, session_id) DO UPDATE SET
+               runtime = excluded.runtime,
                is_active = 1,
                last_used_at = datetime('now')",
             params![agent_id, session_id, runtime],
         )?;
+        tx.commit()?;
         Ok(())
     }
 
