@@ -1,12 +1,12 @@
-import { Loader2, ChevronDown } from "lucide-react"
+import { Loader2, ChevronDown } from "lucide-react";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@/components/ui/select"
-import { cn } from "@/lib/cn"
+} from "@/components/ui/select";
+import { cn } from "@/lib/cn";
 
 function SelectSkeleton({ className }: { className?: string }) {
   return (
@@ -16,7 +16,7 @@ function SelectSkeleton({ className }: { className?: string }) {
         "min-h-[46px] px-3 py-2",
         "border border-input rounded-none bg-muted",
         "opacity-60",
-        className
+        className,
       )}
     >
       <span className="flex items-center gap-2 text-muted-foreground text-[13px] font-mono">
@@ -25,19 +25,19 @@ function SelectSkeleton({ className }: { className?: string }) {
       </span>
       <ChevronDown className="h-4 w-4 opacity-50" />
     </div>
-  )
+  );
 }
 
 export interface AsyncSelectProps {
-  value: string
-  onValueChange: (value: string) => void
-  options: { value: string; label: string }[]
-  placeholder?: string
-  isLoading?: boolean
-  error?: string | null
-  emptyMessage?: string
-  disabled?: boolean
-  className?: string
+  value: string;
+  onValueChange: (value: string) => void;
+  options: { value: string; label: string }[];
+  placeholder?: string;
+  isLoading?: boolean;
+  error?: string | null;
+  emptyMessage?: string;
+  disabled?: boolean;
+  className?: string;
 }
 
 function AsyncSelect({
@@ -52,18 +52,29 @@ function AsyncSelect({
   className,
 }: AsyncSelectProps) {
   if (isLoading && !value) {
-    return <SelectSkeleton className={className} />
+    return <SelectSkeleton className={className} />;
   }
 
   return (
-    <Select value={value} onValueChange={onValueChange} disabled={disabled || isLoading}>
-      <SelectTrigger className={cn(error && "border-destructive bg-destructive/10", className)}>
+    <Select
+      value={value}
+      onValueChange={onValueChange}
+      disabled={disabled || isLoading}
+    >
+      <SelectTrigger
+        className={cn(
+          error && "border-destructive bg-destructive/10",
+          className,
+        )}
+      >
         <SelectValue placeholder={placeholder} />
         {isLoading && <Loader2 className="h-4 w-4 animate-spin ml-auto mr-2" />}
       </SelectTrigger>
       <SelectContent>
         {options.length === 0 ? (
-          <div className="px-3 py-2 text-muted-foreground text-sm">{emptyMessage}</div>
+          <div className="px-3 py-2 text-muted-foreground text-sm">
+            {emptyMessage}
+          </div>
         ) : (
           options.map((opt) => (
             <SelectItem key={opt.value} value={opt.value}>
@@ -73,23 +84,23 @@ function AsyncSelect({
         )}
       </SelectContent>
     </Select>
-  )
+  );
 }
 
-export interface RuntimeStatusInfo {
-  runtime: string
-  installed: boolean
-  authenticated: boolean
-  label?: string
+export interface RuntimeSelectEntry {
+  runtime: string;
+  installed: boolean;
+  authenticated: boolean;
+  label?: string;
 }
 
 export interface RuntimeSelectProps {
-  value: string
-  onValueChange: (value: string) => void
-  runtimes: RuntimeStatusInfo[]
-  isLoading?: boolean
-  error?: string | null
-  className?: string
+  value: string;
+  onValueChange: (value: string) => void;
+  runtimes: RuntimeSelectEntry[];
+  isLoading?: boolean;
+  error?: string | null;
+  className?: string;
 }
 
 function RuntimeSelect({
@@ -103,7 +114,7 @@ function RuntimeSelect({
   const options = runtimes.map((rt) => ({
     value: rt.runtime,
     label: rt.label || rt.runtime,
-  }))
+  }));
 
   return (
     <AsyncSelect
@@ -116,7 +127,7 @@ function RuntimeSelect({
       emptyMessage="No runtimes available"
       className={className}
     />
-  )
+  );
 }
 
-export { AsyncSelect, RuntimeSelect, SelectSkeleton }
+export { AsyncSelect, RuntimeSelect, SelectSkeleton };

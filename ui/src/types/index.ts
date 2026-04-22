@@ -15,7 +15,7 @@ export type {
   AgentInfo,
   AgentEnvVar,
   ProbeAuth,
-  RuntimeStatusInfo,
+  RuntimeCatalogEntry,
   AgentDetailResponse,
   ActivityMessage,
   ActivityResponse,

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { isRuntimeAvailable, modelSelectDisplayLabel, runtimeOptionLabel, runtimeStatusSummary } from './AgentConfigForm'
+import {
+  isRuntimeAvailable,
+  modelSelectDisplayLabel,
+  runtimeOptionLabel,
+  runtimeReasoningEffortOptions,
+  runtimeStatusSummary,
+} from './AgentConfigForm'
 
 describe('runtimeOptionLabel', () => {
   it('shows not installed copy when the runtime is missing', () => {
@@ -16,6 +22,14 @@ describe('runtimeOptionLabel', () => {
         { runtime: 'claude', auth: 'authed' as const },
       ])
     ).toContain('signed in')
+  })
+
+  it('uses the Gemini label for gemini runtimes', () => {
+    expect(
+      runtimeOptionLabel('gemini', [
+        { runtime: 'gemini', auth: 'authed' as const },
+      ])
+    ).toContain('Gemini CLI')
   })
 })
 
@@ -71,5 +85,39 @@ describe('modelSelectDisplayLabel', () => {
       runtimeModels: ['openai/codex-mini-latest'],
       isLoading: false,
     })).toBe('openai/codex-mini-latest')
+  })
+})
+
+describe('runtimeReasoningEffortOptions', () => {
+  it('uses the runtime-provided reasoning effort list', () => {
+    expect(
+      runtimeReasoningEffortOptions('codex', [
+        {
+          runtime: 'codex',
+          label: 'Codex CLI',
+          order: 1,
+          reasoning_efforts: ['low', 'max'],
+          auth: 'authed' as const,
+        },
+      ])
+    ).toEqual([
+      { value: 'default', label: 'Default' },
+      { value: 'low', label: 'Low' },
+      { value: 'max', label: 'Max' },
+    ])
+  })
+
+  it('returns no options when the runtime exposes no reasoning efforts', () => {
+    expect(
+      runtimeReasoningEffortOptions('gemini', [
+        {
+          runtime: 'gemini',
+          label: 'Gemini CLI',
+          order: 4,
+          reasoning_efforts: [],
+          auth: 'authed' as const,
+        },
+      ])
+    ).toEqual([])
   })
 })

@@ -88,7 +88,7 @@ export {
   type AgentRunInfo,
   type AgentRunsResponse,
   type ProbeAuth,
-  type RuntimeStatusInfo,
+  type RuntimeCatalogEntry,
   type AgentDetailResponse,
   type ActivityMessage,
   type ActivityResponse,

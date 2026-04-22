@@ -5,6 +5,7 @@ mod event_forwarder;
 pub mod lifecycle;
 pub mod manager;
 pub mod process_status;
+pub mod runtime_catalog;
 pub mod runtime_status;
 pub mod templates;
 pub mod trace;

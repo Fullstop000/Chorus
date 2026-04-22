@@ -21,6 +21,7 @@ use crate::utils::error::{format_anyhow_error, AppErrorCode};
 use crate::utils::slug::{random_slug_suffix, slugify_base, MAX_SLUG_ATTEMPTS};
 
 use super::dto::AgentInfo;
+use crate::agent::runtime_catalog::{supports_reasoning_effort, supports_reasoning_effort_value};
 
 // ── Activity query params ──
 
@@ -168,8 +169,10 @@ pub(super) fn normalize_reasoning_effort(
     runtime: &str,
     reasoning_effort: Option<&str>,
 ) -> Result<Option<String>, (StatusCode, Json<super::ErrorResponse>)> {
-    let parsed = AgentRuntime::parse(runtime);
-    if parsed != Some(AgentRuntime::Codex) && parsed != Some(AgentRuntime::Opencode) {
+    let Some(parsed) = AgentRuntime::parse(runtime) else {
+        return Ok(None);
+    };
+    if !supports_reasoning_effort(parsed) {
         return Ok(None);
     }
 
@@ -180,14 +183,13 @@ pub(super) fn normalize_reasoning_effort(
         return Ok(None);
     }
 
-    match reasoning_effort {
-        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" => {
-            Ok(Some(reasoning_effort.to_string()))
-        }
-        _ => Err(app_err!(
+    if supports_reasoning_effort_value(parsed, reasoning_effort) {
+        Ok(Some(reasoning_effort.to_string()))
+    } else {
+        Err(app_err!(
             StatusCode::BAD_REQUEST,
             "unsupported reasoning effort: {reasoning_effort}"
-        )),
+        ))
     }
 }
 
