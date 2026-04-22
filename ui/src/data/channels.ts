@@ -15,7 +15,8 @@ export interface ChannelInfo {
   name: string
   description?: string
   joined: boolean
-  channel_type?: 'channel' | 'dm' | 'system' | 'team'
+  channel_type?: 'channel' | 'dm' | 'system' | 'team' | 'task'
+  parent_channel_id?: string | null
   read_only?: boolean
 }
 

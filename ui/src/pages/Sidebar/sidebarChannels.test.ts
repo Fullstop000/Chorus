@@ -30,4 +30,31 @@ describe('isVisibleSidebarChannel', () => {
       isVisibleSidebarChannel(makeChannel({ channel_type: 'team', joined: false }))
     ).toBe(true)
   })
+
+  it('task sub-channels are never visible, even when joined', () => {
+    expect(
+      isVisibleSidebarChannel(
+        makeChannel({
+          channel_type: 'task',
+          joined: true,
+          parent_channel_id: 'parent-1',
+        })
+      )
+    ).toBe(false)
+  })
+
+  it('task sub-channels are never visible, even when marked as a team channel', () => {
+    // Belt-and-suspenders: if the short-circuit is placed correctly,
+    // 'task' wins over any other property — no path through the function
+    // can render a task sub-channel in the sidebar tree.
+    expect(
+      isVisibleSidebarChannel(
+        makeChannel({
+          channel_type: 'task',
+          joined: false,
+          parent_channel_id: 'parent-1',
+        })
+      )
+    ).toBe(false)
+  })
 })
