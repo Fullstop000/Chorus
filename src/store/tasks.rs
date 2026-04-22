@@ -773,6 +773,66 @@ mod sub_channel_tests {
     }
 
     #[test]
+    fn done_sub_channel_drops_out_of_inbox_notifications() {
+        // Regression: archived task sub-channels must not linger in the inbox
+        // view after Done. Reachable via the task detail page; gone from the
+        // active conversation listing.
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+        store
+            .create_tasks("eng", "alice", &["Ship it", "Also ship it"])
+            .unwrap();
+        store.update_tasks_claim("eng", "bob", &[1, 2]).unwrap();
+
+        // Before Done: both task sub-channels appear in bob's inbox.
+        let before: Vec<String> = store
+            .get_inbox_conversation_notifications("bob")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.conversation_name)
+            .collect();
+        assert!(
+            before.iter().any(|n| n == "eng__task-1"),
+            "active task sub-channel must be visible in inbox before Done: got {:?}",
+            before
+        );
+        assert!(
+            before.iter().any(|n| n == "eng__task-2"),
+            "second active task sub-channel must be visible: got {:?}",
+            before
+        );
+
+        // Advance task 1 through InReview → Done. Task 2 stays in progress.
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::Done)
+            .unwrap();
+
+        let after: Vec<String> = store
+            .get_inbox_conversation_notifications("bob")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.conversation_name)
+            .collect();
+        assert!(
+            !after.iter().any(|n| n == "eng__task-1"),
+            "archived task sub-channel must be hidden from inbox: got {:?}",
+            after
+        );
+        assert!(
+            after.iter().any(|n| n == "eng__task-2"),
+            "other active task sub-channel must still be visible: got {:?}",
+            after
+        );
+    }
+
+    #[test]
     fn user_cannot_manually_archive_task_sub_channel() {
         // The existing `archive_channel` guard only allows user/team channels.
         // Task sub-channels must archive exclusively via the `Done` transition

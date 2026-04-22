@@ -192,7 +192,10 @@ FROM channel_members cm
 JOIN channels c ON c.id = cm.channel_id
 LEFT JOIN inbox_read_state irs
   ON irs.conversation_id = cm.channel_id
- AND irs.member_name = cm.member_name;
+ AND irs.member_name = cm.member_name
+-- Archived task sub-channels are completed work; they remain reachable via the
+-- task detail page but must not linger in the user's active inbox listing.
+WHERE NOT (c.archived = 1 AND c.channel_type = 'task');
 
 -- Sessions held by an agent. One row per (agent, runtime-assigned session id).
 -- `is_active` marks the session that should be resumed on next start.
