@@ -89,6 +89,7 @@ pub async fn handle_launch_trio(
             &channel_name,
             None,
             crate::store::channels::ChannelType::Channel,
+            None,
         )
         .map_err(|e| {
             app_err!(

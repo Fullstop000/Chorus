@@ -134,7 +134,7 @@ pub async fn handle_create_channel(
     };
     let channel_id = state
         .store
-        .create_channel(&name, description, ChannelType::Channel)
+        .create_channel(&name, description, ChannelType::Channel, None)
         .map_err(|e| {
             let msg = e.to_string();
             if msg.contains("UNIQUE constraint") {

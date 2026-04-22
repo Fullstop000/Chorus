@@ -148,7 +148,7 @@ async fn start_chorus_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store.create_human("testuser").unwrap();
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store
         .join_channel("general", "testuser", SenderType::Human)

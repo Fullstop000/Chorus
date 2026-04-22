@@ -24,7 +24,7 @@ async fn start_fixture() -> String {
     store.create_human("testuser").unwrap();
     // Seed a default channel so `list --all` isn't empty even before we create.
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store
         .join_channel("general", "testuser", SenderType::Human)

@@ -150,7 +150,7 @@ impl AgentLifecycle for NoopLifecycle {
 async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>)> {
     let store = Arc::new(Store::open(":memory:")?);
     store.create_human("tester")?;
-    store.create_channel("general", Some("General"), ChannelType::Channel)?;
+    store.create_channel("general", Some("General"), ChannelType::Channel, None)?;
     store.join_channel("general", "tester", SenderType::Human)?;
 
     let router = build_router_with_services(

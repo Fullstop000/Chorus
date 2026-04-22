@@ -173,19 +173,21 @@ impl Store {
     }
 
     /// Persist a new channel row. User-visible list queries later filter out
-    /// non-channel types and archived entries.
+    /// non-channel types and archived entries. Pass `parent_channel_id` only
+    /// for `ChannelType::Task` sub-channels; all other channel types use `None`.
     pub fn create_channel(
         &self,
         name: &str,
         description: Option<&str>,
         channel_type: ChannelType,
+        parent_channel_id: Option<&str>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let ct = channel_type.as_api_str();
         conn.execute(
-            "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, ?4)",
-            params![id, name, description, ct],
+            "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, description, ct, parent_channel_id],
         )?;
         Ok(id)
     }
@@ -307,6 +309,15 @@ impl Store {
             .filter_map(|row| row.ok())
             .collect();
 
+        // Collect any task sub-channels so they get the same cleanup before
+        // the parent row is removed. Without this, the `parent_channel_id`
+        // FK would block the final `DELETE FROM channels` on the parent.
+        let sub_channel_ids: Vec<String> = conn
+            .prepare("SELECT id FROM channels WHERE parent_channel_id = ?1")?
+            .query_map(params![channel_id], |row| row.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
         conn.execute(
             "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
             params![channel_id],
@@ -327,6 +338,29 @@ impl Store {
             "DELETE FROM channel_members WHERE channel_id = ?1",
             params![channel_id],
         )?;
+
+        // Cascade clean-up into every task sub-channel (messages, memberships,
+        // inbox state, then the channel row itself).
+        for sub_id in &sub_channel_ids {
+            conn.execute(
+                "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
+                params![sub_id],
+            )?;
+            conn.execute(
+                "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?1)",
+                params![sub_id],
+            )?;
+            conn.execute(
+                "DELETE FROM messages WHERE channel_id = ?1",
+                params![sub_id],
+            )?;
+            conn.execute(
+                "DELETE FROM channel_members WHERE channel_id = ?1",
+                params![sub_id],
+            )?;
+            conn.execute("DELETE FROM channels WHERE id = ?1", params![sub_id])?;
+        }
+
         conn.execute("DELETE FROM channels WHERE id = ?1", params![channel_id])?;
 
         for (attachment_id, stored_path) in attachment_rows {

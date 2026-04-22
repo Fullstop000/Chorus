@@ -94,7 +94,7 @@ impl AgentLifecycle for MockLifecycle {
 fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store

@@ -145,7 +145,7 @@ pub async fn handle_create_team(
 
     state
         .store
-        .create_channel(&name, None, ChannelType::Team)
+        .create_channel(&name, None, ChannelType::Team, None)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let teams_dir = state.store.teams_dir();
