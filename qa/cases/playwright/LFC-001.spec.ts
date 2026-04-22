@@ -15,7 +15,7 @@ import { ensureMixedRuntimeTrio, listAgents, type TrioNames } from './helpers/ap
  * 3. Wait until the agent settles into its idle state such as `online`, `ready`, or `waiting for messages`.
  * 4. Verify sidebar status, profile status, and activity log all tell the same lifecycle story.
  * 5. Stop the agent from the shipped UI control.
- * 6. Verify sidebar, profile, and activity all move to an inactive or stopped state.
+ * 6. Verify sidebar, profile, and activity all move to an asleep or stopped state.
  * 7. Start the agent again from the shipped UI control if one exists.
  * 8. Verify it returns to startup and then back to idle.
  *
@@ -60,16 +60,16 @@ test.describe('LFC-001', () => {
       }
     })
 
-    await test.step('Step 6: Inactive — start button visible', async () => {
+    await test.step('Step 6: Asleep — start button visible', async () => {
       await expect(page.getByRole('button', { name: '[start::agent]' })).toBeVisible({ timeout: 30_000 })
     })
 
-    await test.step('Step 7–8: Start again → back to stop-capable active state', async () => {
+    await test.step('Step 7–8: Start again → back to stop-capable ready/working state', async () => {
       await page.getByRole('button', { name: '[start::agent]' }).click()
       await expect(page.getByRole('button', { name: '[stop::agent]' })).toBeVisible({ timeout: 60_000 })
     })
 
-    await test.step('Expected: API list shows bot-a active after restart', async () => {
+    await test.step('Expected: API list shows bot-a ready or working after restart', async () => {
       const agents = await listAgents(request)
       expect(['ready', 'working']).toContain(agents.find((x) => x.name === trio.botA)?.status)
     })

@@ -14,7 +14,7 @@ const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 /**
  * Catalog: `qa/cases/agents.md` — ACT-002 Activity Timeline Ordering During Wake And Recovery
  *
- * Uses bot-b (kimi) because it reliably responds when woken from inactive.
+ * Uses bot-b (kimi) because it reliably responds when woken from asleep.
  */
 let trio: TrioNames
 
@@ -51,7 +51,7 @@ test.describe('ACT-002', () => {
       await expect(page.locator('.ta-layout')).toBeVisible({ timeout: 15_000 })
       const items = page.locator('.ta-detail .activity-item')
       await expect(items.first()).toBeVisible({ timeout: 15_000 })
-      // Agent should be active after wake-up
+      // Agent should settle into a wake-complete state after recovery.
       const detail = await getAgentDetail(request, trio.botB)
       expect(['ready', 'working']).toContain(detail.agent.status)
     })
