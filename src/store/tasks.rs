@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::params;
+use rusqlite::{params, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -123,8 +123,10 @@ impl Store {
     /// Create one or more tasks under `channel_name`, each with its own
     /// `ChannelType::Task` sub-channel and the creator enrolled as the first
     /// member of that sub-channel. All inserts — sub-channel, first member,
-    /// and task row — run inside a single `conn.transaction()` so a partial
-    /// failure on any task leaves zero orphan channels or membership rows.
+    /// and task row — run inside a single IMMEDIATE transaction so a partial
+    /// failure on any task leaves zero orphan channels or membership rows,
+    /// and concurrent `create_tasks` calls on the same parent can't race
+    /// on `task_number`.
     pub fn create_tasks(
         &self,
         channel_name: &str,
@@ -140,11 +142,14 @@ impl Store {
         let creator_type = crate::store::resolve_sender_type_inner(&conn, creator_name)?;
         let task_channel_type = ChannelType::Task.as_api_str();
 
-        // BEGIN IMMEDIATE via `conn.transaction()`. Acquires the SQLite write
-        // lock up-front so a concurrent `create_tasks` on the same parent
-        // either serializes cleanly or fails fast — and if any INSERT below
-        // errors, the channel + member rows roll back with the task row.
-        let tx = conn.transaction()?;
+        // `transaction_with_behavior(Immediate)` issues BEGIN IMMEDIATE, which
+        // acquires the SQLite write lock eagerly. A concurrent `create_tasks`
+        // on the same (or any) connection will block until we commit or fail
+        // fast with SQLITE_BUSY — so the MAX(task_number) read below is
+        // serialized with the INSERTs, and two callers cannot both pick the
+        // same task_number. `conn.transaction()` defaults to DEFERRED, which
+        // does not give that guarantee.
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         // tx-scoped: MAX under write lock so task_number is race-free across
         // concurrent `create_tasks` calls on the same parent.
         let max_num: i64 = tx.query_row(
@@ -306,7 +311,7 @@ impl Store {
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let claimer_type = crate::store::resolve_sender_type_inner(&conn, claimer_name)?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let mut results = Vec::new();
         // Batch semantics: all claims commit together or none do. A hard SQL
@@ -392,7 +397,7 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         // tx-scoped read closes the TOCTOU window — another writer can't
         // reassign `claimed_by` between the check and the UPDATE.
@@ -445,7 +450,7 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let (current_status_str, claimed_by, sub_channel_id): (
             String,
