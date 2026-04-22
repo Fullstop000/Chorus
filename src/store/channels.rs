@@ -123,6 +123,10 @@ pub struct ChannelListParams<'a> {
     pub include_system: bool,
     /// Include `team` type channels.
     pub include_team: bool,
+    /// Include `task` type channels (task sub-channels). Defaults to `false`
+    /// so the normal sidebar/channel-list queries keep hiding per-task rooms;
+    /// only task-aware views (e.g. the task detail page) opt in.
+    pub include_tasks: bool,
 }
 
 impl Store {
@@ -136,6 +140,9 @@ impl Store {
         }
         if params.include_system {
             types.push("system");
+        }
+        if params.include_tasks {
+            types.push("task");
         }
         types
     }
@@ -607,6 +614,38 @@ mod task_channel_tests {
     #[test]
     fn channel_type_task_roundtrip() {
         assert_eq!(ChannelType::Task.as_api_str(), "task");
+    }
+
+    #[test]
+    fn default_channel_list_excludes_task_sub_channels() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        store.create_tasks("eng", "alice", &["t1"]).unwrap();
+
+        let channels = store.get_channels().unwrap();
+        assert!(channels.iter().any(|c| c.name == "eng"));
+        assert!(
+            !channels.iter().any(|c| c.channel_type == ChannelType::Task),
+            "task sub-channels must not appear in default list"
+        );
+
+        // Opting in via `include_tasks` must surface task sub-channels so the
+        // task-detail view can fetch them.
+        let with_tasks = store
+            .get_channels_by_params(&ChannelListParams {
+                include_tasks: true,
+                ..ChannelListParams::default()
+            })
+            .unwrap();
+        assert!(
+            with_tasks
+                .iter()
+                .any(|c| c.channel_type == ChannelType::Task),
+            "opt-in via include_tasks must include task sub-channels"
+        );
     }
 
     #[test]

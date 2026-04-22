@@ -113,6 +113,7 @@ pub async fn handle_list_channels(
             include_dm: query.include_dm,
             include_system: query.include_system,
             include_team: query.include_team,
+            include_tasks: false,
         },
     )
     .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
