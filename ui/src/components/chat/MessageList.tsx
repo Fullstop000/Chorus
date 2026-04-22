@@ -311,7 +311,14 @@ export function MessageList({
     }
   }
 
+  // Wrapper exists so NewMessageBadge can be `position: absolute` against a
+  // stable non-scrolling parent. Before this split the badge used
+  // `position: fixed` and floated at the viewport bottom-right, which looked
+  // correct inside the main ChatPanel (it occupies most of the viewport) but
+  // broke inside TaskDetail where the chat is a sub-region and the badge
+  // ended up hovering over the composer.
   return (
+    <div className={`message-list-wrapper${scrollMode === "inherit" ? " message-list-wrapper--inherit" : ""}`}>
     <div
       className={`message-list${scrollMode === "inherit" ? " message-list--inherit" : ""}`}
       ref={scrollMode === "inherit" ? undefined : internalScrollContainerRef}
@@ -391,6 +398,7 @@ export function MessageList({
         </div>
       ))}
       <div ref={bottomRef} />
+    </div>
       {hasUnread && (
         <NewMessageBadge
           unreadCount={unreadCount}

@@ -192,10 +192,12 @@ FROM channel_members cm
 JOIN channels c ON c.id = cm.channel_id
 LEFT JOIN inbox_read_state irs
   ON irs.conversation_id = cm.channel_id
- AND irs.member_name = cm.member_name
--- Archived task sub-channels are completed work; they remain reachable via the
--- task detail page but must not linger in the user's active inbox listing.
-WHERE NOT (c.archived = 1 AND c.channel_type = 'task');
+ AND irs.member_name = cm.member_name;
+-- Note: archived task sub-channels still appear in this view so the
+-- per-conversation read-cursor + notification lookup can find them when the
+-- user is viewing an archived sub-channel via the task detail page. The
+-- sidebar LIST query (`get_inbox_conversation_notifications`) filters them
+-- out instead — see that method for the WHERE clause.
 
 -- Sessions held by an agent. One row per (agent, runtime-assigned session id).
 -- `is_active` marks the session that should be resumed on next start.

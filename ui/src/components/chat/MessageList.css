@@ -1,3 +1,18 @@
+.message-list-wrapper {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.message-list-wrapper--inherit {
+  /* Inherit mode: the wrapper is not the positioning context — whoever owns
+     the outer scroller does. Use `display: contents` so the wrapper collapses
+     in the layout tree. */
+  display: contents;
+}
+
 .message-list {
   flex: 1;
   min-height: 0;
@@ -64,9 +79,12 @@
 }
 
 .new-message-badge {
-  position: fixed;
-  bottom: 24px;
-  right: 24px;
+  /* Anchored to `.message-list-wrapper` (position: relative) so the badge
+     floats in the bottom-right of the chat area, regardless of whether that
+     area is a full-viewport ChatPanel or a sub-region inside TaskDetail. */
+  position: absolute;
+  bottom: 12px;
+  right: 18px;
   z-index: 50;
   display: inline-flex;
   align-items: center;

@@ -838,6 +838,58 @@ mod sub_channel_tests {
     }
 
     #[test]
+    fn archived_sub_channel_still_resolves_per_member_notification() {
+        // Regression: when viewing an archived task sub-channel's history via
+        // the task detail page, the UI POSTs a read-cursor. The server then
+        // looks up the per-member notification row to return fresh counts.
+        // That lookup must NOT apply the "hide archived task sub-channels"
+        // filter — that filter is for the sidebar listing only. If the
+        // per-member query returned None, `update_read_cursor_for_channel`
+        // would 500 and the UI's unread badge would never clear.
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+        store.create_tasks("eng", "alice", &["Ship it"]).unwrap();
+        store.update_tasks_claim("eng", "bob", &[1]).unwrap();
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::InReview)
+            .unwrap();
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::Done)
+            .unwrap();
+
+        let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
+        let sub_id = sub_id.expect("task has sub_channel_id");
+
+        // Archived sub-channel is gone from the sidebar listing.
+        let list_names: Vec<String> = store
+            .get_inbox_conversation_notifications("alice")
+            .unwrap()
+            .into_iter()
+            .map(|r| r.conversation_name)
+            .collect();
+        assert!(
+            !list_names.iter().any(|n| n == "eng__task-1"),
+            "archive filter on list query: got {:?}",
+            list_names
+        );
+
+        // ...but still resolvable via per-member lookup (alice is the creator,
+        // so she's a member). This is the row the read-cursor handler needs.
+        let per_member = store
+            .get_inbox_conversation_notification_for_member(&sub_id, "alice")
+            .unwrap();
+        assert!(
+            per_member.is_some(),
+            "per-member notification lookup must still resolve archived task sub-channels"
+        );
+        assert_eq!(per_member.unwrap().conversation_name, "eng__task-1");
+    }
+
+    #[test]
     fn user_cannot_manually_archive_task_sub_channel() {
         // The existing `archive_channel` guard only allows user/team channels.
         // Task sub-channels must archive exclusively via the `Done` transition

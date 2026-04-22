@@ -99,6 +99,11 @@ export const useStore = create<UIStore>((set) => ({
           ? {
               currentChannel: null,
               activeTab: isSameAgent ? state.activeTab : ('chat' as const),
+              // Selecting an agent always exits any open task-detail view —
+              // the detail is scoped to a channel, so agent navigation takes
+              // us out of it. Without this clear, MainPanel keeps rendering
+              // TaskDetail because currentTaskDetail outranks currentAgent.
+              currentTaskDetail: null,
             }
           : {}),
       }
