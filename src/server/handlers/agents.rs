@@ -279,10 +279,12 @@ pub async fn handle_create_agent(
             result.name
         ));
     }
+    let ps = state.lifecycle.process_state(&result.name).await;
+    let status = crate::agent::process_status::derive_status(ps.as_ref());
     Ok(Json(serde_json::json!({
         "id": result.id,
         "name": result.name,
-        "status": serde_json::to_value(crate::agent::process_status::Status::Working).unwrap(),
+        "status": serde_json::to_value(status).unwrap(),
     })))
 }
 

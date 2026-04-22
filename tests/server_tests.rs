@@ -1411,6 +1411,7 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         "model": "sonnet"
     });
     let resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -1434,6 +1435,36 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         .find(|a| a.name.starts_with("stuck-bot-"))
         .expect("agent should remain in the store after failed start");
     assert!(store.is_member("all", &agent.name).unwrap());
+
+    // After a failed start the manager has no live process, so the derived
+    // status surfaced through the API must be `asleep`. Regression guard:
+    // before status was derived from ProcessState the persisted column
+    // carried this claim; that column is gone, so verify through the API.
+    let list_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let listed: Vec<serde_json::Value> = serde_json::from_slice(
+        &axum::body::to_bytes(list_resp.into_body(), 1_000_000)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let entry = listed
+        .iter()
+        .find(|a| a["name"] == agent.name.as_str())
+        .expect("failed-start agent must still appear in /api/agents");
+    assert_eq!(
+        entry["status"], "asleep",
+        "failed-start agent must derive to `asleep`, got `{}`",
+        entry["status"]
+    );
 }
 
 #[tokio::test]
@@ -1475,7 +1506,7 @@ async fn test_create_kimi_agent_via_api() {
     );
     let agent = store.get_agent(&name).unwrap().expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
-    assert_eq!(payload["status"], "working");
+    assert_eq!(payload["status"], "ready");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
