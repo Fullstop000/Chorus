@@ -304,26 +304,37 @@ impl Store {
             return Err(anyhow!("only user channels can be deleted"));
         }
 
+        // Collect any task sub-channels first so the attachment sweep below can
+        // include attachments referenced only by sub-channel messages. Without
+        // this, attachments uploaded inside a task sub-channel would leak rows
+        // and files after the parent channel is deleted.
+        let sub_channel_ids: Vec<String> = conn
+            .prepare("SELECT id FROM channels WHERE parent_channel_id = ?1")?
+            .query_map(params![channel_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Build the `channel_id IN (?1, ?2, ...)` list used by both the
+        // attachment sweep and the cascade deletes. Parent first, then subs.
+        let doomed_ids: Vec<String> = std::iter::once(channel_id.to_string())
+            .chain(sub_channel_ids.iter().cloned())
+            .collect();
+        let placeholders = (1..=doomed_ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let doomed_params = rusqlite::params_from_iter(doomed_ids.iter());
+
         let attachment_rows: Vec<(String, String)> = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT DISTINCT a.id, a.stored_path
                  FROM attachments a
                  JOIN message_attachments ma ON ma.attachment_id = a.id
                  JOIN messages m ON m.id = ma.message_id
-                 WHERE m.channel_id = ?1",
-            )?
-            .query_map(params![channel_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .filter_map(|row| row.ok())
-            .collect();
-
-        // Collect any task sub-channels so they get the same cleanup before
-        // the parent row is removed. Without this, the `parent_channel_id`
-        // FK would block the final `DELETE FROM channels` on the parent.
-        let sub_channel_ids: Vec<String> = conn
-            .prepare("SELECT id FROM channels WHERE parent_channel_id = ?1")?
-            .query_map(params![channel_id], |row| row.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
+                 WHERE m.channel_id IN ({})",
+                placeholders
+            ))?
+            .query_map(doomed_params, |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         conn.execute(
             "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
@@ -696,5 +707,68 @@ mod task_channel_tests {
             .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
             .unwrap();
         assert_eq!(task_count, 0, "task rows must be gone too");
+    }
+
+    #[test]
+    fn delete_channel_cleans_up_sub_channel_attachments() {
+        // Regression: before this fix, `delete_channel` only swept attachments
+        // referenced by messages on the *parent* channel. Attachments
+        // referenced only by sub-channel messages leaked into `attachments`
+        // and on disk after delete.
+        let store = Store::open(":memory:").unwrap();
+        let parent_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        store.create_tasks("eng", "alice", &["t1"]).unwrap();
+
+        let sub_id: String = {
+            let conn = store.conn_for_test();
+            conn.query_row(
+                "SELECT sub_channel_id FROM tasks WHERE task_number = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // Attach a fake attachment to a message in the sub-channel only (no
+        // reference from any parent-channel message).
+        {
+            let conn = store.conn_for_test();
+            conn.execute(
+                "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path) \
+                 VALUES ('att-sub', 'note.txt', 'text/plain', 4, '/nonexistent/note.txt')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq) \
+                 VALUES ('m-sub', ?1, 'alice', 'human', 'here', 1)",
+                params![sub_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO message_attachments (message_id, attachment_id) VALUES ('m-sub', 'att-sub')",
+                [],
+            )
+            .unwrap();
+        }
+
+        store.delete_channel(&parent_id).unwrap();
+
+        // Attachment row referenced only by a sub-channel message must be gone.
+        let conn = store.conn_for_test();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM attachments WHERE id = 'att-sub'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "attachment referenced only by sub-channel message must be swept"
+        );
     }
 }
