@@ -284,23 +284,30 @@ fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
 
     // Backfill: every existing task gets a sub-channel matching the new primitive.
     // Fetch orphan rows first (outside tx) to avoid borrowing conn twice.
-    let orphans: Vec<(String, String, i64, String)> = conn
+    let orphans: Vec<(String, String, String, i64, String)> = conn
         .prepare(
-            "SELECT t.id, c.name, t.task_number, t.created_by \
+            "SELECT t.id, c.id, c.name, t.task_number, t.created_by \
              FROM tasks t \
              JOIN channels c ON c.id = t.channel_id \
              WHERE t.sub_channel_id IS NULL",
         )?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
 
     if orphans.is_empty() {
         return Ok(());
     }
 
     let tx = conn.unchecked_transaction()?;
-    for (task_id, parent_name, task_number, creator_name) in orphans {
+    for (task_id, parent_id, parent_name, task_number, creator_name) in orphans {
         let sub_id = uuid::Uuid::new_v4().to_string();
         let sub_name = format!("{}__task-{}", parent_name, task_number);
         let creator_type = {
@@ -313,11 +320,6 @@ fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
                 "human"
             }
         };
-        let parent_id: String = tx.query_row(
-            "SELECT id FROM channels WHERE name = ?1",
-            rusqlite::params![parent_name],
-            |r| r.get(0),
-        )?;
         tx.execute(
             "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
              VALUES (?1, ?2, NULL, 'task', ?3)",
@@ -382,7 +384,7 @@ mod backfill_tests {
     use super::*;
     use rusqlite::Connection;
 
-    fn bootstrap_pre_migration_db() -> Connection {
+    fn bootstrap_pre_migration_db_with_creator(creator_name: &str, creator_table: &str) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         // Bare-minimum pre-migration schema — channels and tasks WITHOUT the new columns.
         conn.execute_batch(
@@ -408,13 +410,25 @@ mod backfill_tests {
              );
              CREATE TABLE agents (name TEXT PRIMARY KEY);
              CREATE TABLE humans (name TEXT PRIMARY KEY);
-             INSERT INTO channels (id, name) VALUES ('ch1', 'eng');
-             INSERT INTO humans (name) VALUES ('alice');
-             INSERT INTO tasks (id, channel_id, task_number, title, created_by)
-                 VALUES ('t1', 'ch1', 1, 'legacy task', 'alice');",
+             INSERT INTO channels (id, name) VALUES ('ch1', 'eng');",
+        )
+        .unwrap();
+        conn.execute(
+            &format!("INSERT INTO {} (name) VALUES (?1)", creator_table),
+            rusqlite::params![creator_name],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, channel_id, task_number, title, created_by)
+                 VALUES ('t1', 'ch1', 1, 'legacy task', ?1)",
+            rusqlite::params![creator_name],
         )
         .unwrap();
         conn
+    }
+
+    fn bootstrap_pre_migration_db() -> Connection {
+        bootstrap_pre_migration_db_with_creator("alice", "humans")
     }
 
     #[test]
@@ -446,6 +460,37 @@ mod backfill_tests {
             )
             .unwrap();
         assert_eq!(is_member, 1);
+        let parent_channel_id: Option<String> = conn
+            .query_row(
+                "SELECT parent_channel_id FROM channels WHERE id = ?1",
+                [&sub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent_channel_id.as_deref(), Some("ch1"));
+    }
+
+    #[test]
+    fn backfill_uses_agent_member_type_when_creator_is_agent() {
+        let conn = bootstrap_pre_migration_db_with_creator("bot", "agents");
+        migrate_add_parent_channel_id(&conn).unwrap();
+        migrate_add_task_sub_channel_id(&conn).unwrap();
+
+        let sub_id: String = conn
+            .query_row(
+                "SELECT sub_channel_id FROM tasks WHERE id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let member_type: String = conn
+            .query_row(
+                "SELECT member_type FROM channel_members WHERE channel_id = ?1 AND member_name = 'bot'",
+                [&sub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(member_type, "agent");
     }
 
     #[test]
