@@ -9,6 +9,7 @@ How unread counts, read cursors, and inbox state work end-to-end.
 | Concept               | Meaning                                                                 |
 | --------------------- | ----------------------------------------------------------------------- |
 | **Conversation**      | A channel, DM, or team — identified by `conversationId`                 |
+| **Task sub-channel**  | `channel_type='task'` channels reuse the same inbox machinery as regular channels; nothing special. |
 | **`latestSeq`**       | Highest message sequence number in a conversation                       |
 | **`lastReadSeq`**     | The viewer's read cursor — highest seq they've seen                     |
 | **Unread count**      | Derived: `latestSeq - lastReadSeq` (no separate counter)                |
