@@ -12,6 +12,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_create_trace_events_table(conn)?;
     migrate_add_display_name_to_humans(conn)?;
     migrate_create_agent_sessions_table(conn)?;
+    migrate_copy_session_ids_to_agent_sessions(conn)?;
     Ok(())
 }
 
@@ -225,5 +226,25 @@ fn migrate_create_agent_sessions_table(conn: &Connection) -> Result<()> {
          CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
             ON agent_sessions(agent_id, is_active);",
     )?;
+    Ok(())
+}
+
+fn migrate_copy_session_ids_to_agent_sessions(conn: &Connection) -> Result<()> {
+    let has_column = conn
+        .prepare("PRAGMA table_info(agents)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|col| col == "session_id");
+    if !has_column {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT OR IGNORE INTO agent_sessions (agent_id, session_id, runtime, is_active, created_at, last_used_at)
+         SELECT id, session_id, runtime, 1, created_at, datetime('now')
+         FROM agents
+         WHERE session_id IS NOT NULL AND session_id != ''",
+        [],
+    )?;
+    tracing::info!("migration: copied agents.session_id values into agent_sessions");
     Ok(())
 }

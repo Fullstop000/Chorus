@@ -116,4 +116,23 @@ mod tests {
         store.clear_active_session("a1").unwrap();
         assert!(store.get_active_session("a1").unwrap().is_none());
     }
+
+    #[test]
+    fn migration_copies_existing_session_id() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("db.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            conn.execute_batch(include_str!("schema.sql")).unwrap();
+            // Re-add the legacy column to simulate an upgrade path.
+            let _ = conn.execute("ALTER TABLE agents ADD COLUMN session_id TEXT", []);
+            conn.execute(
+                "INSERT INTO agents (id, name, display_name, runtime, model, session_id) VALUES ('a1', 'a', 'A', 'fake', 'fake', 'legacy-sess')",
+                [],
+            ).unwrap();
+        }
+        let store = Store::open(db_path.to_str().expect("utf-8 path")).unwrap();
+        let got = store.get_active_session("a1").unwrap().unwrap();
+        assert_eq!(got.session_id, "legacy-sess");
+    }
 }
