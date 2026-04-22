@@ -80,15 +80,17 @@ export function TaskDetailView({
   canAdvance,
   advanceLabel,
 }: TaskDetailViewProps) {
-  // Hide the advance button when sub_channel_id is null (legacy pre-backfill
-  // tasks) — those rows predate the sub-channel machinery and should be read-only
-  // in the detail view. Also gate on advanceLabel + canAdvance.
-  const showAdvance =
-    !!task &&
-    !!advanceLabel &&
-    canAdvance &&
-    task.subChannelId !== null &&
-    task.subChannelId !== undefined;
+  // Advance button is shown whenever the task can advance and the user has
+  // permission. For legacy pre-backfill rows (`sub_channel_id` null/undefined)
+  // we render a disabled button with a tooltip explaining why — silent hide
+  // leaves the user stuck with no signal about what's wrong.
+  const showAdvance = !!task && !!advanceLabel && canAdvance;
+  const hasSubChannel =
+    !!task && task.subChannelId !== null && task.subChannelId !== undefined;
+  const advanceDisabled = advancing || !hasSubChannel;
+  const advanceTitle = hasSubChannel
+    ? undefined
+    : "This task was created before sub-channels existed and cannot be advanced. Create a new task to collaborate.";
 
   return (
     <header className="task-detail__header">
@@ -119,7 +121,9 @@ export function TaskDetailView({
                 type="button"
                 className="task-detail__advance"
                 onClick={onAdvance}
-                disabled={advancing}
+                disabled={advanceDisabled}
+                title={advanceTitle}
+                aria-disabled={advanceDisabled || undefined}
               >
                 {advancing ? "…" : advanceLabel}
               </button>

@@ -115,7 +115,7 @@ describe("TaskDetailView", () => {
     expect(html).toContain('class="task-detail__advance"');
   });
 
-  it("hides the advance button for legacy tasks without a sub-channel", () => {
+  it("disables the advance button with a tooltip for legacy tasks without a sub-channel", () => {
     const task: TaskInfo = {
       taskNumber: 3,
       title: "legacy",
@@ -132,7 +132,11 @@ describe("TaskDetailView", () => {
         advanceLabel="Start"
       />,
     );
-    expect(html).not.toContain("task-detail__advance");
+    // Rendered, not hidden — silent hide leaves the user with no signal.
+    expect(html).toContain("task-detail__advance");
+    expect(html).toContain("disabled");
+    // Tooltip explains why the button won't respond.
+    expect(html).toMatch(/before sub-channels existed/i);
   });
 
   it("hides the advance button when user cannot advance", () => {
