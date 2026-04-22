@@ -602,9 +602,60 @@ impl Store {
 #[cfg(test)]
 mod task_channel_tests {
     use super::*;
+    use crate::store::Store;
 
     #[test]
     fn channel_type_task_roundtrip() {
         assert_eq!(ChannelType::Task.as_api_str(), "task");
+    }
+
+    #[test]
+    fn delete_channel_cascades_to_task_sub_children() {
+        let store = Store::open(":memory:").unwrap();
+        let parent_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        store.create_tasks("eng", "alice", &["t1", "t2"]).unwrap();
+
+        // Verify parent + 2 task sub-channels exist before delete.
+        {
+            let conn = store.conn_for_test();
+            let sub_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM channels WHERE parent_channel_id = ?1",
+                    params![parent_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(sub_count, 2);
+        }
+
+        store.delete_channel(&parent_id).unwrap();
+
+        // Parent, sub-channels, and tasks rows must all be gone.
+        let conn = store.conn_for_test();
+        let parent_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channels WHERE id = ?1",
+                params![parent_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent_exists, 0);
+
+        let sub_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channels WHERE parent_channel_id = ?1",
+                params![parent_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sub_count, 0, "task sub-channels must be deleted with parent");
+
+        let task_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(task_count, 0, "task rows must be gone too");
     }
 }

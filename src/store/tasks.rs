@@ -136,12 +136,6 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let max_num: i64 = conn.query_row(
-            "SELECT COALESCE(MAX(task_number), 0) FROM tasks WHERE channel_id = ?1",
-            params![channel.id],
-            |row| row.get(0),
-        )?;
-
         // Resolve creator kind up-front so the transaction only does writes.
         let creator_type = crate::store::resolve_sender_type_inner(&conn, creator_name)?;
         let task_channel_type = ChannelType::Task.as_api_str();
@@ -151,6 +145,13 @@ impl Store {
         // either serializes cleanly or fails fast — and if any INSERT below
         // errors, the channel + member rows roll back with the task row.
         let tx = conn.transaction()?;
+        // tx-scoped: MAX under write lock so task_number is race-free across
+        // concurrent `create_tasks` calls on the same parent.
+        let max_num: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(task_number), 0) FROM tasks WHERE channel_id = ?1",
+            params![channel.id],
+            |row| row.get(0),
+        )?;
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
             let task_id = Uuid::new_v4().to_string();
@@ -189,7 +190,7 @@ impl Store {
             result.push(TaskInfo {
                 task_number,
                 title: title.to_string(),
-                status: "todo".to_string(),
+                status: TaskStatus::Todo.as_str().to_string(),
                 claimed_by_name: None,
                 created_by_name: Some(creator_name.to_string()),
                 sub_channel_id: Some(sub_channel_id),
