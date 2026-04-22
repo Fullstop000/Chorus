@@ -1,6 +1,6 @@
 import { test, expect } from './helpers/fixtures'
 import { ensureMixedRuntimeTrio, getWhoami, historyForUser, stopAgentApi, type TrioNames } from './helpers/api'
-import { openAgentChat, openAgentTab, sendChatMessage , gotoApp } from './helpers/ui'
+import { expectProfileStatus, gotoApp, openAgentChat, openAgentTab, sendChatMessage } from './helpers/ui'
 
 const skipLLM = process.env.CHORUS_E2E_LLM === '0'
 
@@ -25,10 +25,10 @@ test.describe('MSG-004', () => {
     await stopAgentApi(request, trio.botB)
     await gotoApp(page)
 
-    await test.step('Steps 1–5: Send DM to inactive bot-b and wait for wake + reply', async () => {
+    await test.step('Steps 1–5: Send DM to asleep bot-b and wait for wake + reply', async () => {
       await openAgentChat(page, trio.displayB)
       await openAgentTab(page, trio.displayB, 'Profile')
-      await expect(page.locator('.profile-config-grid')).toContainText('inactive')
+      await expectProfileStatus(page, 'asleep')
       await page.getByRole('button', { name: 'Chat', exact: true }).click()
       await sendChatMessage(page, `Reply with exact token ${token}`)
       const deadline = Date.now() + 120_000
@@ -45,7 +45,7 @@ test.describe('MSG-004', () => {
     await test.step('Steps 6–9: Reply stays in same DM and lifecycle surfaces recover coherently', async () => {
       await expect(page.locator('.message-item').filter({ hasText: token }).first()).toBeVisible()
       await openAgentTab(page, trio.displayB, 'Profile')
-      await expect(page.locator('.profile-config-grid')).toContainText('active')
+      await expectProfileStatus(page, ['ready', 'working'])
       await page.getByRole('button', { name: 'Chat', exact: true }).click()
       await expect(page.locator('.message-item').filter({ hasText: token }).first()).toBeVisible()
     })

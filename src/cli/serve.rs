@@ -1,9 +1,9 @@
 //! `chorus start --no-open` (or `chorus serve`) — start the HTTP server and agent manager.
 //!
 //! Initialises the data directory layout, opens the SQLite store, spawns the
-//! [`AgentManager`] (which auto-restarts previously-active agents), loads
-//! agent templates, and starts the Axum HTTP server on `0.0.0.0:<port>`.
-//! Shuts down cleanly on Ctrl-C.
+//! [`AgentManager`], loads agent templates, and starts the Axum HTTP server
+//! on `0.0.0.0:<port>`. Agents lazy-start on the first incoming message;
+//! no boot autorestart. Shuts down cleanly on Ctrl-C.
 //!
 //! Always starts the shared MCP HTTP bridge on `127.0.0.1:<bridge_port>` in
 //! the same process. Both the main server and the bridge share a single
@@ -13,7 +13,6 @@
 use std::sync::Arc;
 
 use chorus::agent::manager::AgentManager;
-use chorus::store::agents::AgentStatus;
 use chorus::store::Store;
 use tokio_util::sync::CancellationToken;
 
@@ -50,9 +49,9 @@ pub async fn run(
     // both the main server and the bridge together.
     let shutdown_token = CancellationToken::new();
 
-    // Bind the shared bridge BEFORE auto-restarting agents — agents now
-    // require a live bridge (no more stdio fallback). If the bridge port is
-    // taken we fail to start.
+    // Bind the shared bridge before accepting HTTP traffic — agents require
+    // a live bridge (no more stdio fallback). If the bridge port is taken
+    // we fail to start.
     let bridge_listen = format!("127.0.0.1:{bridge_port}");
     let bridge_listener = tokio::net::TcpListener::bind(&bridge_listen)
         .await
@@ -89,11 +88,11 @@ pub async fn run(
     ) {
         Ok(()) => {
             // RAII guard removes the discovery file on every exit path —
-            // normal shutdown, `?` propagation, or a panic during the
-            // auto-restart loop below. Without this, a panic between here
-            // and the bridge task actually serving HTTP would leave a stale
-            // file that the next `chorus serve` reads as "another chorus
-            // is alive," permanently blocking startup.
+            // normal shutdown, `?` propagation, or a panic during startup.
+            // Without this, a panic between here and the bridge task
+            // actually serving HTTP would leave a stale file that the
+            // next `chorus serve` reads as "another chorus is alive,"
+            // permanently blocking startup.
             Some(chorus::bridge::discovery::DiscoveryGuard)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -135,45 +134,10 @@ pub async fn run(
         tracing::info!("shared bridge stopped");
     });
 
-    // Auto-restart agents that were active before server restart.
-    // Track failures per agent so repeated failures can be surfaced.
-    {
-        let active_agents: Vec<String> = store
-            .get_agents()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|a| a.status == AgentStatus::Active)
-            .map(|a| a.name)
-            .collect();
-        let mut failed_agents = Vec::new();
-        for agent_name in active_agents {
-            tracing::info!(agent = %agent_name, "auto-restarting active agent");
-            if let Err(e) = manager.start_agent(&agent_name, None).await {
-                let error_detail = format!("{e:#}");
-                tracing::error!(agent = %agent_name, err = %error_detail, "failed to restart agent — marking inactive so subsequent delivery can retry");
-                // Mark inactive so next message delivery can attempt a fresh start
-                if let Err(e) = store.update_agent_status(&agent_name, AgentStatus::Inactive) {
-                    tracing::error!(agent = %agent_name, err = %e, "also failed to mark agent inactive — manual intervention required");
-                }
-                failed_agents.push((agent_name, error_detail));
-            }
-        }
-        if !failed_agents.is_empty() {
-            tracing::warn!(
-                "Warning: {} agent(s) failed to auto-restart and were marked inactive: {}",
-                failed_agents.len(),
-                failed_agents
-                    .iter()
-                    .map(|(agent_name, _)| agent_name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-            for (agent_name, error_detail) in &failed_agents {
-                tracing::warn!("  - {agent_name}: {error_detail}");
-            }
-            tracing::warn!("They will be retried on next message delivery. To restart immediately: `chorus agent start <name>`");
-        }
-    }
+    // No boot autorestart: agents lazy-start on first incoming message
+    // (see deliver_message_to_agents). The active agent_sessions row
+    // (added in Phase 5) will ensure resume continuity when the next
+    // start happens.
 
     // Load agent templates from the configured directory.
     let template_path = chorus::agent::templates::expand_tilde(&template_dir_raw);

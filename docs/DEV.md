@@ -146,8 +146,8 @@ means:
 1. Check the worktree is clean before switching branches.
 2. If local changes exist, commit, stash, or move them before switching.
 3. Start from an up-to-date `main` based on `origin/main`.
-4. Create branches with an `{agent}/` prefix: `claude/`, `codex/`, `gemini/`,
-   `kimi/`, `opencode/`, etc. Use your agent name.
+4. Create branches with an `{agent}/` prefix: `claude/`, `codex/`, `kimi/`,
+   `opencode/`, etc. Use your agent name.
 5. Don't carry unrelated changes into a new branch.
 
 ### Commits

@@ -18,9 +18,16 @@ function agentColor(name: string): string {
 }
 
 function agentDotClass(status: string, activity?: string): string {
-  if (status !== 'active') return status === 'sleeping' ? 'offline' : 'offline'
-  if (activity === 'thinking' || activity === 'working') return activity
-  return 'online'
+  if (status === 'working') {
+    if (activity === 'thinking' || activity === 'working') return activity
+    return 'working'
+  }
+  if (status === 'ready') {
+    if (activity === 'thinking' || activity === 'working') return activity
+    return 'online'
+  }
+  if (status === 'failed') return 'failed'
+  return 'offline'
 }
 
 function AgentAvatar({ name, status, activity }: { name: string; status: string; activity?: string }) {

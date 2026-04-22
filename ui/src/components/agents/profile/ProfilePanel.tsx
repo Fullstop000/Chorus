@@ -104,7 +104,7 @@ export function ProfilePanel() {
   const agent = selectedAgent;
   const color = agentColor(agent.name);
   const initial = agent.name[0]?.toUpperCase() ?? "?";
-  const isActive = agent.status === "active";
+  const isActive = agent.status === "ready" || agent.status === "working";
   const envVars = detail?.envVars ?? [];
   const reasoningEffort =
     agent.reasoningEffort ?? detail?.agent.reasoningEffort ?? null;
@@ -223,30 +223,17 @@ export function ProfilePanel() {
           <span
             className="badge"
             style={{
-              background: isActive
-                ? "var(--status-online)"
-                : agent.status === "sleeping"
-                  ? "var(--status-sleeping)"
-                  : "var(--status-inactive)",
+              background: agent.status === "working"
+                ? "var(--status-sleeping)"
+                : agent.status === "ready"
+                  ? "var(--status-online)"
+                  : agent.status === "failed"
+                    ? "var(--status-failed)"
+                    : "var(--status-inactive)",
             }}
           >
             {agent.status}
           </span>
-          {agent.session_id && (
-            <>
-              <span className="profile-config-key">Session</span>
-              <span
-                className="badge"
-                style={{
-                  fontFamily: "monospace",
-                  fontSize: "10px",
-                  letterSpacing: 0,
-                }}
-              >
-                {agent.session_id}
-              </span>
-            </>
-          )}
         </div>
         <div
           className={`runtime-status-banner runtime-status-banner-${runtimeSummary.tone}`}

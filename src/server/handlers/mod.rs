@@ -101,8 +101,12 @@ pub async fn handle_server_info(
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
     debug!(agent = %agent_id, "list_server");
-    let info = server_info::build_server_info(state.store.as_ref(), &agent_id)
+    let mut info = server_info::build_server_info(state.store.as_ref(), &agent_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    for agent_info in &mut info.agents {
+        let ps = state.lifecycle.process_state(&agent_info.name).await;
+        agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
+    }
     Ok(Json(info))
 }
 

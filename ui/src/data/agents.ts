@@ -12,13 +12,12 @@ export interface AgentInfo {
   id: string
   name: string
   display_name?: string
-  status: 'active' | 'sleeping' | 'inactive'
+  status: 'working' | 'ready' | 'asleep' | 'failed'
   runtime?: string
   model?: string
   reasoningEffort?: string
   description?: string
   systemPrompt?: string
-  session_id?: string
   activity?: string
   activity_detail?: string
 }
@@ -191,7 +190,7 @@ export function toAgentLabel(agent: AgentInfo): string {
 }
 
 export function isAgentActive(agent: AgentInfo): boolean {
-  return agent.status === 'active' || agent.status === 'sleeping'
+  return agent.status === 'ready' || agent.status === 'working'
 }
 
 // ── Query definitions ──

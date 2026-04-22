@@ -439,7 +439,7 @@ struct PendingRequest {
 #[derive(Debug, Clone)]
 struct SessionState {
     /// Current lifecycle state.
-    agent_state: AgentState,
+    agent_state: ProcessState,
     /// Turn id currently in flight on this session, if any.
     turn_id: Option<String>,
     /// Run id correlating the current prompt with its events.
@@ -525,7 +525,7 @@ pub struct CodexHandle {
     key: AgentKey,
     /// Pre-start state only; after `start()` consult
     /// `shared.sessions[session_id].agent_state` instead.
-    state: AgentState,
+    state: ProcessState,
     spec: AgentSpec,
     process: Arc<CodexAgentProcess>,
     /// The `thread_id` this handle is attached to, filled by `start()`.
@@ -539,7 +539,7 @@ impl CodexHandle {
     fn new(key: AgentKey, spec: AgentSpec, process: Arc<CodexAgentProcess>) -> Self {
         Self {
             key,
-            state: AgentState::Idle,
+            state: ProcessState::Idle,
             spec,
             process,
             session_id: None,
@@ -710,14 +710,14 @@ impl CodexHandle {
     /// `open_session(Resume)` or the `start` compat shim) to decide whether
     /// to send `thread/resume` or `thread/start` to the app-server.
     async fn run_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        if !matches!(self.state, AgentState::Idle) {
+        if !matches!(self.state, ProcessState::Idle) {
             bail!("codex: start called in non-idle state");
         }
 
-        self.state = AgentState::Starting;
+        self.state = ProcessState::Starting;
         self.process.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Starting,
+            state: ProcessState::Starting,
         });
 
         // Spawn the shared child process if we're the first handle on this
@@ -736,7 +736,7 @@ impl CodexHandle {
             s.sessions.insert(
                 thread_id.clone(),
                 SessionState {
-                    agent_state: AgentState::Active {
+                    agent_state: ProcessState::Active {
                         session_id: thread_id.clone(),
                     },
                     turn_id: None,
@@ -750,11 +750,11 @@ impl CodexHandle {
         });
         self.process.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Active {
+            state: ProcessState::Active {
                 session_id: thread_id.clone(),
             },
         });
-        self.state = AgentState::Active {
+        self.state = ProcessState::Active {
             session_id: thread_id.clone(),
         };
 
@@ -783,7 +783,7 @@ impl Session for CodexHandle {
             .or(self.resume_session_id.as_deref())
     }
 
-    fn state(&self) -> AgentState {
+    fn process_state(&self) -> ProcessState {
         if let Some(ref sid) = self.session_id {
             let s = self.process.shared.lock().unwrap();
             if let Some(session) = s.sessions.get(sid) {
@@ -813,7 +813,7 @@ impl Session for CodexHandle {
                 .sessions
                 .get(&session_id)
                 .ok_or_else(|| anyhow::anyhow!("codex: session state missing for {session_id}"))?;
-            if !matches!(session.agent_state, AgentState::Active { .. }) {
+            if !matches!(session.agent_state, ProcessState::Active { .. }) {
                 bail!("codex: cannot prompt in non-active state");
             }
         }
@@ -833,7 +833,7 @@ impl Session for CodexHandle {
             );
             if let Some(session) = s.sessions.get_mut(&session_id) {
                 session.run_id = Some(run_id);
-                session.agent_state = AgentState::PromptInFlight {
+                session.agent_state = ProcessState::PromptInFlight {
                     run_id,
                     session_id: session_id.clone(),
                 };
@@ -842,7 +842,7 @@ impl Session for CodexHandle {
 
         self.process.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::PromptInFlight {
+            state: ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             },
@@ -853,7 +853,7 @@ impl Session for CodexHandle {
             .send_line(turn_req)
             .context("codex: stdin channel closed")?;
 
-        self.state = AgentState::PromptInFlight { run_id, session_id };
+        self.state = ProcessState::PromptInFlight { run_id, session_id };
         Ok(run_id)
     }
 
@@ -867,12 +867,12 @@ impl Session for CodexHandle {
             let Some(session) = s.sessions.get_mut(&session_id) else {
                 return Ok(CancelOutcome::NotInFlight);
             };
-            if !matches!(session.agent_state, AgentState::PromptInFlight { .. }) {
+            if !matches!(session.agent_state, ProcessState::PromptInFlight { .. }) {
                 return Ok(CancelOutcome::NotInFlight);
             }
             let run_id = session.run_id.take();
             let turn_id = session.turn_id.take();
-            session.agent_state = AgentState::Active {
+            session.agent_state = ProcessState::Active {
                 session_id: session_id.clone(),
             };
             (run_id, turn_id)
@@ -908,12 +908,12 @@ impl Session for CodexHandle {
             });
         }
 
-        self.state = AgentState::Active { session_id };
+        self.state = ProcessState::Active { session_id };
         Ok(CancelOutcome::Aborted)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
-        if matches!(self.state, AgentState::Closed) {
+        if matches!(self.state, ProcessState::Closed) {
             return Ok(());
         }
 
@@ -927,13 +927,13 @@ impl Session for CodexHandle {
             let mut s = self.process.shared.lock().unwrap();
             if let Some(ref sid) = self.session_id {
                 if let Some(session) = s.sessions.get_mut(sid) {
-                    session.agent_state = AgentState::Closed;
+                    session.agent_state = ProcessState::Closed;
                 }
             }
             let all_closed = s
                 .sessions
                 .values()
-                .all(|sess| matches!(sess.agent_state, AgentState::Closed));
+                .all(|sess| matches!(sess.agent_state, ProcessState::Closed));
             // Don't tear down while a thread/start or thread/resume response
             // is pending — the caller is awaiting a new session that would
             // lose its backing process if we pruned now.
@@ -953,11 +953,11 @@ impl Session for CodexHandle {
             agent_instances().remove(&self.key);
         }
 
-        self.state = AgentState::Closed;
+        self.state = ProcessState::Closed;
 
         self.process.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Closed,
+            state: ProcessState::Closed,
         });
         Ok(())
     }
@@ -1036,11 +1036,11 @@ async fn reader_loop(proc: Arc<CodexAgentProcess>, stdout: Box<dyn AsyncBufRead 
         }
         emit(DriverEvent::Lifecycle {
             key: proc.key.clone(),
-            state: AgentState::Closed,
+            state: ProcessState::Closed,
         });
         let mut s = proc.shared.lock().unwrap();
         if let Some(session) = s.sessions.get_mut(&session_id) {
-            session.agent_state = AgentState::Closed;
+            session.agent_state = ProcessState::Closed;
             session.run_id = None;
         }
     }
@@ -1151,7 +1151,7 @@ async fn handle_event<F: Fn(DriverEvent)>(
                         let rid = session.run_id.take();
                         session.turn_id = None;
                         if rid.is_some() {
-                            session.agent_state = AgentState::Active {
+                            session.agent_state = ProcessState::Active {
                                 session_id: thread_id.clone(),
                             };
                         }
@@ -1195,7 +1195,7 @@ async fn handle_event<F: Fn(DriverEvent)>(
                 });
                 emit(DriverEvent::Lifecycle {
                     key: proc.key.clone(),
-                    state: AgentState::Active {
+                    state: ProcessState::Active {
                         session_id: thread_id,
                     },
                 });
@@ -1462,7 +1462,7 @@ mod tests {
             .open_session("agent-codex-1".into(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.session.state(), AgentState::Idle));
+        assert!(matches!(result.session.process_state(), ProcessState::Idle));
     }
 
     #[tokio::test]
@@ -1473,7 +1473,7 @@ mod tests {
             .open_session("agent-codex-3".into(), test_spec(), SessionIntent::New)
             .await
             .unwrap();
-        assert!(matches!(result.session.state(), AgentState::Idle));
+        assert!(matches!(result.session.process_state(), ProcessState::Idle));
     }
 
     // ---- build_codex_mcp_args tests ----
@@ -1895,15 +1895,15 @@ mod multisession_tests {
         // The session should flip to PromptInFlight carrying stored_id +
         // the run_id we were handed. (If the turn completes before we
         // inspect, it's back to Active but still bound to stored_id.)
-        match resumed.state() {
-            AgentState::PromptInFlight {
+        match resumed.process_state() {
+            ProcessState::PromptInFlight {
                 run_id: rid,
                 session_id,
             } => {
                 assert_eq!(rid, run_id);
                 assert_eq!(session_id, stored_id);
             }
-            AgentState::Active { session_id } => {
+            ProcessState::Active { session_id } => {
                 assert_eq!(session_id, stored_id);
             }
             other => panic!("expected PromptInFlight or Active, got {other:?}"),

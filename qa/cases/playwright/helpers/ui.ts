@@ -27,6 +27,15 @@ export async function reloadApp(page: Page): Promise<void> {
   await waitForAppReady(page)
 }
 
+export async function expectProfileStatus(
+  page: Page,
+  statuses: string | string[]
+): Promise<void> {
+  const allowed = Array.isArray(statuses) ? statuses : [statuses]
+  const pattern = new RegExp(`\\b(${allowed.join('|')})\\b`)
+  await expect(page.locator('.profile-config-grid')).toContainText(pattern)
+}
+
 export async function createAgentViaUi(
   page: Page,
   opts: { name: string; runtime: string; model: string; reasoningEffort?: string | null }
@@ -135,4 +144,3 @@ export async function closeMembersPanel(page: Page): Promise<void> {
     await close.click()
   }
 }
-

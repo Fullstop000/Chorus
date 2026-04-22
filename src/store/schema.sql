@@ -75,8 +75,6 @@ CREATE TABLE IF NOT EXISTS agents (
     runtime TEXT NOT NULL, -- The runtime driver used (e.g., 'claude', 'codex')
     model TEXT NOT NULL, -- The specific LLM model used
     reasoning_effort TEXT, -- The reasoning effort configuration
-    status TEXT NOT NULL DEFAULT 'inactive', -- Current status (e.g., 'active', 'inactive')
-    session_id TEXT, -- Optional ID for the current session/process
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the agent was created
 );
 
@@ -193,3 +191,18 @@ JOIN channels c ON c.id = cm.channel_id
 LEFT JOIN inbox_read_state irs
   ON irs.conversation_id = cm.channel_id
  AND irs.member_name = cm.member_name;
+
+-- Sessions held by an agent. One row per (agent, runtime-assigned session id).
+-- `is_active` marks the session that should be resumed on next start.
+CREATE TABLE IF NOT EXISTS agent_sessions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    runtime TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(agent_id, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
+    ON agent_sessions(agent_id, is_active);

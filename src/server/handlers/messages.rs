@@ -10,7 +10,6 @@ use tracing::{debug, info, warn};
 use super::dto::ChannelInfo;
 use super::path_params::{resolve_public_agent, PublicResourceIdPath};
 use super::{app_err, ApiResult, AppState};
-use crate::store::agents::AgentStatus;
 use crate::store::channels::Channel;
 use crate::store::inbox::InboxConversationNotificationView;
 use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
@@ -720,14 +719,23 @@ pub(crate) async fn deliver_message_to_agents(
         .store
         .get_agent_message_recipients(channel_id, sender_name)?;
     for recipient_name in recipients {
-        let Some(agent) = state.store.get_agent(&recipient_name)? else {
+        if state.store.get_agent(&recipient_name)?.is_none() {
             continue;
-        };
+        }
         // Associate the channel with the agent's trace run before notifying/starting.
         state.lifecycle.set_run_channel(&recipient_name, channel_id);
-        match agent.status {
-            AgentStatus::Active => state.lifecycle.notify_agent(&recipient_name).await?,
-            AgentStatus::Sleeping | AgentStatus::Inactive => {
+        // Route on runtime liveness (manager HashMap), not on the persisted
+        // `agents.status` column — the two can drift, and the manager is the
+        // single source of truth for whether a process is alive right now.
+        let process_state = state.lifecycle.process_state(&recipient_name).await;
+        let status = crate::agent::process_status::derive_status(process_state.as_ref());
+        match status {
+            crate::agent::process_status::Status::Working
+            | crate::agent::process_status::Status::Ready => {
+                state.lifecycle.notify_agent(&recipient_name).await?
+            }
+            crate::agent::process_status::Status::Asleep
+            | crate::agent::process_status::Status::Failed => {
                 let wake_message = state
                     .store
                     .get_received_message_for_agent(&recipient_name, message_id)?;

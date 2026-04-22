@@ -14,12 +14,11 @@ use crate::agent::drivers::gemini::GeminiDriver;
 use crate::agent::drivers::kimi::KimiDriver;
 use crate::agent::drivers::opencode::OpencodeDriver;
 use crate::agent::drivers::{
-    AgentSpec, AgentState, PromptReq, RuntimeDriver, Session, SessionIntent,
+    AgentSpec, ProcessState, PromptReq, RuntimeDriver, Session, SessionIntent,
 };
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
-use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
@@ -96,7 +95,6 @@ pub struct AgentManager {
     /// Test-only override for the bridge endpoint. Production code leaves this
     /// `None` and discovery reads `~/.chorus/bridge.json`; tests set it to a
     /// synthetic URL so they don't depend on a real bridge being up.
-    #[cfg(test)]
     bridge_endpoint_override: Option<String>,
 }
 
@@ -119,23 +117,59 @@ impl AgentManager {
             trace_store: Arc::new(AgentTraceStore::new()),
             store,
             data_dir,
-            #[cfg(test)]
             bridge_endpoint_override: None,
         }
     }
 
     /// Start an agent process. Creates the workspace, writes `MEMORY.md`, and
     /// optionally threads through the message that caused the wake-up.
+    // TODO(per-agent-lock): start_agent races with concurrent stop/sleep/start.
+    // See plan task 3.0 for documented interleavings. Fix deferred.
     pub async fn start_agent(
         &self,
         agent_name: &str,
         wake_message: Option<ReceivedMessage>,
     ) -> anyhow::Result<()> {
-        // Already running?
-        {
-            let agents = self.agents.lock().await;
-            if agents.contains_key(agent_name) {
-                return Ok(());
+        // Already running? Inspect the existing handle's state — only
+        // bail if it's truly live. Closed/Failed/Idle handles get evicted
+        // so the recovery path can spin a fresh process. The eviction set
+        // matches the "not really running" mapping in derive_status:
+        //   - Closed/Idle map to Status::Asleep.
+        //   - Failed maps to Status::Failed but Phase 3 routes Failed
+        //     through start_agent for one retry per inbound message.
+        // Active/Starting/PromptInFlight are genuinely live; short-circuit.
+        //
+        // Eviction must call close() on the evicted handle — several
+        // drivers (kimi, opencode) do registry/fan-out teardown in close()
+        // that Drop does not do, so relying on Drop would leak state.
+        // We remove from the map, drop the lock, then close() + abort
+        // event tasks best-effort outside the lock so other manager
+        // operations aren't blocked on teardown I/O.
+        let evicted = {
+            let mut agents = self.agents.lock().await;
+            match agents.get(agent_name).map(|e| e.handle.process_state()) {
+                Some(
+                    crate::agent::drivers::ProcessState::Active { .. }
+                    | crate::agent::drivers::ProcessState::PromptInFlight { .. }
+                    | crate::agent::drivers::ProcessState::Starting,
+                ) => return Ok(()),
+                Some(
+                    crate::agent::drivers::ProcessState::Idle
+                    | crate::agent::drivers::ProcessState::Closed
+                    | crate::agent::drivers::ProcessState::Failed(_),
+                ) => {
+                    debug!(agent = %agent_name, "evicting dead handle before fresh start");
+                    agents.remove(agent_name)
+                }
+                None => None,
+            }
+        };
+        if let Some(mut dead) = evicted {
+            if let Err(err) = dead.handle.close().await {
+                warn!(agent = %agent_name, err = %err, "error closing evicted handle");
+            }
+            for task in dead._event_tasks.drain(..) {
+                task.abort();
             }
         }
 
@@ -190,8 +224,10 @@ impl AgentManager {
             bridge_endpoint,
         };
 
-        let intent = match agent.session_id.clone() {
-            Some(id) => SessionIntent::Resume(id),
+        let active = self.store.get_active_session(&agent.id)?;
+        let is_resume = active.is_some();
+        let intent = match active {
+            Some(s) => SessionIntent::Resume(s.session_id),
             None => SessionIntent::New,
         };
         let attach_result = driver
@@ -200,8 +236,6 @@ impl AgentManager {
         let mut handle = attach_result.session;
         let events = attach_result.events;
         let event_rx = events.subscribe(); // subscribe BEFORE run
-
-        let is_resume = agent.session_id.is_some();
         let unread_summary = self.store.get_unread_summary(agent_name)?;
         let init_prompt_text = build_start_prompt(
             &agent.display_name,
@@ -210,8 +244,6 @@ impl AgentManager {
             wake_message.as_ref(),
         );
 
-        self.store
-            .update_agent_status(agent_name, AgentStatus::Active)?;
         activity_log::set_activity_state(
             &self.activity_logs,
             agent_name,
@@ -274,9 +306,6 @@ impl AgentManager {
                 },
             );
             self.trace_store.end_run(agent_name);
-            self.store
-                .update_agent_status(agent_name, AgentStatus::Inactive)?;
-            let _ = self.store.update_agent_session(agent_name, None);
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
@@ -295,9 +324,6 @@ impl AgentManager {
             if let Err(e) = agent.handle.close().await {
                 warn!(agent = %agent_name, err = %e, "error closing handle for sleep");
             }
-            self.store
-                .update_agent_status(agent_name, AgentStatus::Sleeping)?;
-            let _ = self.store.update_agent_session(agent_name, None);
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
@@ -315,7 +341,7 @@ impl AgentManager {
             agent.pending_notification_count += 1;
             let count = agent.pending_notification_count;
 
-            let is_active = matches!(agent.handle.state(), AgentState::Active { .. });
+            let is_active = matches!(agent.handle.process_state(), ProcessState::Active { .. });
             if !is_active {
                 // Agent is mid-run (e.g. init turn or processing another message).
                 // The event forwarder will deliver the notification immediately
@@ -340,7 +366,7 @@ impl AgentManager {
                     // the newer debounce task will be authoritative. Bow out.
                     return;
                 }
-                if !matches!(agent.handle.state(), AgentState::Active { .. }) {
+                if !matches!(agent.handle.process_state(), ProcessState::Active { .. }) {
                     debug!(agent = %name, "agent no longer Active after debounce, skipping");
                     agent.pending_notification_count = 0;
                     return;
@@ -375,10 +401,30 @@ impl AgentManager {
         self.agents.lock().await.keys().cloned().collect()
     }
 
+    /// Returns the runtime [`ProcessState`] for `agent_name` if a process is
+    /// currently managed, else `None`. Single source of truth for runtime
+    /// liveness; replaces reads of any persisted column in subsequent tasks.
+    pub async fn process_state(
+        &self,
+        agent_name: &str,
+    ) -> Option<crate::agent::drivers::ProcessState> {
+        let agents = self.agents.lock().await;
+        agents.get(agent_name).map(|m| m.handle.process_state())
+    }
+
+    /// Test-only constructor: builds an [`AgentManager`] with an empty driver
+    /// registry and a synthetic bridge endpoint override, so no real runtimes
+    /// or bridge process are required. Register drivers explicitly after
+    /// construction via [`register_driver`] if the test needs to start agents.
+    pub fn new_for_test(store: Arc<Store>, data_dir: std::path::PathBuf) -> Self {
+        let mut mgr = AgentManager::new(store, data_dir);
+        mgr.bridge_endpoint_override = Some("http://127.0.0.1:1".to_string());
+        mgr
+    }
+
     /// Resolve the shared bridge endpoint. Fails loudly if no bridge is
     /// running — there is no stdio fallback anymore.
     fn resolve_bridge_endpoint(&self) -> anyhow::Result<String> {
-        #[cfg(test)]
         if let Some(override_url) = &self.bridge_endpoint_override {
             return Ok(override_url.clone());
         }
@@ -405,6 +451,27 @@ impl AgentManager {
     #[cfg(test)]
     pub(crate) fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
         self.bridge_endpoint_override = Some(url.into());
+    }
+
+    /// Test-only: insert a pre-built [`Session`] handle into the agent map so
+    /// tests can verify eviction behaviour without going through `start_agent`'s
+    /// full driver path. The inserted `ManagedAgent` has no event tasks and a
+    /// zero pending-notification count — sufficient for eviction tests.
+    #[doc(hidden)]
+    pub async fn inject_session_for_test(
+        &self,
+        agent_name: impl Into<String>,
+        handle: Box<dyn crate::agent::drivers::Session>,
+    ) {
+        let mut agents = self.agents.lock().await;
+        agents.insert(
+            agent_name.into(),
+            ManagedAgent {
+                handle,
+                _event_tasks: vec![],
+                pending_notification_count: 0,
+            },
+        );
     }
 }
 
@@ -493,6 +560,19 @@ impl AgentLifecycle for AgentManager {
         agent_name: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(AgentManager::stop_agent(self, agent_name))
+    }
+
+    fn process_state<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Option<crate::agent::drivers::ProcessState>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(AgentManager::process_state(self, agent_name))
     }
 
     fn get_activity_log_data(
@@ -635,12 +715,11 @@ mod tests {
             !agents.contains_key("v2bot"),
             "v2bot should be removed after sleep"
         );
+        drop(agents);
 
-        let agent_record = store.get_agent("v2bot").unwrap().unwrap();
-        assert_eq!(
-            agent_record.status,
-            AgentStatus::Sleeping,
-            "agent status should be sleeping"
+        assert!(
+            manager.process_state("v2bot").await.is_none(),
+            "sleep_agent should remove the managed process"
         );
     }
 
@@ -733,6 +812,131 @@ mod tests {
                 "registry should contain {:?}",
                 rt
             );
+        }
+    }
+
+    // ── Task 3.0: dead-handle eviction ──────────────────────────────────────
+
+    /// Verify that start_agent evicts a Failed handle and falls through to a
+    /// fresh start rather than short-circuiting with Ok(()) as it did before
+    /// this fix.
+    ///
+    /// We inject a FakeHandle in ProcessState::Failed into the manager's
+    /// HashMap, then call start_agent. Assertions:
+    ///   - The call does NOT short-circuit: it evicts the Failed handle and
+    ///     reaches the driver path, resulting in ProcessState::Active.
+    ///   - The old Failed entry is no longer present.
+    #[tokio::test]
+    async fn start_agent_replaces_failed_handle() {
+        use crate::agent::drivers::fake::FakeHandle;
+        use crate::agent::drivers::{AgentError, EventFanOut, ProcessState};
+
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+
+        store
+            .create_agent_record(&AgentRecordUpsert {
+                name: "recovery-bot",
+                display_name: "Recovery Bot",
+                description: Some("test agent for eviction"),
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-fake",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
+            .unwrap();
+
+        let manager = make_test_manager(store, dir.path());
+
+        // Inject a Failed handle simulating a previous run that crashed.
+        let (events, event_tx) = EventFanOut::new();
+        let failed_handle = FakeHandle::new("recovery-bot".to_string(), events, event_tx)
+            .with_state(ProcessState::Failed(AgentError::Transport(
+                "simulated transport failure".to_string(),
+            )));
+        manager
+            .inject_session_for_test("recovery-bot", Box::new(failed_handle))
+            .await;
+
+        // Precondition: Failed handle is present.
+        let pre_state = manager.process_state("recovery-bot").await;
+        assert!(
+            matches!(pre_state, Some(ProcessState::Failed(_))),
+            "precondition: handle should be Failed before start_agent, got {pre_state:?}",
+        );
+
+        // Before the fix this returned Ok(()) immediately (contains_key hit).
+        // After the fix it must evict and restart.
+        let result = manager.start_agent("recovery-bot", None).await;
+        assert!(
+            result.is_ok(),
+            "start_agent should succeed after evicting a Failed handle: {result:?}",
+        );
+
+        // The handle must now be Active (FakeDriver completed a fresh start).
+        let post_state = manager.process_state("recovery-bot").await;
+        assert!(
+            matches!(post_state, Some(ProcessState::Active { .. })),
+            "after start_agent the handle should be Active, got {post_state:?}",
+        );
+
+        let _ = manager.stop_agent("recovery-bot").await;
+    }
+
+    /// Verify that start_agent short-circuits without eviction when the handle
+    /// is genuinely live (ProcessState::Active). The injected session id must
+    /// survive the call unchanged.
+    #[tokio::test]
+    async fn start_agent_noop_when_handle_is_active() {
+        use crate::agent::drivers::fake::FakeHandle;
+        use crate::agent::drivers::{EventFanOut, ProcessState};
+
+        let dir = tempdir().unwrap();
+        let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
+
+        store
+            .create_agent_record(&AgentRecordUpsert {
+                name: "live-bot",
+                display_name: "Live Bot",
+                description: Some("test agent for no-op check"),
+                system_prompt: None,
+                runtime: "codex",
+                model: "gpt-fake",
+                reasoning_effort: None,
+                env_vars: &[],
+            })
+            .unwrap();
+
+        let manager = make_test_manager(store, dir.path());
+
+        // Inject an Active handle. start_agent must NOT replace it.
+        let (events, event_tx) = EventFanOut::new();
+        let active_handle = FakeHandle::new("live-bot".to_string(), events, event_tx).with_state(
+            ProcessState::Active {
+                session_id: "existing-session".to_string(),
+            },
+        );
+        manager
+            .inject_session_for_test("live-bot", Box::new(active_handle))
+            .await;
+
+        let result = manager.start_agent("live-bot", None).await;
+        assert!(
+            result.is_ok(),
+            "start_agent on an Active agent should be Ok: {result:?}",
+        );
+
+        // Session id must still be the one we injected — not replaced.
+        let post_state = manager.process_state("live-bot").await;
+        match post_state {
+            Some(ProcessState::Active { ref session_id }) => {
+                assert_eq!(
+                    session_id, "existing-session",
+                    "Active handle must not have been replaced",
+                );
+            }
+            other => panic!("expected Active(existing-session), got {other:?}"),
         }
     }
 }

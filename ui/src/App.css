@@ -5,6 +5,7 @@
   --status-online: #1f9d4d;
   --status-sleeping: #c67a18;
   --status-inactive: #b8b1a6;
+  --status-failed: #c94040;
 
   /* Typography (supplements @theme) */
   --font: 'Inter', sans-serif;
@@ -110,6 +111,7 @@ body {
   animation: pulse-dot 1s ease-in-out infinite;
 }
 .status-dot.offline { background: var(--status-inactive); }
+.status-dot.failed { background: var(--status-failed); }
 
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }

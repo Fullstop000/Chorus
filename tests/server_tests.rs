@@ -10,12 +10,12 @@ use chorus::agent::AgentRuntime;
 use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
 use chorus::server::{build_router_with_services, AgentDetailResponse, HistoryResponse};
-use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use harness::{build_router, build_router_with_lifecycle};
+use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -89,6 +89,9 @@ struct MockLifecycle {
     stopped: Mutex<Vec<String>>,
     notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
+    /// Tracks which agents are currently "running" so that process_state,
+    /// start_agent, and stop_agent share one source of truth.
+    running: Mutex<HashSet<String>>,
 }
 
 struct MockRuntimeStatusProvider {
@@ -136,6 +139,14 @@ impl MockLifecycle {
     fn stopped_names(&self) -> Vec<String> {
         self.stopped.lock().unwrap().clone()
     }
+
+    /// Simulate an already-running managed process. Subsequent
+    /// `process_state` calls will return `Active` for this agent,
+    /// mirroring what the real manager would report when a process
+    /// is alive and idle.
+    fn mark_running(&self, agent_name: &str) {
+        self.running.lock().unwrap().insert(agent_name.to_string());
+    }
 }
 
 impl AgentLifecycle for MockLifecycle {
@@ -149,6 +160,7 @@ impl AgentLifecycle for MockLifecycle {
                 .lock()
                 .unwrap()
                 .push((agent_name.to_string(), wake_message));
+            self.running.lock().unwrap().insert(agent_name.to_string());
             Ok(())
         })
     }
@@ -169,7 +181,25 @@ impl AgentLifecycle for MockLifecycle {
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             self.stopped.lock().unwrap().push(agent_name.to_string());
+            self.running.lock().unwrap().remove(agent_name);
             Ok(())
+        })
+    }
+
+    fn process_state<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>>
+    {
+        let is_running = self.running.lock().unwrap().contains(agent_name);
+        Box::pin(async move {
+            if is_running {
+                Some(chorus::agent::drivers::ProcessState::Active {
+                    session_id: "test".into(),
+                })
+            } else {
+                None
+            }
         })
     }
 
@@ -207,6 +237,14 @@ impl AgentLifecycle for FailStartLifecycle {
         _agent_name: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn process_state<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>>
+    {
+        Box::pin(async { None })
     }
 
     fn get_activity_log_data(
@@ -428,10 +466,7 @@ async fn test_receive_timeout_is_interpreted_in_milliseconds() {
 
 #[tokio::test]
 async fn test_send_starts_sleeping_agent_with_wake_message() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Sleeping)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "wake up from sleep" });
     let response = app
@@ -465,10 +500,8 @@ async fn test_send_starts_sleeping_agent_with_wake_message() {
 
 #[tokio::test]
 async fn test_send_notifies_active_agent_without_restart() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
+    lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "stay online" });
     let response = app
@@ -1378,6 +1411,7 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         "model": "sonnet"
     });
     let resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -1400,8 +1434,37 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         .iter()
         .find(|a| a.name.starts_with("stuck-bot-"))
         .expect("agent should remain in the store after failed start");
-    assert_eq!(agent.status, AgentStatus::Inactive);
     assert!(store.is_member("all", &agent.name).unwrap());
+
+    // After a failed start the manager has no live process, so the derived
+    // status surfaced through the API must be `asleep`. Regression guard:
+    // before status was derived from ProcessState the persisted column
+    // carried this claim; that column is gone, so verify through the API.
+    let list_resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(list_resp.status(), StatusCode::OK);
+    let listed: Vec<serde_json::Value> = serde_json::from_slice(
+        &axum::body::to_bytes(list_resp.into_body(), 1_000_000)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    let entry = listed
+        .iter()
+        .find(|a| a["name"] == agent.name.as_str())
+        .expect("failed-start agent must still appear in /api/agents");
+    assert_eq!(
+        entry["status"], "asleep",
+        "failed-start agent must derive to `asleep`, got `{}`",
+        entry["status"]
+    );
 }
 
 #[tokio::test]
@@ -1443,7 +1506,7 @@ async fn test_create_kimi_agent_via_api() {
     );
     let agent = store.get_agent(&name).unwrap().expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
-    assert_eq!(payload["status"], "active");
+    assert_eq!(payload["status"], "ready");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
@@ -1453,9 +1516,10 @@ async fn test_create_kimi_agent_via_api() {
 #[tokio::test]
 async fn test_get_and_update_agent_via_api() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    // Runtime liveness is the manager HashMap, not the DB column:
+    // mark the agent as having a live managed process so a config
+    // edit that requires restart will actually restart.
+    lifecycle.mark_running("bot1");
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     let detail_resp = app
@@ -1513,9 +1577,9 @@ async fn test_get_and_update_agent_via_api() {
 #[tokio::test]
 async fn test_update_agent_to_kimi_clears_reasoning_effort() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    // Mark the agent as having a live managed process so a config
+    // edit that requires restart will actually restart.
+    lifecycle.mark_running("bot1");
     store
         .update_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -1563,13 +1627,58 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
 }
 
+/// Regression: a config-edit PATCH must not trigger a restart when the
+/// manager has no live process for the agent, even if the persisted
+/// `agents.status` column says `Active`. Runtime liveness is the
+/// manager HashMap via `process_state`, not the DB column.
+#[tokio::test]
+async fn config_edit_does_not_restart_when_no_process_managed_despite_db_active() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    // Deliberately DO NOT call lifecycle.mark_running("bot1").
+
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    let update_req = serde_json::json!({
+        "display_name": "Bot 1",
+        "description": "Replies in Chorus",
+        "runtime": "claude",
+        "model": "different-model",
+        "envVars": []
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri(format!("/api/agents/{}", bot1.id))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&update_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(
+        body["restarted"], false,
+        "config-edit must not restart when manager has no process, regardless of DB status"
+    );
+    assert!(
+        lifecycle.stopped_names().is_empty(),
+        "no managed process means nothing to stop"
+    );
+    assert!(
+        lifecycle.started_names().is_empty(),
+        "no managed process means nothing to restart"
+    );
+}
+
 #[tokio::test]
 async fn test_restart_agent_reset_session_preserves_workspace() {
     let (store, _app, dir) = setup_with_data_dir();
-    store
-        .update_agent_session("bot1", Some("thread-123"))
-        .unwrap();
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
+    store
+        .record_session(&bot1.id, "thread-123", &bot1.runtime)
+        .unwrap();
     let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
@@ -1589,8 +1698,10 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let agent = store.get_agent("bot1").unwrap().unwrap();
-    assert_eq!(agent.session_id, None);
+    assert!(
+        store.get_active_session(&bot1.id).unwrap().is_none(),
+        "reset_session must clear the active agent_sessions row"
+    );
     assert!(workspace_dir.join("plan.md").exists());
 }
 
@@ -1767,10 +1878,10 @@ async fn test_dm_send_starts_inactive_agent() {
 
 #[tokio::test]
 async fn test_dm_send_notifies_active_agent() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
+    // Runtime liveness is the manager HashMap, not the DB column:
+    // mark the agent as having a live managed process.
+    lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey active bot1 via dm" });
     let resp = app
@@ -1793,12 +1904,45 @@ async fn test_dm_send_notifies_active_agent() {
     );
 }
 
+/// Regression: persisted `AgentStatus::Active` does not mean the
+/// runtime has a managed process. Delivery must route on the
+/// manager HashMap (`process_state`), not the DB column, so an
+/// agent whose row says Active but whose process is absent still
+/// gets woken via `start_agent`.
+#[tokio::test]
+async fn delivery_starts_agent_when_no_process_managed_even_if_db_says_active() {
+    let (_store, app, lifecycle) = setup_with_lifecycle();
+    // Deliberately DO NOT call lifecycle.mark_running("bot1").
+
+    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "wake up despite drift" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/alice/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        lifecycle.started_names(),
+        vec!["bot1".to_string()],
+        "delivery must route on process_state, not the persisted AgentStatus column",
+    );
+    assert!(
+        lifecycle.notified_names().is_empty(),
+        "no live process means notify_agent must not be called",
+    );
+}
+
 #[tokio::test]
 async fn test_send_notifies_active_agents() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
+    lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "ping active bot" });
     let resp = app
@@ -2382,12 +2526,8 @@ async fn test_at_mention_forwards_to_team_channel() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
-    store
-        .update_agent_status("bot2", AgentStatus::Active)
-        .unwrap();
+    lifecycle.mark_running("bot1");
+    lifecycle.mark_running("bot2");
     let team_id = store
         .create_team("eng-team", "Engineering", "leader_operators", Some("bot1"))
         .unwrap();

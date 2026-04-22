@@ -137,6 +137,19 @@ impl AgentLifecycle for NoopLifecycle {
         }
     }
 
+    fn process_state<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Option<chorus::agent::drivers::ProcessState>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async { None })
+    }
+
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         vec![]
     }
@@ -1032,7 +1045,7 @@ mod harness_unit_tests {
         let mut rx = events.subscribe();
         tx.send(DriverEvent::Lifecycle {
             key: "k".into(),
-            state: chorus::agent::drivers::AgentState::Starting,
+            state: chorus::agent::drivers::ProcessState::Starting,
         })
         .await
         .unwrap();

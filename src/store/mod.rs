@@ -5,6 +5,7 @@ pub mod humans;
 pub mod inbox;
 pub mod messages;
 pub mod migrations;
+pub mod sessions;
 pub mod stream;
 pub mod tasks;
 pub mod teams;
@@ -20,7 +21,7 @@ use tokio::sync::broadcast;
 use crate::utils::{derive_data_dir, parse_datetime};
 
 pub use agents::AgentRecordUpsert;
-pub use agents::{Agent, AgentEnvVar, AgentStatus};
+pub use agents::{Agent, AgentEnvVar};
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
 pub use humans::Human;
@@ -29,6 +30,7 @@ pub use messages::{
     ActivityMessage, AttachmentRef, ConversationMessageView, ForwardedFrom, HistoryMessage,
     HistorySnapshot, Message, ReceivedMessage, SenderType,
 };
+pub use sessions::AgentSession;
 pub use stream::StreamEvent;
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};

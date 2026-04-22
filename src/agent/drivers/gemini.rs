@@ -301,7 +301,7 @@ struct SharedReaderState {
 }
 
 struct SessionState {
-    state: AgentState,
+    state: ProcessState,
     run_id: Option<RunId>,
     tool_accumulator: ToolCallAccumulator,
 }
@@ -309,7 +309,7 @@ struct SessionState {
 impl SessionState {
     fn new(session_id: &str) -> Self {
         Self {
-            state: AgentState::Active {
+            state: ProcessState::Active {
                 session_id: session_id.to_string(),
             },
             run_id: None,
@@ -447,7 +447,7 @@ impl RuntimeDriver for GeminiDriver {
 pub struct GeminiHandle {
     core: Arc<GeminiAgentCore>,
     session_id: Option<SessionId>,
-    state: AgentState,
+    state: ProcessState,
     preassigned_session_id: Option<SessionId>,
 }
 
@@ -456,7 +456,7 @@ impl GeminiHandle {
         Self {
             core,
             session_id: None,
-            state: AgentState::Idle,
+            state: ProcessState::Idle,
             preassigned_session_id,
         }
     }
@@ -566,7 +566,7 @@ impl GeminiHandle {
 
         self.register_session_in_shared_state(&sid).await;
         self.session_id = Some(sid.clone());
-        self.state = AgentState::Active {
+        self.state = ProcessState::Active {
             session_id: sid.clone(),
         };
         self.emit(DriverEvent::SessionAttached {
@@ -602,8 +602,8 @@ impl Session for GeminiHandle {
 
     fn session_id(&self) -> Option<&str> {
         match &self.state {
-            AgentState::Active { session_id } => Some(session_id.as_str()),
-            AgentState::PromptInFlight { session_id, .. } => Some(session_id.as_str()),
+            ProcessState::Active { session_id } => Some(session_id.as_str()),
+            ProcessState::PromptInFlight { session_id, .. } => Some(session_id.as_str()),
             _ => self
                 .session_id
                 .as_deref()
@@ -611,7 +611,7 @@ impl Session for GeminiHandle {
         }
     }
 
-    fn state(&self) -> AgentState {
+    fn process_state(&self) -> ProcessState {
         self.state.clone()
     }
 
@@ -655,19 +655,19 @@ impl Session for GeminiHandle {
                 .entry(session_id.clone())
                 .or_insert_with(|| SessionState::new(&session_id));
             slot.run_id = Some(run_id);
-            slot.state = AgentState::PromptInFlight {
+            slot.state = ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             };
         }
 
-        self.state = AgentState::PromptInFlight {
+        self.state = ProcessState::PromptInFlight {
             run_id,
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.core.key.clone(),
-            state: AgentState::PromptInFlight {
+            state: ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             },
@@ -702,11 +702,11 @@ impl Session for GeminiHandle {
                 None => return Ok(CancelOutcome::NotInFlight),
             };
             match &slot.state {
-                AgentState::PromptInFlight { run_id, session_id } => {
+                ProcessState::PromptInFlight { run_id, session_id } => {
                     let rid = *run_id;
                     let psid = session_id.clone();
                     slot.run_id = None;
-                    slot.state = AgentState::Active {
+                    slot.state = ProcessState::Active {
                         session_id: psid.clone(),
                     };
                     (rid, psid)
@@ -724,12 +724,12 @@ impl Session for GeminiHandle {
             },
         });
 
-        self.state = AgentState::Active { session_id };
+        self.state = ProcessState::Active { session_id };
         Ok(CancelOutcome::Aborted)
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
-        if matches!(self.state, AgentState::Closed) {
+        if matches!(self.state, ProcessState::Closed) {
             return Ok(());
         }
 
@@ -746,7 +746,7 @@ impl Session for GeminiHandle {
                 let all_closed = s
                     .sessions
                     .values()
-                    .all(|slot| matches!(slot.state, AgentState::Closed));
+                    .all(|slot| matches!(slot.state, ProcessState::Closed));
                 let no_pending_session_creation = !s.pending.values().any(|p| {
                     matches!(
                         p,
@@ -762,10 +762,10 @@ impl Session for GeminiHandle {
             }
         };
 
-        self.state = AgentState::Closed;
+        self.state = ProcessState::Closed;
         self.emit(DriverEvent::Lifecycle {
             key: self.core.key.clone(),
-            state: AgentState::Closed,
+            state: ProcessState::Closed,
         });
 
         if all_sessions_closed {
@@ -877,12 +877,12 @@ async fn reader_loop(
                 let target = s
                     .sessions
                     .iter()
-                    .find(|(_, st)| matches!(st.state, AgentState::PromptInFlight { .. }))
+                    .find(|(_, st)| matches!(st.state, ProcessState::PromptInFlight { .. }))
                     .map(|(sid, st)| (sid.clone(), st.run_id));
                 if let Some((sid, Some(run_id))) = target {
                     let slot = s.sessions.get_mut(&sid).unwrap();
                     slot.run_id = None;
-                    slot.state = AgentState::Active {
+                    slot.state = ProcessState::Active {
                         session_id: sid.clone(),
                     };
                     let _ = event_tx.try_send(DriverEvent::Failed {
@@ -927,14 +927,14 @@ async fn reader_loop(
         if !shared_emitted.swap(true, Ordering::SeqCst) {
             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                 key: key.clone(),
-                state: AgentState::Closed,
+                state: ProcessState::Closed,
             });
         }
     }
     {
         let mut s = shared.lock().unwrap();
         for st in s.sessions.values_mut() {
-            st.state = AgentState::Closed;
+            st.state = ProcessState::Closed;
         }
     }
 }
@@ -1022,7 +1022,7 @@ async fn handle_response(
                 if let Some(slot) = s.sessions.get_mut(&session_id) {
                     let drained = slot.tool_accumulator.drain();
                     slot.run_id = None;
-                    slot.state = AgentState::Active {
+                    slot.state = ProcessState::Active {
                         session_id: session_id.clone(),
                     };
                     drained
@@ -1054,7 +1054,7 @@ async fn handle_response(
             });
             let _ = event_tx.try_send(DriverEvent::Lifecycle {
                 key: key.clone(),
-                state: AgentState::Active {
+                state: ProcessState::Active {
                     session_id: session_id.clone(),
                 },
             });
@@ -1409,7 +1409,7 @@ mod tests {
 
         tx.send(DriverEvent::Lifecycle {
             key: "a1".into(),
-            state: AgentState::Idle,
+            state: ProcessState::Idle,
         })
         .await
         .unwrap();
@@ -1456,7 +1456,7 @@ mod tests {
 
         let mut handle = GeminiHandle::new(core, None);
         handle.session_id = Some(session_id.clone());
-        handle.state = AgentState::Active { session_id };
+        handle.state = ProcessState::Active { session_id };
 
         handle.close().await.unwrap();
 
@@ -1517,7 +1517,7 @@ mod tests {
                 sessions.insert(first_sid.clone(), SessionState::new(&first_sid));
                 let mut secondary = SessionState::new(&secondary_sid);
                 secondary.run_id = Some(secondary_run);
-                secondary.state = AgentState::PromptInFlight {
+                secondary.state = ProcessState::PromptInFlight {
                     run_id: secondary_run,
                     session_id: secondary_sid.clone(),
                 };
@@ -1544,12 +1544,12 @@ mod tests {
 
         let mut first_handle = GeminiHandle::new(core.clone(), None);
         first_handle.session_id = Some(first_sid.clone());
-        first_handle.state = AgentState::Active {
+        first_handle.state = ProcessState::Active {
             session_id: first_sid.clone(),
         };
         let mut secondary_handle = GeminiHandle::new(core.clone(), None);
         secondary_handle.session_id = Some(secondary_sid.clone());
-        secondary_handle.state = AgentState::PromptInFlight {
+        secondary_handle.state = ProcessState::PromptInFlight {
             run_id: secondary_run,
             session_id: secondary_sid.clone(),
         };
@@ -1635,7 +1635,7 @@ mod tests {
 
         let mut handle = GeminiHandle::new(core, None);
         handle.session_id = Some(session_id.clone());
-        handle.state = AgentState::Active { session_id };
+        handle.state = ProcessState::Active { session_id };
 
         handle.close().await.unwrap();
         drop(handle);
@@ -1645,7 +1645,7 @@ mod tests {
             if matches!(
                 event,
                 DriverEvent::Lifecycle {
-                    state: AgentState::Closed,
+                    state: ProcessState::Closed,
                     ..
                 }
             ) {

@@ -10,12 +10,18 @@ export interface AgentRow {
   model?: string
   reasoningEffort?: string | null
   description?: string | null
-  session_id?: string | null
 }
 
 export interface AgentDetail {
   agent: AgentRow
   envVars: Array<{ key: string; value: string }>
+}
+
+export const AGENT_ACTIVE_STATUSES = ['ready', 'working'] as const
+export const AGENT_ASLEEP_STATUS = 'asleep' as const
+
+export function isAgentActiveStatus(status: string | null | undefined): boolean {
+  return status === 'ready' || status === 'working'
 }
 
 export interface ChannelRow {
@@ -209,10 +215,10 @@ export async function waitForAgentActive(
   while (Date.now() < deadline) {
     const agents = await listAgents(request)
     const a = agents.find((x) => x.name === name)
-    if (a?.status === 'active') return
+    if (isAgentActiveStatus(a?.status)) return
     await new Promise((r) => setTimeout(r, 2000))
   }
-  throw new Error(`Agent ${name} did not become active within ${timeoutMs}ms`)
+  throw new Error(`Agent ${name} did not become ready/working within ${timeoutMs}ms`)
 }
 
 export async function waitForAgentStatus(

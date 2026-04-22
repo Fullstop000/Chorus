@@ -140,8 +140,8 @@ pub(crate) enum AgentCommands {
     /// Stop a running agent
     Stop {
         name: String,
-        #[arg(long)]
-        data_dir: Option<String>,
+        #[arg(long, default_value = "http://localhost:3001")]
+        server_url: String,
     },
     /// List all agents
     List {
@@ -168,14 +168,6 @@ pub(crate) fn default_model_for_runtime(runtime: &str) -> &str {
         Some(AgentRuntime::Gemini) => "gemini-3.1-pro-preview",
         _ => "sonnet",
     }
-}
-
-/// Resolve and prepare `<data_dir_root>/data/chorus.db`, creating the parent
-/// directory as a side effect. Returns the path as a String for `Store::open`.
-pub(crate) fn db_path_for(data_dir_root: &str) -> String {
-    let dir = std::path::PathBuf::from(data_dir_root).join(DATA_SUBDIR);
-    let _ = std::fs::create_dir_all(&dir);
-    dir.join("chorus.db").to_string_lossy().into_owned()
 }
 
 /// Resolve the effective template directory: CLI flag > config file > default.

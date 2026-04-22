@@ -13,7 +13,7 @@ use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
-use crate::store::agents::{AgentEnvVar, AgentStatus};
+use crate::store::agents::AgentEnvVar;
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
 use crate::utils::error::internal_err;
@@ -201,6 +201,12 @@ pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<
         .iter()
         .map(AgentInfo::from)
         .collect();
+
+    for info in &mut agents {
+        let ps = state.lifecycle.process_state(&info.name).await;
+        info.status = crate::agent::process_status::derive_status(ps.as_ref());
+    }
+
     let activity_states = state.lifecycle.get_all_agent_activity_states();
     for agent in &mut agents {
         if let Some((_, activity, detail)) = activity_states
@@ -273,10 +279,12 @@ pub async fn handle_create_agent(
             result.name
         ));
     }
+    let ps = state.lifecycle.process_state(&result.name).await;
+    let status = crate::agent::process_status::derive_status(ps.as_ref());
     Ok(Json(serde_json::json!({
         "id": result.id,
         "name": result.name,
-        "status": AgentStatus::Active.as_str(),
+        "status": status,
     })))
 }
 
@@ -364,8 +372,11 @@ pub async fn handle_get_agent(
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentDetailResponse> {
     let agent = resolve_public_agent_with_env(&state, &id)?;
+    let mut agent_info = AgentInfo::from(&agent);
+    let ps = state.lifecycle.process_state(&agent_info.name).await;
+    agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
     Ok(Json(AgentDetailResponse {
-        agent: AgentInfo::from(&agent),
+        agent: agent_info,
         env_vars: agent
             .env_vars
             .iter()
@@ -419,16 +430,17 @@ pub async fn handle_update_agent(
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    if existing.status == AgentStatus::Active && requires_restart {
+    let ps = state.lifecycle.process_state(&name).await;
+    let was_running = crate::agent::process_status::derive_status(ps.as_ref())
+        != crate::agent::process_status::Status::Asleep;
+
+    if was_running && requires_restart {
         state
             .lifecycle
             .stop_agent(&name)
             .await
             .map_err(internal_err)?;
         if let Err(err) = state.lifecycle.start_agent(&name, None).await {
-            let _ = state
-                .store
-                .update_agent_status(&name, AgentStatus::Inactive);
             return Err(app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent updated but restart failed: {err}"
@@ -437,7 +449,7 @@ pub async fn handle_update_agent(
     }
     Ok(Json(serde_json::json!({
         "ok": true,
-        "restarted": existing.status == AgentStatus::Active && requires_restart
+        "restarted": was_running && requires_restart
     })))
 }
 
@@ -463,13 +475,13 @@ pub async fn handle_restart_agent(
         RestartMode::ResetSession => {
             state
                 .store
-                .update_agent_session(&name, None)
+                .clear_active_session(&agent.id)
                 .map_err(internal_err)?;
         }
         RestartMode::FullReset => {
             state
                 .store
-                .update_agent_session(&name, None)
+                .clear_active_session(&agent.id)
                 .map_err(internal_err)?;
             workspace.delete_if_exists(&name).map_err(|e| {
                 app_err!(
@@ -481,9 +493,6 @@ pub async fn handle_restart_agent(
     }
 
     if let Err(err) = state.lifecycle.start_agent(&name, None).await {
-        let _ = state
-            .store
-            .update_agent_status(&name, AgentStatus::Inactive);
         return Err(app_err!(
             AppErrorCode::AgentRestartFailed,
             "restart failed: {err}"

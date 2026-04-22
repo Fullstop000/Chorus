@@ -405,7 +405,7 @@ impl ClaudeAgentProcess {
 
 pub struct ClaudeHandle {
     key: AgentKey,
-    state: AgentState,
+    state: ProcessState,
     spec: AgentSpec,
     /// Shared state for this agent. Provides the [`EventStreamHandle`] every
     /// session writes into.
@@ -446,14 +446,14 @@ pub struct ClaudeHandle {
 struct SharedReaderState {
     session_id: Option<String>,
     run_id: Option<RunId>,
-    agent_state: AgentState,
+    agent_state: ProcessState,
 }
 
 impl ClaudeHandle {
     fn new(key: AgentKey, spec: AgentSpec, proc: Arc<ClaudeAgentProcess>) -> Self {
         Self {
             key,
-            state: AgentState::Idle,
+            state: ProcessState::Idle,
             spec,
             proc,
             preassigned_session_id: None,
@@ -476,14 +476,14 @@ impl ClaudeHandle {
     /// `open_session(Resume)` or the `start` compat shim) to determine
     /// whether to pass `--resume <id>` to the CLI.
     async fn run_inner(&mut self, init_prompt: Option<PromptReq>) -> anyhow::Result<()> {
-        if !matches!(self.state, AgentState::Idle) {
+        if !matches!(self.state, ProcessState::Idle) {
             bail!("claude v2: start called in non-idle state");
         }
 
-        self.state = AgentState::Starting;
+        self.state = ProcessState::Starting;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Starting,
+            state: ProcessState::Starting,
         });
 
         // Write a per-start MCP config file. Claude is the only runtime
@@ -574,7 +574,7 @@ impl ClaudeHandle {
         let shared = Arc::new(Mutex::new(SharedReaderState {
             session_id: None,
             run_id: initial_run_id,
-            agent_state: AgentState::Starting,
+            agent_state: ProcessState::Starting,
         }));
         self.shared = Some(shared.clone());
 
@@ -626,7 +626,7 @@ impl Session for ClaudeHandle {
             .or(self.preassigned_session_id.as_deref())
     }
 
-    fn state(&self) -> AgentState {
+    fn process_state(&self) -> ProcessState {
         if let Some(ref shared) = self.shared {
             shared.lock().unwrap().agent_state.clone()
         } else {
@@ -645,12 +645,12 @@ impl Session for ClaudeHandle {
         let session_id = if let Some(ref shared) = self.shared {
             let guard = shared.lock().unwrap();
             match &guard.agent_state {
-                AgentState::Active { session_id } => session_id.clone(),
+                ProcessState::Active { session_id } => session_id.clone(),
                 _ => bail!("claude v2: prompt called in non-active state"),
             }
         } else {
             match &self.state {
-                AgentState::Active { session_id } => session_id.clone(),
+                ProcessState::Active { session_id } => session_id.clone(),
                 _ => bail!("claude v2: prompt called in non-active state"),
             }
         };
@@ -671,18 +671,18 @@ impl Session for ClaudeHandle {
         if let Some(ref shared) = self.shared {
             let mut guard = shared.lock().unwrap();
             guard.run_id = Some(run_id);
-            guard.agent_state = AgentState::PromptInFlight {
+            guard.agent_state = ProcessState::PromptInFlight {
                 run_id,
                 session_id: session_id.clone(),
             };
         }
-        self.state = AgentState::PromptInFlight {
+        self.state = ProcessState::PromptInFlight {
             run_id,
             session_id: session_id.clone(),
         };
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::PromptInFlight { run_id, session_id },
+            state: ProcessState::PromptInFlight { run_id, session_id },
         });
 
         Ok(run_id)
@@ -696,7 +696,7 @@ impl Session for ClaudeHandle {
     }
 
     async fn close(&mut self) -> anyhow::Result<()> {
-        if matches!(self.state, AgentState::Closed) {
+        if matches!(self.state, ProcessState::Closed) {
             return Ok(());
         }
 
@@ -729,12 +729,12 @@ impl Session for ClaudeHandle {
         self.mcp_config_path = None;
 
         if let Some(ref shared) = self.shared {
-            shared.lock().unwrap().agent_state = AgentState::Closed;
+            shared.lock().unwrap().agent_state = ProcessState::Closed;
         }
-        self.state = AgentState::Closed;
+        self.state = ProcessState::Closed;
         self.emit(DriverEvent::Lifecycle {
             key: self.key.clone(),
-            state: AgentState::Closed,
+            state: ProcessState::Closed,
         });
 
         // Live-session accounting: only decrement if start() actually ran
@@ -817,7 +817,7 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
                     let pre_existing_run_id = {
                         let mut guard = shared.lock().unwrap();
                         guard.session_id = Some(session_id.clone());
-                        guard.agent_state = AgentState::Active {
+                        guard.agent_state = ProcessState::Active {
                             session_id: session_id.clone(),
                         };
                         guard.run_id
@@ -832,7 +832,7 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
                     let _ = tx
                         .send(DriverEvent::Lifecycle {
                             key: key.clone(),
-                            state: AgentState::Active {
+                            state: ProcessState::Active {
                                 session_id: session_id.clone(),
                             },
                         })
@@ -843,7 +843,7 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
                     if let Some(run_id) = pre_existing_run_id {
                         {
                             let mut guard = shared.lock().unwrap();
-                            guard.agent_state = AgentState::PromptInFlight {
+                            guard.agent_state = ProcessState::PromptInFlight {
                                 run_id,
                                 session_id: session_id.clone(),
                             };
@@ -851,7 +851,7 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
                         let _ = tx
                             .send(DriverEvent::Lifecycle {
                                 key: key.clone(),
-                                state: AgentState::PromptInFlight {
+                                state: ProcessState::PromptInFlight {
                                     run_id,
                                     session_id: session_id.clone(),
                                 },
@@ -1003,7 +1003,7 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
                         {
                             let mut guard = shared.lock().unwrap();
                             guard.run_id = None;
-                            guard.agent_state = AgentState::Active {
+                            guard.agent_state = ProcessState::Active {
                                 session_id: resolved_sid.clone(),
                             };
                         }
@@ -1011,7 +1011,7 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
                         let _ = tx
                             .send(DriverEvent::Lifecycle {
                                 key: key.clone(),
-                                state: AgentState::Active {
+                                state: ProcessState::Active {
                                     session_id: resolved_sid,
                                 },
                             })
@@ -1026,12 +1026,12 @@ fn spawn_stdout_reader<R: AsyncRead + Unpin + Send + 'static>(
         // stdout EOF
         {
             let mut guard = shared.lock().unwrap();
-            guard.agent_state = AgentState::Closed;
+            guard.agent_state = ProcessState::Closed;
         }
         let _ = tx
             .send(DriverEvent::Lifecycle {
                 key: key.clone(),
-                state: AgentState::Closed,
+                state: ProcessState::Closed,
             })
             .await;
     })
@@ -1129,7 +1129,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(matches!(result.session.state(), AgentState::Idle));
+        assert!(matches!(result.session.process_state(), ProcessState::Idle));
     }
 
     // ---- build_mcp_config tests ----
@@ -1178,7 +1178,7 @@ mod tests {
         let shared = Arc::new(Mutex::new(SharedReaderState {
             session_id: None,
             run_id: Some(initial_run_id),
-            agent_state: AgentState::Starting,
+            agent_state: ProcessState::Starting,
         }));
 
         // Spawn the reader
@@ -1213,7 +1213,7 @@ mod tests {
         );
         // 2. Lifecycle(Active)
         assert!(
-            matches!(&events[1], DriverEvent::Lifecycle { state: AgentState::Active { session_id }, .. } if session_id == "sess-test"),
+            matches!(&events[1], DriverEvent::Lifecycle { state: ProcessState::Active { session_id }, .. } if session_id == "sess-test"),
             "expected Lifecycle(Active), got {:?}",
             events[1]
         );
@@ -1222,7 +1222,7 @@ mod tests {
             matches!(
                 &events[2],
                 DriverEvent::Lifecycle {
-                    state: AgentState::PromptInFlight { .. },
+                    state: ProcessState::PromptInFlight { .. },
                     ..
                 }
             ),
@@ -1284,7 +1284,7 @@ mod tests {
             matches!(
                 &events[8],
                 DriverEvent::Lifecycle {
-                    state: AgentState::Active { .. },
+                    state: ProcessState::Active { .. },
                     ..
                 }
             ),
@@ -1296,7 +1296,7 @@ mod tests {
             matches!(
                 &events[9],
                 DriverEvent::Lifecycle {
-                    state: AgentState::Closed,
+                    state: ProcessState::Closed,
                     ..
                 }
             ),
@@ -1307,7 +1307,7 @@ mod tests {
 
         // Verify shared state ended as Closed
         let final_state = shared.lock().unwrap().agent_state.clone();
-        assert!(matches!(final_state, AgentState::Closed));
+        assert!(matches!(final_state, ProcessState::Closed));
     }
 
     // -----------------------------------------------------------------------

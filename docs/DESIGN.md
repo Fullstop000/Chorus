@@ -111,7 +111,8 @@ Defined in `ui/src/App.css:5-7` outside the Tailwind theme (no shadcn equivalent
 |---|---|---|
 | `--status-online` | `#1f9d4d` | Agent online, status dot, presence |
 | `--status-sleeping` | `#c67a18` | Agent thinking or working (same amber as destructive — reuse is intentional, both convey "active attention") |
-| `--status-inactive` | `#b8b1a6` | Agent offline |
+| `--status-inactive` | `#b8b1a6` | Agent offline / asleep |
+| `--status-failed` | `#c94040` | Agent crashed or in a failed state — rose/red to distinguish from the gray of inactive |
 
 ### Color rules
 

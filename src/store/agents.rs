@@ -29,10 +29,6 @@ pub struct Agent {
     pub reasoning_effort: Option<String>,
     /// Injected environment variables (ordered by `position`).
     pub env_vars: Vec<AgentEnvVar>,
-    /// Process / bridge lifecycle state.
-    pub status: AgentStatus,
-    /// Current bridge session id when connected.
-    pub session_id: Option<String>,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
 }
@@ -46,38 +42,6 @@ pub struct AgentEnvVar {
     pub value: String,
     /// Sort order when listing / injecting into the process env.
     pub position: i64,
-}
-
-/// Persisted agent process state (independent of in-memory activity strings).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentStatus {
-    /// Bridge connected and agent runnable.
-    Active,
-    /// Connected but blocked in receive / idle wait.
-    Sleeping,
-    /// No running bridge process.
-    Inactive,
-}
-
-impl AgentStatus {
-    /// Value stored in `agents.status` and returned in API JSON.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Active => "active",
-            Self::Sleeping => "sleeping",
-            Self::Inactive => "inactive",
-        }
-    }
-
-    /// Parse DB / API status string; unknown values map to [`Inactive`].
-    pub fn from_status_str(s: &str) -> Self {
-        match s {
-            "active" => Self::Active,
-            "sleeping" => Self::Sleeping,
-            _ => Self::Inactive,
-        }
-    }
 }
 
 /// Shared persisted agent configuration used by store create/update helpers.
@@ -135,7 +99,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
-                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents ORDER BY name",
+                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents ORDER BY name",
             )?
             .query_map([], |row| {
                 Self::agent_from_row(row)
@@ -148,7 +112,7 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE name = ?1",
+            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -161,7 +125,7 @@ impl Store {
     pub fn get_agent_by_id(&self, id: &str, hydrate_env: bool) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, status, session_id, created_at FROM agents WHERE id = ?1",
+            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -188,15 +152,6 @@ impl Store {
             ],
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
-        Ok(())
-    }
-
-    pub fn update_agent_status(&self, name: &str, status: AgentStatus) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE agents SET status = ?1 WHERE name = ?2",
-            params![status.as_str(), name],
-        )?;
         Ok(())
     }
 
@@ -231,7 +186,7 @@ impl Store {
     }
 
     fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Agent> {
-        let created_at = row.get::<_, String>(10)?;
+        let created_at = row.get::<_, String>(8)?;
         Ok(Agent {
             id: row.get(0)?,
             name: row.get(1)?,
@@ -242,8 +197,6 @@ impl Store {
             model: row.get(6)?,
             reasoning_effort: row.get(7)?,
             env_vars: Vec::new(),
-            status: AgentStatus::from_status_str(&row.get::<_, String>(8)?),
-            session_id: row.get(9)?,
             created_at: parse_datetime(&created_at),
         })
     }
@@ -263,15 +216,6 @@ impl Store {
                 params![name, env_var.key, env_var.value, env_var.position],
             )?;
         }
-        Ok(())
-    }
-
-    pub fn update_agent_session(&self, name: &str, session_id: Option<&str>) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE agents SET session_id = ?1 WHERE name = ?2",
-            params![session_id, name],
-        )?;
         Ok(())
     }
 
