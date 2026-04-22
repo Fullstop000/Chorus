@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useStore } from "../../store";
 import { useTasks } from "../../hooks/useTasks";
-import { createTasks, updateTaskStatus, claimTasks } from "../../data";
+import { createTasks } from "../../data";
 import type { TaskInfo, TaskStatus } from "./types";
 import { FormError } from "@/components/ui/form";
 import "./TasksPanel.css";
@@ -15,65 +15,40 @@ const COLUMNS: { status: TaskStatus; label: string }[] = [
 
 function TaskCard({
   task,
-  currentUser,
-  channel,
-  onRefresh,
-  onError,
+  parentChannelId,
+  parentSlug,
 }: {
   task: TaskInfo;
-  currentUser: string;
-  channel: string;
-  onRefresh: () => void;
-  onError: (message: string | null) => void;
+  parentChannelId: string;
+  parentSlug: string;
 }) {
-  const nextStatus: Record<TaskStatus, TaskStatus | null> = {
-    todo: "in_progress",
-    in_progress: "in_review",
-    in_review: "done",
-    done: null,
-  };
-  const next = nextStatus[task.status];
-  const canAdvance =
-    !!next &&
-    ((!task.claimedByName && task.status === "todo") ||
-      task.claimedByName === currentUser);
+  const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
 
-  async function advance() {
-    if (!next || !canAdvance) return;
-    try {
-      // Auto-claim when starting a task (backend requires claim before status update)
-      if (task.status === "todo") {
-        await claimTasks(channel, [task.taskNumber]);
-        onError(null);
-        onRefresh();
-        return;
-      }
-      await updateTaskStatus(channel, task.taskNumber, next);
-      onError(null);
-      onRefresh();
-    } catch (e) {
-      console.error(e);
-      onError(e instanceof Error ? e.message : String(e));
-    }
+  // Primary click opens the task detail view. Status advancement (previously
+  // auto-advance on card click) moves to affordances inside the detail page
+  // in Task 9 — clicking a row is now pure navigation.
+  function openDetail() {
+    setCurrentTaskDetail({
+      parentChannelId,
+      parentSlug,
+      taskNumber: task.taskNumber,
+    });
   }
 
   return (
     <div
       className="task-card"
-      onClick={advance}
-      title={
-        !next
-          ? "Done"
-          : canAdvance
-            ? `Advance to ${next}`
-            : task.claimedByName
-              ? `Claimed by ${task.claimedByName}`
-              : "Unavailable"
-      }
-      style={{
-        cursor: canAdvance ? "pointer" : "not-allowed",
-        opacity: canAdvance ? 1 : 0.7,
+      onClick={openDetail}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openDetail();
+        }
       }}
+      title={`Open task #${task.taskNumber}`}
+      style={{ cursor: "pointer" }}
     >
       <div className="task-card-number">#{task.taskNumber}</div>
       <div className="task-card-title">{task.title}</div>
@@ -113,7 +88,7 @@ export function TasksPanel() {
     }
   }
 
-  if (!currentChannel) {
+  if (!currentChannel || !channelId) {
     return (
       <div className="tasks-panel">
         <div className="tasks-empty">Select a channel to view tasks.</div>
@@ -148,10 +123,8 @@ export function TasksPanel() {
                   <TaskCard
                     key={task.taskNumber}
                     task={task}
-                    currentUser={currentUser}
-                    channel={channelId ?? ""}
-                    onRefresh={refresh}
-                    onError={setError}
+                    parentChannelId={channelId}
+                    parentSlug={currentChannel.name}
                   />
                 ))}
                 {status === "todo" && (

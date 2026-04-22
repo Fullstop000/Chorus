@@ -11,6 +11,17 @@ export interface ToastEntry {
   level: 'error' | 'warning' | 'info'
 }
 
+/**
+ * Identifies a task currently rendered in the task-detail view.
+ * Parent channel id/slug are carried along so breadcrumbs and data
+ * fetching don't have to re-derive them from the tasks board.
+ */
+export interface TaskDetailTarget {
+  parentChannelId: string
+  parentSlug: string
+  taskNumber: number
+}
+
 interface UIState {
   /** Logged-in username, set once after /api/whoami resolves */
   currentUser: string
@@ -28,6 +39,8 @@ interface UIState {
   toasts: ToastEntry[]
   /** Whether the full-page Settings view is open */
   showSettings: boolean
+  /** When non-null, MainPanel renders the task-detail view for this task */
+  currentTaskDetail: TaskDetailTarget | null
 }
 
 interface UIActions {
@@ -47,6 +60,7 @@ interface UIActions {
   pushToast: (entry: ToastEntry) => void
   dismissToast: (id: string) => void
   setShowSettings: (show: boolean) => void
+  setCurrentTaskDetail: (target: TaskDetailTarget | null) => void
 }
 
 export type UIStore = UIState & UIActions
@@ -60,6 +74,7 @@ const initialState: UIState = {
   shellBootstrapped: false,
   toasts: [],
   showSettings: false,
+  currentTaskDetail: null,
 }
 
 export const useStore = create<UIStore>((set) => ({
@@ -96,6 +111,13 @@ export const useStore = create<UIStore>((set) => ({
             state.activeTab === 'profile')
           ? 'chat'
           : state.activeTab,
+      // Leaving the parent channel discards any open task-detail view;
+      // the detail belongs to a specific parent and can't survive navigation.
+      currentTaskDetail:
+        channel && state.currentTaskDetail &&
+          state.currentTaskDetail.parentChannelId === channel.id
+          ? state.currentTaskDetail
+          : null,
     })),
 
   setActiveTab: (activeTab: ActiveTab) => set({ activeTab }),
@@ -143,6 +165,7 @@ export const useStore = create<UIStore>((set) => ({
       inboxState: createInboxState(),
       shellBootstrapped: false,
       toasts: [],
+      currentTaskDetail: null,
     }),
 
   pushToast: (entry: ToastEntry) =>
@@ -152,6 +175,9 @@ export const useStore = create<UIStore>((set) => ({
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
   setShowSettings: (showSettings: boolean) => set({ showSettings }),
+
+  setCurrentTaskDetail: (currentTaskDetail: TaskDetailTarget | null) =>
+    set({ currentTaskDetail }),
 }))
 
 export function pushErrorToast(err: unknown) {
