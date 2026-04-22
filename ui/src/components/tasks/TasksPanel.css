@@ -57,7 +57,7 @@
   flex: 1;
   overflow-x: auto;
   display: flex;
-  gap: 10px;
+  gap: 8px;
   padding: 2px 0 0;
   align-items: flex-start;
 }
@@ -68,9 +68,12 @@
   border-radius: 0;
   box-shadow: none;
   padding: 10px;
-  min-width: 240px;
-  max-width: 300px;
-  flex-shrink: 0;
+  /* Share space equally at any viewport; shrink to 200px before scrolling. The
+     previous `min-width: 240px; flex-shrink: 0` caused all four columns to
+     always request 4*240+3*10=990px, hiding `done` off-screen on the common
+     ~918px chat area and pushing the board into horizontal scroll on tablet. */
+  flex: 1 1 0;
+  min-width: 200px;
 }
 
 .task-column-header {
