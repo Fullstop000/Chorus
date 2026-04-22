@@ -136,19 +136,38 @@ impl AgentManager {
         //   - Failed maps to Status::Failed but Phase 3 routes Failed
         //     through start_agent for one retry per inbound message.
         // Active/Starting/PromptInFlight are genuinely live; short-circuit.
-        {
+        //
+        // Eviction must call close() on the evicted handle — several
+        // drivers (kimi, opencode) do registry/fan-out teardown in close()
+        // that Drop does not do, so relying on Drop would leak state.
+        // We remove from the map, drop the lock, then close() + abort
+        // event tasks best-effort outside the lock so other manager
+        // operations aren't blocked on teardown I/O.
+        let evicted = {
             let mut agents = self.agents.lock().await;
-            if let Some(existing) = agents.get(agent_name) {
-                use crate::agent::drivers::ProcessState::*;
-                match existing.handle.process_state() {
-                    Active { .. } | PromptInFlight { .. } | Starting => {
-                        return Ok(());
-                    }
-                    Idle | Closed | Failed(_) => {
-                        debug!(agent = %agent_name, "evicting dead handle before fresh start");
-                        agents.remove(agent_name);
-                    }
+            match agents.get(agent_name).map(|e| e.handle.process_state()) {
+                Some(
+                    crate::agent::drivers::ProcessState::Active { .. }
+                    | crate::agent::drivers::ProcessState::PromptInFlight { .. }
+                    | crate::agent::drivers::ProcessState::Starting,
+                ) => return Ok(()),
+                Some(
+                    crate::agent::drivers::ProcessState::Idle
+                    | crate::agent::drivers::ProcessState::Closed
+                    | crate::agent::drivers::ProcessState::Failed(_),
+                ) => {
+                    debug!(agent = %agent_name, "evicting dead handle before fresh start");
+                    agents.remove(agent_name)
                 }
+                None => None,
+            }
+        };
+        if let Some(mut dead) = evicted {
+            if let Err(err) = dead.handle.close().await {
+                warn!(agent = %agent_name, err = %err, "error closing evicted handle");
+            }
+            for task in dead._event_tasks.drain(..) {
+                task.abort();
             }
         }
 
