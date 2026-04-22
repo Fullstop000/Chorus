@@ -16,14 +16,19 @@ describe("TaskDetailView", () => {
     taskNumber: 7,
   };
 
+  const baseProps = {
+    target,
+    advanceError: null,
+    advancing: false,
+    onBack: () => {},
+    onAdvance: () => {},
+    canAdvance: false,
+    advanceLabel: null as string | null,
+  };
+
   it("renders breadcrumbs and loading state when task is null", () => {
     const html = renderToStaticMarkup(
-      <TaskDetailView
-        target={target}
-        task={null}
-        error={null}
-        onBack={() => {}}
-      />,
+      <TaskDetailView {...baseProps} task={null} error={null} />,
     );
 
     expect(html).toContain("eng");
@@ -43,12 +48,7 @@ describe("TaskDetailView", () => {
       subChannelName: "eng__task-7",
     };
     const html = renderToStaticMarkup(
-      <TaskDetailView
-        target={target}
-        task={task}
-        error={null}
-        onBack={() => {}}
-      />,
+      <TaskDetailView {...baseProps} task={task} error={null} />,
     );
 
     expect(html).toContain("wire up the bridge");
@@ -66,12 +66,7 @@ describe("TaskDetailView", () => {
       subChannelName: null,
     };
     const html = renderToStaticMarkup(
-      <TaskDetailView
-        target={target}
-        task={task}
-        error={null}
-        onBack={() => {}}
-      />,
+      <TaskDetailView {...baseProps} task={task} error={null} />,
     );
 
     expect(html).toContain("created by unknown");
@@ -79,12 +74,7 @@ describe("TaskDetailView", () => {
 
   it("renders the error message when fetch failed", () => {
     const html = renderToStaticMarkup(
-      <TaskDetailView
-        target={target}
-        task={null}
-        error="HTTP 404"
-        onBack={() => {}}
-      />,
+      <TaskDetailView {...baseProps} task={null} error="HTTP 404" />,
     );
 
     expect(html).toContain("Failed to load task: HTTP 404");
@@ -94,7 +84,7 @@ describe("TaskDetailView", () => {
     const onBack = vi.fn();
     const html = renderToStaticMarkup(
       <TaskDetailView
-        target={target}
+        {...baseProps}
         task={null}
         error={null}
         onBack={onBack}
@@ -102,6 +92,90 @@ describe("TaskDetailView", () => {
     );
     expect(html).toContain('aria-label="back to channel"');
     expect(onBack).not.toHaveBeenCalled();
+  });
+
+  it("renders the advance button when canAdvance and subChannelId is set", () => {
+    const task: TaskInfo = {
+      taskNumber: 7,
+      title: "wire it",
+      status: "todo",
+      subChannelId: "22222222-2222-2222-2222-222222222222",
+      subChannelName: "eng__task-7",
+    };
+    const html = renderToStaticMarkup(
+      <TaskDetailView
+        {...baseProps}
+        task={task}
+        error={null}
+        canAdvance
+        advanceLabel="Start"
+      />,
+    );
+    expect(html).toContain("Start");
+    expect(html).toContain('class="task-detail__advance"');
+  });
+
+  it("hides the advance button for legacy tasks without a sub-channel", () => {
+    const task: TaskInfo = {
+      taskNumber: 3,
+      title: "legacy",
+      status: "todo",
+      subChannelId: null,
+      subChannelName: null,
+    };
+    const html = renderToStaticMarkup(
+      <TaskDetailView
+        {...baseProps}
+        task={task}
+        error={null}
+        canAdvance
+        advanceLabel="Start"
+      />,
+    );
+    expect(html).not.toContain("task-detail__advance");
+  });
+
+  it("hides the advance button when user cannot advance", () => {
+    const task: TaskInfo = {
+      taskNumber: 7,
+      title: "claimed by someone else",
+      status: "in_progress",
+      claimedByName: "alice",
+      subChannelId: "22222222-2222-2222-2222-222222222222",
+      subChannelName: "eng__task-7",
+    };
+    const html = renderToStaticMarkup(
+      <TaskDetailView
+        {...baseProps}
+        task={task}
+        error={null}
+        canAdvance={false}
+        advanceLabel="Submit for review"
+      />,
+    );
+    expect(html).not.toContain("task-detail__advance");
+  });
+
+  it("shows advanceError banner when present", () => {
+    const task: TaskInfo = {
+      taskNumber: 7,
+      title: "t",
+      status: "in_progress",
+      claimedByName: "alice",
+      subChannelId: "22222222-2222-2222-2222-222222222222",
+      subChannelName: "eng__task-7",
+    };
+    const html = renderToStaticMarkup(
+      <TaskDetailView
+        {...baseProps}
+        task={task}
+        error={null}
+        advanceError="HTTP 403 not the claimer"
+        canAdvance
+        advanceLabel="Submit for review"
+      />,
+    );
+    expect(html).toContain("Failed to advance task: HTTP 403 not the claimer");
   });
 });
 

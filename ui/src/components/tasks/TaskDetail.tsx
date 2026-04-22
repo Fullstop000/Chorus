@@ -4,14 +4,62 @@ import type { TaskDetailTarget } from "../../store/uiStore";
 import { useHistory } from "../../hooks/useHistory";
 import { ChatPanel } from "../chat/ChatPanel";
 import { MessageInput } from "../chat/MessageInput";
-import { getTaskDetail, type TaskInfo } from "../../data";
+import {
+  claimTasks,
+  getTaskDetail,
+  updateTaskStatus,
+  type TaskInfo,
+  type TaskStatus,
+} from "../../data";
 import "./TaskDetail.css";
+
+/**
+ * Next legal status for the "advance" affordance, in the Todo → InProgress →
+ * InReview → Done kanban chain. `null` means no further advancement (Done).
+ */
+const NEXT_STATUS: Record<TaskStatus, TaskStatus | null> = {
+  todo: "in_progress",
+  in_progress: "in_review",
+  in_review: "done",
+  done: null,
+};
+
+/**
+ * Human label for the advance button for each current status. Todo is phrased
+ * as "Start" because advancing from Todo also claims the task on the user's
+ * behalf (claim + status bump in one click).
+ */
+const ADVANCE_LABEL: Record<TaskStatus, string | null> = {
+  todo: "Start",
+  in_progress: "Submit for review",
+  in_review: "Mark done",
+  done: null,
+};
+
+/**
+ * Pure permission check: can `currentUser` advance `task`? Claim-on-start is
+ * allowed for anyone when the task is unclaimed Todo; subsequent transitions
+ * require the current user to be the claimer. Mirrors the historical
+ * `TaskCard.advance()` logic from pre-Task-8 TasksPanel.
+ */
+function canAdvanceTask(task: TaskInfo, currentUser: string): boolean {
+  if (task.status === "done") return false;
+  if (task.status === "todo") {
+    return !task.claimedByName || task.claimedByName === currentUser;
+  }
+  return task.claimedByName === currentUser;
+}
 
 interface TaskDetailViewProps {
   target: TaskDetailTarget;
   task: TaskInfo | null;
   error: string | null;
+  advanceError: string | null;
+  advancing: boolean;
   onBack: () => void;
+  onAdvance: () => void;
+  canAdvance: boolean;
+  advanceLabel: string | null;
 }
 
 /**
@@ -25,8 +73,23 @@ export function TaskDetailView({
   target,
   task,
   error,
+  advanceError,
+  advancing,
   onBack,
+  onAdvance,
+  canAdvance,
+  advanceLabel,
 }: TaskDetailViewProps) {
+  // Hide the advance button when sub_channel_id is null (legacy pre-backfill
+  // tasks) — those rows predate the sub-channel machinery and should be read-only
+  // in the detail view. Also gate on advanceLabel + canAdvance.
+  const showAdvance =
+    !!task &&
+    !!advanceLabel &&
+    canAdvance &&
+    task.subChannelId !== null &&
+    task.subChannelId !== undefined;
+
   return (
     <header className="task-detail__header">
       <button
@@ -51,7 +114,22 @@ export function TaskDetailView({
               <span>claimed by {task.claimedByName}</span>
             )}
             <span>created by {task.createdByName ?? "unknown"}</span>
+            {showAdvance && (
+              <button
+                type="button"
+                className="task-detail__advance"
+                onClick={onAdvance}
+                disabled={advancing}
+              >
+                {advancing ? "…" : advanceLabel}
+              </button>
+            )}
           </div>
+          {advanceError && (
+            <div className="task-detail__error" role="alert">
+              Failed to advance task: {advanceError}
+            </div>
+          )}
         </>
       ) : error ? (
         <div className="task-detail__error">Failed to load task: {error}</div>
@@ -72,9 +150,17 @@ export function TaskDetailView({
  * so the hook call is stable across renders and satisfies Rules of Hooks.
  */
 export function TaskDetail() {
-  const { currentUser, currentTaskDetail, setCurrentTaskDetail } = useStore();
+  const { currentUser, currentTaskDetail, setCurrentTaskDetail, setActiveTab } =
+    useStore();
   const [task, setTask] = useState<TaskInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [advanceError, setAdvanceError] = useState<string | null>(null);
+  const [advancing, setAdvancing] = useState(false);
+
+  // Bump when we want to force-refetch the task (e.g. after a successful
+  // status transition). Including it in the effect deps keeps fetch logic in
+  // one place instead of duplicating it inside the advance handler.
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     if (!currentTaskDetail) {
@@ -83,7 +169,6 @@ export function TaskDetail() {
       return;
     }
     let alive = true;
-    setTask(null);
     setError(null);
     getTaskDetail(currentTaskDetail.parentChannelId, currentTaskDetail.taskNumber)
       .then((t) => {
@@ -97,7 +182,7 @@ export function TaskDetail() {
     return () => {
       alive = false;
     };
-  }, [currentTaskDetail]);
+  }, [currentTaskDetail, refreshTick]);
 
   // Hooks must run unconditionally — pull sub-channel wiring before any early
   // return. `useHistory` tolerates null args and stays idle until both are set.
@@ -105,7 +190,37 @@ export function TaskDetail() {
   const subChannelId = task?.subChannelId ?? null;
   const history = useHistory(currentUser, subChannelName, subChannelId);
 
+  async function handleAdvance() {
+    if (!task || !currentTaskDetail) return;
+    const next = NEXT_STATUS[task.status];
+    if (!next) return;
+    if (!canAdvanceTask(task, currentUser)) return;
+    setAdvancing(true);
+    setAdvanceError(null);
+    try {
+      if (task.status === "todo") {
+        // Claim implicitly transitions Todo → InProgress server-side, so a
+        // single POST covers both steps here.
+        await claimTasks(currentTaskDetail.parentChannelId, [task.taskNumber]);
+      } else {
+        await updateTaskStatus(
+          currentTaskDetail.parentChannelId,
+          task.taskNumber,
+          next,
+        );
+      }
+      setRefreshTick((n) => n + 1);
+    } catch (e) {
+      setAdvanceError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
   if (!currentTaskDetail) return null;
+
+  const advanceLabel = task ? ADVANCE_LABEL[task.status] : null;
+  const canAdvance = task ? canAdvanceTask(task, currentUser) : false;
 
   return (
     <div data-testid="task-detail" className="task-detail">
@@ -113,7 +228,17 @@ export function TaskDetail() {
         target={currentTaskDetail}
         task={task}
         error={error}
-        onBack={() => setCurrentTaskDetail(null)}
+        advanceError={advanceError}
+        advancing={advancing}
+        onBack={() => {
+          // Return to the parent channel's Tasks tab (the user came from the
+          // board). Without this the MainPanel would drop them on Chat.
+          setActiveTab("tasks");
+          setCurrentTaskDetail(null);
+        }}
+        onAdvance={handleAdvance}
+        canAdvance={canAdvance}
+        advanceLabel={advanceLabel}
       />
       <div className="task-detail__body">
         <ChatPanel
