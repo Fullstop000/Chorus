@@ -53,7 +53,7 @@ test.describe('ACT-002', () => {
       await expect(items.first()).toBeVisible({ timeout: 15_000 })
       // Agent should be active after wake-up
       const detail = await getAgentDetail(request, trio.botB)
-      expect(detail.agent.status).toBe('active')
+      expect(['ready', 'working']).toContain(detail.agent.status)
     })
   })
 })

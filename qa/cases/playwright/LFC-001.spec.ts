@@ -71,7 +71,7 @@ test.describe('LFC-001', () => {
 
     await test.step('Expected: API list shows bot-a active after restart', async () => {
       const agents = await listAgents(request)
-      expect(agents.find((x) => x.name === trio.botA)?.status).toBe('active')
+      expect(['ready', 'working']).toContain(agents.find((x) => x.name === trio.botA)?.status)
     })
   })
 })

@@ -18,7 +18,6 @@ use crate::agent::drivers::{
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
-use crate::store::agents::AgentStatus;
 use crate::store::messages::ReceivedMessage;
 use crate::store::Store;
 
@@ -224,8 +223,6 @@ impl AgentManager {
             wake_message.as_ref(),
         );
 
-        self.store
-            .update_agent_status(agent_name, AgentStatus::Active)?;
         activity_log::set_activity_state(
             &self.activity_logs,
             agent_name,
@@ -288,8 +285,6 @@ impl AgentManager {
                 },
             );
             self.trace_store.end_run(agent_name);
-            self.store
-                .update_agent_status(agent_name, AgentStatus::Inactive)?;
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
@@ -308,8 +303,6 @@ impl AgentManager {
             if let Err(e) = agent.handle.close().await {
                 warn!(agent = %agent_name, err = %e, "error closing handle for sleep");
             }
-            self.store
-                .update_agent_status(agent_name, AgentStatus::Sleeping)?;
             activity_log::set_activity_state(
                 &self.activity_logs,
                 agent_name,
@@ -695,12 +688,11 @@ mod tests {
             !agents.contains_key("v2bot"),
             "v2bot should be removed after sleep"
         );
+        drop(agents);
 
-        let agent_record = store.get_agent("v2bot").unwrap().unwrap();
-        assert_eq!(
-            agent_record.status,
-            AgentStatus::Sleeping,
-            "agent status should be sleeping"
+        assert!(
+            manager.process_state("v2bot").await.is_none(),
+            "sleep_agent should remove the managed process"
         );
     }
 

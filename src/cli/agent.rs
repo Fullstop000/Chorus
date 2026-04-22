@@ -6,10 +6,15 @@
 //!   next heartbeat (or immediately if the server is running).
 //! - `list`          — list all agents with their status and runtime.
 
-use chorus::store::agents::AgentStatus;
-use chorus::store::Store;
+use super::{default_model_for_runtime, AgentCommands};
 
-use super::{db_path_for, default_data_dir, default_model_for_runtime, AgentCommands};
+fn find_agent_id_by_name(agents: &[serde_json::Value], name: &str) -> Option<String> {
+    agents.iter().find_map(|agent| {
+        (agent.get("name").and_then(|v| v.as_str()) == Some(name))
+            .then(|| agent.get("id").and_then(|v| v.as_str()).map(str::to_string))
+            .flatten()
+    })
+}
 
 pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
     match cmd {
@@ -49,13 +54,27 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             tracing::info!("Agent @{agent_name} created (runtime: {runtime}, model: {model}).");
             Ok(())
         }
-        AgentCommands::Stop { name, data_dir } => {
+        AgentCommands::Stop { name, server_url } => {
             tracing::info!("Stopping agent @{name}...");
-            let data_dir = data_dir.unwrap_or_else(default_data_dir);
-            let db_path = db_path_for(&data_dir);
-            let store = Store::open(&db_path)?;
-            store.update_agent_status(&name, AgentStatus::Inactive)?;
-            tracing::info!("Agent @{name} marked as inactive.");
+            let client = chorus::utils::http::client();
+            let list_res = client.get(format!("{server_url}/api/agents")).send().await?;
+            let list_status = list_res.status();
+            let agents: Vec<serde_json::Value> = list_res.json().await?;
+            if !list_status.is_success() {
+                anyhow::bail!("server returned {list_status} while listing agents");
+            }
+            let agent_id = find_agent_id_by_name(&agents, &name)
+                .ok_or_else(|| anyhow::anyhow!("agent not found: {name}"))?;
+            let res = client
+                .post(format!("{server_url}/api/agents/{agent_id}/stop"))
+                .send()
+                .await?;
+            let status = res.status();
+            if !status.is_success() {
+                let body = res.text().await.unwrap_or_default();
+                anyhow::bail!("server returned {status}: {body}");
+            }
+            tracing::info!("Agent @{name} stopped.");
             Ok(())
         }
         AgentCommands::List { server_url } => {

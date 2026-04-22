@@ -124,9 +124,6 @@ pub struct AgentInfo {
     /// Codex-only reasoning effort override.
     #[serde(rename = "reasoningEffort", skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
-    /// Opaque session id when the agent process is connected.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
     /// Short activity label from the runtime (`AgentManager` / activity map).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub activity: Option<String>,
@@ -174,7 +171,6 @@ impl From<&Agent> for AgentInfo {
             runtime: Some(agent.runtime.clone()),
             model: Some(agent.model.clone()),
             reasoning_effort: agent.reasoning_effort.clone(),
-            session_id: agent.session_id.clone(),
             activity: None,
             activity_detail: None,
         }

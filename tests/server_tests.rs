@@ -10,7 +10,6 @@ use chorus::agent::AgentRuntime;
 use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
 use chorus::server::{build_router_with_services, AgentDetailResponse, HistoryResponse};
-use chorus::store::agents::AgentStatus;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
@@ -467,10 +466,7 @@ async fn test_receive_timeout_is_interpreted_in_milliseconds() {
 
 #[tokio::test]
 async fn test_send_starts_sleeping_agent_with_wake_message() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Sleeping)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "wake up from sleep" });
     let response = app
@@ -504,10 +500,7 @@ async fn test_send_starts_sleeping_agent_with_wake_message() {
 
 #[tokio::test]
 async fn test_send_notifies_active_agent_without_restart() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
     lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "stay online" });
@@ -1440,7 +1433,6 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         .iter()
         .find(|a| a.name.starts_with("stuck-bot-"))
         .expect("agent should remain in the store after failed start");
-    assert_eq!(agent.status, AgentStatus::Inactive);
     assert!(store.is_member("all", &agent.name).unwrap());
 }
 
@@ -1493,9 +1485,6 @@ async fn test_create_kimi_agent_via_api() {
 #[tokio::test]
 async fn test_get_and_update_agent_via_api() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
     // Runtime liveness is the manager HashMap, not the DB column:
     // mark the agent as having a live managed process so a config
     // edit that requires restart will actually restart.
@@ -1557,9 +1546,6 @@ async fn test_get_and_update_agent_via_api() {
 #[tokio::test]
 async fn test_update_agent_to_kimi_clears_reasoning_effort() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
     // Mark the agent as having a live managed process so a config
     // edit that requires restart will actually restart.
     lifecycle.mark_running("bot1");
@@ -1617,10 +1603,6 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
 #[tokio::test]
 async fn config_edit_does_not_restart_when_no_process_managed_despite_db_active() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    // DB column lies: says Active, but manager HashMap is empty.
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
     // Deliberately DO NOT call lifecycle.mark_running("bot1").
 
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
@@ -1865,10 +1847,7 @@ async fn test_dm_send_starts_inactive_agent() {
 
 #[tokio::test]
 async fn test_dm_send_notifies_active_agent() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
     // Runtime liveness is the manager HashMap, not the DB column:
     // mark the agent as having a live managed process.
     lifecycle.mark_running("bot1");
@@ -1901,11 +1880,7 @@ async fn test_dm_send_notifies_active_agent() {
 /// gets woken via `start_agent`.
 #[tokio::test]
 async fn delivery_starts_agent_when_no_process_managed_even_if_db_says_active() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    // DB column lies: says Active, but manager HashMap is empty.
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
     // Deliberately DO NOT call lifecycle.mark_running("bot1").
 
     let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "wake up despite drift" });
@@ -1935,10 +1910,7 @@ async fn delivery_starts_agent_when_no_process_managed_even_if_db_says_active() 
 
 #[tokio::test]
 async fn test_send_notifies_active_agents() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
+    let (_store, app, lifecycle) = setup_with_lifecycle();
     lifecycle.mark_running("bot1");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "ping active bot" });
@@ -2522,12 +2494,6 @@ async fn test_at_mention_forwards_to_team_channel() {
             reasoning_effort: None,
             env_vars: &[],
         })
-        .unwrap();
-    store
-        .update_agent_status("bot1", AgentStatus::Active)
-        .unwrap();
-    store
-        .update_agent_status("bot2", AgentStatus::Active)
         .unwrap();
     lifecycle.mark_running("bot1");
     lifecycle.mark_running("bot2");

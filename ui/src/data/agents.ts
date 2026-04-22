@@ -18,7 +18,6 @@ export interface AgentInfo {
   reasoningEffort?: string
   description?: string
   systemPrompt?: string
-  session_id?: string
   activity?: string
   activity_detail?: string
 }

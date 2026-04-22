@@ -13,6 +13,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_add_display_name_to_humans(conn)?;
     migrate_create_agent_sessions_table(conn)?;
     migrate_copy_session_ids_to_agent_sessions(conn)?;
+    migrate_drop_agents_status_and_session_id_columns(conn)?;
     Ok(())
 }
 
@@ -246,5 +247,44 @@ fn migrate_copy_session_ids_to_agent_sessions(conn: &Connection) -> Result<()> {
         [],
     )?;
     tracing::info!("migration: copied agents.session_id values into agent_sessions");
+    Ok(())
+}
+
+fn migrate_drop_agents_status_and_session_id_columns(conn: &Connection) -> Result<()> {
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(agents)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let has_status = cols.iter().any(|c| c == "status");
+    let has_session_id = cols.iter().any(|c| c == "session_id");
+    if !has_status && !has_session_id {
+        return Ok(());
+    }
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         BEGIN;
+         CREATE TABLE agents_new (
+            id TEXT PRIMARY KEY,
+            name TEXT UNIQUE NOT NULL,
+            display_name TEXT NOT NULL,
+            description TEXT,
+            system_prompt TEXT,
+            runtime TEXT NOT NULL,
+            model TEXT NOT NULL,
+            reasoning_effort TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         INSERT INTO agents_new (
+            id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at
+         )
+            SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at
+            FROM agents;
+         DROP TABLE agents;
+         ALTER TABLE agents_new RENAME TO agents;
+         COMMIT;
+         PRAGMA foreign_keys=ON;",
+    )?;
+    tracing::info!("migration: dropped agents.status and agents.session_id columns");
     Ok(())
 }
