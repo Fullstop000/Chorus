@@ -36,7 +36,9 @@ struct AgentInboxChannelContext {
 
 fn channel_type_wire_label(kind: ChannelType) -> &'static str {
     match kind {
-        ChannelType::Channel | ChannelType::System | ChannelType::Team => "channel",
+        ChannelType::Channel | ChannelType::System | ChannelType::Team | ChannelType::Task => {
+            "channel"
+        }
         ChannelType::Dm => "dm",
     }
 }

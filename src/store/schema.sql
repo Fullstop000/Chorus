@@ -1,13 +1,14 @@
 -- Schema for Chorus store
 
--- Channels represent chat rooms, direct messages, or system broadcasts.
+-- Channels represent chat rooms, direct messages, system broadcasts, or task sub-channels.
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY, -- Unique UUID for the channel
     name TEXT UNIQUE NOT NULL, -- Human-readable unique name (e.g., 'general', 'dm-alice-bob')
     description TEXT, -- Optional topic or description for the channel
-    channel_type TEXT NOT NULL DEFAULT 'channel', -- Type of channel: 'channel', 'dm', or 'system'
+    channel_type TEXT NOT NULL DEFAULT 'channel', -- Type of channel: 'channel' | 'dm' | 'system' | 'team' | 'task'
     archived INTEGER NOT NULL DEFAULT 0, -- 1 if archived, 0 if active
-    created_at TEXT NOT NULL DEFAULT (datetime('now')) -- Timestamp of creation
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), -- Timestamp of creation
+    parent_channel_id TEXT REFERENCES channels(id) -- Parent channel for task sub-channels; NULL for all other types.
 );
 
 -- Memberships linking users/agents to channels.
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     created_by TEXT NOT NULL, -- User/agent who created the task
     created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the task was created
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the task was last updated
+    sub_channel_id TEXT REFERENCES channels(id), -- Child channel owned by this task (ChannelType::Task)
     UNIQUE(channel_id, task_number)
 );
 

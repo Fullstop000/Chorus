@@ -46,6 +46,7 @@ impl Store {
                         description: None,
                         channel_type: ChannelType::Dm,
                         created_at: chrono::Utc::now(),
+                        parent_channel_id: None,
                     }
                 }
             };

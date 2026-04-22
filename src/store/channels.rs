@@ -16,7 +16,7 @@ pub fn normalize_channel_name(raw: &str) -> String {
 
 // ── Types owned by this module ──
 
-/// One row from `channels` (any type: user, DM, system, or team).
+/// One row from `channels` (any type: user, DM, system, team, or task sub-channel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Channel {
     /// UUID primary key.
@@ -29,6 +29,9 @@ pub struct Channel {
     pub channel_type: ChannelType,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
+    /// Parent channel id, set for `ChannelType::Task` sub-channels pointing at
+    /// the channel that owns the task. `None` for all other channel types.
+    pub parent_channel_id: Option<String>,
 }
 
 /// Classifies how the channel behaves in the UI and access control.
@@ -45,6 +48,8 @@ pub enum ChannelType {
     /// Channel owned by a team. Managed through team lifecycle, not directly
     /// deletable by the user.
     Team,
+    /// Child channel owned by a task. One per task. Hidden from the main channel list.
+    Task,
 }
 
 impl ChannelType {
@@ -55,12 +60,13 @@ impl ChannelType {
             Self::Dm => "dm",
             Self::System => "system",
             Self::Team => "team",
+            Self::Task => "task",
         }
     }
 }
 
 impl Channel {
-    /// Parse the standard 5-column `channels` row: id, name, description, channel_type, created_at.
+    /// Parse the standard 6-column `channels` row: id, name, description, channel_type, created_at, parent_channel_id.
     pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
@@ -70,9 +76,11 @@ impl Channel {
                 "team" => ChannelType::Team,
                 "dm" => ChannelType::Dm,
                 "system" => ChannelType::System,
+                "task" => ChannelType::Task,
                 _ => ChannelType::Channel,
             },
             created_at: super::parse_datetime(&row.get::<_, String>(4)?),
+            parent_channel_id: row.get(5)?,
         })
     }
 }
@@ -137,7 +145,7 @@ impl Store {
         params: &ChannelListParams<'_>,
     ) -> Result<Vec<Channel>> {
         let mut sql =
-            "SELECT id, name, description, channel_type, created_at FROM channels".to_string();
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels".to_string();
         let mut conditions = Vec::new();
 
         if !params.include_archived {
@@ -218,7 +226,7 @@ impl Store {
     pub fn get_auto_join_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id
              FROM channels
              WHERE archived = 0 AND channel_type = 'system'
              ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at",
@@ -349,7 +357,7 @@ impl Store {
         name: &str,
     ) -> Result<Option<Channel>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels WHERE name = ?1",
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Channel::from_row)?;
         Ok(rows.next().transpose()?)
@@ -362,7 +370,7 @@ impl Store {
 
     pub(crate) fn get_channel_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Channel>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels WHERE id = ?1",
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Channel::from_row)?;
         Ok(rows.next().transpose()?)
@@ -554,5 +562,15 @@ impl Store {
             tracing::info!(channel = %name, "created system channel");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod task_channel_tests {
+    use super::*;
+
+    #[test]
+    fn channel_type_task_roundtrip() {
+        assert_eq!(ChannelType::Task.as_api_str(), "task");
     }
 }

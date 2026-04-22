@@ -14,6 +14,8 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_create_agent_sessions_table(conn)?;
     migrate_copy_session_ids_to_agent_sessions(conn)?;
     migrate_drop_agents_status_and_session_id_columns(conn)?;
+    migrate_add_parent_channel_id(conn)?;
+    migrate_add_task_sub_channel_id(conn)?;
     Ok(())
 }
 
@@ -250,6 +252,92 @@ fn migrate_copy_session_ids_to_agent_sessions(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Add nullable `parent_channel_id` column to `channels` if missing.
+fn migrate_add_parent_channel_id(conn: &Connection) -> Result<()> {
+    let exists: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('channels') WHERE name = 'parent_channel_id'")?
+        .exists([])?;
+    if !exists {
+        conn.execute(
+            "ALTER TABLE channels ADD COLUMN parent_channel_id TEXT REFERENCES channels(id)",
+            [],
+        )?;
+        tracing::info!("migration: added parent_channel_id column to channels");
+    }
+    Ok(())
+}
+
+/// Add nullable `sub_channel_id` column to `tasks` if missing, then backfill
+/// sub-channels for pre-existing tasks. Idempotent: after backfill runs once,
+/// no task row has `sub_channel_id IS NULL`, so the SELECT returns zero rows.
+fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
+    let exists: bool = conn
+        .prepare("SELECT 1 FROM pragma_table_info('tasks') WHERE name = 'sub_channel_id'")?
+        .exists([])?;
+    if !exists {
+        conn.execute(
+            "ALTER TABLE tasks ADD COLUMN sub_channel_id TEXT REFERENCES channels(id)",
+            [],
+        )?;
+        tracing::info!("migration: added sub_channel_id column to tasks");
+    }
+
+    // Backfill: every existing task gets a sub-channel matching the new primitive.
+    // Fetch orphan rows first (outside tx) to avoid borrowing conn twice.
+    let orphans: Vec<(String, String, i64, String)> = conn
+        .prepare(
+            "SELECT t.id, c.name, t.task_number, t.created_by \
+             FROM tasks t \
+             JOIN channels c ON c.id = t.channel_id \
+             WHERE t.sub_channel_id IS NULL",
+        )?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    if orphans.is_empty() {
+        return Ok(());
+    }
+
+    let tx = conn.unchecked_transaction()?;
+    for (task_id, parent_name, task_number, creator_name) in orphans {
+        let sub_id = uuid::Uuid::new_v4().to_string();
+        let sub_name = format!("{}__task-{}", parent_name, task_number);
+        let creator_type = {
+            let is_agent: bool = tx
+                .prepare("SELECT 1 FROM agents WHERE name = ?1")?
+                .exists(rusqlite::params![creator_name])?;
+            if is_agent {
+                "agent"
+            } else {
+                "human"
+            }
+        };
+        let parent_id: String = tx.query_row(
+            "SELECT id FROM channels WHERE name = ?1",
+            rusqlite::params![parent_name],
+            |r| r.get(0),
+        )?;
+        tx.execute(
+            "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
+             VALUES (?1, ?2, NULL, 'task', ?3)",
+            rusqlite::params![sub_id, sub_name, parent_id],
+        )?;
+        tx.execute(
+            "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
+             VALUES (?1, ?2, ?3, 0)",
+            rusqlite::params![sub_id, creator_name, creator_type],
+        )?;
+        tx.execute(
+            "UPDATE tasks SET sub_channel_id = ?1 WHERE id = ?2",
+            rusqlite::params![sub_id, task_id],
+        )?;
+        tracing::info!(task_id = %task_id, sub_channel = %sub_name, "backfilled task sub-channel");
+    }
+    tx.commit()?;
+    Ok(())
+}
+
 fn migrate_drop_agents_status_and_session_id_columns(conn: &Connection) -> Result<()> {
     let cols: Vec<String> = conn
         .prepare("PRAGMA table_info(agents)")?
@@ -287,4 +375,93 @@ fn migrate_drop_agents_status_and_session_id_columns(conn: &Connection) -> Resul
     )?;
     tracing::info!("migration: dropped agents.status and agents.session_id columns");
     Ok(())
+}
+
+#[cfg(test)]
+mod backfill_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn bootstrap_pre_migration_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        // Bare-minimum pre-migration schema — channels and tasks WITHOUT the new columns.
+        conn.execute_batch(
+            "CREATE TABLE channels (
+                id TEXT PRIMARY KEY, name TEXT UNIQUE NOT NULL, description TEXT,
+                channel_type TEXT NOT NULL DEFAULT 'channel',
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE channel_members (
+                channel_id TEXT NOT NULL, member_name TEXT NOT NULL,
+                member_type TEXT NOT NULL, last_read_seq INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (channel_id, member_name)
+             );
+             CREATE TABLE tasks (
+                id TEXT PRIMARY KEY, channel_id TEXT NOT NULL,
+                task_number INTEGER NOT NULL, title TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'todo', claimed_by TEXT,
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(channel_id, task_number)
+             );
+             CREATE TABLE agents (name TEXT PRIMARY KEY);
+             CREATE TABLE humans (name TEXT PRIMARY KEY);
+             INSERT INTO channels (id, name) VALUES ('ch1', 'eng');
+             INSERT INTO humans (name) VALUES ('alice');
+             INSERT INTO tasks (id, channel_id, task_number, title, created_by)
+                 VALUES ('t1', 'ch1', 1, 'legacy task', 'alice');",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn backfill_spawns_sub_channel_for_legacy_task() {
+        let conn = bootstrap_pre_migration_db();
+        migrate_add_parent_channel_id(&conn).unwrap();
+        migrate_add_task_sub_channel_id(&conn).unwrap();
+
+        let sub_id: String = conn
+            .query_row(
+                "SELECT sub_channel_id FROM tasks WHERE id = 't1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let sub_name: String = conn
+            .query_row(
+                "SELECT name FROM channels WHERE id = ?1",
+                [&sub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(sub_name, "eng__task-1");
+        let is_member: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channel_members WHERE channel_id = ?1 AND member_name = 'alice'",
+                [&sub_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(is_member, 1);
+    }
+
+    #[test]
+    fn backfill_is_idempotent() {
+        let conn = bootstrap_pre_migration_db();
+        migrate_add_parent_channel_id(&conn).unwrap();
+        migrate_add_task_sub_channel_id(&conn).unwrap();
+        // Running it again must not spawn a second sub-channel.
+        migrate_add_task_sub_channel_id(&conn).unwrap();
+        let task_channels: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channels WHERE channel_type = 'task'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(task_channels, 1);
+    }
 }

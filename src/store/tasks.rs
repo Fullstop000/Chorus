@@ -29,6 +29,9 @@ pub struct Task {
     pub created_at: DateTime<Utc>,
     /// Last mutation time.
     pub updated_at: DateTime<Utc>,
+    /// Child `ChannelType::Task` channel that owns this task's collaboration
+    /// scope. Populated on creation (and backfilled for legacy rows).
+    pub sub_channel_id: Option<String>,
 }
 
 /// Kanban-style state stored in SQLite.
