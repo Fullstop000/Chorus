@@ -272,15 +272,20 @@ impl Backend for ChorusBackend {
                     .and_then(|v| v.as_str())
                     .map(to_local_time)
                     .unwrap_or_else(|| "-".into());
-                let sender_type = match m.get("sender_type").and_then(|v| v.as_str()) {
-                    Some("agent") => " type=agent",
+                let sender_type_raw = m.get("sender_type").and_then(|v| v.as_str()).unwrap_or("");
+                let sender_type = match sender_type_raw {
+                    "agent" => " type=agent",
                     _ => "",
                 };
                 let sender = m
                     .get("sender_name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let raw_content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let content = crate::bridge::format::format_message_for_agent(
+                    sender_type_raw,
+                    raw_content,
+                );
                 let attach_suffix = format_attachments(m.get("attachments"));
                 format!(
                     "[target={} msg={} time={}{}] @{}: {}{}",
@@ -358,8 +363,9 @@ impl Backend for ChorusBackend {
         let formatted: Vec<String> = messages
             .iter()
             .map(|m| {
-                let sender_type = match m.get("senderType").and_then(|v| v.as_str()) {
-                    Some("agent") => " type=agent",
+                let sender_type_raw = m.get("senderType").and_then(|v| v.as_str()).unwrap_or("");
+                let sender_type = match sender_type_raw {
+                    "agent" => " type=agent",
                     _ => "",
                 };
                 let time = m
@@ -381,7 +387,11 @@ impl Backend for ChorusBackend {
                     .get("senderName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let raw_content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
+                let content = crate::bridge::format::format_message_for_agent(
+                    sender_type_raw,
+                    raw_content,
+                );
                 let attach_suffix = format_attachments(m.get("attachments"));
                 format!(
                     "[seq={} msg={} time={}{}] @{}: {}{}",

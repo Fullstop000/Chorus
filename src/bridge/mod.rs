@@ -6,7 +6,7 @@ use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 pub mod backend;
 pub mod discovery;
 pub mod error;
-mod format;
+pub mod format;
 pub mod pairing;
 pub mod serve;
 mod types;
