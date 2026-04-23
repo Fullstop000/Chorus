@@ -1650,3 +1650,307 @@ fn test_lookup_sender_type_recovers_after_mutex_poison() {
 
     let _conn = store.conn_for_test();
 }
+
+#[test]
+fn task_event_payload_round_trips_through_json() {
+    use chorus::store::tasks::events::{TaskEventAction, TaskEventPayload};
+    use chorus::store::tasks::TaskStatus;
+
+    let original = TaskEventPayload {
+        action: TaskEventAction::Claimed,
+        task_number: 7,
+        title: "wire up the bridge".into(),
+        sub_channel_id: "22222222-2222-2222-2222-222222222222".into(),
+        actor: "alice".into(),
+        prev_status: Some(TaskStatus::Todo),
+        next_status: TaskStatus::InProgress,
+        claimed_by: Some("alice".into()),
+    };
+
+    let json = original.to_json_string().unwrap();
+    assert!(json.contains(r#""kind":"task_event""#));
+    assert!(json.contains(r#""action":"claimed""#));
+    assert!(json.contains(r#""nextStatus":"in_progress""#));
+    assert!(json.contains(r#""taskNumber":7"#));
+
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["kind"], "task_event");
+    assert_eq!(parsed["actor"], "alice");
+    assert_eq!(
+        parsed["subChannelId"],
+        "22222222-2222-2222-2222-222222222222"
+    );
+}
+
+#[test]
+fn task_event_payload_serializes_none_fields_as_json_null() {
+    use chorus::store::tasks::events::{TaskEventAction, TaskEventPayload};
+    use chorus::store::tasks::TaskStatus;
+
+    // Created events set prev_status = None and claimed_by = None. The frontend
+    // parser needs `null` for these (not missing keys) to distinguish "event
+    // explicitly cleared the field" from "producer forgot the field".
+    let created = TaskEventPayload {
+        action: TaskEventAction::Created,
+        task_number: 1,
+        title: "t".into(),
+        sub_channel_id: "s".into(),
+        actor: "a".into(),
+        prev_status: None,
+        next_status: TaskStatus::Todo,
+        claimed_by: None,
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(&created.to_json_string().unwrap()).unwrap();
+    assert!(
+        parsed["prevStatus"].is_null(),
+        "expected JSON null, got {:?}",
+        parsed["prevStatus"]
+    );
+    assert!(
+        parsed["claimedBy"].is_null(),
+        "expected JSON null, got {:?}",
+        parsed["claimedBy"]
+    );
+    assert_eq!(parsed["action"], "created");
+    assert_eq!(parsed["nextStatus"], "todo");
+}
+
+#[test]
+fn create_tasks_emits_task_event_to_parent_channel() {
+    let (store, _dir) = make_store();
+    let parent_id = store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel(
+            "eng",
+            "bob",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
+
+    let result = store
+        .create_tasks("eng", "bob", &["wire up the bridge"])
+        .unwrap();
+    assert_eq!(result.len(), 1);
+
+    let event_rows: Vec<(String, String)> = store
+        .conn_for_test()
+        .prepare("SELECT sender_type, content FROM messages WHERE channel_id = ?1 ORDER BY seq")
+        .unwrap()
+        .query_map(rusqlite::params![parent_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    assert_eq!(event_rows.len(), 1);
+    assert_eq!(event_rows[0].0, "system");
+
+    let parsed: serde_json::Value = serde_json::from_str(&event_rows[0].1).unwrap();
+    assert_eq!(parsed["kind"], "task_event");
+    assert_eq!(parsed["action"], "created");
+    assert_eq!(parsed["actor"], "bob");
+    assert_eq!(parsed["taskNumber"], 1);
+    assert_eq!(parsed["nextStatus"], "todo");
+    assert_eq!(parsed["title"], "wire up the bridge");
+}
+
+#[test]
+fn claim_task_emits_claimed_event_to_parent_channel() {
+    let (store, _dir) = make_store();
+    let parent_id = store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel(
+            "eng",
+            "bob",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel(
+            "eng",
+            "alice",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
+
+    store.create_tasks("eng", "bob", &["t"]).unwrap();
+    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+
+    let events: Vec<serde_json::Value> = store
+        .conn_for_test()
+        .prepare("SELECT content FROM messages WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq")
+        .unwrap()
+        .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .map(|s| serde_json::from_str(&s).unwrap())
+        .collect();
+
+    assert_eq!(events.len(), 2); // created + claimed
+    assert_eq!(events[1]["action"], "claimed");
+    assert_eq!(events[1]["actor"], "alice");
+    assert_eq!(events[1]["taskNumber"], 1);
+    assert_eq!(events[1]["prevStatus"], "todo");
+    assert_eq!(events[1]["nextStatus"], "in_progress");
+    assert_eq!(events[1]["claimedBy"], "alice");
+}
+
+#[test]
+fn unclaim_task_emits_unclaimed_event() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel(
+            "eng",
+            "alice",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
+    store.create_tasks("eng", "alice", &["t"]).unwrap();
+    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+
+    store.update_task_unclaim("eng", "alice", 1).unwrap();
+
+    let last_event: serde_json::Value = {
+        let content: String = store
+            .conn_for_test()
+            .query_row(
+                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&content).unwrap()
+    };
+    assert_eq!(last_event["action"], "unclaimed");
+    assert_eq!(last_event["prevStatus"], "in_progress");
+    assert_eq!(last_event["nextStatus"], "todo");
+    assert_eq!(last_event["claimedBy"], serde_json::Value::Null);
+}
+
+#[test]
+fn update_task_status_emits_status_changed_event() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel(
+            "eng",
+            "alice",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
+    store.create_tasks("eng", "alice", &["t"]).unwrap();
+    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+        .unwrap();
+
+    let last_event: serde_json::Value = {
+        let content: String = store
+            .conn_for_test()
+            .query_row(
+                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&content).unwrap()
+    };
+    assert_eq!(last_event["action"], "status_changed");
+    assert_eq!(last_event["actor"], "alice");
+    assert_eq!(last_event["prevStatus"], "in_progress");
+    assert_eq!(last_event["nextStatus"], "in_review");
+}
+
+#[test]
+fn get_unread_summary_excludes_archived_task_sub_channels() {
+    // Archived task sub-channels are terminal work, hidden from the active UI.
+    // The agent start-prompt builder reads `get_unread_summary`; without this
+    // filter an agent resuming after a task hits `Done` gets told it has
+    // unread messages in a channel it can't navigate to. Mirrors the filter
+    // used by `get_inbox_conversation_notifications` for the sidebar.
+    let (store, _dir) = make_store();
+    let sub_id = store
+        .create_channel("eng__task-1", None, ChannelType::Task, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel_by_id(&sub_id, "alice", SenderType::Human)
+        .unwrap();
+    store
+        .join_channel_by_id(&sub_id, "bob", SenderType::Human)
+        .unwrap();
+    // Bob's non-system message is unread for alice (the view excludes system
+    // messages, so only human/agent traffic can produce a leak).
+    store
+        .create_message(CreateMessage {
+            channel_name: "eng__task-1",
+            sender_name: "bob",
+            sender_type: SenderType::Human,
+            content: "hi alice",
+            attachment_ids: &[],
+            suppress_event: true,
+            run_id: None,
+        })
+        .unwrap();
+
+    let before = store.get_unread_summary("alice").unwrap();
+    assert_eq!(
+        before.get("eng__task-1"),
+        Some(&1),
+        "pre-archive: unread summary must include the sub-channel"
+    );
+
+    // Simulate the `Done` transition's archive step (direct UPDATE; the full
+    // lifecycle path is covered by `task_lifecycle_emits_four_events_in_parent_channel`).
+    store
+        .conn_for_test()
+        .execute(
+            "UPDATE channels SET archived = 1 WHERE id = ?1",
+            params![sub_id],
+        )
+        .unwrap();
+
+    let after = store.get_unread_summary("alice").unwrap();
+    assert!(
+        !after.contains_key("eng__task-1"),
+        "post-archive: unread summary must exclude archived task sub-channels, \
+         got {:?}",
+        after
+    );
+}

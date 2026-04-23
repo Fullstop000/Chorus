@@ -1,9 +1,12 @@
+pub mod events;
+
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use self::events::{TaskEventAction, TaskEventPayload};
 use super::channels::ChannelType;
 use super::Store;
 
@@ -157,6 +160,9 @@ impl Store {
             params![channel.id],
             |row| row.get(0),
         )?;
+        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
+            Vec::new();
+
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
             let task_id = Uuid::new_v4().to_string();
@@ -192,6 +198,22 @@ impl Store {
                 ],
             )?;
 
+            // Emit task_event inside the same tx so the task row and its
+            // visibility-in-chat commit atomically.
+            let payload = TaskEventPayload {
+                action: TaskEventAction::Created,
+                task_number,
+                title: title.to_string(),
+                sub_channel_id: sub_channel_id.clone(),
+                actor: creator_name.to_string(),
+                prev_status: None,
+                next_status: TaskStatus::Todo,
+                claimed_by: None,
+            };
+            let content = payload.to_json_string()?;
+            let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+            pending_events.push((inserted, content));
+
             result.push(TaskInfo {
                 task_number,
                 title: title.to_string(),
@@ -203,6 +225,9 @@ impl Store {
             });
         }
         tx.commit()?;
+        drop(conn); // release the mutex guard before the stream fanout
+
+        self.emit_system_stream_events(&channel, pending_events)?;
         Ok(result)
     }
 
@@ -310,22 +335,24 @@ impl Store {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let mut results = Vec::new();
+        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
+            Vec::new();
         // Batch semantics: all claims commit together or none do. A hard SQL
         // error on claim N rolls back successful claims 1..N-1. "Soft"
         // rejections (task already claimed / not in todo / stolen mid-flight)
         // push a `ClaimResult { success: false, .. }` and continue; they still
         // commit as a no-op batch.
         for &tn in task_numbers {
-            let task: Option<(String, Option<String>, Option<String>)> = tx
+            let task: Option<(String, Option<String>, Option<String>, String)> = tx
                 .query_row(
-                    "SELECT status, claimed_by, sub_channel_id FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
+                    "SELECT status, claimed_by, sub_channel_id, title FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
                     params![channel.id, tn],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .ok();
 
             match task {
-                Some((status, claimed_by, sub_channel_id))
+                Some((status, claimed_by, sub_channel_id, title))
                     if status == "todo" && claimed_by.is_none() =>
                 {
                     // Defense in depth: WHERE-guard on the precondition we
@@ -347,13 +374,26 @@ impl Store {
                     // Sync sub-channel membership: claimer joins. `INSERT OR
                     // IGNORE` keeps the operation idempotent when the claimer
                     // is already a member (e.g. they also created the task).
-                    if let Some(sub_id) = sub_channel_id {
+                    if let Some(ref sub_id) = sub_channel_id {
                         tx.execute(
                             "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
                              VALUES (?1, ?2, ?3, 0)",
                             params![sub_id, claimer_name, claimer_type.as_str()],
                         )?;
                     }
+                    let payload = TaskEventPayload {
+                        action: TaskEventAction::Claimed,
+                        task_number: tn,
+                        title,
+                        sub_channel_id: sub_channel_id.unwrap_or_default(),
+                        actor: claimer_name.to_string(),
+                        prev_status: Some(TaskStatus::Todo),
+                        next_status: TaskStatus::InProgress,
+                        claimed_by: Some(claimer_name.to_string()),
+                    };
+                    let content = payload.to_json_string()?;
+                    let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+                    pending_events.push((inserted, content));
                     results.push(ClaimResult {
                         task_number: tn,
                         success: true,
@@ -377,6 +417,8 @@ impl Store {
             }
         }
         tx.commit()?;
+        drop(conn);
+        self.emit_system_stream_events(&channel, pending_events)?;
         Ok(results)
     }
 
@@ -397,10 +439,10 @@ impl Store {
 
         // tx-scoped read closes the TOCTOU window — another writer can't
         // reassign `claimed_by` between the check and the UPDATE.
-        let (claimed_by, sub_channel_id): (Option<String>, Option<String>) = tx.query_row(
-            "SELECT claimed_by, sub_channel_id FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
+        let (claimed_by, sub_channel_id, current_status_str, title): (Option<String>, Option<String>, String, String) = tx.query_row(
+            "SELECT claimed_by, sub_channel_id, status, title FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
 
         if claimed_by.as_deref() != Some(claimer_name) {
@@ -422,13 +464,31 @@ impl Store {
             ));
         }
 
-        if let Some(sub_id) = sub_channel_id {
+        if let Some(sub_id) = sub_channel_id.as_deref() {
             tx.execute(
                 "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
                 params![sub_id, claimer_name],
             )?;
         }
+
+        let prev_status = TaskStatus::from_status_str(&current_status_str)
+            .ok_or_else(|| anyhow!("invalid task status: {}", current_status_str))?;
+
+        let payload = TaskEventPayload {
+            action: TaskEventAction::Unclaimed,
+            task_number,
+            title,
+            sub_channel_id: sub_channel_id.unwrap_or_default(),
+            actor: claimer_name.to_string(),
+            prev_status: Some(prev_status),
+            next_status: TaskStatus::Todo,
+            claimed_by: None,
+        };
+        let content = payload.to_json_string()?;
+        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
         tx.commit()?;
+        drop(conn);
+        self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
         Ok(())
     }
 
@@ -448,15 +508,16 @@ impl Store {
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        let (current_status_str, claimed_by, sub_channel_id): (
+        let (current_status_str, claimed_by, sub_channel_id, title): (
             String,
             Option<String>,
             Option<String>,
+            String,
         ) = tx.query_row(
-            "SELECT status, claimed_by, sub_channel_id FROM tasks \
+            "SELECT status, claimed_by, sub_channel_id, title FROM tasks \
              WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
 
         let current_status = TaskStatus::from_status_str(&current_status_str)
@@ -478,6 +539,21 @@ impl Store {
             params![new_status.as_str(), channel.id, task_number],
         )?;
 
+        // Emit the event inside the tx, BEFORE the optional archive below
+        // (which consumes `sub_channel_id`).
+        let payload = TaskEventPayload {
+            action: TaskEventAction::StatusChanged,
+            task_number,
+            title,
+            sub_channel_id: sub_channel_id.clone().unwrap_or_default(),
+            actor: requester_name.to_string(),
+            prev_status: Some(current_status),
+            next_status: new_status,
+            claimed_by: claimed_by.clone(),
+        };
+        let content = payload.to_json_string()?;
+        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+
         // `Done` is terminal (`can_transition_to` has no outbound edges from
         // `Done`), so archiving here is safe — there is no path back that would
         // need to un-archive. Bypasses the `archive_channel` guard on purpose:
@@ -493,6 +569,8 @@ impl Store {
         }
 
         tx.commit()?;
+        drop(conn);
+        self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
         Ok(())
     }
 }

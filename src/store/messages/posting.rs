@@ -104,38 +104,76 @@ impl Store {
         Ok(inserted.id)
     }
 
-    /// Post a server-authored message into a channel.
-    pub fn create_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
-            .ok_or_else(|| anyhow!("channel not found by id"))?;
-        let inserted = Self::insert_message_tx(
-            &tx,
-            &channel,
+    /// Insert a `sender_type = 'system'` message inside an existing transaction.
+    /// Callers doing multi-statement mutations (e.g. task claim → status flip
+    /// → event message) wrap the whole sequence in their own transaction and
+    /// call this helper. Use the public [`Store::create_system_message`] for
+    /// standalone posts.
+    ///
+    /// Takes `&Channel` directly so batched callers (e.g. `create_tasks`
+    /// looping over N tasks in one tx) don't re-query the channel row for
+    /// every event they emit.
+    ///
+    /// Returns the [`InsertedMessage`] so callers can emit the stream event
+    /// after the outer transaction commits.
+    pub(crate) fn create_system_message_tx(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        content: &str,
+    ) -> Result<InsertedMessage> {
+        Self::insert_message_tx(
+            tx,
+            channel,
             "system",
             SenderType::System,
             content,
             &[],
             None,
             None,
-        )?;
-        tx.commit()?;
+        )
+    }
 
-        let payload = inserted.to_event_payload(
-            channel.id.as_str(),
-            channel.channel_type.as_api_str(),
-            "system",
-            SenderType::System.as_str(),
-            content,
-        );
-        let stream_event = StreamEvent::new(
-            channel.id.clone(),
-            inserted.seq,
-            serde_json::to_value(payload)?,
-        );
-        let _ = self.stream_tx.send(stream_event);
-        Ok(inserted.id)
+    /// Emit `message.created` stream events for system messages that were
+    /// inserted via `create_system_message_tx` and committed by the caller.
+    /// Each `(inserted, content)` tuple produced inside the transaction maps
+    /// to one WebSocket event. Best-effort: send errors are dropped because
+    /// the DB rows are the source of truth.
+    pub(crate) fn emit_system_stream_events(
+        &self,
+        channel: &Channel,
+        pending: Vec<(InsertedMessage, String)>,
+    ) -> Result<()> {
+        for (inserted, content) in pending {
+            let payload = inserted.to_event_payload(
+                channel.id.as_str(),
+                channel.channel_type.as_api_str(),
+                "system",
+                SenderType::System.as_str(),
+                &content,
+            );
+            let stream_event = StreamEvent::new(
+                channel.id.clone(),
+                inserted.seq,
+                serde_json::to_value(payload)?,
+            );
+            let _ = self.stream_tx.send(stream_event);
+        }
+        Ok(())
+    }
+
+    /// Post a server-authored message into a channel.
+    pub fn create_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
+            .ok_or_else(|| anyhow!("channel not found by id"))?;
+        let inserted = Self::create_system_message_tx(&tx, &channel, content)?;
+        let message_id = inserted.id.clone();
+        tx.commit()?;
+        drop(conn); // release the guard before fanout to avoid holding the mutex
+
+        self.emit_system_stream_events(&channel, vec![(inserted, content.to_string())])?;
+        Ok(message_id)
     }
 
     pub fn create_message(&self, message: CreateMessage<'_>) -> Result<String> {
@@ -179,5 +217,89 @@ impl Store {
             let _ = self.stream_tx.send(stream_event);
         }
         Ok(inserted.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::store::channels::ChannelType;
+    use crate::store::Store;
+    use rusqlite::params;
+
+    fn make_store() -> Store {
+        // `Store::open` takes `&str`; in-memory matches what `tests/e2e_tests.rs`
+        // does for the test harness and avoids any path-to-string juggling.
+        Store::open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn create_system_message_tx_inserts_within_caller_transaction() {
+        let store = make_store();
+        let channel_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+
+        let msg_id = {
+            let mut conn = store.conn_for_test();
+            let tx = conn.transaction().unwrap();
+            let channel = Store::get_channel_by_id_inner(&tx, &channel_id)
+                .unwrap()
+                .unwrap();
+            let inserted = Store::create_system_message_tx(&tx, &channel, "hello").unwrap();
+            tx.commit().unwrap();
+            inserted.id
+        };
+
+        // Verify ALL invariants the helper owns, not just content.
+        let (content, sender_type, sender_name, seq): (String, String, String, i64) = store
+            .conn_for_test()
+            .query_row(
+                "SELECT content, sender_type, sender_name, seq FROM messages WHERE id = ?1",
+                params![msg_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "hello");
+        assert_eq!(sender_type, "system");
+        assert_eq!(sender_name, "system");
+        assert_eq!(seq, 1);
+    }
+
+    #[test]
+    fn create_system_message_tx_respects_caller_rollback() {
+        // The whole point of a tx-scoped API: if the caller rolls back, the
+        // insert must not persist. Pins the "no inner transaction" invariant.
+        use rusqlite::OptionalExtension;
+
+        let store = make_store();
+        let channel_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+
+        let msg_id = {
+            let mut conn = store.conn_for_test();
+            let tx = conn.transaction().unwrap();
+            let channel = Store::get_channel_by_id_inner(&tx, &channel_id)
+                .unwrap()
+                .unwrap();
+            let inserted = Store::create_system_message_tx(&tx, &channel, "discard me").unwrap();
+            // Drop the tx without committing — implicit rollback.
+            drop(tx);
+            inserted.id
+        };
+
+        let row: Option<String> = store
+            .conn_for_test()
+            .query_row(
+                "SELECT id FROM messages WHERE id = ?1",
+                params![msg_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert!(
+            row.is_none(),
+            "tx-scoped insert must not persist when caller rolls back"
+        );
     }
 }
