@@ -195,4 +195,38 @@ impl Store {
             .optional()
             .map_err(anyhow::Error::from)
     }
+
+    /// Mark a pending proposal as dismissed. The proposal row is updated
+    /// atomically under a compare-and-set on `status = 'pending'` to avoid
+    /// double-resolution races (two users both clicking dismiss on the
+    /// card at once). Returns `Err` if the row is missing or already
+    /// resolved.
+    pub fn dismiss_task_proposal(&self, id: &str, resolver: &str) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let now = chrono::Utc::now().to_rfc3339();
+        let rows = tx.execute(
+            "UPDATE task_proposals \
+             SET status = 'dismissed', resolved_by = ?1, resolved_at = ?2 \
+             WHERE id = ?3 AND status = 'pending'",
+            params![resolver, now, id],
+        )?;
+        if rows == 0 {
+            let exists: bool = tx
+                .query_row(
+                    "SELECT 1 FROM task_proposals WHERE id = ?1",
+                    params![id],
+                    |_| Ok(true),
+                )
+                .optional()?
+                .is_some();
+            return if exists {
+                Err(anyhow!("task proposal {id} is not pending"))
+            } else {
+                Err(anyhow!("task proposal not found: {id}"))
+            };
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }

@@ -2151,3 +2151,41 @@ fn get_task_proposal_by_id_returns_none_for_unknown() {
     let got = store.get_task_proposal_by_id("does-not-exist").unwrap();
     assert!(got.is_none());
 }
+
+#[test]
+fn dismiss_task_proposal_flips_status_and_records_resolver() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "t")
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    store.dismiss_task_proposal(&p.id, "alice").unwrap();
+
+    let got = store.get_task_proposal_by_id(&p.id).unwrap().unwrap();
+    assert_eq!(got.status, TaskProposalStatus::Dismissed);
+    assert_eq!(got.resolved_by.as_deref(), Some("alice"));
+    assert!(got.resolved_at.is_some());
+}
+
+#[test]
+fn dismiss_task_proposal_rejects_non_pending() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "t")
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.dismiss_task_proposal(&p.id, "alice").unwrap();
+
+    let err = store.dismiss_task_proposal(&p.id, "alice").unwrap_err();
+    assert!(
+        format!("{err}").contains("not pending"),
+        "expected 'not pending' in: {err}"
+    );
+}
