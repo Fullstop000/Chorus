@@ -266,16 +266,20 @@ fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) 
     }
 }
 
+/// Run a `tokio::process::Command` with a 5-second timeout.
+/// Returns `None` if the command hangs, fails, or the child can't be spawned.
+async fn cmd_output_with_timeout(cmd: &mut TokioCommand) -> Option<std::process::Output> {
+    tokio::time::timeout(Duration::from_secs(5), cmd.output())
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+}
+
 /// Async version of `check_tool` with a 5-second timeout.
 async fn check_tool_async(name: &str) -> Option<String> {
-    let output = tokio::time::timeout(
-        Duration::from_secs(5),
-        TokioCommand::new(name).arg("--version").output(),
-    )
-    .await
-    .ok()
-    .and_then(|r| r.ok())
-    .filter(|o| o.status.success())?;
+    let output = cmd_output_with_timeout(TokioCommand::new(name).arg("--version"))
+        .await
+        .filter(|o| o.status.success())?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let source = if stdout.trim().is_empty() {
@@ -317,15 +321,10 @@ async fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -
     // changes between test runs are reflected.
     let acp = match acp {
         AcpStatus::AdapterFound(bin) | AcpStatus::AdapterMissing(bin) => {
-            let found = tokio::time::timeout(
-                Duration::from_secs(5),
-                TokioCommand::new(bin).arg("--version").output(),
-            )
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .map(|o| o.status.success())
-            .unwrap_or(false);
+            let found = cmd_output_with_timeout(TokioCommand::new(bin).arg("--version"))
+                .await
+                .map(|o| o.status.success())
+                .unwrap_or(false);
             if found {
                 AcpStatus::AdapterFound(bin)
             } else {
@@ -739,5 +738,30 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0], dir_a.join("myfake-bin"));
         assert_eq!(found[1], dir_c.join("myfake-bin"));
+    }
+
+    #[tokio::test]
+    async fn check_tool_async_times_out_on_hanging_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("sleep-forever.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 10\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let start = std::time::Instant::now();
+        let result = check_tool_async(script.to_str().unwrap()).await;
+        let elapsed = start.elapsed();
+
+        assert!(result.is_none());
+        assert!(
+            elapsed < Duration::from_secs(7),
+            "timeout took too long: {:?}",
+            elapsed
+        );
     }
 }

@@ -12,7 +12,9 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
     if !chorus::store::channels::is_valid_channel_name(&normalized) {
-        anyhow::bail!("channel name can only contain lowercase letters, numbers, hyphens, and underscores: {normalized}");
+        return Err(crate::cli::UserError(format!(
+            "channel name can only contain lowercase letters, numbers, hyphens, and underscores: {normalized}"
+        )).into());
     }
     let description = description.unwrap_or_default();
     let client = super::http::client();
