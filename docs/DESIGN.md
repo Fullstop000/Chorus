@@ -191,6 +191,14 @@ Inter 400 / 500 / 600 / 700, IBM Plex Mono 400 / 500 / 600.
   this recipe.
 - **Display text uses negative tracking.** Only at 24px+. Below that, use
   default or positive tracking.
+- **Ambient system markers break the case and sans rules on purpose.**
+  Task-event cards in the chat feed (`ui/src/components/chat/TaskEventMessage.*`)
+  use *lowercase* mono for the task-number and status badges (letter-spacing
+  0.07em) and *sans* for the 14px title. The card is a quiet state indicator,
+  not a content label or chat message — shouting "IN PROGRESS" next to a
+  pressable card reads like a warning. Mono + muted still applies to the
+  meta row and the inline timeline. If you add a new ambient marker (not a
+  content message, not a badge on a control), follow this pattern.
 
 ---
 
@@ -430,6 +438,18 @@ Used by: `.chat-header-btn`, `.chat-header-member-btn`, `.mention-pill-clickable
 `.message-input-btn`, `.new-message-badge`, `.message-action-btn`. When you add a
 new interactive element, this is the default hover treatment.
 
+### Large-surface hover: accent tint, not primary-invert
+
+Large clickable surfaces — whole card rows, feed items — use a quieter hover
+(`background: var(--color-accent)`) instead of the full primary-invert.
+Color-inversion at card scale is visually loud next to the feed's natural
+hover rhythm and competes with the content. Reserve primary-invert for
+buttons, pills, and small controls.
+
+Used by: `.message-item` (via translucent white, historical), `.task-event-card`,
+`.task-event-done-row`. When you add a new card-scale click target, follow
+this pattern, not the primary-invert above.
+
 ### Active / selected
 
 Same as hover — primary fill, white text. There is no separate "active" style.
@@ -508,10 +528,34 @@ consolidated but have not been.
 
 ### Motion rules
 
-- **Color transitions only.** 120-150ms ease on background, color, border.
+- **Color transitions only *on hover*.** 120-150ms ease on background, color,
+  border. Never on `transform`, `scale`, or `box-shadow`.
 - **Never scale on hover.** Never translate. Never rotate on hover.
 - **Loaders spin linearly, statuses pulse in ease-in-out.** Keep it that way.
 - **No spring physics, no overshoot, no stagger.**
+- **`prefers-reduced-motion` is honored.** Any transition added must drop to
+  `transition: none !important` inside `@media (prefers-reduced-motion: reduce)`.
+
+### State-machine transitions
+
+The "color transitions only" rule above governs **hover**. State-machine
+components — where a data attribute flips an element between distinct,
+named states — may also transition the properties listed below. These are
+*not* hover animations; they express a persistent data change.
+
+Allowed properties:
+
+- `max-height` + `opacity` for reveal / collapse of stacked views (e.g. the
+  `.task-event-card-view` ↔ `.task-event-pill-view` swap when a task reaches
+  `done`). 200-260ms on `cubic-bezier(0.2, 0.8, 0.2, 1)`.
+- `transform: translateX` (small, under 8px) + `opacity` for list-item entry
+  into a live feed (`.task-event-ev.is-show`). 180ms.
+- `border-left-color` + `color` for status-pill color changes
+  (`.task-event-status[data-status=...]`). 220ms on the same ease curve.
+
+See `ui/src/components/chat/TaskEventMessage.css` for the canonical recipe.
+Reach for this *only* when the element is driven by a data-attribute state
+flip. If the trigger is the user's pointer, re-read the motion rules above.
 
 ---
 
