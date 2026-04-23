@@ -10,7 +10,9 @@ use super::{default_model_for_runtime, AgentCommands};
 
 fn find_agent_id_by_name(agents: &[serde_json::Value], name: &str) -> Option<String> {
     agents.iter().find_map(|agent| {
-        (agent.get("name").and_then(|v| v.as_str()) == Some(name))
+        let matches = agent.get("name").and_then(|v| v.as_str()) == Some(name)
+            || agent.get("display_name").and_then(|v| v.as_str()) == Some(name);
+        matches
             .then(|| agent.get("id").and_then(|v| v.as_str()).map(str::to_string))
             .flatten()
     })
@@ -31,25 +33,25 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 model
             };
             let client = chorus::utils::http::client();
+            let mut payload = serde_json::json!({
+                "display_name": name,
+                "runtime": runtime,
+                "model": model,
+            });
+            if let Some(desc) = description {
+                payload["description"] = serde_json::json!(desc);
+            }
             let res = client
                 .post(format!("{server_url}/api/agents"))
-                .json(&serde_json::json!({
-                    "display_name": name,
-                    "description": description,
-                    "runtime": runtime,
-                    "model": model,
-                }))
+                .json(&payload)
                 .send()
                 .await?;
             let status = res.status();
-            let data: serde_json::Value = res.json().await?;
             if !status.is_success() {
-                let msg = data
-                    .get("error")
-                    .and_then(|e| e.as_str())
-                    .unwrap_or("unknown error");
-                anyhow::bail!("server returned {status}: {msg}");
+                let body = res.text().await.unwrap_or_default();
+                anyhow::bail!("server returned {status}: {body}");
             }
+            let data: serde_json::Value = res.json().await?;
             let agent_name = data.get("name").and_then(|v| v.as_str()).unwrap_or("?");
             tracing::info!("Agent @{agent_name} created (runtime: {runtime}, model: {model}).");
             Ok(())
