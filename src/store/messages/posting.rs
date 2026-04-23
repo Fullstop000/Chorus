@@ -113,17 +113,17 @@ impl Store {
     /// Returns the [`InsertedMessage`] so callers can emit the stream event
     /// after the outer transaction commits.
     pub(crate) fn create_system_message_tx(
-        tx: &rusqlite::Transaction<'_>,
+        tx: &Transaction<'_>,
         channel_id: &str,
         content: &str,
-    ) -> anyhow::Result<crate::store::messages::types::InsertedMessage> {
+    ) -> Result<InsertedMessage> {
         let channel = Self::get_channel_by_id_inner(tx, channel_id)?
-            .ok_or_else(|| anyhow::anyhow!("channel not found by id"))?;
+            .ok_or_else(|| anyhow!("channel not found by id"))?;
         Self::insert_message_tx(
             tx,
             &channel,
             "system",
-            crate::store::messages::types::SenderType::System,
+            SenderType::System,
             content,
             &[],
             None,
@@ -138,18 +138,18 @@ impl Store {
     /// the DB rows are the source of truth.
     pub(crate) fn emit_system_stream_events(
         &self,
-        channel: &crate::store::channels::Channel,
-        pending: Vec<(crate::store::messages::types::InsertedMessage, String)>,
-    ) -> anyhow::Result<()> {
+        channel: &Channel,
+        pending: Vec<(InsertedMessage, String)>,
+    ) -> Result<()> {
         for (inserted, content) in pending {
             let payload = inserted.to_event_payload(
                 channel.id.as_str(),
                 channel.channel_type.as_api_str(),
                 "system",
-                crate::store::messages::types::SenderType::System.as_str(),
+                SenderType::System.as_str(),
                 &content,
             );
-            let stream_event = crate::store::stream::StreamEvent::new(
+            let stream_event = StreamEvent::new(
                 channel.id.clone(),
                 inserted.seq,
                 serde_json::to_value(payload)?,
@@ -245,14 +245,49 @@ mod tests {
             inserted.id
         };
 
-        let content: String = store
+        // Verify ALL invariants the helper owns, not just content.
+        let (content, sender_type, sender_name, seq): (String, String, String, i64) = store
             .conn_for_test()
             .query_row(
-                "SELECT content FROM messages WHERE id = ?1",
+                "SELECT content, sender_type, sender_name, seq FROM messages WHERE id = ?1",
                 params![msg_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert_eq!(content, "hello");
+        assert_eq!(sender_type, "system");
+        assert_eq!(sender_name, "system");
+        assert_eq!(seq, 1);
+    }
+
+    #[test]
+    fn create_system_message_tx_respects_caller_rollback() {
+        // The whole point of a tx-scoped API: if the caller rolls back, the
+        // insert must not persist. Pins the "no inner transaction" invariant.
+        use rusqlite::OptionalExtension;
+
+        let store = make_store();
+        let channel_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+
+        let msg_id = {
+            let mut conn = store.conn_for_test();
+            let tx = conn.transaction().unwrap();
+            let inserted = Store::create_system_message_tx(&tx, &channel_id, "discard me").unwrap();
+            // Drop the tx without committing — implicit rollback.
+            drop(tx);
+            inserted.id
+        };
+
+        let row: Option<String> = store
+            .conn_for_test()
+            .query_row("SELECT id FROM messages WHERE id = ?1", params![msg_id], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert!(
+            row.is_none(),
+            "tx-scoped insert must not persist when caller rolls back"
+        );
     }
 }
