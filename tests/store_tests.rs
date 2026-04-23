@@ -2189,3 +2189,157 @@ fn dismiss_task_proposal_rejects_non_pending() {
         "expected 'not pending' in: {err}"
     );
 }
+
+#[test]
+fn accept_task_proposal_creates_task_claims_it_and_marks_accepted() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "fix login")
+        .unwrap();
+
+    let accepted = store.accept_task_proposal(&p.id, "alice").unwrap();
+    assert_eq!(accepted.task_number, 1);
+    assert!(!accepted.sub_channel_id.is_empty());
+
+    // Proposal row updated.
+    let got = store.get_task_proposal_by_id(&p.id).unwrap().unwrap();
+    assert_eq!(got.status, TaskProposalStatus::Accepted);
+    assert_eq!(got.accepted_task_number, Some(1));
+    assert_eq!(got.resolved_by.as_deref(), Some("alice"));
+
+    // Task exists and is claimed by the proposer agent.
+    let tasks = store.get_tasks("eng", None).unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].task_number, 1);
+    assert_eq!(tasks[0].title, "fix login");
+    assert_eq!(tasks[0].claimed_by_name.as_deref(), Some("claude"));
+
+    // Sub-channel members include both proposer agent and accepter human.
+    let conn = store.conn_for_test();
+    let members: Vec<String> = conn
+        .prepare(
+            "SELECT member_name FROM channel_members \
+             WHERE channel_id = ?1 ORDER BY member_name",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![got.accepted_sub_channel_id.unwrap()], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(members, vec!["alice".to_string(), "claude".to_string()]);
+}
+
+#[test]
+fn accept_task_proposal_does_not_emit_created_task_event() {
+    // Scope 1b: proposal card already shows creation — skip the ambient
+    // task_event so we don't double-signal. Only the initial
+    // kind="task_proposal" message exists for this task before acceptance.
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "fix login")
+        .unwrap();
+    store.accept_task_proposal(&p.id, "alice").unwrap();
+
+    // Count messages in the PARENT channel with action=created or
+    // action=claimed. Expected: 0. (The proposal card is
+    // kind=task_proposal, not action=created.)
+    let conn = store.conn_for_test();
+    let mut stmt = conn
+        .prepare(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system'",
+        )
+        .unwrap();
+    let kinds_and_actions: Vec<(Option<String>, Option<String>)> = stmt
+        .query_map(rusqlite::params![channel_id], |r| {
+            let content: String = r.get(0)?;
+            let v: serde_json::Value = serde_json::from_str(&content).unwrap_or_default();
+            Ok((
+                v.get("kind").and_then(|k| k.as_str()).map(String::from),
+                v.get("action").and_then(|k| k.as_str()).map(String::from),
+            ))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    for (kind, action) in &kinds_and_actions {
+        assert_ne!(
+            action.as_deref(),
+            Some("created"),
+            "no `action=created` task_event expected; got kinds={kinds_and_actions:?}"
+        );
+        assert_ne!(
+            action.as_deref(),
+            Some("claimed"),
+            "no `action=claimed` task_event expected; got kinds={kinds_and_actions:?}"
+        );
+        assert!(
+            kind.as_deref() == Some("task_proposal") || kind.is_none(),
+            "unexpected kind {kind:?}"
+        );
+    }
+}
+
+#[test]
+fn accept_task_proposal_is_idempotent_rejected_after_first_accept() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "t")
+        .unwrap();
+    store.accept_task_proposal(&p.id, "alice").unwrap();
+    let err = store.accept_task_proposal(&p.id, "alice").unwrap_err();
+    assert!(
+        format!("{err}").contains("not pending"),
+        "expected 'not pending' in: {err}"
+    );
+}

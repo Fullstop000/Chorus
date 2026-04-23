@@ -120,6 +120,18 @@ impl TaskProposal {
     }
 }
 
+/// Result of a successful `accept_task_proposal`. The caller (HTTP handler)
+/// returns this to the client so the UI can deep-link to the sub-channel.
+/// Task 8 will add a `kickoff_message_id` field so the HTTP handler can
+/// explicitly wake the proposer agent — Chorus does NOT auto-wake on new
+/// messages.
+#[derive(Debug, Clone, Serialize)]
+pub struct AcceptedTaskProposal {
+    pub task_number: i64,
+    pub sub_channel_id: String,
+    pub sub_channel_name: String,
+}
+
 impl Store {
     /// Create a new pending task proposal and post a companion
     /// `kind: "task_proposal"` chat message into the parent channel so the
@@ -228,5 +240,117 @@ impl Store {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// Flip a pending proposal to accepted, creating the backing task +
+    /// sub-channel in the same transaction. Auto-claims the task to the
+    /// proposer agent. Enrolls the accepter human in the sub-channel so
+    /// they can follow along. Does NOT emit a `task_event` create/claim
+    /// pair — the proposal card already carries that signal (scope 1b).
+    pub fn accept_task_proposal(
+        &self,
+        id: &str,
+        accepter: &str,
+    ) -> Result<AcceptedTaskProposal> {
+        use rusqlite::TransactionBehavior;
+
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Load the proposal under the write lock so a concurrent accept
+        // can't race us. Also carry `created_at` so the accepted-snapshot
+        // below emits the true proposal time for `proposedAt`, not the
+        // resolve time.
+        let row = tx
+            .query_row(
+                "SELECT channel_id, proposed_by, title, status, created_at \
+                 FROM task_proposals WHERE id = ?1",
+                params![id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((channel_id, proposed_by, title, status_str, _proposed_at)) = row else {
+            return Err(anyhow!("task proposal not found: {id}"));
+        };
+        // `_proposed_at` is read so Task 9 can attach it to the resolution
+        // snapshot's `proposedAt` field. Kept under the write lock read for
+        // free and named with a leading underscore until then.
+        if status_str != "pending" {
+            return Err(anyhow!("task proposal {id} is not pending"));
+        }
+
+        let channel = Self::get_channel_by_id_inner(&tx, &channel_id)?
+            .ok_or_else(|| anyhow!("proposal's channel vanished: {channel_id}"))?;
+
+        // Pick task_number via MAX+1 under the write lock, same pattern
+        // as `create_tasks`.
+        let max_num: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(task_number), 0) FROM tasks WHERE channel_id = ?1",
+            params![channel.id],
+            |r| r.get(0),
+        )?;
+        let task_number = max_num + 1;
+
+        // Proposer is always an agent (humans don't use the tool); resolve
+        // its sender type via the existing helper that handles both kinds.
+        let proposer_type = crate::store::resolve_sender_type_inner(&tx, &proposed_by)?;
+
+        let (task_id, sub_channel_id, sub_channel_name) =
+            Self::insert_task_and_subchannel_tx(
+                &tx,
+                &channel,
+                &proposed_by,
+                proposer_type,
+                &title,
+                task_number,
+            )?;
+
+        // Auto-claim to the proposer (move status Todo → InProgress) and
+        // set claimed_by. Mirrors the update_tasks_claim write but without
+        // the task_event emission.
+        tx.execute(
+            "UPDATE tasks SET claimed_by = ?1, status = 'in_progress' \
+             WHERE id = ?2",
+            params![proposed_by, task_id],
+        )?;
+
+        // Enroll the accepter human in the sub-channel so they can follow
+        // the conversation (the agent was enrolled by
+        // insert_task_and_subchannel_tx as the creator).
+        let accepter_type = crate::store::resolve_sender_type_inner(&tx, accepter)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO channel_members \
+             (channel_id, member_name, member_type, last_read_seq) \
+             VALUES (?1, ?2, ?3, 0)",
+            params![sub_channel_id, accepter, accepter_type.as_str()],
+        )?;
+
+        // Flip the proposal status.
+        let now = chrono::Utc::now().to_rfc3339();
+        tx.execute(
+            "UPDATE task_proposals \
+             SET status = 'accepted', accepted_task_number = ?1, \
+                 accepted_sub_channel_id = ?2, resolved_by = ?3, \
+                 resolved_at = ?4 \
+             WHERE id = ?5",
+            params![task_number, sub_channel_id, accepter, now, id],
+        )?;
+
+        tx.commit()?;
+        drop(conn);
+
+        Ok(AcceptedTaskProposal {
+            task_number,
+            sub_channel_id,
+            sub_channel_name,
+        })
     }
 }
