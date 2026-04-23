@@ -213,3 +213,23 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
     ON agent_sessions(agent_id, is_active);
+
+-- Task proposals. An agent proposes a task via the `propose_task` MCP tool;
+-- the row lives here, and a kind="task_proposal" chat message in the parent
+-- channel renders as an interactive card. On accept, the task is created via
+-- the shared `insert_task_and_subchannel_tx` helper and this row records the
+-- resulting task number + sub-channel for deep-linking.
+CREATE TABLE IF NOT EXISTS task_proposals (
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    proposed_by TEXT NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'dismissed')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    accepted_task_number INTEGER,
+    accepted_sub_channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL,
+    resolved_by TEXT,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_task_proposals_channel_status
+    ON task_proposals(channel_id, status);

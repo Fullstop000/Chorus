@@ -16,6 +16,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_drop_agents_status_and_session_id_columns(conn)?;
     migrate_add_parent_channel_id(conn)?;
     migrate_add_task_sub_channel_id(conn)?;
+    migrate_create_task_proposals_table(conn)?;
     Ok(())
 }
 
@@ -398,6 +399,29 @@ fn migrate_drop_agents_status_and_session_id_columns(conn: &Connection) -> Resul
          PRAGMA foreign_keys=ON;",
     )?;
     tracing::info!("migration: dropped agents.status and agents.session_id columns");
+    Ok(())
+}
+
+fn migrate_create_task_proposals_table(conn: &Connection) -> Result<()> {
+    // Fresh DBs get the table from schema.sql. For DBs opened before
+    // this feature landed, create it here. Idempotent via IF NOT EXISTS.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS task_proposals (
+            id TEXT PRIMARY KEY,
+            channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+            proposed_by TEXT NOT NULL,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'dismissed')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            accepted_task_number INTEGER,
+            accepted_sub_channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL,
+            resolved_by TEXT,
+            resolved_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_task_proposals_channel_status
+            ON task_proposals(channel_id, status);",
+    )?;
+    tracing::info!("task_proposals table ensured");
     Ok(())
 }
 

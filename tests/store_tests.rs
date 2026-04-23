@@ -1972,3 +1972,49 @@ fn task_proposal_status_round_trips_through_str() {
     }
     assert_eq!(None, TaskProposalStatus::from_status_str("garbage"));
 }
+
+#[test]
+fn task_proposals_table_exists_after_open() {
+    let (store, _dir) = make_store();
+    let conn = store.conn_for_test();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type='table' AND name='task_proposals'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "task_proposals table must be created on open");
+}
+
+#[test]
+fn task_proposals_table_has_expected_columns() {
+    let (store, _dir) = make_store();
+    let conn = store.conn_for_test();
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info('task_proposals')")
+        .unwrap();
+    let names: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    for expected in [
+        "id",
+        "channel_id",
+        "proposed_by",
+        "title",
+        "status",
+        "created_at",
+        "accepted_task_number",
+        "accepted_sub_channel_id",
+        "resolved_by",
+        "resolved_at",
+    ] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "column {expected} missing: got {names:?}"
+        );
+    }
+}
