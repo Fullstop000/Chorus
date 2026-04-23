@@ -7,6 +7,7 @@ pub mod messages;
 pub mod migrations;
 pub mod sessions;
 pub mod stream;
+pub mod task_proposals;
 pub mod tasks;
 pub mod teams;
 pub mod trace_writer;

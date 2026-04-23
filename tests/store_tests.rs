@@ -1954,3 +1954,21 @@ fn get_unread_summary_excludes_archived_task_sub_channels() {
         after
     );
 }
+
+#[test]
+fn task_proposal_status_round_trips_through_str() {
+    use chorus::store::task_proposals::TaskProposalStatus;
+    for status in [
+        TaskProposalStatus::Pending,
+        TaskProposalStatus::Accepted,
+        TaskProposalStatus::Dismissed,
+    ] {
+        let s = status.as_str();
+        assert_eq!(
+            Some(status),
+            TaskProposalStatus::from_status_str(s),
+            "status {s:?} failed to round-trip"
+        );
+    }
+    assert_eq!(None, TaskProposalStatus::from_status_str("garbage"));
+}
