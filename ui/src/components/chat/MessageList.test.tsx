@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MessageList } from "./MessageList";
 import type { HistoryMessage } from "../../data/chat";
 
@@ -11,6 +12,7 @@ vi.mock("../../store", () => {
   const state = {
     advanceConversationLastReadSeq: () => {},
     setCurrentTaskDetail: () => {},
+    currentUser: "alice",
   };
   return {
     useStore: (selector?: (s: typeof state) => unknown) =>
@@ -87,5 +89,67 @@ describe("MessageList — task_event rendering", () => {
       .length;
     expect(occurrences).toBe(1);
     expect(html).toContain('data-state="in_progress"');
+  });
+
+  it("renders a single task-proposal card when multiple snapshots for same proposalId exist", () => {
+    const msgs: HistoryMessage[] = [
+      {
+        id: "m1",
+        seq: 1,
+        content: JSON.stringify({
+          kind: "task_proposal",
+          proposalId: "p1",
+          status: "pending",
+          title: "fix login",
+          proposedBy: "claude",
+          proposedAt: "2026-04-23T10:00:00Z",
+          taskNumber: null,
+          subChannelId: null,
+          subChannelName: null,
+        }),
+        senderName: "system",
+        senderType: "system",
+        createdAt: "2026-04-23T10:00:00Z",
+        senderDeleted: false,
+      },
+      {
+        id: "m2",
+        seq: 2,
+        content: JSON.stringify({
+          kind: "task_proposal",
+          proposalId: "p1",
+          status: "accepted",
+          title: "fix login",
+          proposedBy: "claude",
+          proposedAt: "2026-04-23T10:00:00Z",
+          taskNumber: 7,
+          subChannelId: "s",
+          subChannelName: "eng__task-7",
+        }),
+        senderName: "system",
+        senderType: "system",
+        createdAt: "2026-04-23T10:05:00Z",
+        senderDeleted: false,
+      },
+    ];
+    // TaskProposalCardBoundary calls useMutation (accept/dismiss), which
+    // requires a real QueryClientProvider — the partial-mock above only
+    // overrides useQueryClient, not useMutation.
+    const client = new QueryClient();
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <MessageList
+          targetKey="eng"
+          conversationId="cid"
+          messages={msgs}
+          loading={false}
+          lastReadSeq={0}
+          currentUser="alice"
+        />
+      </QueryClientProvider>,
+    );
+    const occ = (html.match(/data-testid="task-proposal-p1"/g) ?? []).length;
+    expect(occ).toBe(1);
+    expect(html).toContain('data-status="accepted"');
   });
 });

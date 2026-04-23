@@ -11,6 +11,15 @@ import { useStore } from "../../store";
 import { useTraceStore } from "../../store/traceStore";
 import { useTaskEventLog } from "../../hooks/useTaskEventLog";
 import { TaskEventMessage } from "./TaskEventMessage";
+import {
+  useTaskProposalLog,
+  type TaskProposalState,
+} from "../../hooks/useTaskProposalLog";
+import { TaskProposalMessage } from "./TaskProposalMessage";
+import {
+  useAcceptTaskProposal,
+  useDismissTaskProposal,
+} from "../../data/taskProposals";
 import "./MessageList.css";
 import type { RefObject } from "react";
 
@@ -91,6 +100,7 @@ export function MessageList({
   const queryKey = historyQueryKeys.history(conversationId ?? "");
   const { advanceConversationLastReadSeq } = useStore();
   const taskEventIndex = useTaskEventLog(messages);
+  const taskProposalIndex = useTaskProposalLog(messages);
   const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
 
   // ── Sync refs with props ──
@@ -334,6 +344,42 @@ export function MessageList({
         <div className="message-list-empty">{emptyLabel}</div>
       )}
       {messages.map((msg, i) => {
+        // Task-proposal system messages short-circuit to the TaskProposalMessage
+        // renderer. Suppress repeated snapshots for the same proposal so we
+        // render one card per proposal, anchored at its latest snapshot. The
+        // hook already parsed the payload once when building
+        // `taskProposalIndex`; the render loop just asks "does this seq belong
+        // to a proposal?" — O(1), no JSON re-parse. Sits BEFORE the task_event
+        // branch because a task_proposal snapshot is not a task_event.
+        const proposalId = taskProposalIndex.proposalIdBySeq.get(msg.seq);
+        if (msg.senderType === "system" && proposalId !== undefined) {
+          const state = taskProposalIndex.byProposalId.get(proposalId);
+          const isLatestForProposal =
+            state !== undefined && state.latestSeq === msg.seq;
+          // Same wrapper discipline as task_event: keep the visibility
+          // wrapper + unread anchor even when we suppress the card.
+          return (
+            <div
+              key={msg.id}
+              ref={(el) => {
+                if (el) messageRowRefs.current.set(msg.id, el);
+                else messageRowRefs.current.delete(msg.id);
+              }}
+            >
+              <div
+                ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
+              />
+              {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
+              {isLatestForProposal && state && (
+                <TaskProposalCardBoundary
+                  state={state}
+                  conversationId={conversationId}
+                />
+              )}
+            </div>
+          );
+        }
+
         // Task-event system messages short-circuit to the TaskEventMessage
         // renderer. Suppress repeated events for the same task so we render
         // one card per task, anchored at its latest event. The hook already
@@ -454,5 +500,39 @@ export function MessageList({
         />
       )}
     </div>
+  );
+}
+
+// Keeps the inline JSX tidy: wires the mutation hooks to TaskProposalMessage
+// and pulls currentUser off the store so callers don't have to thread it in.
+function TaskProposalCardBoundary({
+  state,
+  conversationId,
+}: {
+  state: TaskProposalState;
+  conversationId: string | null;
+}) {
+  const currentUser = useStore((s) => s.currentUser);
+  const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
+  const accept = useAcceptTaskProposal(state.proposalId);
+  const dismiss = useDismissTaskProposal(state.proposalId);
+
+  return (
+    <TaskProposalMessage
+      state={state}
+      busy={accept.isPending || dismiss.isPending}
+      onAccept={() => accept.mutate({ accepter: currentUser })}
+      onDismiss={() => dismiss.mutate({ resolver: currentUser })}
+      onOpenSubChannel={() => {
+        if (state.taskNumber !== null && conversationId) {
+          setCurrentTaskDetail({
+            parentChannelId: conversationId,
+            parentSlug: "",
+            taskNumber: state.taskNumber,
+            returnToTab: "chat",
+          });
+        }
+      }}
+    />
   );
 }
