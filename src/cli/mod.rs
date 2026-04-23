@@ -19,6 +19,20 @@ use clap::{Parser, Subcommand, ValueEnum};
 use chorus::agent::AgentRuntime;
 use chorus::config::ChorusConfig;
 
+/// An expected user error that should be printed cleanly without a backtrace.
+/// The Chorus CLI enables `RUST_BACKTRACE=1` by default, so `anyhow::bail!`
+/// would emit a full backtrace for mundane mistakes like forgetting `--yes`.
+#[derive(Debug)]
+pub struct UserError(pub String);
+
+impl std::fmt::Display for UserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for UserError {}
+
 #[derive(Parser)]
 #[command(name = "chorus", about = "Local AI agent collaboration platform")]
 struct Cli {

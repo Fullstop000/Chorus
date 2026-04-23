@@ -11,8 +11,8 @@ pub async fn run(
     server_url: &str,
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
-    if normalized.contains(' ') {
-        anyhow::bail!("channel name cannot contain spaces: {normalized}");
+    if !normalized.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+        anyhow::bail!("channel name can only contain lowercase letters, numbers, hyphens, and underscores: {normalized}");
     }
     let description = description.unwrap_or_default();
     let client = super::http::client();

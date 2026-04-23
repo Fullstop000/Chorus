@@ -271,33 +271,6 @@ fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) 
     }
 }
 
-/// Run `<name> --version` and return the extracted dotted version, or `None`
-/// if the binary is missing or the command fails. Some tools print their
-/// version to stderr (historically `python --version` did), so we fall
-/// back to stderr if stdout is empty.
-#[allow(dead_code)]
-fn check_tool(name: &str) -> Option<String> {
-    let output = Command::new(name)
-        .arg("--version")
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let source = if stdout.trim().is_empty() {
-        stderr
-    } else {
-        stdout
-    };
-    extract_version(&source).or_else(|| {
-        source
-            .lines()
-            .next()
-            .map(|l| l.trim().to_string())
-            .filter(|s| !s.is_empty())
-    })
-}
-
 /// Async version of `check_tool` with a 5-second timeout.
 async fn check_tool_async(name: &str) -> Option<String> {
     let output = tokio::time::timeout(
@@ -349,13 +322,16 @@ async fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -
     // changes between test runs are reflected.
     let acp = match acp {
         AcpStatus::AdapterFound(bin) | AcpStatus::AdapterMissing(bin) => {
-            if TokioCommand::new(bin)
-                .arg("--version")
-                .output()
-                .await
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-            {
+            let found = tokio::time::timeout(
+                Duration::from_secs(5),
+                TokioCommand::new(bin).arg("--version").output(),
+            )
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+            if found {
                 AcpStatus::AdapterFound(bin)
             } else {
                 AcpStatus::AdapterMissing(bin)
@@ -721,9 +697,9 @@ pub async fn run(
 mod tests {
     use super::*;
 
-    #[test]
-    fn check_tool_returns_none_for_missing_binary() {
-        assert!(check_tool("definitely-not-a-real-binary-xyzzy").is_none());
+    #[tokio::test]
+    async fn check_tool_returns_none_for_missing_binary() {
+        assert!(check_tool_async("definitely-not-a-real-binary-xyzzy").await.is_none());
     }
 
     #[test]

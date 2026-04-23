@@ -128,8 +128,8 @@ pub async fn handle_create_channel(
     if name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
-    if name.contains(' ') {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "channel name cannot contain spaces"));
+    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+        return Err(app_err!(StatusCode::BAD_REQUEST, "channel name can only contain lowercase letters, numbers, hyphens, and underscores"));
     }
     let description = if req.description.trim().is_empty() {
         None
@@ -234,8 +234,8 @@ pub async fn handle_update_channel(
     if name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
-    if name.contains(' ') {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "channel name cannot contain spaces"));
+    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+        return Err(app_err!(StatusCode::BAD_REQUEST, "channel name can only contain lowercase letters, numbers, hyphens, and underscores"));
     }
     let description = if req.description.trim().is_empty() {
         None

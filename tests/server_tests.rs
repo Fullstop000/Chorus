@@ -3017,24 +3017,30 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
 
 
 #[tokio::test]
-async fn create_channel_rejects_spaces_in_name() {
+async fn create_channel_rejects_invalid_names() {
     let (store, app) = setup();
     store.create_human("alice").unwrap();
 
-    let req = serde_json::json!({ "name": "space channel", "description": "" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/channels")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    for bad_name in ["space channel", "channel/name", "channel?", "emoji🎉"] {
+        let req = serde_json::json!({ "name": bad_name, "description": "" });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/channels")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for channel name: {bad_name}"
+        );
+    }
 }
 
 #[tokio::test]
