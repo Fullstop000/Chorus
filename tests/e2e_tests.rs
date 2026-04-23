@@ -589,3 +589,85 @@ async fn batched_create_tasks_emits_one_event_per_task() {
     assert_eq!(events[1]["title"], "b");
     assert_eq!(events[2]["title"], "c");
 }
+
+#[tokio::test]
+async fn http_accept_task_proposal_returns_task_coords() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "fix login")
+        .unwrap();
+
+    let resp = client
+        .post(format!("{url}/api/task-proposals/{}/accept", p.id))
+        .json(&serde_json::json!({ "accepter": "alice" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["taskNumber"], 1);
+    assert!(body["subChannelId"].is_string());
+    assert!(body["subChannelName"].as_str().unwrap().ends_with("__task-1"));
+}
+
+#[tokio::test]
+async fn http_dismiss_task_proposal_returns_204() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "t")
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    let resp = client
+        .post(format!("{url}/api/task-proposals/{}/dismiss", p.id))
+        .json(&serde_json::json!({ "resolver": "alice" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}
+
+#[tokio::test]
+async fn http_get_task_proposal_returns_current_state() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "t")
+        .unwrap();
+
+    let resp = client
+        .get(format!("{url}/api/task-proposals/{}", p.id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["id"], p.id);
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["title"], "t");
+}

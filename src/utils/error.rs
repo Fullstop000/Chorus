@@ -43,6 +43,8 @@ pub enum AppErrorCode {
     ChannelOperationUnsupported,
     /// Sender is not a channel member — show "join channel" guidance.
     MessageNotAMember,
+    /// The proposal target for an accept/dismiss is no longer pending.
+    TaskProposalAlreadyResolved,
 }
 
 impl AppErrorCode {
@@ -56,6 +58,7 @@ impl AppErrorCode {
             Self::AgentDeleteWorkspaceCleanupFailed => StatusCode::INTERNAL_SERVER_ERROR,
             Self::ChannelOperationUnsupported => StatusCode::BAD_REQUEST,
             Self::MessageNotAMember => StatusCode::FORBIDDEN,
+            Self::TaskProposalAlreadyResolved => StatusCode::CONFLICT,
         }
     }
 }
@@ -302,6 +305,7 @@ mod tests {
             AppErrorCode::AgentDeleteWorkspaceCleanupFailed,
             AppErrorCode::ChannelOperationUnsupported,
             AppErrorCode::MessageNotAMember,
+            AppErrorCode::TaskProposalAlreadyResolved,
         ];
         for code in codes {
             let serialised = serde_json::to_string(&code).unwrap();

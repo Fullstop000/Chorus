@@ -186,6 +186,18 @@ pub fn build_router_with_services(
         )
         .route("/templates", get(handle_list_templates))
         .route("/templates/launch-trio", post(handle_launch_trio))
+        .route(
+            "/task-proposals/{id}",
+            get(handlers::task_proposals::get_task_proposal),
+        )
+        .route(
+            "/task-proposals/{id}/accept",
+            post(handlers::task_proposals::accept_task_proposal),
+        )
+        .route(
+            "/task-proposals/{id}/dismiss",
+            post(handlers::task_proposals::dismiss_task_proposal),
+        )
         .route("/server-info", get(handle_ui_server_info))
         .route("/system-info", get(handle_system_info))
         .route("/logs", get(handle_logs))

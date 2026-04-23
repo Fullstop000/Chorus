@@ -5,6 +5,7 @@ pub mod dto;
 pub mod messages;
 pub mod path_params;
 pub mod server_info;
+pub mod task_proposals;
 pub mod tasks;
 pub mod teams;
 pub mod templates;
