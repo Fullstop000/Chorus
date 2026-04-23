@@ -95,6 +95,20 @@ They are intentionally kept in sync but exist for different call paths.
 
 **Task sub-channels.** Every task owns a child channel (`ChannelType::Task`, `parent_channel_id` FK). Created when the task is created; the creator is its first member. Claim/unclaim syncs membership. Transitioning to `Done` archives the sub-channel. Task sub-channels are excluded from default channel listings; reach them via the parent task board and the task detail view (a full-panel view backed by Zustand's `currentTaskDetail` state). Legacy tasks from before 2026-04-22 are backfilled on migration.
 
+### Task event system messages
+
+Task mutations in `src/store/tasks/mod.rs` post a `sender_type = 'system'`
+message to the parent channel for every successful `create` / `claim` /
+`unclaim` / status change. The `content` column carries a JSON payload with
+`kind: "task_event"` and a camelCase schema (`taskNumber`, `prevStatus`,
+`nextStatus`, `claimedBy`, ...). The frontend renders these via
+`TaskEventMessage` in the chat feed; the bridge layer formats them as a
+one-line human sentence before handing them to agents (see
+`src/bridge/format.rs::format_message_for_agent`).
+
+The task-row write and the event-message insert share the same `tx`, so a
+failure on either rolls both back.
+
 ### Sender Type Resolution (Security Boundary)
 
 **Never allow clients to forge `sender_type='system'` messages.**
@@ -108,7 +122,7 @@ sender_type_for_actor()
 
 - `lookup_sender_type` only queries `agents` and `humans` tables
 - `System` is never returned from this lookup
-- `create_system_message` is only callable internally (templates.rs)
+- `create_system_message` is internal-only. Current callers: channel-kickoff in `templates.rs` and the task mutation hooks in `src/store/tasks/mod.rs` (create / claim / unclaim / status change). Clients cannot forge `sender_type = 'system'` — the HTTP surface has no endpoint that accepts it.
 
 ---
 
