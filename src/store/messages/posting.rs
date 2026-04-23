@@ -104,38 +104,74 @@ impl Store {
         Ok(inserted.id)
     }
 
+    /// Insert a `sender_type = 'system'` message inside an existing transaction.
+    /// Callers doing multi-statement mutations (e.g. task claim → status flip
+    /// → event message) wrap the whole sequence in their own transaction and
+    /// call this helper. Use the public [`Store::create_system_message`] for
+    /// standalone posts.
+    ///
+    /// Returns the [`InsertedMessage`] so callers can emit the stream event
+    /// after the outer transaction commits.
+    pub(crate) fn create_system_message_tx(
+        tx: &rusqlite::Transaction<'_>,
+        channel_id: &str,
+        content: &str,
+    ) -> anyhow::Result<crate::store::messages::types::InsertedMessage> {
+        let channel = Self::get_channel_by_id_inner(tx, channel_id)?
+            .ok_or_else(|| anyhow::anyhow!("channel not found by id"))?;
+        Self::insert_message_tx(
+            tx,
+            &channel,
+            "system",
+            crate::store::messages::types::SenderType::System,
+            content,
+            &[],
+            None,
+            None,
+        )
+    }
+
+    /// Emit `message.created` stream events for system messages that were
+    /// inserted via `create_system_message_tx` and committed by the caller.
+    /// Each `(inserted, content)` tuple produced inside the transaction maps
+    /// to one WebSocket event. Best-effort: send errors are dropped because
+    /// the DB rows are the source of truth.
+    pub(crate) fn emit_system_stream_events(
+        &self,
+        channel: &crate::store::channels::Channel,
+        pending: Vec<(crate::store::messages::types::InsertedMessage, String)>,
+    ) -> anyhow::Result<()> {
+        for (inserted, content) in pending {
+            let payload = inserted.to_event_payload(
+                channel.id.as_str(),
+                channel.channel_type.as_api_str(),
+                "system",
+                crate::store::messages::types::SenderType::System.as_str(),
+                &content,
+            );
+            let stream_event = crate::store::stream::StreamEvent::new(
+                channel.id.clone(),
+                inserted.seq,
+                serde_json::to_value(payload)?,
+            );
+            let _ = self.stream_tx.send(stream_event);
+        }
+        Ok(())
+    }
+
     /// Post a server-authored message into a channel.
     pub fn create_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
             .ok_or_else(|| anyhow!("channel not found by id"))?;
-        let inserted = Self::insert_message_tx(
-            &tx,
-            &channel,
-            "system",
-            SenderType::System,
-            content,
-            &[],
-            None,
-            None,
-        )?;
+        let inserted = Self::create_system_message_tx(&tx, channel_id, content)?;
+        let message_id = inserted.id.clone();
         tx.commit()?;
+        drop(conn); // release the guard before fanout to avoid holding the mutex
 
-        let payload = inserted.to_event_payload(
-            channel.id.as_str(),
-            channel.channel_type.as_api_str(),
-            "system",
-            SenderType::System.as_str(),
-            content,
-        );
-        let stream_event = StreamEvent::new(
-            channel.id.clone(),
-            inserted.seq,
-            serde_json::to_value(payload)?,
-        );
-        let _ = self.stream_tx.send(stream_event);
-        Ok(inserted.id)
+        self.emit_system_stream_events(&channel, vec![(inserted, content.to_string())])?;
+        Ok(message_id)
     }
 
     pub fn create_message(&self, message: CreateMessage<'_>) -> Result<String> {
@@ -179,5 +215,44 @@ impl Store {
             let _ = self.stream_tx.send(stream_event);
         }
         Ok(inserted.id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::store::channels::ChannelType;
+    use crate::store::Store;
+    use rusqlite::params;
+
+    fn make_store() -> Store {
+        // `Store::open` takes `&str`; in-memory matches what `tests/e2e_tests.rs`
+        // does for the test harness and avoids any path-to-string juggling.
+        Store::open(":memory:").unwrap()
+    }
+
+    #[test]
+    fn create_system_message_tx_inserts_within_caller_transaction() {
+        let store = make_store();
+        let channel_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+
+        let msg_id = {
+            let mut conn = store.conn_for_test();
+            let tx = conn.transaction().unwrap();
+            let inserted = Store::create_system_message_tx(&tx, &channel_id, "hello").unwrap();
+            tx.commit().unwrap();
+            inserted.id
+        };
+
+        let content: String = store
+            .conn_for_test()
+            .query_row(
+                "SELECT content FROM messages WHERE id = ?1",
+                params![msg_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(content, "hello");
     }
 }
