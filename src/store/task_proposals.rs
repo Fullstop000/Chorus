@@ -317,8 +317,8 @@ impl Store {
         // set claimed_by. Mirrors the update_tasks_claim write but without
         // the task_event emission.
         tx.execute(
-            "UPDATE tasks SET claimed_by = ?1, status = 'in_progress' \
-             WHERE id = ?2",
+            "UPDATE tasks SET claimed_by = ?1, status = 'in_progress', \
+             updated_at = datetime('now') WHERE id = ?2",
             params![proposed_by, task_id],
         )?;
 
