@@ -211,7 +211,7 @@ impl Store {
                 claimed_by: None,
             };
             let content = payload.to_json_string()?;
-            let inserted = Self::create_system_message_tx(&tx, &channel.id, &content)?;
+            let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
             pending_events.push((inserted, content));
 
             result.push(TaskInfo {
@@ -392,7 +392,7 @@ impl Store {
                         claimed_by: Some(claimer_name.to_string()),
                     };
                     let content = payload.to_json_string()?;
-                    let inserted = Self::create_system_message_tx(&tx, &channel.id, &content)?;
+                    let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
                     pending_events.push((inserted, content));
                     results.push(ClaimResult {
                         task_number: tn,
@@ -485,7 +485,7 @@ impl Store {
             claimed_by: None,
         };
         let content = payload.to_json_string()?;
-        let inserted = Self::create_system_message_tx(&tx, &channel.id, &content)?;
+        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
         tx.commit()?;
         drop(conn);
         self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
@@ -552,7 +552,7 @@ impl Store {
             claimed_by: claimed_by.clone(),
         };
         let content = payload.to_json_string()?;
-        let inserted = Self::create_system_message_tx(&tx, &channel.id, &content)?;
+        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
 
         // `Done` is terminal (`can_transition_to` has no outbound edges from
         // `Done`), so archiving here is safe — there is no path back that would

@@ -110,18 +110,20 @@ impl Store {
     /// call this helper. Use the public [`Store::create_system_message`] for
     /// standalone posts.
     ///
+    /// Takes `&Channel` directly so batched callers (e.g. `create_tasks`
+    /// looping over N tasks in one tx) don't re-query the channel row for
+    /// every event they emit.
+    ///
     /// Returns the [`InsertedMessage`] so callers can emit the stream event
     /// after the outer transaction commits.
     pub(crate) fn create_system_message_tx(
         tx: &Transaction<'_>,
-        channel_id: &str,
+        channel: &Channel,
         content: &str,
     ) -> Result<InsertedMessage> {
-        let channel = Self::get_channel_by_id_inner(tx, channel_id)?
-            .ok_or_else(|| anyhow!("channel not found by id"))?;
         Self::insert_message_tx(
             tx,
-            &channel,
+            channel,
             "system",
             SenderType::System,
             content,
@@ -165,7 +167,7 @@ impl Store {
         let tx = conn.transaction()?;
         let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
             .ok_or_else(|| anyhow!("channel not found by id"))?;
-        let inserted = Self::create_system_message_tx(&tx, channel_id, content)?;
+        let inserted = Self::create_system_message_tx(&tx, &channel, content)?;
         let message_id = inserted.id.clone();
         tx.commit()?;
         drop(conn); // release the guard before fanout to avoid holding the mutex
@@ -240,7 +242,10 @@ mod tests {
         let msg_id = {
             let mut conn = store.conn_for_test();
             let tx = conn.transaction().unwrap();
-            let inserted = Store::create_system_message_tx(&tx, &channel_id, "hello").unwrap();
+            let channel = Store::get_channel_by_id_inner(&tx, &channel_id)
+                .unwrap()
+                .unwrap();
+            let inserted = Store::create_system_message_tx(&tx, &channel, "hello").unwrap();
             tx.commit().unwrap();
             inserted.id
         };
@@ -274,7 +279,11 @@ mod tests {
         let msg_id = {
             let mut conn = store.conn_for_test();
             let tx = conn.transaction().unwrap();
-            let inserted = Store::create_system_message_tx(&tx, &channel_id, "discard me").unwrap();
+            let channel = Store::get_channel_by_id_inner(&tx, &channel_id)
+                .unwrap()
+                .unwrap();
+            let inserted =
+                Store::create_system_message_tx(&tx, &channel, "discard me").unwrap();
             // Drop the tx without committing — implicit rollback.
             drop(tx);
             inserted.id
