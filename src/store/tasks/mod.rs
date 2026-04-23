@@ -1,3 +1,5 @@
+pub mod events;
+
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, TransactionBehavior};

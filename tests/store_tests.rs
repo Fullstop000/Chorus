@@ -1650,3 +1650,31 @@ fn test_lookup_sender_type_recovers_after_mutex_poison() {
 
     let _conn = store.conn_for_test();
 }
+
+#[test]
+fn task_event_payload_round_trips_through_json() {
+    use chorus::store::tasks::events::{TaskEventAction, TaskEventPayload};
+    use chorus::store::tasks::TaskStatus;
+
+    let original = TaskEventPayload {
+        action: TaskEventAction::Claimed,
+        task_number: 7,
+        title: "wire up the bridge".into(),
+        sub_channel_id: "22222222-2222-2222-2222-222222222222".into(),
+        actor: "alice".into(),
+        prev_status: Some(TaskStatus::Todo),
+        next_status: TaskStatus::InProgress,
+        claimed_by: Some("alice".into()),
+    };
+
+    let json = original.to_json_string().unwrap();
+    assert!(json.contains(r#""kind":"task_event""#));
+    assert!(json.contains(r#""action":"claimed""#));
+    assert!(json.contains(r#""nextStatus":"in_progress""#));
+    assert!(json.contains(r#""taskNumber":7"#));
+
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(parsed["kind"], "task_event");
+    assert_eq!(parsed["actor"], "alice");
+    assert_eq!(parsed["subChannelId"], "22222222-2222-2222-2222-222222222222");
+}
