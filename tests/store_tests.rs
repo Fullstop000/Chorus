@@ -2116,3 +2116,30 @@ fn create_task_proposal_rejects_empty_title() {
         "expected 'title' in error: {err}"
     );
 }
+
+#[test]
+fn get_task_proposal_by_id_roundtrips() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let created = store
+        .create_task_proposal(&channel_id, "claude", "fix login")
+        .unwrap();
+
+    let loaded = store
+        .get_task_proposal_by_id(&created.id)
+        .unwrap()
+        .expect("proposal must exist");
+    assert_eq!(loaded.id, created.id);
+    assert_eq!(loaded.title, "fix login");
+    assert_eq!(loaded.status, TaskProposalStatus::Pending);
+    assert_eq!(loaded.proposed_by, "claude");
+}
+
+#[test]
+fn get_task_proposal_by_id_returns_none_for_unknown() {
+    let (store, _dir) = make_store();
+    let got = store.get_task_proposal_by_id("does-not-exist").unwrap();
+    assert!(got.is_none());
+}
