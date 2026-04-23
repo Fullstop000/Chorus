@@ -68,7 +68,7 @@ pub async fn run(server_url: String, cmd: ChannelCommands) -> anyhow::Result<()>
 /// Parses the server's `ErrorResponse` JSON (`{error, code?}`). When a typed
 /// `code` is present, surfaces it as `<code>: <error>`. Falls back to status +
 /// raw body when the body isn't the expected shape.
-pub(super) fn surface_http_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+pub(crate) fn surface_http_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
         let msg = val.get("error").and_then(|v| v.as_str()).unwrap_or("");
         let code = val.get("code").and_then(|v| v.as_str());
