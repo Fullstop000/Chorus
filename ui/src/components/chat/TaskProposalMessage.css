@@ -1,0 +1,107 @@
+/*
+ * Task-proposal card. Sibling of TaskEventMessage in vocabulary: zero
+ * radius, token-based colors, mono for metadata, sans for the title
+ * (ambient system marker exception, per docs/DESIGN.md). Three visual
+ * states: pending (buttons), accepted (resolved tag + deep link),
+ * dismissed (muted resolved tag).
+ */
+
+.task-proposal-card {
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+  padding: 10px 12px;
+  transition: background 0.15s ease;
+}
+.task-proposal-card[data-status="dismissed"] {
+  background: var(--color-muted);
+  opacity: 0.7;
+}
+
+.task-proposal-head {
+  margin-bottom: 4px;
+}
+.task-proposal-kicker {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: lowercase;
+  color: var(--color-muted-foreground);
+}
+.task-proposal-kicker::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 1px;
+  background: currentColor;
+  opacity: 0.55;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.task-proposal-title {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-foreground);
+  margin-bottom: 8px;
+}
+
+.task-proposal-actions {
+  display: flex;
+  gap: 8px;
+}
+.task-proposal-btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-muted);
+  color: var(--color-accent-foreground);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+.task-proposal-btn:hover:not(:disabled) {
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  border-color: var(--color-primary);
+}
+.task-proposal-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.task-proposal-btn--create {
+  color: var(--color-foreground);
+}
+
+.task-proposal-resolved {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.task-proposal-resolved-tag {
+  color: var(--status-online);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.task-proposal-resolved-tag--muted {
+  color: var(--color-muted-foreground);
+}
+.task-proposal-link {
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: var(--color-foreground);
+  text-decoration: underline;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
