@@ -671,3 +671,51 @@ async fn http_get_task_proposal_returns_current_state() {
     assert_eq!(body["status"], "pending");
     assert_eq!(body["title"], "t");
 }
+
+#[tokio::test]
+async fn http_accept_nonexistent_proposal_returns_404() {
+    let (url, _store) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(format!("{url}/api/task-proposals/does-not-exist/accept"))
+        .json(&serde_json::json!({ "accepter": "alice" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn http_dismiss_already_dismissed_returns_409() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "t")
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    // First dismiss succeeds.
+    let first = client
+        .post(format!("{url}/api/task-proposals/{}/dismiss", p.id))
+        .json(&serde_json::json!({ "resolver": "alice" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status(), 204);
+
+    // Second dismiss — proposal already resolved. Expect 409 + the
+    // machine-readable code `TASK_PROPOSAL_ALREADY_RESOLVED`.
+    let second = client
+        .post(format!("{url}/api/task-proposals/{}/dismiss", p.id))
+        .json(&serde_json::json!({ "resolver": "alice" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second.status(), 409);
+    let body: serde_json::Value = second.json().await.unwrap();
+    assert_eq!(body["code"], "TASK_PROPOSAL_ALREADY_RESOLVED");
+}

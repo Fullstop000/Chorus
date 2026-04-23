@@ -52,9 +52,16 @@ impl From<AcceptedTaskProposal> for AcceptResponse {
     }
 }
 
-/// HTTP view of a task proposal. Field names match the chat-message
+/// HTTP view of a task proposal. Field names align with the chat-message
 /// `task_proposal` snapshot payload (`taskNumber`, `subChannelId`,
-/// `proposedAt`, etc.) so the frontend has one data shape, not two.
+/// `proposedAt`, etc.) so the frontend can share parsing logic between
+/// the HTTP and WebSocket surfaces.
+///
+/// Known omission: `subChannelName` is NOT in this view (the backing
+/// `TaskProposal` row doesn't persist it; snapshots derive it via
+/// `format!("{parent}__task-{n}")` during the accept tx). If a frontend
+/// surface needs the name from this view, reconstruct it at the call site
+/// or add `accepted_sub_channel_name` to the DB row first.
 #[derive(Debug, Serialize)]
 pub struct ProposalView {
     pub id: String,
