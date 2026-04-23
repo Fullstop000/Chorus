@@ -64,9 +64,10 @@ pub async fn run(name: String, yes: bool, server_url: &str) -> anyhow::Result<()
                 return Ok(());
             }
             ConfirmOutcome::RefuseNonInteractive => {
-                anyhow::bail!(
-                    "refusing to delete #{normalized} without --yes on non-interactive stdin"
+                eprintln!(
+                    "Error: refusing to delete #{normalized} without --yes on non-interactive stdin"
                 );
+                std::process::exit(1);
             }
         }
     }

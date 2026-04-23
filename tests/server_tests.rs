@@ -3014,3 +3014,46 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
     let body = body_json(resp).await;
     assert_eq!(body["code"], "AGENT_RESTART_FAILED");
 }
+
+
+#[tokio::test]
+async fn create_channel_rejects_spaces_in_name() {
+    let (store, app) = setup();
+    store.create_human("alice").unwrap();
+
+    let req = serde_json::json!({ "name": "space channel", "description": "" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/channels")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn public_send_rejects_empty_content() {
+    let (store, app) = setup();
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+
+    let req = serde_json::json!({ "content": "" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/conversations/{channel_id}/messages"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

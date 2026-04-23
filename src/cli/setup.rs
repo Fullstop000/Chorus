@@ -12,6 +12,7 @@ use console::{style, Emoji};
 use std::io::IsTerminal;
 use std::process::Command;
 use std::time::{Duration, Instant};
+use tokio::process::Command as TokioCommand;
 
 use super::{default_data_dir, DATA_SUBDIR, DEFAULT_TEMPLATE_DIR};
 
@@ -112,6 +113,17 @@ fn check_auth(name: &str) -> ProbeAuth {
         "gemini" => check_gemini_auth(),
         _ => ProbeAuth::NotInstalled,
     }
+}
+
+/// Probe auth with a 5-second timeout so a hanging runtime binary
+/// (e.g. `gemini auth status`) can't freeze setup indefinitely.
+async fn check_auth_with_timeout(name: &str) -> ProbeAuth {
+    let name = name.to_string();
+    tokio::time::timeout(Duration::from_secs(5), tokio::task::spawn_blocking(move || check_auth(&name)))
+        .await
+        .ok()
+        .and_then(|r| r.ok())
+        .unwrap_or(ProbeAuth::Unauthed)
 }
 
 fn check_claude_auth() -> ProbeAuth {
@@ -263,6 +275,7 @@ fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) 
 /// if the binary is missing or the command fails. Some tools print their
 /// version to stderr (historically `python --version` did), so we fall
 /// back to stderr if stdout is empty.
+#[allow(dead_code)]
 fn check_tool(name: &str) -> Option<String> {
     let output = Command::new(name)
         .arg("--version")
@@ -276,6 +289,33 @@ fn check_tool(name: &str) -> Option<String> {
     } else {
         stdout
     };
+    extract_version(&source).or_else(|| {
+        source
+            .lines()
+            .next()
+            .map(|l| l.trim().to_string())
+            .filter(|s| !s.is_empty())
+    })
+}
+
+/// Async version of `check_tool` with a 5-second timeout.
+async fn check_tool_async(name: &str) -> Option<String> {
+    let output = tokio::time::timeout(
+        Duration::from_secs(5),
+        TokioCommand::new(name).arg("--version").output(),
+    )
+    .await
+    .ok()
+    .and_then(|r| r.ok())
+    .filter(|o| o.status.success())?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let source = if stdout.trim().is_empty() {
+        String::from_utf8_lossy(&output.stderr)
+    } else {
+        stdout
+    };
+
     extract_version(&source).or_else(|| {
         source
             .lines()
@@ -303,15 +343,16 @@ struct RuntimeReport {
     auth: ProbeAuth,
 }
 
-fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> RuntimeReport {
-    let version = check_tool(name);
+async fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> RuntimeReport {
+    let version = check_tool_async(name).await;
     // If an external adaptor is expected, re-resolve at check time so PATH
     // changes between test runs are reflected.
     let acp = match acp {
         AcpStatus::AdapterFound(bin) | AcpStatus::AdapterMissing(bin) => {
-            if Command::new(bin)
+            if TokioCommand::new(bin)
                 .arg("--version")
                 .output()
+                .await
                 .map(|o| o.status.success())
                 .unwrap_or(false)
             {
@@ -323,7 +364,7 @@ fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> Runt
         AcpStatus::Native => AcpStatus::Native,
     };
     let auth = if version.is_some() {
-        check_auth(name)
+        check_auth_with_timeout(name).await
     } else {
         ProbeAuth::NotInstalled
     };
@@ -539,23 +580,27 @@ pub async fn run(
             "claude",
             "https://docs.claude.com/en/docs/claude-code",
             AcpStatus::Native,
-        ),
+        )
+        .await,
         check_runtime(
             "codex",
             "https://github.com/openai/codex",
             AcpStatus::Native,
-        ),
+        )
+        .await,
         check_runtime(
             "kimi",
             "https://github.com/MoonshotAI/kimi-cli",
             AcpStatus::Native,
-        ),
-        check_runtime("opencode", "https://opencode.ai", AcpStatus::Native),
+        )
+        .await,
+        check_runtime("opencode", "https://opencode.ai", AcpStatus::Native).await,
         check_runtime(
             "gemini",
             "https://github.com/google-gemini/gemini-cli",
             AcpStatus::Native,
-        ),
+        )
+        .await,
     ];
     for r in &runtimes {
         render_runtime(r);

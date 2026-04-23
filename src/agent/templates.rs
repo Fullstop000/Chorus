@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const MAX_TEMPLATE_FILE_SIZE: u64 = 100 * 1024; // 100KB
 
@@ -163,7 +163,7 @@ fn parse_template_file(path: &Path, category: &str) -> Option<AgentTemplate> {
     let fm: TemplateFrontmatter = match serde_yaml::from_str(frontmatter_str) {
         Ok(fm) => fm,
         Err(e) => {
-            warn!(path = %path.display(), error = %e, "failed to parse YAML frontmatter");
+            debug!(path = %path.display(), error = %e, "failed to parse YAML frontmatter");
             return None;
         }
     };

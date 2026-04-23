@@ -128,6 +128,9 @@ pub async fn handle_create_channel(
     if name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
     }
+    if name.contains(' ') {
+        return Err(app_err!(StatusCode::BAD_REQUEST, "channel name cannot contain spaces"));
+    }
     let description = if req.description.trim().is_empty() {
         None
     } else {
@@ -230,6 +233,9 @@ pub async fn handle_update_channel(
     let name = normalize_channel_name(&req.name);
     if name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
+    }
+    if name.contains(' ') {
+        return Err(app_err!(StatusCode::BAD_REQUEST, "channel name cannot contain spaces"));
     }
     let description = if req.description.trim().is_empty() {
         None

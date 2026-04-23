@@ -11,6 +11,9 @@ pub async fn run(
     server_url: &str,
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
+    if normalized.contains(' ') {
+        anyhow::bail!("channel name cannot contain spaces: {normalized}");
+    }
     let description = description.unwrap_or_default();
     let client = super::http::client();
     let url = format!("{server_url}/api/channels");

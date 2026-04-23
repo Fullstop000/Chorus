@@ -41,8 +41,8 @@ enum Commands {
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
     },
-    /// Start the server and open the web UI in a browser.
-    /// Use `--no-open` to skip the browser (alias for the former `serve`).
+    /// Start the server and open the web UI in a browser
+    /// (use `--no-open` to skip opening a browser tab).
     Start {
         #[arg(long, default_value = "3001")]
         port: u16,
@@ -104,6 +104,9 @@ enum Commands {
         #[arg(long)]
         agent: String,
     },
+    /// Run a self-test of the shared MCP bridge (no Chorus server required)
+    #[command(name = "bridge-smoke-test")]
+    BridgeSmokeTest,
     /// Read-only environment diagnostic
     Check {
         #[arg(long)]
@@ -298,6 +301,8 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::BridgePair { agent }) => {
             chorus::bridge::pairing::run_bridge_pair(&agent).await
         }
+
+        Some(Commands::BridgeSmokeTest) => chorus::bridge::smoke_test::run_smoke_test().await,
 
         Some(Commands::Send {
             target,
