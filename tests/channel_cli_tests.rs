@@ -154,6 +154,63 @@ async fn channel_lifecycle() {
 }
 
 #[tokio::test]
+async fn channel_create_rejects_invalid_name() {
+    let url = start_fixture().await;
+
+    for bad_name in ["", "space channel", "channel/name", "emoji🎉"] {
+        let out = run_channel(&[
+            "create",
+            bad_name,
+            "--description",
+            "test",
+            "--server-url",
+            &url,
+        ])
+        .await;
+        assert!(
+            !out.status.success(),
+            "expected non-zero exit for invalid channel name: {bad_name}"
+        );
+        let err = combined(&out);
+        assert!(
+            err.contains("can only contain lowercase letters, numbers, hyphens, and underscores"),
+            "expected validation error for '{bad_name}', got: {err}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn channel_delete_alias_works() {
+    let url = start_fixture().await;
+
+    // Create a channel
+    let out = run_channel(&[
+        "create",
+        "aliastest",
+        "--description",
+        "for alias test",
+        "--server-url",
+        &url,
+    ])
+    .await;
+    assert!(out.status.success(), "create failed: {}", stderr_of(&out));
+
+    // Use `delete` alias (not `del`) to remove it
+    let out = run_channel(&["delete", "aliastest", "--yes", "--server-url", &url]).await;
+    assert!(
+        out.status.success(),
+        "delete alias failed: stdout={} stderr={}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    assert!(
+        combined(&out).contains("deleted"),
+        "expected 'deleted' in output, got: {}",
+        combined(&out)
+    );
+}
+
+#[tokio::test]
 async fn channel_del_not_found() {
     let url = start_fixture().await;
 

@@ -107,7 +107,8 @@ fn parse_system(v: &Value) -> HeadlessEvent {
         }
         // hook_started / hook_response are emitted during session
         // initialization hooks (e.g. superpowers plugin). Safe to ignore.
-        Some("hook_started" | "hook_response") => HeadlessEvent::Unknown,
+        // "status" is emitted regularly by claude-code and is not actionable.
+        Some("hook_started" | "hook_response" | "status") => HeadlessEvent::Unknown,
         Some(other) => {
             warn!("claude headless: unknown system subtype: {other}");
             HeadlessEvent::Unknown

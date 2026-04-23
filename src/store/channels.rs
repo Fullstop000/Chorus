@@ -14,6 +14,20 @@ pub fn normalize_channel_name(raw: &str) -> String {
     raw.trim().trim_start_matches('#').trim().to_lowercase()
 }
 
+/// Shared error message for invalid channel names.
+pub const INVALID_CHANNEL_NAME_MSG: &str =
+    "channel name can only contain lowercase letters, numbers, hyphens, and underscores";
+
+/// Returns true if the channel name contains only allowed characters:
+/// lowercase ASCII letters, digits, hyphens, and underscores.
+/// Callers should normalize first, then validate.
+pub fn is_valid_channel_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
 // ── Types owned by this module ──
 
 /// One row from `channels` (any type: user, DM, system, team, or task sub-channel).
@@ -614,6 +628,34 @@ impl Store {
             tracing::info!(channel = %name, "created system channel");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod channel_name_tests {
+    use super::*;
+
+    #[test]
+    fn is_valid_channel_name_accepts_letters_digits_hyphens_underscores() {
+        assert!(is_valid_channel_name("general"));
+        assert!(is_valid_channel_name("eng-team"));
+        assert!(is_valid_channel_name("team_42"));
+        assert!(is_valid_channel_name("a1-b2_c3"));
+    }
+
+    #[test]
+    fn is_valid_channel_name_rejects_empty() {
+        assert!(!is_valid_channel_name(""));
+    }
+
+    #[test]
+    fn is_valid_channel_name_rejects_spaces_and_special_chars() {
+        assert!(!is_valid_channel_name("space channel"));
+        assert!(!is_valid_channel_name("channel/name"));
+        assert!(!is_valid_channel_name("channel?"));
+        assert!(!is_valid_channel_name("emoji🎉"));
+        assert!(!is_valid_channel_name("UPPER"));
+        assert!(!is_valid_channel_name("dot.channel"));
     }
 }
 

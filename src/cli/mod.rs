@@ -19,6 +19,20 @@ use clap::{Parser, Subcommand, ValueEnum};
 use chorus::agent::AgentRuntime;
 use chorus::config::ChorusConfig;
 
+/// An expected user error that should be printed cleanly without a backtrace.
+/// The Chorus CLI enables `RUST_BACKTRACE=1` by default, so `anyhow::bail!`
+/// would emit a full backtrace for mundane mistakes like forgetting `--yes`.
+#[derive(Debug)]
+pub struct UserError(pub String);
+
+impl std::fmt::Display for UserError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for UserError {}
+
 #[derive(Parser)]
 #[command(name = "chorus", about = "Local AI agent collaboration platform")]
 struct Cli {
@@ -41,8 +55,8 @@ enum Commands {
         #[arg(long, env = "CHORUS_TEMPLATE_DIR")]
         template_dir: Option<String>,
     },
-    /// Start the server and open the web UI in a browser.
-    /// Use `--no-open` to skip the browser (alias for the former `serve`).
+    /// Start the server and open the web UI in a browser
+    /// (use `--no-open` to skip opening a browser tab).
     Start {
         #[arg(long, default_value = "3001")]
         port: u16,
@@ -104,6 +118,9 @@ enum Commands {
         #[arg(long)]
         agent: String,
     },
+    /// Run a self-test of the shared MCP bridge (no Chorus server required)
+    #[command(name = "bridge-smoke-test")]
+    BridgeSmokeTest,
     /// Read-only environment diagnostic
     Check {
         #[arg(long)]
@@ -298,6 +315,8 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::BridgePair { agent }) => {
             chorus::bridge::pairing::run_bridge_pair(&agent).await
         }
+
+        Some(Commands::BridgeSmokeTest) => chorus::bridge::smoke_test::run_smoke_test().await,
 
         Some(Commands::Send {
             target,

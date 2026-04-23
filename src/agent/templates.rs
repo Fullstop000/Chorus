@@ -163,7 +163,7 @@ fn parse_template_file(path: &Path, category: &str) -> Option<AgentTemplate> {
     let fm: TemplateFrontmatter = match serde_yaml::from_str(frontmatter_str) {
         Ok(fm) => fm,
         Err(e) => {
-            warn!(path = %path.display(), error = %e, "failed to parse YAML frontmatter");
+            info!(path = %path.display(), error = %e, "failed to parse YAML frontmatter");
             return None;
         }
     };

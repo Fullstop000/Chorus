@@ -31,6 +31,7 @@ pub(crate) enum ChannelCommands {
         description: Option<String>,
     },
     /// Delete a channel
+    #[command(visible_alias = "delete")]
     Del {
         name: String,
         #[arg(long)]

@@ -64,9 +64,9 @@ pub async fn run(name: String, yes: bool, server_url: &str) -> anyhow::Result<()
                 return Ok(());
             }
             ConfirmOutcome::RefuseNonInteractive => {
-                anyhow::bail!(
+                return Err(crate::cli::UserError(format!(
                     "refusing to delete #{normalized} without --yes on non-interactive stdin"
-                );
+                )).into());
             }
         }
     }

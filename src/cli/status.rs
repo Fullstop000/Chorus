@@ -25,6 +25,17 @@ pub async fn run(server_url: String) -> anyhow::Result<()> {
             }
         }
     }
+    if let Some(system_channels) = data.get("system_channels").and_then(|v| v.as_array()) {
+        for ch in system_channels {
+            let name = ch.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+            let desc = ch.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            if desc.is_empty() {
+                tracing::info!("  #{name} [system]");
+            } else {
+                tracing::info!("  #{name} [system] — {desc}");
+            }
+        }
+    }
     tracing::info!("\n== Agents ==");
     if let Some(agents) = data.get("agents").and_then(|v| v.as_array()) {
         for a in agents {
