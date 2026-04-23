@@ -240,7 +240,44 @@ impl Store {
                 Err(anyhow!("task proposal not found: {id}"))
             };
         }
+
+        // After the status flip, append a `status=dismissed` snapshot so
+        // the chat log reflects the terminal state and the UI fold picks
+        // it up. Load fields from the updated row first.
+        let (channel_id, proposed_by, title, created_at): (
+            String,
+            String,
+            String,
+            String,
+        ) = tx.query_row(
+            "SELECT channel_id, proposed_by, title, created_at \
+             FROM task_proposals WHERE id = ?1",
+            params![id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )?;
+        let channel = Self::get_channel_by_id_inner(&tx, &channel_id)?
+            .ok_or_else(|| anyhow!("channel vanished: {channel_id}"))?;
+        let snapshot = serde_json::json!({
+            "kind": "task_proposal",
+            "proposalId": id,
+            "status": "dismissed",
+            "title": title,
+            "proposedBy": proposed_by,
+            "proposedAt": created_at,
+            "taskNumber": serde_json::Value::Null,
+            "subChannelId": serde_json::Value::Null,
+            "subChannelName": serde_json::Value::Null,
+            "resolvedBy": resolver,
+            "resolvedAt": now,
+        });
+        let snapshot_content = snapshot.to_string();
+        let snapshot_inserted =
+            Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
+        let pending = vec![(snapshot_inserted, snapshot_content)];
+
         tx.commit()?;
+        drop(conn);
+        self.emit_system_stream_events(&channel, pending)?;
         Ok(())
     }
 
@@ -279,12 +316,9 @@ impl Store {
                 },
             )
             .optional()?;
-        let Some((channel_id, proposed_by, title, status_str, _proposed_at)) = row else {
+        let Some((channel_id, proposed_by, title, status_str, proposed_at)) = row else {
             return Err(anyhow!("task proposal not found: {id}"));
         };
-        // `_proposed_at` is read so Task 9 can attach it to the resolution
-        // snapshot's `proposedAt` field. Kept under the write lock read for
-        // free and named with a leading underscore until then.
         if status_str != "pending" {
             return Err(anyhow!("task proposal {id} is not pending"));
         }
@@ -364,10 +398,34 @@ impl Store {
         // Collect pending events so we can emit the WS events after commit.
         let pending_sub = vec![(kickoff_inserted, kickoff)];
 
+        // Emit a snapshot message reflecting the new accepted state so the
+        // chat log is a faithful record of the lifecycle and the UI
+        // reducer (Task 14) can fold the two snapshots by proposalId.
+        // `proposed_at` is the ORIGINAL creation time loaded from the row
+        // above; `now` is the resolve time.
+        let snapshot = serde_json::json!({
+            "kind": "task_proposal",
+            "proposalId": id,
+            "status": "accepted",
+            "title": title,
+            "proposedBy": proposed_by,
+            "proposedAt": proposed_at,
+            "taskNumber": task_number,
+            "subChannelId": sub_channel_id,
+            "subChannelName": sub_channel_name,
+            "resolvedBy": accepter,
+            "resolvedAt": now,
+        });
+        let snapshot_content = snapshot.to_string();
+        let parent_snapshot =
+            Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
+        let pending_parent = vec![(parent_snapshot, snapshot_content)];
+
         tx.commit()?;
         drop(conn);
 
         self.emit_system_stream_events(&sub_channel, pending_sub)?;
+        self.emit_system_stream_events(&channel, pending_parent)?;
 
         Ok(AcceptedTaskProposal {
             task_number,

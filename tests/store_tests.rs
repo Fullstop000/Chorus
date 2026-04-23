@@ -2396,3 +2396,77 @@ fn accept_task_proposal_posts_kickoff_in_sub_channel() {
         rows[0].1
     );
 }
+
+#[test]
+fn accept_task_proposal_posts_updated_task_proposal_message_in_parent() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "fix login")
+        .unwrap();
+    store.accept_task_proposal(&p.id, "alice").unwrap();
+
+    // Last system message in the parent channel is a kind=task_proposal
+    // snapshot with status=accepted and populated task fields.
+    let content: String = store
+        .conn_for_test()
+        .query_row(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' \
+             ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![channel_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(v["kind"], "task_proposal");
+    assert_eq!(v["proposalId"], p.id);
+    assert_eq!(v["status"], "accepted");
+    assert_eq!(v["taskNumber"], 1);
+    assert!(v["subChannelId"].is_string());
+    assert!(v["subChannelName"].as_str().unwrap().ends_with("__task-1"));
+}
+
+#[test]
+fn dismiss_task_proposal_posts_updated_task_proposal_message() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "t")
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.dismiss_task_proposal(&p.id, "alice").unwrap();
+
+    let content: String = store
+        .conn_for_test()
+        .query_row(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' \
+             ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![channel_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(v["kind"], "task_proposal");
+    assert_eq!(v["proposalId"], p.id);
+    assert_eq!(v["status"], "dismissed");
+    assert!(v["taskNumber"].is_null());
+}
