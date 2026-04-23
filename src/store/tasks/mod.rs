@@ -4,10 +4,10 @@ use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, TransactionBehavior};
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use self::events::{TaskEventAction, TaskEventPayload};
 use super::channels::ChannelType;
+use super::messages::SenderType;
 use super::Store;
 
 // ── Types owned by this module ──
@@ -143,7 +143,6 @@ impl Store {
 
         // Resolve creator kind up-front so the transaction only does writes.
         let creator_type = crate::store::resolve_sender_type_inner(&conn, creator_name)?;
-        let task_channel_type = ChannelType::Task.as_api_str();
 
         // `transaction_with_behavior(Immediate)` issues BEGIN IMMEDIATE, which
         // acquires the SQLite write lock eagerly. A concurrent `create_tasks`
@@ -165,45 +164,23 @@ impl Store {
 
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
-            let task_id = Uuid::new_v4().to_string();
             let task_number = max_num + 1 + i as i64;
-            let sub_channel_id = Uuid::new_v4().to_string();
-            let sub_channel_name = format!("{}__task-{}", channel.name, task_number);
-
-            tx.execute(
-                "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
-                 VALUES (?1, ?2, NULL, ?3, ?4)",
-                params![
-                    sub_channel_id,
-                    sub_channel_name,
-                    task_channel_type,
-                    channel.id
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
-                 VALUES (?1, ?2, ?3, 0)",
-                params![sub_channel_id, creator_name, creator_type.as_str()],
-            )?;
-            tx.execute(
-                "INSERT INTO tasks (id, channel_id, task_number, title, created_by, sub_channel_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![
-                    task_id,
-                    channel.id,
-                    task_number,
-                    title,
+            let (_task_id, sub_channel_id, sub_channel_name) =
+                Self::insert_task_and_subchannel_tx(
+                    &tx,
+                    &channel,
                     creator_name,
-                    sub_channel_id
-                ],
-            )?;
+                    creator_type,
+                    title,
+                    task_number,
+                )?;
 
             // Emit task_event inside the same tx so the task row and its
             // visibility-in-chat commit atomically.
             let payload = TaskEventPayload {
                 action: TaskEventAction::Created,
                 task_number,
-                title: title.to_string(),
+                title: (*title).to_string(),
                 sub_channel_id: sub_channel_id.clone(),
                 actor: creator_name.to_string(),
                 prev_status: None,
@@ -216,7 +193,7 @@ impl Store {
 
             result.push(TaskInfo {
                 task_number,
-                title: title.to_string(),
+                title: (*title).to_string(),
                 status: TaskStatus::Todo.as_str().to_string(),
                 claimed_by_name: None,
                 created_by_name: Some(creator_name.to_string()),
@@ -572,6 +549,61 @@ impl Store {
         drop(conn);
         self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
         Ok(())
+    }
+}
+
+impl Store {
+    /// Insert a single task row + its child `ChannelType::Task` sub-channel
+    /// + the creator's membership row, inside the caller's transaction.
+    ///
+    /// Returns `(task_id, sub_channel_id, sub_channel_name)`.
+    ///
+    /// Callers are responsible for assigning `task_number` with whatever
+    /// serialization guarantee they need (`create_tasks` holds an
+    /// IMMEDIATE write lock and reads MAX+1; `accept_task_proposal` does
+    /// the same at single-task scale). This helper does not read the
+    /// current max.
+    pub(crate) fn insert_task_and_subchannel_tx(
+        tx: &rusqlite::Transaction<'_>,
+        parent_channel: &crate::store::channels::Channel,
+        creator_name: &str,
+        creator_type: SenderType,
+        title: &str,
+        task_number: i64,
+    ) -> anyhow::Result<(String, String, String)> {
+        let task_id = uuid::Uuid::new_v4().to_string();
+        let sub_channel_id = uuid::Uuid::new_v4().to_string();
+        let sub_channel_name = format!("{}__task-{}", parent_channel.name, task_number);
+        let task_channel_type = ChannelType::Task.as_api_str();
+
+        tx.execute(
+            "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
+             VALUES (?1, ?2, NULL, ?3, ?4)",
+            rusqlite::params![
+                sub_channel_id,
+                sub_channel_name,
+                task_channel_type,
+                parent_channel.id
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
+             VALUES (?1, ?2, ?3, 0)",
+            rusqlite::params![sub_channel_id, creator_name, creator_type.as_str()],
+        )?;
+        tx.execute(
+            "INSERT INTO tasks (id, channel_id, task_number, title, created_by, sub_channel_id) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                task_id,
+                parent_channel.id,
+                task_number,
+                title,
+                creator_name,
+                sub_channel_id
+            ],
+        )?;
+        Ok((task_id, sub_channel_id, sub_channel_name))
     }
 }
 

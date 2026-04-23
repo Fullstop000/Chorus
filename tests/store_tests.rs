@@ -2018,3 +2018,40 @@ fn task_proposals_table_has_expected_columns() {
         );
     }
 }
+
+#[test]
+fn create_tasks_still_creates_sub_channel_and_enrolls_creator() {
+    // Pins the pre-refactor shape: the per-task block (sub-channel
+    // insert + membership + task row) is the unit we'll later share
+    // with accept_task_proposal. This test catches a botched extract.
+    let (store, _dir) = make_store();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    let info = store.create_tasks("eng", "alice", &["fix it"]).unwrap();
+    assert_eq!(info.len(), 1);
+    assert_eq!(info[0].task_number, 1);
+
+    let sub_id = info[0].sub_channel_id.clone().unwrap();
+    let conn = store.conn_for_test();
+    // Sub-channel exists.
+    let row: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channels WHERE id = ?1 AND channel_type = 'task'",
+            rusqlite::params![sub_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row, 1);
+    // Creator enrolled.
+    let row: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channel_members \
+             WHERE channel_id = ?1 AND member_name = 'alice'",
+            rusqlite::params![sub_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(row, 1);
+}
