@@ -282,8 +282,7 @@ mod tests {
             let channel = Store::get_channel_by_id_inner(&tx, &channel_id)
                 .unwrap()
                 .unwrap();
-            let inserted =
-                Store::create_system_message_tx(&tx, &channel, "discard me").unwrap();
+            let inserted = Store::create_system_message_tx(&tx, &channel, "discard me").unwrap();
             // Drop the tx without committing — implicit rollback.
             drop(tx);
             inserted.id
