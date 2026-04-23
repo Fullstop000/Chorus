@@ -100,9 +100,6 @@ fn extract_version(s: &str) -> Option<String> {
 // Auth probing — mirrors each driver's RuntimeDriver::probe() logic
 // ---------------------------------------------------------------------------
 
-/// Probe a runtime's authentication state synchronously.
-/// Mirrors the logic in each runtime's `RuntimeDriver::probe()` but blocks
-/// so it can run inside the synchronous setup doctor.
 /// Probe auth with a 5-second timeout so a hanging runtime binary
 /// (e.g. `gemini auth status`) can't freeze setup indefinitely.
 async fn check_auth_with_timeout(name: &str) -> ProbeAuth {
