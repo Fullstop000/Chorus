@@ -109,6 +109,35 @@ one-line human sentence before handing them to agents (see
 The task-row write and the event-message insert share the same `tx`, so a
 failure on either rolls both back.
 
+### Task proposals
+
+Agents propose tasks via the `propose_task` MCP tool. The bridge POSTs to
+`/internal/agent/:agent/channels/:channel_name/task-proposals`, which:
+
+1. Inserts a `task_proposals` row with `status = 'pending'`.
+2. Posts a `sender_type = 'system'` chat message to the parent channel with
+   `content.kind = "task_proposal"`. The frontend renders this as an
+   interactive card (`TaskProposalMessage`).
+
+A human-member clicks accept or dismiss, hitting
+`POST /api/task-proposals/:id/accept` or `POST /api/task-proposals/:id/dismiss`.
+Acceptance:
+- Reuses the shared `insert_task_and_subchannel_tx` helper to create the
+  task + sub-channel + creator membership.
+- Auto-claims the task to the proposer agent.
+- Enrolls the accepter in the sub-channel.
+- Posts a kickoff system message in the new sub-channel ("Task #N opened:
+  …") — the existing inbox wake-on-new-unread pipeline triggers the agent's
+  next run there.
+- Posts a second `kind = "task_proposal"` snapshot in the parent channel
+  with `status = "accepted"` + task coords, so the UI fold picks up the
+  terminal state.
+- Does NOT emit a `task_event` with `action = "created"` or `"claimed"` —
+  the proposal card already carries that signal (see scope anchor 1b).
+
+The status flip and task creation share one transaction; a failure on any
+step rolls the whole sequence back.
+
 ### Sender Type Resolution (Security Boundary)
 
 **Never allow clients to forge `sender_type='system'` messages.**

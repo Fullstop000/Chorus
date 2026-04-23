@@ -58,3 +58,17 @@
   5. `Submit for review` and verify the card's `data-state` flips to `in_review` in place.
   6. `Mark done` and verify the card collapses to the done pill (`task-event-done-row` visible, `data-state="done"`).
 - Expected: one task → one card; state transitions update the same card without duplication; terminal done swaps to the compact pill view
+
+### TSK-005 Task Proposal Accept Flow
+
+- Suite: smoke
+- Goal: verify an agent-proposed task renders an interactive card in the parent channel, flips to `accepted` on click, and deep-links into the new sub-channel with its kickoff message
+- Script: [`playwright/TSK-005.spec.ts`](./playwright/TSK-005.spec.ts)
+- Steps:
+  1. Create a channel.
+  2. Create an agent record via the API (the agent does not run — the proposal endpoint is hit directly).
+  3. POST the proposal to `/internal/agent/:agent/channels/:channel/task-proposals` with a title.
+  4. Reload the channel and verify a `data-testid="task-proposal-<id>"` card is visible with `data-status="pending"` and a `create` button.
+  5. Click `create`; verify the same card's `data-status` transitions to `accepted` and renders `task #N opened in <channel>__task-N`.
+  6. Click the deep-link; verify the sub-channel loads and the kickoff system message (`Task #N opened: <title>`) is visible.
+- Expected: one proposal → one card; accept updates the card in place; deep-link opens the sub-channel; no 4xx/5xx on `/task-proposals/*` during the flow
