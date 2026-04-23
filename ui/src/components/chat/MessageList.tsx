@@ -9,7 +9,6 @@ import { updateReadCursor, historyQueryKeys } from "../../data";
 import type { HistoryMessage, HistoryResponse } from "../../data";
 import { useStore } from "../../store";
 import { useTraceStore } from "../../store/traceStore";
-import { parseTaskEvent } from "../../data/taskEvents";
 import { useTaskEventLog } from "../../hooks/useTaskEventLog";
 import { TaskEventMessage } from "./TaskEventMessage";
 import "./MessageList.css";
@@ -91,7 +90,7 @@ export function MessageList({
   const queryClient = useQueryClient();
   const queryKey = historyQueryKeys.history(conversationId ?? "");
   const { advanceConversationLastReadSeq } = useStore();
-  const taskStates = useTaskEventLog(messages);
+  const taskEventIndex = useTaskEventLog(messages);
   const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
 
   // ── Sync refs with props ──
@@ -337,45 +336,46 @@ export function MessageList({
       {messages.map((msg, i) => {
         // Task-event system messages short-circuit to the TaskEventMessage
         // renderer. Suppress repeated events for the same task so we render
-        // one card per task, anchored at its latest event.
-        if (msg.senderType === "system") {
-          const ev = parseTaskEvent(msg.content);
-          if (ev) {
-            const state = taskStates.get(ev.taskNumber);
-            const isLatestForTask = state && state.latestSeq === msg.seq;
+        // one card per task, anchored at its latest event. The hook already
+        // parsed the payload once when building `taskEventIndex`; the render
+        // loop just asks "does this seq belong to a task?" — O(1), no JSON
+        // re-parse.
+        const taskNumber = taskEventIndex.taskNumberBySeq.get(msg.seq);
+        if (msg.senderType === "system" && taskNumber !== undefined) {
+          const state = taskEventIndex.byTaskNumber.get(taskNumber);
+          const isLatestForTask = state && state.latestSeq === msg.seq;
 
-            // Even when we suppress the task-card render (not the latest
-            // event), we still need the wrapper div so visibility tracking
-            // hits the row AND the unread divider anchors on the right seq.
-            // Returning null here loses the unread anchor entirely.
-            return (
+          // Even when we suppress the task-card render (not the latest
+          // event), we still need the wrapper div so visibility tracking
+          // hits the row AND the unread divider anchors on the right seq.
+          // Returning null here loses the unread anchor entirely.
+          return (
+            <div
+              key={msg.id}
+              ref={(el) => {
+                if (el) messageRowRefs.current.set(msg.id, el);
+                else messageRowRefs.current.delete(msg.id);
+              }}
+            >
               <div
-                key={msg.id}
-                ref={(el) => {
-                  if (el) messageRowRefs.current.set(msg.id, el);
-                  else messageRowRefs.current.delete(msg.id);
-                }}
-              >
-                <div
-                  ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
+                ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
+              />
+              {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
+              {isLatestForTask && state && (
+                <TaskEventMessage
+                  taskState={state}
+                  onOpen={() =>
+                    setCurrentTaskDetail({
+                      parentChannelId: conversationId ?? "",
+                      parentSlug: targetKey ?? "",
+                      taskNumber,
+                      returnToTab: "chat",
+                    })
+                  }
                 />
-                {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
-                {isLatestForTask && state && (
-                  <TaskEventMessage
-                    taskState={state}
-                    onOpen={() =>
-                      setCurrentTaskDetail({
-                        parentChannelId: conversationId ?? "",
-                        parentSlug: targetKey ?? "",
-                        taskNumber: ev.taskNumber,
-                        returnToTab: "chat",
-                      })
-                    }
-                  />
-                )}
-              </div>
-            );
-          }
+              )}
+            </div>
+          );
         }
 
         // Bind trace to message:

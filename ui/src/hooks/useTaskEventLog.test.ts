@@ -30,8 +30,9 @@ describe('deriveTaskStates', () => {
         senderDeleted: false,
       },
     ]
-    const states = deriveTaskStates(msgs)
-    expect(states.size).toBe(0)
+    const index = deriveTaskStates(msgs)
+    expect(index.byTaskNumber.size).toBe(0)
+    expect(index.taskNumberBySeq.size).toBe(0)
   })
 
   it('converges to the correct state after create → claim → in_review → done', () => {
@@ -73,12 +74,15 @@ describe('deriveTaskStates', () => {
         nextStatus: 'done',
       }),
     ]
-    const states = deriveTaskStates(msgs)
-    const task = states.get(7)!
+    const index = deriveTaskStates(msgs)
+    const task = index.byTaskNumber.get(7)!
     expect(task.status).toBe('done')
     expect(task.claimedBy).toBe('alice')
     expect(task.events).toHaveLength(4)
     expect(task.title).toBe('t')
+    // Inverse index covers every emitted task_event seq.
+    expect(index.taskNumberBySeq.get(1)).toBe(7)
+    expect(index.taskNumberBySeq.get(4)).toBe(7)
   })
 
   it('applies events in seq order regardless of array order', () => {
@@ -111,8 +115,8 @@ describe('deriveTaskStates', () => {
         claimedBy: 'a',
       }),
     ]
-    const states = deriveTaskStates(msgs)
-    expect(states.get(1)!.status).toBe('in_review')
+    const index = deriveTaskStates(msgs)
+    expect(index.byTaskNumber.get(1)!.status).toBe('in_review')
   })
 
   it('handles unclaimed by clearing claimedBy', () => {
@@ -144,8 +148,8 @@ describe('deriveTaskStates', () => {
         claimedBy: null,
       }),
     ]
-    const states = deriveTaskStates(msgs)
-    expect(states.get(1)!.claimedBy).toBeNull()
-    expect(states.get(1)!.status).toBe('todo')
+    const index = deriveTaskStates(msgs)
+    expect(index.byTaskNumber.get(1)!.claimedBy).toBeNull()
+    expect(index.byTaskNumber.get(1)!.status).toBe('todo')
   })
 })
