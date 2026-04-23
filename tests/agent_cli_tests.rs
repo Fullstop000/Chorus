@@ -92,12 +92,28 @@ async fn agent_restart_not_found() {
 async fn agent_delete_not_found() {
     let url = start_fixture().await;
 
-    let out = run_agent(&["delete", "nope", "--server-url", &url]).await;
+    let out = run_agent(&["delete", "nope", "--yes", "--server-url", &url]).await;
     assert!(!out.status.success(), "expected non-zero exit for unknown agent");
     let err = combined(&out);
     assert!(
         err.contains("agent not found: nope"),
         "expected 'agent not found: nope' in output, got: {err}"
+    );
+}
+
+#[tokio::test]
+async fn agent_delete_refuses_non_interactive_without_yes() {
+    let url = start_fixture().await;
+
+    let out = run_agent(&["delete", "nope", "--server-url", &url]).await;
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit when refusing non-interactive delete"
+    );
+    let err = combined(&out);
+    assert!(
+        err.contains("refusing to delete @nope without --yes on non-interactive stdin"),
+        "expected non-interactive refusal message, got: {err}"
     );
 }
 
@@ -170,8 +186,34 @@ async fn agent_crud_lifecycle() {
         combined(&out)
     );
 
-    // Delete
+    // Restart with reset_session mode
+    let out = run_agent(&["restart", "testbot", "--mode", "reset-session", "--server-url", &url]).await;
+    assert!(
+        out.status.success(),
+        "restart reset_session failed: stdout={} stderr={}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    assert!(
+        combined(&out).contains("restarted"),
+        "expected 'restarted' in output, got: {}",
+        combined(&out)
+    );
+
+    // Delete without --yes should refuse on non-interactive stdin
     let out = run_agent(&["delete", "testbot", "--server-url", &url]).await;
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for delete without --yes on non-interactive stdin"
+    );
+    let err = combined(&out);
+    assert!(
+        err.contains("refusing to delete"),
+        "expected refusal message, got: {err}"
+    );
+
+    // Delete with --yes
+    let out = run_agent(&["delete", "testbot", "--yes", "--server-url", &url]).await;
     assert!(
         out.status.success(),
         "delete failed: stdout={} stderr={}",

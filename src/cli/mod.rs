@@ -14,7 +14,7 @@ mod setup;
 mod start;
 mod status;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 use chorus::agent::AgentRuntime;
 use chorus::config::ChorusConfig;
@@ -169,8 +169,8 @@ pub(crate) enum AgentCommands {
     /// Restart an agent
     Restart {
         name: String,
-        #[arg(long, default_value = "restart")]
-        mode: String,
+        #[arg(long, default_value_t = RestartMode::Restart)]
+        mode: RestartMode,
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
@@ -180,9 +180,35 @@ pub(crate) enum AgentCommands {
         /// Also delete the agent's workspace directory
         #[arg(long)]
         wipe: bool,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        yes: bool,
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum RestartMode {
+    Restart,
+    ResetSession,
+    FullReset,
+}
+
+impl std::fmt::Display for RestartMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl RestartMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RestartMode::Restart => "restart",
+            RestartMode::ResetSession => "reset_session",
+            RestartMode::FullReset => "full_reset",
+        }
+    }
 }
 
 /// Subdirectory inside the data dir root that holds SQLite + per-agent/team

@@ -6,16 +6,35 @@
 //!   next heartbeat (or immediately if the server is running).
 //! - `list`          — list all agents with their status and runtime.
 
+use std::io::{BufRead, IsTerminal, Write};
+
 use super::{default_model_for_runtime, AgentCommands};
 
-fn find_agent_id_by_name(agents: &[serde_json::Value], name: &str) -> Option<String> {
-    agents.iter().find_map(|agent| {
-        let matches = agent.get("name").and_then(|v| v.as_str()) == Some(name)
-            || agent.get("display_name").and_then(|v| v.as_str()) == Some(name);
-        matches
+fn find_agent_id_by_name(agents: &[serde_json::Value], name: &str) -> anyhow::Result<String> {
+    // First: exact match on canonical name (strongest identity).
+    if let Some(id) = agents.iter().find_map(|agent| {
+        (agent.get("name").and_then(|v| v.as_str()) == Some(name))
             .then(|| agent.get("id").and_then(|v| v.as_str()).map(str::to_string))
             .flatten()
-    })
+    }) {
+        return Ok(id);
+    }
+
+    // Second: fallback to display_name, but reject ambiguity.
+    let display_matches: Vec<String> = agents
+        .iter()
+        .filter(|agent| agent.get("display_name").and_then(|v| v.as_str()) == Some(name))
+        .filter_map(|agent| agent.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect();
+
+    match display_matches.len() {
+        0 => anyhow::bail!("agent not found: {name}"),
+        1 => Ok(display_matches.into_iter().next().unwrap()),
+        _ => anyhow::bail!(
+            "ambiguous name: '{name}' matches {} agents by display_name. Use the canonical name (e.g., testbot-2a00).",
+            display_matches.len()
+        ),
+    }
 }
 
 pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
@@ -69,8 +88,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 anyhow::bail!("server returned {list_status} while listing agents: {body}");
             }
             let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)
-                .ok_or_else(|| anyhow::anyhow!("agent not found: {name}"))?;
+            let agent_id = find_agent_id_by_name(&agents, &name)?;
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/stop"))
                 .send()
@@ -117,8 +135,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 anyhow::bail!("server returned {list_status} while listing agents: {body}");
             }
             let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)
-                .ok_or_else(|| anyhow::anyhow!("agent not found: {name}"))?;
+            let agent_id = find_agent_id_by_name(&agents, &name)?;
             let res = client
                 .get(format!("{server_url}/api/agents/{agent_id}"))
                 .send()
@@ -165,8 +182,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 anyhow::bail!("server returned {list_status} while listing agents: {body}");
             }
             let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)
-                .ok_or_else(|| anyhow::anyhow!("agent not found: {name}"))?;
+            let agent_id = find_agent_id_by_name(&agents, &name)?;
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/start"))
                 .send()
@@ -192,11 +208,10 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 anyhow::bail!("server returned {list_status} while listing agents: {body}");
             }
             let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)
-                .ok_or_else(|| anyhow::anyhow!("agent not found: {name}"))?;
+            let agent_id = find_agent_id_by_name(&agents, &name)?;
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/restart"))
-                .json(&serde_json::json!({ "mode": mode }))
+                .json(&serde_json::json!({ "mode": mode.as_str() }))
                 .send()
                 .await?;
             let status = res.status();
@@ -207,7 +222,34 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             tracing::info!("Agent @{name} restarted.");
             Ok(())
         }
-        AgentCommands::Delete { name, wipe, server_url } => {
+        AgentCommands::Delete { name, wipe, yes, server_url } => {
+            if !yes {
+                let display_name = if wipe {
+                    format!("{name} (with --wipe)")
+                } else {
+                    name.clone()
+                };
+                eprint!("Delete agent @{display_name}? [y/N] ");
+                std::io::stderr().flush().ok();
+                let stdin = std::io::stdin();
+                let is_tty = stdin.is_terminal();
+                let mut locked = stdin.lock();
+                let mut line = String::new();
+                if !is_tty {
+                    anyhow::bail!(
+                        "refusing to delete @{name} without --yes on non-interactive stdin"
+                    );
+                }
+                if locked.read_line(&mut line).is_err() {
+                    anyhow::bail!("Abort.");
+                }
+                let trimmed = line.trim_end_matches(['\r', '\n']);
+                if !matches!(trimmed, "y" | "Y") {
+                    tracing::info!("Aborted.");
+                    return Ok(());
+                }
+            }
+
             tracing::info!("Deleting agent @{name}...");
             let client = chorus::utils::http::client();
             let list_res = client
@@ -220,8 +262,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 anyhow::bail!("server returned {list_status} while listing agents: {body}");
             }
             let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)
-                .ok_or_else(|| anyhow::anyhow!("agent not found: {name}"))?;
+            let agent_id = find_agent_id_by_name(&agents, &name)?;
             let mode = if wipe { "delete_workspace" } else { "preserve_workspace" };
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/delete"))
@@ -235,6 +276,9 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             }
             let data: serde_json::Value = res.json().await?;
             if let Some(warning) = data.get("warning").and_then(|v| v.as_str()) {
+                if wipe {
+                    anyhow::bail!("Agent deleted but workspace cleanup failed: {warning}");
+                }
                 tracing::warn!("{warning}");
             }
             tracing::info!("Agent @{name} deleted.");
