@@ -3040,6 +3040,12 @@ async fn create_channel_rejects_invalid_names() {
             StatusCode::BAD_REQUEST,
             "expected 400 for channel name: {bad_name}"
         );
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["error"].as_str(),
+            Some(chorus::store::channels::INVALID_CHANNEL_NAME_MSG),
+            "expected specific error message for: {bad_name}"
+        );
     }
 }
 
@@ -3068,6 +3074,12 @@ async fn update_channel_rejects_invalid_names() {
             StatusCode::BAD_REQUEST,
             "expected 400 for channel name: {bad_name}"
         );
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["error"].as_str(),
+            Some(chorus::store::channels::INVALID_CHANNEL_NAME_MSG),
+            "expected specific error message for: {bad_name}"
+        );
     }
 }
 
@@ -3094,6 +3106,13 @@ async fn public_send_rejects_empty_content() {
             resp.status(),
             StatusCode::BAD_REQUEST,
             "expected 400 for content: {:?}",
+            content
+        );
+        let body = body_json(resp).await;
+        assert_eq!(
+            body["error"].as_str(),
+            Some("message content cannot be empty"),
+            "expected specific error message for content: {:?}",
             content
         );
     }
