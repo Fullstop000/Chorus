@@ -42,6 +42,14 @@
   border: 1px solid var(--color-border);
   background: var(--color-popover);
   padding: 10px 12px;
+  transition: background 0.15s ease;
+}
+.task-event-card:hover {
+  /* Large-surface hover: accent tint, not primary-invert. Matches the
+   * `.task-event-done-row:hover` pattern so card-view and pill-view feel
+   * identical, and mirrors `.message-item:hover` — the house recipe for
+   * large feed surfaces. Documented in `docs/DESIGN.md`. */
+  background: var(--color-accent);
 }
 .task-event-card-head {
   display: flex;
