@@ -1739,3 +1739,66 @@ fn create_tasks_emits_task_event_to_parent_channel() {
     assert_eq!(parsed["nextStatus"], "todo");
     assert_eq!(parsed["title"], "wire up the bridge");
 }
+
+#[test]
+fn claim_task_emits_claimed_event_to_parent_channel() {
+    let (store, _dir) = make_store();
+    let parent_id = store
+        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store.join_channel("eng", "bob", chorus::store::messages::types::SenderType::Human).unwrap();
+    store.create_human("alice").unwrap();
+    store.join_channel("eng", "alice", chorus::store::messages::types::SenderType::Human).unwrap();
+
+    store.create_tasks("eng", "bob", &["t"]).unwrap();
+    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+
+    let events: Vec<serde_json::Value> = store
+        .conn_for_test()
+        .prepare("SELECT content FROM messages WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq")
+        .unwrap()
+        .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .map(|s| serde_json::from_str(&s).unwrap())
+        .collect();
+
+    assert_eq!(events.len(), 2); // created + claimed
+    assert_eq!(events[1]["action"], "claimed");
+    assert_eq!(events[1]["actor"], "alice");
+    assert_eq!(events[1]["taskNumber"], 1);
+    assert_eq!(events[1]["prevStatus"], "todo");
+    assert_eq!(events[1]["nextStatus"], "in_progress");
+    assert_eq!(events[1]["claimedBy"], "alice");
+}
+
+#[test]
+fn unclaim_task_emits_unclaimed_event() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.join_channel("eng", "alice", chorus::store::messages::types::SenderType::Human).unwrap();
+    store.create_tasks("eng", "alice", &["t"]).unwrap();
+    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+
+    store.update_task_unclaim("eng", "alice", 1).unwrap();
+
+    let last_event: serde_json::Value = {
+        let content: String = store
+            .conn_for_test()
+            .query_row(
+                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&content).unwrap()
+    };
+    assert_eq!(last_event["action"], "unclaimed");
+    assert_eq!(last_event["prevStatus"], "in_progress");
+    assert_eq!(last_event["nextStatus"], "todo");
+    assert_eq!(last_event["claimedBy"], serde_json::Value::Null);
+}
