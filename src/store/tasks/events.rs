@@ -75,15 +75,24 @@ impl TaskEventPayload {
             ),
             TaskEventAction::Claimed => format!(
                 "[task] {} claimed #{} \"{}\" (now {})",
-                self.actor, self.task_number, self.title, self.next_status.as_str()
+                self.actor,
+                self.task_number,
+                self.title,
+                self.next_status.as_str()
             ),
             TaskEventAction::Unclaimed => format!(
                 "[task] {} unclaimed #{} \"{}\" (now {})",
-                self.actor, self.task_number, self.title, self.next_status.as_str()
+                self.actor,
+                self.task_number,
+                self.title,
+                self.next_status.as_str()
             ),
             TaskEventAction::StatusChanged => format!(
                 "[task] {} → {} on #{} \"{}\"",
-                self.actor, self.next_status.as_str(), self.task_number, self.title
+                self.actor,
+                self.next_status.as_str(),
+                self.task_number,
+                self.title
             ),
         }
     }

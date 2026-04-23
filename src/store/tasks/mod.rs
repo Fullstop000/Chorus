@@ -159,10 +159,8 @@ impl Store {
             params![channel.id],
             |row| row.get(0),
         )?;
-        let mut pending_events: Vec<(
-            crate::store::messages::types::InsertedMessage,
-            String,
-        )> = Vec::new();
+        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
+            Vec::new();
 
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
@@ -336,7 +334,8 @@ impl Store {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let mut results = Vec::new();
-        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> = Vec::new();
+        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
+            Vec::new();
         // Batch semantics: all claims commit together or none do. A hard SQL
         // error on claim N rolls back successful claims 1..N-1. "Soft"
         // rejections (task already claimed / not in todo / stolen mid-flight)

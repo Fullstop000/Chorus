@@ -282,7 +282,11 @@ mod tests {
 
         let row: Option<String> = store
             .conn_for_test()
-            .query_row("SELECT id FROM messages WHERE id = ?1", params![msg_id], |r| r.get(0))
+            .query_row(
+                "SELECT id FROM messages WHERE id = ?1",
+                params![msg_id],
+                |r| r.get(0),
+            )
             .optional()
             .unwrap();
         assert!(

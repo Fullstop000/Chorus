@@ -1676,7 +1676,10 @@ fn task_event_payload_round_trips_through_json() {
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
     assert_eq!(parsed["kind"], "task_event");
     assert_eq!(parsed["actor"], "alice");
-    assert_eq!(parsed["subChannelId"], "22222222-2222-2222-2222-222222222222");
+    assert_eq!(
+        parsed["subChannelId"],
+        "22222222-2222-2222-2222-222222222222"
+    );
 }
 
 #[test]
@@ -1699,8 +1702,16 @@ fn task_event_payload_serializes_none_fields_as_json_null() {
     };
     let parsed: serde_json::Value =
         serde_json::from_str(&created.to_json_string().unwrap()).unwrap();
-    assert!(parsed["prevStatus"].is_null(), "expected JSON null, got {:?}", parsed["prevStatus"]);
-    assert!(parsed["claimedBy"].is_null(), "expected JSON null, got {:?}", parsed["claimedBy"]);
+    assert!(
+        parsed["prevStatus"].is_null(),
+        "expected JSON null, got {:?}",
+        parsed["prevStatus"]
+    );
+    assert!(
+        parsed["claimedBy"].is_null(),
+        "expected JSON null, got {:?}",
+        parsed["claimedBy"]
+    );
     assert_eq!(parsed["action"], "created");
     assert_eq!(parsed["nextStatus"], "todo");
 }
@@ -1709,10 +1720,21 @@ fn task_event_payload_serializes_none_fields_as_json_null() {
 fn create_tasks_emits_task_event_to_parent_channel() {
     let (store, _dir) = make_store();
     let parent_id = store
-        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("bob").unwrap();
-    store.join_channel("eng", "bob", chorus::store::messages::types::SenderType::Human).unwrap();
+    store
+        .join_channel(
+            "eng",
+            "bob",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
 
     let result = store
         .create_tasks("eng", "bob", &["wire up the bridge"])
@@ -1744,12 +1766,29 @@ fn create_tasks_emits_task_event_to_parent_channel() {
 fn claim_task_emits_claimed_event_to_parent_channel() {
     let (store, _dir) = make_store();
     let parent_id = store
-        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("bob").unwrap();
-    store.join_channel("eng", "bob", chorus::store::messages::types::SenderType::Human).unwrap();
+    store
+        .join_channel(
+            "eng",
+            "bob",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
     store.create_human("alice").unwrap();
-    store.join_channel("eng", "alice", chorus::store::messages::types::SenderType::Human).unwrap();
+    store
+        .join_channel(
+            "eng",
+            "alice",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
 
     store.create_tasks("eng", "bob", &["t"]).unwrap();
     store.update_tasks_claim("eng", "alice", &[1]).unwrap();
@@ -1777,10 +1816,21 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
 fn unclaim_task_emits_unclaimed_event() {
     let (store, _dir) = make_store();
     store
-        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("alice").unwrap();
-    store.join_channel("eng", "alice", chorus::store::messages::types::SenderType::Human).unwrap();
+    store
+        .join_channel(
+            "eng",
+            "alice",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
     store.create_tasks("eng", "alice", &["t"]).unwrap();
     store.update_tasks_claim("eng", "alice", &[1]).unwrap();
 
@@ -1807,10 +1857,21 @@ fn unclaim_task_emits_unclaimed_event() {
 fn update_task_status_emits_status_changed_event() {
     let (store, _dir) = make_store();
     store
-        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("alice").unwrap();
-    store.join_channel("eng", "alice", chorus::store::messages::types::SenderType::Human).unwrap();
+    store
+        .join_channel(
+            "eng",
+            "alice",
+            chorus::store::messages::types::SenderType::Human,
+        )
+        .unwrap();
     store.create_tasks("eng", "alice", &["t"]).unwrap();
     store.update_tasks_claim("eng", "alice", &[1]).unwrap();
 

@@ -561,9 +561,7 @@ async fn batched_create_tasks_emits_one_event_per_task() {
         .unwrap();
 
     // Three tasks in one call exercises the pending_events Vec with > 1 entry.
-    let created = store
-        .create_tasks("eng2", "bob", &["a", "b", "c"])
-        .unwrap();
+    let created = store.create_tasks("eng2", "bob", &["a", "b", "c"]).unwrap();
     assert_eq!(created.len(), 3);
 
     let events: Vec<serde_json::Value> = store
