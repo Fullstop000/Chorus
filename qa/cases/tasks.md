@@ -44,3 +44,17 @@
   7. Verify the task lands in `Done` on the board.
   8. Reopen the task detail after Done and verify the posted message is still visible.
 - Expected: sub-channel is never shown in the sidebar; status transitions succeed; archival preserves message history
+
+### TSK-004 Channel Task-Event Feed
+
+- Suite: smoke
+- Goal: verify task lifecycle events surface as a single living card in the parent channel chat and collapse to a done pill when terminal
+- Script: [`playwright/TSK-004.spec.ts`](./playwright/TSK-004.spec.ts)
+- Steps:
+  1. Create a channel.
+  2. Create a task via the kanban tab.
+  3. Open the parent channel chat and verify the task card renders in the `todo` state.
+  4. Click through to the task, `Start` it, return to chat, and verify the card's `data-state` is now `in_progress`.
+  5. `Submit for review` and verify the card's `data-state` flips to `in_review` in place.
+  6. `Mark done` and verify the card collapses to the done pill (`task-event-done-row` visible, `data-state="done"`).
+- Expected: one task → one card; state transitions update the same card without duplication; terminal done swaps to the compact pill view
