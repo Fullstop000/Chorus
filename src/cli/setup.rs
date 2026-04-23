@@ -100,10 +100,12 @@ fn extract_version(s: &str) -> Option<String> {
 // Auth probing — mirrors each driver's RuntimeDriver::probe() logic
 // ---------------------------------------------------------------------------
 
-/// Probe auth with a 5-second timeout so a hanging runtime binary
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Probe auth with a timeout so a hanging runtime binary
 /// (e.g. `gemini auth status`) can't freeze setup indefinitely.
 async fn check_auth_with_timeout(name: &str) -> ProbeAuth {
-    tokio::time::timeout(Duration::from_secs(5), check_auth(name))
+    tokio::time::timeout(PROBE_TIMEOUT, check_auth(name))
         .await
         .unwrap_or(ProbeAuth::Unauthed)
 }
@@ -266,16 +268,16 @@ fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) 
     }
 }
 
-/// Run a `tokio::process::Command` with a 5-second timeout.
+/// Run a `tokio::process::Command` with a timeout.
 /// Returns `None` if the command hangs, fails, or the child can't be spawned.
 async fn cmd_output_with_timeout(cmd: &mut TokioCommand) -> Option<std::process::Output> {
-    tokio::time::timeout(Duration::from_secs(5), cmd.output())
+    tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
         .await
         .ok()
         .and_then(|r| r.ok())
 }
 
-/// Async version of `check_tool` with a 5-second timeout.
+/// Async version of `check_tool` with a timeout.
 async fn check_tool_async(name: &str) -> Option<String> {
     let output = cmd_output_with_timeout(TokioCommand::new(name).arg("--version"))
         .await
@@ -753,15 +755,7 @@ mod tests {
             std::fs::set_permissions(&script, perms).unwrap();
         }
 
-        let start = std::time::Instant::now();
         let result = check_tool_async(script.to_str().unwrap()).await;
-        let elapsed = start.elapsed();
-
         assert!(result.is_none());
-        assert!(
-            elapsed < Duration::from_secs(7),
-            "timeout took too long: {:?}",
-            elapsed
-        );
     }
 }

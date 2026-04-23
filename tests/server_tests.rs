@@ -3021,7 +3021,7 @@ async fn create_channel_rejects_invalid_names() {
     let (store, app) = setup();
     store.create_human("alice").unwrap();
 
-    for bad_name in ["space channel", "channel/name", "channel?", "emoji🎉"] {
+    for bad_name in ["", "space channel", "channel/name", "channel?", "emoji🎉"] {
         let req = serde_json::json!({ "name": bad_name, "description": "" });
         let resp = app
             .clone()
@@ -3029,6 +3029,34 @@ async fn create_channel_rejects_invalid_names() {
                 Request::builder()
                     .method("POST")
                     .uri("/api/channels")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for channel name: {bad_name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_channel_rejects_invalid_names() {
+    let (store, app) = setup();
+    store.create_human("alice").unwrap();
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+
+    for bad_name in ["", "space channel", "channel/name", "channel?", "emoji🎉"] {
+        let req = serde_json::json!({ "name": bad_name, "description": "" });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri(format!("/api/channels/{channel_id}"))
                     .header("content-type", "application/json")
                     .body(Body::from(serde_json::to_vec(&req).unwrap()))
                     .unwrap(),
@@ -3069,4 +3097,30 @@ async fn public_send_rejects_empty_content() {
             content
         );
     }
+}
+
+#[tokio::test]
+async fn public_send_allows_empty_content_with_attachments() {
+    let (store, app) = setup();
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+
+    let req = serde_json::json!({ "content": "", "attachmentIds": ["fake-attachment-id"] });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/conversations/{channel_id}/messages"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // Should not be rejected by the empty-content check.
+    assert_ne!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "empty content with attachments should not be rejected"
+    );
 }
