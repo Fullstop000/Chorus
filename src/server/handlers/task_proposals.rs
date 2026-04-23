@@ -157,6 +157,43 @@ pub async fn accept_task_proposal(
     Ok(Json(accepted.into()))
 }
 
+#[derive(Debug, Deserialize)]
+pub struct InternalProposeBody {
+    pub title: String,
+}
+
+/// Internal endpoint the MCP bridge hits from the `propose_task` tool.
+///
+/// The bridge addresses the channel by name because that's what the agent
+/// sees in the user's message — we resolve to an id here. Error shape
+/// mirrors sibling handlers: store errors surface as 500, a missing channel
+/// is 404, and title validation failures (e.g. empty title) bubble up as
+/// 400 by string-sniffing the anyhow message, same pattern as
+/// `accept_task_proposal`.
+pub async fn internal_agent_propose(
+    State(state): State<AppState>,
+    Path((agent, channel_name)): Path<(String, String)>,
+    Json(body): Json<InternalProposeBody>,
+) -> ApiResult<ProposalView> {
+    let channel = state
+        .store
+        .get_channel_by_name(&channel_name)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "store error: {e}"))?
+        .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "channel not found: {channel_name}"))?;
+    let proposal = state
+        .store
+        .create_task_proposal(&channel.id, &agent, &body.title)
+        .map_err(|e| {
+            let msg = format!("{e}");
+            if msg.contains("title") {
+                app_err!(StatusCode::BAD_REQUEST, "{msg}")
+            } else {
+                app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{msg}")
+            }
+        })?;
+    Ok(Json(proposal.into()))
+}
+
 pub async fn dismiss_task_proposal(
     State(state): State<AppState>,
     Path(id): Path<String>,

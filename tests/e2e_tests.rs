@@ -719,3 +719,39 @@ async fn http_dismiss_already_dismissed_returns_409() {
     let body: serde_json::Value = second.json().await.unwrap();
     assert_eq!(body["code"], "TASK_PROPOSAL_ALREADY_RESOLVED");
 }
+
+#[tokio::test]
+async fn internal_agent_create_proposal_inserts_row_and_card() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let resp = client
+        .post(format!(
+            "{url}/internal/agent/claude/channels/eng/task-proposals"
+        ))
+        .json(&serde_json::json!({ "title": "investigate login 500" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["id"].is_string());
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["title"], "investigate login 500");
+    assert_eq!(body["proposedBy"], "claude");
+}
