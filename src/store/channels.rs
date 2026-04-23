@@ -701,7 +701,10 @@ mod task_channel_tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(sub_count, 0, "task sub-channels must be deleted with parent");
+        assert_eq!(
+            sub_count, 0,
+            "task sub-channels must be deleted with parent"
+        );
 
         let task_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))

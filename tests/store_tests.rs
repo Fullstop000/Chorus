@@ -180,7 +180,12 @@ fn test_shell_style_workspace_mutations_persist() {
 fn test_create_and_list_channels() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", Some("General channel"), ChannelType::Channel, None)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store
         .create_channel("random", None, ChannelType::Channel, None)
@@ -1155,7 +1160,12 @@ fn test_dm_channels() {
 fn test_update_channel_preserves_id_and_metadata() {
     let (store, dir) = make_store();
     let channel_id = store
-        .create_channel("general", Some("General channel"), ChannelType::Channel, None)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
 
     store
@@ -1185,7 +1195,12 @@ fn test_update_channel_preserves_id_and_metadata() {
 fn test_archive_channel_hides_it_from_active_listings() {
     let (store, _dir) = make_store();
     let channel_id = store
-        .create_channel("general", Some("General channel"), ChannelType::Channel, None)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1215,7 +1230,12 @@ fn test_archive_channel_hides_it_from_active_listings() {
 fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", Some("General channel"), ChannelType::Channel, None)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("alice").unwrap();
     store

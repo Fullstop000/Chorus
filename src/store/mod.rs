@@ -253,10 +253,7 @@ impl Store {
 /// stricter handling should validate before calling. Lives at module scope
 /// (not on `Store`) so it can run inside a `rusqlite::Transaction` borrow
 /// without re-locking the store's `Mutex<Connection>`.
-pub(crate) fn resolve_sender_type_inner(
-    conn: &Connection,
-    name: &str,
-) -> Result<SenderType> {
+pub(crate) fn resolve_sender_type_inner(conn: &Connection, name: &str) -> Result<SenderType> {
     let is_agent: bool = conn
         .prepare("SELECT 1 FROM agents WHERE name = ?1")?
         .exists(params![name])?;

@@ -442,7 +442,9 @@ async fn list_tasks_returns_sub_channel_info() {
     // machines (the public endpoint stamps `whoami::username()`, which isn't
     // useful for an assertion).
     store.create_human("alice").unwrap();
-    store.create_tasks("general", "alice", &["Ship it"]).unwrap();
+    store
+        .create_tasks("general", "alice", &["Ship it"])
+        .unwrap();
 
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     let resp: serde_json::Value = client
@@ -469,7 +471,9 @@ async fn get_task_detail_returns_task_and_sub_channel() {
     let client = reqwest::Client::new();
 
     store.create_human("alice").unwrap();
-    store.create_tasks("general", "alice", &["Ship it"]).unwrap();
+    store
+        .create_tasks("general", "alice", &["Ship it"])
+        .unwrap();
 
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     let resp = client

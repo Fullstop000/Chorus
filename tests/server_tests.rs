@@ -840,7 +840,12 @@ async fn test_list_channels_honors_search_params() {
     let (store, app) = setup();
     store.ensure_builtin_channels("alice").unwrap();
     store
-        .create_channel("engineering", Some("Engineering"), ChannelType::Channel, None)
+        .create_channel(
+            "engineering",
+            Some("Engineering"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store
         .create_channel("eng-team", Some("Engineering"), ChannelType::Team, None)

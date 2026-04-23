@@ -406,7 +406,10 @@ mod backfill_tests {
     use super::*;
     use rusqlite::Connection;
 
-    fn bootstrap_pre_migration_db_with_creator(creator_name: &str, creator_table: &str) -> Connection {
+    fn bootstrap_pre_migration_db_with_creator(
+        creator_name: &str,
+        creator_table: &str,
+    ) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         // Bare-minimum pre-migration schema — channels and tasks WITHOUT the new columns.
         conn.execute_batch(
@@ -467,11 +470,9 @@ mod backfill_tests {
             )
             .unwrap();
         let sub_name: String = conn
-            .query_row(
-                "SELECT name FROM channels WHERE id = ?1",
-                [&sub_id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT name FROM channels WHERE id = ?1", [&sub_id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(sub_name, "eng__task-1");
         let is_member: i64 = conn

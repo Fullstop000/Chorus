@@ -209,11 +209,7 @@ impl Store {
     /// Fetch a single task by `(channel_name, task_number)`. Returns `Ok(None)`
     /// when the task doesn't exist so the HTTP handler can map it to 404 —
     /// a missing channel still surfaces as an error (real misconfiguration).
-    pub fn get_task_info(
-        &self,
-        channel_name: &str,
-        task_number: i64,
-    ) -> Result<Option<TaskInfo>> {
+    pub fn get_task_info(&self, channel_name: &str, task_number: i64) -> Result<Option<TaskInfo>> {
         let conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
@@ -571,7 +567,10 @@ mod sub_channel_tests {
             .expect("sub-channel row exists");
         assert_eq!(sub.channel_type, ChannelType::Task);
         assert_eq!(sub.name, "eng__task-1");
-        assert_eq!(sub.parent_channel_id.as_deref(), Some(parent_channel_id.as_str()));
+        assert_eq!(
+            sub.parent_channel_id.as_deref(),
+            Some(parent_channel_id.as_str())
+        );
 
         assert!(
             store.channel_member_exists(&sub_id, "alice").unwrap(),
