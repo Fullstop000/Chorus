@@ -130,6 +130,51 @@ async fn agent_delete_refuses_non_interactive_without_yes() {
 }
 
 #[tokio::test]
+async fn agent_delete_with_wipe() {
+    let url = start_fixture().await;
+
+    // Create
+    let out = run_agent(&[
+        "create",
+        "wipebot",
+        "--runtime",
+        AgentRuntime::Claude.as_str(),
+        "--model",
+        "sonnet",
+        "--server-url",
+        &url,
+    ])
+    .await;
+    assert!(
+        out.status.success(),
+        "create failed: stdout={} stderr={}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+
+    // Delete with --wipe --yes
+    let out = run_agent(&["delete", "wipebot", "--wipe", "--yes", "--server-url", &url]).await;
+    assert!(
+        out.status.success(),
+        "delete --wipe failed: stdout={} stderr={}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+    assert!(
+        combined(&out).contains("deleted"),
+        "expected 'deleted' in output, got: {}",
+        combined(&out)
+    );
+
+    // Get after delete should fail
+    let out = run_agent(&["get", "wipebot", "--server-url", &url]).await;
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit after delete --wipe"
+    );
+}
+
+#[tokio::test]
 async fn agent_crud_lifecycle() {
     let url = start_fixture().await;
 

@@ -9,8 +9,9 @@
 use std::io::{BufRead, IsTerminal, Write};
 
 use super::{default_model_for_runtime, AgentCommands};
+use anyhow::Context;
 
-fn find_agent_id_by_name(agents: &[serde_json::Value], name: &str) -> anyhow::Result<String> {
+fn resolve_agent_id(agents: &[serde_json::Value], name: &str) -> anyhow::Result<String> {
     // First: exact match on canonical name (strongest identity).
     if let Some(id) = agents.iter().find_map(|agent| {
         (agent.get("name").and_then(|v| v.as_str()) == Some(name))
@@ -35,6 +36,27 @@ fn find_agent_id_by_name(agents: &[serde_json::Value], name: &str) -> anyhow::Re
             display_matches.len()
         ),
     }
+}
+
+async fn fetch_agent_list(
+    client: &reqwest::Client,
+    server_url: &str,
+) -> anyhow::Result<Vec<serde_json::Value>> {
+    let res = client
+        .get(format!("{server_url}/api/agents"))
+        .send()
+        .await?;
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        anyhow::bail!(
+            "server returned {status} while listing agents: {}",
+            super::channel::surface_http_error(status, &body)
+        );
+    }
+    let agents: Vec<serde_json::Value> = serde_json::from_str(&body)
+        .with_context(|| format!("unexpected agent list response from {server_url}"))?;
+    Ok(agents)
 }
 
 pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
@@ -66,11 +88,15 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 .send()
                 .await?;
             let status = res.status();
+            let body = res.text().await.unwrap_or_default();
             if !status.is_success() {
-                let body = res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {status}: {body}");
+                anyhow::bail!(
+                    "server returned {status}: {}",
+                    super::channel::surface_http_error(status, &body)
+                );
             }
-            let data: serde_json::Value = res.json().await?;
+            let data: serde_json::Value = serde_json::from_str(&body)
+                .with_context(|| format!("unexpected create response from {server_url}"))?;
             let agent_name = data.get("name").and_then(|v| v.as_str()).unwrap_or("?");
             tracing::info!("Agent @{agent_name} created (runtime: {runtime}, model: {model}).");
             Ok(())
@@ -78,25 +104,19 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         AgentCommands::Stop { name, server_url } => {
             tracing::info!("Stopping agent @{name}...");
             let client = chorus::utils::http::client();
-            let list_res = client
-                .get(format!("{server_url}/api/agents"))
-                .send()
-                .await?;
-            let list_status = list_res.status();
-            if !list_status.is_success() {
-                let body = list_res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {list_status} while listing agents: {body}");
-            }
-            let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)?;
+            let agents = fetch_agent_list(&client, &server_url).await?;
+            let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/stop"))
                 .send()
                 .await?;
             let status = res.status();
+            let body = res.text().await.unwrap_or_default();
             if !status.is_success() {
-                let body = res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {status}: {body}");
+                anyhow::bail!(
+                    "server returned {status}: {}",
+                    super::channel::surface_http_error(status, &body)
+                );
             }
             tracing::info!("Agent @{name} stopped.");
             Ok(())
@@ -125,30 +145,25 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         }
         AgentCommands::Get { name, server_url } => {
             let client = chorus::utils::http::client();
-            let list_res = client
-                .get(format!("{server_url}/api/agents"))
-                .send()
-                .await?;
-            let list_status = list_res.status();
-            if !list_status.is_success() {
-                let body = list_res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {list_status} while listing agents: {body}");
-            }
-            let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)?;
+            let agents = fetch_agent_list(&client, &server_url).await?;
+            let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
                 .get(format!("{server_url}/api/agents/{agent_id}"))
                 .send()
                 .await?;
             let status = res.status();
+            let body = res.text().await.unwrap_or_default();
             if !status.is_success() {
-                let body = res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {status}: {body}");
+                anyhow::bail!(
+                    "server returned {status}: {}",
+                    super::channel::surface_http_error(status, &body)
+                );
             }
-            let data: serde_json::Value = res.json().await?;
+            let data: serde_json::Value = serde_json::from_str(&body)
+                .with_context(|| format!("unexpected get response from {server_url}"))?;
             if let Some(agent) = data.get("agent") {
                 let id = agent.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-                let name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                let agent_name = agent.get("name").and_then(|v| v.as_str()).unwrap_or("?");
                 let runtime = agent.get("runtime").and_then(|v| v.as_str()).unwrap_or("?");
                 let model = agent.get("model").and_then(|v| v.as_str()).unwrap_or("?");
                 let status = agent.get("status").and_then(|v| v.as_str()).unwrap_or("?");
@@ -156,7 +171,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                     .get("description")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                tracing::info!("Agent @{name}");
+                tracing::info!("Agent @{agent_name}");
                 tracing::info!("  id:          {id}");
                 tracing::info!("  runtime:     {runtime}");
                 tracing::info!("  model:       {model}");
@@ -172,25 +187,19 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         AgentCommands::Start { name, server_url } => {
             tracing::info!("Starting agent @{name}...");
             let client = chorus::utils::http::client();
-            let list_res = client
-                .get(format!("{server_url}/api/agents"))
-                .send()
-                .await?;
-            let list_status = list_res.status();
-            if !list_status.is_success() {
-                let body = list_res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {list_status} while listing agents: {body}");
-            }
-            let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)?;
+            let agents = fetch_agent_list(&client, &server_url).await?;
+            let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/start"))
                 .send()
                 .await?;
             let status = res.status();
+            let body = res.text().await.unwrap_or_default();
             if !status.is_success() {
-                let body = res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {status}: {body}");
+                anyhow::bail!(
+                    "server returned {status}: {}",
+                    super::channel::surface_http_error(status, &body)
+                );
             }
             tracing::info!("Agent @{name} started.");
             Ok(())
@@ -202,26 +211,20 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         } => {
             tracing::info!("Restarting agent @{name} (mode: {mode})...");
             let client = chorus::utils::http::client();
-            let list_res = client
-                .get(format!("{server_url}/api/agents"))
-                .send()
-                .await?;
-            let list_status = list_res.status();
-            if !list_status.is_success() {
-                let body = list_res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {list_status} while listing agents: {body}");
-            }
-            let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)?;
+            let agents = fetch_agent_list(&client, &server_url).await?;
+            let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/restart"))
                 .json(&serde_json::json!({ "mode": mode.as_str() }))
                 .send()
                 .await?;
             let status = res.status();
+            let body = res.text().await.unwrap_or_default();
             if !status.is_success() {
-                let body = res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {status}: {body}");
+                anyhow::bail!(
+                    "server returned {status}: {}",
+                    super::channel::surface_http_error(status, &body)
+                );
             }
             tracing::info!("Agent @{name} restarted.");
             Ok(())
@@ -261,17 +264,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
 
             tracing::info!("Deleting agent @{name}...");
             let client = chorus::utils::http::client();
-            let list_res = client
-                .get(format!("{server_url}/api/agents"))
-                .send()
-                .await?;
-            let list_status = list_res.status();
-            if !list_status.is_success() {
-                let body = list_res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {list_status} while listing agents: {body}");
-            }
-            let agents: Vec<serde_json::Value> = list_res.json().await?;
-            let agent_id = find_agent_id_by_name(&agents, &name)?;
+            let agents = fetch_agent_list(&client, &server_url).await?;
+            let agent_id = resolve_agent_id(&agents, &name)?;
             let mode = if wipe {
                 "delete_workspace"
             } else {
@@ -283,11 +277,15 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 .send()
                 .await?;
             let status = res.status();
+            let body = res.text().await.unwrap_or_default();
             if !status.is_success() {
-                let body = res.text().await.unwrap_or_default();
-                anyhow::bail!("server returned {status}: {body}");
+                anyhow::bail!(
+                    "server returned {status}: {}",
+                    super::channel::surface_http_error(status, &body)
+                );
             }
-            let data: serde_json::Value = res.json().await?;
+            let data: serde_json::Value = serde_json::from_str(&body)
+                .with_context(|| format!("unexpected delete response from {server_url}"))?;
             if let Some(warning) = data.get("warning").and_then(|v| v.as_str()) {
                 if wipe {
                     anyhow::bail!("Agent deleted but workspace cleanup failed: {warning}");
