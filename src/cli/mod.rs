@@ -154,6 +154,35 @@ pub(crate) enum AgentCommands {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
+    /// Show agent details
+    Get {
+        name: String,
+        #[arg(long, default_value = "http://localhost:3001")]
+        server_url: String,
+    },
+    /// Start a sleeping agent
+    Start {
+        name: String,
+        #[arg(long, default_value = "http://localhost:3001")]
+        server_url: String,
+    },
+    /// Restart an agent
+    Restart {
+        name: String,
+        #[arg(long, default_value = "restart")]
+        mode: String,
+        #[arg(long, default_value = "http://localhost:3001")]
+        server_url: String,
+    },
+    /// Delete an agent
+    Delete {
+        name: String,
+        /// Also delete the agent's workspace directory
+        #[arg(long)]
+        wipe: bool,
+        #[arg(long, default_value = "http://localhost:3001")]
+        server_url: String,
+    },
 }
 
 /// Subdirectory inside the data dir root that holds SQLite + per-agent/team
