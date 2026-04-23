@@ -3,7 +3,7 @@
  *   .task-event-thread[data-state="<status>"]  → outer state machine
  *   .task-event-status[data-status="<status>"] → colored status pill
  *   .task-event-card[data-claimed="true|false"] → claimer row visibility
- *   .task-event-ev.show                         → timeline event entry
+ *   .task-event-ev.is-show                      → timeline event entry
  *
  * State transitions are 100% CSS — React only toggles data attributes.
  * Ported from the variant-d.html prototype with a `task-event-*` prefix on
