@@ -847,3 +847,59 @@ async fn bridge_receive_messages_formats_task_event_messages() {
         received
     );
 }
+
+// ---------------------------------------------------------------------------
+// propose_task backend tool
+// ---------------------------------------------------------------------------
+
+/// Exercises the `Backend::propose_task` HTTP path end-to-end: the bridge
+/// POSTs to the Chorus server's internal agent-propose endpoint and the row
+/// lands in the store. Mirrors the direct-backend pattern used in
+/// `bridge_read_history_formats_task_event_messages` — there's no
+/// `call_tool` harness in this file, and the MCP wiring is already exercised
+/// by `bridge_sends_message_to_chorus_server`; going direct keeps this test
+/// focused on the new codepath.
+#[tokio::test]
+async fn bridge_propose_task_creates_row_and_returns_json() {
+    use chorus::bridge::backend::{Backend, ChorusBackend};
+
+    let (server_url, store) = start_chorus_server().await;
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let backend = ChorusBackend::new(server_url);
+    let result_json = backend
+        .propose_task("claude", "eng", "fix login")
+        .await
+        .expect("propose_task should succeed");
+
+    let result: serde_json::Value =
+        serde_json::from_str(&result_json).expect("response should be JSON");
+    let id = result["id"]
+        .as_str()
+        .expect("response should carry an id string");
+    assert_eq!(result["status"], "pending");
+    assert_eq!(result["title"], "fix login");
+    assert_eq!(result["proposedBy"], "claude");
+
+    // Row landed in the store.
+    let p = store
+        .get_task_proposal_by_id(id)
+        .unwrap()
+        .expect("proposal row should exist");
+    assert_eq!(p.title, "fix login");
+    assert_eq!(p.proposed_by, "claude");
+}

@@ -92,3 +92,13 @@ pub(super) struct ViewFileParams {
     /// The attachment UUID (from the 'id:...' shown in the message)
     pub(super) attachment_id: String,
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ProposeTaskParams {
+    /// Channel where the user delegated the work. Use the channel name the
+    /// user addressed with @mention (e.g. "eng").
+    pub(super) channel: String,
+    /// Short title for the task the user seems to want. Aim for one clause:
+    /// "investigate login 500", "write integration tests for X", etc.
+    pub(super) title: String,
+}

@@ -114,6 +114,14 @@ pub trait Backend: Send + Sync {
 
     /// View/download a file attachment.
     async fn view_file(&self, agent_key: &str, attachment_id: &str) -> Result<String, BridgeError>;
+
+    /// Create a pending task proposal in a channel.
+    async fn propose_task(
+        &self,
+        agent_key: &str,
+        channel: &str,
+        title: &str,
+    ) -> Result<String, BridgeError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1126,6 +1134,41 @@ impl Backend for ChorusBackend {
             "Downloaded to: {}\n\nUse your Read tool to view this image.",
             file_path.to_string_lossy()
         ))
+    }
+
+    async fn propose_task(
+        &self,
+        agent_key: &str,
+        channel: &str,
+        title: &str,
+    ) -> Result<String, BridgeError> {
+        let body = serde_json::json!({ "title": title });
+        let url = format!(
+            "{}/channels/{}/task-proposals",
+            self.base_url(agent_key),
+            urlencoding::encode(channel)
+        );
+        let res = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
+
+        if !res.status().is_success() {
+            let status = res.status().as_u16();
+            let body = res.text().await.unwrap_or_default();
+            return Err(BridgeError::ServerError { status, body });
+        }
+
+        res.text().await.map_err(|e| BridgeError::ServerError {
+            status: 0,
+            body: format!("invalid response body: {e}"),
+        })
     }
 }
 

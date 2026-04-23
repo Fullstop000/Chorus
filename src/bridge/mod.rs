@@ -137,6 +137,24 @@ impl ChatBridge {
     }
 
     #[tool(
+        description = "Propose a task to the user. Use when the user delegates \
+                       substantial work to you in chat (\"investigate the bug\", \
+                       \"ship a feature\", \"write X\"). Do NOT use for quick \
+                       questions. After you call this, WAIT — the user must \
+                       click Create before you start work. You'll be woken in \
+                       the new task sub-channel once accepted."
+    )]
+    async fn propose_task(
+        &self,
+        Parameters(params): Parameters<ProposeTaskParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        self.backend
+            .propose_task(&self.agent_id, &params.channel, &params.title)
+            .await
+            .map_err(Into::into)
+    }
+
+    #[tool(
         description = "Claim one or more tasks by their number. Returns which claims succeeded and which failed."
     )]
     async fn claim_tasks(
