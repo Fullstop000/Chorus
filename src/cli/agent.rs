@@ -195,7 +195,11 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             tracing::info!("Agent @{name} started.");
             Ok(())
         }
-        AgentCommands::Restart { name, mode, server_url } => {
+        AgentCommands::Restart {
+            name,
+            mode,
+            server_url,
+        } => {
             tracing::info!("Restarting agent @{name} (mode: {mode})...");
             let client = chorus::utils::http::client();
             let list_res = client
@@ -222,7 +226,12 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             tracing::info!("Agent @{name} restarted.");
             Ok(())
         }
-        AgentCommands::Delete { name, wipe, yes, server_url } => {
+        AgentCommands::Delete {
+            name,
+            wipe,
+            yes,
+            server_url,
+        } => {
             if !yes {
                 let display_name = if wipe {
                     format!("{name} (with --wipe)")
@@ -263,7 +272,11 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             }
             let agents: Vec<serde_json::Value> = list_res.json().await?;
             let agent_id = find_agent_id_by_name(&agents, &name)?;
-            let mode = if wipe { "delete_workspace" } else { "preserve_workspace" };
+            let mode = if wipe {
+                "delete_workspace"
+            } else {
+                "preserve_workspace"
+            };
             let res = client
                 .post(format!("{server_url}/api/agents/{agent_id}/delete"))
                 .json(&serde_json::json!({ "mode": mode }))

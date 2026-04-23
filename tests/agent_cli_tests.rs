@@ -54,7 +54,10 @@ async fn agent_get_not_found() {
     let url = start_fixture().await;
 
     let out = run_agent(&["get", "nope", "--server-url", &url]).await;
-    assert!(!out.status.success(), "expected non-zero exit for unknown agent");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for unknown agent"
+    );
     let err = combined(&out);
     assert!(
         err.contains("agent not found: nope"),
@@ -67,7 +70,10 @@ async fn agent_start_not_found() {
     let url = start_fixture().await;
 
     let out = run_agent(&["start", "nope", "--server-url", &url]).await;
-    assert!(!out.status.success(), "expected non-zero exit for unknown agent");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for unknown agent"
+    );
     let err = combined(&out);
     assert!(
         err.contains("agent not found: nope"),
@@ -80,7 +86,10 @@ async fn agent_restart_not_found() {
     let url = start_fixture().await;
 
     let out = run_agent(&["restart", "nope", "--server-url", &url]).await;
-    assert!(!out.status.success(), "expected non-zero exit for unknown agent");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for unknown agent"
+    );
     let err = combined(&out);
     assert!(
         err.contains("agent not found: nope"),
@@ -93,7 +102,10 @@ async fn agent_delete_not_found() {
     let url = start_fixture().await;
 
     let out = run_agent(&["delete", "nope", "--yes", "--server-url", &url]).await;
-    assert!(!out.status.success(), "expected non-zero exit for unknown agent");
+    assert!(
+        !out.status.success(),
+        "expected non-zero exit for unknown agent"
+    );
     let err = combined(&out);
     assert!(
         err.contains("agent not found: nope"),
@@ -187,7 +199,15 @@ async fn agent_crud_lifecycle() {
     );
 
     // Restart with reset_session mode
-    let out = run_agent(&["restart", "testbot", "--mode", "reset-session", "--server-url", &url]).await;
+    let out = run_agent(&[
+        "restart",
+        "testbot",
+        "--mode",
+        "reset-session",
+        "--server-url",
+        &url,
+    ])
+    .await;
     assert!(
         out.status.success(),
         "restart reset_session failed: stdout={} stderr={}",
