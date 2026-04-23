@@ -2135,6 +2135,14 @@ fn get_task_proposal_by_id_roundtrips() {
     assert_eq!(loaded.title, "fix login");
     assert_eq!(loaded.status, TaskProposalStatus::Pending);
     assert_eq!(loaded.proposed_by, "claude");
+    assert_eq!(loaded.channel_id, channel_id);
+    assert_eq!(loaded.accepted_task_number, None);
+    assert_eq!(loaded.accepted_sub_channel_id, None);
+    assert_eq!(loaded.resolved_by, None);
+    assert_eq!(loaded.resolved_at, None);
+    // created_at sanity: within a few seconds of "now"
+    let now = chrono::Utc::now();
+    assert!((now - loaded.created_at).num_seconds().abs() < 5);
 }
 
 #[test]

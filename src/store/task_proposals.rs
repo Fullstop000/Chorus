@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, types::Type, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -59,6 +59,65 @@ pub struct TaskProposal {
     /// Member name that accepted or dismissed.
     pub resolved_by: Option<String>,
     pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl TaskProposal {
+    /// Parse the standard 10-column `task_proposals` row: id, channel_id,
+    /// proposed_by, title, status, created_at, accepted_task_number,
+    /// accepted_sub_channel_id, resolved_by, resolved_at.
+    ///
+    /// Returns a data-integrity error naming the offending proposal id when
+    /// the stored `status` is not one of the allowed variants or when a
+    /// timestamp does not parse as RFC 3339, so a live-DB debugger can
+    /// pinpoint the bad row.
+    pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
+        let id: String = row.get(0)?;
+        let status_s: String = row.get(4)?;
+        let status = TaskProposalStatus::from_status_str(&status_s).ok_or_else(|| {
+            rusqlite::Error::FromSqlConversionFailure(
+                4,
+                Type::Text,
+                format!("invalid task_proposals.status for id={id}: {status_s}").into(),
+            )
+        })?;
+        let created_at_s: String = row.get(5)?;
+        let created_at = chrono::DateTime::parse_from_rfc3339(&created_at_s)
+            .map(|dt| dt.with_timezone(&chrono::Utc))
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    5,
+                    Type::Text,
+                    format!("invalid task_proposals.created_at for id={id}: {e}").into(),
+                )
+            })?;
+        let resolved_at_s: Option<String> = row.get(9)?;
+        let resolved_at = resolved_at_s
+            .as_deref()
+            .map(|s| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .map(|dt| dt.with_timezone(&chrono::Utc))
+                    .map_err(|e| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            9,
+                            Type::Text,
+                            format!("invalid task_proposals.resolved_at for id={id}: {e}").into(),
+                        )
+                    })
+            })
+            .transpose()?;
+        Ok(Self {
+            id,
+            channel_id: row.get(1)?,
+            proposed_by: row.get(2)?,
+            title: row.get(3)?,
+            status,
+            created_at,
+            accepted_task_number: row.get(6)?,
+            accepted_sub_channel_id: row.get(7)?,
+            resolved_by: row.get(8)?,
+            resolved_at,
+        })
+    }
 }
 
 impl Store {
@@ -132,48 +191,8 @@ impl Store {
                     resolved_by, resolved_at \
              FROM task_proposals WHERE id = ?1",
         )?;
-        let row = stmt
-            .query_row(params![id], |r| {
-                let status_s: String = r.get(4)?;
-                let created_at_s: String = r.get(5)?;
-                let resolved_at_s: Option<String> = r.get(9)?;
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, String>(2)?,
-                    r.get::<_, String>(3)?,
-                    status_s,
-                    created_at_s,
-                    r.get::<_, Option<i64>>(6)?,
-                    r.get::<_, Option<String>>(7)?,
-                    r.get::<_, Option<String>>(8)?,
-                    resolved_at_s,
-                ))
-            })
-            .optional()?;
-        let Some(row) = row else { return Ok(None) };
-        let status = TaskProposalStatus::from_status_str(&row.4)
-            .ok_or_else(|| anyhow!("invalid status in task_proposals row: {}", row.4))?;
-        let created_at = chrono::DateTime::parse_from_rfc3339(&row.5)
-            .map_err(|e| anyhow!("bad created_at: {e}"))?
-            .with_timezone(&chrono::Utc);
-        let resolved_at = row
-            .9
-            .as_deref()
-            .map(|s| chrono::DateTime::parse_from_rfc3339(s).map(|dt| dt.with_timezone(&chrono::Utc)))
-            .transpose()
-            .map_err(|e| anyhow!("bad resolved_at: {e}"))?;
-        Ok(Some(TaskProposal {
-            id: row.0,
-            channel_id: row.1,
-            proposed_by: row.2,
-            title: row.3,
-            status,
-            created_at,
-            accepted_task_number: row.6,
-            accepted_sub_channel_id: row.7,
-            resolved_by: row.8,
-            resolved_at,
-        }))
+        stmt.query_row(params![id], TaskProposal::from_row)
+            .optional()
+            .map_err(anyhow::Error::from)
     }
 }
