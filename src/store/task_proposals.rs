@@ -1,5 +1,10 @@
+use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::store::Store;
 
 /// Lifecycle state of a task proposal. A proposal starts `Pending`, then
 /// transitions exactly once to `Accepted` (the user clicked create) or
@@ -54,4 +59,67 @@ pub struct TaskProposal {
     /// Member name that accepted or dismissed.
     pub resolved_by: Option<String>,
     pub resolved_at: Option<DateTime<Utc>>,
+}
+
+impl Store {
+    /// Create a new pending task proposal and post a companion
+    /// `kind: "task_proposal"` chat message into the parent channel so the
+    /// UI can render a card. Row + message are inserted in one transaction.
+    pub fn create_task_proposal(
+        &self,
+        channel_id: &str,
+        proposed_by: &str,
+        title: &str,
+    ) -> Result<TaskProposal> {
+        let trimmed = title.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow!("task proposal title must not be empty"));
+        }
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
+            .ok_or_else(|| anyhow!("channel not found: {channel_id}"))?;
+
+        let id = Uuid::new_v4().to_string();
+        let now = chrono::Utc::now();
+        let now_iso = now.to_rfc3339();
+        tx.execute(
+            "INSERT INTO task_proposals \
+             (id, channel_id, proposed_by, title, status, created_at) \
+             VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
+            params![id, channel.id, proposed_by, trimmed, now_iso],
+        )?;
+
+        let payload = serde_json::json!({
+            "kind": "task_proposal",
+            "proposalId": id,
+            "status": "pending",
+            "title": trimmed,
+            "proposedBy": proposed_by,
+            "proposedAt": now_iso,
+            "taskNumber": serde_json::Value::Null,
+            "subChannelId": serde_json::Value::Null,
+            "subChannelName": serde_json::Value::Null,
+        });
+        let content = payload.to_string();
+        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+        let pending = vec![(inserted, content)];
+        tx.commit()?;
+        drop(conn);
+
+        self.emit_system_stream_events(&channel, pending)?;
+
+        Ok(TaskProposal {
+            id,
+            channel_id: channel.id,
+            proposed_by: proposed_by.to_string(),
+            title: trimmed.to_string(),
+            status: TaskProposalStatus::Pending,
+            created_at: now,
+            accepted_task_number: None,
+            accepted_sub_channel_id: None,
+            resolved_by: None,
+            resolved_at: None,
+        })
+    }
 }

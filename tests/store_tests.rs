@@ -1,6 +1,7 @@
 use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
+use chorus::store::task_proposals::TaskProposalStatus;
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
 use rusqlite::{params, Connection};
@@ -2054,4 +2055,64 @@ fn create_tasks_still_creates_sub_channel_and_enrolls_creator() {
         )
         .unwrap();
     assert_eq!(row, 1);
+}
+
+#[test]
+fn create_task_proposal_inserts_row_and_posts_chat_message() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let proposal = store
+        .create_task_proposal(&channel_id, "claude", "investigate login 500")
+        .unwrap();
+    assert_eq!(proposal.status, TaskProposalStatus::Pending);
+    assert_eq!(proposal.title, "investigate login 500");
+    assert_eq!(proposal.proposed_by, "claude");
+
+    // A kind="task_proposal" system message lands in the channel.
+    let content: String = store
+        .conn_for_test()
+        .query_row(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' \
+             ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![channel_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(value["kind"], "task_proposal");
+    assert_eq!(value["proposalId"], proposal.id);
+    assert_eq!(value["status"], "pending");
+    assert_eq!(value["title"], "investigate login 500");
+    assert_eq!(value["proposedBy"], "claude");
+}
+
+#[test]
+fn create_task_proposal_rejects_empty_title() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let err = store
+        .create_task_proposal(&channel_id, "claude", "   ")
+        .unwrap_err();
+    assert!(
+        format!("{err}").contains("title"),
+        "expected 'title' in error: {err}"
+    );
 }
