@@ -625,7 +625,10 @@ async fn http_accept_task_proposal_returns_task_coords() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["taskNumber"], 1);
     assert!(body["subChannelId"].is_string());
-    assert!(body["subChannelName"].as_str().unwrap().ends_with("__task-1"));
+    assert!(body["subChannelName"]
+        .as_str()
+        .unwrap()
+        .ends_with("__task-1"));
 }
 
 #[tokio::test]

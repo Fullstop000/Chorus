@@ -2238,9 +2238,10 @@ fn accept_task_proposal_creates_task_claims_it_and_marks_accepted() {
              WHERE channel_id = ?1 ORDER BY member_name",
         )
         .unwrap()
-        .query_map(rusqlite::params![got.accepted_sub_channel_id.unwrap()], |r| {
-            r.get::<_, String>(0)
-        })
+        .query_map(
+            rusqlite::params![got.accepted_sub_channel_id.unwrap()],
+            |r| r.get::<_, String>(0),
+        )
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();

@@ -165,15 +165,14 @@ impl Store {
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
             let task_number = max_num + 1 + i as i64;
-            let (_task_id, sub_channel_id, sub_channel_name) =
-                Self::insert_task_and_subchannel_tx(
-                    &tx,
-                    &channel,
-                    creator_name,
-                    creator_type,
-                    title,
-                    task_number,
-                )?;
+            let (_task_id, sub_channel_id, sub_channel_name) = Self::insert_task_and_subchannel_tx(
+                &tx,
+                &channel,
+                creator_name,
+                creator_type,
+                title,
+                task_number,
+            )?;
 
             // Emit task_event inside the same tx so the task row and its
             // visibility-in-chat commit atomically.

@@ -244,17 +244,13 @@ impl Store {
         // After the status flip, append a `status=dismissed` snapshot so
         // the chat log reflects the terminal state and the UI fold picks
         // it up. Load fields from the updated row first.
-        let (channel_id, proposed_by, title, created_at): (
-            String,
-            String,
-            String,
-            String,
-        ) = tx.query_row(
-            "SELECT channel_id, proposed_by, title, created_at \
+        let (channel_id, proposed_by, title, created_at): (String, String, String, String) = tx
+            .query_row(
+                "SELECT channel_id, proposed_by, title, created_at \
              FROM task_proposals WHERE id = ?1",
-            params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )?;
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )?;
         let channel = Self::get_channel_by_id_inner(&tx, &channel_id)?
             .ok_or_else(|| anyhow!("channel vanished: {channel_id}"))?;
         let snapshot = serde_json::json!({
@@ -271,8 +267,7 @@ impl Store {
             "resolvedAt": now,
         });
         let snapshot_content = snapshot.to_string();
-        let snapshot_inserted =
-            Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
+        let snapshot_inserted = Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
         let pending = vec![(snapshot_inserted, snapshot_content)];
 
         tx.commit()?;
@@ -286,11 +281,7 @@ impl Store {
     /// proposer agent. Enrolls the accepter human in the sub-channel so
     /// they can follow along. Does NOT emit a `task_event` create/claim
     /// pair — the proposal card already carries that signal (scope 1b).
-    pub fn accept_task_proposal(
-        &self,
-        id: &str,
-        accepter: &str,
-    ) -> Result<AcceptedTaskProposal> {
+    pub fn accept_task_proposal(&self, id: &str, accepter: &str) -> Result<AcceptedTaskProposal> {
         use rusqlite::TransactionBehavior;
 
         let mut conn = self.conn.lock().unwrap();
@@ -339,15 +330,14 @@ impl Store {
         // its sender type via the existing helper that handles both kinds.
         let proposer_type = crate::store::resolve_sender_type_inner(&tx, &proposed_by)?;
 
-        let (task_id, sub_channel_id, sub_channel_name) =
-            Self::insert_task_and_subchannel_tx(
-                &tx,
-                &channel,
-                &proposed_by,
-                proposer_type,
-                &title,
-                task_number,
-            )?;
+        let (task_id, sub_channel_id, sub_channel_name) = Self::insert_task_and_subchannel_tx(
+            &tx,
+            &channel,
+            &proposed_by,
+            proposer_type,
+            &title,
+            task_number,
+        )?;
 
         // Auto-claim to the proposer (move status Todo → InProgress) and
         // set claimed_by. Mirrors the update_tasks_claim write but without
@@ -391,8 +381,7 @@ impl Store {
             "Task #{task_number} opened: {title}. {proposed_by}, you proposed \
              this — start here and ask any clarifying questions in this channel."
         );
-        let kickoff_inserted =
-            Self::create_system_message_tx(&tx, &sub_channel, &kickoff)?;
+        let kickoff_inserted = Self::create_system_message_tx(&tx, &sub_channel, &kickoff)?;
         let kickoff_message_id = kickoff_inserted.id.clone();
 
         // Collect pending events so we can emit the WS events after commit.
@@ -417,8 +406,7 @@ impl Store {
             "resolvedAt": now,
         });
         let snapshot_content = snapshot.to_string();
-        let parent_snapshot =
-            Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
+        let parent_snapshot = Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
         let pending_parent = vec![(parent_snapshot, snapshot_content)];
 
         tx.commit()?;
