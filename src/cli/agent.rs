@@ -252,7 +252,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 if locked.read_line(&mut line).is_err() {
                     anyhow::bail!("Abort.");
                 }
-                let trimmed = line.trim_end_matches(['\r', '\n']);
+                let trimmed = line.trim();
                 if !matches!(trimmed, "y" | "Y") {
                     tracing::info!("Aborted.");
                     return Ok(());
