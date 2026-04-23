@@ -1704,3 +1704,38 @@ fn task_event_payload_serializes_none_fields_as_json_null() {
     assert_eq!(parsed["action"], "created");
     assert_eq!(parsed["nextStatus"], "todo");
 }
+
+#[test]
+fn create_tasks_emits_task_event_to_parent_channel() {
+    let (store, _dir) = make_store();
+    let parent_id = store
+        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store.join_channel("eng", "bob", chorus::store::messages::types::SenderType::Human).unwrap();
+
+    let result = store
+        .create_tasks("eng", "bob", &["wire up the bridge"])
+        .unwrap();
+    assert_eq!(result.len(), 1);
+
+    let event_rows: Vec<(String, String)> = store
+        .conn_for_test()
+        .prepare("SELECT sender_type, content FROM messages WHERE channel_id = ?1 ORDER BY seq")
+        .unwrap()
+        .query_map(rusqlite::params![parent_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    assert_eq!(event_rows.len(), 1);
+    assert_eq!(event_rows[0].0, "system");
+
+    let parsed: serde_json::Value = serde_json::from_str(&event_rows[0].1).unwrap();
+    assert_eq!(parsed["kind"], "task_event");
+    assert_eq!(parsed["action"], "created");
+    assert_eq!(parsed["actor"], "bob");
+    assert_eq!(parsed["taskNumber"], 1);
+    assert_eq!(parsed["nextStatus"], "todo");
+    assert_eq!(parsed["title"], "wire up the bridge");
+}

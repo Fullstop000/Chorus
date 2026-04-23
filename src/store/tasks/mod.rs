@@ -159,6 +159,11 @@ impl Store {
             params![channel.id],
             |row| row.get(0),
         )?;
+        let mut pending_events: Vec<(
+            crate::store::messages::types::InsertedMessage,
+            String,
+        )> = Vec::new();
+
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
             let task_id = Uuid::new_v4().to_string();
@@ -194,6 +199,22 @@ impl Store {
                 ],
             )?;
 
+            // Emit task_event inside the same tx so the task row and its
+            // visibility-in-chat commit atomically.
+            let payload = crate::store::tasks::events::TaskEventPayload {
+                action: crate::store::tasks::events::TaskEventAction::Created,
+                task_number,
+                title: title.to_string(),
+                sub_channel_id: sub_channel_id.clone(),
+                actor: creator_name.to_string(),
+                prev_status: None,
+                next_status: TaskStatus::Todo,
+                claimed_by: None,
+            };
+            let content = payload.to_json_string()?;
+            let inserted = Self::create_system_message_tx(&tx, &channel.id, &content)?;
+            pending_events.push((inserted, content));
+
             result.push(TaskInfo {
                 task_number,
                 title: title.to_string(),
@@ -205,6 +226,9 @@ impl Store {
             });
         }
         tx.commit()?;
+        drop(conn); // release the mutex guard before the stream fanout
+
+        self.emit_system_stream_events(&channel, pending_events)?;
         Ok(result)
     }
 
