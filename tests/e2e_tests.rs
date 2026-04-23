@@ -498,3 +498,96 @@ async fn get_task_detail_returns_task_and_sub_channel() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+/// Task lifecycle: create → claim → in_review → done emits exactly 4 ordered
+/// system messages in the parent channel.
+#[tokio::test]
+async fn task_lifecycle_emits_four_events_in_parent_channel() {
+    use chorus::store::tasks::TaskStatus;
+
+    let (_url, store) = start_test_server().await;
+    let parent_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("eng", "alice", SenderType::Human)
+        .unwrap();
+
+    // create → claim → in_review → done
+    store.create_tasks("eng", "alice", &["wire up"]).unwrap();
+    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+        .unwrap();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::Done)
+        .unwrap();
+
+    let events: Vec<serde_json::Value> = store
+        .conn_for_test()
+        .prepare(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' \
+             ORDER BY seq",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .map(|s| serde_json::from_str(&s).unwrap())
+        .collect();
+
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[0]["action"], "created");
+    assert_eq!(events[1]["action"], "claimed");
+    assert_eq!(events[2]["action"], "status_changed");
+    assert_eq!(events[2]["nextStatus"], "in_review");
+    assert_eq!(events[3]["action"], "status_changed");
+    assert_eq!(events[3]["nextStatus"], "done");
+}
+
+/// Batched create_tasks with 3 titles exercises the pending_events Vec with
+/// more than one entry and emits one `created` event per task.
+#[tokio::test]
+async fn batched_create_tasks_emits_one_event_per_task() {
+    let (_url, store) = start_test_server().await;
+    let parent_id = store
+        .create_channel("eng2", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel("eng2", "bob", SenderType::Human)
+        .unwrap();
+
+    // Three tasks in one call exercises the pending_events Vec with > 1 entry.
+    let created = store
+        .create_tasks("eng2", "bob", &["a", "b", "c"])
+        .unwrap();
+    assert_eq!(created.len(), 3);
+
+    let events: Vec<serde_json::Value> = store
+        .conn_for_test()
+        .prepare(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' \
+             ORDER BY seq",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .map(|s| serde_json::from_str(&s).unwrap())
+        .collect();
+
+    assert_eq!(events.len(), 3);
+    for (i, event) in events.iter().enumerate() {
+        assert_eq!(event["action"], "created");
+        assert_eq!(event["taskNumber"], (i + 1) as i64);
+        assert_eq!(event["actor"], "bob");
+    }
+    // Task numbers are distinct 1, 2, 3 in creation order.
+    assert_eq!(events[0]["title"], "a");
+    assert_eq!(events[1]["title"], "b");
+    assert_eq!(events[2]["title"], "c");
+}
