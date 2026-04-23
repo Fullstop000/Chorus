@@ -18,9 +18,30 @@ interface Props {
   target: string | null;
   conversationId: string | null;
   history: ReturnType<typeof useHistory>;
+  /**
+   * Hide the "also create as task" affordance. The checkbox reads
+   * `currentChannel` from the store, which is the parent channel even when
+   * MessageInput is embedded inside TaskDetail's sub-channel view. Toggling
+   * it there would silently create a peer task on the parent. Sub-tasks of
+   * tasks are not a supported primitive, so the caller (TaskDetail) hides
+   * the checkbox entirely.
+   */
+  hideCreateTaskCheckbox?: boolean;
+  /**
+   * Override the default "Message {target}" placeholder. Used by TaskDetail
+   * so the user sees "Message task #7" instead of the internal sub-channel
+   * slug `pr-72-polish__task-7`, which leaks the backfill naming scheme.
+   */
+  placeholder?: string;
 }
 
-export function MessageInput({ target, conversationId, history }: Props) {
+export function MessageInput({
+  target,
+  conversationId,
+  history,
+  hideCreateTaskCheckbox = false,
+  placeholder: placeholderOverride,
+}: Props) {
   const { currentUser, currentChannel } = useStore();
   const pushToast = useStore((s) => s.pushToast);
   const agents = useAgents();
@@ -66,9 +87,11 @@ export function MessageInput({ target, conversationId, history }: Props) {
 
   const placeholder = isReadOnlySystem
     ? `${target} is read-only — agent breadcrumbs only`
-    : target
-      ? `Message ${target}`
-      : "Select a channel to message";
+    : placeholderOverride
+      ? placeholderOverride
+      : target
+        ? `Message ${target}`
+        : "Select a channel to message";
 
   async function handleSend() {
     if (
@@ -205,7 +228,7 @@ export function MessageInput({ target, conversationId, history }: Props) {
           {sending ? "..." : "Send"}
         </button>
       </div>
-      {currentChannel && !isReadOnlySystem && (
+      {currentChannel && !isReadOnlySystem && !hideCreateTaskCheckbox && (
         <div className="message-input-footer">
           <label className="task-checkbox-label">
             <input

@@ -11,10 +11,11 @@ import { FormField, FormError } from '@/components/ui/form'
 import { Label } from '@/components/ui/label'
 import './SettingsPage.css'
 
-type SettingsSection = 'profile' | 'system' | 'logs'
+type SettingsSection = 'profile' | 'appearance' | 'system' | 'logs'
 
 const NAV_ITEMS: { id: SettingsSection; label: string }[] = [
   { id: 'profile', label: 'Profile' },
+  { id: 'appearance', label: 'Appearance' },
   { id: 'system', label: 'System' },
   { id: 'logs', label: 'Logs' },
 ]
@@ -89,6 +90,35 @@ function ProfileSection({ username }: { username: string }) {
           {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
         </Button>
       </div>
+    </div>
+  )
+}
+
+function AppearanceSection() {
+  const showConversationIds = useStore((s) => s.showConversationIds)
+  const setShowConversationIds = useStore((s) => s.setShowConversationIds)
+
+  return (
+    <div className="settings-section">
+      <div className="settings-section-header">
+        <h2 className="settings-section-title">Appearance</h2>
+        <p className="settings-section-desc">Display preferences for the sidebar and chat surface.</p>
+      </div>
+
+      <label className="settings-toggle-row">
+        <input
+          type="checkbox"
+          className="settings-toggle-input"
+          checked={showConversationIds}
+          onChange={(e) => setShowConversationIds(e.target.checked)}
+        />
+        <span className="settings-toggle-copy">
+          <span className="settings-toggle-label">Show conversation IDs</span>
+          <span className="settings-toggle-desc">
+            Render the underlying UUID below each channel and agent row. Useful for debugging; off by default.
+          </span>
+        </span>
+      </label>
     </div>
   )
 }
@@ -310,6 +340,7 @@ export function SettingsPage() {
 
         <div className="settings-content">
           {activeSection === 'profile' && <ProfileSection username={currentUser} />}
+          {activeSection === 'appearance' && <AppearanceSection />}
           {activeSection === 'system' && <SystemSection />}
           {activeSection === 'logs' && <LogsSection />}
         </div>

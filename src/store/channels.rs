@@ -16,7 +16,7 @@ pub fn normalize_channel_name(raw: &str) -> String {
 
 // ── Types owned by this module ──
 
-/// One row from `channels` (any type: user, DM, system, or team).
+/// One row from `channels` (any type: user, DM, system, team, or task sub-channel).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Channel {
     /// UUID primary key.
@@ -29,6 +29,9 @@ pub struct Channel {
     pub channel_type: ChannelType,
     /// Row creation time.
     pub created_at: DateTime<Utc>,
+    /// Parent channel id, set for `ChannelType::Task` sub-channels pointing at
+    /// the channel that owns the task. `None` for all other channel types.
+    pub parent_channel_id: Option<String>,
 }
 
 /// Classifies how the channel behaves in the UI and access control.
@@ -45,6 +48,8 @@ pub enum ChannelType {
     /// Channel owned by a team. Managed through team lifecycle, not directly
     /// deletable by the user.
     Team,
+    /// Child channel owned by a task. One per task. Hidden from the main channel list.
+    Task,
 }
 
 impl ChannelType {
@@ -55,12 +60,13 @@ impl ChannelType {
             Self::Dm => "dm",
             Self::System => "system",
             Self::Team => "team",
+            Self::Task => "task",
         }
     }
 }
 
 impl Channel {
-    /// Parse the standard 5-column `channels` row: id, name, description, channel_type, created_at.
+    /// Parse the standard 6-column `channels` row: id, name, description, channel_type, created_at, parent_channel_id.
     pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
@@ -70,9 +76,11 @@ impl Channel {
                 "team" => ChannelType::Team,
                 "dm" => ChannelType::Dm,
                 "system" => ChannelType::System,
+                "task" => ChannelType::Task,
                 _ => ChannelType::Channel,
             },
             created_at: super::parse_datetime(&row.get::<_, String>(4)?),
+            parent_channel_id: row.get(5)?,
         })
     }
 }
@@ -115,6 +123,10 @@ pub struct ChannelListParams<'a> {
     pub include_system: bool,
     /// Include `team` type channels.
     pub include_team: bool,
+    /// Include `task` type channels (task sub-channels). Defaults to `false`
+    /// so the normal sidebar/channel-list queries keep hiding per-task rooms;
+    /// only task-aware views (e.g. the task detail page) opt in.
+    pub include_tasks: bool,
 }
 
 impl Store {
@@ -129,6 +141,9 @@ impl Store {
         if params.include_system {
             types.push("system");
         }
+        if params.include_tasks {
+            types.push("task");
+        }
         types
     }
 
@@ -137,7 +152,7 @@ impl Store {
         params: &ChannelListParams<'_>,
     ) -> Result<Vec<Channel>> {
         let mut sql =
-            "SELECT id, name, description, channel_type, created_at FROM channels".to_string();
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels".to_string();
         let mut conditions = Vec::new();
 
         if !params.include_archived {
@@ -165,19 +180,21 @@ impl Store {
     }
 
     /// Persist a new channel row. User-visible list queries later filter out
-    /// non-channel types and archived entries.
+    /// non-channel types and archived entries. Pass `parent_channel_id` only
+    /// for `ChannelType::Task` sub-channels; all other channel types use `None`.
     pub fn create_channel(
         &self,
         name: &str,
         description: Option<&str>,
         channel_type: ChannelType,
+        parent_channel_id: Option<&str>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
         let ct = channel_type.as_api_str();
         conn.execute(
-            "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, ?4)",
-            params![id, name, description, ct],
+            "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, name, description, ct, parent_channel_id],
         )?;
         Ok(id)
     }
@@ -218,7 +235,7 @@ impl Store {
     pub fn get_auto_join_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id
              FROM channels
              WHERE archived = 0 AND channel_type = 'system'
              ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at",
@@ -287,17 +304,37 @@ impl Store {
             return Err(anyhow!("only user channels can be deleted"));
         }
 
+        // Collect any task sub-channels first so the attachment sweep below can
+        // include attachments referenced only by sub-channel messages. Without
+        // this, attachments uploaded inside a task sub-channel would leak rows
+        // and files after the parent channel is deleted.
+        let sub_channel_ids: Vec<String> = conn
+            .prepare("SELECT id FROM channels WHERE parent_channel_id = ?1")?
+            .query_map(params![channel_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        // Build the `channel_id IN (?1, ?2, ...)` list used by both the
+        // attachment sweep and the cascade deletes. Parent first, then subs.
+        let doomed_ids: Vec<String> = std::iter::once(channel_id.to_string())
+            .chain(sub_channel_ids.iter().cloned())
+            .collect();
+        let placeholders = (1..=doomed_ids.len())
+            .map(|i| format!("?{}", i))
+            .collect::<Vec<_>>()
+            .join(",");
+        let doomed_params = rusqlite::params_from_iter(doomed_ids.iter());
+
         let attachment_rows: Vec<(String, String)> = conn
-            .prepare(
+            .prepare(&format!(
                 "SELECT DISTINCT a.id, a.stored_path
                  FROM attachments a
                  JOIN message_attachments ma ON ma.attachment_id = a.id
                  JOIN messages m ON m.id = ma.message_id
-                 WHERE m.channel_id = ?1",
-            )?
-            .query_map(params![channel_id], |row| Ok((row.get(0)?, row.get(1)?)))?
-            .filter_map(|row| row.ok())
-            .collect();
+                 WHERE m.channel_id IN ({})",
+                placeholders
+            ))?
+            .query_map(doomed_params, |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
 
         conn.execute(
             "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
@@ -319,6 +356,29 @@ impl Store {
             "DELETE FROM channel_members WHERE channel_id = ?1",
             params![channel_id],
         )?;
+
+        // Cascade clean-up into every task sub-channel (messages, memberships,
+        // inbox state, then the channel row itself).
+        for sub_id in &sub_channel_ids {
+            conn.execute(
+                "DELETE FROM inbox_read_state WHERE conversation_id = ?1",
+                params![sub_id],
+            )?;
+            conn.execute(
+                "DELETE FROM message_attachments WHERE message_id IN (SELECT id FROM messages WHERE channel_id = ?1)",
+                params![sub_id],
+            )?;
+            conn.execute(
+                "DELETE FROM messages WHERE channel_id = ?1",
+                params![sub_id],
+            )?;
+            conn.execute(
+                "DELETE FROM channel_members WHERE channel_id = ?1",
+                params![sub_id],
+            )?;
+            conn.execute("DELETE FROM channels WHERE id = ?1", params![sub_id])?;
+        }
+
         conn.execute("DELETE FROM channels WHERE id = ?1", params![channel_id])?;
 
         for (attachment_id, stored_path) in attachment_rows {
@@ -349,7 +409,7 @@ impl Store {
         name: &str,
     ) -> Result<Option<Channel>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels WHERE name = ?1",
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Channel::from_row)?;
         Ok(rows.next().transpose()?)
@@ -362,7 +422,7 @@ impl Store {
 
     pub(crate) fn get_channel_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Channel>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at FROM channels WHERE id = ?1",
+            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Channel::from_row)?;
         Ok(rows.next().transpose()?)
@@ -554,5 +614,164 @@ impl Store {
             tracing::info!(channel = %name, "created system channel");
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod task_channel_tests {
+    use super::*;
+    use crate::store::Store;
+
+    #[test]
+    fn channel_type_task_roundtrip() {
+        assert_eq!(ChannelType::Task.as_api_str(), "task");
+    }
+
+    #[test]
+    fn default_channel_list_excludes_task_sub_channels() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        store.create_tasks("eng", "alice", &["t1"]).unwrap();
+
+        let channels = store.get_channels().unwrap();
+        assert!(channels.iter().any(|c| c.name == "eng"));
+        assert!(
+            !channels.iter().any(|c| c.channel_type == ChannelType::Task),
+            "task sub-channels must not appear in default list"
+        );
+
+        // Opting in via `include_tasks` must surface task sub-channels so the
+        // task-detail view can fetch them.
+        let with_tasks = store
+            .get_channels_by_params(&ChannelListParams {
+                include_tasks: true,
+                ..ChannelListParams::default()
+            })
+            .unwrap();
+        assert!(
+            with_tasks
+                .iter()
+                .any(|c| c.channel_type == ChannelType::Task),
+            "opt-in via include_tasks must include task sub-channels"
+        );
+    }
+
+    #[test]
+    fn delete_channel_cascades_to_task_sub_children() {
+        let store = Store::open(":memory:").unwrap();
+        let parent_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        store.create_tasks("eng", "alice", &["t1", "t2"]).unwrap();
+
+        // Verify parent + 2 task sub-channels exist before delete.
+        {
+            let conn = store.conn_for_test();
+            let sub_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM channels WHERE parent_channel_id = ?1",
+                    params![parent_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(sub_count, 2);
+        }
+
+        store.delete_channel(&parent_id).unwrap();
+
+        // Parent, sub-channels, and tasks rows must all be gone.
+        let conn = store.conn_for_test();
+        let parent_exists: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channels WHERE id = ?1",
+                params![parent_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent_exists, 0);
+
+        let sub_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM channels WHERE parent_channel_id = ?1",
+                params![parent_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            sub_count, 0,
+            "task sub-channels must be deleted with parent"
+        );
+
+        let task_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM tasks", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(task_count, 0, "task rows must be gone too");
+    }
+
+    #[test]
+    fn delete_channel_cleans_up_sub_channel_attachments() {
+        // Regression: before this fix, `delete_channel` only swept attachments
+        // referenced by messages on the *parent* channel. Attachments
+        // referenced only by sub-channel messages leaked into `attachments`
+        // and on disk after delete.
+        let store = Store::open(":memory:").unwrap();
+        let parent_id = store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        store.create_tasks("eng", "alice", &["t1"]).unwrap();
+
+        let sub_id: String = {
+            let conn = store.conn_for_test();
+            conn.query_row(
+                "SELECT sub_channel_id FROM tasks WHERE task_number = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        // Attach a fake attachment to a message in the sub-channel only (no
+        // reference from any parent-channel message).
+        {
+            let conn = store.conn_for_test();
+            conn.execute(
+                "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path) \
+                 VALUES ('att-sub', 'note.txt', 'text/plain', 4, '/nonexistent/note.txt')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq) \
+                 VALUES ('m-sub', ?1, 'alice', 'human', 'here', 1)",
+                params![sub_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO message_attachments (message_id, attachment_id) VALUES ('m-sub', 'att-sub')",
+                [],
+            )
+            .unwrap();
+        }
+
+        store.delete_channel(&parent_id).unwrap();
+
+        // Attachment row referenced only by a sub-channel message must be gone.
+        let conn = store.conn_for_test();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM attachments WHERE id = 'att-sub'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            remaining, 0,
+            "attachment referenced only by sub-channel message must be swept"
+        );
     }
 }

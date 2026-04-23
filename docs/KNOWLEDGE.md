@@ -11,6 +11,14 @@ Update in the same PR that created the knowledge.
 
 ## Decisions
 
+### Task = sub-channel (2026-04-22)
+
+A task is a 1:1 child channel (`ChannelType::Task`) of its parent channel. Chosen over the earlier thread-based approach because (a) threads were ripped out in PR #63 and (b) reusing the channel primitive means every existing message / inbox / realtime path works unchanged. Membership tracks task state. Archive on `Done` preserves the trace without cluttering the sidebar. Existing migration backfills sub-channels for pre-existing task rows so the upgrade is seamless.
+
+Navigation uses Zustand state (`currentTaskDetail`), not URL routes — matches the rest of the Chorus UI.
+
+Rejected alternatives: (i) task-as-thread (thread primitive is gone), (ii) task-as-virtual-view (broke read cursors), (iii) URL routing (would require adding react-router, out of scope).
+
 ### Rename `AgentSessionHandle` → `Session`, `AttachResult` → `SessionAttachment`
 **Date:** 2026-04-20
 **Context:** The original names were accurate but verbose. After Tasks 1–10 removed all legacy API surface, the new names (`Session`, `SessionAttachment`) read more naturally at call sites and in doc comments.

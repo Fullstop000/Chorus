@@ -120,6 +120,10 @@ pub fn build_router_with_services(
             get(handle_public_list_tasks).post(handle_public_create_tasks),
         )
         .route(
+            "/conversations/{conversation_id}/tasks/{task_number}",
+            get(handle_get_task_detail),
+        )
+        .route(
             "/conversations/{conversation_id}/tasks/claim",
             post(handle_public_claim_tasks),
         )

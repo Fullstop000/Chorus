@@ -14,6 +14,7 @@ import { useTraceSubscription } from "../hooks/useTraceSubscription";
 import { TabBar } from "./TabBar";
 import { ChatHeader, ChatPanel } from "../components/chat/ChatPanel";
 import { TasksPanel } from "../components/tasks/TasksPanel";
+import { TaskDetail } from "../components/tasks/TaskDetail";
 import { ProfilePanel } from "../components/agents/profile/ProfilePanel";
 import { TelescopeActivity } from "../components/agents/activity/TelescopeActivity";
 import { WorkspacePanel } from "../components/agents/WorkspacePanel";
@@ -39,6 +40,7 @@ export function MainPanel() {
     currentChannel,
     currentAgent,
     showSettings,
+    currentTaskDetail,
   } = useStore();
   const agents = useAgents();
   const humans = useHumans();
@@ -183,6 +185,8 @@ export function MainPanel() {
     >
       {showSettings ? (
         <SettingsPage />
+      ) : currentTaskDetail ? (
+        <TaskDetail />
       ) : (
         <>
       {showHeader && (

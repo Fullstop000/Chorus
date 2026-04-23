@@ -1,0 +1,150 @@
+.task-detail {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: transparent;
+}
+
+.task-detail__header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 18px 14px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-popover);
+  flex-shrink: 0;
+}
+
+.task-detail__back {
+  align-self: flex-start;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: lowercase;
+  color: var(--color-muted-foreground);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.task-detail__back:hover {
+  color: var(--color-foreground);
+  border-color: var(--color-foreground);
+}
+
+.task-detail__breadcrumb {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: lowercase;
+  color: var(--color-muted-foreground);
+}
+
+.task-detail__title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+  margin: 0;
+  color: var(--color-foreground);
+}
+
+.task-detail__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: lowercase;
+  color: var(--color-muted-foreground);
+}
+
+.task-detail__status {
+  border: 1px solid var(--color-border);
+  padding: 2px 6px;
+  color: var(--color-foreground);
+}
+
+/* Primary CTA of the task-detail view. Mirrors `.message-input-send`'s recipe
+   (solid primary fill, inner embossed border, uppercase mono) so the advance
+   action reads as the main step forward, not as a sibling of the ghost meta
+   chips. Pushed to the right with margin-left:auto. */
+.task-detail__advance {
+  margin-left: auto;
+  position: relative;
+  min-height: 24px;
+  padding: 0 12px;
+  background: var(--color-primary);
+  color: var(--color-primary-foreground);
+  border: 1px solid var(--color-primary);
+  border-radius: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.task-detail__advance::before {
+  content: "";
+  position: absolute;
+  inset: 3px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  pointer-events: none;
+}
+
+.task-detail__advance:hover:not(:disabled) {
+  background: #34312b;
+}
+
+.task-detail__advance:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.task-detail__loading,
+.task-detail__error {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+.task-detail__error {
+  color: var(--color-foreground);
+}
+
+.task-detail__body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Rendered when a legacy row has no sub-channel (backfill miss). Uses the
+   mono/muted empty-state recipe from docs/DESIGN.md so it reads as an
+   ambient system notice, not an error toast. */
+.task-detail__legacy-notice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 56px 20px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--color-muted-foreground);
+}
+
+.task-detail__legacy-notice p {
+  margin: 0;
+  max-width: 52ch;
+}

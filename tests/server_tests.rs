@@ -28,7 +28,7 @@ use tower::ServiceExt;
 fn setup() -> (Arc<Store>, axum::Router) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -58,7 +58,7 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
     let db_path = dir.path().join("chorus.db");
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -267,7 +267,7 @@ impl AgentLifecycle for FailStartLifecycle {
 fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -299,7 +299,7 @@ fn setup_with_runtime_statuses(
 ) -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -344,7 +344,7 @@ fn setup_with_lifecycle_and_data_dir() -> (
     let db_path = dir.path().join("chorus.db");
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -840,13 +840,18 @@ async fn test_list_channels_honors_search_params() {
     let (store, app) = setup();
     store.ensure_builtin_channels("alice").unwrap();
     store
-        .create_channel("engineering", Some("Engineering"), ChannelType::Channel)
+        .create_channel(
+            "engineering",
+            Some("Engineering"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store
-        .create_channel("eng-team", Some("Engineering"), ChannelType::Team)
+        .create_channel("eng-team", Some("Engineering"), ChannelType::Team, None)
         .unwrap();
     store
-        .create_channel("dm-bot1", None, ChannelType::Dm)
+        .create_channel("dm-bot1", None, ChannelType::Dm, None)
         .unwrap();
 
     let resp = app
@@ -903,7 +908,7 @@ async fn test_update_channel_via_api_normalizes_and_preserves_identity() {
 async fn test_update_channel_via_api_rejects_duplicate_name() {
     let (store, app) = setup();
     store
-        .create_channel("random", Some("Random"), ChannelType::Channel)
+        .create_channel("random", Some("Random"), ChannelType::Channel, None)
         .unwrap();
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
@@ -1402,7 +1407,7 @@ async fn test_list_runtime_models() {
 async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1810,7 +1815,7 @@ async fn test_send_starts_inactive_agent_recipients() {
 async fn test_send_persists_message_even_if_agent_delivery_fails() {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -2397,7 +2402,7 @@ async fn test_list_channels_includes_team_without_human_membership() {
         .create_team("qa-eng", "QA Engineering", "leader_operators", Some("bot1"))
         .unwrap();
     store
-        .create_channel("qa-eng", None, ChannelType::Team)
+        .create_channel("qa-eng", None, ChannelType::Team, None)
         .unwrap();
     store
         .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
@@ -2442,7 +2447,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .create_team("eng-team", "Engineering Team", "leader_operators", None)
         .unwrap();
     store
-        .create_channel("eng-team", None, ChannelType::Team)
+        .create_channel("eng-team", None, ChannelType::Team, None)
         .unwrap();
 
     let add_body = serde_json::json!({
@@ -2538,7 +2543,7 @@ async fn test_at_mention_forwards_to_team_channel() {
         .create_team("eng-team", "Engineering", "leader_operators", Some("bot1"))
         .unwrap();
     store
-        .create_channel("eng-team", None, ChannelType::Team)
+        .create_channel("eng-team", None, ChannelType::Team, None)
         .unwrap();
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let bot2 = store.get_agent("bot2").unwrap().unwrap();
@@ -2915,7 +2920,7 @@ async fn test_duplicate_team_name_returns_team_name_taken() {
 async fn test_patch_system_channel_returns_operation_unsupported() {
     let (store, app) = setup();
     let system_channel_id = store
-        .create_channel("all", None, ChannelType::System)
+        .create_channel("all", None, ChannelType::System, None)
         .unwrap();
 
     let req = serde_json::json!({ "name": "all", "description": "everyone" });
@@ -2972,7 +2977,7 @@ async fn test_non_member_history_returns_message_not_a_member() {
 async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store

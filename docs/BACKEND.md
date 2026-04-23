@@ -91,6 +91,10 @@ Unread counts are computed by **SQL VIEW**, not Rust code. The view excludes:
 
 They are intentionally kept in sync but exist for different call paths.
 
+### Task sub-channels
+
+**Task sub-channels.** Every task owns a child channel (`ChannelType::Task`, `parent_channel_id` FK). Created when the task is created; the creator is its first member. Claim/unclaim syncs membership. Transitioning to `Done` archives the sub-channel. Task sub-channels are excluded from default channel listings; reach them via the parent task board and the task detail view (a full-panel view backed by Zustand's `currentTaskDetail` state). Legacy tasks from before 2026-04-22 are backfilled on migration.
+
 ### Sender Type Resolution (Security Boundary)
 
 **Never allow clients to forge `sender_type='system'` messages.**

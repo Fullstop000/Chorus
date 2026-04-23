@@ -13,9 +13,10 @@ import { createUserChannelViaUi, clickSidebarChannel } from "./helpers/ui";
  * 1. Open `Tasks`.
  * 2. Create a new task with an unambiguous title.
  * 3. Verify it appears in `To Do`.
- * 4. Advance it once.
- * 5. Verify it moves to the correct next state.
- * 6. Watch console and network responses during the transition.
+ * 4. Click the card to open TaskDetail.
+ * 5. Click `Start` in TaskDetail to claim + advance.
+ * 6. Return to the board via the back button.
+ * 7. Verify the card has moved to `in_progress`.
  *
  * Expected:
  * - state change succeeds without server error; card moves once; UI matches backend
@@ -53,12 +54,22 @@ test.describe("TSK-001", () => {
       ).toBeVisible();
     });
 
-    await test.step("Steps 4–6: Advance once; no error responses", async () => {
+    await test.step("Steps 4–5: Click card, then Start in TaskDetail", async () => {
       await page
         .locator(".task-card")
         .filter({ hasText: title })
         .first()
         .click();
+      await expect(page.locator('[data-testid="task-detail"]')).toBeVisible();
+      await page.getByRole("button", { name: "Start", exact: true }).click();
+      // Status pill should flip once the refetch lands.
+      await expect(
+        page.locator(".task-detail__status").filter({ hasText: "in_progress" }),
+      ).toBeVisible({ timeout: 15_000 });
+    });
+
+    await test.step("Steps 6–7: Back to board; card is in In Progress", async () => {
+      await page.getByRole("button", { name: "back to channel" }).click();
       await expect(
         page
           .locator('.task-column[data-status="in_progress"] .task-card-title')

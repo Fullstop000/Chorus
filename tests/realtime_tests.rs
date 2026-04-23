@@ -17,7 +17,7 @@ async fn start_test_server() -> (String, Arc<Store>) {
     store.create_human("alice").unwrap();
     store.create_human("zoe").unwrap();
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
@@ -83,7 +83,7 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
 async fn test_realtime_skips_non_member_channel() {
     let (base_url, store) = start_test_server().await;
     store
-        .create_channel("private", Some("Private"), ChannelType::Channel)
+        .create_channel("private", Some("Private"), ChannelType::Channel, None)
         .unwrap();
     store
         .join_channel("private", "zoe", SenderType::Human)

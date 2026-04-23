@@ -85,6 +85,8 @@ interface ChatPanelProps {
   messages: HistoryMessage[];
   loading: boolean;
   lastReadSeq: number;
+  /** Optional override for the zero-messages prompt; defaults to MessageList's generic copy. */
+  emptyLabel?: string;
 }
 
 export function ChatPanel({
@@ -93,6 +95,7 @@ export function ChatPanel({
   messages,
   loading,
   lastReadSeq,
+  emptyLabel,
 }: ChatPanelProps) {
   const { currentUser } = useStore();
 
@@ -115,6 +118,7 @@ export function ChatPanel({
         loading={loading}
         lastReadSeq={lastReadSeq}
         currentUser={currentUser}
+        emptyLabel={emptyLabel}
       />
     </div>
   );

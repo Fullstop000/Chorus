@@ -250,7 +250,14 @@ impl Store {
                     LIMIT 1
                 ) AS last_message_at
              FROM inbox_conversation_state_view view
+             JOIN channels c ON c.id = view.conversation_id
              WHERE view.member_name = ?1
+               -- Archived task sub-channels are completed work; reachable via
+               -- the task detail page but not shown in this active-inbox
+               -- listing. Per-conversation lookups (read-cursor flush and
+               -- notification-for-member) bypass this filter so the sub-channel
+               -- still has a valid notification row while the user views it.
+               AND NOT (c.archived = 1 AND c.channel_type = 'task')
              ORDER BY view.conversation_name ASC",
         )?;
         let rows = stmt.query_map(params![member_name], |row| {

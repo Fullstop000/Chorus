@@ -120,6 +120,47 @@
   margin-top: 16px;
 }
 
+/* Appearance toggle row. Flat checkbox left, stacked label+description right. */
+.settings-toggle-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  cursor: pointer;
+  background: transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.settings-toggle-row:hover {
+  border-color: var(--color-input);
+  background: rgba(255, 255, 255, 0.4);
+}
+
+.settings-toggle-input {
+  margin-top: 3px;
+  accent-color: var(--color-primary);
+}
+
+.settings-toggle-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-toggle-label {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-toggle-desc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+  line-height: 1.45;
+}
+
 /* System info grid */
 .settings-info-grid {
   display: grid;

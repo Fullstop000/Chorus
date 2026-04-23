@@ -98,7 +98,7 @@ fn make_store() -> (Store, tempfile::TempDir) {
 fn test_shell_style_workspace_mutations_persist() {
     let store = Store::open(":memory:").unwrap();
     store
-        .create_channel("general", Some("General"), ChannelType::Channel)
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -126,6 +126,7 @@ fn test_shell_style_workspace_mutations_persist() {
             "ops-room",
             Some("Shell API mutation coverage"),
             ChannelType::Channel,
+            None,
         )
         .unwrap();
     store
@@ -138,7 +139,7 @@ fn test_shell_style_workspace_mutations_persist() {
         .create_team("ops-team", "Ops Team", "leader_operators", Some("bot1"))
         .unwrap();
     store
-        .create_channel("ops-team", None, ChannelType::Team)
+        .create_channel("ops-team", None, ChannelType::Team, None)
         .unwrap();
     store
         .create_team_member(&team_id, "bot1", "agent", &bot1.id, "operator")
@@ -179,10 +180,15 @@ fn test_shell_style_workspace_mutations_persist() {
 fn test_create_and_list_channels() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store
-        .create_channel("random", None, ChannelType::Channel)
+        .create_channel("random", None, ChannelType::Channel, None)
         .unwrap();
     let channels = store.get_channels().unwrap();
     assert_eq!(channels.len(), 2);
@@ -193,7 +199,7 @@ fn test_create_and_list_channels() {
 fn test_send_and_receive_messages() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -292,7 +298,7 @@ fn test_agent_does_not_receive_its_own_sent_message() {
 fn test_message_history_pagination() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -328,7 +334,7 @@ fn test_message_history_pagination() {
 fn test_history_snapshot_returns_messages_and_read_cursor() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -373,7 +379,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
 fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -486,7 +492,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
 fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -555,7 +561,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
 fn test_history_read_cursor_rejects_seq_above_max() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -599,7 +605,7 @@ fn test_history_read_cursor_rejects_seq_above_max() {
 fn test_history_read_cursor_rejects_negative_seq() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -630,7 +636,7 @@ fn test_history_read_cursor_rejects_negative_seq() {
 fn test_history_read_cursor_heals_orphan_above_max_seq() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -671,7 +677,7 @@ fn test_history_read_cursor_heals_orphan_above_max_seq() {
 fn test_conversation_messages_view_projects_message_rows() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -730,7 +736,7 @@ fn test_conversation_messages_view_projects_message_rows() {
 fn test_agent_env_vars_persist_in_agent_record() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     let env_vars = vec![
         AgentEnvVar {
@@ -801,7 +807,7 @@ fn test_agent_reasoning_effort_persists_in_agent_record() {
 fn test_mark_agent_messages_deleted_marks_history_rows() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store
         .create_agent_record(&AgentRecordUpsert {
@@ -837,7 +843,7 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
 fn test_create_message_persists_top_level() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -866,7 +872,7 @@ fn test_create_message_persists_top_level() {
 fn test_unread_excludes_own_messages_for_sender() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -942,7 +948,7 @@ fn test_unread_excludes_own_messages_for_sender() {
 fn test_tasks_crud() {
     let (store, _dir) = make_store();
     store
-        .create_channel("eng", None, ChannelType::Channel)
+        .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
     store
         .create_agent_record(&AgentRecordUpsert {
@@ -972,7 +978,7 @@ fn test_tasks_crud() {
 fn test_task_claim_and_status() {
     let (store, _dir) = make_store();
     store
-        .create_channel("eng", None, ChannelType::Channel)
+        .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
     store
         .create_agent_record(&AgentRecordUpsert {
@@ -1017,7 +1023,7 @@ fn test_task_claim_and_status() {
 fn test_resolve_target() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1044,7 +1050,7 @@ fn test_resolve_target() {
 fn test_list_channels_excludes_dm() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1075,7 +1081,7 @@ fn test_list_channels_excludes_dm() {
 fn test_dm_only_has_two_members() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1154,7 +1160,12 @@ fn test_dm_channels() {
 fn test_update_channel_preserves_id_and_metadata() {
     let (store, dir) = make_store();
     let channel_id = store
-        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
 
     store
@@ -1184,7 +1195,12 @@ fn test_update_channel_preserves_id_and_metadata() {
 fn test_archive_channel_hides_it_from_active_listings() {
     let (store, _dir) = make_store();
     let channel_id = store
-        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1214,7 +1230,12 @@ fn test_archive_channel_hides_it_from_active_listings() {
 fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", Some("General channel"), ChannelType::Channel)
+        .create_channel(
+            "general",
+            Some("General channel"),
+            ChannelType::Channel,
+            None,
+        )
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1401,7 +1422,7 @@ fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
 fn test_delete_channel_removes_messages_tasks_and_memberships() {
     let (store, dir) = make_store();
     let channel_id = store
-        .create_channel("eng", Some("Engineering"), ChannelType::Channel)
+        .create_channel("eng", Some("Engineering"), ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1492,7 +1513,7 @@ fn test_sender_type_system_round_trip() {
 fn test_create_system_message_writes_system_sender_type() {
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1524,7 +1545,7 @@ fn test_channel_unread_count_excludes_system_messages() {
     // A server-authored system message must not bump the channel unread badge.
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store
@@ -1575,7 +1596,7 @@ fn test_create_system_message_emits_system_typed_stream_event() {
     // payload's sender.type is "system" (not "human" as the legacy code wrote).
     let (store, _dir) = make_store();
     store
-        .create_channel("general", None, ChannelType::Channel)
+        .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.create_human("alice").unwrap();
     store

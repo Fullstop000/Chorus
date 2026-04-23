@@ -5,10 +5,53 @@ import { createInboxState } from './inbox'
 
 export type ActiveTab = 'chat' | 'tasks' | 'workspace' | 'activity' | 'profile'
 
+/** localStorage key for persisted display preferences. */
+const PREFS_KEY = 'chorus:ui-prefs:v1'
+
+interface PersistedPrefs {
+  showConversationIds: boolean
+}
+
+function readPersistedPrefs(): PersistedPrefs {
+  if (typeof localStorage === 'undefined') return { showConversationIds: false }
+  try {
+    const raw = localStorage.getItem(PREFS_KEY)
+    if (!raw) return { showConversationIds: false }
+    const parsed = JSON.parse(raw) as Partial<PersistedPrefs>
+    return { showConversationIds: !!parsed.showConversationIds }
+  } catch {
+    return { showConversationIds: false }
+  }
+}
+
+function writePersistedPrefs(prefs: PersistedPrefs): void {
+  if (typeof localStorage === 'undefined') return
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs))
+  } catch {
+    // Storage quota or disabled — the in-memory value still applies for this session.
+  }
+}
+
 export interface ToastEntry {
   id: string
   message: string
   level: 'error' | 'warning' | 'info'
+}
+
+/**
+ * Identifies a task currently rendered in the task-detail view.
+ * Parent channel id/slug are carried along so breadcrumbs and data
+ * fetching don't have to re-derive them from the tasks board.
+ * `returnToTab` captures which tab the user was on when they opened the
+ * detail, so the back button can restore that context rather than dumping
+ * everyone on Tasks.
+ */
+export interface TaskDetailTarget {
+  parentChannelId: string
+  parentSlug: string
+  taskNumber: number
+  returnToTab?: ActiveTab
 }
 
 interface UIState {
@@ -28,6 +71,14 @@ interface UIState {
   toasts: ToastEntry[]
   /** Whether the full-page Settings view is open */
   showSettings: boolean
+  /** When non-null, MainPanel renders the task-detail view for this task */
+  currentTaskDetail: TaskDetailTarget | null
+  /**
+   * Display preference: when true, sidebar channel/agent rows show their
+   * underlying UUID as a trailing caption. Off by default — UUIDs are
+   * routing identifiers, not user content. Persisted to localStorage.
+   */
+  showConversationIds: boolean
 }
 
 interface UIActions {
@@ -47,6 +98,8 @@ interface UIActions {
   pushToast: (entry: ToastEntry) => void
   dismissToast: (id: string) => void
   setShowSettings: (show: boolean) => void
+  setCurrentTaskDetail: (target: TaskDetailTarget | null) => void
+  setShowConversationIds: (show: boolean) => void
 }
 
 export type UIStore = UIState & UIActions
@@ -60,6 +113,8 @@ const initialState: UIState = {
   shellBootstrapped: false,
   toasts: [],
   showSettings: false,
+  currentTaskDetail: null,
+  showConversationIds: readPersistedPrefs().showConversationIds,
 }
 
 export const useStore = create<UIStore>((set) => ({
@@ -80,6 +135,11 @@ export const useStore = create<UIStore>((set) => ({
           ? {
               currentChannel: null,
               activeTab: isSameAgent ? state.activeTab : ('chat' as const),
+              // Selecting an agent always exits any open task-detail view —
+              // the detail is scoped to a channel, so agent navigation takes
+              // us out of it. Without this clear, MainPanel keeps rendering
+              // TaskDetail because currentTaskDetail outranks currentAgent.
+              currentTaskDetail: null,
             }
           : {}),
       }
@@ -96,6 +156,13 @@ export const useStore = create<UIStore>((set) => ({
             state.activeTab === 'profile')
           ? 'chat'
           : state.activeTab,
+      // Leaving the parent channel discards any open task-detail view;
+      // the detail belongs to a specific parent and can't survive navigation.
+      currentTaskDetail:
+        channel && state.currentTaskDetail &&
+          state.currentTaskDetail.parentChannelId === channel.id
+          ? state.currentTaskDetail
+          : null,
     })),
 
   setActiveTab: (activeTab: ActiveTab) => set({ activeTab }),
@@ -143,6 +210,7 @@ export const useStore = create<UIStore>((set) => ({
       inboxState: createInboxState(),
       shellBootstrapped: false,
       toasts: [],
+      currentTaskDetail: null,
     }),
 
   pushToast: (entry: ToastEntry) =>
@@ -152,6 +220,14 @@ export const useStore = create<UIStore>((set) => ({
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
   setShowSettings: (showSettings: boolean) => set({ showSettings }),
+
+  setCurrentTaskDetail: (currentTaskDetail: TaskDetailTarget | null) =>
+    set({ currentTaskDetail }),
+
+  setShowConversationIds: (showConversationIds: boolean) => {
+    writePersistedPrefs({ showConversationIds })
+    set({ showConversationIds })
+  },
 }))
 
 export function pushErrorToast(err: unknown) {
