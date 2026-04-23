@@ -1895,3 +1895,62 @@ fn update_task_status_emits_status_changed_event() {
     assert_eq!(last_event["prevStatus"], "in_progress");
     assert_eq!(last_event["nextStatus"], "in_review");
 }
+
+#[test]
+fn get_unread_summary_excludes_archived_task_sub_channels() {
+    // Archived task sub-channels are terminal work, hidden from the active UI.
+    // The agent start-prompt builder reads `get_unread_summary`; without this
+    // filter an agent resuming after a task hits `Done` gets told it has
+    // unread messages in a channel it can't navigate to. Mirrors the filter
+    // used by `get_inbox_conversation_notifications` for the sidebar.
+    let (store, _dir) = make_store();
+    let sub_id = store
+        .create_channel("eng__task-1", None, ChannelType::Task, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.create_human("bob").unwrap();
+    store
+        .join_channel_by_id(&sub_id, "alice", SenderType::Human)
+        .unwrap();
+    store
+        .join_channel_by_id(&sub_id, "bob", SenderType::Human)
+        .unwrap();
+    // Bob's non-system message is unread for alice (the view excludes system
+    // messages, so only human/agent traffic can produce a leak).
+    store
+        .create_message(CreateMessage {
+            channel_name: "eng__task-1",
+            sender_name: "bob",
+            sender_type: SenderType::Human,
+            content: "hi alice",
+            attachment_ids: &[],
+            suppress_event: true,
+            run_id: None,
+        })
+        .unwrap();
+
+    let before = store.get_unread_summary("alice").unwrap();
+    assert_eq!(
+        before.get("eng__task-1"),
+        Some(&1),
+        "pre-archive: unread summary must include the sub-channel"
+    );
+
+    // Simulate the `Done` transition's archive step (direct UPDATE; the full
+    // lifecycle path is covered by `task_lifecycle_emits_four_events_in_parent_channel`).
+    store
+        .conn_for_test()
+        .execute(
+            "UPDATE channels SET archived = 1 WHERE id = ?1",
+            params![sub_id],
+        )
+        .unwrap();
+
+    let after = store.get_unread_summary("alice").unwrap();
+    assert!(
+        !after.contains_key("eng__task-1"),
+        "post-archive: unread summary must exclude archived task sub-channels, \
+         got {:?}",
+        after
+    );
+}

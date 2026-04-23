@@ -200,9 +200,16 @@ impl Store {
     pub fn get_unread_summary(&self, member_name: &str) -> Result<HashMap<String, i64>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT conversation_name, unread_count
-             FROM inbox_conversation_state_view
-             WHERE member_name = ?1 AND unread_count > 0",
+            // Archived task sub-channels are terminal work; the agent's start
+            // prompt should not list them as unread — they're hidden from the
+            // active UI, so the agent has no way to clear them. Mirrors the
+            // filter on `get_inbox_conversation_notifications`.
+            "SELECT view.conversation_name, view.unread_count
+             FROM inbox_conversation_state_view view
+             JOIN channels c ON c.id = view.conversation_id
+             WHERE view.member_name = ?1
+               AND view.unread_count > 0
+               AND NOT (c.archived = 1 AND c.channel_type = 'task')",
         )?;
         let rows = stmt
             .query_map(params![member_name], |row| {
