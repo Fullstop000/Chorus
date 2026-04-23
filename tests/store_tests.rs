@@ -1678,3 +1678,29 @@ fn task_event_payload_round_trips_through_json() {
     assert_eq!(parsed["actor"], "alice");
     assert_eq!(parsed["subChannelId"], "22222222-2222-2222-2222-222222222222");
 }
+
+#[test]
+fn task_event_payload_serializes_none_fields_as_json_null() {
+    use chorus::store::tasks::events::{TaskEventAction, TaskEventPayload};
+    use chorus::store::tasks::TaskStatus;
+
+    // Created events set prev_status = None and claimed_by = None. The frontend
+    // parser needs `null` for these (not missing keys) to distinguish "event
+    // explicitly cleared the field" from "producer forgot the field".
+    let created = TaskEventPayload {
+        action: TaskEventAction::Created,
+        task_number: 1,
+        title: "t".into(),
+        sub_channel_id: "s".into(),
+        actor: "a".into(),
+        prev_status: None,
+        next_status: TaskStatus::Todo,
+        claimed_by: None,
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(&created.to_json_string().unwrap()).unwrap();
+    assert!(parsed["prevStatus"].is_null(), "expected JSON null, got {:?}", parsed["prevStatus"]);
+    assert!(parsed["claimedBy"].is_null(), "expected JSON null, got {:?}", parsed["claimedBy"]);
+    assert_eq!(parsed["action"], "created");
+    assert_eq!(parsed["nextStatus"], "todo");
+}
