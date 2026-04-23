@@ -6,6 +6,7 @@ use rusqlite::{params, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use self::events::{TaskEventAction, TaskEventPayload};
 use super::channels::ChannelType;
 use super::Store;
 
@@ -199,8 +200,8 @@ impl Store {
 
             // Emit task_event inside the same tx so the task row and its
             // visibility-in-chat commit atomically.
-            let payload = crate::store::tasks::events::TaskEventPayload {
-                action: crate::store::tasks::events::TaskEventAction::Created,
+            let payload = TaskEventPayload {
+                action: TaskEventAction::Created,
                 task_number,
                 title: title.to_string(),
                 sub_channel_id: sub_channel_id.clone(),
@@ -380,8 +381,8 @@ impl Store {
                             params![sub_id, claimer_name, claimer_type.as_str()],
                         )?;
                     }
-                    let payload = crate::store::tasks::events::TaskEventPayload {
-                        action: crate::store::tasks::events::TaskEventAction::Claimed,
+                    let payload = TaskEventPayload {
+                        action: TaskEventAction::Claimed,
                         task_number: tn,
                         title,
                         sub_channel_id: sub_channel_id.unwrap_or_default(),
@@ -473,8 +474,8 @@ impl Store {
         let prev_status = TaskStatus::from_status_str(&current_status_str)
             .ok_or_else(|| anyhow!("invalid task status: {}", current_status_str))?;
 
-        let payload = crate::store::tasks::events::TaskEventPayload {
-            action: crate::store::tasks::events::TaskEventAction::Unclaimed,
+        let payload = TaskEventPayload {
+            action: TaskEventAction::Unclaimed,
             task_number,
             title,
             sub_channel_id: sub_channel_id.unwrap_or_default(),
@@ -540,8 +541,8 @@ impl Store {
 
         // Emit the event inside the tx, BEFORE the optional archive below
         // (which consumes `sub_channel_id`).
-        let payload = crate::store::tasks::events::TaskEventPayload {
-            action: crate::store::tasks::events::TaskEventAction::StatusChanged,
+        let payload = TaskEventPayload {
+            action: TaskEventAction::StatusChanged,
             task_number,
             title,
             sub_channel_id: sub_channel_id.clone().unwrap_or_default(),
