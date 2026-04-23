@@ -198,12 +198,29 @@ async fn agent_crud_lifecycle() {
         combined(&out)
     );
 
-    // Restart with reset_session mode
+    // Restart with kebab-case mode
     let out = run_agent(&[
         "restart",
         "testbot",
         "--mode",
         "reset-session",
+        "--server-url",
+        &url,
+    ])
+    .await;
+    assert!(
+        out.status.success(),
+        "restart reset-session failed: stdout={} stderr={}",
+        stdout_of(&out),
+        stderr_of(&out)
+    );
+
+    // Restart with snake_case mode (alias)
+    let out = run_agent(&[
+        "restart",
+        "testbot",
+        "--mode",
+        "reset_session",
         "--server-url",
         &url,
     ])

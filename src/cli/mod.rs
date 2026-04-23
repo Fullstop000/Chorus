@@ -191,7 +191,9 @@ pub(crate) enum AgentCommands {
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub(crate) enum RestartMode {
     Restart,
+    #[value(alias = "reset_session")]
     ResetSession,
+    #[value(alias = "full_reset")]
     FullReset,
 }
 
