@@ -508,15 +508,16 @@ impl Store {
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        let (current_status_str, claimed_by, sub_channel_id): (
+        let (current_status_str, claimed_by, sub_channel_id, title): (
             String,
             Option<String>,
             Option<String>,
+            String,
         ) = tx.query_row(
-            "SELECT status, claimed_by, sub_channel_id FROM tasks \
+            "SELECT status, claimed_by, sub_channel_id, title FROM tasks \
              WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
 
         let current_status = TaskStatus::from_status_str(&current_status_str)
@@ -538,6 +539,21 @@ impl Store {
             params![new_status.as_str(), channel.id, task_number],
         )?;
 
+        // Emit the event inside the tx, BEFORE the optional archive below
+        // (which consumes `sub_channel_id`).
+        let payload = crate::store::tasks::events::TaskEventPayload {
+            action: crate::store::tasks::events::TaskEventAction::StatusChanged,
+            task_number,
+            title,
+            sub_channel_id: sub_channel_id.clone().unwrap_or_default(),
+            actor: requester_name.to_string(),
+            prev_status: Some(current_status),
+            next_status: new_status,
+            claimed_by: claimed_by.clone(),
+        };
+        let content = payload.to_json_string()?;
+        let inserted = Self::create_system_message_tx(&tx, &channel.id, &content)?;
+
         // `Done` is terminal (`can_transition_to` has no outbound edges from
         // `Done`), so archiving here is safe — there is no path back that would
         // need to un-archive. Bypasses the `archive_channel` guard on purpose:
@@ -553,6 +569,8 @@ impl Store {
         }
 
         tx.commit()?;
+        drop(conn);
+        self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
         Ok(())
     }
 }

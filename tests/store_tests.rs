@@ -1802,3 +1802,35 @@ fn unclaim_task_emits_unclaimed_event() {
     assert_eq!(last_event["nextStatus"], "todo");
     assert_eq!(last_event["claimedBy"], serde_json::Value::Null);
 }
+
+#[test]
+fn update_task_status_emits_status_changed_event() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("eng", None, chorus::store::channels::ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.join_channel("eng", "alice", chorus::store::messages::types::SenderType::Human).unwrap();
+    store.create_tasks("eng", "alice", &["t"]).unwrap();
+    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+        .unwrap();
+
+    let last_event: serde_json::Value = {
+        let content: String = store
+            .conn_for_test()
+            .query_row(
+                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        serde_json::from_str(&content).unwrap()
+    };
+    assert_eq!(last_event["action"], "status_changed");
+    assert_eq!(last_event["actor"], "alice");
+    assert_eq!(last_event["prevStatus"], "in_progress");
+    assert_eq!(last_event["nextStatus"], "in_review");
+}
