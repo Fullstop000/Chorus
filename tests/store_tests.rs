@@ -2343,3 +2343,56 @@ fn accept_task_proposal_is_idempotent_rejected_after_first_accept() {
         "expected 'not pending' in: {err}"
     );
 }
+
+#[test]
+fn accept_task_proposal_posts_kickoff_in_sub_channel() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+    let p = store
+        .create_task_proposal(&channel_id, "claude", "fix login")
+        .unwrap();
+    let accepted = store.accept_task_proposal(&p.id, "alice").unwrap();
+
+    // Exactly one system message in the sub-channel, carrying the kickoff
+    // context (task number + original title).
+    let conn = store.conn_for_test();
+    let rows: Vec<(String, String)> = conn
+        .prepare(
+            "SELECT sender_type, content FROM messages \
+             WHERE channel_id = ?1 ORDER BY seq ASC",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![accepted.sub_channel_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(rows.len(), 1, "expected 1 kickoff message, got {rows:?}");
+    assert_eq!(rows[0].0, "system");
+    assert!(
+        rows[0].1.contains("fix login"),
+        "kickoff missing title: {:?}",
+        rows[0].1
+    );
+    assert!(
+        rows[0].1.contains(&format!("#{}", accepted.task_number)),
+        "kickoff missing task number: {:?}",
+        rows[0].1
+    );
+}

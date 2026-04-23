@@ -122,14 +122,16 @@ impl TaskProposal {
 
 /// Result of a successful `accept_task_proposal`. The caller (HTTP handler)
 /// returns this to the client so the UI can deep-link to the sub-channel.
-/// Task 8 will add a `kickoff_message_id` field so the HTTP handler can
-/// explicitly wake the proposer agent — Chorus does NOT auto-wake on new
-/// messages.
 #[derive(Debug, Clone, Serialize)]
 pub struct AcceptedTaskProposal {
     pub task_number: i64,
     pub sub_channel_id: String,
     pub sub_channel_name: String,
+    /// Internal — message id of the kickoff system message posted in the
+    /// sub-channel on acceptance. The HTTP handler uses this to route
+    /// `deliver_message_to_agents`. Not exposed in the HTTP response.
+    #[serde(skip)]
+    pub kickoff_message_id: String,
 }
 
 impl Store {
@@ -344,13 +346,34 @@ impl Store {
             params![task_number, sub_channel_id, accepter, now, id],
         )?;
 
+        // Post a kickoff system message in the sub-channel. Plain text,
+        // not a structured `task_event` — this is a human-readable marker
+        // that the task has been opened and the agent should start. The
+        // existing inbox wake-on-new-unread pipeline picks it up and
+        // triggers the agent's next run scoped to the sub-channel.
+        let sub_channel = Self::get_channel_by_id_inner(&tx, &sub_channel_id)?
+            .ok_or_else(|| anyhow!("sub-channel vanished: {sub_channel_id}"))?;
+        let kickoff = format!(
+            "Task #{task_number} opened: {title}. {proposed_by}, you proposed \
+             this — start here and ask any clarifying questions in this channel."
+        );
+        let kickoff_inserted =
+            Self::create_system_message_tx(&tx, &sub_channel, &kickoff)?;
+        let kickoff_message_id = kickoff_inserted.id.clone();
+
+        // Collect pending events so we can emit the WS events after commit.
+        let pending_sub = vec![(kickoff_inserted, kickoff)];
+
         tx.commit()?;
         drop(conn);
+
+        self.emit_system_stream_events(&sub_channel, pending_sub)?;
 
         Ok(AcceptedTaskProposal {
             task_number,
             sub_channel_id,
             sub_channel_name,
+            kickoff_message_id,
         })
     }
 }
