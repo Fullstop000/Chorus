@@ -3048,18 +3048,25 @@ async fn public_send_rejects_empty_content() {
     let (store, app) = setup();
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
-    let req = serde_json::json!({ "content": "" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/conversations/{channel_id}/messages"))
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    for content in ["", "   ", "\n\t"] {
+        let req = serde_json::json!({ "content": content });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/conversations/{channel_id}/messages"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "expected 400 for content: {:?}",
+            content
+        );
+    }
 }

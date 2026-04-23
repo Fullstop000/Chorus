@@ -10,7 +10,6 @@ use chorus::config::ChorusConfig;
 use chorus::store::Store;
 use console::{style, Emoji};
 use std::io::IsTerminal;
-use std::process::Command;
 use std::time::{Duration, Instant};
 use tokio::process::Command as TokioCommand;
 
@@ -104,30 +103,27 @@ fn extract_version(s: &str) -> Option<String> {
 /// Probe a runtime's authentication state synchronously.
 /// Mirrors the logic in each runtime's `RuntimeDriver::probe()` but blocks
 /// so it can run inside the synchronous setup doctor.
-fn check_auth(name: &str) -> ProbeAuth {
+/// Probe auth with a 5-second timeout so a hanging runtime binary
+/// (e.g. `gemini auth status`) can't freeze setup indefinitely.
+async fn check_auth_with_timeout(name: &str) -> ProbeAuth {
+    tokio::time::timeout(Duration::from_secs(5), check_auth(name))
+        .await
+        .unwrap_or(ProbeAuth::Unauthed)
+}
+
+async fn check_auth(name: &str) -> ProbeAuth {
     match name {
-        "claude" => check_claude_auth(),
-        "codex" => check_codex_auth(),
-        "kimi" => check_kimi_auth(),
-        "opencode" => check_opencode_auth(),
-        "gemini" => check_gemini_auth(),
+        "claude" => check_claude_auth().await,
+        "codex" => check_codex_auth().await,
+        "kimi" => check_kimi_auth().await,
+        "opencode" => check_opencode_auth().await,
+        "gemini" => check_gemini_auth().await,
         _ => ProbeAuth::NotInstalled,
     }
 }
 
-/// Probe auth with a 5-second timeout so a hanging runtime binary
-/// (e.g. `gemini auth status`) can't freeze setup indefinitely.
-async fn check_auth_with_timeout(name: &str) -> ProbeAuth {
-    let name = name.to_string();
-    tokio::time::timeout(Duration::from_secs(5), tokio::task::spawn_blocking(move || check_auth(&name)))
-        .await
-        .ok()
-        .and_then(|r| r.ok())
-        .unwrap_or(ProbeAuth::Unauthed)
-}
-
-fn check_claude_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("claude").args(["auth", "status"]).output() else {
+async fn check_claude_auth() -> ProbeAuth {
+    let Ok(output) = TokioCommand::new("claude").args(["auth", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -145,8 +141,8 @@ fn check_claude_auth() -> ProbeAuth {
     }
 }
 
-fn check_codex_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("codex").args(["login", "status"]).output() else {
+async fn check_codex_auth() -> ProbeAuth {
+    let Ok(output) = TokioCommand::new("codex").args(["login", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     let combined = format!(
@@ -162,16 +158,18 @@ fn check_codex_auth() -> ProbeAuth {
     }
 }
 
-fn check_kimi_auth() -> ProbeAuth {
-    let has_access = Command::new("kimi")
+async fn check_kimi_auth() -> ProbeAuth {
+    let has_access = TokioCommand::new("kimi")
         .args(["config", "get", "auth.access_token"])
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
-    let has_refresh = Command::new("kimi")
+    let has_refresh = TokioCommand::new("kimi")
         .args(["config", "get", "auth.refresh_token"])
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
@@ -182,8 +180,8 @@ fn check_kimi_auth() -> ProbeAuth {
     }
 }
 
-fn check_opencode_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("opencode").args(["auth", "status"]).output() else {
+async fn check_opencode_auth() -> ProbeAuth {
+    let Ok(output) = TokioCommand::new("opencode").args(["auth", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     if output.status.success() {
@@ -193,11 +191,11 @@ fn check_opencode_auth() -> ProbeAuth {
     }
 }
 
-fn check_gemini_auth() -> ProbeAuth {
+async fn check_gemini_auth() -> ProbeAuth {
     if std::env::var("GEMINI_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
         return ProbeAuth::Authed;
     }
-    let Ok(output) = Command::new("gemini").args(["auth", "status"]).output() else {
+    let Ok(output) = TokioCommand::new("gemini").args(["auth", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {

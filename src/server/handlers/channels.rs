@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{app_err, ApiResult, AppState};
 use crate::server::error::AppErrorCode;
-use crate::store::channels::{normalize_channel_name, Channel, ChannelMemberProfile, ChannelType};
+use crate::store::channels::{is_valid_channel_name, normalize_channel_name, Channel, ChannelMemberProfile, ChannelType};
 use crate::store::messages::SenderType;
 use crate::store::ChannelListParams;
 
@@ -125,10 +125,7 @@ pub async fn handle_create_channel(
     Json(req): Json<CreateChannelRequest>,
 ) -> ApiResult<serde_json::Value> {
     let name = normalize_channel_name(&req.name);
-    if name.is_empty() {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
-    }
-    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+    if !is_valid_channel_name(&name) {
         return Err(app_err!(StatusCode::BAD_REQUEST, "channel name can only contain lowercase letters, numbers, hyphens, and underscores"));
     }
     let description = if req.description.trim().is_empty() {
@@ -231,10 +228,7 @@ pub async fn handle_update_channel(
 ) -> ApiResult<serde_json::Value> {
     let channel = validate_channel_mutation(&state, &channel_id)?;
     let name = normalize_channel_name(&req.name);
-    if name.is_empty() {
-        return Err(app_err!(StatusCode::BAD_REQUEST, "name is required"));
-    }
-    if !name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+    if !is_valid_channel_name(&name) {
         return Err(app_err!(StatusCode::BAD_REQUEST, "channel name can only contain lowercase letters, numbers, hyphens, and underscores"));
     }
     let description = if req.description.trim().is_empty() {

@@ -11,7 +11,7 @@ pub async fn run(
     server_url: &str,
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
-    if !normalized.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-') {
+    if !chorus::store::channels::is_valid_channel_name(&normalized) {
         anyhow::bail!("channel name can only contain lowercase letters, numbers, hyphens, and underscores: {normalized}");
     }
     let description = description.unwrap_or_default();

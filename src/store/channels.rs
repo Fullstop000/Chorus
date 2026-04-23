@@ -14,6 +14,16 @@ pub fn normalize_channel_name(raw: &str) -> String {
     raw.trim().trim_start_matches('#').trim().to_lowercase()
 }
 
+/// Returns true if the channel name contains only allowed characters:
+/// lowercase ASCII letters, digits, hyphens, and underscores.
+/// Callers should normalize first, then validate.
+pub fn is_valid_channel_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+}
+
 // ── Types owned by this module ──
 
 /// One row from `channels` (any type: user, DM, system, team, or task sub-channel).
