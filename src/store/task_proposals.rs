@@ -372,16 +372,44 @@ impl Store {
 
         // After the status flip, append a `status=dismissed` snapshot so
         // the chat log reflects the terminal state and the UI fold picks
-        // it up. Load fields from the updated row first.
-        let (channel_id, proposed_by, title, created_at): (String, String, String, String) = tx
-            .query_row(
-                "SELECT channel_id, proposed_by, title, created_at \
+        // it up. Load fields from the updated row first — including the
+        // four v2 wire-contract snapshot fields so the dismissed payload
+        // matches the pending/accepted shape (see `accept_task_proposal`
+        // for the same rationale).
+        // Types inferred from turbofish in the closure (matches the
+        // `accept_task_proposal` pattern above); an explicit 8-tuple type
+        // annotation here would trip clippy::type_complexity.
+        let (
+            channel_id,
+            proposed_by,
+            title,
+            created_at,
+            source_message_id,
+            snapshot_sender_name,
+            snapshot_content,
+            snapshot_created_at,
+        ) = tx.query_row(
+            "SELECT channel_id, proposed_by, title, created_at, \
+                    source_message_id, snapshot_sender_name, \
+                    snapshot_content, snapshot_created_at \
              FROM task_proposals WHERE id = ?1",
-                params![id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )?;
+            params![id],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                    r.get::<_, Option<String>>(5)?,
+                    r.get::<_, Option<String>>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                ))
+            },
+        )?;
         let channel = Self::get_channel_by_id_inner(&tx, &channel_id)?
             .ok_or_else(|| anyhow!("channel vanished: {channel_id}"))?;
+        let snapshot_excerpt = snapshot_content.as_deref().map(truncate_excerpt);
         let snapshot = serde_json::json!({
             "kind": "task_proposal",
             "proposalId": id,
@@ -394,6 +422,10 @@ impl Store {
             "subChannelName": serde_json::Value::Null,
             "resolvedBy": resolver,
             "resolvedAt": now,
+            "sourceMessageId": source_message_id,
+            "snapshotSenderName": snapshot_sender_name,
+            "snapshotExcerpt": snapshot_excerpt,
+            "snapshotCreatedAt": snapshot_created_at,
         });
         let snapshot_content = snapshot.to_string();
         let snapshot_inserted = Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
@@ -422,10 +454,18 @@ impl Store {
         // resolve time. Snapshot sender + content are pulled too so the
         // kickoff body can embed the originating user request verbatim as
         // a blockquote (v2 context-carrying kickoff).
+        // Also load the two extra wire-contract snapshot fields
+        // (`source_message_id`, `snapshot_created_at`) so the terminal-state
+        // snapshot payload carries the same four v2 fields the pending
+        // payload does. Without them, users joining mid-flight would see the
+        // accepted/dismissed card with null snapshot metadata — the
+        // frontend reducer's `?? prev` fallback masks the gap only for
+        // clients that loaded the pending snapshot first.
         let row = tx
             .query_row(
                 "SELECT channel_id, proposed_by, title, status, created_at, \
-                        snapshot_sender_name, snapshot_content \
+                        snapshot_sender_name, snapshot_content, \
+                        source_message_id, snapshot_created_at \
                  FROM task_proposals WHERE id = ?1",
                 params![id],
                 |r| {
@@ -437,6 +477,8 @@ impl Store {
                         r.get::<_, String>(4)?,
                         r.get::<_, Option<String>>(5)?,
                         r.get::<_, Option<String>>(6)?,
+                        r.get::<_, Option<String>>(7)?,
+                        r.get::<_, Option<String>>(8)?,
                     ))
                 },
             )
@@ -449,6 +491,8 @@ impl Store {
             proposed_at,
             snapshot_sender_name,
             snapshot_content,
+            source_message_id,
+            snapshot_created_at,
         )) = row
         else {
             return Err(anyhow!("task proposal not found: {id}"));
@@ -560,6 +604,24 @@ impl Store {
         // reducer (Task 14) can fold the two snapshots by proposalId.
         // `proposed_at` is the ORIGINAL creation time loaded from the row
         // above; `now` is the resolve time.
+        //
+        // Carry the four v2 snapshot wire fields alongside the terminal
+        // state so the payload stays a complete proposal snapshot — clients
+        // that first see the accepted card (joined mid-flight, re-hydrated
+        // from history) don't have to cross-reference the pending payload
+        // to render the excerpt/source/sender. Legacy v1 rows have all
+        // snapshot columns NULL and therefore emit `null` for each wire
+        // field, which is what the UI already expects for those rows.
+        //
+        // Known limitation (deferred, not in v2 scope): an attachment-only
+        // source message has `snapshot_content = Some("")`. The kickoff
+        // body's `content.lines()` splitter then emits no `> ` lines, so
+        // the blockquote section renders visually empty. Low severity —
+        // attachment-only proposals are rare, and the other two sections
+        // (title + provenance line) still carry the task identity. A
+        // future pass could emit `> (attachment-only message)` or pre-
+        // reject empty content at propose time.
+        let snapshot_excerpt = snapshot_content.as_deref().map(truncate_excerpt);
         let snapshot = serde_json::json!({
             "kind": "task_proposal",
             "proposalId": id,
@@ -572,10 +634,14 @@ impl Store {
             "subChannelName": sub_channel_name,
             "resolvedBy": accepter,
             "resolvedAt": now,
+            "sourceMessageId": source_message_id,
+            "snapshotSenderName": snapshot_sender_name,
+            "snapshotExcerpt": snapshot_excerpt,
+            "snapshotCreatedAt": snapshot_created_at,
         });
-        let snapshot_content = snapshot.to_string();
-        let parent_snapshot = Self::create_system_message_tx(&tx, &channel, &snapshot_content)?;
-        let pending_parent = vec![(parent_snapshot, snapshot_content)];
+        let snapshot_body = snapshot.to_string();
+        let parent_snapshot = Self::create_system_message_tx(&tx, &channel, &snapshot_body)?;
+        let pending_parent = vec![(parent_snapshot, snapshot_body)];
 
         tx.commit()?;
         drop(conn);
