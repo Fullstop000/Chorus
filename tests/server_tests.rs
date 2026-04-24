@@ -3015,7 +3015,6 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
     assert_eq!(body["code"], "AGENT_RESTART_FAILED");
 }
 
-
 #[tokio::test]
 async fn create_channel_rejects_invalid_names() {
     let (store, app) = setup();

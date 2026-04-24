@@ -122,7 +122,11 @@ async fn check_auth(name: &str) -> ProbeAuth {
 }
 
 async fn check_claude_auth() -> ProbeAuth {
-    let Ok(output) = TokioCommand::new("claude").args(["auth", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("claude")
+        .args(["auth", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -141,7 +145,11 @@ async fn check_claude_auth() -> ProbeAuth {
 }
 
 async fn check_codex_auth() -> ProbeAuth {
-    let Ok(output) = TokioCommand::new("codex").args(["login", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("codex")
+        .args(["login", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     let combined = format!(
@@ -180,7 +188,11 @@ async fn check_kimi_auth() -> ProbeAuth {
 }
 
 async fn check_opencode_auth() -> ProbeAuth {
-    let Ok(output) = TokioCommand::new("opencode").args(["auth", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("opencode")
+        .args(["auth", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     if output.status.success() {
@@ -194,7 +206,11 @@ async fn check_gemini_auth() -> ProbeAuth {
     if std::env::var("GEMINI_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
         return ProbeAuth::Authed;
     }
-    let Ok(output) = TokioCommand::new("gemini").args(["auth", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("gemini")
+        .args(["auth", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -695,7 +711,9 @@ mod tests {
 
     #[tokio::test]
     async fn check_tool_returns_none_for_missing_binary() {
-        assert!(check_tool_async("definitely-not-a-real-binary-xyzzy").await.is_none());
+        assert!(check_tool_async("definitely-not-a-real-binary-xyzzy")
+            .await
+            .is_none());
     }
 
     #[test]
