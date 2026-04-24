@@ -45,6 +45,10 @@ pub enum AppErrorCode {
     MessageNotAMember,
     /// The proposal target for an accept/dismiss is no longer pending.
     TaskProposalAlreadyResolved,
+    /// Propose-time snapshot lookup found no source message in the channel.
+    /// Bridge/caller needs to retry with a valid message id — inline field
+    /// error rather than a toast.
+    TaskProposalSourceMessageNotFound,
 }
 
 impl AppErrorCode {
@@ -59,6 +63,7 @@ impl AppErrorCode {
             Self::ChannelOperationUnsupported => StatusCode::BAD_REQUEST,
             Self::MessageNotAMember => StatusCode::FORBIDDEN,
             Self::TaskProposalAlreadyResolved => StatusCode::CONFLICT,
+            Self::TaskProposalSourceMessageNotFound => StatusCode::BAD_REQUEST,
         }
     }
 }
@@ -226,6 +231,26 @@ mod tests {
     }
 
     #[test]
+    fn task_proposal_source_message_not_found_maps_to_400() {
+        assert_eq!(
+            AppErrorCode::TaskProposalSourceMessageNotFound.http_status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[test]
+    fn task_proposal_source_message_not_found_serializes_screaming_snake() {
+        let json = serde_json::to_string(&AppErrorCode::TaskProposalSourceMessageNotFound).unwrap();
+        assert_eq!(json, "\"TASK_PROPOSAL_SOURCE_MESSAGE_NOT_FOUND\"");
+        let back: AppErrorCode =
+            serde_json::from_str("\"TASK_PROPOSAL_SOURCE_MESSAGE_NOT_FOUND\"").unwrap();
+        assert!(matches!(
+            back,
+            AppErrorCode::TaskProposalSourceMessageNotFound
+        ));
+    }
+
+    #[test]
     fn not_a_member_maps_to_403() {
         assert_eq!(
             AppErrorCode::MessageNotAMember.http_status(),
@@ -306,6 +331,7 @@ mod tests {
             AppErrorCode::ChannelOperationUnsupported,
             AppErrorCode::MessageNotAMember,
             AppErrorCode::TaskProposalAlreadyResolved,
+            AppErrorCode::TaskProposalSourceMessageNotFound,
         ];
         for code in codes {
             let serialised = serde_json::to_string(&code).unwrap();

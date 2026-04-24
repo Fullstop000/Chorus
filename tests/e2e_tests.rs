@@ -807,6 +807,46 @@ async fn internal_agent_create_proposal_inserts_row_and_card() {
     assert_eq!(body["proposedBy"], "claude");
 }
 
+/// A bogus `sourceMessageId` must surface as 400 with the typed error code
+/// `TASK_PROPOSAL_SOURCE_MESSAGE_NOT_FOUND` — so the bridge/caller can
+/// distinguish a bad propose argument from a generic 400 and surface a
+/// useful inline error to the agent.
+#[tokio::test]
+async fn internal_propose_with_bad_source_message_returns_400_with_typed_code() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let resp = client
+        .post(format!(
+            "{url}/internal/agent/claude/channels/eng/task-proposals"
+        ))
+        .json(&serde_json::json!({
+            "title": "investigate login 500",
+            "sourceMessageId": "msg_does_not_exist",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "TASK_PROPOSAL_SOURCE_MESSAGE_NOT_FOUND");
+}
+
 /// Fixture for kickoff-body tests. Seeds an `eng` channel + `claude` agent,
 /// emits a source message with `source_content` from `sender`, creates the
 /// proposal, accepts it, and returns the sub-channel's kickoff body (the

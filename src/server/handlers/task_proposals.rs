@@ -188,9 +188,8 @@ pub struct InternalProposeBody {
     /// v2: id of the user message the agent read when deciding to propose.
     /// Required — the store snapshots this message's content + sender into
     /// the proposal row so the per-task session gets the originating
-    /// request as immutable kickoff context. Task 4 will wire this into a
-    /// dedicated error code on a 400; for now the `source message not
-    /// found` anyhow message is surfaced as a generic 400 below.
+    /// request as immutable kickoff context. A missing/foreign message id
+    /// returns 400 with `TASK_PROPOSAL_SOURCE_MESSAGE_NOT_FOUND`.
     #[serde(rename = "sourceMessageId")]
     pub source_message_id: String,
 }
@@ -223,7 +222,15 @@ pub async fn internal_agent_propose(
         })
         .map_err(|e| {
             let msg = format!("{e}");
-            if msg.contains("title") || msg.contains("source message") {
+            // Tightened from "source message" to the full phrase the store
+            // emits — "source message" alone could accidentally match future
+            // unrelated errors (e.g. a "source message type mismatch" 500).
+            if msg.contains("source message not found") {
+                app_err!(
+                    AppErrorCode::TaskProposalSourceMessageNotFound,
+                    "source message not found in channel"
+                )
+            } else if msg.contains("title") {
                 app_err!(StatusCode::BAD_REQUEST, "{msg}")
             } else {
                 app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{msg}")
