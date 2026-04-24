@@ -62,7 +62,7 @@ task_number             INT   (per-channel auto-increment for display)
 title                   TEXT
 status                  ENUM  {proposed, dismissed, todo, in_progress, in_review, done}
 owner                   TEXT  NULL   (was claimed_by)
-created_by_name         TEXT
+created_by              TEXT
 created_at              TIMESTAMP
 sub_channel_id          UUID  NULL   (minted on transition out of `proposed`)
 -- provenance (migrated from task_proposals, PR #96)
@@ -87,8 +87,8 @@ snapshot_created_at     TIMESTAMP NULL
   becomes null again.
 - **Ownership default.** Every create — agent-proposed, human direct-create —
   starts with `owner = null`. A task becomes owned only via explicit
-  `claim_task` or `POST /api/tasks/:id/claim`. This is uniform and matches
-  today's `claimed_by` default.
+  `claim_task` or `POST /api/conversations/:id/tasks/:number/claim`. This is
+  uniform and matches today's `claimed_by` default.
 - **Pointer-vs-truth.** `source_message_id` uses `ON DELETE SET NULL`. If the
   originating message is deleted, the pointer nulls but the four `snapshot_*`
   fields stay. Provenance survives source deletion — preserved verbatim from
@@ -223,14 +223,15 @@ POST  /api/conversations/:id/tasks           create (human, direct)   → status
 POST  /internal/agent/:agent/channels/:ch/tasks  create (agent)       → status=proposed (snapshot required)
 GET   /api/conversations/:id/tasks           list (filterable by status)
 GET   /api/conversations/:id/tasks/:number   detail
-POST  /api/tasks/:id/status                  body: { status }         advance lifecycle
-POST  /api/tasks/:id/claim                   sets owner = caller
-POST  /api/tasks/:id/unclaim                 clears owner
+POST  /api/conversations/:id/tasks/:number/status   body: { status }   advance lifecycle
+POST  /api/conversations/:id/tasks/:number/claim    sets owner = caller
+POST  /api/conversations/:id/tasks/:number/unclaim  clears owner
 ```
 
 One status endpoint with server-side transition validation, not six
-action-named endpoints. Matches today's `updateTaskStatus` precedent. The
-state machine lives in the Rust store.
+action-named endpoints. Matches today's `updateTaskStatus` precedent and the
+existing convention of keying tasks by `(conversation_id, task_number)` —
+not UUID. The state machine lives in the Rust store.
 
 ### Transition graph (forward-only v1)
 
@@ -257,13 +258,17 @@ transition — owner is a label, not a gate.
 ### MCP tools (agent surface)
 
 ```
-create_task          { title, source_message_id } → status=proposed
-accept_task          { task_id }                  → proposed → todo
-dismiss_task         { task_id }                  → proposed → dismissed
-claim_task           { task_id }
-unclaim_task         { task_id }
-advance_task_status  { task_id, status }
+create_task          { channel, title, source_message_id } → status=proposed
+accept_task          { channel, task_number }              → proposed → todo
+dismiss_task         { channel, task_number }              → proposed → dismissed
+claim_task           { channel, task_number }
+unclaim_task         { channel, task_number }
+advance_task_status  { channel, task_number, status }
 ```
+
+All MCP tools key tasks by `(channel, task_number)` — matches existing
+`Backend` trait in `src/bridge/backend.rs` and the public HTTP API. The UUID
+`task_id` is an internal DB detail and never surfaced to agents or the UI.
 
 One tool per action (CLAUDE.md: "one thing, done well"). Agents always go
 through the proposal gate — `create_task` always produces `status =
@@ -304,7 +309,7 @@ client. No OCC in v1.
 - `TaskEventMessage.tsx` + `useTaskEventLog.ts` card-deriving reducer:
   replaced by `TaskEventRow.tsx` + per-event reducer.
 - Action-named HTTP routes (`POST /task-proposals/:id/accept`, `/dismiss`):
-  collapsed into `POST /tasks/:id/status`.
+  collapsed into `POST /api/conversations/:id/tasks/:number/status`.
 - MCP tools: `propose_task` → `create_task`; `accept_task_proposal` →
   `accept_task`; `dismiss_task_proposal` → `dismiss_task`.
 
