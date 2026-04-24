@@ -2530,10 +2530,17 @@ fn accept_task_proposal_posts_updated_task_proposal_message_in_parent() {
     // (joined mid-flight) can render excerpt + source without depending
     // on the pending snapshot existing earlier in history. Pins the
     // regression codex R1 caught (accept payload had lost these fields).
+    // snapshotCreatedAt pinned to the row's stored value — the source
+    // message's created_at, frozen at propose time — so a future regression
+    // that accidentally passes `now` here would fail instead of slipping
+    // through an is_string check.
     assert_eq!(v["sourceMessageId"], msg_id);
     assert_eq!(v["snapshotSenderName"], "alice");
     assert_eq!(v["snapshotExcerpt"], "hi");
-    assert!(v["snapshotCreatedAt"].is_string());
+    assert_eq!(
+        v["snapshotCreatedAt"].as_str().unwrap(),
+        p.snapshot_created_at.as_deref().unwrap()
+    );
 }
 
 #[test]
@@ -2574,7 +2581,10 @@ fn dismiss_task_proposal_posts_updated_task_proposal_message() {
     assert_eq!(v["sourceMessageId"], msg_id);
     assert_eq!(v["snapshotSenderName"], "alice");
     assert_eq!(v["snapshotExcerpt"], "hi");
-    assert!(v["snapshotCreatedAt"].is_string());
+    assert_eq!(
+        v["snapshotCreatedAt"].as_str().unwrap(),
+        p.snapshot_created_at.as_deref().unwrap()
+    );
 }
 
 // ── v2: snapshot capture tests ───────────────────────────────────────────────
