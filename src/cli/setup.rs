@@ -10,6 +10,7 @@ use chorus::config::ChorusConfig;
 use chorus::store::{Store, Workspace};
 use console::{style, Emoji};
 use std::io::IsTerminal;
+use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::process::Command as TokioCommand;
 
@@ -488,6 +489,18 @@ fn ensure_setup_workspace(
     store.create_local_workspace(workspace_name, owner_human)
 }
 
+fn existing_setup_has_active_workspace(data_dir: &Path) -> anyhow::Result<bool> {
+    let db_path = data_dir.join(DATA_SUBDIR).join("chorus.db");
+    if !db_path.exists() {
+        return Ok(false);
+    }
+    let db_path = db_path.to_str().ok_or_else(|| {
+        anyhow::anyhow!("database path is not valid UTF-8: {}", db_path.display())
+    })?;
+    let store = Store::open(db_path)?;
+    Ok(store.get_active_workspace()?.is_some())
+}
+
 /// Reconcile older installs with the current layout:
 ///   root → <root>/data/   : chorus.db*, attachments/, teams/
 ///   <root>/data/ → root   : agents/  (an earlier commit mistakenly moved it)
@@ -536,11 +549,10 @@ pub async fn run(
     let data_dir_early = chorus::agent::templates::expand_tilde(&data_dir_str_early);
     let config_path = data_dir_early.join("config.toml");
 
-    // Skip setup when config already exists and the caller didn't explicitly
-    // force it (e.g. via --yes in an automated context). This makes
-    // `chorus setup` safe to call from scripts without wrapping it in a
-    // `[ ! -f config.toml ]` guard.
-    if config_path.exists() && !yes {
+    // Skip setup only when the existing install already has an active local
+    // workspace. Older installs can have config.toml without workspace state;
+    // those still need to flow through setup once to create the local context.
+    if config_path.exists() && !yes && existing_setup_has_active_workspace(&data_dir_early)? {
         println!(
             "  {} config already exists at {}  (re-run with --yes to overwrite)",
             style(OK).green(),
@@ -834,6 +846,38 @@ mod tests {
         assert_eq!(workspace.id, existing.id);
         assert_eq!(workspace.name, "Existing Workspace");
         assert_eq!(store.list_workspaces_for_human("bob").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn existing_setup_without_database_still_needs_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        assert!(!existing_setup_has_active_workspace(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn existing_setup_without_active_workspace_still_needs_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_subdir = tmp.path().join(DATA_SUBDIR);
+        std::fs::create_dir_all(&data_subdir).unwrap();
+        let db_path = data_subdir.join("chorus.db");
+        Store::open(db_path.to_str().unwrap()).unwrap();
+
+        assert!(!existing_setup_has_active_workspace(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn existing_setup_with_active_workspace_can_skip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_subdir = tmp.path().join(DATA_SUBDIR);
+        std::fs::create_dir_all(&data_subdir).unwrap();
+        let db_path = data_subdir.join("chorus.db");
+        let store = Store::open(db_path.to_str().unwrap()).unwrap();
+        store
+            .create_local_workspace("Chorus Local", "alice")
+            .unwrap();
+
+        assert!(existing_setup_has_active_workspace(tmp.path()).unwrap());
     }
 
     #[tokio::test]
