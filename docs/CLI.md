@@ -8,11 +8,11 @@ Complete reference for the `chorus` command-line interface.
 
 ### `chorus setup`
 
-First-run initializer. Detects installed AI runtimes, probes authentication status, writes `config.toml`, creates the data directory layout, and migrates legacy configurations.
+First-run initializer. Detects installed AI runtimes, probes authentication status, writes `config.toml`, creates the data directory layout, creates a local workspace, and migrates legacy configurations.
 
 ```bash
 chorus setup
-chorus setup --yes                    # non-interactive, accept defaults
+chorus setup --yes                    # non-interactive, accept defaults including "Chorus Local"
 chorus setup --data-dir /custom/path  # override default ~/.chorus
 ```
 
@@ -21,6 +21,7 @@ chorus setup --data-dir /custom/path  # override default ~/.chorus
 - Probes each runtime's auth state (API keys, OAuth tokens, login status)
 - Writes `~/.chorus/config.toml` with detected runtime settings
 - Creates `data/`, `logs/`, and `agents/` subdirectories
+- Creates an explicit local workspace; interactive setup prompts for a name with `Chorus Local` as the default
 - Generates a `machine_id` UUID for this installation
 
 **Mutates:** yes (writes config, creates directories).

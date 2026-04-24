@@ -7,7 +7,7 @@
 
 use chorus::agent::drivers::ProbeAuth;
 use chorus::config::ChorusConfig;
-use chorus::store::Store;
+use chorus::store::{Store, Workspace};
 use console::{style, Emoji};
 use std::io::IsTerminal;
 use std::time::{Duration, Instant};
@@ -19,6 +19,8 @@ use super::{default_data_dir, DATA_SUBDIR, DEFAULT_TEMPLATE_DIR};
 static OK: Emoji<'_, '_> = Emoji("✓ ", "ok ");
 static BAD: Emoji<'_, '_> = Emoji("✗ ", "x  ");
 static WARN: Emoji<'_, '_> = Emoji("⚠ ", "!  ");
+
+const DEFAULT_WORKSPACE_NAME: &str = "Chorus Local";
 
 fn banner() {
     // Render visible content for each inner row at a fixed width, then apply
@@ -122,7 +124,11 @@ async fn check_auth(name: &str) -> ProbeAuth {
 }
 
 async fn check_claude_auth() -> ProbeAuth {
-    let Ok(output) = TokioCommand::new("claude").args(["auth", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("claude")
+        .args(["auth", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -141,7 +147,11 @@ async fn check_claude_auth() -> ProbeAuth {
 }
 
 async fn check_codex_auth() -> ProbeAuth {
-    let Ok(output) = TokioCommand::new("codex").args(["login", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("codex")
+        .args(["login", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     let combined = format!(
@@ -180,7 +190,11 @@ async fn check_kimi_auth() -> ProbeAuth {
 }
 
 async fn check_opencode_auth() -> ProbeAuth {
-    let Ok(output) = TokioCommand::new("opencode").args(["auth", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("opencode")
+        .args(["auth", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     if output.status.success() {
@@ -194,7 +208,11 @@ async fn check_gemini_auth() -> ProbeAuth {
     if std::env::var("GEMINI_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
         return ProbeAuth::Authed;
     }
-    let Ok(output) = TokioCommand::new("gemini").args(["auth", "status"]).output().await else {
+    let Ok(output) = TokioCommand::new("gemini")
+        .args(["auth", "status"])
+        .output()
+        .await
+    else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -440,6 +458,36 @@ fn check_template_dir(dir: &std::path::Path) -> (usize, usize) {
     (templates, categories)
 }
 
+fn default_workspace_name() -> String {
+    DEFAULT_WORKSPACE_NAME.to_string()
+}
+
+fn prompt_workspace_name(interactive: bool) -> String {
+    let default_name = default_workspace_name();
+    if !interactive {
+        return default_name;
+    }
+
+    use dialoguer::theme::ColorfulTheme;
+    use dialoguer::Input;
+    Input::<String>::with_theme(&ColorfulTheme::default())
+        .with_prompt("Workspace name")
+        .default(default_name.clone())
+        .interact_text()
+        .unwrap_or(default_name)
+}
+
+fn ensure_setup_workspace(
+    store: &Store,
+    workspace_name: &str,
+    owner_human: &str,
+) -> anyhow::Result<Workspace> {
+    if let Some(workspace) = store.get_active_workspace()? {
+        return Ok(workspace);
+    }
+    store.create_local_workspace(workspace_name, owner_human)
+}
+
 /// Reconcile older installs with the current layout:
 ///   root → <root>/data/   : chorus.db*, attachments/, teams/
 ///   <root>/data/ → root   : agents/  (an earlier commit mistakenly moved it)
@@ -633,7 +681,13 @@ pub async fn run(
     // Always call Store::open: it runs migrations idempotently, so an
     // existing chorus.db gets schema upgrades as part of setup.
     let db_path = data_subdir.join("chorus.db");
-    let _ = Store::open(db_path.to_str().unwrap())?;
+    let store = Store::open(db_path.to_str().unwrap())?;
+    let workspace = if let Some(workspace) = store.get_active_workspace()? {
+        workspace
+    } else {
+        let workspace_name = prompt_workspace_name(interactive);
+        ensure_setup_workspace(&store, &workspace_name, &whoami::username())?
+    };
 
     // Persist config — machine_id (stable across re-runs) + template_dir,
     // so `chorus start` can read the chosen paths without the user re-passing
@@ -660,6 +714,10 @@ pub async fn run(
     row_ok("data", &format!("{}", data_subdir.display()));
     row_ok("logs", &format!("{}", logs_dir.display()));
     row_ok("agents", &format!("{}", agents_dir.display()));
+    row_ok(
+        "workspace",
+        &format!("{} ({})", style(&workspace.name).cyan(), workspace.slug),
+    );
     row_ok(
         "machine id",
         &format!("{} (persistent)", style(&machine_id).cyan()),
@@ -695,7 +753,9 @@ mod tests {
 
     #[tokio::test]
     async fn check_tool_returns_none_for_missing_binary() {
-        assert!(check_tool_async("definitely-not-a-real-binary-xyzzy").await.is_none());
+        assert!(check_tool_async("definitely-not-a-real-binary-xyzzy")
+            .await
+            .is_none());
     }
 
     #[test]
@@ -740,6 +800,40 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0], dir_a.join("myfake-bin"));
         assert_eq!(found[1], dir_c.join("myfake-bin"));
+    }
+
+    #[test]
+    fn ensure_setup_workspace_creates_local_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Store::open(db_path.to_str().unwrap()).unwrap();
+
+        let workspace = ensure_setup_workspace(&store, "Chorus Local", "alice").unwrap();
+
+        assert_eq!(workspace.name, "Chorus Local");
+        assert_eq!(workspace.slug, "chorus-local");
+        assert_eq!(workspace.created_by_human.as_deref(), Some("alice"));
+        assert_eq!(workspace.mode, chorus::store::WorkspaceMode::LocalOnly);
+        assert_eq!(
+            store.get_active_workspace().unwrap().unwrap().id,
+            workspace.id
+        );
+    }
+
+    #[test]
+    fn ensure_setup_workspace_preserves_existing_active_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Store::open(db_path.to_str().unwrap()).unwrap();
+        let existing = store
+            .create_local_workspace("Existing Workspace", "alice")
+            .unwrap();
+
+        let workspace = ensure_setup_workspace(&store, "New Workspace", "bob").unwrap();
+
+        assert_eq!(workspace.id, existing.id);
+        assert_eq!(workspace.name, "Existing Workspace");
+        assert_eq!(store.list_workspaces_for_human("bob").unwrap().len(), 0);
     }
 
     #[tokio::test]

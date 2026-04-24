@@ -2,7 +2,7 @@ use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::tasks::TaskStatus;
-use chorus::store::{AgentRecordUpsert, Store};
+use chorus::store::{AgentRecordUpsert, Store, WorkspaceMode};
 use rusqlite::{params, Connection};
 use tempfile::tempdir;
 
@@ -89,6 +89,86 @@ fn make_store() -> (Store, tempfile::TempDir) {
     let db_path = dir.path().join("test.db");
     let store = Store::open(db_path.to_str().unwrap()).unwrap();
     (store, dir)
+}
+
+#[test]
+fn test_create_local_workspace_sets_owner_and_active_context() {
+    let (store, _dir) = make_store();
+
+    let workspace = store.create_local_workspace("Chorus Dev", "alice").unwrap();
+
+    assert_eq!(workspace.name, "Chorus Dev");
+    assert_eq!(workspace.slug, "chorus-dev");
+    assert_eq!(workspace.mode, WorkspaceMode::LocalOnly);
+    assert_eq!(workspace.created_by_human.as_deref(), Some("alice"));
+    assert_eq!(
+        store.get_active_workspace().unwrap().unwrap().id,
+        workspace.id
+    );
+    assert_eq!(
+        store.list_workspaces_for_human("alice").unwrap()[0].id,
+        workspace.id
+    );
+}
+
+#[test]
+fn test_workspace_scoped_names_allow_same_channel_name_in_different_workspaces() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "bob").unwrap();
+
+    store
+        .create_channel_in_workspace(
+            &alpha.id,
+            "general",
+            Some("Alpha general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_channel_in_workspace(
+            &beta.id,
+            "general",
+            Some("Beta general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+
+    assert!(store
+        .create_channel_in_workspace(
+            &alpha.id,
+            "general",
+            Some("Duplicate Alpha general"),
+            ChannelType::Channel,
+            None,
+        )
+        .is_err());
+}
+
+#[test]
+fn test_unknown_workspace_mode_surfaces_error() {
+    let (store, _dir) = make_store();
+    {
+        let conn = store.conn_for_test();
+        conn.execute(
+            "INSERT INTO workspaces (id, name, slug, mode, created_by_human)
+             VALUES ('workspace-1', 'Broken', 'broken', 'surprise', 'alice')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_workspace_state (key, workspace_id)
+             VALUES ('active_workspace_id', 'workspace-1')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let err = store.get_active_workspace().unwrap_err();
+
+    assert!(err.to_string().contains("unknown workspace mode"));
 }
 
 /// Channel archive, team creation, and agent record update as performed by shell/API layers.

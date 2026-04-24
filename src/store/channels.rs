@@ -213,6 +213,27 @@ impl Store {
         Ok(id)
     }
 
+    /// Persist a channel row inside an explicit workspace. New workspace-aware
+    /// call paths should use this instead of relying on name-only global scope.
+    pub fn create_channel_in_workspace(
+        &self,
+        workspace_id: &str,
+        name: &str,
+        description: Option<&str>,
+        channel_type: ChannelType,
+        parent_channel_id: Option<&str>,
+    ) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        let id = Uuid::new_v4().to_string();
+        let ct = channel_type.as_api_str();
+        conn.execute(
+            "INSERT INTO channels (id, workspace_id, name, description, channel_type, parent_channel_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, workspace_id, name, description, ct, parent_channel_id],
+        )?;
+        Ok(id)
+    }
+
     pub fn get_channels(&self) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
         Self::get_channels_inner(
