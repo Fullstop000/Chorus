@@ -10,6 +10,27 @@
 
 **Branch strategy:** Close PR #93 and PR #96. Branch `feat/task-lifecycle` off `main`. Single PR.
 
+**Important scope note (added after starting implementation):** PRs #93 and #96 are closed (not merged). The `feat/task-lifecycle` branch is off `main`, which does NOT contain their code. That means several "delete X" / "remove Y" steps below reference targets that don't exist on this branch:
+
+- `task_proposals` table in `schema.sql` — does not exist (Task 1 Step 2: no-op)
+- `migrate_create_task_proposals_table`, `migrate_add_task_proposal_snapshot_columns` — do not exist (Task 1 Step 3: no-op)
+- `src/store/task_proposals.rs` — does not exist (Task 11 Rust deletion: no-op)
+- `src/server/handlers/task_proposals.rs` — does not exist (Task 6 Step 6, Task 11 deletion: no-op)
+- `TaskProposalMessage.tsx`, `useTaskProposalLog.ts` — do not exist (Task 11 UI deletion: no-op)
+- `normalize_sqlite_timestamp` helper — does not exist (Task 1 Step 3.5: write fresh, don't "move")
+- `propose_task` / `accept_task_proposal` / `dismiss_task_proposal` MCP tools + bridge paths — do not exist (Task 8: add fresh, don't "rename")
+
+**Concrete existing-on-main components** the plan extends (verified with `grep` on main):
+- `src/store/tasks/mod.rs` — has `TaskStatus` enum (today: todo/in_progress/in_review/done), `create_tasks`, `update_tasks_claim`, `update_task_unclaim`, `update_task_status`, `claimed_by` field.
+- `src/store/tasks/events.rs` — has `TaskEventAction` + `TaskEventPayload` + `claimedBy` wire field.
+- `src/server/handlers/tasks.rs` — has list/detail/create/claim/unclaim/update-status handlers keyed today by `(conversation_id, task_number)`.
+- `src/bridge/*.rs` — has `claim_tasks` MCP tool; no `propose_task`.
+- `ui/src/components/chat/TaskEventMessage.tsx` + `.css` + `.test.tsx` + `useTaskEventLog.ts` — exist.
+- `ui/src/components/tasks/TasksPanel.tsx` + `TaskDetail.tsx` — exist.
+- `ui/src/data/tasks.ts`, `ui/src/data/taskEvents.ts` — exist.
+
+**Implementer guidance:** Skip "delete" steps when the target doesn't exist; write fresh when the plan says "move" or "rename from X" and X doesn't exist; report `DONE_WITH_CONCERNS` only if the delta changes the semantics of your task. Do not carry forward references to non-existent files.
+
 **Key convention (locked after R1 review):**
 - Tasks are keyed by `(channel_name, task_number)` on every public HTTP route and every MCP tool. UUID `task_id` is an internal DB detail — never surfaced.
 - Wire format on `task_event` messages keeps the legacy `claimedBy` field name to preserve message-history compatibility. Only in-memory types rename to `owner`; the boundary maps wire → type.
