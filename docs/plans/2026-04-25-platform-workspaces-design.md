@@ -99,7 +99,7 @@ Local human identity must be consistent. `chorus setup` should persist the local
 - Ambiguous selector: fail and ask for the slug.
 - Invalid rename: fail before mutating state.
 - Active workspace pointer references a missing workspace: fail as "no active workspace" and ask the user to switch or create one.
-- Legacy unscoped resources exist after upgrade: do not silently mix them into active workspace results; either migrate them explicitly or report them as legacy data.
+- Legacy unscoped resources exist after upgrade: no migration/backfill. The product is still in rapid development, so scoped workspace results may ignore old unscoped rows.
 - Bridge credential with the wrong workspace: reject.
 
 Switching workspace while a server is already running only updates local state in the first slice. The server picks up the active workspace on restart. Live workspace switching can be designed later.
@@ -114,4 +114,4 @@ Keep the next PR focused on the workspace control plane:
 4. Scope core resource list paths (`channels`, `agents`, `teams`, and `status`) to the active workspace.
 5. Add docs and tests for CLI behavior and resource isolation.
 
-Full route-level workspace scoping for every mutation and bridge credential is a later slice. The first slice must still prove that switching the active workspace changes the visible platform surface for core resources; otherwise `workspace switch` is only cosmetic.
+Full route-level workspace scoping for every mutation and bridge credential is a later slice. The first slice must still prove that switching the active workspace changes the visible platform surface for core resources; otherwise `workspace switch` is only cosmetic. Compatibility migration for pre-workspace data is intentionally out of scope.

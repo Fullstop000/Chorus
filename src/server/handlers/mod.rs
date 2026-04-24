@@ -41,6 +41,7 @@ use dto::ServerInfo;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
+    pub active_workspace_id: Option<String>,
     pub lifecycle: Arc<dyn AgentLifecycle>,
     pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
@@ -101,8 +102,12 @@ pub async fn handle_server_info(
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
     debug!(agent = %agent_id, "list_server");
-    let mut info = server_info::build_server_info(state.store.as_ref(), &agent_id)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mut info = server_info::build_server_info_for_workspace(
+        state.store.as_ref(),
+        &agent_id,
+        state.active_workspace_id.as_deref(),
+    )
+    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     for agent_info in &mut info.agents {
         let ps = state.lifecycle.process_state(&agent_info.name).await;
         agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
@@ -113,8 +118,11 @@ pub async fn handle_server_info(
 // ── UI Server Info ──
 
 pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
-    let info = server_info::build_ui_shell_info(state.store.as_ref())
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let info = server_info::build_ui_shell_info_for_workspace(
+        state.store.as_ref(),
+        state.active_workspace_id.as_deref(),
+    )
+    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::to_value(info).unwrap()))
 }
 

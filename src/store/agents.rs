@@ -67,15 +67,42 @@ pub struct AgentRecordUpsert<'a> {
 impl Store {
     pub fn create_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<String> {
         let conn = self.conn.lock().unwrap();
+        Self::create_agent_record_inner(&conn, None, record)
+    }
+
+    pub fn create_agent_record_in_workspace(
+        &self,
+        workspace_id: &str,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        Self::create_agent_record_inner(&conn, Some(workspace_id), record)
+    }
+
+    fn create_agent_record_inner(
+        conn: &rusqlite::Connection,
+        workspace_id: Option<&str>,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<String> {
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO agents (id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
+            "INSERT INTO agents (id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
         )?;
         Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
-        if let Some(all_channel) =
-            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
-        {
+        let all_channel = match workspace_id {
+            Some(workspace_id) => conn
+                .query_row(
+                    "SELECT id, name, description, channel_type, created_at, parent_channel_id
+                     FROM channels
+                     WHERE workspace_id = ?1 AND name = ?2",
+                    params![workspace_id, Self::DEFAULT_SYSTEM_CHANNEL],
+                    super::channels::Channel::from_row,
+                )
+                .ok(),
+            None => Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?,
+        };
+        if let Some(all_channel) = all_channel {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
                  VALUES (?1, ?2, 'agent', 0)",
@@ -96,14 +123,32 @@ impl Store {
     }
 
     pub fn get_agents(&self) -> Result<Vec<Agent>> {
+        self.get_agents_inner(None)
+    }
+
+    pub fn get_agents_in_workspace(&self, workspace_id: &str) -> Result<Vec<Agent>> {
+        self.get_agents_inner(Some(workspace_id))
+    }
+
+    pub fn get_agents_for_workspace(&self, workspace_id: Option<&str>) -> Result<Vec<Agent>> {
+        self.get_agents_inner(workspace_id)
+    }
+
+    fn get_agents_inner(&self, workspace_id: Option<&str>) -> Result<Vec<Agent>> {
         let conn = self.conn.lock().unwrap();
-        let rows = conn
-            .prepare(
+        let (sql, params) = match workspace_id {
+            Some(workspace_id) => (
+                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE workspace_id = ?1 ORDER BY name",
+                vec![workspace_id.to_string()],
+            ),
+            None => (
                 "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents ORDER BY name",
-            )?
-            .query_map([], |row| {
-                Self::agent_from_row(row)
-            })?
+                Vec::new(),
+            ),
+        };
+        let rows = conn
+            .prepare(sql)?
+            .query_map(rusqlite::params_from_iter(params), Self::agent_from_row)?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)

@@ -32,8 +32,8 @@ Add first-class CLI commands for platform workspaces on top of the existing work
 4. Core resource isolation
    - Resolve the active workspace at server startup.
    - Filter core resource list routes by active workspace: channels, agents, teams, and status/server-info surfaces.
-   - Keep unscoped legacy rows hidden from scoped list results unless an explicit migration/backfill path is added in the same slice.
-   - If legacy unscoped rows are not migrated, surface them as legacy data in diagnostics instead of silently mixing them into workspace results.
+   - Keep unscoped legacy rows hidden from scoped list results.
+   - Do not add legacy migration or backfill; Chorus is still in rapid development and compatibility is not a goal for this slice.
    - Do not claim complete workspace isolation until mutation routes and bridge credentials are scoped in later slices.
 
 5. Error handling

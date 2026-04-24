@@ -44,7 +44,10 @@ use crate::agent::AgentLifecycle;
 use crate::store::Store;
 
 pub use handlers::dto;
-pub use handlers::server_info::{build_server_info, build_ui_shell_info};
+pub use handlers::server_info::{
+    build_server_info, build_server_info_for_workspace, build_ui_shell_info,
+    build_ui_shell_info_for_workspace,
+};
 pub use handlers::{AgentDetailResponse, AppState, HistoryResponse};
 
 pub fn build_router_with_services(
@@ -61,8 +64,15 @@ pub fn build_router_with_services(
         .allow_methods(Any)
         .allow_headers(Any);
 
+    let active_workspace_id = store
+        .get_active_workspace()
+        .ok()
+        .flatten()
+        .map(|workspace| workspace.id);
+
     let state = AppState {
         store,
+        active_workspace_id,
         lifecycle,
         runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),

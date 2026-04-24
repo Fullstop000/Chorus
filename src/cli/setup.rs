@@ -489,6 +489,17 @@ fn ensure_setup_workspace(
     store.create_local_workspace(workspace_name, owner_human)
 }
 
+fn ensure_setup_local_human(cfg: &mut ChorusConfig, default_human: &str) -> String {
+    let human = cfg
+        .local_human
+        .name
+        .clone()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| default_human.to_string());
+    cfg.local_human.name = Some(human.clone());
+    human
+}
+
 fn existing_setup_has_active_workspace(data_dir: &Path) -> anyhow::Result<bool> {
     let db_path = data_dir.join(DATA_SUBDIR).join("chorus.db");
     if !db_path.exists() {
@@ -694,17 +705,18 @@ pub async fn run(
     // existing chorus.db gets schema upgrades as part of setup.
     let db_path = data_subdir.join("chorus.db");
     let store = Store::open(db_path.to_str().unwrap())?;
+    let mut cfg = ChorusConfig::load(&data_dir)?.unwrap_or_default();
+    let local_human = ensure_setup_local_human(&mut cfg, &whoami::username());
     let workspace = if let Some(workspace) = store.get_active_workspace()? {
         workspace
     } else {
         let workspace_name = prompt_workspace_name(interactive);
-        ensure_setup_workspace(&store, &workspace_name, &whoami::username())?
+        ensure_setup_workspace(&store, &workspace_name, &local_human)?
     };
 
     // Persist config — machine_id (stable across re-runs) + template_dir,
     // so `chorus start` can read the chosen paths without the user re-passing
     // --template-dir every time.
-    let mut cfg = ChorusConfig::load(&data_dir)?.unwrap_or_default();
     let machine_id = cfg.ensure_machine_id().to_string();
     cfg.agent_template.dir = Some(template_dir_raw.clone());
 
@@ -846,6 +858,27 @@ mod tests {
         assert_eq!(workspace.id, existing.id);
         assert_eq!(workspace.name, "Existing Workspace");
         assert_eq!(store.list_workspaces_for_human("bob").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn ensure_setup_local_human_preserves_existing_identity() {
+        let mut cfg = ChorusConfig::default();
+        cfg.local_human.name = Some("alice".to_string());
+
+        let human = ensure_setup_local_human(&mut cfg, "bob");
+
+        assert_eq!(human, "alice");
+        assert_eq!(cfg.local_human.name.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn ensure_setup_local_human_persists_default_identity() {
+        let mut cfg = ChorusConfig::default();
+
+        let human = ensure_setup_local_human(&mut cfg, "bob");
+
+        assert_eq!(human, "bob");
+        assert_eq!(cfg.local_human.name.as_deref(), Some("bob"));
     }
 
     #[test]

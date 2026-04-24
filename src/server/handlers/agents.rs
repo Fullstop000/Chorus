@@ -198,7 +198,7 @@ pub(super) fn normalize_reasoning_effort(
 pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<AgentInfo>> {
     let mut agents: Vec<AgentInfo> = state
         .store
-        .get_agents()
+        .get_agents_for_workspace(state.active_workspace_id.as_deref())
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .iter()
         .map(AgentInfo::from)
@@ -320,7 +320,7 @@ pub(crate) async fn create_and_start_agent(
     let mut slug_result: Option<(String, String)> = None;
     for _ in 0..MAX_SLUG_ATTEMPTS {
         let candidate = format!("{}-{}", params.base_name, random_slug_suffix());
-        match state.store.create_agent_record(&AgentRecordUpsert {
+        let record = AgentRecordUpsert {
             name: &candidate,
             display_name: params.display_name,
             description: params.description,
@@ -329,7 +329,14 @@ pub(crate) async fn create_and_start_agent(
             model: params.model,
             reasoning_effort: params.reasoning_effort,
             env_vars: params.env_vars,
-        }) {
+        };
+        let create_result = match state.active_workspace_id.as_deref() {
+            Some(workspace_id) => state
+                .store
+                .create_agent_record_in_workspace(workspace_id, &record),
+            None => state.store.create_agent_record(&record),
+        };
+        match create_result {
             Ok(id) => {
                 slug_result = Some((candidate, id));
                 break;
@@ -350,10 +357,13 @@ pub(crate) async fn create_and_start_agent(
             last_error.unwrap_or_else(|| "unknown".to_string())
         )
     })?;
-    for channel in state.store.get_auto_join_channels()? {
+    for channel in state
+        .store
+        .get_auto_join_channels_for_workspace(state.active_workspace_id.as_deref())?
+    {
         let _ = state
             .store
-            .join_channel(&channel.name, &name, SenderType::Agent);
+            .join_channel_by_id(&channel.id, &name, SenderType::Agent);
     }
     let start_error = if let Err(err) = state.lifecycle.start_agent(&name, None).await {
         let error_detail = format_anyhow_error(&err);

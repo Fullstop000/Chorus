@@ -54,7 +54,7 @@ impl Store {
     pub fn create_local_workspace(&self, name: &str, owner_human: &str) -> Result<Workspace> {
         let conn = self.conn.lock().unwrap();
         let id = Uuid::new_v4().to_string();
-        let slug = slugify_base(name).ok_or_else(|| anyhow!("workspace name has no slug"))?;
+        let slug = Self::unique_workspace_slug_inner(&conn, name)?;
 
         conn.execute(
             "INSERT OR IGNORE INTO humans (name, display_name) VALUES (?1, ?1)",
@@ -102,6 +102,75 @@ impl Store {
         }
     }
 
+    pub fn set_active_workspace(&self, workspace_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if Self::get_workspace_by_id_inner(&conn, workspace_id)?.is_none() {
+            return Err(anyhow!("workspace not found: {workspace_id}"));
+        }
+        conn.execute(
+            "INSERT INTO local_workspace_state (key, workspace_id)
+             VALUES ('active_workspace_id', ?1)
+             ON CONFLICT(key) DO UPDATE SET workspace_id = excluded.workspace_id",
+            params![workspace_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_workspace_by_selector(&self, selector: &str) -> Result<Option<Workspace>> {
+        let selector = selector.trim();
+        if selector.is_empty() {
+            return Err(anyhow!("workspace selector cannot be empty"));
+        }
+
+        let conn = self.conn.lock().unwrap();
+        if let Some(workspace) = conn
+            .query_row(
+                "SELECT id, name, slug, mode, created_by_human, created_at
+                 FROM workspaces
+                 WHERE slug = ?1",
+                params![selector],
+                Self::workspace_from_row,
+            )
+            .optional()?
+        {
+            return Ok(Some(workspace));
+        }
+
+        let rows = conn
+            .prepare(
+                "SELECT id, name, slug, mode, created_by_human, created_at
+                 FROM workspaces
+                 WHERE name = ?1
+                 ORDER BY created_at, slug",
+            )?
+            .query_map(params![selector], Self::workspace_from_row)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        match rows.len() {
+            0 => Ok(None),
+            1 => Ok(rows.into_iter().next()),
+            _ => Err(anyhow!(
+                "workspace selector is ambiguous: {selector}; use the workspace slug"
+            )),
+        }
+    }
+
+    pub fn rename_workspace(&self, workspace_id: &str, new_name: &str) -> Result<Workspace> {
+        if slugify_base(new_name).is_none() {
+            return Err(anyhow!("workspace name has no slug"));
+        }
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE workspaces SET name = ?1 WHERE id = ?2",
+            params![new_name, workspace_id],
+        )?;
+        if updated == 0 {
+            return Err(anyhow!("workspace not found: {workspace_id}"));
+        }
+        Self::get_workspace_by_id_inner(&conn, workspace_id)?
+            .ok_or_else(|| anyhow!("workspace not found after rename: {workspace_id}"))
+    }
+
     pub fn list_workspaces_for_human(&self, human_name: &str) -> Result<Vec<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -142,5 +211,27 @@ impl Store {
             created_by_human: row.get(4)?,
             created_at: parse_datetime(&created_at),
         })
+    }
+
+    fn unique_workspace_slug_inner(conn: &rusqlite::Connection, name: &str) -> Result<String> {
+        let base = slugify_base(name).ok_or_else(|| anyhow!("workspace name has no slug"))?;
+        for suffix in 0.. {
+            let candidate = if suffix == 0 {
+                base.clone()
+            } else {
+                format!("{base}-{suffix}")
+            };
+            let exists: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM workspaces WHERE slug = ?1)",
+                    params![candidate],
+                    |row| row.get::<_, i64>(0),
+                )
+                .map(|count| count != 0)?;
+            if !exists {
+                return Ok(candidate);
+            }
+        }
+        unreachable!("unbounded suffix search should return")
     }
 }

@@ -127,6 +127,9 @@ pub struct ChannelMemberProfile {
 /// listings so handlers can request exactly the channel set they need.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelListParams<'a> {
+    /// Restrict results to one workspace. When set, legacy unscoped rows are
+    /// intentionally hidden.
+    pub workspace_id: Option<&'a str>,
     /// When set, callers can derive per-row `joined` from membership.
     pub for_member: Option<&'a str>,
     /// Include rows with `archived = 1`.
@@ -173,11 +176,18 @@ impl Store {
             conditions.push("archived = 0".to_string());
         }
 
+        let mut values: Vec<String> = Vec::new();
+        if let Some(workspace_id) = params.workspace_id {
+            conditions.push("workspace_id = ?".to_string());
+            values.push(workspace_id.to_string());
+        }
+
         let channel_types = Self::list_channel_type_names(params);
         conditions.push(format!(
             "channel_type IN ({})",
             vec!["?"; channel_types.len()].join(", ")
         ));
+        values.extend(channel_types.iter().map(|value| value.to_string()));
 
         if !conditions.is_empty() {
             sql.push_str(" WHERE ");
@@ -186,10 +196,7 @@ impl Store {
         sql.push_str(" ORDER BY created_at");
 
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt.query_map(
-            rusqlite::params_from_iter(channel_types.iter().copied()),
-            Channel::from_row,
-        )?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(values), Channel::from_row)?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
@@ -268,14 +275,26 @@ impl Store {
     /// channels stay invite-only; only writable built-in system rooms such as
     /// `#all` are auto-joined.
     pub fn get_auto_join_channels(&self) -> Result<Vec<Channel>> {
+        self.get_auto_join_channels_for_workspace(None)
+    }
+
+    pub fn get_auto_join_channels_for_workspace(
+        &self,
+        workspace_id: Option<&str>,
+    ) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at, parent_channel_id
+        let mut sql = "SELECT id, name, description, channel_type, created_at, parent_channel_id
              FROM channels
-             WHERE archived = 0 AND channel_type = 'system'
-             ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at",
-        )?;
-        let rows = stmt.query_map([], Channel::from_row)?;
+             WHERE archived = 0 AND channel_type = 'system'"
+            .to_string();
+        let mut values = Vec::new();
+        if let Some(workspace_id) = workspace_id {
+            sql.push_str(" AND workspace_id = ?1");
+            values.push(workspace_id.to_string());
+        }
+        sql.push_str(" ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at");
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(values), Channel::from_row)?;
         Ok(rows.filter_map(|row| row.ok()).collect())
     }
 

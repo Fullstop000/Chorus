@@ -2241,13 +2241,18 @@ async fn test_create_team_endpoint() {
     assert_eq!(bot_member.member_type, "agent");
     assert_eq!(bot_member.role, "operator");
 
-    let human_member = members.iter().find(|m| m.member_name == current_user).unwrap();
+    let human_member = members
+        .iter()
+        .find(|m| m.member_name == current_user)
+        .unwrap();
     assert_eq!(human_member.member_type, "human");
     assert_eq!(human_member.role, "operator");
 
     // Creator is also joined to the team channel.
     let channel_members = store.get_channel_members(&ch.id).unwrap();
-    assert!(channel_members.iter().any(|m| m.member_name == current_user));
+    assert!(channel_members
+        .iter()
+        .any(|m| m.member_name == current_user));
 
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
@@ -2306,7 +2311,9 @@ async fn test_create_team_does_not_duplicate_creator_when_explicitly_in_members(
     // Explicit creator is also joined to the team channel via the member loop.
     let ch = store.get_channel_by_name("eng-team").unwrap().unwrap();
     let channel_members = store.get_channel_members(&ch.id).unwrap();
-    assert!(channel_members.iter().any(|m| m.member_name == current_user));
+    assert!(channel_members
+        .iter()
+        .any(|m| m.member_name == current_user));
 }
 
 #[tokio::test]
@@ -2844,6 +2851,113 @@ async fn test_create_agent_appends_random_suffix() {
 }
 
 #[tokio::test]
+async fn test_active_workspace_filters_core_resource_lists() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+    store.set_active_workspace(&alpha.id).unwrap();
+    store
+        .create_channel_in_workspace(
+            &alpha.id,
+            "alpha-general",
+            Some("Alpha general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_channel_in_workspace(
+            &beta.id,
+            "beta-general",
+            Some("Beta general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &alpha.id,
+            &AgentRecordUpsert {
+                name: "alpha-bot",
+                display_name: "Alpha Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &beta.id,
+            &AgentRecordUpsert {
+                name: "beta-bot",
+                display_name: "Beta Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_team_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&beta.id, "beta-team", "Beta Team", "swarm", None)
+        .unwrap();
+    let app = build_router(store.clone());
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/channels")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let channels = body_json(resp).await;
+    assert!(channels.to_string().contains("alpha-general"));
+    assert!(!channels.to_string().contains("beta-general"));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let agents = body_json(resp).await;
+    assert!(agents.to_string().contains("alpha-bot"));
+    assert!(!agents.to_string().contains("beta-bot"));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/teams")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let teams = body_json(resp).await;
+    assert!(teams.to_string().contains("alpha-team"));
+    assert!(!teams.to_string().contains("beta-team"));
+}
+
+#[tokio::test]
 async fn test_create_agent_derives_slug_from_display_name() {
     let (store, app, _lifecycle) = setup_with_lifecycle();
     store.ensure_builtin_channels("alice").unwrap();
@@ -3115,7 +3229,6 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
     let body = body_json(resp).await;
     assert_eq!(body["code"], "AGENT_RESTART_FAILED");
 }
-
 
 #[tokio::test]
 async fn create_channel_rejects_invalid_names() {

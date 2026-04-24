@@ -56,6 +56,14 @@ pub struct AgentTemplateConfig {
     pub default: String,
 }
 
+/// Local human identity for single-user local platform deployments.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalHumanConfig {
+    /// Stable human name used for workspace ownership and membership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 /// File-logging settings. Applied by `chorus serve` / `chorus start` to
 /// write structured logs into `<data_dir>/logs/` alongside stdout output.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -110,6 +118,9 @@ pub struct ChorusConfig {
 
     #[serde(default)]
     pub agent_template: AgentTemplateConfig,
+
+    #[serde(default)]
+    pub local_human: LocalHumanConfig,
 
     #[serde(default)]
     pub logs: LogsConfig,

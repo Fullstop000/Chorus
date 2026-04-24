@@ -171,6 +171,109 @@ fn test_unknown_workspace_mode_surfaces_error() {
     assert!(err.to_string().contains("unknown workspace mode"));
 }
 
+#[test]
+fn test_workspace_selector_switch_rename_and_slug_collision() {
+    let (store, _dir) = make_store();
+    let first = store.create_local_workspace("Acme", "alice").unwrap();
+    let second = store.create_local_workspace("Acme", "alice").unwrap();
+
+    assert_eq!(first.slug, "acme");
+    assert_eq!(second.slug, "acme-1");
+    assert_eq!(
+        store.get_workspace_by_selector("acme").unwrap().unwrap().id,
+        first.id
+    );
+
+    store.set_active_workspace(&first.id).unwrap();
+    assert_eq!(store.get_active_workspace().unwrap().unwrap().id, first.id);
+
+    let renamed = store.rename_workspace(&first.id, "Acme Renamed").unwrap();
+    assert_eq!(renamed.name, "Acme Renamed");
+    assert_eq!(renamed.slug, "acme");
+}
+
+#[test]
+fn test_workspace_scoped_core_resource_lists() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+
+    store
+        .create_channel_in_workspace(
+            &alpha.id,
+            "general",
+            Some("Alpha general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_channel_in_workspace(
+            &beta.id,
+            "general",
+            Some("Beta general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &alpha.id,
+            &AgentRecordUpsert {
+                name: "alpha-bot",
+                display_name: "Alpha Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &beta.id,
+            &AgentRecordUpsert {
+                name: "beta-bot",
+                display_name: "Beta Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_team_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&beta.id, "beta-team", "Beta Team", "swarm", None)
+        .unwrap();
+
+    let alpha_channels = store
+        .get_channels_by_params(&chorus::store::ChannelListParams {
+            workspace_id: Some(&alpha.id),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(alpha_channels.len(), 1);
+    assert_eq!(
+        alpha_channels[0].description.as_deref(),
+        Some("Alpha general")
+    );
+
+    let alpha_agents = store.get_agents_in_workspace(&alpha.id).unwrap();
+    assert_eq!(alpha_agents.len(), 1);
+    assert_eq!(alpha_agents[0].name, "alpha-bot");
+
+    let alpha_teams = store.get_teams_in_workspace(&alpha.id).unwrap();
+    assert_eq!(alpha_teams.len(), 1);
+    assert_eq!(alpha_teams[0].name, "alpha-team");
+}
+
 /// Channel archive, team creation, and agent record update as performed by shell/API layers.
 /// Lives in store tests (not `server_tests`) so we do not build the HTTP router: constructing
 /// `ServeDir::new("ui/dist")` can block for a long time when that tree is huge or on a slow volume.
