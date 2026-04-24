@@ -47,6 +47,29 @@
   margin-bottom: 8px;
 }
 
+/*
+ * Snapshot excerpt: the originating user message that motivated the
+ * proposal. Rendered as a blockquote above the title — evidence first,
+ * then the proposed work. Plain text (no markdown) so code fences,
+ * mentions, and URLs render verbatim. Matches the blockquote vocabulary
+ * from ChatPanel (2px left border, muted foreground) but on a muted
+ * surface so it reads as quoted context, not a top-level message.
+ */
+.task-proposal__excerpt {
+  border-left: 2px solid var(--color-input);
+  background: var(--color-muted);
+  padding: 6px 10px;
+  margin: 0 0 8px 0;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.task-proposal__excerpt-author {
+  font-weight: 600;
+  margin-right: 6px;
+}
+
 .task-proposal-actions {
   display: flex;
   gap: 8px;

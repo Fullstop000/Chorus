@@ -3,7 +3,9 @@ import { describe, it, expect } from 'vitest'
 import { TaskProposalMessage } from './TaskProposalMessage'
 import type { TaskProposalState } from '../../hooks/useTaskProposalLog'
 
-function pending(): TaskProposalState {
+function pending(
+  overrides: Partial<TaskProposalState> = {},
+): TaskProposalState {
   return {
     proposalId: 'p1',
     status: 'pending',
@@ -20,6 +22,7 @@ function pending(): TaskProposalState {
     snapshotExcerpt: null,
     snapshotCreatedAt: null,
     latestSeq: 1,
+    ...overrides,
   }
 }
 
@@ -83,5 +86,59 @@ describe('TaskProposalMessage', () => {
     expect(html).toContain('data-status="dismissed"')
     expect(html).not.toContain('data-testid="task-proposal-accept-btn"')
     expect(html).not.toContain('data-testid="task-proposal-dismiss-btn"')
+  })
+
+  it('renders snapshot excerpt on pending when present', () => {
+    const state = pending({
+      snapshotSenderName: 'alice',
+      snapshotExcerpt: 'login breaks on Safari',
+    })
+    const html = renderToStaticMarkup(
+      <TaskProposalMessage
+        state={state}
+        onAccept={() => {}}
+        onDismiss={() => {}}
+        busy={false}
+      />,
+    )
+    expect(html).toContain('task-proposal__excerpt')
+    expect(html).toContain('@alice')
+    expect(html).toContain('login breaks on Safari')
+  })
+
+  it('omits excerpt block when snapshotExcerpt is null', () => {
+    const state = pending({
+      snapshotSenderName: null,
+      snapshotExcerpt: null,
+    })
+    const html = renderToStaticMarkup(
+      <TaskProposalMessage
+        state={state}
+        onAccept={() => {}}
+        onDismiss={() => {}}
+        busy={false}
+      />,
+    )
+    expect(html).not.toContain('task-proposal__excerpt')
+  })
+
+  it('renders excerpt as plain text, not markdown', () => {
+    const state = pending({
+      snapshotSenderName: 'alice',
+      snapshotExcerpt: '```rust\nfn foo() {}\n```',
+    })
+    const html = renderToStaticMarkup(
+      <TaskProposalMessage
+        state={state}
+        onAccept={() => {}}
+        onDismiss={() => {}}
+        busy={false}
+      />,
+    )
+    // Triple backticks render verbatim — no code block conversion.
+    expect(html).toContain('```rust')
+    // No markdown rendering means no generated <pre>/<code> inside excerpt.
+    expect(html).not.toContain('<pre')
+    expect(html).not.toContain('<code')
   })
 })

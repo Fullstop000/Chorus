@@ -17,8 +17,16 @@ export function TaskProposalMessage({
   onOpenSubChannel,
   busy,
 }: TaskProposalMessageProps) {
-  const { proposalId, status, title, proposedBy, taskNumber, subChannelName } =
-    state
+  const {
+    proposalId,
+    status,
+    title,
+    proposedBy,
+    taskNumber,
+    subChannelName,
+    snapshotSenderName,
+    snapshotExcerpt,
+  } = state
   return (
     <div
       className="task-proposal-card"
@@ -28,6 +36,16 @@ export function TaskProposalMessage({
       <div className="task-proposal-head">
         <span className="task-proposal-kicker">proposed by {proposedBy}</span>
       </div>
+      {status === 'pending' && snapshotExcerpt && (
+        <blockquote className="task-proposal__excerpt">
+          {snapshotSenderName && (
+            <span className="task-proposal__excerpt-author">
+              @{snapshotSenderName}:
+            </span>
+          )}
+          <span className="task-proposal__excerpt-text">{snapshotExcerpt}</span>
+        </blockquote>
+      )}
       <div className="task-proposal-title">{title}</div>
       {status === 'pending' && (
         <div className="task-proposal-actions">
