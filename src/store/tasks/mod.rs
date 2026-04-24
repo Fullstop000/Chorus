@@ -97,28 +97,92 @@ impl TaskStatus {
 }
 
 /// Returned by list_tasks and create_tasks — store constructs these directly.
-#[derive(Debug, Serialize, Deserialize)]
+/// Serialized as camelCase JSON for direct consumption by the TypeScript frontend.
+///
+/// `id` is the task's UUID primary key. Surfaced to the UI for store keying
+/// (task_number alone is ambiguous across parent channels). MCP tools use
+/// `(channel_name, task_number)` as the agent-facing handle and do NOT see `id`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskInfo {
+    /// UUID primary key.
+    pub id: String,
     /// Per-channel task number.
-    #[serde(rename = "taskNumber")]
     pub task_number: i64,
     /// Title line.
     pub title: String,
-    /// Status string matching `TaskStatus::as_str`.
-    pub status: String,
-    /// Display name of claimer when set.
-    #[serde(rename = "claimedByName")]
-    pub claimed_by_name: Option<String>,
-    /// Display name of creator.
-    #[serde(rename = "createdByName")]
-    pub created_by_name: Option<String>,
+    /// Status — the typed enum, so the wire form matches `TaskStatus::as_str()`.
+    pub status: TaskStatus,
+    /// Current owner (claimer) handle. `None` when unclaimed or pre-acceptance.
+    pub owner: Option<String>,
+    /// Creator handle (human or agent).
+    pub created_by: String,
+    /// Insert time — ISO8601 string straight from SQLite.
+    pub created_at: String,
+    /// Last mutation time — ISO8601 string straight from SQLite.
+    pub updated_at: String,
     /// Child `ChannelType::Task` sub-channel id, when the task has one (always
     /// populated for tasks created after Task 2; may be `None` for legacy data).
-    #[serde(rename = "subChannelId")]
     pub sub_channel_id: Option<String>,
     /// Child sub-channel name for deep-linking. `None` when `sub_channel_id` is `None`.
-    #[serde(rename = "subChannelName")]
     pub sub_channel_name: Option<String>,
+    /// Source message id: the chat message this task was carved out of (when
+    /// created from a "carve into task" action). `None` for tasks created
+    /// directly (no source message).
+    pub source_message_id: Option<String>,
+    /// Snapshot of the source message's sender display name. Captured at task
+    /// creation so the task card remains readable even after the source message
+    /// is deleted. `None` when the task has no source message.
+    pub snapshot_sender_name: Option<String>,
+    /// Snapshot of the source message's sender type (`human` / `agent` / `system`).
+    pub snapshot_sender_type: Option<String>,
+    /// Snapshot of the source message's content at the time of task creation.
+    pub snapshot_content: Option<String>,
+    /// Snapshot of the source message's created_at timestamp.
+    pub snapshot_created_at: Option<String>,
+}
+
+/// Build a `TaskInfo` from a SELECT that returns the canonical 15-column shape
+/// used by every task-listing query in this module. Keeping one helper prevents
+/// per-query drift: adding a field means one SQL column list update + one
+/// `row.get(n)` edit here, not four.
+///
+/// Expected column order (mirrors the SELECT text):
+/// 0 `t.id`, 1 `t.task_number`, 2 `t.title`, 3 `t.status`, 4 `t.owner`,
+/// 5 `t.created_by`, 6 `t.created_at`, 7 `t.updated_at`, 8 `t.sub_channel_id`,
+/// 9 `c.name AS sub_channel_name`, 10 `t.source_message_id`,
+/// 11 `t.snapshot_sender_name`, 12 `t.snapshot_sender_type`,
+/// 13 `t.snapshot_content`, 14 `t.snapshot_created_at`.
+fn task_info_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskInfo> {
+    let status_str: String = row.get(3)?;
+    // Schema CHECK constraint limits `status` to the six known enum variants,
+    // so an unknown string here is a corruption / migration-drift bug, not user
+    // input. Surface it as an InvalidColumnType error — same shape rusqlite uses
+    // for other parse failures — rather than silently defaulting.
+    let status = TaskStatus::from_status_str(&status_str).ok_or_else(|| {
+        rusqlite::Error::InvalidColumnType(
+            3,
+            format!("unknown task status: {status_str}"),
+            rusqlite::types::Type::Text,
+        )
+    })?;
+    Ok(TaskInfo {
+        id: row.get(0)?,
+        task_number: row.get(1)?,
+        title: row.get(2)?,
+        status,
+        owner: row.get(4)?,
+        created_by: row.get(5)?,
+        created_at: row.get(6)?,
+        updated_at: row.get(7)?,
+        sub_channel_id: row.get(8)?,
+        sub_channel_name: row.get(9)?,
+        source_message_id: row.get(10)?,
+        snapshot_sender_name: row.get(11)?,
+        snapshot_sender_type: row.get(12)?,
+        snapshot_content: row.get(13)?,
+        snapshot_created_at: row.get(14)?,
+    })
 }
 
 /// Returned by claim_tasks — store constructs these directly.
@@ -197,9 +261,14 @@ impl Store {
                  VALUES (?1, ?2, ?3, 0)",
                 params![sub_channel_id, creator_name, creator_type.as_str()],
             )?;
-            tx.execute(
+            // `RETURNING created_at, updated_at` reads the DB-default
+            // `datetime('now')` values SQLite applies to the row, so the
+            // returned `TaskInfo` carries exact-match timestamps without a
+            // second SELECT round-trip.
+            let (created_at, updated_at): (String, String) = tx.query_row(
                 "INSERT INTO tasks (id, channel_id, task_number, title, created_by, sub_channel_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                 RETURNING created_at, updated_at",
                 params![
                     task_id,
                     channel.id,
@@ -208,6 +277,7 @@ impl Store {
                     creator_name,
                     sub_channel_id
                 ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
 
             // Emit task_event inside the same tx so the task row and its
@@ -227,13 +297,21 @@ impl Store {
             pending_events.push((inserted, content));
 
             result.push(TaskInfo {
+                id: task_id,
                 task_number,
                 title: title.to_string(),
-                status: TaskStatus::Todo.as_str().to_string(),
-                claimed_by_name: None,
-                created_by_name: Some(creator_name.to_string()),
+                status: TaskStatus::Todo,
+                owner: None,
+                created_by: creator_name.to_string(),
+                created_at,
+                updated_at,
                 sub_channel_id: Some(sub_channel_id),
                 sub_channel_name: Some(sub_channel_name),
+                source_message_id: None,
+                snapshot_sender_name: None,
+                snapshot_sender_type: None,
+                snapshot_content: None,
+                snapshot_created_at: None,
             });
         }
         tx.commit()?;
@@ -251,32 +329,22 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let row = conn
-            .query_row(
-                "SELECT t.task_number, t.title, t.status, t.claimed_by, t.created_by, \
-                        t.sub_channel_id, c.name \
-                 FROM tasks t \
-                 LEFT JOIN channels c ON c.id = t.sub_channel_id \
-                 WHERE t.channel_id = ?1 AND t.task_number = ?2 \
-                 LIMIT 1",
-                params![channel.id, task_number],
-                |row| {
-                    Ok(TaskInfo {
-                        task_number: row.get(0)?,
-                        title: row.get(1)?,
-                        status: row.get(2)?,
-                        claimed_by_name: row.get(3)?,
-                        created_by_name: row.get(4)?,
-                        sub_channel_id: row.get(5)?,
-                        sub_channel_name: row.get(6)?,
-                    })
-                },
-            )
-            .map(Some)
-            .or_else(|e| match e {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(other),
-            })?;
+        let row: Option<TaskInfo> = match conn.query_row(
+            "SELECT t.id, t.task_number, t.title, t.status, t.owner, t.created_by, \
+                    t.created_at, t.updated_at, t.sub_channel_id, c.name AS sub_channel_name, \
+                    t.source_message_id, t.snapshot_sender_name, t.snapshot_sender_type, \
+                    t.snapshot_content, t.snapshot_created_at \
+             FROM tasks t \
+             LEFT JOIN channels c ON c.id = t.sub_channel_id \
+             WHERE t.channel_id = ?1 AND t.task_number = ?2 \
+             LIMIT 1",
+            params![channel.id, task_number],
+            task_info_from_row,
+        ) {
+            Ok(row) => Some(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(other) => return Err(other.into()),
+        };
         Ok(row)
     }
 
@@ -289,42 +357,40 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
-        let map_row = |row: &rusqlite::Row| -> rusqlite::Result<TaskInfo> {
-            Ok(TaskInfo {
-                task_number: row.get(0)?,
-                title: row.get(1)?,
-                status: row.get(2)?,
-                claimed_by_name: row.get(3)?,
-                created_by_name: row.get(4)?,
-                sub_channel_id: row.get(5)?,
-                sub_channel_name: row.get(6)?,
-            })
-        };
-
         let rows: Vec<TaskInfo> = if let Some(status) = status_filter {
-            conn.prepare(
-                "SELECT t.task_number, t.title, t.status, t.claimed_by, t.created_by, \
-                        t.sub_channel_id, c.name \
+            let mut stmt = conn.prepare(
+                "SELECT t.id, t.task_number, t.title, t.status, t.owner, t.created_by, \
+                        t.created_at, t.updated_at, t.sub_channel_id, c.name AS sub_channel_name, \
+                        t.source_message_id, t.snapshot_sender_name, t.snapshot_sender_type, \
+                        t.snapshot_content, t.snapshot_created_at \
                  FROM tasks t \
                  LEFT JOIN channels c ON c.id = t.sub_channel_id \
                  WHERE t.channel_id = ?1 AND t.status = ?2 \
                  ORDER BY t.task_number",
-            )?
-            .query_map(params![channel.id, status.as_str()], map_row)?
-            .filter_map(|r| r.ok())
-            .collect()
+            )?;
+            let iter = stmt.query_map(params![channel.id, status.as_str()], task_info_from_row)?;
+            let mut out = Vec::new();
+            for row in iter {
+                out.push(row?);
+            }
+            out
         } else {
-            conn.prepare(
-                "SELECT t.task_number, t.title, t.status, t.claimed_by, t.created_by, \
-                        t.sub_channel_id, c.name \
+            let mut stmt = conn.prepare(
+                "SELECT t.id, t.task_number, t.title, t.status, t.owner, t.created_by, \
+                        t.created_at, t.updated_at, t.sub_channel_id, c.name AS sub_channel_name, \
+                        t.source_message_id, t.snapshot_sender_name, t.snapshot_sender_type, \
+                        t.snapshot_content, t.snapshot_created_at \
                  FROM tasks t \
                  LEFT JOIN channels c ON c.id = t.sub_channel_id \
                  WHERE t.channel_id = ?1 \
                  ORDER BY t.task_number",
-            )?
-            .query_map(params![channel.id], map_row)?
-            .filter_map(|r| r.ok())
-            .collect()
+            )?;
+            let iter = stmt.query_map(params![channel.id], task_info_from_row)?;
+            let mut out = Vec::new();
+            for row in iter {
+                out.push(row?);
+            }
+            out
         };
         Ok(rows)
     }
