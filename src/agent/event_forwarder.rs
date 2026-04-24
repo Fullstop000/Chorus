@@ -27,7 +27,8 @@ use crate::agent::activity_log::{
     self, ActivityEntry, ActivityLogMap, ACTIVITY_ERROR, ACTIVITY_OFFLINE, ACTIVITY_ONLINE,
     ACTIVITY_THINKING, ACTIVITY_WORKING,
 };
-use crate::agent::drivers::{AgentEventItem, DriverEvent, ProcessState};
+use crate::agent::drivers::acp_protocol;
+use crate::agent::drivers::{AgentEventItem, DriverEvent, FinishReason, ProcessState};
 use crate::agent::manager::ManagedAgent;
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::store::Store;
@@ -176,6 +177,8 @@ pub(super) fn spawn_event_forwarder(
         let mut pending_thinking: HashMap<String, String> = HashMap::new();
         let mut pending_text: HashMap<String, String> = HashMap::new();
         let mut last_tool_raw_name: HashMap<String, String> = HashMap::new();
+        // Per-run tracking: did the agent invoke send_message at least once?
+        let mut run_had_send_message: HashMap<uuid::Uuid, bool> = HashMap::new();
 
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -219,7 +222,7 @@ pub(super) fn spawn_event_forwarder(
                 DriverEvent::Output {
                     ref key,
                     ref session_id,
-                    run_id: _,
+                    run_id,
                     ref item,
                 } => {
                     match item {
@@ -284,6 +287,9 @@ pub(super) fn spawn_event_forwarder(
 
                     match item {
                         AgentEventItem::ToolCall { name, input } => {
+                            if acp_protocol::strip_mcp_prefix(name) == "send_message" {
+                                run_had_send_message.insert(run_id, true);
+                            }
                             info!(agent = %key, tool = %name, "tool call");
                             last_tool_raw_name.insert(session_id.clone(), name.clone());
                             let tool_input = summarize_input(input);
@@ -358,7 +364,7 @@ pub(super) fn spawn_event_forwarder(
                 DriverEvent::Completed {
                     ref key,
                     ref session_id,
-                    run_id: _,
+                    run_id,
                     ref result,
                 } => {
                     if let Some(buf) = pending_thinking.remove(session_id) {
@@ -375,6 +381,29 @@ pub(super) fn spawn_event_forwarder(
                     // into a future run reusing the same session_id.
                     last_tool_raw_name.remove(session_id);
                     info!(agent = %key, reason = ?result.finish_reason, "run completed");
+
+                    // Post-run empty-response detection: if the run finished
+                    // naturally but never invoked send_message, warn the channel
+                    // so the user isn't left staring at silence.
+                    let channel_id = trace_store.run_channel_id(key);
+                    let had_send_message = run_had_send_message.remove(&run_id).unwrap_or(false);
+                    if result.finish_reason == FinishReason::Natural && !had_send_message {
+                        if let Some(channel_id) = channel_id {
+                            let warning = format!(
+                                "⚠️ @{} completed a run without replying. Common causes: not authed, auth expired, runtime error. Check agent logs.",
+                                key
+                            );
+                            if let Err(e) = store.create_system_message(&channel_id, &warning) {
+                                warn!(
+                                    agent = %key,
+                                    channel_id = %channel_id,
+                                    error = %e,
+                                    "failed to post empty-run warning"
+                                );
+                            }
+                        }
+                    }
+
                     if !session_id.is_empty() {
                         persist_session(&store, key, session_id, "completed");
                     }
@@ -406,7 +435,7 @@ pub(super) fn spawn_event_forwarder(
                 DriverEvent::Failed {
                     ref key,
                     ref session_id,
-                    run_id: _,
+                    run_id,
                     ref error,
                 } => {
                     // Clean up any pending buffers for the failing session so
@@ -415,6 +444,7 @@ pub(super) fn spawn_event_forwarder(
                     pending_thinking.remove(session_id);
                     pending_text.remove(session_id);
                     last_tool_raw_name.remove(session_id);
+                    run_had_send_message.remove(&run_id);
                     let msg = format!("{error:?}");
                     error!(agent = %key, error = %msg, "run failed");
                     trace::emit_active_event(
@@ -572,5 +602,154 @@ mod tests {
                 "cross-contamination: flushed text {t:?} is not exactly one session's payload"
             );
         }
+    }
+
+    /// When a run completes naturally without invoking send_message, a system
+    /// warning should be posted to the triggering channel so the user isn't
+    /// left staring at silence.
+    #[tokio::test]
+    async fn warn_on_empty_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            activity_logs,
+            trace_store.clone(),
+            trace_tx.clone(),
+            store.clone(),
+            agents,
+        );
+
+        let key = "bot".to_string();
+        let sid = "session-1".to_string();
+        let run_id = uuid::Uuid::new_v4();
+
+        let channel_id = store
+            .create_channel("eng", None, crate::store::ChannelType::Channel, None)
+            .unwrap();
+        trace_store.set_run_channel(&key, &channel_id);
+
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id,
+                item: AgentEventItem::ToolCall {
+                    name: "bash".to_string(),
+                    input: serde_json::Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid,
+                run_id,
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+        drop(trace_tx);
+
+        let content: String = store
+            .conn_for_test()
+            .query_row(
+                "SELECT content FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert!(
+            content.contains("completed a run without replying"),
+            "expected empty-run warning, got: {content}"
+        );
+    }
+
+    /// When a run does invoke send_message, no system warning should be posted.
+    #[tokio::test]
+    async fn no_warn_when_send_message_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            activity_logs,
+            trace_store.clone(),
+            trace_tx.clone(),
+            store.clone(),
+            agents,
+        );
+
+        let key = "bot".to_string();
+        let sid = "session-1".to_string();
+        let run_id = uuid::Uuid::new_v4();
+
+        let channel_id = store
+            .create_channel("eng", None, crate::store::ChannelType::Channel, None)
+            .unwrap();
+        trace_store.set_run_channel(&key, &channel_id);
+
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id,
+                item: AgentEventItem::ToolCall {
+                    name: "send_message".to_string(),
+                    input: serde_json::Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid,
+                run_id,
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+        drop(trace_tx);
+
+        let count: i64 = store
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(count, 0, "expected no system warning when send_message was used");
     }
 }
