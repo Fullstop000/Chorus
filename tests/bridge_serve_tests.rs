@@ -920,3 +920,235 @@ async fn bridge_propose_task_creates_row_and_returns_json() {
     assert_eq!(p.title, "fix login");
     assert_eq!(p.proposed_by, "claude");
 }
+
+/// End-to-end MCP `tools/call` for `propose_task`: proves the shared bridge's
+/// MCP tool surfaces the new `source_message_id` argument and threads it into
+/// the Chorus server, producing a pending proposal row. Complements
+/// `bridge_propose_task_creates_row_and_returns_json`, which exercises the
+/// same path via the direct backend — this one goes through the full
+/// MCP-over-HTTP stack to catch schema / parameter-plumbing regressions.
+#[tokio::test]
+async fn bridge_propose_task_mcp_call_creates_proposal() {
+    // 1. Seed server with channel, agent, source message.
+    let (server_url, store) = start_chorus_server().await;
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("eng", "alice", SenderType::Human)
+        .unwrap();
+    let msg_id = store
+        .create_message(CreateMessage {
+            channel_name: "eng",
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "please fix login",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap();
+
+    // 2. Start the bridge pointed at the Chorus server.
+    let (bridge_addr, bridge_ct) = start_bridge_with_server(&server_url).await;
+    let client = reqwest::Client::new();
+    let mcp_url = format!("{}/claude/mcp", bridge_addr);
+
+    // 3. MCP initialize + initialized handshake.
+    let init_resp = send_initialize(&client, &mcp_url).await;
+    assert_eq!(init_resp.status(), 200);
+    let session_id = init_resp
+        .headers()
+        .get("Mcp-Session-Id")
+        .expect("initialize response must contain Mcp-Session-Id")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let _ = init_resp.text().await.unwrap();
+    let initialized_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .send()
+        .await
+        .expect("initialized notification should succeed");
+    assert!(initialized_resp.status().is_success());
+    let _ = initialized_resp.text().await.unwrap();
+
+    // 4. Call `propose_task` via MCP tools/call with a valid source_message_id.
+    let tools_call_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "propose_task",
+            "arguments": {
+                "channel": "eng",
+                "title": "fix login",
+                "source_message_id": msg_id,
+            }
+        }
+    });
+    let call_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&tools_call_body)
+        .send()
+        .await
+        .expect("tools/call request should succeed");
+    assert_eq!(call_resp.status(), 200);
+    let call_body = call_resp.text().await.unwrap();
+    let call_json = extract_jsonrpc_from_sse(&call_body);
+    assert_eq!(call_json["jsonrpc"], "2.0");
+    assert_eq!(call_json["id"], 2);
+    assert!(
+        call_json.get("error").is_none(),
+        "tools/call should not return an error, got: {}",
+        call_json
+    );
+
+    // 5. Tool returns the server's JSON body as text content. Parse out the
+    //    proposal id and look the row up to confirm the snapshot landed.
+    let text = call_json["result"]["content"][0]["text"]
+        .as_str()
+        .expect("tool result should carry text content");
+    let proposal_json: serde_json::Value =
+        serde_json::from_str(text).expect("tool result text should be JSON");
+    let proposal_id = proposal_json["id"]
+        .as_str()
+        .expect("proposal response should carry an id");
+
+    let p = store
+        .get_task_proposal_by_id(proposal_id)
+        .unwrap()
+        .expect("proposal row should exist");
+    assert_eq!(p.title, "fix login");
+    assert_eq!(p.proposed_by, "claude");
+    assert_eq!(p.source_message_id.as_deref(), Some(msg_id.as_str()));
+
+    bridge_ct.cancel();
+}
+
+/// Calling `propose_task` without `source_message_id` must fail — the
+/// `ProposeTaskParams` schema marks it as required (not Option), so rmcp
+/// rejects the tool call at deserialize time. This test guards against
+/// accidentally flipping the field to optional and losing the snapshot
+/// guarantee that Task 2's server-side validation depends on.
+#[tokio::test]
+async fn bridge_propose_task_mcp_rejects_missing_source_message_id() {
+    let (server_url, store) = start_chorus_server().await;
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let (bridge_addr, bridge_ct) = start_bridge_with_server(&server_url).await;
+    let client = reqwest::Client::new();
+    let mcp_url = format!("{}/claude/mcp", bridge_addr);
+
+    // MCP handshake.
+    let init_resp = send_initialize(&client, &mcp_url).await;
+    assert_eq!(init_resp.status(), 200);
+    let session_id = init_resp
+        .headers()
+        .get("Mcp-Session-Id")
+        .expect("initialize response must contain Mcp-Session-Id")
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let _ = init_resp.text().await.unwrap();
+    let initialized_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized"
+        }))
+        .send()
+        .await
+        .expect("initialized notification should succeed");
+    assert!(initialized_resp.status().is_success());
+    let _ = initialized_resp.text().await.unwrap();
+
+    // Tool call missing the required source_message_id.
+    let tools_call_body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "propose_task",
+            "arguments": {
+                "channel": "eng",
+                "title": "fix login",
+            }
+        }
+    });
+    let call_resp = client
+        .post(&mcp_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("Mcp-Session-Id", &session_id)
+        .json(&tools_call_body)
+        .send()
+        .await
+        .expect("tools/call request should succeed");
+    assert_eq!(call_resp.status(), 200);
+    let call_body = call_resp.text().await.unwrap();
+    let call_json = extract_jsonrpc_from_sse(&call_body);
+    assert_eq!(call_json["jsonrpc"], "2.0");
+    assert_eq!(call_json["id"], 2);
+    // rmcp may surface missing-field as a JSON-RPC protocol error (`error`)
+    // or as a tool result with `isError: true`. Either is a valid signal that
+    // the schema rejected the call — accept both shapes.
+    let rpc_error = call_json.get("error").is_some();
+    let tool_error = call_json["result"]
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    assert!(
+        rpc_error || tool_error,
+        "tools/call with missing source_message_id must signal an error, got: {}",
+        call_json
+    );
+
+    // We don't need a store-side check: rmcp's schema layer rejects the
+    // call before the backend ever sees it, so any side effect would
+    // already be a protocol violation. Keeping `store` bound so future
+    // additions (e.g. a list helper) can strengthen this assertion.
+    let _ = store;
+
+    bridge_ct.cancel();
+}

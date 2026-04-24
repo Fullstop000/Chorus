@@ -138,12 +138,27 @@ impl ChatBridge {
     }
 
     #[tool(
-        description = "Propose a task to the user. Use when the user delegates \
-                       substantial work to you in chat (\"investigate the bug\", \
-                       \"ship a feature\", \"write X\"). Do NOT use for quick \
-                       questions. After you call this, WAIT — the user must \
-                       click Create before you start work. You'll be woken in \
-                       the new task sub-channel once accepted."
+        description = r#"Propose a task to the user in the current channel. Posts an interactive card
+that the user can accept or dismiss.
+
+Use when the user has asked for substantive work (investigation, implementation,
+refactor) that warrants a dedicated task sub-channel with its own agent session.
+Do NOT use for quick questions, small clarifications, or work that can be done
+inline.
+
+`source_message_id` must be the id of the user message you are responding to
+— the message that asked for this work. Do NOT pass your own prior reply's id:
+the snapshot is what the per-task session will treat as "what the user asked
+for," so snapshotting your own reply would feed the new agent your words
+instead of the user's. The server captures the message's content as the
+task's immutable context. The per-task session in the sub-channel will see
+that message verbatim as its first context — you do NOT need to summarize
+or restate it in the title.
+`title` should be a short label (~60 chars) describing the work.
+
+After calling this tool, stop work on this request in the current session
+until the proposal is accepted or dismissed. If accepted, a dedicated task
+session will continue from the captured source message."#
     )]
     async fn propose_task(
         &self,
