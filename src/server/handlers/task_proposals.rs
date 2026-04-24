@@ -144,6 +144,37 @@ pub async fn accept_task_proposal(
     Path(id): Path<String>,
     Json(body): Json<AcceptBody>,
 ) -> ApiResult<AcceptResponse> {
+    // Gate on parent-channel membership BEFORE mutating. Without this,
+    // anyone who knows a pending proposal id can resolve it as any
+    // identity they like — materializing a task + sub-channel in a
+    // channel they don't belong to, and routing the kickoff to a
+    // wake-dispatch they shouldn't trigger. Load the proposal once to
+    // resolve its channel, then reuse the same membership helper the
+    // message-send path uses so the failure mode is uniform across
+    // agent-authored and human-authored writes in this subsystem.
+    let proposal = state
+        .store
+        .get_task_proposal_by_id(&id)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "store error: {e}"))?
+        .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "proposal not found: {id}"))?;
+    let channel = state
+        .store
+        .get_channel_by_id(&proposal.channel_id)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "store error: {e}"))?
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proposal's channel vanished: {}",
+                proposal.channel_id
+            )
+        })?;
+    crate::server::handlers::messages::require_channel_membership(
+        &state,
+        &body.accepter,
+        &channel,
+        &channel.name,
+    )?;
+
     let accepted = state
         .store
         .accept_task_proposal(&id, &body.accepter)
@@ -256,6 +287,33 @@ pub async fn dismiss_task_proposal(
     Path(id): Path<String>,
     Json(body): Json<DismissBody>,
 ) -> Result<StatusCode, (StatusCode, Json<ErrorResponse>)> {
+    // Same membership precondition as accept: a resolver who isn't in
+    // the parent channel shouldn't be able to terminate a pending
+    // proposal and post its dismissed-state snapshot to a conversation
+    // they don't belong to. See the accept path for the full rationale.
+    let proposal = state
+        .store
+        .get_task_proposal_by_id(&id)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "store error: {e}"))?
+        .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "proposal not found: {id}"))?;
+    let channel = state
+        .store
+        .get_channel_by_id(&proposal.channel_id)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "store error: {e}"))?
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "proposal's channel vanished: {}",
+                proposal.channel_id
+            )
+        })?;
+    crate::server::handlers::messages::require_channel_membership(
+        &state,
+        &body.resolver,
+        &channel,
+        &channel.name,
+    )?;
+
     state
         .store
         .dismiss_task_proposal(&id, &body.resolver)

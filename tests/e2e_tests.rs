@@ -906,6 +906,110 @@ async fn internal_propose_rejects_non_member_agent() {
     assert_eq!(body["code"], "MESSAGE_NOT_A_MEMBER");
 }
 
+/// The accept endpoint MUST reject an `accepter` who isn't a member of
+/// the parent channel. Without this gate, anyone who learns a pending
+/// proposal id can materialize a task + sub-channel in a channel they
+/// don't belong to and trigger the agent-wake side effect. Same
+/// `MESSAGE_NOT_A_MEMBER` code as the propose + message-send paths so
+/// clients handle all three uniformly.
+#[tokio::test]
+async fn http_accept_task_proposal_rejects_non_member_accepter() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store
+        .join_channel("eng", "claude", SenderType::Agent)
+        .unwrap();
+    // Source message via alice (member); proposal by claude; accept
+    // attempt by eve who was never joined to #eng.
+    let msg_id = seed_source_message(&store, "eng", "alice", "fix login");
+    let p = store
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &store
+                .get_channel_by_name("eng")
+                .unwrap()
+                .unwrap()
+                .id,
+            proposed_by: "claude",
+            title: "investigate login 500",
+            source_message_id: &msg_id,
+        })
+        .unwrap();
+
+    let resp = client
+        .post(format!("{url}/api/task-proposals/{}/accept", p.id))
+        .json(&serde_json::json!({ "accepter": "eve" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "MESSAGE_NOT_A_MEMBER");
+}
+
+/// Same precondition as accept — a dismiss by a non-member must be
+/// rejected before the state flip and terminal-snapshot post.
+#[tokio::test]
+async fn http_dismiss_task_proposal_rejects_non_member_resolver() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store
+        .join_channel("eng", "claude", SenderType::Agent)
+        .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "fix login");
+    let p = store
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &store
+                .get_channel_by_name("eng")
+                .unwrap()
+                .unwrap()
+                .id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
+        .unwrap();
+
+    let resp = client
+        .post(format!("{url}/api/task-proposals/{}/dismiss", p.id))
+        .json(&serde_json::json!({ "resolver": "eve" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "MESSAGE_NOT_A_MEMBER");
+}
+
 /// Fixture for kickoff-body tests. Seeds an `eng` channel + `claude` agent,
 /// emits a source message with `source_content` from `sender`, creates the
 /// proposal, accepts it, and returns the sub-channel's kickoff body (the
