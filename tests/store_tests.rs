@@ -2615,6 +2615,20 @@ fn create_task_proposal_captures_snapshot_from_source_message() {
     assert_eq!(prop.snapshot_sender_type.as_deref(), Some("human"));
     assert!(prop.snapshot_created_at.is_some());
     assert!(prop.snapshotted_at.is_some());
+    // Pin the RFC3339 wire contract on snapshot_created_at. The source
+    // message's `messages.created_at` comes out of SQLite in default
+    // datetime format (`YYYY-MM-DD HH:MM:SS`); the store normalizes it at
+    // capture time so sibling `proposedAt`/`resolvedAt` wire fields (all
+    // RFC3339) don't drift. Codex dogfooding caught the original format
+    // mismatch — this assertion prevents regression. Expected shape is
+    // ISO-8601 with a `T` separator and a UTC `+00:00` offset.
+    let snap_ts = prop.snapshot_created_at.as_deref().unwrap();
+    assert!(
+        snap_ts.contains('T') && (snap_ts.ends_with("+00:00") || snap_ts.ends_with('Z')),
+        "snapshot_created_at must be RFC3339, got: {snap_ts}"
+    );
+    chrono::DateTime::parse_from_rfc3339(snap_ts)
+        .unwrap_or_else(|e| panic!("snapshot_created_at must parse as RFC3339: {e}"));
 
     // Pending-card payload carries the 4 wire fields (DB-only
     // snapshotted_at + snapshot_sender_type are NOT on the wire).

@@ -1,10 +1,35 @@
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, types::Type, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::store::Store;
+
+/// Normalize a timestamp we read out of SQLite into RFC3339 for wire use.
+///
+/// The `messages.created_at` column uses the SQLite default `datetime('now')`
+/// format (`YYYY-MM-DD HH:MM:SS`, UTC implicit, no offset, no `T` separator).
+/// Other timestamps in the proposal wire shape (`proposedAt`, `resolvedAt`)
+/// are RFC3339 because we write them from chrono. Returning SQLite format to
+/// the frontend alongside RFC3339 siblings is a client-parsing footgun
+/// (`Date.parse(...)` results differ by browser, and the UI treats all
+/// `*At` fields uniformly). Normalize at the store boundary so every wire
+/// consumer sees RFC3339 regardless of how the original column was written.
+///
+/// Falls back to the input string unchanged if it parses as neither format —
+/// the CHECK constraint ensures `snapshot_created_at` is never NULL for v2
+/// rows, so the parse-failure path is only reachable if a future writer
+/// stores a genuinely malformed value, which a test in this module catches.
+fn normalize_sqlite_timestamp(ts: &str) -> String {
+    if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
+        return dt.with_timezone(&Utc).to_rfc3339();
+    }
+    if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        return Utc.from_utc_datetime(&ndt).to_rfc3339();
+    }
+    ts.to_string()
+}
 
 /// Lifecycle state of a task proposal. A proposal starts `Pending`, then
 /// transitions exactly once to `Accepted` (the user clicked create) or
@@ -250,6 +275,13 @@ impl Store {
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
         let now_iso = now.to_rfc3339();
+        // Normalize the source message's created_at to RFC3339 BEFORE
+        // persisting. `messages.created_at` uses SQLite's default datetime
+        // format (`YYYY-MM-DD HH:MM:SS`), which would drift the wire shape
+        // from sibling `proposedAt`/`resolvedAt` fields (RFC3339). Normalize
+        // at the store boundary so every downstream reader — ProposalView,
+        // pending payload, accept/dismiss payloads — gets a single format.
+        let src_created_at_normalized = normalize_sqlite_timestamp(&src_created_at);
         // All five snapshot fields and the pointer are written together —
         // the DB CHECK constraint rejects partial snapshots, so partial
         // writes are impossible even under a misbehaving caller.
@@ -269,7 +301,7 @@ impl Store {
                 src_sender_name,
                 src_sender_type,
                 src_content,
-                src_created_at,
+                src_created_at_normalized,
                 now_iso,
             ],
         )?;
@@ -292,7 +324,7 @@ impl Store {
             "sourceMessageId": input.source_message_id,
             "snapshotSenderName": src_sender_name,
             "snapshotExcerpt": excerpt,
-            "snapshotCreatedAt": src_created_at,
+            "snapshotCreatedAt": src_created_at_normalized,
         });
         let content = payload.to_string();
         let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
@@ -317,7 +349,7 @@ impl Store {
             snapshot_sender_name: Some(src_sender_name),
             snapshot_sender_type: Some(src_sender_type),
             snapshot_content: Some(src_content),
-            snapshot_created_at: Some(src_created_at),
+            snapshot_created_at: Some(src_created_at_normalized),
             snapshotted_at: Some(now_iso),
         })
     }
