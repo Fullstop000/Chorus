@@ -143,3 +143,29 @@ Three of the MUST-FIX issues were introduced by the R2 revisions themselves.
 
 10 findings, all fix inline. If R4 returns zero MUST/SHOULD, we ship the plan.
 
+## R4 — kimi CLI (2026-04-24, same day — convergence confirmed)
+
+Verdict: **CONVERGED**. 0 MUST-FIX, 0 SHOULD-FIX, 3 NICE-TO-HAVE. All 10 R3
+fixes verified correct. The three NICE-TO-HAVEs were stale File Structure
+overview text (references to a migration that no longer exists, a
+`TaskEventAction::Dismissed` variant that was removed, and a missing
+`evToRow` helper in MessageList pseudocode). All three applied inline.
+
+### R4 findings
+
+| # | Finding | Disposition |
+|---|---------|-------------|
+| R4-1 | File Structure bullet for `src/store/migrations.rs` references a migration that Task 1 explicitly deletes. | **Fix inline.** Overview now says "delete the two proposal-era migrations." |
+| R4-2 | File Structure bullet for `src/store/tasks/mod.rs` mentions `update_task_dismiss` and `TaskEventAction::Dismissed` — both removed in R3-1. | **Fix inline.** Overview aligned: dismiss routes through generic status endpoint; no separate function. `TaskEventAction` unchanged. |
+| R4-3 | `MessageList` pseudocode uses `evToRow(ev, msg)` without defining the helper. | **Fix inline.** Inline the conversion: `{ ...ev, eventId: msg.id, seq: msg.seq, createdAt: msg.createdAt }`. |
+
+### Loop closeout
+
+Four kimi rounds, 47 total findings across R1/R2/R3/R4:
+- R1: 16 findings (all applied)
+- R2: 18 findings (17 applied, 1 user-dismissed for scope — migration)
+- R3: 10 findings (all applied)
+- R4: 3 findings (all applied)
+
+Plan is implementable as-is. Ready to ship.
+

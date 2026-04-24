@@ -22,9 +22,9 @@
 
 **Modify:**
 - `src/store/schema.sql` — extend `tasks` with snapshot cols + widen status CHECK; drop `task_proposals` table.
-- `src/store/migrations.rs` — one new migration `migrate_unify_task_proposals_into_tasks` following the rebuild pattern (`CREATE TABLE tasks_new; INSERT SELECT; migrate task_proposals rows; DROP; RENAME`).
-- `src/store/tasks/mod.rs` — extend `TaskStatus` enum; add `create_proposed_task`; rename internal field `claimed_by` → `owner`; rewrite `update_task_status` (drop claimer-only gate, extend transition graph); rewrite `update_tasks_claim` (decouple claim from status advance); extend `load_task_tx` to return snapshot fields; add `update_task_dismiss`.
-- `src/store/tasks/events.rs` — add `TaskEventAction::Dismissed`; add `task_card` wire payload struct + helper `post_task_card_message_tx`; keep wire field name `claimedBy` on `TaskEventPayload`.
+- `src/store/migrations.rs` — **delete** the two proposal-era migrations (`migrate_create_task_proposals_table`, `migrate_add_task_proposal_snapshot_columns`) and their tests. No new migration — neither PR is in prod, dev-local DBs are wiped.
+- `src/store/tasks/mod.rs` — extend `TaskStatus` enum; add `create_proposed_task`; rename internal field `claimed_by` → `owner`; rewrite `update_task_status` (drop claimer-only gate, extend transition graph, typed `InvalidTaskTransition` error); rewrite `update_tasks_claim` + `update_task_unclaim` (decouple claim from status advance); add `load_task_by_id_tx` + `load_task_by_number_tx` helpers that return snapshot fields + `sub_channel_name`. No separate dismiss function — dismiss routes through the generic status endpoint.
+- `src/store/tasks/events.rs` — add `task_card` wire payload struct + helper `post_task_card_message_tx`. `TaskEventAction` stays unchanged (no `Dismissed` variant — spec forbids `task_event` on pre-acceptance transitions). Keep wire field name `claimedBy` on `TaskEventPayload`.
 - `src/store/mod.rs` — add `task_updates_tx: broadcast::Sender<TaskUpdateEvent>` + `subscribe_task_updates()`; remove `pub mod task_proposals`.
 - `src/server/handlers/tasks.rs` — add status/claim/unclaim handlers keyed by `(channel, task_number)`; add agent-create + human-create paths; preserve membership preconditions.
 - `src/server/handlers/mod.rs` / `src/server/mod.rs` — drop `task_proposals` handler module + routes.
@@ -1453,7 +1453,14 @@ if (parsed?.kind === 'task_card') {
 // using it as the `task_event` detector is stable. Parse once, reuse.
 const ev = parseTaskEvent(msg.content)
 if (ev != null) {
-  return <TaskEventRow event={evToRow(ev, msg)} />
+  // Flatten parsed payload + message metadata into the row shape the
+  // component consumes. Inline — no helper needed.
+  return <TaskEventRow event={{
+    ...ev,
+    eventId: msg.id,
+    seq: msg.seq,
+    createdAt: msg.createdAt,
+  }} />
 }
 ```
 
