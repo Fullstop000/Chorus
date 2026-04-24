@@ -11,6 +11,12 @@ pub async fn run(
     server_url: &str,
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
+    if !chorus::store::channels::is_valid_channel_name(&normalized) {
+        return Err(crate::cli::UserError(format!(
+            "{}: {normalized}",
+            chorus::store::channels::INVALID_CHANNEL_NAME_MSG
+        )).into());
+    }
     let description = description.unwrap_or_default();
     let client = super::http::client();
     let url = format!("{server_url}/api/channels");

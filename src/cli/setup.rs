@@ -10,8 +10,8 @@ use chorus::config::ChorusConfig;
 use chorus::store::Store;
 use console::{style, Emoji};
 use std::io::IsTerminal;
-use std::process::Command;
 use std::time::{Duration, Instant};
+use tokio::process::Command as TokioCommand;
 
 use super::{default_data_dir, DATA_SUBDIR, DEFAULT_TEMPLATE_DIR};
 
@@ -100,22 +100,29 @@ fn extract_version(s: &str) -> Option<String> {
 // Auth probing — mirrors each driver's RuntimeDriver::probe() logic
 // ---------------------------------------------------------------------------
 
-/// Probe a runtime's authentication state synchronously.
-/// Mirrors the logic in each runtime's `RuntimeDriver::probe()` but blocks
-/// so it can run inside the synchronous setup doctor.
-fn check_auth(name: &str) -> ProbeAuth {
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Probe auth with a timeout so a hanging runtime binary
+/// (e.g. `gemini auth status`) can't freeze setup indefinitely.
+async fn check_auth_with_timeout(name: &str) -> ProbeAuth {
+    tokio::time::timeout(PROBE_TIMEOUT, check_auth(name))
+        .await
+        .unwrap_or(ProbeAuth::Unauthed)
+}
+
+async fn check_auth(name: &str) -> ProbeAuth {
     match name {
-        "claude" => check_claude_auth(),
-        "codex" => check_codex_auth(),
-        "kimi" => check_kimi_auth(),
-        "opencode" => check_opencode_auth(),
-        "gemini" => check_gemini_auth(),
+        "claude" => check_claude_auth().await,
+        "codex" => check_codex_auth().await,
+        "kimi" => check_kimi_auth().await,
+        "opencode" => check_opencode_auth().await,
+        "gemini" => check_gemini_auth().await,
         _ => ProbeAuth::NotInstalled,
     }
 }
 
-fn check_claude_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("claude").args(["auth", "status"]).output() else {
+async fn check_claude_auth() -> ProbeAuth {
+    let Ok(output) = TokioCommand::new("claude").args(["auth", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -133,8 +140,8 @@ fn check_claude_auth() -> ProbeAuth {
     }
 }
 
-fn check_codex_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("codex").args(["login", "status"]).output() else {
+async fn check_codex_auth() -> ProbeAuth {
+    let Ok(output) = TokioCommand::new("codex").args(["login", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     let combined = format!(
@@ -150,16 +157,18 @@ fn check_codex_auth() -> ProbeAuth {
     }
 }
 
-fn check_kimi_auth() -> ProbeAuth {
-    let has_access = Command::new("kimi")
+async fn check_kimi_auth() -> ProbeAuth {
+    let has_access = TokioCommand::new("kimi")
         .args(["config", "get", "auth.access_token"])
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
-    let has_refresh = Command::new("kimi")
+    let has_refresh = TokioCommand::new("kimi")
         .args(["config", "get", "auth.refresh_token"])
         .output()
+        .await
         .ok()
         .filter(|o| o.status.success())
         .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
@@ -170,8 +179,8 @@ fn check_kimi_auth() -> ProbeAuth {
     }
 }
 
-fn check_opencode_auth() -> ProbeAuth {
-    let Ok(output) = Command::new("opencode").args(["auth", "status"]).output() else {
+async fn check_opencode_auth() -> ProbeAuth {
+    let Ok(output) = TokioCommand::new("opencode").args(["auth", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     if output.status.success() {
@@ -181,11 +190,11 @@ fn check_opencode_auth() -> ProbeAuth {
     }
 }
 
-fn check_gemini_auth() -> ProbeAuth {
+async fn check_gemini_auth() -> ProbeAuth {
     if std::env::var("GEMINI_API_KEY").is_ok_and(|v| !v.trim().is_empty()) {
         return ProbeAuth::Authed;
     }
-    let Ok(output) = Command::new("gemini").args(["auth", "status"]).output() else {
+    let Ok(output) = TokioCommand::new("gemini").args(["auth", "status"]).output().await else {
         return ProbeAuth::Unauthed;
     };
     if !output.status.success() {
@@ -259,23 +268,28 @@ fn fill_binary_path(target: &mut Option<String>, name: &str, interactive: bool) 
     }
 }
 
-/// Run `<name> --version` and return the extracted dotted version, or `None`
-/// if the binary is missing or the command fails. Some tools print their
-/// version to stderr (historically `python --version` did), so we fall
-/// back to stderr if stdout is empty.
-fn check_tool(name: &str) -> Option<String> {
-    let output = Command::new(name)
-        .arg("--version")
-        .output()
+/// Run a `tokio::process::Command` with a timeout.
+/// Returns `None` if the command hangs, fails, or the child can't be spawned.
+async fn cmd_output_with_timeout(cmd: &mut TokioCommand) -> Option<std::process::Output> {
+    tokio::time::timeout(PROBE_TIMEOUT, cmd.output())
+        .await
         .ok()
+        .and_then(|r| r.ok())
+}
+
+/// Async version of `check_tool` with a timeout.
+async fn check_tool_async(name: &str) -> Option<String> {
+    let output = cmd_output_with_timeout(TokioCommand::new(name).arg("--version"))
+        .await
         .filter(|o| o.status.success())?;
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
     let source = if stdout.trim().is_empty() {
-        stderr
+        String::from_utf8_lossy(&output.stderr)
     } else {
         stdout
     };
+
     extract_version(&source).or_else(|| {
         source
             .lines()
@@ -303,18 +317,17 @@ struct RuntimeReport {
     auth: ProbeAuth,
 }
 
-fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> RuntimeReport {
-    let version = check_tool(name);
+async fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> RuntimeReport {
+    let version = check_tool_async(name).await;
     // If an external adaptor is expected, re-resolve at check time so PATH
     // changes between test runs are reflected.
     let acp = match acp {
         AcpStatus::AdapterFound(bin) | AcpStatus::AdapterMissing(bin) => {
-            if Command::new(bin)
-                .arg("--version")
-                .output()
+            let found = cmd_output_with_timeout(TokioCommand::new(bin).arg("--version"))
+                .await
                 .map(|o| o.status.success())
-                .unwrap_or(false)
-            {
+                .unwrap_or(false);
+            if found {
                 AcpStatus::AdapterFound(bin)
             } else {
                 AcpStatus::AdapterMissing(bin)
@@ -323,7 +336,7 @@ fn check_runtime(name: &'static str, hint: &'static str, acp: AcpStatus) -> Runt
         AcpStatus::Native => AcpStatus::Native,
     };
     let auth = if version.is_some() {
-        check_auth(name)
+        check_auth_with_timeout(name).await
     } else {
         ProbeAuth::NotInstalled
     };
@@ -539,23 +552,27 @@ pub async fn run(
             "claude",
             "https://docs.claude.com/en/docs/claude-code",
             AcpStatus::Native,
-        ),
+        )
+        .await,
         check_runtime(
             "codex",
             "https://github.com/openai/codex",
             AcpStatus::Native,
-        ),
+        )
+        .await,
         check_runtime(
             "kimi",
             "https://github.com/MoonshotAI/kimi-cli",
             AcpStatus::Native,
-        ),
-        check_runtime("opencode", "https://opencode.ai", AcpStatus::Native),
+        )
+        .await,
+        check_runtime("opencode", "https://opencode.ai", AcpStatus::Native).await,
         check_runtime(
             "gemini",
             "https://github.com/google-gemini/gemini-cli",
             AcpStatus::Native,
-        ),
+        )
+        .await,
     ];
     for r in &runtimes {
         render_runtime(r);
@@ -676,9 +693,9 @@ pub async fn run(
 mod tests {
     use super::*;
 
-    #[test]
-    fn check_tool_returns_none_for_missing_binary() {
-        assert!(check_tool("definitely-not-a-real-binary-xyzzy").is_none());
+    #[tokio::test]
+    async fn check_tool_returns_none_for_missing_binary() {
+        assert!(check_tool_async("definitely-not-a-real-binary-xyzzy").await.is_none());
     }
 
     #[test]
@@ -723,5 +740,22 @@ mod tests {
         assert_eq!(found.len(), 2);
         assert_eq!(found[0], dir_a.join("myfake-bin"));
         assert_eq!(found[1], dir_c.join("myfake-bin"));
+    }
+
+    #[tokio::test]
+    async fn check_tool_async_times_out_on_hanging_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let script = tmp.path().join("sleep-forever.sh");
+        std::fs::write(&script, "#!/bin/sh\nsleep 10\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script, perms).unwrap();
+        }
+
+        let result = check_tool_async(script.to_str().unwrap()).await;
+        assert!(result.is_none());
     }
 }

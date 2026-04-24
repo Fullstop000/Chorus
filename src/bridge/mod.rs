@@ -9,6 +9,7 @@ pub mod error;
 pub mod format;
 pub mod pairing;
 pub mod serve;
+pub mod smoke_test;
 mod types;
 
 use backend::{Backend, ChorusBackend};

@@ -1,6 +1,13 @@
 mod cli;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    cli::run().await
+async fn main() {
+    if let Err(e) = cli::run().await {
+        if let Some(user_err) = e.downcast_ref::<cli::UserError>() {
+            eprintln!("Error: {user_err}");
+        } else {
+            eprintln!("{:?}", e);
+        }
+        std::process::exit(1);
+    }
 }

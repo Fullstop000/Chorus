@@ -302,6 +302,9 @@ async fn send_message_to_channel(
     suppress_agent_delivery: bool,
     suppress_event: bool,
 ) -> ApiResult<SendResponse> {
+    if content.trim().is_empty() && attachment_ids.is_empty() {
+        return Err(app_err!(StatusCode::BAD_REQUEST, "message content cannot be empty"));
+    }
     let store = &state.store;
     let sender_type = sender_type_for_actor(store, actor_id)?;
 
