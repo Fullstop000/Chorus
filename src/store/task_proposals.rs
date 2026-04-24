@@ -59,12 +59,36 @@ pub struct TaskProposal {
     /// Member name that accepted or dismissed.
     pub resolved_by: Option<String>,
     pub resolved_at: Option<DateTime<Utc>>,
+
+    // v2 additions.
+    //
+    // Snapshot fields exist for context consistency: the per-task ACP session
+    // has a fresh context window and cannot see the parent channel, so the
+    // kickoff message must carry the originating user request verbatim.
+    // Storing a pointer alone would mean edits/deletes to the source message
+    // silently rewrite or erase the task's context after approval. The copy
+    // freezes what the user asked for at propose-time and never mutates.
+    //
+    // The five snapshot_* fields are all-or-nothing (DB CHECK enforces): for
+    // any given row they are all Some(..) (v2+) or all None (legacy v1).
+    // `source_message_id` is an independent navigation pointer — stays for
+    // "jump to source" UX, may be None separately from the snapshot (legacy
+    // v1 rows, or after ON DELETE SET NULL fires).
+    pub source_message_id: Option<String>,
+    pub snapshot_sender_name: Option<String>,
+    pub snapshot_sender_type: Option<String>,
+    pub snapshot_content: Option<String>,
+    pub snapshot_created_at: Option<String>,
+    pub snapshotted_at: Option<String>,
 }
 
 impl TaskProposal {
-    /// Parse the standard 10-column `task_proposals` row: id, channel_id,
-    /// proposed_by, title, status, created_at, accepted_task_number,
-    /// accepted_sub_channel_id, resolved_by, resolved_at.
+    /// Parse the standard 16-column `task_proposals` row. v1 columns (0..10):
+    /// id, channel_id, proposed_by, title, status, created_at,
+    /// accepted_task_number, accepted_sub_channel_id, resolved_by,
+    /// resolved_at. v2 columns (10..16): source_message_id,
+    /// snapshot_sender_name, snapshot_sender_type, snapshot_content,
+    /// snapshot_created_at, snapshotted_at.
     ///
     /// Returns a data-integrity error naming the offending proposal id when
     /// the stored `status` is not one of the allowed variants or when a
@@ -116,6 +140,12 @@ impl TaskProposal {
             accepted_sub_channel_id: row.get(7)?,
             resolved_by: row.get(8)?,
             resolved_at,
+            source_message_id: row.get(10)?,
+            snapshot_sender_name: row.get(11)?,
+            snapshot_sender_type: row.get(12)?,
+            snapshot_content: row.get(13)?,
+            snapshot_created_at: row.get(14)?,
+            snapshotted_at: row.get(15)?,
         })
     }
 }
@@ -134,45 +164,137 @@ pub struct AcceptedTaskProposal {
     pub kickoff_message_id: String,
 }
 
+/// Inputs for [`Store::create_task_proposal`]. `source_message_id` is
+/// required: v2 proposals always originate from a concrete chat message in the
+/// same channel, and the store snapshots its content + sender + timestamp into
+/// the proposal row so the per-task ACP session gets immutable context.
+pub struct CreateTaskProposalInput<'a> {
+    pub channel_id: &'a str,
+    pub proposed_by: &'a str,
+    pub title: &'a str,
+    pub source_message_id: &'a str,
+}
+
+/// Shorten `content` to at most 240 Unicode scalar values, appending `'…'`
+/// when truncated. Used for the `snapshotExcerpt` field on the pending-card
+/// chat-message payload so the frontend doesn't have to do any trimming. The
+/// full verbatim body lives on the DB row (`snapshot_content`) — the excerpt
+/// is a display-only derivation.
+///
+/// Private to this module (narrow visibility); Task 3 extracts or re-implements
+/// an identical helper at the handler layer for the HTTP view.
+const SNAPSHOT_EXCERPT_LIMIT: usize = 240;
+
+fn truncate_excerpt_for_card(content: &str) -> String {
+    let mut chars = content.chars();
+    let head: String = chars.by_ref().take(SNAPSHOT_EXCERPT_LIMIT).collect();
+    if chars.next().is_some() {
+        format!("{head}…")
+    } else {
+        head
+    }
+}
+
 impl Store {
     /// Create a new pending task proposal and post a companion
     /// `kind: "task_proposal"` chat message into the parent channel so the
     /// UI can render a card. Row + message are inserted in one transaction.
+    ///
+    /// v2: the proposal captures an immutable snapshot of the source message
+    /// (content, sender, original timestamp) so the per-task ACP session —
+    /// which has a fresh context window and cannot see the parent channel —
+    /// gets the originating user request verbatim via the kickoff message.
+    /// Edits or deletes to the source message after propose-time do not
+    /// mutate the agreed context. The DB CHECK constraint enforces that all
+    /// five snapshot fields are populated together.
     pub fn create_task_proposal(
         &self,
-        channel_id: &str,
-        proposed_by: &str,
-        title: &str,
+        input: CreateTaskProposalInput<'_>,
     ) -> Result<TaskProposal> {
-        let trimmed = title.trim();
+        use rusqlite::TransactionBehavior;
+
+        let trimmed = input.title.trim();
         if trimmed.is_empty() {
             return Err(anyhow!("task proposal title must not be empty"));
         }
         let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
-            .ok_or_else(|| anyhow!("channel not found: {channel_id}"))?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let channel = Self::get_channel_by_id_inner(&tx, input.channel_id)?
+            .ok_or_else(|| anyhow!("channel not found: {}", input.channel_id))?;
+
+        // Fetch the source message within the same channel. `messages` uses
+        // sender_name + sender_type as identity (no separate sender_id
+        // column), so we snapshot both — deleted source messages never
+        // orphan authorship type. Scoping to `channel_id = ?2` rejects
+        // cross-channel references up-front with a clear error.
+        let Some((src_content, src_sender_name, src_sender_type, src_created_at)) = tx
+            .query_row(
+                "SELECT content, sender_name, sender_type, created_at \
+                 FROM messages WHERE id = ?1 AND channel_id = ?2",
+                params![input.source_message_id, channel.id],
+                |r| {
+                    Ok::<_, rusqlite::Error>((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Err(anyhow!(
+                "source message not found in channel: {}",
+                input.source_message_id
+            ));
+        };
 
         let id = Uuid::new_v4().to_string();
         let now = chrono::Utc::now();
         let now_iso = now.to_rfc3339();
+        // All five snapshot fields and the pointer are written together —
+        // the DB CHECK constraint rejects partial snapshots, so partial
+        // writes are impossible even under a misbehaving caller.
         tx.execute(
-            "INSERT INTO task_proposals \
-             (id, channel_id, proposed_by, title, status, created_at) \
-             VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
-            params![id, channel.id, proposed_by, trimmed, now_iso],
+            "INSERT INTO task_proposals (
+                id, channel_id, proposed_by, title, status, created_at,
+                source_message_id, snapshot_sender_name, snapshot_sender_type,
+                snapshot_content, snapshot_created_at, snapshotted_at
+             ) VALUES (?1, ?2, ?3, ?4, 'pending', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                id,
+                channel.id,
+                input.proposed_by,
+                trimmed,
+                now_iso,
+                input.source_message_id,
+                src_sender_name,
+                src_sender_type,
+                src_content,
+                src_created_at,
+                now_iso,
+            ],
         )?;
 
+        // Pending-card payload: carry the snapshot on the wire so the
+        // frontend reducer can render an excerpt block without a second
+        // round-trip. `snapshotted_at` and `snapshot_sender_type` are
+        // DB-only — not in the payload — per the v2 wire contract.
+        let excerpt = truncate_excerpt_for_card(&src_content);
         let payload = serde_json::json!({
             "kind": "task_proposal",
             "proposalId": id,
             "status": "pending",
             "title": trimmed,
-            "proposedBy": proposed_by,
+            "proposedBy": input.proposed_by,
             "proposedAt": now_iso,
             "taskNumber": serde_json::Value::Null,
             "subChannelId": serde_json::Value::Null,
             "subChannelName": serde_json::Value::Null,
+            "sourceMessageId": input.source_message_id,
+            "snapshotSenderName": src_sender_name,
+            "snapshotExcerpt": excerpt,
+            "snapshotCreatedAt": src_created_at,
         });
         let content = payload.to_string();
         let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
@@ -185,7 +307,7 @@ impl Store {
         Ok(TaskProposal {
             id,
             channel_id: channel.id,
-            proposed_by: proposed_by.to_string(),
+            proposed_by: input.proposed_by.to_string(),
             title: trimmed.to_string(),
             status: TaskProposalStatus::Pending,
             created_at: now,
@@ -193,6 +315,12 @@ impl Store {
             accepted_sub_channel_id: None,
             resolved_by: None,
             resolved_at: None,
+            source_message_id: Some(input.source_message_id.to_string()),
+            snapshot_sender_name: Some(src_sender_name),
+            snapshot_sender_type: Some(src_sender_type),
+            snapshot_content: Some(src_content),
+            snapshot_created_at: Some(src_created_at),
+            snapshotted_at: Some(now_iso),
         })
     }
 
@@ -202,7 +330,10 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT id, channel_id, proposed_by, title, status, created_at, \
                     accepted_task_number, accepted_sub_channel_id, \
-                    resolved_by, resolved_at \
+                    resolved_by, resolved_at, \
+                    source_message_id, snapshot_sender_name, \
+                    snapshot_sender_type, snapshot_content, \
+                    snapshot_created_at, snapshotted_at \
              FROM task_proposals WHERE id = ?1",
         )?;
         stmt.query_row(params![id], TaskProposal::from_row)

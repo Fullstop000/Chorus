@@ -6,7 +6,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::{build_bridge_router, build_bridge_router_with_token_ttl};
 use chorus::server::build_router_with_services;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::{AgentRecordUpsert, Store};
 
 /// Helper: start the bridge server on a random port and return the base URL
@@ -880,9 +880,26 @@ async fn bridge_propose_task_creates_row_and_returns_json() {
         })
         .unwrap();
 
+    // v2: create_task_proposal snapshots a source message, so seed one.
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("eng", "alice", SenderType::Human)
+        .unwrap();
+    let msg_id = store
+        .create_message(CreateMessage {
+            channel_name: "eng",
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "please fix login",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap();
+
     let backend = ChorusBackend::new(server_url);
     let result_json = backend
-        .propose_task("claude", "eng", "fix login")
+        .propose_task("claude", "eng", "fix login", &msg_id)
         .await
         .expect("propose_task should succeed");
 

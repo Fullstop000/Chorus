@@ -150,7 +150,12 @@ impl ChatBridge {
         Parameters(params): Parameters<ProposeTaskParams>,
     ) -> Result<String, rmcp::ErrorData> {
         self.backend
-            .propose_task(&self.agent_id, &params.channel, &params.title)
+            .propose_task(
+                &self.agent_id,
+                &params.channel,
+                &params.title,
+                &params.source_message_id,
+            )
             .await
             .map_err(Into::into)
     }

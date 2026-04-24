@@ -4,9 +4,35 @@ use std::sync::Arc;
 
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
+use chorus::store::task_proposals::CreateTaskProposalInput;
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use harness::build_router;
+
+/// Seed a human-authored message into `channel_name` so v2
+/// `create_task_proposal` has a concrete `source_message_id` to snapshot.
+/// Idempotent on human-create / join so callers can reuse one sender across
+/// several calls without extra bookkeeping.
+fn seed_source_message(
+    store: &Store,
+    channel_name: &str,
+    sender: &str,
+    content: &str,
+) -> String {
+    let _ = store.create_human(sender);
+    let _ = store.join_channel(channel_name, sender, SenderType::Human);
+    store
+        .create_message(CreateMessage {
+            channel_name,
+            sender_name: sender,
+            sender_type: SenderType::Human,
+            content,
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap()
+}
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
@@ -610,9 +636,14 @@ async fn http_accept_task_proposal_returns_task_coords() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_human("alice").unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "fix login")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "fix login",
+            source_message_id: &msg_id,
+        })
         .unwrap();
 
     let resp = client
@@ -638,10 +669,15 @@ async fn http_dismiss_task_proposal_returns_204() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "t")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
         .unwrap();
-    store.create_human("alice").unwrap();
 
     let resp = client
         .post(format!("{url}/api/task-proposals/{}/dismiss", p.id))
@@ -659,8 +695,14 @@ async fn http_get_task_proposal_returns_current_state() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "t")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
         .unwrap();
 
     let resp = client
@@ -696,10 +738,15 @@ async fn http_dismiss_already_dismissed_returns_409() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "t")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
         .unwrap();
-    store.create_human("alice").unwrap();
 
     // First dismiss succeeds.
     let first = client
@@ -742,12 +789,18 @@ async fn internal_agent_create_proposal_inserts_row_and_card() {
             env_vars: &[],
         })
         .unwrap();
+    // v2: the internal endpoint now requires sourceMessageId (the user
+    // request the agent is proposing against), so seed one.
+    let msg_id = seed_source_message(&store, "eng", "alice", "please fix login");
 
     let resp = client
         .post(format!(
             "{url}/internal/agent/claude/channels/eng/task-proposals"
         ))
-        .json(&serde_json::json!({ "title": "investigate login 500" }))
+        .json(&serde_json::json!({
+            "title": "investigate login 500",
+            "sourceMessageId": msg_id,
+        }))
         .send()
         .await
         .unwrap();

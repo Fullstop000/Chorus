@@ -101,4 +101,9 @@ pub(super) struct ProposeTaskParams {
     /// Short title for the task the user seems to want. Aim for one clause:
     /// "investigate login 500", "write integration tests for X", etc.
     pub(super) title: String,
+    /// Message id of the user request you are proposing against. The
+    /// server snapshots this message's content + sender into the proposal
+    /// so the per-task session starts with the originating ask as
+    /// immutable context.
+    pub(super) source_message_id: String,
 }

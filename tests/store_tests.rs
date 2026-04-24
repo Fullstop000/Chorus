@@ -1,7 +1,7 @@
 use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
-use chorus::store::task_proposals::TaskProposalStatus;
+use chorus::store::task_proposals::{CreateTaskProposalInput, TaskProposalStatus};
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store};
 use rusqlite::{params, Connection};
@@ -90,6 +90,28 @@ fn make_store() -> (Store, tempfile::TempDir) {
     let db_path = dir.path().join("test.db");
     let store = Store::open(db_path.to_str().unwrap()).unwrap();
     (store, dir)
+}
+
+/// Seed a human-authored message into `channel_name` and return its id.
+/// Used by task-proposal tests to get a concrete `source_message_id` for
+/// the v2 `create_task_proposal` signature. Creates the human row too if
+/// missing, so callers don't have to pre-seed participants.
+fn seed_source_message(store: &Store, channel_name: &str, sender: &str, content: &str) -> String {
+    let _ = store.create_human(sender);
+    // Idempotent: if already a member, INSERT OR IGNORE in join_channel
+    // keeps this safe across multiple calls with the same sender.
+    let _ = store.join_channel(channel_name, sender, SenderType::Human);
+    store
+        .create_message(CreateMessage {
+            channel_name,
+            sender_name: sender,
+            sender_type: SenderType::Human,
+            content,
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap()
 }
 
 /// Channel archive, team creation, and agent record update as performed by shell/API layers.
@@ -2076,8 +2098,14 @@ fn create_task_proposal_inserts_row_and_posts_chat_message() {
         })
         .unwrap();
 
+    let msg_id = seed_source_message(&store, "eng", "alice", "login broken");
     let proposal = store
-        .create_task_proposal(&channel_id, "claude", "investigate login 500")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "investigate login 500",
+            source_message_id: &msg_id,
+        })
         .unwrap();
     assert_eq!(proposal.status, TaskProposalStatus::Pending);
     assert_eq!(proposal.title, "investigate login 500");
@@ -2108,8 +2136,14 @@ fn create_task_proposal_rejects_empty_title() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let err = store
-        .create_task_proposal(&channel_id, "claude", "   ")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "   ",
+            source_message_id: &msg_id,
+        })
         .unwrap_err();
     assert!(
         format!("{err}").contains("title"),
@@ -2123,8 +2157,14 @@ fn get_task_proposal_by_id_roundtrips() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let created = store
-        .create_task_proposal(&channel_id, "claude", "fix login")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "fix login",
+            source_message_id: &msg_id,
+        })
         .unwrap();
 
     let loaded = store
@@ -2158,10 +2198,15 @@ fn dismiss_task_proposal_flips_status_and_records_resolver() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "t")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
         .unwrap();
-    store.create_human("alice").unwrap();
 
     store.dismiss_task_proposal(&p.id, "alice").unwrap();
 
@@ -2177,10 +2222,15 @@ fn dismiss_task_proposal_rejects_non_pending() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "t")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
         .unwrap();
-    store.create_human("alice").unwrap();
     store.dismiss_task_proposal(&p.id, "alice").unwrap();
 
     let err = store.dismiss_task_proposal(&p.id, "alice").unwrap_err();
@@ -2208,9 +2258,14 @@ fn accept_task_proposal_creates_task_claims_it_and_marks_accepted() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_human("alice").unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "fix login")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "fix login",
+            source_message_id: &msg_id,
+        })
         .unwrap();
 
     let accepted = store.accept_task_proposal(&p.id, "alice").unwrap();
@@ -2269,9 +2324,14 @@ fn accept_task_proposal_does_not_emit_created_task_event() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_human("alice").unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "fix login")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "fix login",
+            source_message_id: &msg_id,
+        })
         .unwrap();
     store.accept_task_proposal(&p.id, "alice").unwrap();
 
@@ -2333,9 +2393,14 @@ fn accept_task_proposal_is_idempotent_rejected_after_first_accept() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_human("alice").unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "t")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
         .unwrap();
     store.accept_task_proposal(&p.id, "alice").unwrap();
     let err = store.accept_task_proposal(&p.id, "alice").unwrap_err();
@@ -2363,9 +2428,14 @@ fn accept_task_proposal_posts_kickoff_in_sub_channel() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_human("alice").unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "fix login")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "fix login",
+            source_message_id: &msg_id,
+        })
         .unwrap();
     let accepted = store.accept_task_proposal(&p.id, "alice").unwrap();
 
@@ -2416,9 +2486,14 @@ fn accept_task_proposal_posts_updated_task_proposal_message_in_parent() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_human("alice").unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "fix login")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "fix login",
+            source_message_id: &msg_id,
+        })
         .unwrap();
     store.accept_task_proposal(&p.id, "alice").unwrap();
 
@@ -2449,10 +2524,15 @@ fn dismiss_task_proposal_posts_updated_task_proposal_message() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "hi");
     let p = store
-        .create_task_proposal(&channel_id, "claude", "t")
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
         .unwrap();
-    store.create_human("alice").unwrap();
     store.dismiss_task_proposal(&p.id, "alice").unwrap();
 
     let content: String = store
@@ -2470,4 +2550,148 @@ fn dismiss_task_proposal_posts_updated_task_proposal_message() {
     assert_eq!(v["proposalId"], p.id);
     assert_eq!(v["status"], "dismissed");
     assert!(v["taskNumber"].is_null());
+}
+
+// ── v2: snapshot capture tests ───────────────────────────────────────────────
+
+#[test]
+fn create_task_proposal_captures_snapshot_from_source_message() {
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "login breaks on Safari");
+
+    let prop = store
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "Investigate Safari login",
+            source_message_id: &msg_id,
+        })
+        .unwrap();
+
+    assert_eq!(prop.source_message_id.as_deref(), Some(msg_id.as_str()));
+    assert_eq!(
+        prop.snapshot_content.as_deref(),
+        Some("login breaks on Safari")
+    );
+    assert_eq!(prop.snapshot_sender_name.as_deref(), Some("alice"));
+    assert_eq!(prop.snapshot_sender_type.as_deref(), Some("human"));
+    assert!(prop.snapshot_created_at.is_some());
+    assert!(prop.snapshotted_at.is_some());
+
+    // Pending-card payload carries the 4 wire fields (DB-only
+    // snapshotted_at + snapshot_sender_type are NOT on the wire).
+    let content: String = store
+        .conn_for_test()
+        .query_row(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' \
+             ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![channel_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(v["sourceMessageId"], msg_id);
+    assert_eq!(v["snapshotSenderName"], "alice");
+    assert_eq!(v["snapshotExcerpt"], "login breaks on Safari");
+    assert!(v["snapshotCreatedAt"].is_string());
+}
+
+#[test]
+fn create_task_proposal_rejects_wrong_channel_source_message() {
+    let (store, _dir) = make_store();
+    let ch_a = store
+        .create_channel("a", None, ChannelType::Channel, None)
+        .unwrap();
+    let _ch_b = store
+        .create_channel("b", None, ChannelType::Channel, None)
+        .unwrap();
+    // Seed message lives in channel b, not a.
+    let msg_in_b = seed_source_message(&store, "b", "alice", "hi");
+
+    let err = store
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &ch_a,
+            proposed_by: "claude",
+            title: "foo",
+            source_message_id: &msg_in_b,
+        })
+        .unwrap_err();
+    assert!(
+        format!("{err}").contains("source message not found"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn source_message_edit_does_not_mutate_accepted_proposal() {
+    // The whole point of the snapshot: editing the source message after
+    // propose-time must not rewrite the task's agreed context.
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "original");
+    let prop = store
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
+        .unwrap();
+
+    // Directly rewrite the message row (simulates an edit path). The store
+    // doesn't expose a public edit API, and writing one isn't our scope.
+    store
+        .conn_for_test()
+        .execute(
+            "UPDATE messages SET content = ?1 WHERE id = ?2",
+            rusqlite::params!["edited text", msg_id],
+        )
+        .unwrap();
+
+    let reloaded = store.get_task_proposal_by_id(&prop.id).unwrap().unwrap();
+    assert_eq!(reloaded.snapshot_content.as_deref(), Some("original"));
+}
+
+#[test]
+fn source_message_delete_nulls_pointer_but_preserves_snapshot() {
+    // CHECK constraint guards truth; ON DELETE SET NULL clears the pointer.
+    // Delete the source message and verify exactly that split: pointer gone,
+    // snapshot intact. Requires PRAGMA foreign_keys=ON (Store::open sets it).
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    let msg_id = seed_source_message(&store, "eng", "alice", "original");
+    let prop = store
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title: "t",
+            source_message_id: &msg_id,
+        })
+        .unwrap();
+
+    // Hard-delete triggers ON DELETE SET NULL on task_proposals.source_message_id.
+    store
+        .conn_for_test()
+        .execute(
+            "DELETE FROM messages WHERE id = ?1",
+            rusqlite::params![msg_id],
+        )
+        .unwrap();
+
+    let reloaded = store.get_task_proposal_by_id(&prop.id).unwrap().unwrap();
+    // Pointer cleared, truth preserved.
+    assert!(reloaded.source_message_id.is_none());
+    assert_eq!(reloaded.snapshot_content.as_deref(), Some("original"));
+    assert_eq!(reloaded.snapshot_sender_name.as_deref(), Some("alice"));
+    assert_eq!(reloaded.snapshot_sender_type.as_deref(), Some("human"));
+    assert!(reloaded.snapshot_created_at.is_some());
+    assert!(reloaded.snapshotted_at.is_some());
 }

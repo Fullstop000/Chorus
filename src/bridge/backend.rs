@@ -116,11 +116,18 @@ pub trait Backend: Send + Sync {
     async fn view_file(&self, agent_key: &str, attachment_id: &str) -> Result<String, BridgeError>;
 
     /// Create a pending task proposal in a channel.
+    ///
+    /// `source_message_id` points at the user message the agent read when
+    /// deciding to propose — the server snapshots that message's content +
+    /// sender into the proposal row so the per-task session gets immutable
+    /// kickoff context. Must name a real message in `channel`; the server
+    /// returns 400 otherwise.
     async fn propose_task(
         &self,
         agent_key: &str,
         channel: &str,
         title: &str,
+        source_message_id: &str,
     ) -> Result<String, BridgeError>;
 }
 
@@ -1141,8 +1148,12 @@ impl Backend for ChorusBackend {
         agent_key: &str,
         channel: &str,
         title: &str,
+        source_message_id: &str,
     ) -> Result<String, BridgeError> {
-        let body = serde_json::json!({ "title": title });
+        let body = serde_json::json!({
+            "title": title,
+            "sourceMessageId": source_message_id,
+        });
         let url = format!(
             "{}/channels/{}/task-proposals",
             self.base_url(agent_key),

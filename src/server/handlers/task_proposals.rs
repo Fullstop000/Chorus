@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{ApiResult, AppState};
 use crate::server::error::{app_err, AppErrorCode, ErrorResponse};
-use crate::store::task_proposals::{AcceptedTaskProposal, TaskProposal};
+use crate::store::task_proposals::{AcceptedTaskProposal, CreateTaskProposalInput, TaskProposal};
 
 // ── Request bodies ───────────────────────────────────────────────────────────
 
@@ -160,6 +160,14 @@ pub async fn accept_task_proposal(
 #[derive(Debug, Deserialize)]
 pub struct InternalProposeBody {
     pub title: String,
+    /// v2: id of the user message the agent read when deciding to propose.
+    /// Required — the store snapshots this message's content + sender into
+    /// the proposal row so the per-task session gets the originating
+    /// request as immutable kickoff context. Task 4 will wire this into a
+    /// dedicated error code on a 400; for now the `source message not
+    /// found` anyhow message is surfaced as a generic 400 below.
+    #[serde(rename = "sourceMessageId")]
+    pub source_message_id: String,
 }
 
 /// Internal endpoint the MCP bridge hits from the `propose_task` tool.
@@ -182,10 +190,15 @@ pub async fn internal_agent_propose(
         .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "channel not found: {channel_name}"))?;
     let proposal = state
         .store
-        .create_task_proposal(&channel.id, &agent, &body.title)
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel.id,
+            proposed_by: &agent,
+            title: &body.title,
+            source_message_id: &body.source_message_id,
+        })
         .map_err(|e| {
             let msg = format!("{e}");
-            if msg.contains("title") {
+            if msg.contains("title") || msg.contains("source message") {
                 app_err!(StatusCode::BAD_REQUEST, "{msg}")
             } else {
                 app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{msg}")
