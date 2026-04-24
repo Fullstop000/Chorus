@@ -109,3 +109,37 @@ the code before triage.
 18 findings: 16 fix inline, 1 dismiss (R2-6, user scope decision), 1 closes
 R1 #4. After applying, ready to commit and ship the plan.
 
+## R3 — kimi CLI (2026-04-24, same day — convergence check)
+
+Verdict: **NOT_CONVERGED**. 4 MUST-FIX + 4 SHOULD-FIX + 2 NICE-TO-HAVE.
+Three of the MUST-FIX issues were introduced by the R2 revisions themselves.
+
+### MUST-FIX
+
+| # | Finding | Disposition |
+|---|---------|-------------|
+| R3-1 | Plan emits a `task_event` in the parent channel on `proposed → dismissed`, contradicting the spec's "no task_event for pre-acceptance transitions" rule. | **Fix inline — honor the spec.** Remove `TaskEventAction::Dismissed`, delete `post_parent_dismissed_event_tx`, strip the Dismissed branch from `update_task_status`, and drop the `dismissed` arm from `TaskEventRow.formatEvent`. The card's state mutation (driven by SSE `task_update`) is sufficient evidence of the dismissal — no separate event log entry. |
+| R3-2 | `InvalidTaskTransition` typed error is defined and used by the handler's `downcast_ref`, but `update_task_status` still returns `Err(anyhow!("invalid ..."))` — a plain string error. `downcast_ref` never matches, so every invalid transition 500s. | **Fix inline.** Store returns `Err(InvalidTaskTransition { from, to }.into())`. Overlaps with R2-10, which fixed the handler but left the store untouched. |
+| R3-3 | Rust sends `{ "type": "task_update", "payload": ev }`; TypeScript `RealtimeFrame` and `RealtimeSession` dispatcher both read `frame.event`. Task updates drop on the client. | **Fix inline.** Change the Rust `json!(...)` to `"event": ev` — matches the existing trace/event convention. |
+| R3-4 | `MessageList` pseudocode calls `useTask(payload.task_id)` inside a conditional — React Rules of Hooks violation. | **Fix inline.** Extract `TaskCardContainer` sub-component that calls `useTask` unconditionally at its top level. |
+
+### SHOULD-FIX
+
+| # | Finding | Disposition |
+|---|---------|-------------|
+| R3-5 | Claim/unclaim SQL not explicitly shown despite the column rename + fusion break. | **Fix inline.** Show explicit `UPDATE tasks SET owner = ?1 ...` / `SET owner = NULL ...` in Task 5. |
+| R3-6 | `create_tasks` pseudocode pushes both parent (`task_card`) and sub-channel (kickoff) events into one `pending_events` vector; `emit_system_stream_events` tags every event with the single `&channel` param, so mixing would misroute the kickoff. | **Fix inline.** Split into `parent_events` + `sub_events` vectors with two separate `emit_system_stream_events` calls. |
+| R3-7 | Rust `TaskInfo` struct omits `sub_channel_name`; the UI `TaskCard` uses `task.subChannelName` for the deep-link. | **Fix inline.** Add `pub sub_channel_name: Option<String>` to `TaskInfo` and join `channels` in the SELECTs. |
+| R3-8 | `normalize_sqlite_timestamp` is used in Task 3's `create_proposed_task` but the helper move out of `src/store/task_proposals.rs` is scheduled in Task 11. Mid-implementation build break. | **Fix inline.** Move the helper in Task 1 (alongside schema changes), not Task 11. |
+
+### NICE-TO-HAVE
+
+| # | Finding | Disposition |
+|---|---------|-------------|
+| R3-9 | `MessageList` pseudocode parses `msg.content` twice via `parseTaskEvent`. | **Fix inline** — parse once, reuse. |
+| R3-10 | `TaskCardWirePayload` TS interface never explicitly declared in the plan. | **Fix inline** — declare in Task 10 alongside the routing. |
+
+### R3 Closeout
+
+10 findings, all fix inline. If R4 returns zero MUST/SHOULD, we ship the plan.
+

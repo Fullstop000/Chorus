@@ -136,6 +136,12 @@ In `src/store/migrations.rs`:
 
 Fresh-DB path now goes straight to the merged `tasks` schema via `schema.sql`. No migration code path for the task-lifecycle feature.
 
+- [ ] **Step 3.5: Move `normalize_sqlite_timestamp` out of `src/store/task_proposals.rs`.**
+
+Later tasks (Task 3's `create_proposed_task`, Task 6's agent-create handler) call this helper. It currently lives in `src/store/task_proposals.rs`, which gets deleted in Task 11. Relocate it now — before any caller needs it — to avoid a mid-implementation build break.
+
+Destination: `src/store/tasks/mod.rs` (colocated with callers) or `src/utils/time.rs` if a shared util module exists. Update any existing call site (there's exactly one, inside `task_proposals.rs`) to the new path.
+
 - [ ] **Step 4: Extend `TaskStatus` enum in `src/store/tasks/mod.rs`.**
 
 Add two variants + a transition validator:
@@ -202,46 +208,22 @@ git commit -am "feat(schema): unify task_proposals into tasks with six-state enu
 **Files:**
 - Modify: `src/store/tasks/events.rs`
 
-- [ ] **Step 1: Extend `TaskEventAction` with `Dismissed` + update all match arms.**
+- [ ] **Step 1: `TaskEventAction` stays unchanged.**
+
+Per the spec, `proposed → dismissed` does **not** emit a `task_event` — the parent-channel `task_card` host message re-renders to the `dismissed` state via SSE `task_update`, and that's the only signal. No enum changes needed.
+
+Keep the existing variants as-is:
 
 ```rust
 pub enum TaskEventAction {
-    Created,
+    Created,        // today; becomes unused under the new model (parent-channel task_card replaces it).
     Claimed,
     Unclaimed,
     StatusChanged,
-    Dismissed,  // new — fired only on `proposed → dismissed`, posted in PARENT channel (no sub-channel exists yet).
 }
 ```
 
-Also update every `match action { ... }` on this enum. In particular:
-
-```rust
-impl TaskEventAction {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Created => "created",
-            Self::Claimed => "claimed",
-            Self::Unclaimed => "unclaimed",
-            Self::StatusChanged => "status_changed",
-            Self::Dismissed => "dismissed",   // new
-        }
-    }
-
-    pub fn as_agent_sentence(&self, actor: &str, next: TaskStatus) -> String {
-        match self {
-            Self::Created      => format!("{actor} created the task"),
-            Self::Claimed      => format!("{actor} claimed the task"),
-            Self::Unclaimed    => format!("{actor} unclaimed the task"),
-            Self::StatusChanged => format!("task moved to {}", next.as_str()),
-            Self::Dismissed    => format!("{actor} dismissed the proposal"),  // new
-        }
-    }
-}
-```
-
-Without these arms, a `match` elsewhere may fall through to a catch-all and
-produce a nonsense agent sentence on dismissal.
+The `Created` variant stays for now (used by the existing `create_tasks` code path) but is removed in Task 3 Step 2 when `create_tasks` switches to posting `task_card` instead.
 
 - [ ] **Step 2: Define `TaskCardWirePayload`.**
 
@@ -318,23 +300,7 @@ pub fn post_task_event_tx(
 
 `TaskEventPayload::claimed_by` field stays. Serde renames to `claimedBy` on the wire. **Do not rename this field to `owner` in the wire payload** — it would break persisted chat history compat.
 
-- [ ] **Step 6: Add a `post_parent_dismissed_event_tx` helper.**
-
-`proposed → dismissed` has no sub-channel to host an event. We fire a one-off `task_event` with `action=dismissed` in the **parent** channel, so chat history shows the dismissal as a system message alongside the host `task_card`.
-
-```rust
-pub fn post_parent_dismissed_event_tx(
-    tx: &Transaction<'_>,
-    parent_channel: &Channel,
-    payload: TaskEventPayload,   // payload.action == Dismissed, sub_channel_id == ""
-) -> Result<(InsertedMessage, String)> {
-    let content = payload.to_json_string()?;
-    let msg = Store::create_system_message_tx(tx, parent_channel, &content)?;
-    Ok((msg, content))
-}
-```
-
-- [ ] **Step 7: Unit tests.**
+- [ ] **Step 6: Unit tests.**
 
 ```rust
 #[test]
@@ -349,7 +315,7 @@ fn task_event_wire_field_is_claimed_by_camel_case() {
 }
 ```
 
-- [ ] **Step 8: Commit.**
+- [ ] **Step 7: Commit.**
 
 ---
 
@@ -420,20 +386,29 @@ pub fn create_proposed_task(
 
 Keep today's sub-channel mint + kickoff. **Remove** the existing `task_event(Created)` emission in the parent channel — the new `task_card` host message replaces it. Direct-created tasks have `status='todo'`, all snapshot fields null, and an immediately-minted sub-channel.
 
-Concretely, inside the existing `create_tasks` per-task loop:
+Concretely, inside the existing `create_tasks` per-task loop — keep parent and sub-channel events in **separate** vectors because `emit_system_stream_events` tags every event with the single `&channel` argument it receives, so mixing would misroute the kickoff (sub-channel event) to parent-channel subscribers:
 
 ```rust
-// (existing code allocates task_number, INSERTs the row, mints sub_channel, posts kickoff)
+// (existing code allocates task_number, INSERTs the row, mints sub_channel)
 
 // REMOVED: parent-channel `task_event(Created)` emission — task_card replaces it.
 
 // ADDED: post task_card in the parent channel.
 let task = load_task_by_id_tx(&tx, &id)?;
-pending_events.push(events::post_task_card_message_tx(&tx, &channel, &task)?);
-// ... kickoff message gets pushed onto pending_events as before (in the sub-channel)
+parent_events.push(events::post_task_card_message_tx(&tx, &channel, &task)?);
+
+// Existing: post kickoff in the sub-channel. Push onto the sub-channel vector.
+let sub_channel = /* load the newly-minted sub-channel */;
+sub_events.push(events::post_kickoff_message_tx(&tx, &channel, &sub_channel.id, &task)?);
 ```
 
-Note that `pending_events` is `Vec<(InsertedMessage, String)>` — the helper returns a tuple shaped exactly for it. `emit_system_stream_events` handles fan-out after `tx.commit()`. **The parent channel and the sub-channel get their events via separate `emit_system_stream_events` calls** — do not mix them.
+```rust
+// After tx.commit():
+self.emit_system_stream_events(&channel, parent_events)?;
+self.emit_system_stream_events(&sub_channel, sub_events)?;
+```
+
+Both vectors are `Vec<(InsertedMessage, String)>` — the helpers return tuples shaped exactly for them. Two separate fan-out calls, one per channel.
 
 - [ ] **Step 3: Extend `TaskInfo` struct with snapshot fields + rename `claimed_by` → `owner`.**
 
@@ -450,6 +425,7 @@ pub struct TaskInfo {
     pub created_at: String,
     pub updated_at: String,
     pub sub_channel_id: Option<String>,
+    pub sub_channel_name: Option<String>,      // joined from channels.name — UI uses this for the deep-link button
     pub source_message_id: Option<String>,
     pub snapshot_sender_name: Option<String>,
     pub snapshot_sender_type: Option<String>,
@@ -462,7 +438,21 @@ pub struct TaskInfo {
 
 - [ ] **Step 4: Update all existing `SELECT` statements.**
 
-Every `SELECT task_number, title, status, claimed_by, created_by, …` becomes `SELECT id, task_number, title, status, owner, created_by, …` + snapshot cols. Locations are listed in `grep -n "SELECT .* FROM tasks" src/store/tasks/mod.rs`.
+Every `SELECT task_number, title, status, claimed_by, created_by, …` becomes:
+
+```sql
+SELECT t.id, t.task_number, t.title, t.status, t.owner, t.created_by,
+       t.created_at, t.updated_at, t.sub_channel_id, c.name AS sub_channel_name,
+       t.source_message_id, t.snapshot_sender_name, t.snapshot_sender_type,
+       t.snapshot_content, t.snapshot_created_at
+FROM tasks t
+LEFT JOIN channels c ON c.id = t.sub_channel_id
+WHERE t.channel_id = ?1 AND t.task_number = ?2
+```
+
+The `LEFT JOIN channels` to resolve `sub_channel_name` matches the existing
+pattern at `src/store/tasks/mod.rs:220-236`. Locations to update:
+`grep -n "SELECT .* FROM tasks" src/store/tasks/mod.rs`.
 
 - [ ] **Step 5: Store tests.**
 
@@ -516,11 +506,11 @@ pub fn update_task_status(
     let current_status = task.status;
 
     if !current_status.can_transition_to(new_status) {
-        return Err(anyhow!(
-            "invalid task transition: {} -> {}",
-            current_status.as_str(),
-            new_status.as_str()
-        ));
+        // Typed error so the HTTP handler can map to 422 via downcast_ref.
+        return Err(InvalidTaskTransition {
+            from: current_status,
+            to: new_status,
+        }.into());
     }
 
     // REMOVED: `if claimed_by.as_deref() != Some(requester_name) { ... }`
@@ -542,35 +532,28 @@ pub fn update_task_status(
     )?;
     task.status = new_status;
 
-    // Post task_event — EXCEPT on `proposed -> todo`. The kickoff message is
-    // the anchor for acceptance; firing a task_event here would double-up.
-    let pending_event: Option<(InsertedMessage, String)> = if
-        current_status == TaskStatus::Proposed && new_status == TaskStatus::Todo
-    {
-        None
-    } else {
-        let event_payload = TaskEventPayload {
-            action: match new_status {
-                TaskStatus::Dismissed => TaskEventAction::Dismissed,
-                _ => TaskEventAction::StatusChanged,
-            },
-            task_number, title: task.title.clone(),
-            sub_channel_id: task.sub_channel_id.clone().unwrap_or_default(),
-            actor: actor.to_string(),
-            prev_status: Some(current_status),
-            next_status: new_status,
-            claimed_by: task.owner.clone(),   // keep wire field name!
-        };
-        Some(if new_status == TaskStatus::Dismissed {
-            // proposed -> dismissed: no sub-channel; post event in parent.
-            events::post_parent_dismissed_event_tx(&tx, &channel, event_payload)?
+    // Post task_event — only for post-acceptance transitions. The spec
+    // explicitly forbids task_events on pre-acceptance transitions
+    // (proposed → todo, proposed → dismissed). For those two cases, the
+    // parent-channel task_card host message re-renders via SSE task_update
+    // and that is the sole signal.
+    let pending_event: Option<(InsertedMessage, String)> =
+        if current_status == TaskStatus::Proposed {
+            None   // both proposed → todo and proposed → dismissed: no event
         } else {
-            // todo -> in_progress, etc: post event in sub-channel.
+            let event_payload = TaskEventPayload {
+                action: TaskEventAction::StatusChanged,
+                task_number, title: task.title.clone(),
+                sub_channel_id: task.sub_channel_id.clone().unwrap_or_default(),
+                actor: actor.to_string(),
+                prev_status: Some(current_status),
+                next_status: new_status,
+                claimed_by: task.owner.clone(),   // keep wire field name!
+            };
             let sub_id = task.sub_channel_id.as_deref()
-                .ok_or_else(|| anyhow!("sub-channel missing for non-dismissed transition"))?;
-            events::post_task_event_tx(&tx, sub_id, event_payload)?
-        })
-    };
+                .ok_or_else(|| anyhow!("post-acceptance transition requires sub-channel"))?;
+            Some(events::post_task_event_tx(&tx, sub_id, event_payload)?)
+        };
 
     // Done -> archive the sub-channel (existing behavior preserved). The
     // archive helper is at `src/store/channels.rs` (inline if not present):
@@ -584,16 +567,12 @@ pub fn update_task_status(
     tx.commit()?;
     drop(conn);
 
-    // Fan out: task_event (if any) on the channel it was posted in; then task_update globally.
+    // Fan out: post-acceptance task_event in the sub-channel; task_update globally.
     if let Some(ev) = pending_event {
-        let emit_channel = if new_status == TaskStatus::Dismissed {
-            channel
-        } else {
-            let sub_id = task.sub_channel_id.as_deref().unwrap();
-            self.get_channel_by_id(sub_id)?
-                .ok_or_else(|| anyhow!("sub-channel vanished after tx commit"))?
-        };
-        self.emit_system_stream_events(&emit_channel, vec![ev])?;
+        let sub_id = task.sub_channel_id.as_deref().unwrap();
+        let sub_channel = self.get_channel_by_id(sub_id)?
+            .ok_or_else(|| anyhow!("sub-channel vanished after tx commit"))?;
+        self.emit_system_stream_events(&sub_channel, vec![ev])?;
     }
     self.emit_task_update(&task);  // global fan-out (Task 7)
     Ok(task)
@@ -677,21 +656,25 @@ fn reverse_transition_rejected() { ... }
 
 - [ ] **Step 1: Rewrite `update_tasks_claim` — set owner only, do not advance status.**
 
-The existing SQL at line 338 is:
-```
+The existing SQL at `src/store/tasks/mod.rs:338` is:
+```sql
 UPDATE tasks SET claimed_by = ?1, status = 'in_progress', updated_at = datetime('now')
-```
-Change to:
-```
-UPDATE tasks SET owner = ?1, updated_at = datetime('now')
+  WHERE channel_id = ?2 AND task_number = ?3 AND status = 'todo' AND claimed_by IS NULL
 ```
 
-Precondition check changes: today's code requires `status == 'todo' AND claimed_by IS NULL`. New logic:
-- Claim allowed on `Todo`, `InProgress`, `InReview` (anyone can re-claim / steal a claim — permissive, matches owner-as-label).
-- Claim rejected on `Proposed`, `Dismissed`, `Done` → return 422 via handler.
+New SQL — set `owner` only, drop the status advance and the `claimed_by IS NULL` guard (re-claim is permissive):
+
+```sql
+UPDATE tasks SET owner = ?1, updated_at = datetime('now')
+  WHERE channel_id = ?2 AND task_number = ?3 AND status IN ('todo','in_progress','in_review')
+```
+
+The `status IN (...)` guard enforces the claimable-state precondition at the SQL level — a check-then-UPDATE race between "status still Todo" and "someone just moved it to InReview" resolves to the UPDATE simply matching zero rows, and we return a "cannot claim terminal task" error.
+
+Rust-side precondition check before the UPDATE (for 422 clarity at the handler):
 
 ```rust
-if !matches!(task.status, Todo | InProgress | InReview) {
+if !matches!(task.status, TaskStatus::Todo | TaskStatus::InProgress | TaskStatus::InReview) {
     return Err(anyhow!("cannot claim task in {:?} state", task.status));
 }
 ```
@@ -726,9 +709,23 @@ Claimer joins the sub-channel (existing `INSERT OR IGNORE INTO channel_members`)
 
 - [ ] **Step 4: `update_task_unclaim` — clear owner only.**
 
-Existing code at line ~420 also fuses `UPDATE tasks SET claimed_by = NULL, status = 'todo', ...`. Decouple the same way: set `owner = NULL`, leave `status` alone. Unclaim is allowed on the same three states.
+Existing code at `src/store/tasks/mod.rs:431` fuses `claimed_by = NULL, status = 'todo'`:
 
-The existing TOCTOU guard (`WHERE ... AND claimed_by = ?3`) stays — it prevents unclaiming a claim that was already stolen.
+```sql
+UPDATE tasks SET claimed_by = NULL, status = 'todo', updated_at = datetime('now')
+  WHERE channel_id = ?1 AND task_number = ?2 AND claimed_by = ?3
+```
+
+New SQL — clear `owner`, leave `status` alone, keep the TOCTOU guard on the caller:
+
+```sql
+UPDATE tasks SET owner = NULL, updated_at = datetime('now')
+  WHERE channel_id = ?1 AND task_number = ?2 AND owner = ?3
+```
+
+The `owner = ?3` guard (where `?3` is the caller's name) prevents unclaiming a claim that was already stolen by a concurrent writer — if `rows != 1`, surface "no longer claimed by you" as today.
+
+Unclaim is allowed on the same three states (Todo, InProgress, InReview). Add the same Rust-side guard as Step 1.
 
 - [ ] **Step 5: Unclaim `task_event` also posts to the SUB-CHANNEL.**
 
@@ -1007,8 +1004,11 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
             task_update = task_update_rx.recv() => {
                 match task_update {
                     Ok(ev) => {
+                        // Key is "event" — matches the existing trace/event wrapper
+                        // convention used elsewhere in realtime.rs. The TypeScript
+                        // `RealtimeFrame` dispatcher expects `frame.event`.
                         let msg = Message::Text(
-                            serde_json::to_string(&json!({ "type": "task_update", "payload": ev })).unwrap()
+                            serde_json::to_string(&json!({ "type": "task_update", "event": ev })).unwrap()
                         );
                         if socket.send(msg).await.is_err() { break; }
                     }
@@ -1393,8 +1393,9 @@ function formatEvent(e: TaskEventRow): string {
     case 'claimed':        return `@${e.actor} claimed`
     case 'unclaimed':      return `@${e.actor} unclaimed`
     case 'status_changed': return `→ ${e.nextStatus}`
-    case 'dismissed':      return `@${e.actor} dismissed`
-    case 'created':        return `@${e.actor} created`
+    // No `dismissed` or `created` arms — per spec, proposed → dismissed does
+    // not post a task_event (the task_card mutation is the signal), and
+    // direct-create posts a task_card instead of a task_event(Created).
     default:               return `${e.actor} ${e.action}`
   }
 }
@@ -1402,23 +1403,59 @@ function formatEvent(e: TaskEventRow): string {
 
 - [ ] **Step 4: Route `task_card` + `task_event` in MessageList.**
 
-The `HistoryMessage` type has no top-level `kind` field — `kind` is a discriminator inside the JSON `content` string (pattern used by the existing `task_proposal` and `task_event` rendering). Parse first, then dispatch:
+The `HistoryMessage` type has no top-level `kind` field — `kind` is a discriminator inside the JSON `content` string (pattern used by the existing `task_proposal` and `task_event` rendering).
+
+Because `useTask` is a hook (it subscribes to `useTasksStore`), it **cannot** be called conditionally inside the `MessageList` render loop — that would violate React's Rules of Hooks. Extract a sub-component that calls the hook unconditionally at its top level:
 
 ```tsx
-// HistoryMessage has no `kind` field; kind lives inside the JSON content.
-const parsed = tryJsonParse<{ kind?: string }>(msg.content)
-if (parsed?.kind === 'task_card') {
-  const payload = parsed as TaskCardWirePayload
-  const task = useTask(payload.task_id)
-  return task ? <TaskCard task={task} onAction={...} busy={...} /> : null
+// ui/src/components/chat/TaskCardContainer.tsx
+import { useTask } from '../../hooks/useTask'
+import { TaskCard } from './TaskCard'
+
+export interface TaskCardWirePayload {
+  kind: 'task_card'
+  task_id: string
+  task_number: number
+  title: string
+  status: string
+  owner: string | null
+  created_by: string
+  source_message_id: string | null
+  snapshot_sender_name: string | null
+  snapshot_sender_type: string | null
+  snapshot_content: string | null
+  snapshot_created_at: string | null
 }
-if (parseTaskEvent(msg.content) != null) {
-  const ev = parseTaskEvent(msg.content)!
-  return <TaskEventRow event={evToRow(ev, msg)} />
+
+interface TaskCardContainerProps {
+  payload: TaskCardWirePayload
+  onAction: (action: TaskAction) => void
+  busy: boolean
+}
+
+export function TaskCardContainer({ payload, onAction, busy }: TaskCardContainerProps) {
+  const task = useTask(payload.task_id)
+  return task ? <TaskCard task={task} onAction={onAction} busy={busy} /> : null
 }
 ```
 
-`parseTaskEvent` already returns null on non-event system messages, so using it as the `task_event` detector is stable.
+Then the `MessageList` dispatch calls the sub-component, not the hook:
+
+```tsx
+// Parse once — the same result serves both routes.
+const parsed = tryJsonParse<{ kind?: string }>(msg.content)
+
+if (parsed?.kind === 'task_card') {
+  return <TaskCardContainer payload={parsed as TaskCardWirePayload} onAction={...} busy={...} />
+}
+
+// `parseTaskEvent` already returns null on non-event system messages, so
+// using it as the `task_event` detector is stable. Parse once, reuse.
+const ev = parseTaskEvent(msg.content)
+if (ev != null) {
+  return <TaskEventRow event={evToRow(ev, msg)} />
+}
+```
 
 - [ ] **Step 5: Extend the realtime transport for `task_update` frames.**
 
@@ -1529,7 +1566,7 @@ git rm src/store/task_proposals.rs
 # remove `pub mod task_proposals;` from src/store/mod.rs
 ```
 
-- [ ] **Step 3: Move `normalize_sqlite_timestamp` helper** if it's still only in the deleted `task_proposals.rs`. Destination: `src/store/tasks/mod.rs` (or `src/utils/time.rs` if a shared util module exists).
+- [ ] **Step 3: `normalize_sqlite_timestamp` already moved in Task 1 Step 3.5.** Confirm no stragglers with `git grep normalize_sqlite_timestamp -- 'src/**'`.
 
 - [ ] **Step 4: Run the full stack.**
 
