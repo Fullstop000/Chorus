@@ -62,7 +62,7 @@ CLI
 
 Server
   -> loads active workspace on startup
-  -> platform routes eventually operate inside workspace context
+  -> platform routes operate inside active workspace context
 
 Bridge
   -> stays local
@@ -83,11 +83,14 @@ local_workspace_state(key='active_workspace_id', workspace_id)
 Needed store APIs:
 
 - `set_active_workspace(workspace_id)`
-- `get_workspace_by_slug_or_name(selector)`
-- `rename_workspace(workspace_id, new_name)`
+- `get_workspace_by_selector(selector)`
+- `rename_workspace(workspace_id, new_name, slug_policy)`
 - `list_workspaces_for_human(human_name)` for CLI output
+- workspace-aware list APIs for core resources (`channels`, `agents`, `teams`)
 
-Workspace identity in CLI should use name or slug, not raw UUID. The database should enforce unique workspace slug values so CLI selection is deterministic.
+Workspace identity in CLI should use name or slug, not raw UUID. The database should enforce unique workspace slug values so CLI selection is deterministic. Slugs should be stable by default: renaming a workspace changes the display name only unless the user explicitly asks to regenerate the slug in a later command.
+
+Local human identity must be consistent. `chorus setup` should persist the local human name, defaulting to the OS username and allowing explicit input. Later `chorus workspace create` calls should read that persisted value instead of re-reading the OS username every time.
 
 ## Failure Rules
 
@@ -95,6 +98,8 @@ Workspace identity in CLI should use name or slug, not raw UUID. The database sh
 - Unknown workspace: fail with a short candidate list.
 - Ambiguous selector: fail and ask for the slug.
 - Invalid rename: fail before mutating state.
+- Active workspace pointer references a missing workspace: fail as "no active workspace" and ask the user to switch or create one.
+- Legacy unscoped resources exist after upgrade: do not silently mix them into active workspace results; either migrate them explicitly or report them as legacy data.
 - Bridge credential with the wrong workspace: reject.
 
 Switching workspace while a server is already running only updates local state in the first slice. The server picks up the active workspace on restart. Live workspace switching can be designed later.
@@ -106,7 +111,7 @@ Keep the next PR focused on the workspace control plane:
 1. Add `chorus workspace current/list/create/switch/rename`.
 2. Make `workspace create` auto-switch to the new workspace.
 3. Keep `chorus setup` responsible for first workspace creation.
-4. Add docs and tests for CLI behavior.
-5. Do not fully migrate all server routes yet.
+4. Scope core resource list paths (`channels`, `agents`, `teams`, and `status`) to the active workspace.
+5. Add docs and tests for CLI behavior and resource isolation.
 
-Full route-level workspace scoping is a later slice. The first slice establishes the platform workspace management surface without mixing in every downstream data-path migration.
+Full route-level workspace scoping for every mutation and bridge credential is a later slice. The first slice must still prove that switching the active workspace changes the visible platform surface for core resources; otherwise `workspace switch` is only cosmetic.
