@@ -2,13 +2,47 @@ pub mod events;
 
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, TransactionBehavior};
+use rusqlite::{params, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use self::events::{TaskEventAction, TaskEventPayload};
+use self::events::{post_task_card_message_tx, TaskEventAction, TaskEventPayload};
 use super::channels::ChannelType;
 use super::Store;
+
+/// Normalize a timestamp string to RFC3339 UTC form (`"YYYY-MM-DDTHH:MM:SSZ"`).
+///
+/// Accepts:
+///   - SQLite native: `"YYYY-MM-DD HH:MM:SS"` (no TZ, implicitly UTC) — what
+///     `datetime('now')` produces.
+///   - RFC3339 already: `"YYYY-MM-DDTHH:MM:SSZ"` or offset-bearing forms
+///     like `"2026-04-25T10:30:45+00:00"`.
+///
+/// The snapshot spec requires canonical RFC3339 UTC for cross-surface
+/// consistency (UI, MCP tools, SSE). Callers copy a source message's
+/// `created_at` into a task row's snapshot columns, and that source can come
+/// from either format — this helper guarantees the stored form is canonical
+/// regardless of input shape. Errors when chrono can't parse the input.
+#[allow(dead_code)] // consumed by Task 6 (agent-create HTTP handler)
+pub(crate) fn normalize_sqlite_timestamp(ts: &str) -> Result<String> {
+    use chrono::NaiveDateTime;
+
+    // Try RFC3339 first — handles `2026-04-25T00:00:00Z` and offset-bearing forms.
+    if let Ok(dt) = DateTime::parse_from_rfc3339(ts) {
+        return Ok(dt
+            .with_timezone(&Utc)
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string());
+    }
+    // Fall back to SQLite's native `datetime('now')` shape (implicit UTC).
+    if let Ok(naive) = NaiveDateTime::parse_from_str(ts, "%Y-%m-%d %H:%M:%S") {
+        return Ok(naive
+            .and_utc()
+            .format("%Y-%m-%dT%H:%M:%SZ")
+            .to_string());
+    }
+    Err(anyhow!("timestamp not in known format: {}", ts))
+}
 
 // ── Types owned by this module ──
 
@@ -185,6 +219,30 @@ fn task_info_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskInfo> {
     })
 }
 
+/// Arguments for [`Store::create_proposed_task`] — the agent-driven create
+/// path. All five snapshot fields are required together because the schema's
+/// CHECK constraint enforces all-or-none snapshot presence (see
+/// `schema.sql` `tasks` table). `snapshot_created_at` must already be in
+/// canonical RFC3339 UTC form; callers get there via
+/// [`normalize_sqlite_timestamp`].
+#[derive(Debug, Clone)]
+pub struct CreateProposedTaskArgs {
+    /// Title line for the proposed task.
+    pub title: String,
+    /// Creator handle (agent name).
+    pub created_by: String,
+    /// Chat message the proposal was carved from.
+    pub source_message_id: String,
+    /// Snapshot of the source message's sender display name.
+    pub snapshot_sender_name: String,
+    /// Snapshot of the source message's sender type (`human`/`agent`/`system`).
+    pub snapshot_sender_type: String,
+    /// Snapshot of the source message's body at carve time.
+    pub snapshot_content: String,
+    /// Snapshot of the source message's created_at, RFC3339 UTC.
+    pub snapshot_created_at: String,
+}
+
 /// Returned by claim_tasks — store constructs these directly.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClaimResult {
@@ -236,8 +294,21 @@ impl Store {
             params![channel.id],
             |row| row.get(0),
         )?;
-        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
+
+        // Parent- and sub-channel events live in separate fanout vectors
+        // because `emit_system_stream_events` tags every event with the single
+        // `&Channel` it receives — mixing sub-channel events into the parent
+        // vector would misroute them to parent subscribers. Each vector is
+        // keyed to its owning channel and fanned out in its own call below.
+        // `sub_events` currently stays empty (no kickoff in direct-create
+        // today); the structure is scaffolded for Task 4 which adds kickoff.
+        let mut parent_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
             Vec::new();
+        let sub_events: Vec<(
+            String,
+            crate::store::messages::types::InsertedMessage,
+            String,
+        )> = Vec::new();
 
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
@@ -280,23 +351,7 @@ impl Store {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
 
-            // Emit task_event inside the same tx so the task row and its
-            // visibility-in-chat commit atomically.
-            let payload = TaskEventPayload {
-                action: TaskEventAction::Created,
-                task_number,
-                title: title.to_string(),
-                sub_channel_id: sub_channel_id.clone(),
-                actor: creator_name.to_string(),
-                prev_status: None,
-                next_status: TaskStatus::Todo,
-                claimed_by: None,
-            };
-            let content = payload.to_json_string()?;
-            let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
-            pending_events.push((inserted, content));
-
-            result.push(TaskInfo {
+            let task = TaskInfo {
                 id: task_id,
                 task_number,
                 title: title.to_string(),
@@ -305,20 +360,113 @@ impl Store {
                 created_by: creator_name.to_string(),
                 created_at,
                 updated_at,
-                sub_channel_id: Some(sub_channel_id),
+                sub_channel_id: Some(sub_channel_id.clone()),
                 sub_channel_name: Some(sub_channel_name),
                 source_message_id: None,
                 snapshot_sender_name: None,
                 snapshot_sender_type: None,
                 snapshot_content: None,
                 snapshot_created_at: None,
-            });
+            };
+
+            // Post the `task_card` host message in the parent channel. This
+            // replaces the old `task_event(Created)` emission — the card is
+            // the canonical parent-channel surface for a task and re-renders
+            // in place on every subsequent `task_update` SSE event.
+            parent_events.push(post_task_card_message_tx(&tx, &channel, &task)?);
+
+            result.push(task);
         }
         tx.commit()?;
         drop(conn); // release the mutex guard before the stream fanout
 
-        self.emit_system_stream_events(&channel, pending_events)?;
+        // Two separate fanouts — one per channel the events belong to. The
+        // `sub_events` group is keyed by `sub_channel_id`; today it's empty
+        // (no kickoff yet), but Task 4 fills it with kickoff rows when the
+        // `proposed → todo` transition mints a sub-channel.
+        self.emit_system_stream_events(&channel, parent_events)?;
+        for (sub_channel_id, inserted, content) in sub_events {
+            let sub_channel = self
+                .get_channel_by_id(&sub_channel_id)?
+                .ok_or_else(|| anyhow!("sub-channel vanished post-commit: {}", sub_channel_id))?;
+            self.emit_system_stream_events(&sub_channel, vec![(inserted, content)])?;
+        }
         Ok(result)
+    }
+
+    /// Agent-driven create path. Always inserts with `status='proposed'` and
+    /// no sub-channel — proposals are pre-acceptance and carry no
+    /// collaboration scope yet. A `task_card` host message is posted in the
+    /// parent channel so the proposal is visible in chat; no `task_event` is
+    /// emitted because there's no sub-channel, no claim, and no status
+    /// transition at this point.
+    ///
+    /// The snapshot bundle (`source_message_id` + 4 `snapshot_*` fields) is
+    /// required — the schema CHECK constraint enforces all-or-none, and
+    /// proposals always originate from a chat message. Callers must
+    /// pre-normalize `snapshot_created_at` to RFC3339 UTC using
+    /// [`normalize_sqlite_timestamp`].
+    pub fn create_proposed_task(
+        &self,
+        channel_name: &str,
+        args: CreateProposedTaskArgs,
+    ) -> Result<TaskInfo> {
+        let mut conn = self.conn.lock().unwrap();
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+        // Race-free allocation of task_number under the write lock — mirrors
+        // `create_tasks`. A concurrent proposal on the same parent blocks until
+        // this transaction commits or fails.
+        let task_number: i64 = tx.query_row(
+            "SELECT COALESCE(MAX(task_number), 0) + 1 FROM tasks WHERE channel_id = ?1",
+            params![channel.id],
+            |r| r.get(0),
+        )?;
+
+        let id = Uuid::new_v4().to_string();
+
+        // `status = 'proposed'`, `sub_channel_id IS NULL`, snapshot fully
+        // populated. The schema CHECK on snapshot all-or-none rejects
+        // partial-snapshot inserts — surfacing a SQLite error back to the
+        // caller is the right move (invalid input, not silent fallback).
+        tx.execute(
+            "INSERT INTO tasks \
+               (id, channel_id, task_number, title, status, owner, \
+                created_by, sub_channel_id, \
+                source_message_id, snapshot_sender_name, snapshot_sender_type, \
+                snapshot_content, snapshot_created_at) \
+             VALUES (?1, ?2, ?3, ?4, 'proposed', NULL, ?5, NULL, \
+                     ?6, ?7, ?8, ?9, ?10)",
+            params![
+                id,
+                channel.id,
+                task_number,
+                args.title,
+                args.created_by,
+                args.source_message_id,
+                args.snapshot_sender_name,
+                args.snapshot_sender_type,
+                args.snapshot_content,
+                args.snapshot_created_at,
+            ],
+        )?;
+
+        let task = Self::get_task_info_tx(&tx, &channel.id, task_number)?
+            .ok_or_else(|| anyhow!("freshly-inserted proposed task disappeared"))?;
+
+        // The `task_card` host message is the ONLY chat-visible signal for a
+        // proposal — there's no sub-channel to post a kickoff in yet, and no
+        // `task_event` fires for pre-acceptance transitions per spec.
+        let pending = vec![post_task_card_message_tx(&tx, &channel, &task)?];
+
+        tx.commit()?;
+        drop(conn);
+
+        self.emit_system_stream_events(&channel, pending)?;
+        // Note: `task_update` SSE emission is wired up in Task 7.
+        Ok(task)
     }
 
     /// Fetch a single task by `(channel_name, task_number)`. Returns `Ok(None)`
@@ -339,6 +487,34 @@ impl Store {
              WHERE t.channel_id = ?1 AND t.task_number = ?2 \
              LIMIT 1",
             params![channel.id, task_number],
+            task_info_from_row,
+        ) {
+            Ok(row) => Some(row),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(other) => return Err(other.into()),
+        };
+        Ok(row)
+    }
+
+    /// Transaction-scoped variant of `get_task_info`. Used by create paths
+    /// that just inserted a task row and need the canonical 15-column
+    /// `TaskInfo` (with `sub_channel_name` joined) without releasing the
+    /// write lock. Returns `Ok(None)` when the row isn't visible in the tx.
+    pub(crate) fn get_task_info_tx(
+        tx: &Transaction<'_>,
+        channel_id: &str,
+        task_number: i64,
+    ) -> Result<Option<TaskInfo>> {
+        let row: Option<TaskInfo> = match tx.query_row(
+            "SELECT t.id, t.task_number, t.title, t.status, t.owner, t.created_by, \
+                    t.created_at, t.updated_at, t.sub_channel_id, c.name AS sub_channel_name, \
+                    t.source_message_id, t.snapshot_sender_name, t.snapshot_sender_type, \
+                    t.snapshot_content, t.snapshot_created_at \
+             FROM tasks t \
+             LEFT JOIN channels c ON c.id = t.sub_channel_id \
+             WHERE t.channel_id = ?1 AND t.task_number = ?2 \
+             LIMIT 1",
+            params![channel_id, task_number],
             task_info_from_row,
         ) {
             Ok(row) => Some(row),
@@ -667,6 +843,38 @@ mod tests {
         assert!(!Done.can_transition_to(InProgress)); // terminal
         assert!(Todo.can_transition_to(InProgress));
         assert!(!InProgress.can_transition_to(Todo)); // no reverse in v1
+    }
+
+    #[test]
+    fn normalize_sqlite_timestamp_handles_sqlite_native() {
+        // `datetime('now')` returns this exact shape — the default that
+        // every task row's created_at/updated_at uses today.
+        assert_eq!(
+            normalize_sqlite_timestamp("2026-04-25 10:30:45").unwrap(),
+            "2026-04-25T10:30:45Z"
+        );
+    }
+
+    #[test]
+    fn normalize_sqlite_timestamp_handles_rfc3339() {
+        // Callers may pass already-canonical RFC3339 (passthrough) or
+        // offset-bearing forms (normalized to `Z`).
+        assert_eq!(
+            normalize_sqlite_timestamp("2026-04-25T10:30:45Z").unwrap(),
+            "2026-04-25T10:30:45Z"
+        );
+        assert_eq!(
+            normalize_sqlite_timestamp("2026-04-25T10:30:45+00:00").unwrap(),
+            "2026-04-25T10:30:45Z"
+        );
+    }
+
+    #[test]
+    fn normalize_sqlite_timestamp_rejects_garbage() {
+        // Unknown-format inputs surface as errors rather than silently
+        // defaulting — snapshot timestamps are cross-surface identifiers,
+        // a wrong value would quietly corrupt history.
+        assert!(normalize_sqlite_timestamp("not a date").is_err());
     }
 }
 

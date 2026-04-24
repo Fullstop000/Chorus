@@ -146,7 +146,6 @@ pub struct TaskCardWirePayload {
 /// `pending_events: Vec<(InsertedMessage, String)>` queue and fans out via
 /// [`Store::emit_system_stream_events`] AFTER `tx.commit()` to avoid holding
 /// the connection mutex across the stream send.
-#[allow(dead_code)] // consumed by Task 3 (unified create paths)
 pub(crate) fn post_task_card_message_tx(
     tx: &Transaction<'_>,
     parent_channel: &Channel,

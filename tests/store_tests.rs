@@ -1717,7 +1717,10 @@ fn task_event_payload_serializes_none_fields_as_json_null() {
 }
 
 #[test]
-fn create_tasks_emits_task_event_to_parent_channel() {
+fn create_tasks_posts_task_card_host_message_to_parent_channel() {
+    // Task 3: the unified create path posts a `task_card` host message (not
+    // a `task_event(Created)`) in the parent channel. The card carries the
+    // full TaskInfo shape so the UI renders without a separate fetch.
     let (store, _dir) = make_store();
     let parent_id = store
         .create_channel(
@@ -1740,6 +1743,7 @@ fn create_tasks_emits_task_event_to_parent_channel() {
         .create_tasks("eng", "bob", &["wire up the bridge"])
         .unwrap();
     assert_eq!(result.len(), 1);
+    let task = &result[0];
 
     let event_rows: Vec<(String, String)> = store
         .conn_for_test()
@@ -1750,16 +1754,197 @@ fn create_tasks_emits_task_event_to_parent_channel() {
         .filter_map(|r| r.ok())
         .collect();
 
-    assert_eq!(event_rows.len(), 1);
+    assert_eq!(
+        event_rows.len(),
+        1,
+        "direct-create emits exactly one parent-channel system message (task_card)"
+    );
     assert_eq!(event_rows[0].0, "system");
 
     let parsed: serde_json::Value = serde_json::from_str(&event_rows[0].1).unwrap();
-    assert_eq!(parsed["kind"], "task_event");
-    assert_eq!(parsed["action"], "created");
-    assert_eq!(parsed["actor"], "bob");
+    assert_eq!(
+        parsed["kind"], "task_card",
+        "parent-channel host message must be task_card, not task_event"
+    );
+    assert_eq!(parsed["taskId"], task.id);
     assert_eq!(parsed["taskNumber"], 1);
-    assert_eq!(parsed["nextStatus"], "todo");
     assert_eq!(parsed["title"], "wire up the bridge");
+    assert_eq!(parsed["status"], "todo");
+    assert_eq!(parsed["createdBy"], "bob");
+    assert!(
+        parsed["owner"].is_null(),
+        "direct-create starts unclaimed: {:?}",
+        parsed["owner"]
+    );
+    assert!(
+        parsed["sourceMessageId"].is_null(),
+        "direct-create has no source message: {:?}",
+        parsed["sourceMessageId"]
+    );
+}
+
+#[test]
+fn create_task_direct_mints_sub_channel_and_has_null_snapshot_fields() {
+    // Task 3: human direct-create produces a task with status=Todo, a fully
+    // minted sub-channel, and all snapshot fields null (no source message).
+    let (store, _dir) = make_store();
+    store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    let result = store.create_tasks("eng", "alice", &["ship it"]).unwrap();
+    assert_eq!(result.len(), 1);
+    let task = &result[0];
+
+    assert_eq!(task.status, TaskStatus::Todo);
+    assert!(task.sub_channel_id.is_some(), "direct-create mints sub-channel");
+    assert_eq!(task.sub_channel_name.as_deref(), Some("eng__task-1"));
+    assert!(task.owner.is_none(), "direct-create starts unclaimed");
+    assert!(task.source_message_id.is_none());
+    assert!(task.snapshot_sender_name.is_none());
+    assert!(task.snapshot_sender_type.is_none());
+    assert!(task.snapshot_content.is_none());
+    assert!(task.snapshot_created_at.is_none());
+}
+
+#[test]
+fn create_proposed_task_inserts_snapshot_and_posts_task_card() {
+    // Task 3: agent-driven create. Task row is `status='proposed'` with no
+    // sub-channel, all snapshot fields populated. The parent channel receives
+    // exactly one `task_card` host message — no `task_event` fires pre-
+    // acceptance.
+    use chorus::store::tasks::CreateProposedTaskArgs;
+
+    let (store, _dir) = make_store();
+    let parent_id = store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .join_channel("eng", "alice", SenderType::Human)
+        .unwrap();
+
+    // Seed a real source message so `source_message_id` points at a real row
+    // (FK is ON DELETE SET NULL; a garbage id still validates the snapshot
+    // CHECK, but pointing at a real message is more realistic).
+    let source_msg_id = store
+        .create_message(CreateMessage {
+            channel_name: "eng",
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "we should fix the login bug",
+            attachment_ids: &[],
+            run_id: None,
+            suppress_event: false,
+        })
+        .unwrap();
+
+    let task = store
+        .create_proposed_task(
+            "eng",
+            CreateProposedTaskArgs {
+                title: "fix login".into(),
+                created_by: "agent-1".into(),
+                source_message_id: source_msg_id.clone(),
+                snapshot_sender_name: "alice".into(),
+                snapshot_sender_type: "human".into(),
+                snapshot_content: "we should fix the login bug".into(),
+                snapshot_created_at: "2026-04-24T12:00:00Z".into(),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(task.status, TaskStatus::Proposed);
+    assert!(task.sub_channel_id.is_none(), "proposals have no sub-channel");
+    assert!(task.sub_channel_name.is_none());
+    assert!(task.owner.is_none());
+    assert_eq!(task.created_by, "agent-1");
+    assert_eq!(task.source_message_id.as_deref(), Some(source_msg_id.as_str()));
+    assert_eq!(task.snapshot_sender_name.as_deref(), Some("alice"));
+    assert_eq!(task.snapshot_sender_type.as_deref(), Some("human"));
+    assert_eq!(
+        task.snapshot_content.as_deref(),
+        Some("we should fix the login bug")
+    );
+    assert_eq!(
+        task.snapshot_created_at.as_deref(),
+        Some("2026-04-24T12:00:00Z")
+    );
+
+    // Parent channel: one human message (seed) + one system task_card.
+    let rows: Vec<(String, String)> = store
+        .conn_for_test()
+        .prepare(
+            "SELECT sender_type, content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![parent_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+
+    assert_eq!(
+        rows.len(),
+        1,
+        "create_proposed_task posts exactly one system message (task_card)"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&rows[0].1).unwrap();
+    assert_eq!(parsed["kind"], "task_card");
+    assert_eq!(parsed["taskId"], task.id);
+    assert_eq!(parsed["status"], "proposed");
+    assert_eq!(parsed["createdBy"], "agent-1");
+    assert_eq!(parsed["sourceMessageId"], source_msg_id);
+    assert_eq!(parsed["snapshotSenderName"], "alice");
+    assert_eq!(parsed["snapshotSenderType"], "human");
+    assert_eq!(parsed["snapshotContent"], "we should fix the login bug");
+    assert_eq!(parsed["snapshotCreatedAt"], "2026-04-24T12:00:00Z");
+}
+
+#[test]
+fn create_proposed_task_rejects_partial_snapshot_via_check_constraint() {
+    // Schema CHECK: snapshot columns are all-or-none. A direct INSERT with
+    // `source_message_id` set but one snapshot_* field NULL must fail —
+    // this is the DB-level invariant that guards every create path.
+    let (store, _dir) = make_store();
+    let channel_id = store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+
+    let conn = store.conn_for_test();
+    let err = conn
+        .execute(
+            "INSERT INTO tasks \
+               (id, channel_id, task_number, title, status, created_by, \
+                source_message_id, snapshot_sender_name, snapshot_sender_type, \
+                snapshot_content, snapshot_created_at) \
+             VALUES ('t-1', ?1, 1, 'partial', 'proposed', 'agent-1', \
+                     'msg-1', NULL, 'human', 'oops', '2026-04-24T12:00:00Z')",
+            rusqlite::params![channel_id],
+        )
+        .unwrap_err();
+
+    let err_str = err.to_string();
+    assert!(
+        err_str.to_lowercase().contains("check"),
+        "expected CHECK constraint violation, got: {err_str}"
+    );
 }
 
 #[test]
