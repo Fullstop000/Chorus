@@ -179,6 +179,11 @@ pub(super) fn spawn_event_forwarder(
         let mut last_tool_raw_name: HashMap<String, String> = HashMap::new();
         // Per-run tracking: did the agent invoke send_message at least once?
         let mut run_had_send_message: HashMap<uuid::Uuid, bool> = HashMap::new();
+        // Per-run snapshot of the channel that triggered this run.
+        // `trace_store.run_channel_id` is agent-scoped and can drift under
+        // concurrent sessions or mid-run notifications, so we capture it
+        // the first time we see an event for a given `run_id`.
+        let mut run_channel_id: HashMap<uuid::Uuid, String> = HashMap::new();
 
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -225,6 +230,14 @@ pub(super) fn spawn_event_forwarder(
                     run_id,
                     ref item,
                 } => {
+                    // Snapshot the triggering channel the first time we see
+                    // this run id so we don't race with `end_run` or concurrent
+                    // sessions clearing the agent-scoped channel binding.
+                    if !run_channel_id.contains_key(&run_id) {
+                        if let Some(ch) = trace_store.run_channel_id(key) {
+                            run_channel_id.insert(run_id, ch);
+                        }
+                    }
                     match item {
                         AgentEventItem::Thinking { text } => {
                             pending_thinking
@@ -385,12 +398,12 @@ pub(super) fn spawn_event_forwarder(
                     // Post-run empty-response detection: if the run finished
                     // naturally but never invoked send_message, warn the channel
                     // so the user isn't left staring at silence.
-                    let channel_id = trace_store.run_channel_id(key);
+                    let channel_id = run_channel_id.remove(&run_id);
                     let had_send_message = run_had_send_message.remove(&run_id).unwrap_or(false);
                     if result.finish_reason == FinishReason::Natural && !had_send_message {
                         if let Some(channel_id) = channel_id {
                             let warning = format!(
-                                "⚠️ @{} completed a run without replying. Common causes: not authed, auth expired, runtime error. Check agent logs.",
+                                "⚠️ @{} completed a run without replying. Common causes: not authenticated, authentication expired, or a runtime error. Check agent logs for details.",
                                 key
                             );
                             if let Err(e) = store.create_system_message(&channel_id, &warning) {
@@ -445,6 +458,7 @@ pub(super) fn spawn_event_forwarder(
                     pending_text.remove(session_id);
                     last_tool_raw_name.remove(session_id);
                     run_had_send_message.remove(&run_id);
+                    run_channel_id.remove(&run_id);
                     let msg = format!("{error:?}");
                     error!(agent = %key, error = %msg, "run failed");
                     trace::emit_active_event(
@@ -466,7 +480,7 @@ pub(super) fn spawn_event_forwarder(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::drivers::{FinishReason, RunResult};
+    use crate::agent::drivers::RunResult;
     use tokio::sync::mpsc;
 
     /// Collect every TraceEvent emitted on `rx` until the sender is dropped.
