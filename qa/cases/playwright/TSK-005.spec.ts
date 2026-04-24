@@ -5,25 +5,35 @@ import {
   createUserChannelViaUi,
   clickSidebarChannel,
 } from './helpers/ui'
-import { createAgentApi } from './helpers/api'
+import {
+  createAgentApi,
+  getWhoami,
+  historyForUser,
+  pollUntil,
+  sendAsUser,
+} from './helpers/api'
 
 /**
  * Catalog: `qa/cases/tasks.md` — TSK-005 Task Proposal Accept Flow
  *
  * Smoke for the full proposal -> accept -> sub-channel round-trip:
- *   - an agent proposes a task via the internal bridge endpoint
+ *   - a human seeds the originating ask in the parent channel
+ *   - an agent proposes a task against that message via the internal
+ *     bridge endpoint (passing `sourceMessageId` — v2 required field)
  *   - the parent channel renders an interactive proposal card (pending)
  *   - clicking `create` flips the card to `accepted` and surfaces a
  *     deep-link to the new task sub-channel
  *   - clicking the deep-link opens the sub-channel and the kickoff
- *     system message is visible
+ *     system message carries the v2 context snapshot (title + author
+ *     attribution + verbatim blockquote) in that order
  *
  * Proposal creation is driven by a direct POST to the same
  * `/internal/agent/:agent/channels/:channel/task-proposals` endpoint the
  * shared MCP bridge calls — this is the same internal-route pattern the
  * existing `sendAsUser` helper uses. Heavy verification lives in the Rust
  * store + HTTP handler e2e tests and the frontend unit tests; this spec
- * is intentionally tight and only covers "renders + clicks through".
+ * is intentionally tight and only covers "renders + clicks through" plus
+ * the v2 kickoff ordering contract.
  */
 test.describe('TSK-005', () => {
   test('Task Proposal Accept Flow @case TSK-005', async ({ page, request }) => {
@@ -31,6 +41,7 @@ test.describe('TSK-005', () => {
     const slug = `qa-proposals-${ts}`
     const agentName = `proposer-${ts}`
     const title = `investigate login 500 ${ts}`
+    const sourceContent = 'the login form breaks on Safari mobile'
 
     // Response interceptor — fails the test on any 4xx/5xx to the proposal
     // HTTP surface during the flow (the catalog-level contract).
@@ -61,21 +72,40 @@ test.describe('TSK-005', () => {
       })
     })
 
-    await test.step('Step 3: Agent proposes a task via the internal endpoint', async () => {
+    // v2 requires `sourceMessageId`: the proposal snapshots the originating
+    // human message so the per-task session has it as immutable kickoff
+    // context. Seed the source message as the logged-in human, then fish
+    // its id out of channel history.
+    const { username } = await getWhoami(request)
+    let sourceMessageId = ''
+
+    await test.step('Step 3: Human seeds the source message in the parent channel', async () => {
+      await sendAsUser(request, username, `#${slug}`, sourceContent)
+      sourceMessageId = await pollUntil(async () => {
+        const msgs = await historyForUser(request, username, `#${slug}`, 40)
+        const match = msgs.find(
+          (m) => m.senderName === username && m.content === sourceContent
+        )
+        return match?.id
+      }, 15_000)
+      expect(sourceMessageId).toBeTruthy()
+    })
+
+    await test.step('Step 4: Agent proposes a task against that message', async () => {
       // Same internal-route pattern the shared MCP bridge uses (see
       // `src/bridge/backend.rs` -> `POST /internal/agent/:agent/channels/:channel/task-proposals`).
       // The Playwright `request` fixture already shares the per-worker
       // baseURL, so no auth or localhost binding gymnastics are required.
       const res = await request.post(
         `/internal/agent/${encodeURIComponent(agentName)}/channels/${encodeURIComponent(slug)}/task-proposals`,
-        { data: { title } }
+        { data: { title, sourceMessageId } }
       )
       expect(res.ok(), await res.text()).toBeTruthy()
       const body = (await res.json()) as { id: string; status: string }
       expect(body.status).toBe('pending')
     })
 
-    await test.step('Step 4: Reload — proposal card renders pending with create button', async () => {
+    await test.step('Step 5: Reload — proposal card renders pending with create button', async () => {
       // Reload so the SSE/ws stream is guaranteed to have flushed the
       // system message carrying the proposal snapshot.
       await reloadApp(page)
@@ -90,7 +120,7 @@ test.describe('TSK-005', () => {
       card.locator('[data-testid="task-proposal-accept-btn"]')
     ).toBeVisible()
 
-    await test.step('Step 5: Click create — card flips to accepted with task deep-link', async () => {
+    await test.step('Step 6: Click create — card flips to accepted with task deep-link', async () => {
       await card.locator('[data-testid="task-proposal-accept-btn"]').click()
       // The accept mutation posts a second `kind = "task_proposal"` snapshot
       // with `status = "accepted"` into the parent channel. The reducer
@@ -101,13 +131,33 @@ test.describe('TSK-005', () => {
       await expect(card).toContainText(`${slug}__task-`)
     })
 
-    await test.step('Step 6: Click the deep-link — sub-channel loads with kickoff message', async () => {
+    await test.step('Step 7: Deep-link opens sub-channel; kickoff carries ordered snapshot sections', async () => {
       await card.locator('.task-proposal-link').click()
-      // Acceptance posts a kickoff system message in the new sub-channel
-      // ("Task #N opened: <title>. <agent>, you proposed ..."). Assert the
-      // sub-channel view renders and the kickoff text appears.
-      await expect(page.getByText(/Task #\d+ opened:/).first()).toBeVisible()
-      await expect(page.getByText(title).first()).toBeVisible()
+
+      // The v2 kickoff is a single system message composed of three ordered
+      // sections: title line, author+parent attribution, blockquoted
+      // verbatim source content. All three must appear, and in that order.
+      // Locate by the first-section marker, then extract the full innerText
+      // once and assert substring order — multi-line system-message content
+      // collapses whitespace in `toContainText`, which would hide ordering
+      // bugs.
+      const kickoff = page.locator('.system-message-divider__label').filter({
+        hasText: `Task opened: ${title}`,
+      }).first()
+      await expect(kickoff).toBeVisible()
+
+      const text = (await kickoff.innerText()).replace(/\s+/g, ' ')
+      const expectedTitle = `Task opened: ${title}`
+      const expectedAttribution = `From @${username}'s message in #${slug}:`
+      const expectedQuote = `> ${sourceContent}`
+
+      const titleIdx = text.indexOf(expectedTitle)
+      const attrIdx = text.indexOf(expectedAttribution)
+      const quoteIdx = text.indexOf(expectedQuote)
+
+      expect(titleIdx, `missing "${expectedTitle}" in kickoff`).toBeGreaterThanOrEqual(0)
+      expect(attrIdx, `missing "${expectedAttribution}" in kickoff`).toBeGreaterThan(titleIdx)
+      expect(quoteIdx, `missing blockquoted source in kickoff`).toBeGreaterThan(attrIdx)
     })
 
     expect(failed, 'no 4xx/5xx responses on /task-proposals during the flow').toEqual([])

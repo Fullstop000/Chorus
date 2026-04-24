@@ -138,6 +138,75 @@ Acceptance:
 The status flip and task creation share one transaction; a failure on any
 step rolls the whole sequence back.
 
+### Context snapshot
+
+**Purpose.** The per-task ACP session is born with a fresh context window
+and cannot see the parent channel. Its only grounded context is the
+kickoff message posted in the sub-channel. Storing a copy of the source
+message at propose-time is what prevents a post-approval edit or delete
+from silently rewriting — or erasing — the task's context.
+
+**Captured fields (all 5, atomically).** The propose-time INSERT on
+`task_proposals` writes five snapshot columns inside the same transaction
+as the proposal row itself:
+
+- `snapshot_sender_name` — frozen `messages.sender_name` at capture time
+- `snapshot_sender_type` — frozen `messages.sender_type`
+  (`'human' | 'agent' | 'system'`)
+- `snapshot_content` — frozen message body
+- `snapshot_created_at` — frozen `messages.created_at` (original
+  authorship time)
+- `snapshotted_at` — when the server captured the copy (audit)
+
+A DB `CHECK` enforces all-or-nothing: either all five are non-NULL (v2+
+rows) or all five are NULL (legacy v1 rows). Partial snapshots are
+unrepresentable.
+
+**Pointer vs. truth.** `source_message_id` is an independently-nullable
+navigation pointer — it backs the "jump to source" UX. It lives *outside*
+the CHECK, so `ON DELETE SET NULL` on the `messages` row can null the
+pointer without disturbing the five snapshot fields. The navigation link
+may vanish; the frozen truth cannot.
+
+**Immutability.** Edits and deletes to the source message do not mutate
+the snapshot. Once captured, the row's snapshot fields are never
+rewritten. The pointer can null; the truth cannot change.
+
+**Wire-shape boundary.** The HTTP `ProposalView` and the chat-message
+`task_proposal` payload expose four snapshot fields on the wire:
+
+- `sourceMessageId`
+- `snapshotSenderName`
+- `snapshotExcerpt` (derived from `snapshot_content` via `truncate_excerpt`)
+- `snapshotCreatedAt`
+
+The two DB-only fields are intentionally off the wire for v2:
+`snapshotted_at` is audit metadata, and `snapshot_sender_type` exists for
+identity completeness under source-delete but has no UI consumer that
+needs to discriminate yet.
+
+**Legacy v1 rows.** Proposals created before the v2 migration have NULL
+snapshot fields (all five, by the CHECK). If such a row is accepted
+post-migration — an edge case where a pending v1 proposal lingered across
+deploy — the kickoff falls back to the v1 title-only format
+(`"Task opened: <title>"`). New proposals created through v2 always carry
+snapshot data by construction.
+
+**Kickoff format (v2).** The sub-channel kickoff is a single system
+message composed of two named sections:
+
+```
+Task opened: <title>
+
+From @<snapshot_sender_name>'s message in #<parent_channel_name>:
+> <snapshot_content line 1>
+> <snapshot_content line 2>
+```
+
+Multi-line content is blockquoted line-by-line. If the source already
+contains `> ` at line start, the result is nested blockquotes
+(`> > quoted`) — cosmetic, not escaped (by design).
+
 ### Sender Type Resolution (Security Boundary)
 
 **Never allow clients to forge `sender_type='system'` messages.**
