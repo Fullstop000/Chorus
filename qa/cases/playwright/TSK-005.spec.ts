@@ -39,7 +39,11 @@ test.describe('TSK-005', () => {
   test('Task Proposal Accept Flow @case TSK-005', async ({ page, request }) => {
     const ts = Date.now()
     const slug = `qa-proposals-${ts}`
-    const agentName = `proposer-${ts}`
+    // The server may auto-suffix the agent name on create (collision or
+    // sanitization). Capture the actual stored name from the response
+    // rather than trusting the requested value — the membership invite
+    // and propose path both use the server-canonical name.
+    let agentName = `proposer-${ts}`
     const title = `investigate login 500 ${ts}`
     const sourceContent = 'the login form breaks on Safari mobile'
 
@@ -64,12 +68,38 @@ test.describe('TSK-005', () => {
       // The agent only needs to exist as a row — it never actually runs in
       // this smoke. Model/runtime are arbitrary; the proposal endpoint does
       // not spawn the agent.
-      await createAgentApi(request, {
+      const created = await createAgentApi(request, {
         name: agentName,
         runtime: 'codex',
         model: 'gpt-5.4',
         description: 'TSK-005 proposer',
       })
+      agentName = created.name
+    })
+
+    await test.step('Step 2b: Join the agent to the channel', async () => {
+      // v2 enforces channel membership on `internal_agent_propose` — an
+      // agent that isn't a member of the target channel is rejected with
+      // 403 MESSAGE_NOT_A_MEMBER, matching the send-path precondition.
+      // This smoke seeds the membership row directly against the public
+      // members endpoint rather than driving the UI, because the catalog-
+      // level assertion is the proposal round-trip, not the invite flow.
+      // The invite endpoint accepts `memberType: "agent"`; the sibling
+      // `inviteChannelMemberApi` helper only passes `memberName` (human-
+      // only), so we post here directly.
+      const channelsList = await request.get('/api/channels')
+      expect(channelsList.ok(), await channelsList.text()).toBeTruthy()
+      const channels = (await channelsList.json()) as Array<{
+        id: string
+        name: string
+      }>
+      const chRow = channels.find((c) => c.name === slug)
+      expect(chRow, `channel ${slug} not found`).toBeTruthy()
+      const joinRes = await request.post(
+        `/api/channels/${encodeURIComponent(chRow!.id)}/members`,
+        { data: { memberName: agentName, memberType: 'agent' } }
+      )
+      expect(joinRes.ok(), await joinRes.text()).toBeTruthy()
     })
 
     // v2 requires `sourceMessageId`: the proposal snapshots the originating
