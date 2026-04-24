@@ -206,7 +206,7 @@ fn sender_type_for_actor(
         .unwrap_or(SenderType::Human))
 }
 
-fn require_channel_membership(
+pub(crate) fn require_channel_membership(
     state: &AppState,
     actor_id: &str,
     channel: &Channel,

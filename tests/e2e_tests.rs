@@ -784,6 +784,12 @@ async fn internal_agent_create_proposal_inserts_row_and_card() {
             env_vars: &[],
         })
         .unwrap();
+    // The internal propose endpoint requires the agent to be a member of
+    // the target channel (same precondition as the send path), so enroll
+    // claude before calling it.
+    store
+        .join_channel("eng", "claude", SenderType::Agent)
+        .unwrap();
     // v2: the internal endpoint now requires sourceMessageId (the user
     // request the agent is proposing against), so seed one.
     let msg_id = seed_source_message(&store, "eng", "alice", "please fix login");
@@ -830,6 +836,11 @@ async fn internal_propose_with_bad_source_message_returns_400_with_typed_code() 
             env_vars: &[],
         })
         .unwrap();
+    // Join so the membership check passes and we exercise the downstream
+    // source-message-id validation this test is pinning.
+    store
+        .join_channel("eng", "claude", SenderType::Agent)
+        .unwrap();
 
     let resp = client
         .post(format!(
@@ -845,6 +856,54 @@ async fn internal_propose_with_bad_source_message_returns_400_with_typed_code() 
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["code"], "TASK_PROPOSAL_SOURCE_MESSAGE_NOT_FOUND");
+}
+
+/// The internal propose endpoint mirrors every other agent-authored write: it
+/// MUST reject a request whose path agent is not a member of the target
+/// channel. Without this, an agent could mint proposals (and their kickoff
+/// side-effects on accept) in any channel merely by naming it, bypassing the
+/// core invariant that agents only act inside channels they belong to. The
+/// response shares the `MESSAGE_NOT_A_MEMBER` code + 403 status used on the
+/// message-send surface so clients can handle both the same way.
+#[tokio::test]
+async fn internal_propose_rejects_non_member_agent() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    // Deliberately do NOT join claude to #eng. alice joins + seeds the
+    // source message so the source-message-id step would succeed — this
+    // isolates the membership precondition as the only reason the request
+    // fails.
+    let msg_id = seed_source_message(&store, "eng", "alice", "please fix login");
+
+    let resp = client
+        .post(format!(
+            "{url}/internal/agent/claude/channels/eng/task-proposals"
+        ))
+        .json(&serde_json::json!({
+            "title": "investigate login 500",
+            "sourceMessageId": msg_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["code"], "MESSAGE_NOT_A_MEMBER");
 }
 
 /// Fixture for kickoff-body tests. Seeds an `eng` channel + `claude` agent,

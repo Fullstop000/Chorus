@@ -879,6 +879,11 @@ async fn bridge_propose_task_creates_row_and_returns_json() {
             env_vars: &[],
         })
         .unwrap();
+    // Enroll claude in the target channel — propose now requires the
+    // proposing agent to be a member.
+    store
+        .join_channel("eng", "claude", SenderType::Agent)
+        .unwrap();
 
     // v2: create_task_proposal snapshots a source message, so seed one.
     store.create_human("alice").unwrap();
@@ -945,6 +950,11 @@ async fn bridge_propose_task_mcp_call_creates_proposal() {
             reasoning_effort: None,
             env_vars: &[],
         })
+        .unwrap();
+    // Enroll claude in the target channel — propose now requires the
+    // proposing agent to be a member.
+    store
+        .join_channel("eng", "claude", SenderType::Agent)
         .unwrap();
     store.create_human("alice").unwrap();
     store

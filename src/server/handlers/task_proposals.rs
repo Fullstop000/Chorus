@@ -212,6 +212,18 @@ pub async fn internal_agent_propose(
         .get_channel_by_name(&channel_name)
         .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "store error: {e}"))?
         .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "channel not found: {channel_name}"))?;
+    // Mirror the membership precondition every other agent-authored write
+    // enforces. Without this, an agent could mint a proposal (and its
+    // kickoff side-effects on accept) in any channel merely by naming it —
+    // bypassing the core invariant that agents only act inside channels
+    // they're members of. Same error code as the messaging path so clients
+    // can handle both surfaces uniformly.
+    crate::server::handlers::messages::require_channel_membership(
+        &state,
+        &agent,
+        &channel,
+        &channel_name,
+    )?;
     let proposal = state
         .store
         .create_task_proposal(CreateTaskProposalInput {
