@@ -207,10 +207,7 @@ impl Store {
     /// Edits or deletes to the source message after propose-time do not
     /// mutate the agreed context. The DB CHECK constraint enforces that all
     /// five snapshot fields are populated together.
-    pub fn create_task_proposal(
-        &self,
-        input: CreateTaskProposalInput<'_>,
-    ) -> Result<TaskProposal> {
+    pub fn create_task_proposal(&self, input: CreateTaskProposalInput<'_>) -> Result<TaskProposal> {
         use rusqlite::TransactionBehavior;
 
         let trimmed = input.title.trim();
@@ -552,5 +549,72 @@ impl Store {
             sub_channel_name,
             kickoff_message_id,
         })
+    }
+}
+
+#[cfg(test)]
+mod truncation_tests {
+    use super::*;
+
+    /// Under the limit: the helper must not append `'…'` — the card shows the
+    /// verbatim content. Guards against an off-by-one that would
+    /// unconditionally append the ellipsis.
+    #[test]
+    fn under_limit_unchanged() {
+        let input = "hello world";
+        let out = truncate_excerpt_for_card(input);
+        assert_eq!(out, "hello world");
+        assert!(!out.ends_with('…'));
+    }
+
+    /// Exactly at the limit (240 code points): still unchanged, still no
+    /// ellipsis. This pins the boundary — the helper appends only when input
+    /// has a 241st code point.
+    #[test]
+    fn exactly_at_limit_unchanged() {
+        let input: String = "a".repeat(SNAPSHOT_EXCERPT_LIMIT);
+        assert_eq!(input.chars().count(), SNAPSHOT_EXCERPT_LIMIT);
+        let out = truncate_excerpt_for_card(&input);
+        assert_eq!(out, input);
+        assert!(!out.ends_with('…'));
+    }
+
+    /// Over the limit by one multi-byte char: the helper must slice on a
+    /// Unicode scalar boundary (NOT a byte boundary) and append `'…'`. This
+    /// is the case that would panic or corrupt UTF-8 if the implementation
+    /// used `&s[..240]` on multi-byte input.
+    #[test]
+    fn over_limit_multibyte_trailing_char() {
+        let mut input: String = "a".repeat(SNAPSHOT_EXCERPT_LIMIT);
+        input.push('🦀');
+        assert_eq!(input.chars().count(), SNAPSHOT_EXCERPT_LIMIT + 1);
+
+        let out = truncate_excerpt_for_card(&input);
+
+        // Valid UTF-8 by construction (String), but also assert the crab is
+        // NOT present — the 241st code point must have been dropped.
+        assert!(!out.contains('🦀'));
+        assert!(out.ends_with('…'));
+        // Head = first 240 scalar values; plus the appended ellipsis = 241.
+        assert_eq!(out.chars().count(), SNAPSHOT_EXCERPT_LIMIT + 1);
+        let head: String = "a".repeat(SNAPSHOT_EXCERPT_LIMIT);
+        assert_eq!(out, format!("{head}…"));
+    }
+
+    /// All-multibyte input over the limit: ensures the helper counts code
+    /// points, not bytes. 241 Japanese characters ≈ 723 bytes; a byte-indexed
+    /// implementation would slice in the middle of a scalar and either panic
+    /// or produce invalid UTF-8.
+    #[test]
+    fn over_limit_all_multibyte() {
+        let input: String = "あ".repeat(SNAPSHOT_EXCERPT_LIMIT + 1);
+        assert_eq!(input.chars().count(), SNAPSHOT_EXCERPT_LIMIT + 1);
+
+        let out = truncate_excerpt_for_card(&input);
+
+        assert!(out.ends_with('…'));
+        assert_eq!(out.chars().count(), SNAPSHOT_EXCERPT_LIMIT + 1);
+        let head: String = "あ".repeat(SNAPSHOT_EXCERPT_LIMIT);
+        assert_eq!(out, format!("{head}…"));
     }
 }

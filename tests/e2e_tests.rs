@@ -13,12 +13,7 @@ use harness::build_router;
 /// `create_task_proposal` has a concrete `source_message_id` to snapshot.
 /// Idempotent on human-create / join so callers can reuse one sender across
 /// several calls without extra bookkeeping.
-fn seed_source_message(
-    store: &Store,
-    channel_name: &str,
-    sender: &str,
-    content: &str,
-) -> String {
+fn seed_source_message(store: &Store, channel_name: &str, sender: &str, content: &str) -> String {
     let _ = store.create_human(sender);
     let _ = store.join_channel(channel_name, sender, SenderType::Human);
     store
