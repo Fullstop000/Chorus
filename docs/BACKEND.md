@@ -126,9 +126,10 @@ Acceptance:
   task + sub-channel + creator membership.
 - Auto-claims the task to the proposer agent.
 - Enrolls the accepter in the sub-channel.
-- Posts a kickoff system message in the new sub-channel ("Task #N opened:
-  …") — the existing inbox wake-on-new-unread pipeline triggers the agent's
-  next run there.
+- Posts a kickoff system message in the new sub-channel ("Task opened: …"
+  — v2 also embeds the source-message snapshot as a blockquote; see
+  "Context snapshot" below). The existing inbox wake-on-new-unread pipeline
+  triggers the agent's next run there.
 - Posts a second `kind = "task_proposal"` snapshot in the parent channel
   with `status = "accepted"` + task coords, so the UI fold picks up the
   terminal state.
