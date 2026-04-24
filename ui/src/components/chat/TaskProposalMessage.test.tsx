@@ -15,6 +15,10 @@ function pending(): TaskProposalState {
     subChannelName: null,
     resolvedBy: null,
     resolvedAt: null,
+    sourceMessageId: null,
+    snapshotSenderName: null,
+    snapshotExcerpt: null,
+    snapshotCreatedAt: null,
     latestSeq: 1,
   }
 }

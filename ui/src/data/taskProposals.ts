@@ -13,6 +13,11 @@ export interface TaskProposalPayload {
   subChannelName: string | null
   resolvedBy?: string | null
   resolvedAt?: string | null
+  // v2 additions — nullable (legacy v1 proposals have none):
+  sourceMessageId: string | null
+  snapshotSenderName: string | null
+  snapshotExcerpt: string | null
+  snapshotCreatedAt: string | null
 }
 
 function isStatus(v: unknown): v is TaskProposalStatus {
@@ -76,6 +81,17 @@ export function parseTaskProposal(content: string): TaskProposalPayload | null {
     subChannelName,
     resolvedBy: typeof o.resolvedBy === 'string' ? o.resolvedBy : null,
     resolvedAt: typeof o.resolvedAt === 'string' ? o.resolvedAt : null,
+    // v2 snapshot fields — missing or wrong-typed coerce to null. Keep the
+    // graceful-degradation shape from the v1 fields above; tightening is a
+    // post-merge follow-up, not this PR.
+    sourceMessageId:
+      typeof o.sourceMessageId === 'string' ? o.sourceMessageId : null,
+    snapshotSenderName:
+      typeof o.snapshotSenderName === 'string' ? o.snapshotSenderName : null,
+    snapshotExcerpt:
+      typeof o.snapshotExcerpt === 'string' ? o.snapshotExcerpt : null,
+    snapshotCreatedAt:
+      typeof o.snapshotCreatedAt === 'string' ? o.snapshotCreatedAt : null,
   }
 }
 

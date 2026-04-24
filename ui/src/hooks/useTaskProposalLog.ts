@@ -46,6 +46,15 @@ export function deriveTaskProposalStates(
       prev.subChannelName = ev.subChannelName
       prev.resolvedBy = ev.resolvedBy ?? prev.resolvedBy ?? null
       prev.resolvedAt = ev.resolvedAt ?? prev.resolvedAt ?? null
+      // Snapshot fields are set once on the initial pending row and never
+      // change across subsequent snapshots — but a later snapshot may still
+      // carry them, so prefer incoming and fall back to prev for safety.
+      prev.sourceMessageId = ev.sourceMessageId ?? prev.sourceMessageId ?? null
+      prev.snapshotSenderName =
+        ev.snapshotSenderName ?? prev.snapshotSenderName ?? null
+      prev.snapshotExcerpt = ev.snapshotExcerpt ?? prev.snapshotExcerpt ?? null
+      prev.snapshotCreatedAt =
+        ev.snapshotCreatedAt ?? prev.snapshotCreatedAt ?? null
       prev.latestSeq = msg.seq
     }
   }
