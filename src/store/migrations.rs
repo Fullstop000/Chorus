@@ -17,6 +17,7 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_add_parent_channel_id(conn)?;
     migrate_add_task_sub_channel_id(conn)?;
     migrate_create_task_proposals_table(conn)?;
+    migrate_add_task_proposal_snapshot_columns(conn)?;
     Ok(())
 }
 
@@ -422,6 +423,81 @@ fn migrate_create_task_proposals_table(conn: &Connection) -> Result<()> {
             ON task_proposals(channel_id, status);",
     )?;
     tracing::info!("task_proposals table ensured");
+    Ok(())
+}
+
+/// v2: add snapshot columns + source-message pointer to `task_proposals`.
+///
+/// SQLite's `ALTER TABLE ADD COLUMN` cannot add a CHECK constraint, and we
+/// need the all-or-nothing invariant across the 5 snapshot fields enforced on
+/// migrated DBs (not just fresh installs). Use SQLite's canonical
+/// table-rebuild pattern: create a new table with the full target shape, copy
+/// the v1 rows (which have NULL snapshot columns), drop the old table, rename.
+///
+/// Rebuild > app-layer assertion: a runtime bug or external writer could land
+/// partial-snapshot rows on a migrated DB without the CHECK. Paying the
+/// one-time migration cost keeps the invariant durable everywhere downstream.
+///
+/// Idempotent via a `snapshot_content` column-existence probe.
+pub fn migrate_add_task_proposal_snapshot_columns(conn: &Connection) -> rusqlite::Result<()> {
+    let has_column: bool = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('task_proposals') \
+         WHERE name = 'snapshot_content'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? > 0;
+    if has_column {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        BEGIN;
+        CREATE TABLE task_proposals_new (
+          id TEXT PRIMARY KEY,
+          channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+          proposed_by TEXT NOT NULL,
+          title TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending'
+              CHECK (status IN ('pending', 'accepted', 'dismissed')),
+          created_at TEXT NOT NULL DEFAULT (datetime('now')),
+          accepted_task_number INTEGER,
+          accepted_sub_channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL,
+          resolved_by TEXT,
+          resolved_at TEXT,
+          -- v2 snapshot fields — see schema.sql for full rationale.
+          -- source_message_id: navigation pointer; independently nullable.
+          -- snapshot_*: immutable copy of the source message at propose-time,
+          -- all-or-nothing (enforced by CHECK below). Context consistency for
+          -- the per-task ACP session.
+          source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+          snapshot_sender_name TEXT,
+          snapshot_sender_type TEXT,
+          snapshot_content TEXT,
+          snapshot_created_at TEXT,
+          snapshotted_at TEXT,
+          CHECK (
+            (snapshot_sender_name IS NULL AND snapshot_sender_type IS NULL AND snapshot_content IS NULL
+             AND snapshot_created_at IS NULL AND snapshotted_at IS NULL)
+            OR
+            (snapshot_sender_name IS NOT NULL AND snapshot_sender_type IS NOT NULL AND snapshot_content IS NOT NULL
+             AND snapshot_created_at IS NOT NULL AND snapshotted_at IS NOT NULL)
+          )
+        );
+        INSERT INTO task_proposals_new (
+          id, channel_id, proposed_by, title, status, created_at,
+          accepted_task_number, accepted_sub_channel_id, resolved_by, resolved_at
+        )
+        SELECT
+          id, channel_id, proposed_by, title, status, created_at,
+          accepted_task_number, accepted_sub_channel_id, resolved_by, resolved_at
+        FROM task_proposals;
+        DROP TABLE task_proposals;
+        ALTER TABLE task_proposals_new RENAME TO task_proposals;
+        CREATE INDEX idx_task_proposals_channel_status ON task_proposals(channel_id, status);
+        COMMIT;
+        "#,
+    )?;
+    tracing::info!("migration: added task_proposals snapshot columns");
     Ok(())
 }
 

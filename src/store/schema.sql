@@ -219,6 +219,16 @@ CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
 -- channel renders as an interactive card. On accept, the task is created via
 -- the shared `insert_task_and_subchannel_tx` helper and this row records the
 -- resulting task number + sub-channel for deep-linking.
+--
+-- Snapshot columns (v2) freeze the originating user message at propose-time so
+-- the per-task ACP session (fresh context window, cannot see the parent
+-- channel) can consume immutable context via the kickoff message. Edits or
+-- deletes to the source message after proposal must not mutate the agreed
+-- context. `source_message_id` is a navigation pointer only (independently
+-- nullable: NULL on legacy v1 rows, and cleared by ON DELETE SET NULL if the
+-- source message is hard-deleted). The five `snapshot_*` columns are the
+-- immutable truth and are all-or-nothing (see CHECK): either the row predates
+-- v2 (all NULL) or it was captured with a complete snapshot (all populated).
 CREATE TABLE IF NOT EXISTS task_proposals (
     id TEXT PRIMARY KEY,
     channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
@@ -229,7 +239,20 @@ CREATE TABLE IF NOT EXISTS task_proposals (
     accepted_task_number INTEGER,
     accepted_sub_channel_id TEXT REFERENCES channels(id) ON DELETE SET NULL,
     resolved_by TEXT,
-    resolved_at TEXT
+    resolved_at TEXT,
+    source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL, -- navigation pointer; independently nullable
+    snapshot_sender_name TEXT,    -- frozen messages.sender_name at capture
+    snapshot_sender_type TEXT,    -- frozen messages.sender_type ('human'|'agent'|'system')
+    snapshot_content TEXT,        -- frozen verbatim message body
+    snapshot_created_at TEXT,     -- frozen messages.created_at (original authorship time)
+    snapshotted_at TEXT,          -- when the server captured the copy (audit)
+    CHECK (
+        (snapshot_sender_name IS NULL AND snapshot_sender_type IS NULL AND snapshot_content IS NULL
+         AND snapshot_created_at IS NULL AND snapshotted_at IS NULL)
+        OR
+        (snapshot_sender_name IS NOT NULL AND snapshot_sender_type IS NOT NULL AND snapshot_content IS NOT NULL
+         AND snapshot_created_at IS NOT NULL AND snapshotted_at IS NOT NULL)
+    )
 );
 CREATE INDEX IF NOT EXISTS idx_task_proposals_channel_status
     ON task_proposals(channel_id, status);
