@@ -75,11 +75,14 @@ snapshot_created_at     TIMESTAMP NULL
 
 ### Invariants
 
-- **Snapshot CHECK constraint.** The five snapshot fields (`source_message_id`
-  plus the four `snapshot_*` columns) must be either all-populated or
-  all-null. A task created without a snapshot (human direct-create) has all
-  five null; a task created from a message (agent propose, or future
-  "task from message" UI) has all five populated.
+- **Snapshot CHECK constraint.** The four `snapshot_*` columns must be
+  either all-populated or all-null. `source_message_id` is a **separately
+  nullable pointer** — not part of the CHECK — because the pointer-vs-truth
+  invariant requires it to be nullable independently (ON DELETE SET NULL).
+  A task created without a snapshot (human direct-create) has all four
+  `snapshot_*` fields null and `source_message_id` null; a task created from
+  a message has all four populated plus `source_message_id` populated until
+  the source is deleted.
 - **Sub-channel lifecycle.** `sub_channel_id` is null while `status =
   'proposed'` and stays null forever if the proposal is dismissed. It is
   minted the first (and only) time a task enters `status = 'todo'` — whether
@@ -268,7 +271,9 @@ advance_task_status  { channel, task_number, status }
 
 All MCP tools key tasks by `(channel, task_number)` — matches existing
 `Backend` trait in `src/bridge/backend.rs` and the public HTTP API. The UUID
-`task_id` is an internal DB detail and never surfaced to agents or the UI.
+`task_id` is surfaced to the **UI** (list responses, `task_card` wire payload)
+because the client store needs a stable primary key. It is **not** surfaced
+to **agents / MCP tools** — they use `(channel, task_number)` exclusively.
 
 One tool per action (CLAUDE.md: "one thing, done well"). Agents always go
 through the proposal gate — `create_task` always produces `status =

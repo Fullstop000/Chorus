@@ -69,11 +69,18 @@
 
 ---
 
-## Task 1: Schema migration + `TaskStatus` enum extension
+## Task 1: Schema + `TaskStatus` enum extension
+
+**No migration written.** Neither PR #93 nor PR #96 is in prod. Dev-local
+SQLite files will be wiped (`rm ~/.chorus/*.db` or equivalent) before the
+first run of the new branch. `cargo test` already uses fresh in-memory DBs.
+The two proposal-era migrations (`migrate_create_task_proposals_table`,
+`migrate_add_task_proposal_snapshot_columns`) and their tests are deleted
+outright — no ceremony needed.
 
 **Files:**
 - Modify: `src/store/schema.sql:100-112` (tasks table); delete `src/store/schema.sql:232-258` (task_proposals)
-- Modify: `src/store/migrations.rs` — add new migration + its unit test
+- Modify: `src/store/migrations.rs` — delete the two proposal-era migrations + their unit tests
 - Modify: `src/store/tasks/mod.rs:44-90` (`TaskStatus` enum + `can_transition_to`)
 
 - [ ] **Step 1: Extend `tasks` table in `schema.sql`.**
@@ -119,140 +126,17 @@ CREATE INDEX IF NOT EXISTS idx_tasks_channel_status ON tasks(channel_id, status)
 
 Delete lines ~232–258 (the `CREATE TABLE task_proposals` block and `CREATE INDEX idx_task_proposals_channel_status`). Fresh DBs go straight to the unified `tasks` table.
 
-- [ ] **Step 3: Add `migrate_unify_task_proposals_into_tasks` to `src/store/migrations.rs`.**
+- [ ] **Step 3: Delete the two proposal-era migrations.**
 
-SQLite can't `ALTER TABLE ... ADD CHECK`, so follow the **rebuild pattern** already used by `migrate_add_task_proposal_snapshot_columns` at line 442. Idempotent: check for `tasks.owner` column and exit early if already migrated.
+In `src/store/migrations.rs`:
+- Remove `migrate_create_task_proposals_table(conn)?;` from `run_migrations`.
+- Remove `migrate_add_task_proposal_snapshot_columns(conn)?;` from `run_migrations`.
+- Delete the two `fn migrate_*` bodies themselves.
+- Delete the associated `#[test]` functions (around line 740+).
 
-```rust
-fn migrate_unify_task_proposals_into_tasks(conn: &Connection) -> Result<()> {
-    // Idempotency gate: the rename `claimed_by -> owner` is the irreversible
-    // step, so `tasks.owner` present means we already ran.
-    let has_owner: bool = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'owner'",
-        [],
-        |row| row.get::<_, i64>(0),
-    )? > 0;
-    if has_owner {
-        return Ok(());
-    }
+Fresh-DB path now goes straight to the merged `tasks` schema via `schema.sql`. No migration code path for the task-lifecycle feature.
 
-    conn.execute_batch(r#"
-        PRAGMA foreign_keys=OFF;
-        BEGIN;
-
-        -- 1. Create tasks_new with merged shape.
-        CREATE TABLE tasks_new (
-            id TEXT PRIMARY KEY,
-            channel_id TEXT NOT NULL,
-            task_number INTEGER NOT NULL,
-            title TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'todo'
-                CHECK (status IN ('proposed','dismissed','todo','in_progress','in_review','done')),
-            owner TEXT,
-            created_by TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            sub_channel_id TEXT REFERENCES channels(id),
-            source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
-            snapshot_sender_name TEXT,
-            snapshot_sender_type TEXT,
-            snapshot_content TEXT,
-            snapshot_created_at TEXT,
-            UNIQUE(channel_id, task_number),
-            CHECK (
-              (source_message_id IS NULL
-                 AND snapshot_sender_name IS NULL
-                 AND snapshot_sender_type IS NULL
-                 AND snapshot_content IS NULL
-                 AND snapshot_created_at IS NULL)
-              OR
-              (snapshot_sender_name IS NOT NULL
-                 AND snapshot_sender_type IS NOT NULL
-                 AND snapshot_content IS NOT NULL
-                 AND snapshot_created_at IS NOT NULL)
-            )
-        );
-
-        -- 2. Copy pre-merge tasks (claimed_by -> owner; no snapshot fields on these).
-        INSERT INTO tasks_new
-            (id, channel_id, task_number, title, status, owner,
-             created_by, created_at, updated_at, sub_channel_id)
-        SELECT
-            id, channel_id, task_number, title, status, claimed_by,
-            created_by, created_at, updated_at, sub_channel_id
-        FROM tasks;
-
-        -- 3. Migrate task_proposals rows into tasks_new. The per-channel
-        --    task_number must not collide with existing rows; allocate
-        --    fresh numbers starting from current max+1 per channel.
-        --    SQLite supports window functions since 3.25 (all builds we ship).
-        INSERT INTO tasks_new
-            (id, channel_id, task_number, title, status, owner,
-             created_by, created_at, updated_at, sub_channel_id,
-             source_message_id, snapshot_sender_name, snapshot_sender_type,
-             snapshot_content, snapshot_created_at)
-        SELECT
-            tp.id,
-            tp.channel_id,
-            (SELECT COALESCE(MAX(task_number), 0) FROM tasks_new tn WHERE tn.channel_id = tp.channel_id)
-              + ROW_NUMBER() OVER (PARTITION BY tp.channel_id ORDER BY tp.created_at, tp.id),
-            tp.title,
-            CASE tp.status
-              WHEN 'pending' THEN 'proposed'
-              WHEN 'accepted' THEN 'todo'   -- accepted proposals already have a linked task row; covered by step 2. We only migrate pending + dismissed here.
-              WHEN 'dismissed' THEN 'dismissed'
-              ELSE 'dismissed'
-            END,
-            NULL,
-            tp.proposed_by,
-            tp.created_at,
-            COALESCE(tp.resolved_at, tp.created_at),
-            NULL,
-            tp.source_message_id,
-            tp.snapshot_sender_name,
-            tp.snapshot_sender_type,
-            tp.snapshot_content,
-            tp.snapshot_created_at
-        FROM task_proposals tp
-        WHERE tp.status IN ('pending', 'dismissed');
-
-        -- 4. Atomic swap.
-        DROP TABLE tasks;
-        ALTER TABLE tasks_new RENAME TO tasks;
-        CREATE INDEX IF NOT EXISTS idx_tasks_channel_status ON tasks(channel_id, status);
-
-        -- 5. Drop the legacy table + its index.
-        DROP INDEX IF EXISTS idx_task_proposals_channel_status;
-        DROP TABLE IF EXISTS task_proposals;
-
-        COMMIT;
-        PRAGMA foreign_keys=ON;
-    "#)?;
-    Ok(())
-}
-```
-
-Register it in `run_migrations` AFTER `migrate_add_task_proposal_snapshot_columns` (so the v2 snapshot columns exist on `task_proposals` before we copy them out).
-
-- [ ] **Step 4: Write a migration unit test in `src/store/migrations.rs`.**
-
-Follow the pattern of the existing tests (e.g. line 746 for `migrate_add_task_proposal_snapshot_columns`):
-
-```rust
-#[test]
-fn migrate_unify_task_proposals_into_tasks_rebuilds_table() {
-    let conn = Connection::open_in_memory().unwrap();
-    // Run predecessor migrations up through PR #96's snapshot columns.
-    migrate_add_task_proposal_snapshot_columns(&conn).unwrap();
-    // Seed: 1 existing task + 2 proposals (1 pending, 1 dismissed).
-    seed_one_task_and_two_proposals(&conn);
-    migrate_unify_task_proposals_into_tasks(&conn).unwrap();
-    // Assert: tasks has 3 rows, task_proposals gone, owner column exists,
-    // CHECK constraint fires on partial-snapshot INSERT.
-}
-```
-
-- [ ] **Step 5: Extend `TaskStatus` enum in `src/store/tasks/mod.rs`.**
+- [ ] **Step 4: Extend `TaskStatus` enum in `src/store/tasks/mod.rs`.**
 
 Add two variants + a transition validator:
 
@@ -285,7 +169,7 @@ impl TaskStatus {
 }
 ```
 
-- [ ] **Step 6: Unit tests for the transition graph.**
+- [ ] **Step 5: Unit tests for the transition graph.**
 
 ```rust
 #[test]
@@ -301,12 +185,12 @@ fn task_status_transitions() {
 }
 ```
 
-- [ ] **Step 7: Run `cargo test -p chorus --lib`. Confirm pass.**
+- [ ] **Step 6: Run `cargo test -p chorus --lib`. Confirm pass.**
 
-- [ ] **Step 8: Commit.**
+- [ ] **Step 7: Commit.**
 
 ```bash
-git commit -am "feat(schema): unify task_proposals into tasks with six-state enum + rebuild migration"
+git commit -am "feat(schema): unify task_proposals into tasks with six-state enum"
 ```
 
 ---
@@ -318,7 +202,7 @@ git commit -am "feat(schema): unify task_proposals into tasks with six-state enu
 **Files:**
 - Modify: `src/store/tasks/events.rs`
 
-- [ ] **Step 1: Extend `TaskEventAction` with `Dismissed`.**
+- [ ] **Step 1: Extend `TaskEventAction` with `Dismissed` + update all match arms.**
 
 ```rust
 pub enum TaskEventAction {
@@ -329,6 +213,35 @@ pub enum TaskEventAction {
     Dismissed,  // new — fired only on `proposed → dismissed`, posted in PARENT channel (no sub-channel exists yet).
 }
 ```
+
+Also update every `match action { ... }` on this enum. In particular:
+
+```rust
+impl TaskEventAction {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Claimed => "claimed",
+            Self::Unclaimed => "unclaimed",
+            Self::StatusChanged => "status_changed",
+            Self::Dismissed => "dismissed",   // new
+        }
+    }
+
+    pub fn as_agent_sentence(&self, actor: &str, next: TaskStatus) -> String {
+        match self {
+            Self::Created      => format!("{actor} created the task"),
+            Self::Claimed      => format!("{actor} claimed the task"),
+            Self::Unclaimed    => format!("{actor} unclaimed the task"),
+            Self::StatusChanged => format!("task moved to {}", next.as_str()),
+            Self::Dismissed    => format!("{actor} dismissed the proposal"),  // new
+        }
+    }
+}
+```
+
+Without these arms, a `match` elsewhere may fall through to a catch-all and
+produce a nonsense agent sentence on dismissal.
 
 - [ ] **Step 2: Define `TaskCardWirePayload`.**
 
@@ -352,12 +265,14 @@ pub struct TaskCardWirePayload {
 
 - [ ] **Step 3: Add `post_task_card_message_tx` helper.**
 
+`Store::create_system_message_tx` is at `src/store/messages/posting.rs:119` — returns `Result<InsertedMessage>`, not a generic `MessageRow`. The existing `create_tasks` code pairs `(InsertedMessage, String)` tuples for `emit_system_stream_events`, so match that pattern: return both so the caller can emit.
+
 ```rust
 pub fn post_task_card_message_tx(
     tx: &Transaction<'_>,
     parent_channel: &Channel,
     task: &TaskInfo,
-) -> Result<MessageRow> {
+) -> Result<(InsertedMessage, String)> {
     let payload = TaskCardWirePayload {
         kind: "task_card",
         task_id: task.id.clone(),
@@ -373,29 +288,31 @@ pub fn post_task_card_message_tx(
         snapshot_created_at: task.snapshot_created_at.clone(),
     };
     let content = serde_json::to_string(&payload)?;
-    Store::create_system_message_tx(tx, parent_channel, &content)
+    let msg = Store::create_system_message_tx(tx, parent_channel, &content)?;
+    Ok((msg, content))
 }
 ```
 
-The existing `Store::create_system_message_tx` signature (found at `src/store/messages/posting.rs`) takes `&Channel` + `&str` and returns the inserted row. Reuse it unchanged.
+Callers push the returned tuple into the existing `pending_events: Vec<(InsertedMessage, String)>` buffer and fan out via `emit_system_stream_events` after `tx.commit()`.
 
 - [ ] **Step 4: Add `post_task_event_tx` helper that loads the sub-channel.**
 
 ```rust
 pub fn post_task_event_tx(
     tx: &Transaction<'_>,
-    sub_channel_id: &str,        // may be None-equivalent empty for pre-accept `proposed → dismissed` — caller handles
+    sub_channel_id: &str,
     payload: TaskEventPayload,
-) -> Result<MessageRow> {
-    // Load the sub-channel row by id. `create_system_message_tx` takes &Channel, not a raw id.
-    let sub_channel = Store::get_channel_by_id_tx(tx, sub_channel_id)?
+) -> Result<(InsertedMessage, String)> {
+    // Load the sub-channel row by id. `create_system_message_tx` takes &Channel.
+    // `get_channel_by_id_inner` lives in `src/store/channels.rs:437`; a `&Transaction`
+    // derefs to `&Connection`, so it works from inside a tx.
+    let sub_channel = Store::get_channel_by_id_inner(tx, sub_channel_id)?
         .ok_or_else(|| anyhow!("sub-channel not found: {}", sub_channel_id))?;
     let content = payload.to_json_string()?;
-    Store::create_system_message_tx(tx, &sub_channel, &content)
+    let msg = Store::create_system_message_tx(tx, &sub_channel, &content)?;
+    Ok((msg, content))
 }
 ```
-
-If `Store::get_channel_by_id_tx` doesn't exist, add it alongside `get_channel_by_name_inner`. Thin wrapper on `SELECT ... FROM channels WHERE id = ?1`.
 
 - [ ] **Step 5: Keep wire field name `claimedBy` on `TaskEventPayload`.**
 
@@ -410,9 +327,10 @@ pub fn post_parent_dismissed_event_tx(
     tx: &Transaction<'_>,
     parent_channel: &Channel,
     payload: TaskEventPayload,   // payload.action == Dismissed, sub_channel_id == ""
-) -> Result<MessageRow> {
+) -> Result<(InsertedMessage, String)> {
     let content = payload.to_json_string()?;
-    Store::create_system_message_tx(tx, parent_channel, &content)
+    let msg = Store::create_system_message_tx(tx, parent_channel, &content)?;
+    Ok((msg, content))
 }
 ```
 
@@ -480,16 +398,19 @@ pub fn create_proposed_task(
         ],
     )?;
 
-    // 3. Load the freshly-inserted TaskInfo.
+    // 3. Load the freshly-inserted TaskInfo. Helper wraps the existing
+    //    `get_task_info`-style SELECT keyed by id — add it alongside
+    //    `get_task_info` if it doesn't already exist.
     let task = load_task_by_id_tx(&tx, &id)?;
 
-    // 4. Post task_card in the parent channel.
-    let msg = events::post_task_card_message_tx(&tx, &channel, &task)?;
+    // 4. Post task_card in the parent channel. Returns (InsertedMessage, content)
+    //    tuple so we can fan out the stream event after tx.commit().
+    let pending = vec![events::post_task_card_message_tx(&tx, &channel, &task)?];
 
     tx.commit()?;
     drop(conn);
 
-    self.emit_system_stream_events(&channel, vec![(msg.clone(), task_card_content(&msg))])?;
+    self.emit_system_stream_events(&channel, pending)?;
     self.emit_task_update(&task);  // see Task 7
     Ok(task)
 }
@@ -497,17 +418,30 @@ pub fn create_proposed_task(
 
 - [ ] **Step 2: Refactor existing `create_tasks` (human direct-create path).**
 
-Keep today's sub-channel mint + kickoff + `task_card` posting. Just ensure:
-- `status` defaults to `'todo'` (unchanged),
-- snapshot fields are all null (assert if caller passes any — direct-create doesn't carry provenance),
-- `post_task_card_message_tx` fires at creation (new; today's code may not post a card for direct-created tasks — add it).
+Keep today's sub-channel mint + kickoff. **Remove** the existing `task_event(Created)` emission in the parent channel — the new `task_card` host message replaces it. Direct-created tasks have `status='todo'`, all snapshot fields null, and an immediately-minted sub-channel.
+
+Concretely, inside the existing `create_tasks` per-task loop:
+
+```rust
+// (existing code allocates task_number, INSERTs the row, mints sub_channel, posts kickoff)
+
+// REMOVED: parent-channel `task_event(Created)` emission — task_card replaces it.
+
+// ADDED: post task_card in the parent channel.
+let task = load_task_by_id_tx(&tx, &id)?;
+pending_events.push(events::post_task_card_message_tx(&tx, &channel, &task)?);
+// ... kickoff message gets pushed onto pending_events as before (in the sub-channel)
+```
+
+Note that `pending_events` is `Vec<(InsertedMessage, String)>` — the helper returns a tuple shaped exactly for it. `emit_system_stream_events` handles fan-out after `tx.commit()`. **The parent channel and the sub-channel get their events via separate `emit_system_stream_events` calls** — do not mix them.
 
 - [ ] **Step 3: Extend `TaskInfo` struct with snapshot fields + rename `claimed_by` → `owner`.**
 
 ```rust
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskInfo {
-    pub id: String,                            // new — kept internal; never serialized to public HTTP (rename with serde skip if needed)
+    pub id: String,                            // UUID — surfaced to UI for store keying; NOT surfaced to MCP tools
     pub task_number: i64,
     pub title: String,
     pub status: TaskStatus,
@@ -524,7 +458,7 @@ pub struct TaskInfo {
 }
 ```
 
-The existing `TaskInfoPublic` DTO (if one exists in `handlers/dto.rs`) decides which fields serialize to the public API — keep `task_id` internal.
+**`id` serialization policy:** this field *is* serialized in public HTTP responses — the UI store keys by `task.id`. It is *not* surfaced to agents/MCP tools — those key by `(channel, task_number)`. The bridge backend strips it when formatting tool output.
 
 - [ ] **Step 4: Update all existing `SELECT` statements.**
 
@@ -608,51 +542,72 @@ pub fn update_task_status(
     )?;
     task.status = new_status;
 
-    // Emit task_event.
-    let event_payload = TaskEventPayload {
-        action: match new_status {
-            TaskStatus::Dismissed => TaskEventAction::Dismissed,
-            _ => TaskEventAction::StatusChanged,
-        },
-        task_number, title: task.title.clone(),
-        sub_channel_id: task.sub_channel_id.clone().unwrap_or_default(),
-        actor: actor.to_string(),
-        prev_status: Some(current_status),
-        next_status: new_status,
-        claimed_by: task.owner.clone(),   // keep wire field name!
-    };
-
-    let inserted = if new_status == TaskStatus::Dismissed {
-        // proposed -> dismissed: no sub-channel; post event in parent.
-        events::post_parent_dismissed_event_tx(&tx, &channel, event_payload.clone())?
-    } else if let Some(sub_id) = task.sub_channel_id.as_deref() {
-        events::post_task_event_tx(&tx, sub_id, event_payload.clone())?
+    // Post task_event — EXCEPT on `proposed -> todo`. The kickoff message is
+    // the anchor for acceptance; firing a task_event here would double-up.
+    let pending_event: Option<(InsertedMessage, String)> = if
+        current_status == TaskStatus::Proposed && new_status == TaskStatus::Todo
+    {
+        None
     } else {
-        // Unreachable: only Dismissed can advance without a sub-channel.
-        unreachable!("non-dismissed transition must have sub_channel_id");
+        let event_payload = TaskEventPayload {
+            action: match new_status {
+                TaskStatus::Dismissed => TaskEventAction::Dismissed,
+                _ => TaskEventAction::StatusChanged,
+            },
+            task_number, title: task.title.clone(),
+            sub_channel_id: task.sub_channel_id.clone().unwrap_or_default(),
+            actor: actor.to_string(),
+            prev_status: Some(current_status),
+            next_status: new_status,
+            claimed_by: task.owner.clone(),   // keep wire field name!
+        };
+        Some(if new_status == TaskStatus::Dismissed {
+            // proposed -> dismissed: no sub-channel; post event in parent.
+            events::post_parent_dismissed_event_tx(&tx, &channel, event_payload)?
+        } else {
+            // todo -> in_progress, etc: post event in sub-channel.
+            let sub_id = task.sub_channel_id.as_deref()
+                .ok_or_else(|| anyhow!("sub-channel missing for non-dismissed transition"))?;
+            events::post_task_event_tx(&tx, sub_id, event_payload)?
+        })
     };
 
-    // Done -> archive the sub-channel (existing behavior preserved).
+    // Done -> archive the sub-channel (existing behavior preserved). The
+    // archive helper is at `src/store/channels.rs` (inline if not present):
+    //   UPDATE channels SET archived = 1 WHERE id = ?1
     if new_status == TaskStatus::Done {
-        archive_sub_channel_tx(&tx, task.sub_channel_id.as_deref().unwrap())?;
+        if let Some(sub_id) = task.sub_channel_id.as_deref() {
+            tx.execute("UPDATE channels SET archived = 1 WHERE id = ?1", params![sub_id])?;
+        }
     }
 
     tx.commit()?;
     drop(conn);
 
-    let emit_channel = if new_status == TaskStatus::Dismissed {
-        channel
-    } else {
-        // Load the sub-channel for the event fan-out.
-        let sub_id = task.sub_channel_id.as_deref().unwrap();
-        self.get_channel_by_id(sub_id)?
-            .ok_or_else(|| anyhow!("sub-channel vanished after tx commit"))?
-    };
-    self.emit_system_stream_events(&emit_channel, vec![(inserted.clone(), event_payload.to_json_string()?)])?;
+    // Fan out: task_event (if any) on the channel it was posted in; then task_update globally.
+    if let Some(ev) = pending_event {
+        let emit_channel = if new_status == TaskStatus::Dismissed {
+            channel
+        } else {
+            let sub_id = task.sub_channel_id.as_deref().unwrap();
+            self.get_channel_by_id(sub_id)?
+                .ok_or_else(|| anyhow!("sub-channel vanished after tx commit"))?
+        };
+        self.emit_system_stream_events(&emit_channel, vec![ev])?;
+    }
     self.emit_task_update(&task);  // global fan-out (Task 7)
     Ok(task)
 }
 ```
+
+Required helpers referenced above — if not present in `src/store/tasks/mod.rs`, add them as thin wrappers on the existing `get_task_info`-style SELECT:
+
+```rust
+fn load_task_by_number_tx(tx: &Transaction<'_>, channel_id: &str, task_number: i64) -> Result<TaskInfo> { ... }
+fn load_task_by_id_tx(tx: &Transaction<'_>, id: &str) -> Result<TaskInfo> { ... }
+```
+
+These wrap a `SELECT id, task_number, title, status, owner, created_by, created_at, updated_at, sub_channel_id, source_message_id, snapshot_sender_name, snapshot_sender_type, snapshot_content, snapshot_created_at FROM tasks WHERE ...` and populate `TaskInfo`. Single source of truth for the column list.
 
 - [ ] **Step 2: Add `mint_sub_channel_tx` helper.**
 
@@ -741,9 +696,29 @@ if !matches!(task.status, Todo | InProgress | InReview) {
 }
 ```
 
-- [ ] **Step 2: Emit `Claimed` task_event** with `next_status == current_status` (claim no longer implies status change).
+- [ ] **Step 2: Emit `Claimed` task_event in the SUB-CHANNEL.**
 
-TaskEventPayload's `prev_status` and `next_status` both equal the current task status. The UI renders this as a `"@zht claimed"` row; no status transition.
+(Closes R1 #4 for claim/unclaim.) The existing `update_tasks_claim` at line 374 calls `Self::create_system_message_tx(&tx, &channel, &content)` where `channel` is the **parent**. The spec says claim/unclaim happen inside the sub-channel, so the event timeline lives there too. Route via the new helper:
+
+```rust
+// Inside the claim loop, after the UPDATE succeeds:
+let payload = TaskEventPayload {
+    action: TaskEventAction::Claimed,
+    task_number: tn,
+    title,
+    sub_channel_id: sub_channel_id.clone().unwrap_or_default(),
+    actor: claimer_name.to_string(),
+    prev_status: Some(task.status),   // same as next
+    next_status: task.status,
+    claimed_by: Some(claimer_name.to_string()),
+};
+let sub_id = sub_channel_id.as_deref()
+    .ok_or_else(|| anyhow!("claim on task without sub-channel"))?;   // should be unreachable given the status precondition
+let event = events::post_task_event_tx(&tx, sub_id, payload)?;
+pending_events.push(event);
+```
+
+`prev_status == next_status == task.status`. The UI renders this as a `"@zht claimed"` row. Then fan out via `emit_system_stream_events(&sub_channel, pending_events)` after `tx.commit()` — **the sub-channel, not the parent**.
 
 - [ ] **Step 3: Keep the sub-channel-membership side effect.**
 
@@ -755,9 +730,9 @@ Existing code at line ~420 also fuses `UPDATE tasks SET claimed_by = NULL, statu
 
 The existing TOCTOU guard (`WHERE ... AND claimed_by = ?3`) stays — it prevents unclaiming a claim that was already stolen.
 
-- [ ] **Step 5: Update `TaskEventPayload` emission.**
+- [ ] **Step 5: Unclaim `task_event` also posts to the SUB-CHANNEL.**
 
-`prev_status` and `next_status` both equal the current task status. `claimed_by` is `None` (because wire-field means "new owner after this event").
+Same routing as claim: load the sub-channel via `events::post_task_event_tx(&tx, sub_id, payload)`, fan out via `emit_system_stream_events(&sub_channel, ...)`. `claimed_by` in the payload is `None` (wire-field means "new owner after this event"); `prev_status == next_status == task.status`.
 
 - [ ] **Step 6: Store tests.**
 
@@ -805,9 +780,46 @@ POST /internal/agent/:agent/channels/:channel/tasks
      body: { title, source_message_id }
 ```
 
-Handler resolves `:channel` → `channel_name`, loads the referenced source message (for snapshot capture), normalizes the RFC3339 timestamp (reuse `normalize_sqlite_timestamp` from today's `task_proposals.rs` — move it to `src/store/tasks/mod.rs` or a shared util module first), then calls `store.create_proposed_task(...)`. Preserve the membership precondition (`require_channel_membership` at the agent level).
+Handler loads the source message, assembles the snapshot, normalizes the
+timestamp, and calls `store.create_proposed_task`:
 
-Returns `TaskInfo` as JSON (with `task_id` internal only — use a public DTO).
+```rust
+pub async fn agent_create_proposed_task_handler(
+    Path((agent_name, channel_name)): Path<(String, String)>,
+    State(state): State<AppState>,
+    Json(body): Json<CreateProposedTaskBody>,
+) -> Result<Json<TaskInfo>, ApiError> {
+    // Membership precondition — carried over from PR #96.
+    state.store.require_channel_membership(&channel_name, &agent_name)?;
+
+    // Load the source message for snapshot capture. 404 if missing.
+    let src = state.store.get_message_by_id(&body.source_message_id)?
+        .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "source message not found"))?;
+    if src.channel_name != channel_name {
+        return Err(app_err!(StatusCode::CONFLICT, "source message belongs to a different channel"));
+    }
+
+    // Assemble snapshot. normalize_sqlite_timestamp lives in the tasks module
+    // after being moved out of the deleted task_proposals.rs.
+    let args = CreateProposedTaskArgs {
+        title: body.title.clone(),
+        created_by: agent_name.clone(),
+        source_message_id: body.source_message_id.clone(),
+        snapshot_sender_name: src.sender_name.clone(),
+        snapshot_sender_type: src.sender_type.clone(),
+        snapshot_content: src.content.clone(),
+        snapshot_created_at: normalize_sqlite_timestamp(&src.created_at)?,
+    };
+
+    let task = state.store.create_proposed_task(&channel_name, args)
+        .map_err(|e| app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{}", e))?;
+    Ok(Json(task))
+}
+```
+
+Preserve the membership precondition (`require_channel_membership` at the agent level).
+
+Returns `TaskInfo` as JSON; `id` surfaces to the UI but agent-facing bridge formatting strips it (see Task 8).
 
 - [ ] **Step 2: Human-create route.**
 
@@ -825,29 +837,45 @@ POST /api/conversations/:id/tasks/:number/status
      body: { status: "todo" | "in_progress" | "in_review" | "done" | "dismissed" }
 ```
 
+Define a typed error in the store so the handler maps cleanly without
+string-prefix matching:
+
+```rust
+// In src/store/tasks/mod.rs
+#[derive(Debug, thiserror::Error)]
+#[error("invalid task transition: {from:?} -> {to:?}")]
+pub struct InvalidTaskTransition {
+    pub from: TaskStatus,
+    pub to: TaskStatus,
+}
+// Returned via anyhow::Error::new(InvalidTaskTransition { ... })
+```
+
 ```rust
 pub async fn update_task_status_handler(
     Path((conversation_id, task_number)): Path<(String, i64)>,
     State(state): State<AppState>,
     WithAuth(actor): WithAuth,
     Json(body): Json<UpdateTaskStatusBody>,
-) -> Result<Json<TaskInfoPublic>, ApiError> {
+) -> Result<Json<TaskInfo>, ApiError> {
     let new_status = TaskStatus::from_status_str(&body.status)
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "unknown status: {}", body.status))?;
     let channel_name = state.store.resolve_channel_name(&conversation_id)?;
     state.store.require_channel_membership(&channel_name, &actor.name)?;
-    let result = state.store
-        .update_task_status(&channel_name, task_number, &actor.name, new_status);
-    match result {
-        Ok(task) => Ok(Json(task.into())),
-        Err(e) if e.to_string().starts_with("invalid task transition") =>
-            Err(app_err!(StatusCode::UNPROCESSABLE_ENTITY, "{}", e)),
-        Err(e) => Err(app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{}", e)),
+    match state.store.update_task_status(&channel_name, task_number, &actor.name, new_status) {
+        Ok(task) => Ok(Json(task)),
+        Err(e) => {
+            if e.downcast_ref::<InvalidTaskTransition>().is_some() {
+                Err(app_err!(StatusCode::UNPROCESSABLE_ENTITY, "{}", e))
+            } else {
+                Err(app_err!(StatusCode::INTERNAL_SERVER_ERROR, "{}", e))
+            }
+        }
     }
 }
 ```
 
-Note the explicit 422 mapping (R1 finding #14).
+Note the typed-error `downcast_ref` — more durable than the string-prefix match kimi flagged in R2.
 
 - [ ] **Step 4: Claim + unclaim routes (same keying).**
 
@@ -929,15 +957,31 @@ pub struct TaskUpdateEvent {
 }
 ```
 
-- [ ] **Step 2: Add a dedicated broadcaster on `Store`.**
+Re-export alongside the existing `StreamEvent`:
+
+```rust
+// src/store/mod.rs
+pub use stream::{StreamEvent, TaskUpdateEvent};
+```
+
+- [ ] **Step 2: Add a dedicated broadcaster on `Store`. Initialize in `Store::open`.**
 
 ```rust
 pub struct Store {
-    // ...existing fields
+    // ...existing fields (conn, stream_tx, trace_tx, ...)
     task_updates_tx: broadcast::Sender<TaskUpdateEvent>,
 }
 
 impl Store {
+    pub fn open(path: &str) -> Result<Self> {
+        // ...existing init (conn, run_migrations, stream_tx, trace_tx)
+        let (task_updates_tx, _) = broadcast::channel(256);
+        Ok(Store {
+            // ...existing field assignments
+            task_updates_tx,
+        })
+    }
+
     pub fn subscribe_task_updates(&self) -> broadcast::Receiver<TaskUpdateEvent> {
         self.task_updates_tx.subscribe()
     }
@@ -1358,37 +1402,96 @@ function formatEvent(e: TaskEventRow): string {
 
 - [ ] **Step 4: Route `task_card` + `task_event` in MessageList.**
 
+The `HistoryMessage` type has no top-level `kind` field — `kind` is a discriminator inside the JSON `content` string (pattern used by the existing `task_proposal` and `task_event` rendering). Parse first, then dispatch:
+
 ```tsx
-if (msg.kind === 'task_card') {
-  const payload = tryJsonParse<TaskCardWirePayload>(msg.content)
-  if (!payload) return null
+// HistoryMessage has no `kind` field; kind lives inside the JSON content.
+const parsed = tryJsonParse<{ kind?: string }>(msg.content)
+if (parsed?.kind === 'task_card') {
+  const payload = parsed as TaskCardWirePayload
   const task = useTask(payload.task_id)
   return task ? <TaskCard task={task} onAction={...} busy={...} /> : null
 }
-if (msg.kind === 'task_event') {
-  const ev = parseTaskEvent(msg.content)
-  return ev ? <TaskEventRow event={evToRow(ev, msg)} /> : null
+if (parseTaskEvent(msg.content) != null) {
+  const ev = parseTaskEvent(msg.content)!
+  return <TaskEventRow event={evToRow(ev, msg)} />
 }
 ```
 
-- [ ] **Step 5: `useTaskUpdateStream` hook.**
+`parseTaskEvent` already returns null on non-event system messages, so using it as the `task_event` detector is stable.
+
+- [ ] **Step 5: Extend the realtime transport for `task_update` frames.**
+
+The existing UI transport at `ui/src/transport/types.ts` defines `RealtimeFrame` as a discriminated union (`event | trace | error`). Extend it with a new variant, then add a matching subscription method on `RealtimeSession` — same pattern as `subscribeTraces`.
 
 ```ts
+// ui/src/transport/types.ts
+export interface TaskUpdateFrame {
+  type: 'task_update'
+  taskId: string
+  channelId: string
+  taskNumber: number
+  status: string
+  owner: string | null
+  subChannelId: string | null
+  updatedAt: string
+}
+
+export type RealtimeFrame =
+  | { type: 'event'; event: ServerEvent }
+  | { type: 'trace'; event: TraceFrame }
+  | { type: 'task_update'; event: TaskUpdateFrame }   // NEW
+  | { type: 'error'; code: string; message: string }
+```
+
+```ts
+// ui/src/transport/session.ts
+export class RealtimeSession {
+  // ...existing fields
+  private taskUpdateSubscribers = new Map<string, (f: TaskUpdateFrame) => void>()
+
+  subscribeTaskUpdates(onUpdate: (f: TaskUpdateFrame) => void): () => void {
+    const id = `task-update-${nextSubId++}`
+    this.taskUpdateSubscribers.set(id, onUpdate)
+    this.ensureSocket()
+    return () => { this.taskUpdateSubscribers.delete(id) }
+  }
+
+  // In the frame dispatch switch (near where traces fan out):
+  //   case 'task_update':
+  //     for (const onUpdate of this.taskUpdateSubscribers.values()) {
+  //       onUpdate(frame.event)
+  //     }
+  //     break
+}
+```
+
+Then the hook:
+
+```ts
+// ui/src/hooks/useTaskUpdateStream.ts
 import { useEffect } from 'react'
 import { useTasksStore } from '../store/tasksStore'
-import { connectRealtime } from '../data/realtime'
+import { getRealtimeSession } from '../transport'   // existing singleton accessor
 
 export function useTaskUpdateStream() {
   const applyUpdate = useTasksStore(s => s.applyUpdate)
   useEffect(() => {
-    const conn = connectRealtime()
-    const off = conn.on('task_update', (ev) => applyUpdate(ev))
-    return () => { off(); conn.close() }
+    const session = getRealtimeSession()
+    return session.subscribeTaskUpdates((frame) => {
+      applyUpdate({
+        task_id: frame.taskId,
+        status: frame.status,
+        owner: frame.owner,
+        sub_channel_id: frame.subChannelId,
+        updated_at: frame.updatedAt,
+      })
+    })
   }, [applyUpdate])
 }
 ```
 
-Mount once at the app root.
+Mount once at the app root. If the transport doesn't expose a singleton accessor today, add one (it should — the trace hook uses the same session). No separate WebSocket connection.
 
 - [ ] **Step 6: Initial load into `tasksStore`.**
 
@@ -1472,25 +1575,39 @@ export interface TaskInfo {
 }
 ```
 
-- [ ] **Step 2: Scoped rename `claimedByName` → `owner`.**
+- [ ] **Step 2: Scoped rename `claimedByName` → `owner` AND `createdByName` → `createdBy`.**
 
 Only in these files (avoid a repo-wide sed that could touch wire `claimedBy`):
 - `ui/src/data/tasks.ts`
-- `ui/src/components/tasks/TasksPanel.tsx`
+- `ui/src/components/tasks/TasksPanel.tsx` — updates both the `task.createdByName` reader at line ~60 and the `task.claimedByName` reader
 - `ui/src/components/tasks/TaskDetail.tsx`
 - `ui/src/components/tasks/TaskCard` references (already `owner` from Task 9)
 
-Do NOT touch `ui/src/data/taskEvents.ts`'s wire-level `claimedBy` string — the boundary map is already in place from Task 10 Step 1.
+Do NOT touch `ui/src/data/taskEvents.ts`'s wire-level `claimedBy` string — the boundary map is already in place from Task 10 Step 1. The wire is immutable for chat-history compat; only in-memory types rename.
 
-- [ ] **Step 3: Kanban 4-column filter.**
+- [ ] **Step 3: Kanban 4-column filter + six-key `groupTasksByStatus`.**
 
 ```tsx
 const COMMITTED: TaskStatus[] = ['todo', 'in_progress', 'in_review', 'done']
 const committedTasks = tasks.filter(t => COMMITTED.includes(t.status))
-const groupedByStatus = groupTasksByStatus(committedTasks)   // reduced to 4 keys
+const groupedByStatus = groupTasksByStatus(committedTasks)
+// Read only the four committed-work columns; the other two (proposed, dismissed) are initialized empty.
 ```
 
-`groupTasksByStatus` — widen its record type to include all six statuses, but the UI only reads four.
+`groupTasksByStatus` must initialize **all six** keys — `Record<TaskStatus, TaskInfo[]>` requires them, and TypeScript will fail to compile otherwise:
+
+```ts
+export function groupTasksByStatus(tasks: TaskInfo[]): Record<TaskStatus, TaskInfo[]> {
+  const result: Record<TaskStatus, TaskInfo[]> = {
+    proposed: [], dismissed: [],
+    todo: [], in_progress: [], in_review: [], done: [],
+  }
+  for (const t of tasks) result[t.status].push(t)
+  return result
+}
+```
+
+The UI only reads four. The extra two keys are harmless when empty.
 
 - [ ] **Step 4: Endpoint URLs.**
 
