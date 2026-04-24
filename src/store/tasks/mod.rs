@@ -38,23 +38,31 @@ pub struct Task {
     pub sub_channel_id: Option<String>,
 }
 
-/// Kanban-style state stored in SQLite.
+/// Kanban-style state stored in SQLite. Unified lifecycle: Proposed/Dismissed
+/// sit alongside the four post-acceptance states. Transitions are forward-only
+/// (see `can_transition_to`); there are no reverse edges in v1.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskStatus {
+    /// Suggested by an agent; awaiting human accept/dismiss.
+    Proposed,
+    /// Terminal — the proposal was rejected.
+    Dismissed,
     /// Open, not started.
     Todo,
     /// Someone is actively working it.
     InProgress,
     /// Awaiting review.
     InReview,
-    /// Completed.
+    /// Terminal — completed.
     Done,
 }
 
 impl TaskStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Proposed => "proposed",
+            Self::Dismissed => "dismissed",
             Self::Todo => "todo",
             Self::InProgress => "in_progress",
             Self::InReview => "in_review",
@@ -64,6 +72,8 @@ impl TaskStatus {
 
     pub fn from_status_str(s: &str) -> Option<Self> {
         match s {
+            "proposed" => Some(Self::Proposed),
+            "dismissed" => Some(Self::Dismissed),
             "todo" => Some(Self::Todo),
             "in_progress" => Some(Self::InProgress),
             "in_review" => Some(Self::InReview),
@@ -72,14 +82,16 @@ impl TaskStatus {
         }
     }
 
+    /// Forward-only transitions. No reverse transitions in v1.
     pub fn can_transition_to(&self, to: Self) -> bool {
+        use TaskStatus::*;
         matches!(
             (self, to),
-            (Self::Todo, Self::InProgress)
-                | (Self::InProgress, Self::InReview)
-                | (Self::InProgress, Self::Done)
-                | (Self::InReview, Self::Done)
-                | (Self::InReview, Self::InProgress)
+            (Proposed, Todo)
+                | (Proposed, Dismissed)
+                | (Todo, InProgress)
+                | (InProgress, InReview)
+                | (InReview, Done)
         )
     }
 }
@@ -572,6 +584,23 @@ impl Store {
         drop(conn);
         self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn task_status_transitions() {
+        use TaskStatus::*;
+        assert!(Proposed.can_transition_to(Todo));
+        assert!(Proposed.can_transition_to(Dismissed));
+        assert!(!Proposed.can_transition_to(InProgress));
+        assert!(!Dismissed.can_transition_to(Todo)); // terminal
+        assert!(!Done.can_transition_to(InProgress)); // terminal
+        assert!(Todo.can_transition_to(InProgress));
+        assert!(!InProgress.can_transition_to(Todo)); // no reverse in v1
     }
 }
 
