@@ -1,4 +1,4 @@
-import { Search, Settings2, Users } from "lucide-react";
+import { Settings2, Users } from "lucide-react";
 import { useStore } from "../../store";
 import { useChannels } from "../../hooks/data";
 import { MessageList } from "./MessageList";
@@ -57,13 +57,8 @@ export function ChatHeader({
             <span>{memberCount ?? "..."}</span>
           </button>
         )}
-        <button
-          className="chat-header-btn"
-          type="button"
-          aria-label="Search room"
-        >
-          <Search size={15} />
-        </button>
+        {/* Search is not yet implemented (no backend FTS or search endpoint).
+            See issue #92. */}
         {isTeamChannel && onOpenTeamSettings && (
           <button
             className="chat-header-btn"

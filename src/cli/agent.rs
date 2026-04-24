@@ -29,12 +29,12 @@ fn resolve_agent_id(agents: &[serde_json::Value], name: &str) -> anyhow::Result<
         .collect();
 
     match display_matches.len() {
-        0 => anyhow::bail!("agent not found: {name}"),
+        0 => Err(crate::cli::UserError(format!("agent not found: {name}")).into()),
         1 => Ok(display_matches.into_iter().next().unwrap()),
-        _ => anyhow::bail!(
+        _ => Err(crate::cli::UserError(format!(
             "ambiguous name: '{name}' matches {} agents by display_name. Use the canonical name (e.g., testbot-2a00).",
             display_matches.len()
-        ),
+        )).into()),
     }
 }
 
@@ -248,12 +248,12 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 let mut locked = stdin.lock();
                 let mut line = String::new();
                 if !is_tty {
-                    anyhow::bail!(
+                    return Err(crate::cli::UserError(format!(
                         "refusing to delete @{name} without --yes on non-interactive stdin"
-                    );
+                    )).into());
                 }
                 if locked.read_line(&mut line).is_err() {
-                    anyhow::bail!("Abort.");
+                    return Err(crate::cli::UserError("Abort.".into()).into());
                 }
                 let trimmed = line.trim();
                 if !matches!(trimmed, "y" | "Y") {
@@ -288,7 +288,9 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 .with_context(|| format!("unexpected delete response from {server_url}"))?;
             if let Some(warning) = data.get("warning").and_then(|v| v.as_str()) {
                 if wipe {
-                    anyhow::bail!("Agent deleted but workspace cleanup failed: {warning}");
+                    return Err(crate::cli::UserError(format!(
+                        "Agent deleted but workspace cleanup failed: {warning}"
+                    )).into());
                 }
                 tracing::warn!("{warning}");
             }

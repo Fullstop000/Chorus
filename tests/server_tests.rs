@@ -2234,9 +2234,20 @@ async fn test_create_team_endpoint() {
 
     let team = store.get_team("eng-team").unwrap().unwrap();
     let members = store.get_team_members(&team.id).unwrap();
-    assert_eq!(members.len(), 1);
-    assert_eq!(members[0].member_name, "bot1");
-    assert_eq!(members[0].role, "operator");
+    let current_user = whoami::username();
+    assert_eq!(members.len(), 2);
+
+    let bot_member = members.iter().find(|m| m.member_name == "bot1").unwrap();
+    assert_eq!(bot_member.member_type, "agent");
+    assert_eq!(bot_member.role, "operator");
+
+    let human_member = members.iter().find(|m| m.member_name == current_user).unwrap();
+    assert_eq!(human_member.member_type, "human");
+    assert_eq!(human_member.role, "operator");
+
+    // Creator is also joined to the team channel.
+    let channel_members = store.get_channel_members(&ch.id).unwrap();
+    assert!(channel_members.iter().any(|m| m.member_name == current_user));
 
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
@@ -2253,6 +2264,96 @@ async fn test_create_team_endpoint() {
         .join("eng-team")
         .join("ROLE.md");
     assert!(role_md.exists());
+}
+
+#[tokio::test]
+async fn test_create_team_does_not_duplicate_creator_when_explicitly_in_members() {
+    let (store, app, _lifecycle, _dir) = setup_with_lifecycle_and_data_dir();
+    let current_user = whoami::username();
+
+    let body = serde_json::json!({
+        "name": "eng-team",
+        "display_name": "Engineering Team",
+        "collaboration_model": "leader_operators",
+        "members": [{
+            "member_name": current_user,
+            "member_type": "human",
+            "member_id": current_user,
+            "role": "observer"
+        }]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/teams")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let team = store.get_team("eng-team").unwrap().unwrap();
+    let members = store.get_team_members(&team.id).unwrap();
+    assert_eq!(members.len(), 1);
+    assert_eq!(members[0].member_name, current_user);
+    assert_eq!(members[0].role, "observer");
+
+    // Explicit creator is also joined to the team channel via the member loop.
+    let ch = store.get_channel_by_name("eng-team").unwrap().unwrap();
+    let channel_members = store.get_channel_members(&ch.id).unwrap();
+    assert!(channel_members.iter().any(|m| m.member_name == current_user));
+}
+
+#[tokio::test]
+async fn test_create_team_rejects_agent_sharing_creator_name() {
+    let (store, app, _lifecycle, _dir) = setup_with_lifecycle_and_data_dir();
+    let current_user = whoami::username();
+
+    // Create an agent named after the current OS user.
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: &current_user,
+            display_name: &current_user,
+            description: None,
+            system_prompt: None,
+            runtime: "codex",
+            model: "gpt-5.4-mini",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    let agent = store.get_agent(&current_user).unwrap().unwrap();
+
+    let body = serde_json::json!({
+        "name": "eng-team",
+        "display_name": "Engineering Team",
+        "collaboration_model": "leader_operators",
+        "members": [{
+            "member_name": current_user,
+            "member_type": "agent",
+            "member_id": agent.id,
+            "role": "operator"
+        }]
+    });
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/teams")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

@@ -117,5 +117,5 @@ pub(super) async fn resolve_channel_id(
             return Ok(id.to_string());
         }
     }
-    anyhow::bail!("channel not found: #{normalized}")
+    Err(crate::cli::UserError(format!("channel not found: #{normalized}")).into())
 }

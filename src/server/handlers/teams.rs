@@ -126,6 +126,35 @@ pub async fn handle_create_team(
         ));
     }
 
+    // Reject duplicate member names and agent/creator name collisions upfront
+    // to prevent DB/fs state divergence (PK is (team_id, member_name)).
+    // TODO: This handler is not atomic — late-stage failures (e.g. agent restart)
+    // leave DB records behind without rolling back FS state.
+    let username = whoami::username();
+    let mut seen_names = std::collections::HashSet::new();
+    let mut creator_in_members = false;
+    for member in &req.members {
+        parse_member_type(&member.member_type)?;
+        if !seen_names.insert(&member.member_name) {
+            return Err(app_err!(
+                StatusCode::BAD_REQUEST,
+                format!("duplicate member name: {}", member.member_name)
+            ));
+        }
+        if member.member_name == username && member.member_type == "human" {
+            creator_in_members = true;
+        }
+    }
+    if !creator_in_members && seen_names.contains(&username) {
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "cannot add a member that shares the team creator's name: {}",
+                username
+            )
+        ));
+    }
+
     let team_id = state
         .store
         .create_team(
@@ -147,6 +176,22 @@ pub async fn handle_create_team(
         .store
         .create_channel(&name, None, ChannelType::Team, None)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    // Auto-join the creator to the team channel and add them as a team member
+    // unless they already included themselves in the explicit members list.
+    // NOTE: whoami::username() assumes the server runs as the same OS user who
+    // created the team. This is correct for Chorus's local-first architecture
+    // but would need rethinking for a multi-user or hosted deployment.
+    if !creator_in_members {
+        state
+            .store
+            .join_channel(&name, &username, SenderType::Human)
+            .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+        state
+            .store
+            .create_team_member(&team_id, &username, "human", &username, "operator")
+            .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    }
 
     let teams_dir = state.store.teams_dir();
     let agents_dir = state.store.agents_dir();
