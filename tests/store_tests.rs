@@ -2440,7 +2440,10 @@ fn accept_task_proposal_posts_kickoff_in_sub_channel() {
     let accepted = store.accept_task_proposal(&p.id, "alice").unwrap();
 
     // Exactly one system message in the sub-channel, carrying the kickoff
-    // context (task number + original title).
+    // context (title + provenance + verbatim source snapshot). v2: the task
+    // number is no longer in the body — identity comes from the sub-channel
+    // itself, and the body's job is to carry the originating user request
+    // into the fresh per-task ACP session.
     let conn = store.conn_for_test();
     let rows: Vec<(String, String)> = conn
         .prepare(
@@ -2457,15 +2460,21 @@ fn accept_task_proposal_posts_kickoff_in_sub_channel() {
     assert_eq!(rows.len(), 1, "expected 1 kickoff message, got {rows:?}");
     assert_eq!(rows[0].0, "system");
     assert!(
-        rows[0].1.contains("fix login"),
-        "kickoff missing title: {:?}",
+        rows[0].1.contains("Task opened: fix login"),
+        "kickoff missing title line: {:?}",
         rows[0].1
     );
     assert!(
-        rows[0].1.contains(&format!("#{}", accepted.task_number)),
-        "kickoff missing task number: {:?}",
+        rows[0].1.contains("From @alice's message in #eng:"),
+        "kickoff missing provenance line: {:?}",
         rows[0].1
     );
+    assert!(
+        rows[0].1.contains("\n> hi"),
+        "kickoff missing verbatim source blockquote: {:?}",
+        rows[0].1
+    );
+    let _ = accepted.task_number; // kept for signal that task_number is still returned in the accept result
 }
 
 #[test]

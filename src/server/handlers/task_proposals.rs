@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 
 use super::{ApiResult, AppState};
 use crate::server::error::{app_err, AppErrorCode, ErrorResponse};
-use crate::store::task_proposals::{AcceptedTaskProposal, CreateTaskProposalInput, TaskProposal};
+use crate::store::task_proposals::{
+    truncate_excerpt, AcceptedTaskProposal, CreateTaskProposalInput, TaskProposal,
+};
 
 // ── Request bodies ───────────────────────────────────────────────────────────
 
@@ -81,10 +83,29 @@ pub struct ProposalView {
     pub resolved_by: Option<String>,
     #[serde(rename = "resolvedAt")]
     pub resolved_at: Option<String>,
+
+    // v2 snapshot fields. These mirror the pending-card chat-message payload
+    // so the frontend can share parsing logic between HTTP reads and WS
+    // events. Only four of the six DB snapshot columns cross the wire:
+    // `snapshot_sender_type` and `snapshotted_at` are internal/audit.
+    #[serde(rename = "sourceMessageId")]
+    pub source_message_id: Option<String>,
+    #[serde(rename = "snapshotSenderName")]
+    pub snapshot_sender_name: Option<String>,
+    #[serde(rename = "snapshotExcerpt")]
+    pub snapshot_excerpt: Option<String>,
+    #[serde(rename = "snapshotCreatedAt")]
+    pub snapshot_created_at: Option<String>,
 }
 
 impl From<TaskProposal> for ProposalView {
     fn from(p: TaskProposal) -> Self {
+        // The excerpt derives from `snapshot_content` ALONE — independent of
+        // `source_message_id`. A proposal whose source message was deleted
+        // (pointer NULL after ON DELETE SET NULL, snapshot still populated)
+        // must still serialize `snapshotExcerpt` so the UI can render the
+        // frozen evidence even when the jump-to-source link is gone.
+        let snapshot_excerpt = p.snapshot_content.as_deref().map(truncate_excerpt);
         Self {
             id: p.id,
             channel_id: p.channel_id,
@@ -96,6 +117,10 @@ impl From<TaskProposal> for ProposalView {
             accepted_sub_channel_id: p.accepted_sub_channel_id,
             resolved_by: p.resolved_by,
             resolved_at: p.resolved_at.map(|t| t.to_rfc3339()),
+            source_message_id: p.source_message_id,
+            snapshot_sender_name: p.snapshot_sender_name,
+            snapshot_excerpt,
+            snapshot_created_at: p.snapshot_created_at,
         }
     }
 }
@@ -229,4 +254,47 @@ pub async fn dismiss_task_proposal(
             }
         })?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+    use crate::store::task_proposals::TaskProposalStatus;
+    use chrono::TimeZone;
+
+    /// Covers the deleted-source edge case: the DB's `ON DELETE SET NULL`
+    /// on `source_message_id` nulls the navigation pointer, but the five
+    /// snapshot fields survive untouched (DB CHECK demands all-or-nothing,
+    /// and the delete touches only the pointer). The projected view must
+    /// still emit `snapshotExcerpt` — deriving it from `snapshot_content`
+    /// without consulting `source_message_id`.
+    #[test]
+    fn proposal_view_emits_excerpt_when_pointer_is_null() {
+        let p = TaskProposal {
+            id: "p1".into(),
+            channel_id: "c1".into(),
+            proposed_by: "claude".into(),
+            title: "t".into(),
+            status: TaskProposalStatus::Pending,
+            created_at: chrono::Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap(),
+            accepted_task_number: None,
+            accepted_sub_channel_id: None,
+            resolved_by: None,
+            resolved_at: None,
+            source_message_id: None, // pointer was NULL'd after ON DELETE SET NULL
+            snapshot_sender_name: Some("alice".into()),
+            snapshot_sender_type: Some("human".into()),
+            snapshot_content: Some("please fix login".into()),
+            snapshot_created_at: Some("2026-01-01T00:00:00Z".into()),
+            snapshotted_at: Some("2026-01-01T00:00:00Z".into()),
+        };
+        let view: ProposalView = p.into();
+        assert!(view.source_message_id.is_none());
+        assert_eq!(view.snapshot_sender_name.as_deref(), Some("alice"));
+        assert_eq!(view.snapshot_excerpt.as_deref(), Some("please fix login"));
+        assert_eq!(
+            view.snapshot_created_at.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
 }

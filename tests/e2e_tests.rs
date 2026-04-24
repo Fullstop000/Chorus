@@ -806,3 +806,122 @@ async fn internal_agent_create_proposal_inserts_row_and_card() {
     assert_eq!(body["title"], "investigate login 500");
     assert_eq!(body["proposedBy"], "claude");
 }
+
+/// Fixture for kickoff-body tests. Seeds an `eng` channel + `claude` agent,
+/// emits a source message with `source_content` from `sender`, creates the
+/// proposal, accepts it, and returns the sub-channel's kickoff body (the
+/// first system message posted there).
+///
+/// Scoped to this block only because the shape isn't stable enough to
+/// generalize yet — subsequent tasks may need the proposal id or task number
+/// too, so freezing an API prematurely would cost more than it saves.
+async fn accept_and_fetch_kickoff(
+    store: &Arc<Store>,
+    url: &str,
+    sender: &str,
+    source_content: &str,
+    title: &str,
+) -> String {
+    let client = reqwest::Client::new();
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "claude",
+            display_name: "Claude",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    let msg_id = seed_source_message(store, "eng", sender, source_content);
+    let p = store
+        .create_task_proposal(CreateTaskProposalInput {
+            channel_id: &channel_id,
+            proposed_by: "claude",
+            title,
+            source_message_id: &msg_id,
+        })
+        .unwrap();
+    let resp = client
+        .post(format!("{url}/api/task-proposals/{}/accept", p.id))
+        .json(&serde_json::json!({ "accepter": sender }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let sub_channel_name = body["subChannelName"].as_str().unwrap().to_string();
+
+    // The kickoff is the first system message posted in the sub-channel on
+    // acceptance — the first entry in history.
+    let (messages, _has_more) = store
+        .get_history(&sub_channel_name, 50, None, None)
+        .unwrap();
+    let kickoff = messages
+        .iter()
+        .find(|m| m.sender_type == "system")
+        .expect("sub-channel must contain a system kickoff message");
+    kickoff.content.clone()
+}
+
+#[tokio::test]
+async fn proposal_accept_kickoff_embeds_source_snapshot() {
+    let (url, store) = start_test_server().await;
+    let content = accept_and_fetch_kickoff(&store, &url, "alice", "X", "fix login").await;
+    assert!(
+        content.contains("Task opened: fix login"),
+        "kickoff must name the task: {content}"
+    );
+    assert!(
+        content.contains("From @alice's message in #eng:"),
+        "kickoff must cite source provenance: {content}"
+    );
+    assert!(
+        content.contains("\n> X"),
+        "kickoff must embed source as a line-prefixed blockquote: {content}"
+    );
+}
+
+/// Pins "cosmetic-only, no escaping": if the source already starts a line
+/// with `> `, we produce nested blockquotes rather than escaping. This
+/// prevents a future edit from silently flipping the rule — the blockquote
+/// here is a Markdown line-prefix convention, not a content transform.
+#[tokio::test]
+async fn proposal_accept_kickoff_preserves_existing_blockquote() {
+    let (url, store) = start_test_server().await;
+    let content =
+        accept_and_fetch_kickoff(&store, &url, "alice", "> original", "nested quote").await;
+    assert!(
+        content.contains("> > original"),
+        "pre-existing `> ` must nest, not be escaped: {content}"
+    );
+}
+
+/// Triple-backtick fenced code survives verbatim — every line, including the
+/// fences, gets the `> ` prefix. Downstream Markdown renderers see a
+/// blockquote containing a code fence, which renders correctly in every
+/// client we care about. The backend forwards bytes verbatim; no fence
+/// manipulation.
+#[tokio::test]
+async fn proposal_accept_kickoff_preserves_code_block() {
+    let (url, store) = start_test_server().await;
+    let src = "```rust\nfn foo() {}\n```";
+    let content = accept_and_fetch_kickoff(&store, &url, "alice", src, "run foo").await;
+    assert!(
+        content.contains("> ```rust"),
+        "opening fence must be quoted verbatim: {content}"
+    );
+    assert!(
+        content.contains("> fn foo() {}"),
+        "code body must be quoted verbatim: {content}"
+    );
+    assert!(
+        content.contains("> ```"),
+        "closing fence must be quoted verbatim: {content}"
+    );
+}

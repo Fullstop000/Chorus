@@ -176,16 +176,17 @@ pub struct CreateTaskProposalInput<'a> {
 }
 
 /// Shorten `content` to at most 240 Unicode scalar values, appending `'…'`
-/// when truncated. Used for the `snapshotExcerpt` field on the pending-card
-/// chat-message payload so the frontend doesn't have to do any trimming. The
-/// full verbatim body lives on the DB row (`snapshot_content`) — the excerpt
-/// is a display-only derivation.
+/// when truncated. Single source of truth for the `snapshotExcerpt` shown on
+/// both the pending-card chat-message payload (store-side emission) and the
+/// HTTP `ProposalView` (handler-side projection). The full verbatim body lives
+/// on the DB row (`snapshot_content`) — the excerpt is a display-only
+/// derivation.
 ///
-/// Private to this module (narrow visibility); Task 3 extracts or re-implements
-/// an identical helper at the handler layer for the HTTP view.
-const SNAPSHOT_EXCERPT_LIMIT: usize = 240;
+/// `pub(crate)` so the handler layer can reuse this without duplicating the
+/// 240 code-point rule; still crate-local (never reached by downstream crates).
+pub(crate) const SNAPSHOT_EXCERPT_LIMIT: usize = 240;
 
-fn truncate_excerpt_for_card(content: &str) -> String {
+pub(crate) fn truncate_excerpt(content: &str) -> String {
     let mut chars = content.chars();
     let head: String = chars.by_ref().take(SNAPSHOT_EXCERPT_LIMIT).collect();
     if chars.next().is_some() {
@@ -277,7 +278,7 @@ impl Store {
         // frontend reducer can render an excerpt block without a second
         // round-trip. `snapshotted_at` and `snapshot_sender_type` are
         // DB-only — not in the payload — per the v2 wire contract.
-        let excerpt = truncate_excerpt_for_card(&src_content);
+        let excerpt = truncate_excerpt(&src_content);
         let payload = serde_json::json!({
             "kind": "task_proposal",
             "proposalId": id,
@@ -418,10 +419,13 @@ impl Store {
         // Load the proposal under the write lock so a concurrent accept
         // can't race us. Also carry `created_at` so the accepted-snapshot
         // below emits the true proposal time for `proposedAt`, not the
-        // resolve time.
+        // resolve time. Snapshot sender + content are pulled too so the
+        // kickoff body can embed the originating user request verbatim as
+        // a blockquote (v2 context-carrying kickoff).
         let row = tx
             .query_row(
-                "SELECT channel_id, proposed_by, title, status, created_at \
+                "SELECT channel_id, proposed_by, title, status, created_at, \
+                        snapshot_sender_name, snapshot_content \
                  FROM task_proposals WHERE id = ?1",
                 params![id],
                 |r| {
@@ -431,11 +435,22 @@ impl Store {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, String>(4)?,
+                        r.get::<_, Option<String>>(5)?,
+                        r.get::<_, Option<String>>(6)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((channel_id, proposed_by, title, status_str, proposed_at)) = row else {
+        let Some((
+            channel_id,
+            proposed_by,
+            title,
+            status_str,
+            proposed_at,
+            snapshot_sender_name,
+            snapshot_content,
+        )) = row
+        else {
             return Err(anyhow!("task proposal not found: {id}"));
         };
         if status_str != "pending" {
@@ -505,10 +520,35 @@ impl Store {
         // triggers the agent's next run scoped to the sub-channel.
         let sub_channel = Self::get_channel_by_id_inner(&tx, &sub_channel_id)?
             .ok_or_else(|| anyhow!("sub-channel vanished: {sub_channel_id}"))?;
-        let kickoff = format!(
-            "Task #{task_number} opened: {title}. {proposed_by}, you proposed \
-             this — start here and ask any clarifying questions in this channel."
-        );
+        // Two named sections in one message: the task handoff (title) and
+        // the immutable source evidence (provenance + verbatim blockquote).
+        // Splitting into separate kickoff + pinned-source messages is
+        // deferred until multi-message snapshots exist; for v2 a single
+        // concatenated body keeps ordering, delivery, and per-task agent
+        // reads deterministic.
+        //
+        // Legacy fallback: pre-v2 rows that were pending at deploy time and
+        // accepted afterward have NULL snapshot fields. They get the v1
+        // title-only body. New rows always have snapshot data by
+        // construction (store insert populates all five fields atomically;
+        // the DB CHECK rejects partial writes).
+        let kickoff = match (&snapshot_content, &snapshot_sender_name) {
+            (Some(content), Some(sender)) => {
+                let quoted: String = content
+                    .lines()
+                    .map(|line| format!("> {line}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!(
+                    "Task opened: {title}\n\nFrom @{sender}'s message in #{parent}:\n{quoted}",
+                    title = title,
+                    sender = sender,
+                    parent = channel.name,
+                    quoted = quoted,
+                )
+            }
+            _ => format!("Task opened: {title}"),
+        };
         let kickoff_inserted = Self::create_system_message_tx(&tx, &sub_channel, &kickoff)?;
         let kickoff_message_id = kickoff_inserted.id.clone();
 
@@ -562,7 +602,7 @@ mod truncation_tests {
     #[test]
     fn under_limit_unchanged() {
         let input = "hello world";
-        let out = truncate_excerpt_for_card(input);
+        let out = truncate_excerpt(input);
         assert_eq!(out, "hello world");
         assert!(!out.ends_with('…'));
     }
@@ -574,7 +614,7 @@ mod truncation_tests {
     fn exactly_at_limit_unchanged() {
         let input: String = "a".repeat(SNAPSHOT_EXCERPT_LIMIT);
         assert_eq!(input.chars().count(), SNAPSHOT_EXCERPT_LIMIT);
-        let out = truncate_excerpt_for_card(&input);
+        let out = truncate_excerpt(&input);
         assert_eq!(out, input);
         assert!(!out.ends_with('…'));
     }
@@ -589,7 +629,7 @@ mod truncation_tests {
         input.push('🦀');
         assert_eq!(input.chars().count(), SNAPSHOT_EXCERPT_LIMIT + 1);
 
-        let out = truncate_excerpt_for_card(&input);
+        let out = truncate_excerpt(&input);
 
         // Valid UTF-8 by construction (String), but also assert the crab is
         // NOT present — the 241st code point must have been dropped.
@@ -610,7 +650,7 @@ mod truncation_tests {
         let input: String = "あ".repeat(SNAPSHOT_EXCERPT_LIMIT + 1);
         assert_eq!(input.chars().count(), SNAPSHOT_EXCERPT_LIMIT + 1);
 
-        let out = truncate_excerpt_for_card(&input);
+        let out = truncate_excerpt(&input);
 
         assert!(out.ends_with('…'));
         assert_eq!(out.chars().count(), SNAPSHOT_EXCERPT_LIMIT + 1);
