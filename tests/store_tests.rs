@@ -2525,6 +2525,15 @@ fn accept_task_proposal_posts_updated_task_proposal_message_in_parent() {
     assert_eq!(v["taskNumber"], 1);
     assert!(v["subChannelId"].is_string());
     assert!(v["subChannelName"].as_str().unwrap().ends_with("__task-1"));
+    // v2 wire contract: the terminal-state snapshot must carry the four
+    // snapshot wire fields so clients that first see the accepted card
+    // (joined mid-flight) can render excerpt + source without depending
+    // on the pending snapshot existing earlier in history. Pins the
+    // regression codex R1 caught (accept payload had lost these fields).
+    assert_eq!(v["sourceMessageId"], msg_id);
+    assert_eq!(v["snapshotSenderName"], "alice");
+    assert_eq!(v["snapshotExcerpt"], "hi");
+    assert!(v["snapshotCreatedAt"].is_string());
 }
 
 #[test]
@@ -2559,6 +2568,13 @@ fn dismiss_task_proposal_posts_updated_task_proposal_message() {
     assert_eq!(v["proposalId"], p.id);
     assert_eq!(v["status"], "dismissed");
     assert!(v["taskNumber"].is_null());
+    // v2 wire contract — pin the four snapshot wire fields on the
+    // dismissed terminal-state snapshot. Same rationale as the accepted
+    // test above (codex R1 caught both paths stripping these silently).
+    assert_eq!(v["sourceMessageId"], msg_id);
+    assert_eq!(v["snapshotSenderName"], "alice");
+    assert_eq!(v["snapshotExcerpt"], "hi");
+    assert!(v["snapshotCreatedAt"].is_string());
 }
 
 // ── v2: snapshot capture tests ───────────────────────────────────────────────
