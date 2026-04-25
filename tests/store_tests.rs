@@ -2172,6 +2172,136 @@ fn task_create_emits_task_update_event() {
 }
 
 #[test]
+fn task_snapshot_check_constraint_rejects_partial_population() {
+    // The schema-level CHECK requires all four `snapshot_*` columns to be
+    // either all populated or all NULL. Partial population is the failure
+    // mode that would let a "stub" snapshot leak into chat history without
+    // the full provenance — the constraint is the durable enforcement.
+    let store = Store::open(":memory:").unwrap();
+    use chorus::store::channels::ChannelType;
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+
+    let result = store.conn_for_test().execute(
+        "INSERT INTO tasks (id, channel_id, task_number, title, status, created_by, \
+         source_message_id, snapshot_sender_name) \
+         VALUES ('t1', ?1, 1, 'partial', 'todo', 'alice', \
+                 'msg-1', 'alice')",
+        rusqlite::params![channel_id],
+    );
+    assert!(
+        result.is_err(),
+        "INSERT with only 2 of 4 snapshot fields populated must fail the CHECK"
+    );
+    assert!(
+        result.unwrap_err().to_string().to_lowercase().contains("check"),
+        "error must reference the CHECK constraint"
+    );
+}
+
+#[test]
+fn source_message_delete_nulls_pointer_preserves_snapshot() {
+    // Pointer-vs-truth invariant: ON DELETE SET NULL on the FK from
+    // tasks.source_message_id -> messages.id, but the four `snapshot_*`
+    // columns persist verbatim. Provenance survives source deletion.
+    use chorus::store::channels::ChannelType;
+    use chorus::store::messages::SenderType;
+    use chorus::store::tasks::CreateProposedTaskArgs;
+    let store = Store::open(":memory:").unwrap();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot",
+            display_name: "Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    // Seed a real source message.
+    let src_id = store
+        .create_message(CreateMessage {
+            channel_name: "eng",
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "broken on safari mobile",
+            attachment_ids: &[],
+            suppress_event: true,
+            run_id: None,
+        })
+        .unwrap();
+
+    // Agent proposes a task tied to that message.
+    let proposed = store
+        .create_proposed_task(
+            "eng",
+            CreateProposedTaskArgs {
+                title: "fix safari".into(),
+                created_by: "bot".into(),
+                source_message_id: src_id.clone(),
+                snapshot_sender_name: "alice".into(),
+                snapshot_sender_type: "human".into(),
+                snapshot_content: "broken on safari mobile".into(),
+                snapshot_created_at: "2026-04-25T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+
+    // Pre-delete: pointer + snapshot both populated.
+    let (sm_id, sender, content): (Option<String>, Option<String>, Option<String>) = store
+        .conn_for_test()
+        .query_row(
+            "SELECT source_message_id, snapshot_sender_name, snapshot_content \
+             FROM tasks WHERE id = ?1",
+            rusqlite::params![proposed.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(sm_id.as_deref(), Some(src_id.as_str()));
+    assert_eq!(sender.as_deref(), Some("alice"));
+    assert_eq!(content.as_deref(), Some("broken on safari mobile"));
+
+    // Delete the source message directly; FK ON DELETE SET NULL fires.
+    store
+        .conn_for_test()
+        .execute(
+            "DELETE FROM messages WHERE id = ?1",
+            rusqlite::params![src_id],
+        )
+        .unwrap();
+
+    // Post-delete: pointer is NULL, snapshot fields preserved verbatim.
+    let (sm_id, sender, content): (Option<String>, Option<String>, Option<String>) = store
+        .conn_for_test()
+        .query_row(
+            "SELECT source_message_id, snapshot_sender_name, snapshot_content \
+             FROM tasks WHERE id = ?1",
+            rusqlite::params![proposed.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(sm_id.is_none(), "source pointer must NULL on cascade");
+    assert_eq!(
+        sender.as_deref(),
+        Some("alice"),
+        "snapshot sender survives source deletion"
+    );
+    assert_eq!(
+        content.as_deref(),
+        Some("broken on safari mobile"),
+        "snapshot content survives source deletion"
+    );
+}
+
+#[test]
 fn task_status_transitions_emit_task_update_per_step() {
     use chorus::store::channels::ChannelType;
     use chorus::store::tasks::TaskStatus;
