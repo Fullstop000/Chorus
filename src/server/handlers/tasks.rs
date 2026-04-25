@@ -5,7 +5,9 @@ use serde::Deserialize;
 
 use super::{app_err, ApiResult, AppState};
 use crate::store::channels::Channel;
-use crate::store::tasks::{TaskInfo, TaskStatus};
+use crate::store::tasks::{
+    normalize_sqlite_timestamp, CreateProposedTaskArgs, InvalidTaskTransition, TaskInfo, TaskStatus,
+};
 
 // ── Inline query structs ──
 
@@ -49,6 +51,33 @@ pub struct UpdateTaskStatusRequest {
     pub channel: String,
     pub task_number: i64,
     pub status: String,
+}
+
+/// Agent-path proposal: bridge sends `channel` (with `#` prefix), the
+/// proposer's free-form `title`, and the `source_message_id` of the chat
+/// message that sparked the proposal. The handler captures the snapshot
+/// (sender + content + created_at) so the resulting task carries verbatim
+/// provenance even after the source message is deleted.
+#[derive(Debug, serde::Deserialize)]
+pub struct ProposeTaskRequest {
+    #[serde(default)]
+    pub channel: String,
+    pub title: String,
+    pub source_message_id: String,
+}
+
+/// Map a store-layer `update_task_status` error to the right HTTP code:
+/// `InvalidTaskTransition` → 422 (the transition is well-formed but disallowed
+/// by the state machine — distinct from a 400 "bad request"), everything else
+/// → 400. Callers wrap the error inside their own `app_err!` shape.
+fn map_status_error(
+    e: anyhow::Error,
+) -> (axum::http::StatusCode, Json<super::ErrorResponse>) {
+    if e.downcast_ref::<InvalidTaskTransition>().is_some() {
+        app_err!(StatusCode::UNPROCESSABLE_ENTITY, e.to_string())
+    } else {
+        app_err!(StatusCode::BAD_REQUEST, e.to_string())
+    }
 }
 
 // Internal bridge routes still address task boards by `#channel` target.
@@ -143,8 +172,59 @@ pub async fn handle_update_task_status(
     state
         .store
         .update_task_status(channel_name, req.task_number, &agent_id, new_status)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(map_status_error)?;
     Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+/// `POST /agent/{agent_id}/tasks/propose` — agent proposes a task tied to a
+/// specific chat message. The source message is snapshotted (sender, content,
+/// created_at) so the resulting `tasks` row carries verbatim provenance even
+/// after the message is deleted (`source_message_id` becomes NULL via
+/// `ON DELETE SET NULL`; the `snapshot_*` columns persist).
+///
+/// Returns 404 if the source message id is unknown, 409 if the message lives
+/// in a different channel than the proposal target. The created task starts
+/// in `proposed` state and has no sub-channel until a human accepts it via
+/// `update-status` (proposed → todo).
+pub async fn handle_propose_task(
+    State(state): State<AppState>,
+    Path(agent_id): Path<String>,
+    Json(req): Json<ProposeTaskRequest>,
+) -> ApiResult<TaskInfo> {
+    let channel_name = strip_channel_prefix(&req.channel);
+    let src = state
+        .store
+        .get_conversation_message_view(&req.source_message_id)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "source message not found"))?;
+    if src.conversation_name != channel_name {
+        return Err(app_err!(
+            StatusCode::CONFLICT,
+            "source message belongs to channel {} but proposal target is {}",
+            src.conversation_name,
+            channel_name
+        ));
+    }
+
+    let snapshot_created_at = normalize_sqlite_timestamp(&src.created_at)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let task = state
+        .store
+        .create_proposed_task(
+            channel_name,
+            CreateProposedTaskArgs {
+                title: req.title,
+                created_by: agent_id,
+                source_message_id: req.source_message_id,
+                snapshot_sender_name: src.sender_name,
+                snapshot_sender_type: src.sender_type,
+                snapshot_content: src.content,
+                snapshot_created_at,
+            },
+        )
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(task))
 }
 
 pub async fn handle_public_list_tasks(
@@ -236,6 +316,6 @@ pub async fn handle_public_update_task_status(
     state
         .store
         .update_task_status(&channel.name, req.task_number, &actor_id, new_status)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+        .map_err(map_status_error)?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }

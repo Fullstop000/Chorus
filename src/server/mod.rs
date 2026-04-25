@@ -87,6 +87,7 @@ pub fn build_router_with_services(
             "/agent/{agent_id}/tasks",
             get(handle_list_tasks).post(handle_create_tasks),
         )
+        .route("/agent/{agent_id}/tasks/propose", post(handle_propose_task))
         .route("/agent/{agent_id}/tasks/claim", post(handle_claim_tasks))
         .route("/agent/{agent_id}/tasks/unclaim", post(handle_unclaim_task))
         .route(

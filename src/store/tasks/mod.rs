@@ -36,7 +36,6 @@ pub struct InvalidTaskTransition {
 /// `created_at` into a task row's snapshot columns, and that source can come
 /// from either format — this helper guarantees the stored form is canonical
 /// regardless of input shape. Errors when chrono can't parse the input.
-#[allow(dead_code)] // consumed by Task 6 (agent-create HTTP handler)
 pub(crate) fn normalize_sqlite_timestamp(ts: &str) -> Result<String> {
     use chrono::NaiveDateTime;
 

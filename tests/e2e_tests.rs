@@ -225,7 +225,7 @@ async fn test_task_board_e2e() {
         .unwrap();
     assert_eq!(resp["tasks"].as_array().unwrap().len(), 2);
 
-    // Claim task 1 (transitions from todo -> in_progress)
+    // Claim task 1 — sets owner; status stays todo (decoupled from start).
     let resp: serde_json::Value = client
         .post(format!("{url}/api/conversations/{channel_id}/tasks/claim"))
         .json(&serde_json::json!({
@@ -239,7 +239,20 @@ async fn test_task_board_e2e() {
         .unwrap();
     assert!(resp["results"][0]["success"].as_bool().unwrap());
 
-    // Update status to in_review (in_progress -> in_review)
+    // Walk forward step-by-step: todo -> in_progress -> in_review.
+    let resp = client
+        .post(format!(
+            "{url}/api/conversations/{channel_id}/tasks/update-status"
+        ))
+        .json(&serde_json::json!({
+            "task_number": 1,
+            "status": "in_progress"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(resp.status().is_success());
+
     let resp = client
         .post(format!(
             "{url}/api/conversations/{channel_id}/tasks/update-status"
@@ -460,7 +473,7 @@ async fn list_tasks_returns_sub_channel_info() {
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0]["subChannelName"], "general__task-1");
     assert!(tasks[0]["subChannelId"].is_string());
-    assert_eq!(tasks[0]["createdByName"], "alice");
+    assert_eq!(tasks[0]["createdBy"], "alice");
 }
 
 /// Task 5 — `GET /api/conversations/{id}/tasks/{n}` returns a single task with
@@ -488,7 +501,7 @@ async fn get_task_detail_returns_task_and_sub_channel() {
     assert_eq!(body["title"], "Ship it");
     assert_eq!(body["subChannelName"], "general__task-1");
     assert!(body["subChannelId"].is_string());
-    assert_eq!(body["createdByName"], "alice");
+    assert_eq!(body["createdBy"], "alice");
 
     // Unknown task number → 404, not 500.
     let resp = client
@@ -499,7 +512,12 @@ async fn get_task_detail_returns_task_and_sub_channel() {
     assert_eq!(resp.status(), 404);
 }
 
-/// Task lifecycle: create → claim → in_review → done emits exactly 4 ordered
+/// Task lifecycle in the unified model:
+/// - Parent channel: ONE `task_card` system message (the host) on creation.
+///   Subsequent state changes do not post more parent-channel messages — the
+///   card re-renders via SSE `task_update` instead.
+/// - Sub-channel: kickoff + per-action `task_event` messages.
+/// Walks create → claim → in_progress → in_review → done step-by-step
 /// system messages in the parent channel.
 #[tokio::test]
 async fn task_lifecycle_emits_four_events_in_parent_channel() {
@@ -514,9 +532,19 @@ async fn task_lifecycle_emits_four_events_in_parent_channel() {
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
 
-    // create → claim → in_review → done
-    store.create_tasks("eng", "alice", &["wire up"]).unwrap();
+    // create → claim → in_progress → in_review → done. Forward-only graph
+    // means every step is explicit; claim no longer auto-advances to
+    // in_progress.
+    let created = store.create_tasks("eng", "alice", &["wire up"]).unwrap();
+    let sub_id = created[0]
+        .sub_channel_id
+        .as_deref()
+        .expect("sub-channel minted on create")
+        .to_string();
     store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InProgress)
+        .unwrap();
     store
         .update_task_status("eng", 1, "alice", TaskStatus::InReview)
         .unwrap();
@@ -524,7 +552,10 @@ async fn task_lifecycle_emits_four_events_in_parent_channel() {
         .update_task_status("eng", 1, "alice", TaskStatus::Done)
         .unwrap();
 
-    let events: Vec<serde_json::Value> = store
+    // Parent channel: exactly ONE system message — the `task_card` host. No
+    // task_event fires in the parent under the unified model; the card
+    // re-renders via SSE `task_update` instead.
+    let parent_msgs: Vec<serde_json::Value> = store
         .conn_for_test()
         .prepare(
             "SELECT content FROM messages \
@@ -535,12 +566,43 @@ async fn task_lifecycle_emits_four_events_in_parent_channel() {
         .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
         .unwrap()
         .filter_map(|r| r.ok())
-        .map(|s| serde_json::from_str(&s).unwrap())
+        .map(|s| serde_json::from_str(&s).unwrap_or(serde_json::Value::Null))
         .collect();
+    assert_eq!(
+        parent_msgs.len(),
+        1,
+        "parent channel: exactly one task_card host message"
+    );
+    assert_eq!(parent_msgs[0]["kind"], "task_card");
+    assert_eq!(parent_msgs[0]["status"], "todo");
 
-    assert_eq!(events.len(), 4);
-    assert_eq!(events[0]["action"], "created");
-    assert_eq!(events[1]["action"], "claimed");
+    // Sub-channel: kickoff (plain text) + 4 task_events (claimed,
+    // in_progress, in_review, done).
+    let sub_rows: Vec<String> = store
+        .conn_for_test()
+        .prepare(
+            "SELECT content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' \
+             ORDER BY seq",
+        )
+        .unwrap()
+        .query_map(rusqlite::params![sub_id], |r| r.get::<_, String>(0))
+        .unwrap()
+        .filter_map(|r| r.ok())
+        .collect();
+    assert_eq!(sub_rows.len(), 5, "kickoff + 4 task_events: {sub_rows:?}");
+    assert!(
+        sub_rows[0].starts_with("Task opened: wire up"),
+        "first sub-channel message is the kickoff"
+    );
+    let events: Vec<serde_json::Value> = sub_rows
+        .iter()
+        .skip(1)
+        .map(|c| serde_json::from_str(c).unwrap())
+        .collect();
+    assert_eq!(events[0]["action"], "claimed");
+    assert_eq!(events[1]["action"], "status_changed");
+    assert_eq!(events[1]["nextStatus"], "in_progress");
     assert_eq!(events[2]["action"], "status_changed");
     assert_eq!(events[2]["nextStatus"], "in_review");
     assert_eq!(events[3]["action"], "status_changed");
@@ -560,11 +622,14 @@ async fn batched_create_tasks_emits_one_event_per_task() {
         .join_channel("eng2", "bob", SenderType::Human)
         .unwrap();
 
-    // Three tasks in one call exercises the pending_events Vec with > 1 entry.
+    // Three tasks in one call exercises the per-task task_card emission. Each
+    // creation posts ONE `task_card` host message in the parent channel with
+    // the task's number/title/status; no per-task `created` task_event is
+    // emitted in the unified model (the card replaces it).
     let created = store.create_tasks("eng2", "bob", &["a", "b", "c"]).unwrap();
     assert_eq!(created.len(), 3);
 
-    let events: Vec<serde_json::Value> = store
+    let cards: Vec<serde_json::Value> = store
         .conn_for_test()
         .prepare(
             "SELECT content FROM messages \
@@ -578,14 +643,14 @@ async fn batched_create_tasks_emits_one_event_per_task() {
         .map(|s| serde_json::from_str(&s).unwrap())
         .collect();
 
-    assert_eq!(events.len(), 3);
-    for (i, event) in events.iter().enumerate() {
-        assert_eq!(event["action"], "created");
-        assert_eq!(event["taskNumber"], (i + 1) as i64);
-        assert_eq!(event["actor"], "bob");
+    assert_eq!(cards.len(), 3, "one task_card per task");
+    for (i, card) in cards.iter().enumerate() {
+        assert_eq!(card["kind"], "task_card");
+        assert_eq!(card["taskNumber"], (i + 1) as i64);
+        assert_eq!(card["createdBy"], "bob");
+        assert_eq!(card["status"], "todo");
     }
-    // Task numbers are distinct 1, 2, 3 in creation order.
-    assert_eq!(events[0]["title"], "a");
-    assert_eq!(events[1]["title"], "b");
-    assert_eq!(events[2]["title"], "c");
+    assert_eq!(cards[0]["title"], "a");
+    assert_eq!(cards[1]["title"], "b");
+    assert_eq!(cards[2]["title"], "c");
 }
