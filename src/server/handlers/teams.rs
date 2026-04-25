@@ -155,7 +155,8 @@ pub async fn handle_create_team(
         ));
     }
 
-    let team_id = match state.active_workspace_id.as_deref() {
+    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let team_id = match active_workspace_id.as_deref() {
         Some(workspace_id) => state.store.create_team_in_workspace(
             workspace_id,
             &name,
@@ -179,7 +180,7 @@ pub async fn handle_create_team(
         }
     })?;
 
-    let team_channel_id = match state.active_workspace_id.as_deref() {
+    let team_channel_id = match active_workspace_id.as_deref() {
         Some(workspace_id) => state.store.create_channel_in_workspace(
             workspace_id,
             &name,
@@ -267,9 +268,10 @@ pub async fn handle_create_team(
 }
 
 pub async fn handle_list_teams(State(state): State<AppState>) -> ApiResult<Vec<Team>> {
+    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
     let teams = state
         .store
-        .get_teams_for_workspace(state.active_workspace_id.as_deref())
+        .get_teams_for_workspace(active_workspace_id.as_deref())
         .map_err(internal_err)?;
     Ok(Json(teams))
 }

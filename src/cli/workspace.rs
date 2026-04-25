@@ -1,19 +1,16 @@
-//! `chorus workspace` — manage platform workspaces for the local instance.
+//! `chorus workspace` — manage platform workspaces through the running server.
 
-use std::path::Path;
-
+use anyhow::Context;
 use clap::Subcommand;
+use serde::Deserialize;
 
-use chorus::config::ChorusConfig;
-use chorus::store::{Store, Workspace};
-
-use super::{default_data_dir, DATA_SUBDIR};
+use chorus::utils::http;
 
 #[derive(Subcommand)]
 pub(crate) enum WorkspaceCommands {
     /// Print the active workspace
     Current,
-    /// List workspaces for the local human
+    /// List workspaces
     List,
     /// Create a workspace and switch to it
     Create {
@@ -32,114 +29,152 @@ pub(crate) enum WorkspaceCommands {
     },
 }
 
-pub async fn run(data_dir: Option<String>, cmd: WorkspaceCommands) -> anyhow::Result<()> {
-    let data_dir_str = data_dir.unwrap_or_else(default_data_dir);
-    let data_dir = chorus::agent::templates::expand_tilde(&data_dir_str);
-    let store = open_workspace_store(&data_dir)?;
+#[derive(Debug, Deserialize)]
+struct WorkspaceDto {
+    id: String,
+    name: String,
+    slug: String,
+    mode: String,
+    active: bool,
+}
 
+pub async fn run(server_url: String, cmd: WorkspaceCommands) -> anyhow::Result<()> {
+    let client = http::client();
     match cmd {
         WorkspaceCommands::Current => {
-            let workspace = active_workspace_or_user_error(&store)?;
-            print_workspace(&workspace, true);
+            let workspace = get_workspace(&client, &server_url, "/api/workspaces/current").await?;
+            print_workspace(&workspace);
         }
         WorkspaceCommands::List => {
-            let human = resolve_local_human(&data_dir)?;
-            let active = store.get_active_workspace()?;
-            let workspaces = store.list_workspaces_for_human(&human)?;
+            let workspaces = get_workspaces(&client, &server_url, "/api/workspaces").await?;
             for workspace in workspaces {
-                let is_active = active
-                    .as_ref()
-                    .is_some_and(|active| active.id == workspace.id);
-                print_workspace(&workspace, is_active);
+                print_workspace(&workspace);
             }
         }
         WorkspaceCommands::Create { name } => {
-            let human = ensure_local_human(&data_dir)?;
-            let workspace = store.create_local_workspace(&name, &human)?;
+            let workspace = post_workspace(
+                &client,
+                &server_url,
+                "/api/workspaces",
+                serde_json::json!({ "name": name }),
+            )
+            .await?;
             println!(
                 "Created and switched to workspace {} ({})",
                 workspace.name, workspace.slug
             );
         }
         WorkspaceCommands::Switch { workspace } => {
-            let workspace = store
-                .get_workspace_by_selector(&workspace)?
-                .ok_or_else(|| workspace_not_found(&workspace))?;
-            store.set_active_workspace(&workspace.id)?;
+            let workspace = post_workspace(
+                &client,
+                &server_url,
+                "/api/workspaces/switch",
+                serde_json::json!({ "workspace": workspace }),
+            )
+            .await?;
             println!(
                 "Switched to workspace {} ({})",
                 workspace.name, workspace.slug
             );
-            println!("Restart `chorus start` to apply this workspace to a running server.");
         }
         WorkspaceCommands::Rename { name } => {
-            let active = active_workspace_or_user_error(&store)?;
-            let workspace = store.rename_workspace(&active.id, &name)?;
+            let workspace = patch_workspace(
+                &client,
+                &server_url,
+                "/api/workspaces/current",
+                serde_json::json!({ "name": name }),
+            )
+            .await?;
             println!(
                 "Renamed workspace to {} ({})",
                 workspace.name, workspace.slug
             );
-            println!("Restart `chorus start` to apply this workspace to a running server.");
         }
     }
 
     Ok(())
 }
 
-fn open_workspace_store(data_dir: &Path) -> anyhow::Result<Store> {
-    let data_subdir = data_dir.join(DATA_SUBDIR);
-    std::fs::create_dir_all(&data_subdir)?;
-    let db_path = data_subdir.join("chorus.db");
-    Store::open(path_to_str(&db_path)?)
+async fn get_workspace(
+    client: &reqwest::Client,
+    server_url: &str,
+    path: &str,
+) -> anyhow::Result<WorkspaceDto> {
+    request(client.get(format!("{server_url}{path}")), server_url, path).await
 }
 
-fn path_to_str(path: &Path) -> anyhow::Result<&str> {
-    path.to_str()
-        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
+async fn get_workspaces(
+    client: &reqwest::Client,
+    server_url: &str,
+    path: &str,
+) -> anyhow::Result<Vec<WorkspaceDto>> {
+    request(client.get(format!("{server_url}{path}")), server_url, path).await
 }
 
-fn active_workspace_or_user_error(store: &Store) -> anyhow::Result<Workspace> {
-    store.get_active_workspace()?.ok_or_else(|| {
-        crate::cli::UserError(
-            "no active workspace; run `chorus setup` or `chorus workspace create <name>`".into(),
-        )
-        .into()
-    })
+async fn post_workspace(
+    client: &reqwest::Client,
+    server_url: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> anyhow::Result<WorkspaceDto> {
+    request(
+        client.post(format!("{server_url}{path}")).json(&body),
+        server_url,
+        path,
+    )
+    .await
 }
 
-fn workspace_not_found(selector: &str) -> crate::cli::UserError {
-    crate::cli::UserError(format!("workspace not found: {selector}"))
+async fn patch_workspace(
+    client: &reqwest::Client,
+    server_url: &str,
+    path: &str,
+    body: serde_json::Value,
+) -> anyhow::Result<WorkspaceDto> {
+    request(
+        client.patch(format!("{server_url}{path}")).json(&body),
+        server_url,
+        path,
+    )
+    .await
 }
 
-fn print_workspace(workspace: &Workspace, active: bool) {
-    let marker = if active { "*" } else { " " };
+async fn request<T: serde::de::DeserializeOwned>(
+    builder: reqwest::RequestBuilder,
+    server_url: &str,
+    path: &str,
+) -> anyhow::Result<T> {
+    let url = format!("{server_url}{path}");
+    let res = builder
+        .send()
+        .await
+        .with_context(|| format!("is the Chorus server running at {server_url}?"))?;
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(surface_http_error(status, &body));
+    }
+    serde_json::from_str(&body).with_context(|| format!("unexpected response from {url}: not JSON"))
+}
+
+fn surface_http_error(status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
+        let msg = val.get("error").and_then(|v| v.as_str()).unwrap_or("");
+        let code = val.get("code").and_then(|v| v.as_str());
+        if let Some(code) = code {
+            return anyhow::anyhow!("{}: {}", code.to_lowercase(), msg);
+        }
+        if !msg.is_empty() {
+            return anyhow::anyhow!("{status}: {msg}");
+        }
+    }
+    anyhow::anyhow!("{status}: {body}")
+}
+
+fn print_workspace(workspace: &WorkspaceDto) {
+    let marker = if workspace.active { "*" } else { " " };
     println!(
         "{marker} {} ({}) [{}] id={}",
-        workspace.name,
-        workspace.slug,
-        workspace.mode.as_db_str(),
-        workspace.id
+        workspace.name, workspace.slug, workspace.mode, workspace.id
     );
-}
-
-fn resolve_local_human(data_dir: &Path) -> anyhow::Result<String> {
-    let cfg = ChorusConfig::load(data_dir)?.unwrap_or_default();
-    Ok(cfg
-        .local_human
-        .name
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(whoami::username))
-}
-
-fn ensure_local_human(data_dir: &Path) -> anyhow::Result<String> {
-    let mut cfg = ChorusConfig::load(data_dir)?.unwrap_or_default();
-    let human = cfg
-        .local_human
-        .name
-        .clone()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(whoami::username);
-    cfg.local_human.name = Some(human.clone());
-    cfg.save(data_dir)?;
-    Ok(human)
 }

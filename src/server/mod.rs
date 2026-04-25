@@ -3,7 +3,7 @@ mod handlers;
 pub mod transport;
 
 use std::sync::Arc;
-use std::{collections::HashSet, sync::Mutex};
+use std::{collections::HashSet, sync::Mutex, sync::RwLock};
 
 use axum::body::Body;
 use axum::http::{header, StatusCode, Uri};
@@ -72,7 +72,7 @@ pub fn build_router_with_services(
 
     let state = AppState {
         store,
-        active_workspace_id,
+        active_workspace_id: Arc::new(RwLock::new(active_workspace_id)),
         lifecycle,
         runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
@@ -163,6 +163,15 @@ pub fn build_router_with_services(
                 .delete(handle_delete_team),
         )
         .route("/teams/{id}/members", post(handle_add_team_member))
+        .route(
+            "/workspaces",
+            get(handle_list_workspaces).post(handle_create_workspace),
+        )
+        .route(
+            "/workspaces/current",
+            get(handle_current_workspace).patch(handle_rename_current_workspace),
+        )
+        .route("/workspaces/switch", post(handle_switch_workspace))
         .route(
             "/teams/{id}/members/{member}",
             axum::routing::delete(handle_remove_team_member),

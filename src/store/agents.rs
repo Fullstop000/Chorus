@@ -89,7 +89,7 @@ impl Store {
             "INSERT INTO agents (id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
         )?;
-        Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
+        Self::replace_agent_env_vars_inner(conn, record.name, record.env_vars)?;
         let all_channel = match workspace_id {
             Some(workspace_id) => conn
                 .query_row(
@@ -100,7 +100,7 @@ impl Store {
                     super::channels::Channel::from_row,
                 )
                 .ok(),
-            None => Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?,
+            None => Self::get_channel_by_name_inner(conn, Self::DEFAULT_SYSTEM_CHANNEL)?,
         };
         if let Some(all_channel) = all_channel {
             conn.execute(

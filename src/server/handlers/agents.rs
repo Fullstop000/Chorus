@@ -196,9 +196,10 @@ pub(super) fn normalize_reasoning_effort(
 // ── Public handlers ──
 
 pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<AgentInfo>> {
+    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
     let mut agents: Vec<AgentInfo> = state
         .store
-        .get_agents_for_workspace(state.active_workspace_id.as_deref())
+        .get_agents_for_workspace(active_workspace_id.as_deref())
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .iter()
         .map(AgentInfo::from)
@@ -316,6 +317,7 @@ pub(crate) async fn create_and_start_agent(
     state: &AppState,
     params: &CreateAgentParams<'_>,
 ) -> anyhow::Result<CreateAgentResult> {
+    let active_workspace_id = state.active_workspace_id()?;
     let mut last_error: Option<String> = None;
     let mut slug_result: Option<(String, String)> = None;
     for _ in 0..MAX_SLUG_ATTEMPTS {
@@ -330,7 +332,7 @@ pub(crate) async fn create_and_start_agent(
             reasoning_effort: params.reasoning_effort,
             env_vars: params.env_vars,
         };
-        let create_result = match state.active_workspace_id.as_deref() {
+        let create_result = match active_workspace_id.as_deref() {
             Some(workspace_id) => state
                 .store
                 .create_agent_record_in_workspace(workspace_id, &record),
@@ -359,7 +361,7 @@ pub(crate) async fn create_and_start_agent(
     })?;
     for channel in state
         .store
-        .get_auto_join_channels_for_workspace(state.active_workspace_id.as_deref())?
+        .get_auto_join_channels_for_workspace(active_workspace_id.as_deref())?
     {
         let _ = state
             .store

@@ -2943,6 +2943,7 @@ async fn test_active_workspace_filters_core_resource_lists() {
     assert!(!agents.to_string().contains("beta-bot"));
 
     let resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/teams")
@@ -2955,6 +2956,186 @@ async fn test_active_workspace_filters_core_resource_lists() {
     let teams = body_json(resp).await;
     assert!(teams.to_string().contains("alpha-team"));
     assert!(!teams.to_string().contains("beta-team"));
+
+    let req = serde_json::json!({ "workspace": "beta" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workspaces/switch")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["slug"], "beta");
+    assert_eq!(store.get_active_workspace().unwrap().unwrap().slug, "beta");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/channels")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let channels = body_json(resp).await;
+    assert!(!channels.to_string().contains("alpha-general"));
+    assert!(channels.to_string().contains("beta-general"));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let agents = body_json(resp).await;
+    assert!(!agents.to_string().contains("alpha-bot"));
+    assert!(agents.to_string().contains("beta-bot"));
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/teams")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let teams = body_json(resp).await;
+    assert!(!teams.to_string().contains("alpha-team"));
+    assert!(teams.to_string().contains("beta-team"));
+}
+
+#[tokio::test]
+async fn test_workspace_api_lifecycle() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    let app = build_router(store.clone());
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/workspaces/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert!(body_json(resp)
+        .await
+        .to_string()
+        .contains("no active workspace"));
+
+    let req = serde_json::json!({ "name": "Acme" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workspaces")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["name"], "Acme");
+    assert_eq!(body["slug"], "acme");
+    assert_eq!(body["active"], true);
+
+    let req = serde_json::json!({ "name": "Beta" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workspaces")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["slug"], "beta");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/workspaces/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["slug"], "beta");
+
+    let req = serde_json::json!({ "workspace": "acme" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workspaces/switch")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["slug"], "acme");
+
+    let req = serde_json::json!({ "name": "Acme Renamed" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PATCH")
+                .uri("/api/workspaces/current")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["name"], "Acme Renamed");
+    assert_eq!(body["slug"], "acme");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/workspaces")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let list = body_json(resp).await;
+    assert!(list.to_string().contains("Acme Renamed"));
+    assert!(list.to_string().contains("Beta"));
 }
 
 #[tokio::test]

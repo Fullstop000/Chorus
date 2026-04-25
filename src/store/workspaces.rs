@@ -185,6 +185,18 @@ impl Store {
         Ok(workspaces?)
     }
 
+    pub fn list_workspaces(&self) -> Result<Vec<Workspace>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, slug, mode, created_by_human, created_at
+             FROM workspaces
+             ORDER BY created_at, name",
+        )?;
+        let rows = stmt.query_map([], Self::workspace_from_row)?;
+        let workspaces: rusqlite::Result<Vec<_>> = rows.collect();
+        Ok(workspaces?)
+    }
+
     fn get_workspace_by_id_inner(
         conn: &rusqlite::Connection,
         id: &str,

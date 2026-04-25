@@ -9,6 +9,7 @@ pub mod tasks;
 pub mod teams;
 pub mod templates;
 pub mod workspace;
+pub mod workspaces;
 
 pub use agents::*;
 pub use attachments::*;
@@ -18,9 +19,10 @@ pub use tasks::*;
 pub use teams::*;
 pub use templates::*;
 pub use workspace::*;
+pub use workspaces::*;
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -41,11 +43,29 @@ use dto::ServerInfo;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
-    pub active_workspace_id: Option<String>,
+    pub active_workspace_id: Arc<RwLock<Option<String>>>,
     pub lifecycle: Arc<dyn AgentLifecycle>,
     pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
     pub templates: Arc<Vec<AgentTemplate>>,
+}
+
+impl AppState {
+    pub fn active_workspace_id(&self) -> anyhow::Result<Option<String>> {
+        self.active_workspace_id
+            .read()
+            .map(|guard| guard.clone())
+            .map_err(|_| anyhow::anyhow!("failed to read active workspace state"))
+    }
+
+    pub fn set_active_workspace_id(&self, workspace_id: Option<String>) -> anyhow::Result<()> {
+        let mut guard = self
+            .active_workspace_id
+            .write()
+            .map_err(|_| anyhow::anyhow!("failed to write active workspace state"))?;
+        *guard = workspace_id;
+        Ok(())
+    }
 }
 
 pub(super) struct TransitionGuard {
@@ -105,7 +125,10 @@ pub async fn handle_server_info(
     let mut info = server_info::build_server_info_for_workspace(
         state.store.as_ref(),
         &agent_id,
-        state.active_workspace_id.as_deref(),
+        state
+            .active_workspace_id()
+            .map_err(internal_err)?
+            .as_deref(),
     )
     .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     for agent_info in &mut info.agents {
@@ -120,7 +143,10 @@ pub async fn handle_server_info(
 pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
     let info = server_info::build_ui_shell_info_for_workspace(
         state.store.as_ref(),
-        state.active_workspace_id.as_deref(),
+        state
+            .active_workspace_id()
+            .map_err(internal_err)?
+            .as_deref(),
     )
     .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::to_value(info).unwrap()))

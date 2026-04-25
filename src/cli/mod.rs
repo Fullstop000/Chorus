@@ -104,9 +104,9 @@ enum Commands {
     },
     /// Manage platform workspaces
     Workspace {
-        /// Chorus data directory
-        #[arg(long, global = true)]
-        data_dir: Option<String>,
+        /// Chorus server URL (inherited by all workspace subcommands)
+        #[arg(long, global = true, default_value = "http://localhost:3001")]
+        server_url: String,
         #[command(subcommand)]
         cmd: workspace::WorkspaceCommands,
     },
@@ -337,7 +337,7 @@ pub async fn run() -> anyhow::Result<()> {
 
         Some(Commands::Channel { cmd, server_url }) => channel::run(server_url, cmd).await,
 
-        Some(Commands::Workspace { data_dir, cmd }) => workspace::run(data_dir, cmd).await,
+        Some(Commands::Workspace { server_url, cmd }) => workspace::run(server_url, cmd).await,
 
         Some(Commands::Agent { cmd }) => agent::run(cmd).await,
 

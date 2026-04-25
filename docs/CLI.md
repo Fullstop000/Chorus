@@ -39,15 +39,16 @@ chorus workspace list
 chorus workspace create "Side Project"
 chorus workspace switch side-project
 chorus workspace rename "Side Project AI"
-chorus workspace --data-dir /custom/path current
+chorus workspace --server-url http://localhost:3001 current
 ```
 
 **Behavior:**
+- Calls the running Chorus server API; start Chorus first with `chorus start` or `chorus serve`
 - `create` creates a local platform workspace and switches to it immediately
 - `switch` accepts a workspace slug or exact display name
 - `rename` changes the display name but keeps the slug stable
 - `list` marks the active workspace with `*`
-- switching or renaming requires restarting `chorus start` for an already-running server to pick up the new active workspace
+- switching applies to the running server immediately
 
 **Mutates:** yes for `create`, `switch`, and `rename`; no for `current` and `list`.
 

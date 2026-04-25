@@ -233,9 +233,11 @@ pub(super) fn spawn_event_forwarder(
                     // Snapshot the triggering channel the first time we see
                     // this run id so we don't race with `end_run` or concurrent
                     // sessions clearing the agent-scoped channel binding.
-                    if !run_channel_id.contains_key(&run_id) {
+                    if let std::collections::hash_map::Entry::Vacant(e) =
+                        run_channel_id.entry(run_id)
+                    {
                         if let Some(ch) = trace_store.run_channel_id(key) {
-                            run_channel_id.insert(run_id, ch);
+                            e.insert(ch);
                         }
                     }
                     match item {
@@ -764,6 +766,9 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(count, 0, "expected no system warning when send_message was used");
+        assert_eq!(
+            count, 0,
+            "expected no system warning when send_message was used"
+        );
     }
 }

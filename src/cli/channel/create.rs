@@ -15,7 +15,8 @@ pub async fn run(
         return Err(crate::cli::UserError(format!(
             "{}: {normalized}",
             chorus::store::channels::INVALID_CHANNEL_NAME_MSG
-        )).into());
+        ))
+        .into());
     }
     let description = description.unwrap_or_default();
     let client = super::http::client();
