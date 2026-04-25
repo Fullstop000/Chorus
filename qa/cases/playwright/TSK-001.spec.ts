@@ -1,6 +1,5 @@
 import { test, expect } from './helpers/fixtures'
 import { gotoApp } from './helpers/ui'
-import { ensureMixedRuntimeTrio } from "./helpers/api";
 import { createUserChannelViaUi, clickSidebarChannel } from "./helpers/ui";
 
 /**
@@ -22,10 +21,6 @@ import { createUserChannelViaUi, clickSidebarChannel } from "./helpers/ui";
  *   each one updates the same card in place; UI matches backend.
  */
 test.describe("TSK-001", () => {
-  test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request);
-  });
-
   test("Create And Advance A Task @case TSK-001", async ({ page }) => {
     const slug = `qa-tasks-${Date.now()}`;
     const title = `TSK-001 ${Date.now()}`;

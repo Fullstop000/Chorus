@@ -6,8 +6,10 @@ import {
   reloadApp,
 } from './helpers/ui'
 import {
-  ensureMixedRuntimeTrio,
+  createAgentApi,
+  findAgentByPrefix,
   getWhoami,
+  listAgents,
   proposeTaskAsAgent,
   sendAsUserGetId,
 } from './helpers/api'
@@ -26,13 +28,24 @@ import {
  *     order: "Task opened: {title}" → "From @{sender}'s message in #{parent}:"
  *     → "> {content}"
  */
-test.describe('TSK-005', () => {
-  test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request)
-  })
+// Ensures a single codex agent exists (idempotent). The proposal flow only
+// needs the agent's identity for attribution — the agent is never run — so we
+// avoid the full mixed-runtime trio (which requires kimi auth).
+async function ensureProposerAgent(request: import('@playwright/test').APIRequestContext): Promise<string> {
+  const agents = await listAgents(request)
+  const existing = findAgentByPrefix(agents, 'tsk005-bot')
+  if (existing) return existing.name
+  const { name } = await createAgentApi(request, {
+    name: 'tsk005-bot',
+    runtime: 'codex',
+    model: 'gpt-5.4',
+  }, { allowNameTaken: true })
+  return name
+}
 
+test.describe('TSK-005', () => {
   test('Agent Proposal And Snapshot Kickoff @case TSK-005', async ({ page, request }) => {
-    const trio = await ensureMixedRuntimeTrio(request)
+    const proposerName = await ensureProposerAgent(request)
     const slug = `qa-task-prop-${Date.now()}`
     const title = `TSK-005 ${Date.now()}`
     const sourceContent = `seed message ${Date.now()}`
@@ -67,7 +80,7 @@ test.describe('TSK-005', () => {
     )
 
     await test.step('Step 2: Agent proposes a task tied to the source message', async () => {
-      await proposeTaskAsAgent(request, trio.botA, {
+      await proposeTaskAsAgent(request, proposerName, {
         channel: `#${slug}`,
         title,
         sourceMessageId,
@@ -121,10 +134,11 @@ test.describe('TSK-005', () => {
       await card.locator('[data-testid="task-card-link"]').click()
       await expect(page.locator('[data-testid="task-detail"]')).toBeVisible()
 
-      // The kickoff system message renders as a generic `.message-item` in the
-      // sub-channel feed; all three sections are concatenated into one body.
+      // The kickoff system message renders as a `.system-message-divider`
+      // (role="status") in the sub-channel feed; all three sections are
+      // concatenated into one body inside `.system-message-divider__label`.
       const kickoff = page
-        .locator('[data-testid="task-detail"] .message-item')
+        .locator('[data-testid="task-detail"] .system-message-divider')
         .filter({ hasText: `Task opened: ${title}` })
         .first()
       await expect(kickoff).toBeVisible({ timeout: 15_000 })
