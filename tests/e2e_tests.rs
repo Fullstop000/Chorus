@@ -654,3 +654,108 @@ async fn batched_create_tasks_emits_one_event_per_task() {
     assert_eq!(cards[1]["title"], "b");
     assert_eq!(cards[2]["title"], "c");
 }
+
+/// HTTP-level pointer-vs-truth: agent proposes a task tied to a chat
+/// message, the source message is deleted, and the task detail endpoint
+/// still returns the snapshot. Provenance survives source deletion when
+/// observed through the public API, not just at the SQL layer.
+#[tokio::test]
+async fn http_source_message_delete_preserves_task_snapshot() {
+    let (url, store) = start_test_server().await;
+    let client = reqwest::Client::new();
+
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot",
+            display_name: "Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    let src_id = store
+        .create_message(CreateMessage {
+            channel_name: "general",
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "broken on safari mobile",
+            attachment_ids: &[],
+            suppress_event: true,
+            run_id: None,
+        })
+        .unwrap();
+
+    // Agent proposes via the bridge HTTP route. Agent routes are nested
+    // under /internal/.
+    let raw = client
+        .post(format!("{url}/internal/agent/bot/tasks/propose"))
+        .json(&serde_json::json!({
+            "channel": "general",
+            "title": "fix safari",
+            "source_message_id": src_id,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        raw.status().is_success(),
+        "propose failed: {} body={:?}",
+        raw.status(),
+        raw.text().await.unwrap_or_default()
+    );
+    let resp: serde_json::Value = client
+        .post(format!("{url}/internal/agent/bot/tasks/propose"))
+        .json(&serde_json::json!({
+            "channel": "general",
+            "title": "fix safari take 2",
+            "source_message_id": src_id,
+        }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let task_number = resp["taskNumber"].as_i64().expect("taskNumber on response");
+
+    // Delete the source message.
+    store
+        .conn_for_test()
+        .execute(
+            "DELETE FROM messages WHERE id = ?1",
+            rusqlite::params![src_id],
+        )
+        .unwrap();
+
+    // The public task-detail endpoint still serves the snapshot fields,
+    // with sourceMessageId nulled out.
+    let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
+    let body: serde_json::Value = client
+        .get(format!(
+            "{url}/api/conversations/{channel_id}/tasks/{task_number}"
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert!(
+        body["sourceMessageId"].is_null(),
+        "sourceMessageId must NULL after source delete, got {body:?}"
+    );
+    assert_eq!(
+        body["snapshotSenderName"], "alice",
+        "snapshot sender preserved after source delete"
+    );
+    assert_eq!(
+        body["snapshotContent"], "broken on safari mobile",
+        "snapshot content preserved after source delete"
+    );
+}
