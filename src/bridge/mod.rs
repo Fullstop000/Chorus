@@ -162,7 +162,9 @@ impl ChatBridge {
     }
 
     #[tool(
-        description = "Update a task's progress status. Valid statuses: todo, in_progress, in_review, done."
+        description = "Update a task's progress status. Forward-only state machine: \
+proposed -> todo (acceptance) | dismissed; todo -> in_progress; in_progress -> in_review; \
+in_review -> done. No reverse transitions; reverts go via unclaim or a fresh task."
     )]
     async fn update_task_status(
         &self,
@@ -174,6 +176,29 @@ impl ChatBridge {
                 &params.channel,
                 params.task_number,
                 &params.status,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    #[tool(
+        description = "Propose a task tied to a specific chat message. Use when a user's \
+message describes work that should become a tracked task — quote-style attribution. \
+The server snapshots the source message (sender, content, time) so provenance survives \
+even if the source message is deleted. The proposal starts in `proposed` state and only \
+enters the active kanban after a human accepts it via update_task_status(... 'todo'). \
+Pass the source message's UUID, NOT its display number."
+    )]
+    async fn propose_task(
+        &self,
+        Parameters(params): Parameters<ProposeTaskParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        self.backend
+            .propose_task(
+                &self.agent_id,
+                &params.channel,
+                &params.title,
+                &params.source_message_id,
             )
             .await
             .map_err(Into::into)

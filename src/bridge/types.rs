@@ -75,8 +75,27 @@ pub(super) struct UpdateTaskStatusParams {
     pub(super) channel: String,
     /// The task number to update (e.g. 3)
     pub(super) task_number: i64,
-    /// The new status: todo, in_progress, in_review, or done
+    /// The new status. The state machine is forward-only:
+    ///   proposed -> todo (acceptance) | dismissed (rejection)
+    ///   todo -> in_progress
+    ///   in_progress -> in_review
+    ///   in_review -> done
+    /// No reverse edges in v1; reverts go via unclaim or a fresh task.
     pub(super) status: String,
+}
+
+/// Parameters for `propose_task`: agent proposes a task tied to a chat
+/// message. The server snapshots the source (sender, content, created_at)
+/// onto the task row so provenance survives source-message deletion.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct ProposeTaskParams {
+    /// The channel where the source message lives — e.g. '#engineering'
+    pub(super) channel: String,
+    /// Free-form title of the proposed task
+    pub(super) title: String,
+    /// UUID of the chat message that sparked the proposal. Must belong to
+    /// the same channel; the server returns an error otherwise.
+    pub(super) source_message_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
