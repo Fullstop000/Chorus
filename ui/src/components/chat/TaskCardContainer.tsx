@@ -6,6 +6,7 @@ import {
   updateTaskStatus,
 } from '../../data/tasks'
 import { TaskCard, type TaskAction } from './TaskCard'
+import { formatTime, senderColor } from './MessageItem'
 
 export interface TaskCardWirePayload {
   kind: 'task_card'
@@ -97,5 +98,33 @@ export function TaskCardContainer({
     }
   }
 
-  return <TaskCard task={task} onAction={dispatch} busy={busy} />
+  // Render the card inside a regular message-item shell so it visually flows
+  // as just another message in the chat stream — matches the convention every
+  // other row uses (avatar + sender + timestamp + body) rather than reading as
+  // a floating popover panel.
+  const senderName = task.createdBy
+  const initial = senderName[0]?.toUpperCase() ?? 'T'
+  return (
+    <div className="message-item message-task">
+      <div
+        className="message-avatar"
+        style={{ background: senderColor(senderName) }}
+      >
+        <span style={{ fontSize: 12, fontWeight: 700 }}>{initial}</span>
+      </div>
+      <div className="message-body">
+        <div className="message-header">
+          <span className="message-sender">{senderName}</span>
+          <span className="message-status">opened task #{task.taskNumber}</span>
+          <span
+            className="message-time"
+            title={new Date(task.createdAt).toLocaleString()}
+          >
+            {formatTime(task.createdAt)}
+          </span>
+        </div>
+        <TaskCard task={task} onAction={dispatch} busy={busy} />
+      </div>
+    </div>
+  )
 }

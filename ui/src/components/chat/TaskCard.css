@@ -8,25 +8,35 @@
  *   - Existing palette tokens only — no raw hex.
  */
 
-.task-card {
-  border: 1px solid var(--color-border);
-  background: var(--color-popover);
-  padding: 10px 12px;
+/*
+ * The card flows inline inside a `.message-item.message-task` row (see
+ * TaskCardContainer), so it inherits chat padding and hover/border treatment
+ * from the parent row — no separate border, no popover background, no own
+ * padding. Scoped under `.message-task` to avoid colliding with the kanban
+ * `.task-card` in `tasks/TasksPanel.css` which uses the same class name for
+ * a tile-style surface.
+ */
+.message-task .task-card {
   display: flex;
   flex-direction: column;
   gap: 6px;
   font-family: var(--font-sans);
-}
-
-.task-card--muted {
-  background: var(--color-muted);
-  opacity: 0.75;
-}
-
-.task-card--pill {
-  padding: 0;
-  border: none;
+  /* Override kanban defaults that leak in via the shared `.task-card` name. */
+  border: 0;
   background: transparent;
+  padding: 0;
+  margin: 0;
+  width: auto;
+  cursor: auto;
+  transition: none;
+}
+
+.message-task .task-card--muted {
+  opacity: 0.6;
+}
+
+.message-task .task-card--pill {
+  /* Compact done state — no extra wrapping. */
 }
 
 .task-card__head {

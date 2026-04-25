@@ -87,7 +87,7 @@ function injectMentions(
   );
 }
 
-function formatTime(iso: string): string {
+export function formatTime(iso: string): string {
   try {
     return new Date(iso).toLocaleTimeString([], {
       hour: "2-digit",
@@ -110,7 +110,7 @@ function formatDate(iso: string): string {
   }
 }
 
-function senderColor(name: string): string {
+export function senderColor(name: string): string {
   const colors = [
     "#C0392B",
     "#2980B9",
