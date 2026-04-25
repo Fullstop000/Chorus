@@ -3,7 +3,7 @@ mod handlers;
 pub mod transport;
 
 use std::sync::Arc;
-use std::{collections::HashSet, sync::Mutex, sync::RwLock};
+use std::{collections::HashSet, sync::Mutex};
 
 use axum::body::Body;
 use axum::http::{header, StatusCode, Uri};
@@ -11,6 +11,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use rust_embed::RustEmbed;
+use tokio::sync::RwLock;
 use tower_http::cors::{Any, CorsLayer};
 
 #[derive(RustEmbed)]
@@ -41,6 +42,7 @@ async fn health() -> &'static str {
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
+use crate::config::ChorusConfig;
 use crate::store::Store;
 
 pub use handlers::dto;
@@ -69,10 +71,12 @@ pub fn build_router_with_services(
         .ok()
         .flatten()
         .map(|workspace| workspace.id);
+    let local_human_name = resolve_local_human_name(store.as_ref());
 
     let state = AppState {
         store,
         active_workspace_id: Arc::new(RwLock::new(active_workspace_id)),
+        local_human_name,
         lifecycle,
         runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
@@ -223,4 +227,17 @@ pub fn build_router_with_services(
         // return 405/404 rather than silently serving index.html.
         .fallback_service(get(serve_ui))
         .with_state(state)
+}
+
+fn resolve_local_human_name(store: &Store) -> String {
+    let config_root = store
+        .data_dir()
+        .parent()
+        .unwrap_or_else(|| store.data_dir());
+    ChorusConfig::load(config_root)
+        .ok()
+        .flatten()
+        .and_then(|cfg| cfg.local_human.name)
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(whoami::username)
 }

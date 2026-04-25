@@ -167,7 +167,7 @@ channel insert cannot leave a team without its channel.
 | `POST /api/workspaces` | Creates a workspace without activating it. |
 | `POST /api/workspaces/switch` | Sets the active workspace by slug or exact name. |
 | `PATCH /api/workspaces/current` | Renames the active workspace; slug remains stable. |
-| `DELETE /api/workspaces/{selector}` | Hard-deletes a workspace and its scoped database data. If it was active, the server selects the next workspace if one exists. |
+| `DELETE /api/workspaces/{selector}` | Hard-deletes a workspace and its scoped database data. If it was active, the active workspace becomes unset until the user switches explicitly. |
 
 `chorus workspace` is a thin client over those endpoints. This keeps CLI,
 frontend, and future cloud auth on the same behavior path.

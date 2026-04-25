@@ -196,7 +196,7 @@ pub(super) fn normalize_reasoning_effort(
 // ── Public handlers ──
 
 pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<AgentInfo>> {
-    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
     let mut agents: Vec<AgentInfo> = state
         .store
         .get_agents_for_workspace(active_workspace_id.as_deref())
@@ -317,7 +317,7 @@ pub(crate) async fn create_and_start_agent(
     state: &AppState,
     params: &CreateAgentParams<'_>,
 ) -> anyhow::Result<CreateAgentResult> {
-    let active_workspace_id = state.active_workspace_id()?;
+    let active_workspace_id = state.active_workspace_id().await;
     let mut last_error: Option<String> = None;
     let mut slug_result: Option<(String, String)> = None;
     for _ in 0..MAX_SLUG_ATTEMPTS {

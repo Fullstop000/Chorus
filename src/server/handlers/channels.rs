@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use super::{app_err, internal_err, ApiResult, AppState};
+use super::{app_err, ApiResult, AppState};
 use crate::server::error::AppErrorCode;
 use crate::store::channels::{
     is_valid_channel_name, normalize_channel_name, Channel, ChannelMemberProfile, ChannelType,
@@ -108,7 +108,7 @@ pub async fn handle_list_channels(
     Query(query): Query<ListChannelsQuery>,
 ) -> ApiResult<Vec<ChannelInfo>> {
     let member = query.member.unwrap_or_else(whoami::username);
-    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
     let channels = channel_infos_for(
         state.store.as_ref(),
         &ChannelListParams {
@@ -138,7 +138,7 @@ pub async fn handle_create_channel(
     } else {
         Some(req.description.trim())
     };
-    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
     let channel_id = match active_workspace_id.as_deref() {
         Some(workspace_id) => state.store.create_channel_in_workspace(
             workspace_id,

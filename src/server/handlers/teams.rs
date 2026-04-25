@@ -155,7 +155,7 @@ pub async fn handle_create_team(
         ));
     }
 
-    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
     let (team_id, team_channel_id) = match active_workspace_id.as_deref() {
         Some(workspace_id) => state.store.create_team_with_channel_in_workspace(
             workspace_id,
@@ -254,7 +254,7 @@ pub async fn handle_create_team(
 }
 
 pub async fn handle_list_teams(State(state): State<AppState>) -> ApiResult<Vec<Team>> {
-    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
     let teams = state
         .store
         .get_teams_for_workspace(active_workspace_id.as_deref())

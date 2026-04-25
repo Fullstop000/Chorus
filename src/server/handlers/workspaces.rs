@@ -5,7 +5,6 @@ use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::config::ChorusConfig;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::server::handlers::AppState;
 use crate::store::{Workspace, WorkspaceCounts, WorkspaceMode};
@@ -106,7 +105,7 @@ pub async fn handle_current_workspace(
 pub async fn handle_list_workspaces(
     State(state): State<AppState>,
 ) -> ApiResult<Vec<WorkspaceResponse>> {
-    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
     let workspaces = state.store.list_workspaces().map_err(internal_err)?;
     Ok(Json(
         workspaces
@@ -127,12 +126,11 @@ pub async fn handle_create_workspace(
             "workspace name is required"
         ));
     }
-    let human = local_human_for_store(&state);
     let workspace = state
         .store
-        .create_local_workspace_without_activation(name, &human)
+        .create_local_workspace_without_activation(name, &state.local_human_name)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
-    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
     Ok(Json(workspace_response(
         &state,
         workspace,
@@ -162,7 +160,7 @@ pub async fn handle_switch_workspace(
         .map_err(internal_err)?;
     state
         .set_active_workspace_id(Some(workspace.id.clone()))
-        .map_err(internal_err)?;
+        .await;
     Ok(Json(workspace_response(
         &state,
         workspace.clone(),
@@ -221,7 +219,7 @@ pub async fn handle_delete_workspace(
     let deleted_id = workspace.id.clone();
     let was_active = state
         .active_workspace_id()
-        .map_err(internal_err)?
+        .await
         .is_some_and(|id| id == deleted_id);
 
     state
@@ -230,32 +228,8 @@ pub async fn handle_delete_workspace(
         .map_err(internal_err)?;
 
     let active_workspace = if was_active {
-        let next = state
-            .store
-            .list_workspaces()
-            .map_err(internal_err)?
-            .into_iter()
-            .next();
-        match next {
-            Some(next_workspace) => {
-                state
-                    .store
-                    .set_active_workspace(&next_workspace.id)
-                    .map_err(internal_err)?;
-                state
-                    .set_active_workspace_id(Some(next_workspace.id.clone()))
-                    .map_err(internal_err)?;
-                Some(workspace_response(
-                    &state,
-                    next_workspace.clone(),
-                    Some(&next_workspace.id),
-                )?)
-            }
-            None => {
-                state.set_active_workspace_id(None).map_err(internal_err)?;
-                None
-            }
-        }
+        state.set_active_workspace_id(None).await;
+        None
     } else {
         state
             .store
@@ -269,18 +243,4 @@ pub async fn handle_delete_workspace(
         deleted_id,
         active_workspace,
     }))
-}
-
-fn local_human_for_store(state: &AppState) -> String {
-    let config_root = state
-        .store
-        .data_dir()
-        .parent()
-        .unwrap_or_else(|| state.store.data_dir());
-    ChorusConfig::load(config_root)
-        .ok()
-        .flatten()
-        .and_then(|cfg| cfg.local_human.name)
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(whoami::username)
 }

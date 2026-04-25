@@ -3162,15 +3162,14 @@ async fn test_workspace_api_lifecycle() {
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/workspaces/beta")
+                .uri("/api/workspaces/acme")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["active_workspace"]["slug"], "acme");
+    assert!(body_json(resp).await["active_workspace"].is_null());
 
     let resp = app
         .clone()
@@ -3182,15 +3181,14 @@ async fn test_workspace_api_lifecycle() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["slug"], "acme");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
     let resp = app
         .clone()
         .oneshot(
             Request::builder()
                 .method("DELETE")
-                .uri("/api/workspaces/acme")
+                .uri("/api/workspaces/beta")
                 .body(Body::empty())
                 .unwrap(),
         )
