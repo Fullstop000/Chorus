@@ -251,13 +251,180 @@ impl Store {
     }
 
     pub fn delete_workspace(&self, workspace_id: &str) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let deleted = conn.execute(
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let exists = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM workspaces WHERE id = ?1)",
+                params![workspace_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count != 0)?;
+        if !exists {
+            return Err(anyhow!("workspace not found: {workspace_id}"));
+        }
+
+        let attachment_rows: Vec<(String, String)> = tx
+            .prepare(
+                "WITH RECURSIVE doomed_channels(id) AS (
+                    SELECT id FROM channels WHERE workspace_id = ?1
+                    UNION
+                    SELECT c.id FROM channels c
+                    JOIN doomed_channels d ON c.parent_channel_id = d.id
+                 )
+                 SELECT DISTINCT a.id, a.stored_path
+                 FROM attachments a
+                 JOIN message_attachments ma ON ma.attachment_id = a.id
+                 JOIN messages m ON m.id = ma.message_id
+                 JOIN doomed_channels d ON d.id = m.channel_id",
+            )?
+            .query_map(params![workspace_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        tx.execute(
+            "WITH RECURSIVE doomed_channels(id) AS (
+                SELECT id FROM channels WHERE workspace_id = ?1
+                UNION
+                SELECT c.id FROM channels c
+                JOIN doomed_channels d ON c.parent_channel_id = d.id
+             )
+             DELETE FROM trace_events
+             WHERE run_id IN (
+                SELECT DISTINCT m.run_id
+                FROM messages m
+                JOIN doomed_channels d ON d.id = m.channel_id
+                WHERE m.run_id IS NOT NULL
+             )",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "WITH RECURSIVE doomed_channels(id) AS (
+                SELECT id FROM channels WHERE workspace_id = ?1
+                UNION
+                SELECT c.id FROM channels c
+                JOIN doomed_channels d ON c.parent_channel_id = d.id
+             )
+             DELETE FROM inbox_read_state
+             WHERE conversation_id IN (SELECT id FROM doomed_channels)",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "WITH RECURSIVE doomed_channels(id) AS (
+                SELECT id FROM channels WHERE workspace_id = ?1
+                UNION
+                SELECT c.id FROM channels c
+                JOIN doomed_channels d ON c.parent_channel_id = d.id
+             )
+             DELETE FROM message_attachments
+             WHERE message_id IN (
+                SELECT m.id
+                FROM messages m
+                JOIN doomed_channels d ON d.id = m.channel_id
+             )",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "WITH RECURSIVE doomed_channels(id) AS (
+                SELECT id FROM channels WHERE workspace_id = ?1
+                UNION
+                SELECT c.id FROM channels c
+                JOIN doomed_channels d ON c.parent_channel_id = d.id
+             )
+             DELETE FROM messages
+             WHERE channel_id IN (SELECT id FROM doomed_channels)",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "WITH RECURSIVE doomed_channels(id) AS (
+                SELECT id FROM channels WHERE workspace_id = ?1
+                UNION
+                SELECT c.id FROM channels c
+                JOIN doomed_channels d ON c.parent_channel_id = d.id
+             )
+             DELETE FROM tasks
+             WHERE channel_id IN (SELECT id FROM doomed_channels)
+                OR sub_channel_id IN (SELECT id FROM doomed_channels)",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "WITH RECURSIVE doomed_channels(id) AS (
+                SELECT id FROM channels WHERE workspace_id = ?1
+                UNION
+                SELECT c.id FROM channels c
+                JOIN doomed_channels d ON c.parent_channel_id = d.id
+             )
+             DELETE FROM channel_members
+             WHERE channel_id IN (SELECT id FROM doomed_channels)",
+            params![workspace_id],
+        )?;
+
+        tx.execute(
+            "DELETE FROM agent_sessions
+             WHERE agent_id IN (SELECT id FROM agents WHERE workspace_id = ?1)",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "DELETE FROM agent_env_vars
+             WHERE agent_name IN (SELECT name FROM agents WHERE workspace_id = ?1)",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "DELETE FROM team_members
+             WHERE team_id IN (SELECT id FROM teams WHERE workspace_id = ?1)",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "DELETE FROM agents WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "DELETE FROM teams WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "WITH RECURSIVE doomed_channels(id) AS (
+                SELECT id FROM channels WHERE workspace_id = ?1
+                UNION
+                SELECT c.id FROM channels c
+                JOIN doomed_channels d ON c.parent_channel_id = d.id
+             )
+             DELETE FROM channels
+             WHERE id IN (SELECT id FROM doomed_channels)",
+            params![workspace_id],
+        )?;
+
+        let mut files_to_remove = Vec::new();
+        for (attachment_id, stored_path) in attachment_rows {
+            let refs_remaining: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM message_attachments WHERE attachment_id = ?1",
+                params![attachment_id],
+                |row| row.get(0),
+            )?;
+            if refs_remaining == 0 {
+                tx.execute(
+                    "DELETE FROM attachments WHERE id = ?1",
+                    params![attachment_id],
+                )?;
+                files_to_remove.push(stored_path);
+            }
+        }
+
+        tx.execute(
+            "DELETE FROM local_workspace_state WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        tx.execute(
+            "DELETE FROM workspace_members WHERE workspace_id = ?1",
+            params![workspace_id],
+        )?;
+        tx.execute(
             "DELETE FROM workspaces WHERE id = ?1",
             params![workspace_id],
         )?;
-        if deleted == 0 {
-            return Err(anyhow!("workspace not found: {workspace_id}"));
+        tx.commit()?;
+
+        for path in files_to_remove {
+            let _ = std::fs::remove_file(path);
         }
         Ok(())
     }

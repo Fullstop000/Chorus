@@ -167,7 +167,7 @@ channel insert cannot leave a team without its channel.
 | `POST /api/workspaces` | Creates a workspace without activating it. |
 | `POST /api/workspaces/switch` | Sets the active workspace by slug or exact name. |
 | `PATCH /api/workspaces/current` | Renames the active workspace; slug remains stable. |
-| `DELETE /api/workspaces/{selector}` | Deletes a workspace. If it was active, the server selects the next workspace if one exists. |
+| `DELETE /api/workspaces/{selector}` | Hard-deletes a workspace and its scoped database data. If it was active, the server selects the next workspace if one exists. |
 
 `chorus workspace` is a thin client over those endpoints. This keeps CLI,
 frontend, and future cloud auth on the same behavior path.
@@ -186,6 +186,9 @@ goals.
 - Active workspace is a single pointer for the local running server. It is not
   per browser tab or per CLI shell.
 - Creating a workspace does not switch to it.
+- Deleting a workspace is destructive: workspace-scoped channels, messages,
+  tasks, agents, teams, memberships, trace events, attachment links, orphaned
+  attachment rows, and orphaned attachment files are removed.
 - The CLI requires a running Chorus server and must call the API instead of
   opening SQLite directly.
 - Agent names are not fully workspace-scoped yet.

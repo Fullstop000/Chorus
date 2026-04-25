@@ -374,6 +374,217 @@ fn test_unscoped_agent_and_team_lists_exclude_workspace_rows() {
     assert_eq!(teams[0].name, "legacy-team");
 }
 
+#[test]
+fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
+    let (store, dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "bob").unwrap();
+    let alpha_channel_id = store
+        .create_channel_in_workspace(&alpha.id, "alpha-general", None, ChannelType::Channel, None)
+        .unwrap();
+    let beta_channel_id = store
+        .create_channel_in_workspace(&beta.id, "beta-general", None, ChannelType::Channel, None)
+        .unwrap();
+    let alpha_agent_id = store
+        .create_agent_record_in_workspace(
+            &alpha.id,
+            &AgentRecordUpsert {
+                name: "alpha-bot",
+                display_name: "Alpha Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[AgentEnvVar {
+                    key: "TOKEN".to_string(),
+                    value: "secret".to_string(),
+                    position: 0,
+                }],
+            },
+        )
+        .unwrap();
+    let (alpha_team_id, _) = store
+        .create_team_with_channel_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
+        .unwrap();
+    store
+        .create_team_member(
+            &alpha_team_id,
+            "alpha-bot",
+            "agent",
+            &alpha_agent_id,
+            "member",
+        )
+        .unwrap();
+
+    let alpha_attachment_path = dir.path().join("alpha-attachment.txt");
+    let beta_attachment_path = dir.path().join("beta-attachment.txt");
+    std::fs::write(&alpha_attachment_path, "alpha").unwrap();
+    std::fs::write(&beta_attachment_path, "beta").unwrap();
+    {
+        let conn = store.conn_for_test();
+        conn.execute(
+            "INSERT INTO agent_sessions (agent_id, session_id, runtime)
+             VALUES (?1, 'session-alpha', 'claude')",
+            params![alpha_agent_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, channel_type, parent_channel_id)
+             VALUES ('alpha-task-channel', 'alpha-general__task-1', 'task', ?1)",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_members (channel_id, member_name, member_type)
+             VALUES (?1, 'alice', 'human')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_members (channel_id, member_name, member_type)
+             VALUES ('alpha-task-channel', 'alice', 'human')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO inbox_read_state (conversation_id, member_name, member_type)
+             VALUES (?1, 'alice', 'human')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, channel_id, task_number, title, created_by, sub_channel_id)
+             VALUES ('alpha-task', ?1, 1, 'Ship alpha', 'alice', 'alpha-task-channel')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq, run_id)
+             VALUES ('alpha-message', ?1, 'alice', 'human', 'alpha', 1, 'run-alpha')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO trace_events (run_id, seq, timestamp_ms, kind, data)
+             VALUES ('run-alpha', 1, 1, 'text', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path)
+             VALUES ('alpha-attachment', 'alpha.txt', 'text/plain', 5, ?1)",
+            params![alpha_attachment_path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_attachments (message_id, attachment_id)
+             VALUES ('alpha-message', 'alpha-attachment')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq, run_id)
+             VALUES ('beta-message', ?1, 'bob', 'human', 'beta', 1, 'run-beta')",
+            params![beta_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO trace_events (run_id, seq, timestamp_ms, kind, data)
+             VALUES ('run-beta', 1, 1, 'text', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path)
+             VALUES ('beta-attachment', 'beta.txt', 'text/plain', 4, ?1)",
+            params![beta_attachment_path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_attachments (message_id, attachment_id)
+             VALUES ('beta-message', 'beta-attachment')",
+            [],
+        )
+        .unwrap();
+    }
+
+    store.delete_workspace(&alpha.id).unwrap();
+
+    let conn = store.conn_for_test();
+    for (table, predicate) in [
+        ("workspaces", format!("id = '{}'", alpha.id)),
+        (
+            "workspace_members",
+            format!("workspace_id = '{}'", alpha.id),
+        ),
+        (
+            "local_workspace_state",
+            format!("workspace_id = '{}'", alpha.id),
+        ),
+        ("channels", "id IN ('alpha-task-channel')".to_string()),
+        ("channels", format!("workspace_id = '{}'", alpha.id)),
+        (
+            "channel_members",
+            format!("channel_id = '{}'", alpha_channel_id),
+        ),
+        ("messages", "id = 'alpha-message'".to_string()),
+        ("tasks", "id = 'alpha-task'".to_string()),
+        (
+            "inbox_read_state",
+            format!("conversation_id = '{}'", alpha_channel_id),
+        ),
+        ("trace_events", "run_id = 'run-alpha'".to_string()),
+        (
+            "message_attachments",
+            "attachment_id = 'alpha-attachment'".to_string(),
+        ),
+        ("attachments", "id = 'alpha-attachment'".to_string()),
+        ("agents", "name = 'alpha-bot'".to_string()),
+        ("agent_env_vars", "agent_name = 'alpha-bot'".to_string()),
+        ("agent_sessions", format!("agent_id = '{}'", alpha_agent_id)),
+        ("teams", "name = 'alpha-team'".to_string()),
+        ("team_members", format!("team_id = '{}'", alpha_team_id)),
+    ] {
+        let count: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE {predicate}"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "{table} rows should be deleted");
+    }
+
+    let beta_workspace_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
+            params![beta.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let beta_message_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE id = 'beta-message'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let beta_attachment_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM attachments WHERE id = 'beta-attachment'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(beta_workspace_count, 1);
+    assert_eq!(beta_message_count, 1);
+    assert_eq!(beta_attachment_count, 1);
+    assert!(!alpha_attachment_path.exists());
+    assert!(beta_attachment_path.exists());
+}
+
 /// Channel archive, team creation, and agent record update as performed by shell/API layers.
 /// Lives in store tests (not `server_tests`) so we do not build the HTTP router: constructing
 /// `ServeDir::new("ui/dist")` can block for a long time when that tree is huge or on a slow volume.
