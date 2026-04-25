@@ -5,7 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use super::{app_err, ApiResult, AppState};
 use crate::server::error::AppErrorCode;
-use crate::store::channels::{is_valid_channel_name, normalize_channel_name, Channel, ChannelMemberProfile, ChannelType, INVALID_CHANNEL_NAME_MSG};
+use crate::store::channels::{
+    is_valid_channel_name, normalize_channel_name, Channel, ChannelMemberProfile, ChannelType,
+    INVALID_CHANNEL_NAME_MSG,
+};
 use crate::store::messages::SenderType;
 use crate::store::ChannelListParams;
 

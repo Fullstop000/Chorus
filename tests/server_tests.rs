@@ -2241,13 +2241,18 @@ async fn test_create_team_endpoint() {
     assert_eq!(bot_member.member_type, "agent");
     assert_eq!(bot_member.role, "operator");
 
-    let human_member = members.iter().find(|m| m.member_name == current_user).unwrap();
+    let human_member = members
+        .iter()
+        .find(|m| m.member_name == current_user)
+        .unwrap();
     assert_eq!(human_member.member_type, "human");
     assert_eq!(human_member.role, "operator");
 
     // Creator is also joined to the team channel.
     let channel_members = store.get_channel_members(&ch.id).unwrap();
-    assert!(channel_members.iter().any(|m| m.member_name == current_user));
+    assert!(channel_members
+        .iter()
+        .any(|m| m.member_name == current_user));
 
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
@@ -2306,7 +2311,9 @@ async fn test_create_team_does_not_duplicate_creator_when_explicitly_in_members(
     // Explicit creator is also joined to the team channel via the member loop.
     let ch = store.get_channel_by_name("eng-team").unwrap().unwrap();
     let channel_members = store.get_channel_members(&ch.id).unwrap();
-    assert!(channel_members.iter().any(|m| m.member_name == current_user));
+    assert!(channel_members
+        .iter()
+        .any(|m| m.member_name == current_user));
 }
 
 #[tokio::test]
@@ -3115,7 +3122,6 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
     let body = body_json(resp).await;
     assert_eq!(body["code"], "AGENT_RESTART_FAILED");
 }
-
 
 #[tokio::test]
 async fn create_channel_rejects_invalid_names() {

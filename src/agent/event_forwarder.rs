@@ -412,7 +412,9 @@ pub(super) fn spawn_event_forwarder(
                                         "⚠️ @{} completed a run without replying. Common causes: not authenticated, authentication expired, or a runtime error. Check agent logs for details.",
                                         key
                                     );
-                                    if let Err(e) = store.create_system_message(&channel_id, &warning) {
+                                    if let Err(e) =
+                                        store.create_system_message(&channel_id, &warning)
+                                    {
                                         warn!(
                                             agent = %key,
                                             channel_id = %channel_id,
@@ -772,7 +774,10 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(count, 0, "expected no system warning when send_message was used");
+        assert_eq!(
+            count, 0,
+            "expected no system warning when send_message was used"
+        );
     }
 
     /// In a group channel an agent may be watching without replying; silence
