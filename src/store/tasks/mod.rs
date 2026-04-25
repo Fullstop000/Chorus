@@ -670,10 +670,19 @@ impl Store {
         claimer_name: &str,
         task_numbers: &[i64],
     ) -> Result<Vec<ClaimResult>> {
-        // `transaction()` needs `&mut Connection`. Every successful claim in
-        // this batch must atomically UPDATE the task row AND add the claimer
-        // to the task's sub-channel — otherwise a crash between the two
-        // writes leaves membership and task state out of sync.
+        // Claim sets `owner = ?` only; it does NOT advance status. Decoupled
+        // from start: `[claim] → [start]` are two affordances on the TaskCard,
+        // not one. Spec: owner is a label, not permission. Membership is the
+        // gate (enforced upstream in the HTTP handler).
+        //
+        // Claim is allowed on the three live states (Todo, InProgress, InReview)
+        // — anyone can re-claim / steal — and rejected on terminal/proposal
+        // states (Proposed, Dismissed, Done). The status-IN guard in the
+        // UPDATE makes that race-free.
+        //
+        // Sub-channel membership sync stays: claimer joins the sub-channel so
+        // they receive its inbox notifications. `task_event` posts in the
+        // sub-channel (not the parent) — sub-channel is where the work happens.
         let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
@@ -682,76 +691,98 @@ impl Store {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
         let mut results = Vec::new();
-        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
-            Vec::new();
-        // Batch semantics: all claims commit together or none do. A hard SQL
-        // error on claim N rolls back successful claims 1..N-1. "Soft"
-        // rejections (task already claimed / not in todo / stolen mid-flight)
-        // push a `ClaimResult { success: false, .. }` and continue; they still
-        // commit as a no-op batch.
+        // Per-sub-channel pending events: each task's claim event goes to its
+        // own sub-channel, not a single shared parent. Keyed by sub_channel_id
+        // so we can fan them out one channel at a time after commit.
+        let mut sub_pending: std::collections::HashMap<
+            String,
+            Vec<(InsertedMessage, String)>,
+        > = std::collections::HashMap::new();
+
         for &tn in task_numbers {
             let task: Option<(String, Option<String>, Option<String>, String)> = tx
                 .query_row(
-                    "SELECT status, claimed_by, sub_channel_id, title FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
+                    "SELECT status, owner, sub_channel_id, title FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
                     params![channel.id, tn],
                     |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .ok();
 
             match task {
-                Some((status, claimed_by, sub_channel_id, title))
-                    if status == "todo" && claimed_by.is_none() =>
-                {
-                    // Defense in depth: WHERE-guard on the precondition we
-                    // just read. If another writer won the race between the
-                    // SELECT and this UPDATE, `rows == 0` and we soft-fail.
-                    let rows = tx.execute(
-                        "UPDATE tasks SET claimed_by = ?1, status = 'in_progress', updated_at = datetime('now') \
-                         WHERE channel_id = ?2 AND task_number = ?3 AND status = 'todo' AND claimed_by IS NULL",
-                        params![claimer_name, channel.id, tn],
-                    )?;
-                    if rows != 1 {
+                Some((status_str, _existing_owner, sub_channel_id, title)) => {
+                    let prev_status = match TaskStatus::from_status_str(&status_str) {
+                        Some(s) => s,
+                        None => {
+                            results.push(ClaimResult {
+                                task_number: tn,
+                                success: false,
+                                reason: Some(format!("invalid task status: {status_str}")),
+                            });
+                            continue;
+                        }
+                    };
+                    if !matches!(
+                        prev_status,
+                        TaskStatus::Todo | TaskStatus::InProgress | TaskStatus::InReview
+                    ) {
                         results.push(ClaimResult {
                             task_number: tn,
                             success: false,
-                            reason: Some("task was claimed by another writer".to_string()),
+                            reason: Some(format!(
+                                "cannot claim task in {:?} state",
+                                prev_status
+                            )),
                         });
                         continue;
                     }
-                    // Sync sub-channel membership: claimer joins. `INSERT OR
-                    // IGNORE` keeps the operation idempotent when the claimer
-                    // is already a member (e.g. they also created the task).
-                    if let Some(ref sub_id) = sub_channel_id {
-                        tx.execute(
-                            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
-                             VALUES (?1, ?2, ?3, 0)",
-                            params![sub_id, claimer_name, claimer_type.as_str()],
-                        )?;
+
+                    let rows = tx.execute(
+                        "UPDATE tasks SET owner = ?1, updated_at = datetime('now') \
+                         WHERE channel_id = ?2 AND task_number = ?3 \
+                           AND status IN ('todo','in_progress','in_review')",
+                        params![claimer_name, channel.id, tn],
+                    )?;
+                    if rows != 1 {
+                        // Mid-flight terminal transition stole the task out
+                        // from under us (e.g. -> Done before our UPDATE landed).
+                        results.push(ClaimResult {
+                            task_number: tn,
+                            success: false,
+                            reason: Some("task left claimable state mid-flight".to_string()),
+                        });
+                        continue;
                     }
+
+                    let sub_id = sub_channel_id.clone().ok_or_else(|| {
+                        anyhow!("task #{tn} in claimable state without sub_channel_id")
+                    })?;
+
+                    // Claimer joins the sub-channel. Idempotent.
+                    tx.execute(
+                        "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
+                         VALUES (?1, ?2, ?3, 0)",
+                        params![sub_id, claimer_name, claimer_type.as_str()],
+                    )?;
+
                     let payload = TaskEventPayload {
                         action: TaskEventAction::Claimed,
                         task_number: tn,
                         title,
-                        sub_channel_id: sub_channel_id.unwrap_or_default(),
+                        sub_channel_id: sub_id.clone(),
                         actor: claimer_name.to_string(),
-                        prev_status: Some(TaskStatus::Todo),
-                        next_status: TaskStatus::InProgress,
+                        // Status didn't change — claim is now decoupled.
+                        prev_status: Some(prev_status),
+                        next_status: prev_status,
                         claimed_by: Some(claimer_name.to_string()),
                     };
-                    let content = payload.to_json_string()?;
-                    let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
-                    pending_events.push((inserted, content));
+                    sub_pending
+                        .entry(sub_id.clone())
+                        .or_default()
+                        .push(post_task_event_tx(&tx, &sub_id, payload)?);
                     results.push(ClaimResult {
                         task_number: tn,
                         success: true,
                         reason: None,
-                    });
-                }
-                Some(_) => {
-                    results.push(ClaimResult {
-                        task_number: tn,
-                        success: false,
-                        reason: Some("task already claimed or not in todo status".to_string()),
                     });
                 }
                 None => {
@@ -765,7 +796,15 @@ impl Store {
         }
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events(&channel, pending_events)?;
+
+        // Fan out per sub-channel. Each call needs its own `&Channel` so the
+        // event payloads carry the correct channel id/name.
+        for (sub_id, events) in sub_pending {
+            let sub_channel = self
+                .get_channel_by_id(&sub_id)?
+                .ok_or_else(|| anyhow!("sub-channel vanished after commit: {}", sub_id))?;
+            self.emit_system_stream_events(&sub_channel, events)?;
+        }
         Ok(results)
     }
 
@@ -775,32 +814,36 @@ impl Store {
         claimer_name: &str,
         task_number: i64,
     ) -> Result<()> {
-        // Atomic: UPDATE the task row and DELETE the claimer's sub-channel
-        // membership in one transaction. The creator is never touched — only
-        // the caller's own membership row is removed.
+        // Unclaim clears `owner = NULL` only; status stays put. Decoupled
+        // from "go back to todo" — the task remains in whatever live state it
+        // was in. Same TOCTOU shape as claim: `WHERE owner = ?` guards
+        // against a stolen claim landing between SELECT and UPDATE.
+        //
+        // `task_event(Unclaimed)` posts in the sub-channel (not the parent).
         let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
 
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        // tx-scoped read closes the TOCTOU window — another writer can't
-        // reassign `claimed_by` between the check and the UPDATE.
-        let (claimed_by, sub_channel_id, current_status_str, title): (Option<String>, Option<String>, String, String) = tx.query_row(
-            "SELECT claimed_by, sub_channel_id, status, title FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
+        let (owner, sub_channel_id, current_status_str, title): (
+            Option<String>,
+            Option<String>,
+            String,
+            String,
+        ) = tx.query_row(
+            "SELECT owner, sub_channel_id, status, title FROM tasks WHERE channel_id = ?1 AND task_number = ?2",
             params![channel.id, task_number],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?;
 
-        if claimed_by.as_deref() != Some(claimer_name) {
+        if owner.as_deref() != Some(claimer_name) {
             return Err(anyhow!("task not claimed by {}", claimer_name));
         }
 
-        // Defense in depth: WHERE-guard on the claimer. If `rows != 1` the
-        // claim was stolen mid-flight despite the tx-scoped read — surface it.
         let rows = tx.execute(
-            "UPDATE tasks SET claimed_by = NULL, status = 'todo', updated_at = datetime('now') \
-             WHERE channel_id = ?1 AND task_number = ?2 AND claimed_by = ?3",
+            "UPDATE tasks SET owner = NULL, updated_at = datetime('now') \
+             WHERE channel_id = ?1 AND task_number = ?2 AND owner = ?3",
             params![channel.id, task_number, claimer_name],
         )?;
         if rows != 1 {
@@ -811,12 +854,14 @@ impl Store {
             ));
         }
 
-        if let Some(sub_id) = sub_channel_id.as_deref() {
-            tx.execute(
-                "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
-                params![sub_id, claimer_name],
-            )?;
-        }
+        let sub_id = sub_channel_id.ok_or_else(|| {
+            anyhow!("task #{task_number} in claimable state without sub_channel_id")
+        })?;
+
+        tx.execute(
+            "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
+            params![sub_id, claimer_name],
+        )?;
 
         let prev_status = TaskStatus::from_status_str(&current_status_str)
             .ok_or_else(|| anyhow!("invalid task status: {}", current_status_str))?;
@@ -825,17 +870,21 @@ impl Store {
             action: TaskEventAction::Unclaimed,
             task_number,
             title,
-            sub_channel_id: sub_channel_id.unwrap_or_default(),
+            sub_channel_id: sub_id.clone(),
             actor: claimer_name.to_string(),
+            // Status didn't change — unclaim is now decoupled.
             prev_status: Some(prev_status),
-            next_status: TaskStatus::Todo,
+            next_status: prev_status,
             claimed_by: None,
         };
-        let content = payload.to_json_string()?;
-        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+        let event = post_task_event_tx(&tx, &sub_id, payload)?;
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
+
+        let sub_channel = self
+            .get_channel_by_id(&sub_id)?
+            .ok_or_else(|| anyhow!("sub-channel vanished after commit: {}", sub_id))?;
+        self.emit_system_stream_events(&sub_channel, vec![event])?;
         Ok(())
     }
 
@@ -1228,7 +1277,7 @@ mod sub_channel_tests {
         {
             let conn = store.conn_for_test();
             conn.execute(
-                "UPDATE tasks SET claimed_by = 'carol' WHERE task_number = 1",
+                "UPDATE tasks SET owner = 'carol' WHERE task_number = 1",
                 [],
             )
             .unwrap();
@@ -1277,6 +1326,11 @@ mod sub_channel_tests {
         seed_agent(&store, "bob");
         store.create_tasks("eng", "alice", &["Ship it"]).unwrap();
         store.update_tasks_claim("eng", "bob", &[1]).unwrap();
+        // Claim no longer auto-advances to InProgress; the state machine is
+        // forward-only and step-by-step (Task 5 decoupled claim from start).
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::InProgress)
+            .unwrap();
         store
             .update_task_status("eng", 1, "bob", TaskStatus::InReview)
             .unwrap();
@@ -1314,6 +1368,10 @@ mod sub_channel_tests {
             .create_tasks("eng", "alice", &["Ship it", "Also ship it"])
             .unwrap();
         store.update_tasks_claim("eng", "bob", &[1, 2]).unwrap();
+        // Claim no longer auto-advances; walk task 1 forward step-by-step.
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::InProgress)
+            .unwrap();
 
         // Before Done: both task sub-channels appear in bob's inbox.
         let before: Vec<String> = store
@@ -1376,6 +1434,11 @@ mod sub_channel_tests {
         seed_agent(&store, "bob");
         store.create_tasks("eng", "alice", &["Ship it"]).unwrap();
         store.update_tasks_claim("eng", "bob", &[1]).unwrap();
+        // Claim no longer auto-advances to InProgress; the state machine is
+        // forward-only and step-by-step (Task 5 decoupled claim from start).
+        store
+            .update_task_status("eng", 1, "bob", TaskStatus::InProgress)
+            .unwrap();
         store
             .update_task_status("eng", 1, "bob", TaskStatus::InReview)
             .unwrap();
