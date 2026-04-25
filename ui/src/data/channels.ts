@@ -33,6 +33,9 @@ export interface SystemInfo {
 
 export interface ConfigInfo {
   machine_id?: string
+  local_human?: {
+    name: string
+  }
   agent_template: {
     dir?: string
     default: string

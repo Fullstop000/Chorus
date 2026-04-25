@@ -180,9 +180,9 @@ pub(super) fn spawn_event_forwarder(
         // Per-run tracking: did the agent invoke send_message at least once?
         let mut run_had_send_message: HashMap<uuid::Uuid, bool> = HashMap::new();
         // Per-run snapshot of the channel that triggered this run.
-        // `trace_store.run_channel_id` is agent-scoped and can drift under
-        // concurrent sessions or mid-run notifications, so we capture it
-        // the first time we see an event for a given `run_id`.
+        // `trace_store.run_channel_id` is agent-scoped and can drift after
+        // another prompt arrives, so capture it as soon as the driver announces
+        // a concrete run id.
         let mut run_channel_id: HashMap<uuid::Uuid, String> = HashMap::new();
 
         while let Some(event) = event_rx.recv().await {
@@ -221,6 +221,15 @@ pub(super) fn spawn_event_forwarder(
                             "Stopped",
                         );
                     }
+                    ProcessState::PromptInFlight { run_id, .. } => {
+                        if let std::collections::hash_map::Entry::Vacant(e) =
+                            run_channel_id.entry(*run_id)
+                        {
+                            if let Some(ch) = trace_store.run_channel_id(key) {
+                                e.insert(ch);
+                            }
+                        }
+                    }
                     _ => {}
                 },
 
@@ -230,9 +239,8 @@ pub(super) fn spawn_event_forwarder(
                     run_id,
                     ref item,
                 } => {
-                    // Snapshot the triggering channel the first time we see
-                    // this run id so we don't race with `end_run` or concurrent
-                    // sessions clearing the agent-scoped channel binding.
+                    // Fallback for drivers/tests that emit output without a
+                    // prior PromptInFlight lifecycle event.
                     if let std::collections::hash_map::Entry::Vacant(e) =
                         run_channel_id.entry(run_id)
                     {
@@ -703,6 +711,106 @@ mod tests {
             content.contains("completed a run without replying"),
             "expected empty-run warning, got: {content}"
         );
+    }
+
+    /// The warning channel is captured when the prompt enters
+    /// PromptInFlight. A later notification can update the agent-scoped
+    /// run-channel binding before first output; that must not retarget the
+    /// current run's warning.
+    #[tokio::test]
+    async fn empty_run_warning_uses_prompt_in_flight_channel_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            activity_logs,
+            trace_store.clone(),
+            trace_tx.clone(),
+            store.clone(),
+            agents,
+        );
+
+        let key = "bot".to_string();
+        let sid = "session-1".to_string();
+        let run_id = uuid::Uuid::new_v4();
+
+        let first_channel_id = store
+            .create_channel("first-dm", None, crate::store::ChannelType::Dm, None)
+            .unwrap();
+        let second_channel_id = store
+            .create_channel("second-dm", None, crate::store::ChannelType::Dm, None)
+            .unwrap();
+
+        trace_store.set_run_channel(&key, &first_channel_id);
+        event_tx
+            .send(DriverEvent::Lifecycle {
+                key: key.clone(),
+                state: ProcessState::PromptInFlight {
+                    run_id,
+                    session_id: sid.clone(),
+                },
+            })
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+
+        trace_store.set_run_channel(&key, &second_channel_id);
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id,
+                item: AgentEventItem::ToolCall {
+                    name: "bash".to_string(),
+                    input: serde_json::Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid,
+                run_id,
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+        drop(trace_tx);
+
+        let first_count: i64 = store
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![first_channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let second_count: i64 = store
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![second_channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(first_count, 1, "expected warning in original channel");
+        assert_eq!(second_count, 0, "warning drifted to later channel");
     }
 
     /// When a run does invoke send_message, no system warning should be posted.

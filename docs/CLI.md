@@ -8,11 +8,11 @@ Complete reference for the `chorus` command-line interface.
 
 ### `chorus setup`
 
-First-run initializer. Detects installed AI runtimes, probes authentication status, writes `config.toml`, creates the data directory layout, and migrates legacy configurations.
+First-run initializer. Detects installed AI runtimes, probes authentication status, writes `config.toml`, creates the data directory layout, creates a local workspace, and migrates legacy configurations.
 
 ```bash
 chorus setup
-chorus setup --yes                    # non-interactive, accept defaults
+chorus setup --yes                    # non-interactive, accept defaults including "Chorus Local"
 chorus setup --data-dir /custom/path  # override default ~/.chorus
 ```
 
@@ -21,9 +21,36 @@ chorus setup --data-dir /custom/path  # override default ~/.chorus
 - Probes each runtime's auth state (API keys, OAuth tokens, login status)
 - Writes `~/.chorus/config.toml` with detected runtime settings
 - Creates `data/`, `logs/`, and `agents/` subdirectories
+- Creates an explicit local workspace; interactive setup prompts for a name with `Chorus Local` as the default
+- Persists the local human identity used for workspace ownership
 - Generates a `machine_id` UUID for this installation
 
 **Mutates:** yes (writes config, creates directories).
+
+---
+
+### `chorus workspace`
+
+Manages platform workspaces for the local Chorus instance. Workspace is the platform boundary for channels, agents, teams, tasks, and future cloud sync.
+
+```bash
+chorus workspace current
+chorus workspace list
+chorus workspace create "Side Project"
+chorus workspace switch side-project
+chorus workspace rename "Side Project AI"
+chorus workspace --server-url http://localhost:3001 current
+```
+
+**Behavior:**
+- Calls the running Chorus server API; start Chorus first with `chorus start` or `chorus serve`
+- `create` creates a local platform workspace without changing the active workspace
+- `switch` accepts a workspace slug or exact display name
+- `rename` changes the display name but keeps the slug stable
+- `list` marks the active workspace with `*` and shows channel, agent, and human counts
+- switching applies to the running server immediately
+
+**Mutates:** yes for `create`, `switch`, and `rename`; no for `current` and `list`.
 
 ---
 

@@ -13,6 +13,7 @@ mod serve;
 mod setup;
 mod start;
 mod status;
+mod workspace;
 
 use clap::{Parser, Subcommand, ValueEnum};
 
@@ -100,6 +101,14 @@ enum Commands {
         /// Chorus server URL (inherited by all channel subcommands)
         #[arg(long, global = true, default_value = "http://localhost:3001")]
         server_url: String,
+    },
+    /// Manage platform workspaces
+    Workspace {
+        /// Chorus server URL (inherited by all workspace subcommands)
+        #[arg(long, global = true, default_value = "http://localhost:3001")]
+        server_url: String,
+        #[command(subcommand)]
+        cmd: workspace::WorkspaceCommands,
     },
     /// Start the shared HTTP MCP bridge server (multi-agent)
     #[command(name = "bridge-serve")]
@@ -327,6 +336,8 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::Status { server_url }) => status::run(server_url).await,
 
         Some(Commands::Channel { cmd, server_url }) => channel::run(server_url, cmd).await,
+
+        Some(Commands::Workspace { server_url, cmd }) => workspace::run(server_url, cmd).await,
 
         Some(Commands::Agent { cmd }) => agent::run(cmd).await,
 

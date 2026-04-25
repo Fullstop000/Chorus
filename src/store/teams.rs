@@ -4,7 +4,7 @@ use rusqlite::params;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::{parse_datetime, Store};
+use super::{parse_datetime, ChannelType, Store};
 
 /// A named group of agents (and optional human observers) that collaborate on tasks.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -76,12 +76,116 @@ impl Store {
         leader_agent_name: Option<&str>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
+        Self::create_team_inner(
+            &conn,
+            None,
+            name,
+            display_name,
+            collaboration_model,
+            leader_agent_name,
+        )
+    }
+
+    pub fn create_team_in_workspace(
+        &self,
+        workspace_id: &str,
+        name: &str,
+        display_name: &str,
+        collaboration_model: &str,
+        leader_agent_name: Option<&str>,
+    ) -> Result<String> {
+        let conn = self.conn.lock().unwrap();
+        Self::create_team_inner(
+            &conn,
+            Some(workspace_id),
+            name,
+            display_name,
+            collaboration_model,
+            leader_agent_name,
+        )
+    }
+
+    pub fn create_team_with_channel(
+        &self,
+        name: &str,
+        display_name: &str,
+        collaboration_model: &str,
+        leader_agent_name: Option<&str>,
+    ) -> Result<(String, String)> {
+        self.create_team_with_channel_inner(
+            None,
+            name,
+            display_name,
+            collaboration_model,
+            leader_agent_name,
+        )
+    }
+
+    pub fn create_team_with_channel_in_workspace(
+        &self,
+        workspace_id: &str,
+        name: &str,
+        display_name: &str,
+        collaboration_model: &str,
+        leader_agent_name: Option<&str>,
+    ) -> Result<(String, String)> {
+        self.create_team_with_channel_inner(
+            Some(workspace_id),
+            name,
+            display_name,
+            collaboration_model,
+            leader_agent_name,
+        )
+    }
+
+    fn create_team_with_channel_inner(
+        &self,
+        workspace_id: Option<&str>,
+        name: &str,
+        display_name: &str,
+        collaboration_model: &str,
+        leader_agent_name: Option<&str>,
+    ) -> Result<(String, String)> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let team_id = Self::create_team_inner(
+            &tx,
+            workspace_id,
+            name,
+            display_name,
+            collaboration_model,
+            leader_agent_name,
+        )?;
+        let channel_id = Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO channels (id, workspace_id, name, description, channel_type, parent_channel_id)
+             VALUES (?1, ?2, ?3, NULL, ?4, NULL)",
+            params![
+                channel_id,
+                workspace_id,
+                name,
+                ChannelType::Team.as_api_str()
+            ],
+        )?;
+        tx.commit()?;
+        Ok((team_id, channel_id))
+    }
+
+    fn create_team_inner(
+        conn: &rusqlite::Connection,
+        workspace_id: Option<&str>,
+        name: &str,
+        display_name: &str,
+        collaboration_model: &str,
+        leader_agent_name: Option<&str>,
+    ) -> Result<String> {
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO teams (id, name, display_name, collaboration_model, leader_agent_name)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO teams (id, workspace_id, name, display_name, collaboration_model, leader_agent_name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 id,
+                workspace_id,
                 name,
                 display_name,
                 collaboration_model,
@@ -97,7 +201,10 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT t.id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
              FROM teams t
-             LEFT JOIN channels c ON c.name = t.name AND c.channel_type = 'team' AND c.archived = 0
+             LEFT JOIN channels c ON c.name = t.name
+                AND c.channel_type = 'team'
+                AND c.archived = 0
+                AND (c.workspace_id = t.workspace_id OR (c.workspace_id IS NULL AND t.workspace_id IS NULL))
              WHERE t.name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Team::from_row)?;
@@ -110,7 +217,10 @@ impl Store {
         let mut stmt = conn.prepare(
             "SELECT t.id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
              FROM teams t
-             LEFT JOIN channels c ON c.name = t.name AND c.channel_type = 'team' AND c.archived = 0
+             LEFT JOIN channels c ON c.name = t.name
+                AND c.channel_type = 'team'
+                AND c.archived = 0
+                AND (c.workspace_id = t.workspace_id OR (c.workspace_id IS NULL AND t.workspace_id IS NULL))
              WHERE t.id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Team::from_row)?;
@@ -119,15 +229,37 @@ impl Store {
 
     /// List all teams ordered by name.
     pub fn get_teams(&self) -> Result<Vec<Team>> {
+        self.get_teams_inner(None)
+    }
+
+    pub fn get_teams_in_workspace(&self, workspace_id: &str) -> Result<Vec<Team>> {
+        self.get_teams_inner(Some(workspace_id))
+    }
+
+    pub fn get_teams_for_workspace(&self, workspace_id: Option<&str>) -> Result<Vec<Team>> {
+        self.get_teams_inner(workspace_id)
+    }
+
+    fn get_teams_inner(&self, workspace_id: Option<&str>) -> Result<Vec<Team>> {
         let conn = self.conn.lock().unwrap();
+        let mut sql = "SELECT t.id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
+             FROM teams t
+             LEFT JOIN channels c ON c.name = t.name
+                AND c.channel_type = 'team'
+                AND c.archived = 0
+                AND (c.workspace_id = t.workspace_id OR (c.workspace_id IS NULL AND t.workspace_id IS NULL))"
+            .to_string();
+        let mut values = Vec::new();
+        if let Some(workspace_id) = workspace_id {
+            sql.push_str(" WHERE t.workspace_id = ?1");
+            values.push(workspace_id.to_string());
+        } else {
+            sql.push_str(" WHERE t.workspace_id IS NULL");
+        }
+        sql.push_str(" ORDER BY t.name");
         let rows = conn
-            .prepare(
-                "SELECT t.id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
-                 FROM teams t
-                 LEFT JOIN channels c ON c.name = t.name AND c.channel_type = 'team' AND c.archived = 0
-                 ORDER BY t.name",
-            )?
-            .query_map([], Team::from_row)?
+            .prepare(&sql)?
+            .query_map(rusqlite::params_from_iter(values), Team::from_row)?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)

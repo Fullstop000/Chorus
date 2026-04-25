@@ -16,6 +16,78 @@ pub(super) fn run_migrations(conn: &Connection) -> Result<()> {
     migrate_drop_agents_status_and_session_id_columns(conn)?;
     migrate_add_parent_channel_id(conn)?;
     migrate_add_task_sub_channel_id(conn)?;
+    migrate_add_workspace_foundation(conn)?;
+    Ok(())
+}
+
+fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let exists = stmt
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|r| r.ok())
+        .any(|name| name == column);
+    Ok(exists)
+}
+
+fn migrate_add_workspace_foundation(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            mode TEXT NOT NULL DEFAULT 'local_only',
+            created_by_human TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+         );
+         CREATE TABLE IF NOT EXISTS workspace_members (
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+            human_name TEXT NOT NULL,
+            role TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (workspace_id, human_name)
+         );
+         CREATE TABLE IF NOT EXISTS local_workspace_state (
+            key TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE
+         );",
+    )?;
+
+    if !column_exists(conn, "channels", "workspace_id")? {
+        conn.execute("ALTER TABLE channels ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE", [])?;
+    }
+    if !column_exists(conn, "agents", "workspace_id")? {
+        conn.execute("ALTER TABLE agents ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE", [])?;
+    }
+    if !column_exists(conn, "teams", "workspace_id")? {
+        conn.execute("ALTER TABLE teams ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE", [])?;
+    }
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_workspace_name
+         ON channels(workspace_id, name)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_legacy_name
+         ON channels(name)
+         WHERE workspace_id IS NULL",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name
+         ON agents(workspace_id, name)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_workspace_name
+         ON teams(workspace_id, name)",
+        [],
+    )?;
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_legacy_name
+         ON teams(name)
+         WHERE workspace_id IS NULL",
+        [],
+    )?;
     Ok(())
 }
 

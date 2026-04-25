@@ -162,3 +162,17 @@ export {
   inboxQuery,
   type InboxState,
 } from '../store/inbox'
+
+export {
+  listWorkspaces,
+  getCurrentWorkspace,
+  createWorkspace,
+  switchWorkspace,
+  deleteWorkspace,
+  workspaceQueryKeys,
+  workspacesQuery,
+  currentWorkspaceQuery,
+  type WorkspaceInfo,
+  type WorkspaceMode,
+  type DeleteWorkspaceResponse,
+} from './workspaces'

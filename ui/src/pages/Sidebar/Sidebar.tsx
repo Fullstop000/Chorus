@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Ellipsis, Pencil, Plus, Settings2, Trash2, Users } from 'lucide-react'
 import { useStore } from '../../store'
-import { useAgents, useChannels, useHumans, useInbox, useRefresh } from '../../hooks/data'
+import { useAgents, useChannels, useHumans, useInbox, useRefresh, useWorkspaces } from '../../hooks/data'
 import type { AgentInfo } from '../../components/agents/types'
 import type { ChannelInfo } from '../../components/channels/types'
 import { isVisibleSidebarChannel } from './sidebarChannels'
@@ -62,6 +62,7 @@ export function Sidebar() {
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
   const humans = useHumans()
+  const { workspaces } = useWorkspaces()
   const { getConversationUnread, getAgentUnread, getAgentConversationId } = useInbox()
   const { refreshChannels, refreshAgents, refreshTeams } = useRefresh()
   const [showCreateAgent, setShowCreateAgent] = useState(false)
@@ -77,6 +78,7 @@ export function Sidebar() {
 
   const channels = loadedChannels.filter(isVisibleSidebarChannel)
   const currentHumanInfo = humans.find((h) => h.name === currentUser)
+  const activeWorkspace = workspaces.find((workspace) => workspace.active) ?? null
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent) {
@@ -101,6 +103,11 @@ export function Sidebar() {
           <div className="sidebar-server-block">
             <span className="sidebar-server-label">[chorus::workspace]</span>
             <span className="sidebar-server-name">Chorus</span>
+            {activeWorkspace && (
+              <span className="sidebar-workspace-ref" title={`Current workspace: ${activeWorkspace.name}`}>
+                current: {activeWorkspace.name}
+              </span>
+            )}
           </div>
         </div>
 

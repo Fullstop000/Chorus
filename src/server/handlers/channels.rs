@@ -108,9 +108,11 @@ pub async fn handle_list_channels(
     Query(query): Query<ListChannelsQuery>,
 ) -> ApiResult<Vec<ChannelInfo>> {
     let member = query.member.unwrap_or_else(whoami::username);
+    let active_workspace_id = state.active_workspace_id().await;
     let channels = channel_infos_for(
         state.store.as_ref(),
         &ChannelListParams {
+            workspace_id: active_workspace_id.as_deref(),
             for_member: Some(member.as_str()),
             include_archived: query.include_archived,
             include_dm: query.include_dm,
@@ -136,24 +138,34 @@ pub async fn handle_create_channel(
     } else {
         Some(req.description.trim())
     };
-    let channel_id = state
-        .store
-        .create_channel(&name, description, ChannelType::Channel, None)
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint") {
-                app_err!(
-                    AppErrorCode::ChannelNameTaken,
-                    "channel name already in use"
-                )
-            } else {
-                app_err!(StatusCode::BAD_REQUEST, msg)
-            }
-        })?;
+    let active_workspace_id = state.active_workspace_id().await;
+    let channel_id = match active_workspace_id.as_deref() {
+        Some(workspace_id) => state.store.create_channel_in_workspace(
+            workspace_id,
+            &name,
+            description,
+            ChannelType::Channel,
+            None,
+        ),
+        None => state
+            .store
+            .create_channel(&name, description, ChannelType::Channel, None),
+    }
+    .map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint") {
+            app_err!(
+                AppErrorCode::ChannelNameTaken,
+                "channel name already in use"
+            )
+        } else {
+            app_err!(StatusCode::BAD_REQUEST, msg)
+        }
+    })?;
     let username = whoami::username();
     let _ = state
         .store
-        .join_channel(&name, &username, SenderType::Human);
+        .join_channel_by_id(&channel_id, &username, SenderType::Human);
     Ok(Json(serde_json::json!({ "id": channel_id, "name": name })))
 }
 

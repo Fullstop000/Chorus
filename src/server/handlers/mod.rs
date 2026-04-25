@@ -9,6 +9,7 @@ pub mod tasks;
 pub mod teams;
 pub mod templates;
 pub mod workspace;
+pub mod workspaces;
 
 pub use agents::*;
 pub use attachments::*;
@@ -18,6 +19,7 @@ pub use tasks::*;
 pub use teams::*;
 pub use templates::*;
 pub use workspace::*;
+pub use workspaces::*;
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -26,6 +28,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
+use tokio::sync::RwLock;
 use tracing::debug;
 
 use crate::agent::runtime_status::SharedRuntimeStatusProvider;
@@ -41,10 +44,23 @@ use dto::ServerInfo;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
+    pub active_workspace_id: Arc<RwLock<Option<String>>>,
+    pub local_human_name: String,
     pub lifecycle: Arc<dyn AgentLifecycle>,
     pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
     pub templates: Arc<Vec<AgentTemplate>>,
+}
+
+impl AppState {
+    pub async fn active_workspace_id(&self) -> Option<String> {
+        self.active_workspace_id.read().await.clone()
+    }
+
+    pub async fn set_active_workspace_id(&self, workspace_id: Option<String>) {
+        let mut guard = self.active_workspace_id.write().await;
+        *guard = workspace_id;
+    }
 }
 
 pub(super) struct TransitionGuard {
@@ -101,8 +117,13 @@ pub async fn handle_server_info(
     Path(agent_id): Path<String>,
 ) -> ApiResult<ServerInfo> {
     debug!(agent = %agent_id, "list_server");
-    let mut info = server_info::build_server_info(state.store.as_ref(), &agent_id)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let active_workspace_id = state.active_workspace_id().await;
+    let mut info = server_info::build_server_info_for_workspace(
+        state.store.as_ref(),
+        &agent_id,
+        active_workspace_id.as_deref(),
+    )
+    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     for agent_info in &mut info.agents {
         let ps = state.lifecycle.process_state(&agent_info.name).await;
         agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
@@ -113,8 +134,12 @@ pub async fn handle_server_info(
 // ── UI Server Info ──
 
 pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<serde_json::Value> {
-    let info = server_info::build_ui_shell_info(state.store.as_ref())
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let active_workspace_id = state.active_workspace_id().await;
+    let info = server_info::build_ui_shell_info_for_workspace(
+        state.store.as_ref(),
+        active_workspace_id.as_deref(),
+    )
+    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::to_value(info).unwrap()))
 }
 
@@ -159,6 +184,11 @@ pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto:
             }
             dto::ConfigInfo {
                 machine_id: cfg.machine_id,
+                local_human: cfg
+                    .local_human
+                    .name
+                    .filter(|name| !name.trim().is_empty())
+                    .map(|name| dto::LocalHumanInfo { name }),
                 agent_template: dto::AgentTemplateInfo {
                     dir: cfg.agent_template.dir,
                     default: cfg.agent_template.default,

@@ -1,15 +1,45 @@
 -- Schema for Chorus store
 
+-- Workspaces are the root collaboration boundary. Local-only deployments still
+-- create an explicit workspace during setup.
+CREATE TABLE IF NOT EXISTS workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    mode TEXT NOT NULL DEFAULT 'local_only',
+    created_by_human TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    human_name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (workspace_id, human_name)
+);
+
+CREATE TABLE IF NOT EXISTS local_workspace_state (
+    key TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE
+);
+
 -- Channels represent chat rooms, direct messages, system broadcasts, or task sub-channels.
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY, -- Unique UUID for the channel
-    name TEXT UNIQUE NOT NULL, -- Human-readable unique name (e.g., 'general', 'dm-alice-bob')
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL, -- Human-readable name unique within a workspace
     description TEXT, -- Optional topic or description for the channel
     channel_type TEXT NOT NULL DEFAULT 'channel', -- Type of channel: 'channel' | 'dm' | 'system' | 'team' | 'task'
     archived INTEGER NOT NULL DEFAULT 0, -- 1 if archived, 0 if active
     created_at TEXT NOT NULL DEFAULT (datetime('now')), -- Timestamp of creation
     parent_channel_id TEXT REFERENCES channels(id) -- Parent channel for task sub-channels; NULL for all other types.
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_workspace_name
+    ON channels(workspace_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_legacy_name
+    ON channels(name)
+    WHERE workspace_id IS NULL;
 
 -- Memberships linking users/agents to channels.
 CREATE TABLE IF NOT EXISTS channel_members (
@@ -69,7 +99,8 @@ CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq)
 -- AI Agents configuration and status.
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY, -- Unique UUID for the agent
-    name TEXT UNIQUE NOT NULL, -- Unique machine name
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT UNIQUE NOT NULL, -- Unique machine name; workspace scoping requires agent_env_vars migration first.
     display_name TEXT NOT NULL, -- Human-readable display name
     description TEXT, -- Description of the agent's role/capabilities
     system_prompt TEXT, -- Full system prompt for the LLM (templates inject rich prompts here)
@@ -78,6 +109,8 @@ CREATE TABLE IF NOT EXISTS agents (
     reasoning_effort TEXT, -- The reasoning effort configuration
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the agent was created
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name
+    ON agents(workspace_id, name);
 
 -- Environment variables for agents.
 CREATE TABLE IF NOT EXISTS agent_env_vars (
@@ -124,12 +157,18 @@ CREATE TABLE IF NOT EXISTS attachments (
 -- Teams of agents.
 CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY, -- Unique UUID for the team
-    name TEXT UNIQUE NOT NULL, -- Unique machine name for the team
+    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL, -- Unique machine name for the team within a workspace
     display_name TEXT NOT NULL, -- Human-readable display name
     collaboration_model TEXT NOT NULL, -- Collaboration model used by the team
     leader_agent_name TEXT, -- Optional name of the leader agent
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the team was created
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_workspace_name
+    ON teams(workspace_id, name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_legacy_name
+    ON teams(name)
+    WHERE workspace_id IS NULL;
 
 -- Memberships within teams.
 CREATE TABLE IF NOT EXISTS team_members (

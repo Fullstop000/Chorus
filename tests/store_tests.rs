@@ -2,7 +2,7 @@ use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::tasks::TaskStatus;
-use chorus::store::{AgentRecordUpsert, Store};
+use chorus::store::{AgentRecordUpsert, Store, WorkspaceMode};
 use rusqlite::{params, Connection};
 use tempfile::tempdir;
 
@@ -89,6 +89,500 @@ fn make_store() -> (Store, tempfile::TempDir) {
     let db_path = dir.path().join("test.db");
     let store = Store::open(db_path.to_str().unwrap()).unwrap();
     (store, dir)
+}
+
+#[test]
+fn test_create_local_workspace_sets_owner_and_active_context() {
+    let (store, _dir) = make_store();
+
+    let workspace = store.create_local_workspace("Chorus Dev", "alice").unwrap();
+
+    assert_eq!(workspace.name, "Chorus Dev");
+    assert_eq!(workspace.slug, "chorus-dev");
+    assert_eq!(workspace.mode, WorkspaceMode::LocalOnly);
+    assert_eq!(workspace.created_by_human.as_deref(), Some("alice"));
+    assert_eq!(
+        store.get_active_workspace().unwrap().unwrap().id,
+        workspace.id
+    );
+    assert_eq!(
+        store.list_workspaces_for_human("alice").unwrap()[0].id,
+        workspace.id
+    );
+}
+
+#[test]
+fn test_workspace_scoped_names_allow_same_channel_name_in_different_workspaces() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "bob").unwrap();
+
+    store
+        .create_channel_in_workspace(
+            &alpha.id,
+            "general",
+            Some("Alpha general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_channel_in_workspace(
+            &beta.id,
+            "general",
+            Some("Beta general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+
+    assert!(store
+        .create_channel_in_workspace(
+            &alpha.id,
+            "general",
+            Some("Duplicate Alpha general"),
+            ChannelType::Channel,
+            None,
+        )
+        .is_err());
+}
+
+#[test]
+fn test_unknown_workspace_mode_surfaces_error() {
+    let (store, _dir) = make_store();
+    {
+        let conn = store.conn_for_test();
+        conn.execute(
+            "INSERT INTO workspaces (id, name, slug, mode, created_by_human)
+             VALUES ('workspace-1', 'Broken', 'broken', 'surprise', 'alice')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO local_workspace_state (key, workspace_id)
+             VALUES ('active_workspace_id', 'workspace-1')",
+            [],
+        )
+        .unwrap();
+    }
+
+    let err = store.get_active_workspace().unwrap_err();
+
+    assert!(err.to_string().contains("unknown workspace mode"));
+}
+
+#[test]
+fn test_workspace_selector_switch_rename_and_slug_collision() {
+    let (store, _dir) = make_store();
+    let first = store.create_local_workspace("Acme", "alice").unwrap();
+    let second = store.create_local_workspace("Acme", "alice").unwrap();
+
+    assert_eq!(first.slug, "acme");
+    assert_eq!(second.slug, "acme-1");
+    assert_eq!(
+        store.get_workspace_by_selector("acme").unwrap().unwrap().id,
+        first.id
+    );
+
+    store.set_active_workspace(&first.id).unwrap();
+    assert_eq!(store.get_active_workspace().unwrap().unwrap().id, first.id);
+
+    let renamed = store.rename_workspace(&first.id, "Acme Renamed").unwrap();
+    assert_eq!(renamed.name, "Acme Renamed");
+    assert_eq!(renamed.slug, "acme");
+}
+
+#[test]
+fn test_workspace_scoped_core_resource_lists() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+
+    store
+        .create_channel_in_workspace(
+            &alpha.id,
+            "general",
+            Some("Alpha general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_channel_in_workspace(
+            &beta.id,
+            "general",
+            Some("Beta general"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &alpha.id,
+            &AgentRecordUpsert {
+                name: "alpha-bot",
+                display_name: "Alpha Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &beta.id,
+            &AgentRecordUpsert {
+                name: "beta-bot",
+                display_name: "Beta Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_team_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&beta.id, "beta-team", "Beta Team", "swarm", None)
+        .unwrap();
+
+    let alpha_channels = store
+        .get_channels_by_params(&chorus::store::ChannelListParams {
+            workspace_id: Some(&alpha.id),
+            ..Default::default()
+        })
+        .unwrap();
+    assert_eq!(alpha_channels.len(), 1);
+    assert_eq!(
+        alpha_channels[0].description.as_deref(),
+        Some("Alpha general")
+    );
+
+    let alpha_agents = store.get_agents_in_workspace(&alpha.id).unwrap();
+    assert_eq!(alpha_agents.len(), 1);
+    assert_eq!(alpha_agents[0].name, "alpha-bot");
+
+    let alpha_teams = store.get_teams_in_workspace(&alpha.id).unwrap();
+    assert_eq!(alpha_teams.len(), 1);
+    assert_eq!(alpha_teams[0].name, "alpha-team");
+}
+
+#[test]
+fn test_workspace_scoped_team_channel_join_uses_workspace_id() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+
+    let alpha_channel_id = store
+        .create_channel_in_workspace(&alpha.id, "ops", None, ChannelType::Team, None)
+        .unwrap();
+    store
+        .create_channel_in_workspace(&beta.id, "ops", None, ChannelType::Team, None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&alpha.id, "ops", "Alpha Ops", "swarm", None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&beta.id, "ops", "Beta Ops", "swarm", None)
+        .unwrap();
+
+    let alpha_teams = store.get_teams_in_workspace(&alpha.id).unwrap();
+    assert_eq!(alpha_teams.len(), 1);
+    assert_eq!(alpha_teams[0].display_name, "Alpha Ops");
+    assert_eq!(
+        alpha_teams[0].channel_id.as_deref(),
+        Some(alpha_channel_id.as_str())
+    );
+}
+
+#[test]
+fn test_team_with_channel_create_rolls_back_when_channel_insert_fails() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("ops", None, ChannelType::Team, None)
+        .unwrap();
+
+    let err = store
+        .create_team_with_channel("ops", "Ops", "swarm", None)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("UNIQUE constraint"),
+        "expected channel uniqueness failure, got: {err}"
+    );
+
+    let team_count: i64 = store
+        .conn_for_test()
+        .query_row("SELECT COUNT(*) FROM teams WHERE name = 'ops'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(team_count, 0, "team row should roll back with channel row");
+}
+
+#[test]
+fn test_unscoped_agent_and_team_lists_exclude_workspace_rows() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "legacy-bot",
+            display_name: "Legacy Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &alpha.id,
+            &AgentRecordUpsert {
+                name: "alpha-bot",
+                display_name: "Alpha Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_team("legacy-team", "Legacy Team", "swarm", None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
+        .unwrap();
+
+    let agents = store.get_agents().unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].name, "legacy-bot");
+
+    let teams = store.get_teams().unwrap();
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0].name, "legacy-team");
+}
+
+#[test]
+fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
+    let (store, dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "bob").unwrap();
+    let alpha_channel_id = store
+        .create_channel_in_workspace(&alpha.id, "alpha-general", None, ChannelType::Channel, None)
+        .unwrap();
+    let beta_channel_id = store
+        .create_channel_in_workspace(&beta.id, "beta-general", None, ChannelType::Channel, None)
+        .unwrap();
+    let alpha_agent_id = store
+        .create_agent_record_in_workspace(
+            &alpha.id,
+            &AgentRecordUpsert {
+                name: "alpha-bot",
+                display_name: "Alpha Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[AgentEnvVar {
+                    key: "TOKEN".to_string(),
+                    value: "secret".to_string(),
+                    position: 0,
+                }],
+            },
+        )
+        .unwrap();
+    let (alpha_team_id, _) = store
+        .create_team_with_channel_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
+        .unwrap();
+    store
+        .create_team_member(
+            &alpha_team_id,
+            "alpha-bot",
+            "agent",
+            &alpha_agent_id,
+            "member",
+        )
+        .unwrap();
+
+    let alpha_attachment_path = dir.path().join("alpha-attachment.txt");
+    let beta_attachment_path = dir.path().join("beta-attachment.txt");
+    std::fs::write(&alpha_attachment_path, "alpha").unwrap();
+    std::fs::write(&beta_attachment_path, "beta").unwrap();
+    {
+        let conn = store.conn_for_test();
+        conn.execute(
+            "INSERT INTO agent_sessions (agent_id, session_id, runtime)
+             VALUES (?1, 'session-alpha', 'claude')",
+            params![alpha_agent_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channels (id, name, channel_type, parent_channel_id)
+             VALUES ('alpha-task-channel', 'alpha-general__task-1', 'task', ?1)",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_members (channel_id, member_name, member_type)
+             VALUES (?1, 'alice', 'human')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_members (channel_id, member_name, member_type)
+             VALUES ('alpha-task-channel', 'alice', 'human')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO inbox_read_state (conversation_id, member_name, member_type)
+             VALUES (?1, 'alice', 'human')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (id, channel_id, task_number, title, created_by, sub_channel_id)
+             VALUES ('alpha-task', ?1, 1, 'Ship alpha', 'alice', 'alpha-task-channel')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq, run_id)
+             VALUES ('alpha-message', ?1, 'alice', 'human', 'alpha', 1, 'run-alpha')",
+            params![alpha_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO trace_events (run_id, seq, timestamp_ms, kind, data)
+             VALUES ('run-alpha', 1, 1, 'text', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path)
+             VALUES ('alpha-attachment', 'alpha.txt', 'text/plain', 5, ?1)",
+            params![alpha_attachment_path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_attachments (message_id, attachment_id)
+             VALUES ('alpha-message', 'alpha-attachment')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq, run_id)
+             VALUES ('beta-message', ?1, 'bob', 'human', 'beta', 1, 'run-beta')",
+            params![beta_channel_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO trace_events (run_id, seq, timestamp_ms, kind, data)
+             VALUES ('run-beta', 1, 1, 'text', '{}')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO attachments (id, filename, mime_type, size_bytes, stored_path)
+             VALUES ('beta-attachment', 'beta.txt', 'text/plain', 4, ?1)",
+            params![beta_attachment_path.to_string_lossy().as_ref()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_attachments (message_id, attachment_id)
+             VALUES ('beta-message', 'beta-attachment')",
+            [],
+        )
+        .unwrap();
+    }
+
+    store.delete_workspace(&alpha.id).unwrap();
+
+    let conn = store.conn_for_test();
+    for (table, predicate) in [
+        ("workspaces", format!("id = '{}'", alpha.id)),
+        (
+            "workspace_members",
+            format!("workspace_id = '{}'", alpha.id),
+        ),
+        (
+            "local_workspace_state",
+            format!("workspace_id = '{}'", alpha.id),
+        ),
+        ("channels", "id IN ('alpha-task-channel')".to_string()),
+        ("channels", format!("workspace_id = '{}'", alpha.id)),
+        (
+            "channel_members",
+            format!("channel_id = '{}'", alpha_channel_id),
+        ),
+        ("messages", "id = 'alpha-message'".to_string()),
+        ("tasks", "id = 'alpha-task'".to_string()),
+        (
+            "inbox_read_state",
+            format!("conversation_id = '{}'", alpha_channel_id),
+        ),
+        ("trace_events", "run_id = 'run-alpha'".to_string()),
+        (
+            "message_attachments",
+            "attachment_id = 'alpha-attachment'".to_string(),
+        ),
+        ("attachments", "id = 'alpha-attachment'".to_string()),
+        ("agents", "name = 'alpha-bot'".to_string()),
+        ("agent_env_vars", "agent_name = 'alpha-bot'".to_string()),
+        ("agent_sessions", format!("agent_id = '{}'", alpha_agent_id)),
+        ("teams", "name = 'alpha-team'".to_string()),
+        ("team_members", format!("team_id = '{}'", alpha_team_id)),
+    ] {
+        let count: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE {predicate}"),
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0, "{table} rows should be deleted");
+    }
+
+    let beta_workspace_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM workspaces WHERE id = ?1",
+            params![beta.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let beta_message_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE id = 'beta-message'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let beta_attachment_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM attachments WHERE id = 'beta-attachment'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    assert_eq!(beta_workspace_count, 1);
+    assert_eq!(beta_message_count, 1);
+    assert_eq!(beta_attachment_count, 1);
+    assert!(!alpha_attachment_path.exists());
+    assert!(beta_attachment_path.exists());
 }
 
 /// Channel archive, team creation, and agent record update as performed by shell/API layers.

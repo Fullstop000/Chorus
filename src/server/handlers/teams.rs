@@ -7,7 +7,7 @@ use super::path_params::{PublicResourceIdPath, TeamMemberPath};
 use super::{app_err, internal_err, ApiResult, AppState};
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
 use crate::server::error::AppErrorCode;
-use crate::store::channels::{normalize_channel_name, ChannelType};
+use crate::store::channels::normalize_channel_name;
 use crate::store::messages::SenderType;
 use crate::store::teams::{Team, TeamMember};
 
@@ -155,27 +155,30 @@ pub async fn handle_create_team(
         ));
     }
 
-    let team_id = state
-        .store
-        .create_team(
+    let active_workspace_id = state.active_workspace_id().await;
+    let (team_id, team_channel_id) = match active_workspace_id.as_deref() {
+        Some(workspace_id) => state.store.create_team_with_channel_in_workspace(
+            workspace_id,
             &name,
             display_name,
             req.collaboration_model.as_deref().unwrap_or_default(),
             req.leader_agent_name.as_deref(),
-        )
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.contains("UNIQUE constraint") {
-                app_err!(AppErrorCode::TeamNameTaken, "team name already in use")
-            } else {
-                app_err!(StatusCode::BAD_REQUEST, msg)
-            }
-        })?;
-
-    state
-        .store
-        .create_channel(&name, None, ChannelType::Team, None)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+        ),
+        None => state.store.create_team_with_channel(
+            &name,
+            display_name,
+            req.collaboration_model.as_deref().unwrap_or_default(),
+            req.leader_agent_name.as_deref(),
+        ),
+    }
+    .map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("UNIQUE constraint") {
+            app_err!(AppErrorCode::TeamNameTaken, "team name already in use")
+        } else {
+            app_err!(StatusCode::BAD_REQUEST, msg)
+        }
+    })?;
 
     // Auto-join the creator to the team channel and add them as a team member
     // unless they already included themselves in the explicit members list.
@@ -185,7 +188,7 @@ pub async fn handle_create_team(
     if !creator_in_members {
         state
             .store
-            .join_channel(&name, &username, SenderType::Human)
+            .join_channel_by_id(&team_channel_id, &username, SenderType::Human)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
         state
             .store
@@ -222,7 +225,7 @@ pub async fn handle_create_team(
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
         state
             .store
-            .join_channel(&name, &member.member_name, sender_type)
+            .join_channel_by_id(&team_channel_id, &member.member_name, sender_type)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
         if sender_type == SenderType::Agent {
@@ -235,7 +238,7 @@ pub async fn handle_create_team(
 
     let team = state
         .store
-        .get_team(&name)
+        .get_team_by_id(&team_id)
         .map_err(internal_err)?
         .ok_or_else(|| {
             app_err!(
@@ -251,7 +254,11 @@ pub async fn handle_create_team(
 }
 
 pub async fn handle_list_teams(State(state): State<AppState>) -> ApiResult<Vec<Team>> {
-    let teams = state.store.get_teams().map_err(internal_err)?;
+    let active_workspace_id = state.active_workspace_id().await;
+    let teams = state
+        .store
+        .get_teams_for_workspace(active_workspace_id.as_deref())
+        .map_err(internal_err)?;
     Ok(Json(teams))
 }
 
