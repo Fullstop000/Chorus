@@ -5,7 +5,7 @@ import type { HistoryMessage } from "../../data/chat";
 
 // MessageList calls the store in TWO shapes:
 //   useStore() — returns full state (destructured for advanceConversationLastReadSeq)
-//   useStore((s) => s.setCurrentTaskDetail) — selector form for our new branch
+//   useStore((s) => s.setCurrentTaskDetail) — selector form for the task_card branch
 // The mock must support both or the test crashes before the assertion.
 vi.mock("../../store", () => {
   const state = {
@@ -33,20 +33,22 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
   };
 });
 
-describe("MessageList — task_event rendering", () => {
-  it("renders exactly one task-thread for a sequence of events on the same task", () => {
+describe("MessageList — system message routing", () => {
+  it("renders one TaskEventRow per task_event system message", () => {
     const msgs: HistoryMessage[] = [
       {
         id: "m1",
         seq: 1,
         content: JSON.stringify({
           kind: "task_event",
-          action: "created",
+          action: "claimed",
           taskNumber: 7,
           title: "wire up",
           subChannelId: "s",
           actor: "alice",
-          nextStatus: "todo",
+          prevStatus: "todo",
+          nextStatus: "in_progress",
+          claimedBy: "alice",
         }),
         senderName: "system",
         senderType: "system",
@@ -58,14 +60,13 @@ describe("MessageList — task_event rendering", () => {
         seq: 2,
         content: JSON.stringify({
           kind: "task_event",
-          action: "claimed",
+          action: "status_changed",
           taskNumber: 7,
           title: "wire up",
           subChannelId: "s",
           actor: "alice",
-          prevStatus: "todo",
-          nextStatus: "in_progress",
-          claimedBy: "alice",
+          prevStatus: "in_progress",
+          nextStatus: "in_review",
         }),
         senderName: "system",
         senderType: "system",
@@ -83,9 +84,46 @@ describe("MessageList — task_event rendering", () => {
         currentUser="alice"
       />,
     );
-    const occurrences = (html.match(/data-testid="task-thread-7"/g) ?? [])
+    // Each task_event row renders independently — no per-task suppression.
+    const claimed = (html.match(/data-action="claimed"/g) ?? []).length;
+    const statusChanged = (html.match(/data-action="status_changed"/g) ?? [])
       .length;
-    expect(occurrences).toBe(1);
-    expect(html).toContain('data-state="in_progress"');
+    expect(claimed).toBe(1);
+    expect(statusChanged).toBe(1);
+  });
+
+  it("does not render a TaskCard when the task row is unknown to the store", () => {
+    // Without a populated tasks store, TaskCardContainer returns null. The
+    // wrapper div still anchors visibility tracking, but no card body.
+    const msgs: HistoryMessage[] = [
+      {
+        id: "m1",
+        seq: 1,
+        content: JSON.stringify({
+          kind: "task_card",
+          taskId: "unknown-id",
+          taskNumber: 7,
+          title: "wire up",
+          status: "todo",
+          owner: null,
+          createdBy: "alice",
+        }),
+        senderName: "system",
+        senderType: "system",
+        createdAt: "2026-04-23T10:00:00Z",
+        senderDeleted: false,
+      },
+    ];
+    const html = renderToStaticMarkup(
+      <MessageList
+        targetKey="eng"
+        conversationId="cid"
+        messages={msgs}
+        loading={false}
+        lastReadSeq={0}
+        currentUser="alice"
+      />,
+    );
+    expect(html).not.toContain('data-testid="task-card-7"');
   });
 });

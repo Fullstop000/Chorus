@@ -9,21 +9,54 @@ import type {
 
 // ── Types (source of truth) ──
 
-export type TaskStatus = 'todo' | 'in_progress' | 'in_review' | 'done'
+/**
+ * Unified task lifecycle. Pre-acceptance (`proposed`/`dismissed`) sit beside
+ * the four post-acceptance kanban states. Forward-only — no reverse edges.
+ * Wire form mirrors the Rust `TaskStatus::as_str()` enum.
+ */
+export type TaskStatus =
+  | 'proposed'
+  | 'dismissed'
+  | 'todo'
+  | 'in_progress'
+  | 'in_review'
+  | 'done'
 
+/**
+ * Task wire shape. Field names match the camelCase Rust serialization
+ * (`#[serde(rename_all = "camelCase")]` on `TaskInfo`). The TaskCard host
+ * message in the parent channel carries this same payload — keep the two in
+ * sync.
+ */
 export interface TaskInfo {
-  id?: string
+  /** UUID primary key — store keying. */
+  id: string
+  /** Per-channel task number. Stable handle for MCP/CLI. */
   taskNumber: number
   title: string
   status: TaskStatus
-  channelId?: string
-  claimedByName?: string
-  createdByName?: string
-  createdAt?: string
-  /** Child task sub-channel id; null for legacy rows before sub-channels existed. */
-  subChannelId?: string | null
-  /** Child task sub-channel name for deep-linking. Mirrors `subChannelId`. */
-  subChannelName?: string | null
+  /** Current claimer handle. `null` when unclaimed or pre-acceptance. */
+  owner: string | null
+  /** Creator handle. */
+  createdBy: string
+  /** Insert time (ISO8601). */
+  createdAt: string
+  /** Last mutation time (ISO8601). */
+  updatedAt: string
+  /** Child sub-channel id; `null` for legacy/proposed rows. */
+  subChannelId: string | null
+  /** Child sub-channel name for deep-linking. */
+  subChannelName: string | null
+  /** Source message id this task was carved from (proposal flow). */
+  sourceMessageId?: string | null
+  /** Snapshot of the source message's sender display name. */
+  snapshotSenderName?: string | null
+  /** Snapshot of the source message's sender type (`human`/`agent`/`system`). */
+  snapshotSenderType?: string | null
+  /** Snapshot of the source message's content at carve time. */
+  snapshotContent?: string | null
+  /** Snapshot of the source message's created_at timestamp. */
+  snapshotCreatedAt?: string | null
 }
 
 export interface TasksResponse {
@@ -79,10 +112,23 @@ export function updateTaskStatus(
 
 // ── Transforms ──
 
+/**
+ * Bucket tasks by status. Initialises every key in the literal so the kanban
+ * filter can iterate columns without `?? []` plumbing — even pre-acceptance
+ * rows (`proposed`/`dismissed`) get an empty bucket. Consumers that only
+ * render committed work filter by the four kanban statuses themselves.
+ */
 export function groupTasksByStatus(tasks: TaskInfo[]): Record<TaskStatus, TaskInfo[]> {
-  const result: Record<string, TaskInfo[]> = { todo: [], in_progress: [], in_review: [], done: [] }
+  const result: Record<TaskStatus, TaskInfo[]> = {
+    proposed: [],
+    dismissed: [],
+    todo: [],
+    in_progress: [],
+    in_review: [],
+    done: [],
+  }
   for (const task of tasks) {
     result[task.status].push(task)
   }
-  return result as Record<TaskStatus, TaskInfo[]>
+  return result
 }

@@ -9,8 +9,12 @@ import { updateReadCursor, historyQueryKeys } from "../../data";
 import type { HistoryMessage, HistoryResponse } from "../../data";
 import { useStore } from "../../store";
 import { useTraceStore } from "../../store/traceStore";
-import { useTaskEventLog } from "../../hooks/useTaskEventLog";
-import { TaskEventMessage } from "./TaskEventMessage";
+import { parseTaskEvent } from "../../data/taskEvents";
+import { TaskEventRow } from "./TaskEventRow";
+import {
+  TaskCardContainer,
+  type TaskCardWirePayload,
+} from "./TaskCardContainer";
 import "./MessageList.css";
 import type { RefObject } from "react";
 
@@ -36,6 +40,30 @@ export function getBottomTransition(
   if (nowAtBottom && !wasAtBottom) return "entered";
   if (!nowAtBottom && wasAtBottom) return "left";
   return "none";
+}
+
+/**
+ * Cheap discriminator for system-message JSON payloads. Returns the `kind`
+ * field if the content parses as a JSON object, else null. Avoids re-parsing
+ * downstream when the routing branch needs the typed payload.
+ */
+function tryJsonParse<T = Record<string, unknown>>(content: string): T | null {
+  if (!content || content[0] !== "{") return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === "object" ? (parsed as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Narrow form for the `kind=task_card` host payload. */
+function tryParseTaskCardPayload(content: string): TaskCardWirePayload | null {
+  const obj = tryJsonParse<Record<string, unknown>>(content);
+  if (!obj || obj.kind !== "task_card") return null;
+  if (typeof obj.taskId !== "string") return null;
+  if (typeof obj.taskNumber !== "number") return null;
+  return obj as unknown as TaskCardWirePayload;
 }
 
 interface MessageListProps {
@@ -90,7 +118,6 @@ export function MessageList({
   const queryClient = useQueryClient();
   const queryKey = historyQueryKeys.history(conversationId ?? "");
   const { advanceConversationLastReadSeq } = useStore();
-  const taskEventIndex = useTaskEventLog(messages);
   const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail);
 
   // ── Sync refs with props ──
@@ -334,48 +361,55 @@ export function MessageList({
         <div className="message-list-empty">{emptyLabel}</div>
       )}
       {messages.map((msg, i) => {
-        // Task-event system messages short-circuit to the TaskEventMessage
-        // renderer. Suppress repeated events for the same task so we render
-        // one card per task, anchored at its latest event. The hook already
-        // parsed the payload once when building `taskEventIndex`; the render
-        // loop just asks "does this seq belong to a task?" — O(1), no JSON
-        // re-parse.
-        const taskNumber = taskEventIndex.taskNumberBySeq.get(msg.seq);
-        if (msg.senderType === "system" && taskNumber !== undefined) {
-          const state = taskEventIndex.byTaskNumber.get(taskNumber);
-          const isLatestForTask = state && state.latestSeq === msg.seq;
-
-          // Even when we suppress the task-card render (not the latest
-          // event), we still need the wrapper div so visibility tracking
-          // hits the row AND the unread divider anchors on the right seq.
-          // Returning null here loses the unread anchor entirely.
-          return (
-            <div
-              key={msg.id}
-              ref={(el) => {
-                if (el) messageRowRefs.current.set(msg.id, el);
-                else messageRowRefs.current.delete(msg.id);
-              }}
-            >
+        // System message routing. Two task-related kinds today:
+        //   - `kind=task_card`    → parent-channel host card (TaskCardContainer)
+        //   - `kind=task_event`   → sub-channel narrative row (TaskEventRow)
+        // Parsed once here per message; never re-parse downstream.
+        if (msg.senderType === "system") {
+          const taskCard = tryParseTaskCardPayload(msg.content);
+          const taskEvent = taskCard ? null : parseTaskEvent(msg.content);
+          if (taskCard || taskEvent) {
+            return (
               <div
-                ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
-              />
-              {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
-              {isLatestForTask && state && (
-                <TaskEventMessage
-                  taskState={state}
-                  onOpen={() =>
-                    setCurrentTaskDetail({
-                      parentChannelId: conversationId ?? "",
-                      parentSlug: targetKey ?? "",
-                      taskNumber,
-                      returnToTab: "chat",
-                    })
-                  }
+                key={msg.id}
+                ref={(el) => {
+                  if (el) messageRowRefs.current.set(msg.id, el);
+                  else messageRowRefs.current.delete(msg.id);
+                }}
+              >
+                <div
+                  ref={i === firstUnreadIndex ? firstUnreadAnchorRef : undefined}
                 />
-              )}
-            </div>
-          );
+                {hasUnread && i === firstUnreadIndex && <NewMessageDivider />}
+                {taskCard && (
+                  <TaskCardContainer
+                    payload={taskCard}
+                    parentChannelId={conversationId ?? ""}
+                    onOpenSubChannel={() => {
+                      // Sub-channel deep-link → hand off to TaskDetail via the
+                      // existing `currentTaskDetail` store slot.
+                      setCurrentTaskDetail({
+                        parentChannelId: conversationId ?? "",
+                        parentSlug: targetKey ?? "",
+                        taskNumber: taskCard.taskNumber,
+                        returnToTab: "chat",
+                      });
+                    }}
+                  />
+                )}
+                {taskEvent && (
+                  <TaskEventRow
+                    event={taskEvent}
+                    eventId={msg.id}
+                    createdAt={msg.createdAt}
+                    seq={msg.seq}
+                  />
+                )}
+              </div>
+            );
+          }
+          // Fall through for unrecognised system messages — they render as a
+          // generic MessageItem below.
         }
 
         // Bind trace to message:

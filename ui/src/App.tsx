@@ -238,7 +238,11 @@ function useGlobalSeqListener(
   useEffect(() => {
     if (!currentUser || !shellBootstrapped) return;
     return getSession(currentUser).subscribeAll((frame) => {
-      if (frame.type === "error") return;
+      // Only StreamEvent frames carry MessageCreated payloads; trace and
+      // task_update frames have their own dedicated subscribers and reach
+      // here too because subscribeAll is wildcard. Bail early so the type
+      // guard narrows `frame` to the StreamEvent branch.
+      if (frame.type !== "event") return;
       if (frame.event.eventType !== EventType.MessageCreated) return;
       const seq = frame.event.payload?.seq;
       if (typeof seq === "number") {

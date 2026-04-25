@@ -59,7 +59,13 @@ export interface UnclaimTaskRequest {
 
 export interface UpdateTaskStatusRequest {
   task_number: number
-  status: 'todo' | 'in_progress' | 'in_review' | 'done'
+  status:
+    | 'proposed'
+    | 'dismissed'
+    | 'todo'
+    | 'in_progress'
+    | 'in_review'
+    | 'done'
 }
 
 // ── Agent requests ──

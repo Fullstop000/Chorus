@@ -1,102 +1,46 @@
 import { useMemo } from 'react'
 import type { HistoryMessage } from '../data/chat'
 import { parseTaskEvent, type TaskEventPayload } from '../data/taskEvents'
-import type { TaskStatus } from '../data/tasks'
 
+/**
+ * One row per parsed task_event message. Rendered inline by `TaskEventRow`
+ * inside the sub-channel. Pre-T9 this hook reduced events into per-task
+ * card state — that role moves to the parent-channel `TaskCard`, which
+ * subscribes to the tasks store directly. Sub-channel renderers only need a
+ * flat, ordered log.
+ */
 export interface TaskEventRecord {
+  /** Source message id — stable React key. */
   eventId: string
   seq: number
-  action: TaskEventPayload['action']
-  actor: string
-  prevStatus?: TaskStatus
-  nextStatus: TaskStatus
   createdAt: string
-}
-
-export interface TaskState {
-  taskNumber: number
-  title: string
-  subChannelId: string
-  status: TaskStatus
-  claimedBy: string | null
-  /** Event history in seq order, oldest first. */
-  events: TaskEventRecord[]
-  /** seq of the latest event applied — used for repeat-suppression. */
-  latestSeq: number
-}
-
-export interface TaskEventIndex {
-  /** Per-task state, keyed by taskNumber. */
-  byTaskNumber: Map<number, TaskState>
-  /** Inverse index: seq → taskNumber. Lets the render loop detect a
-   *  task_event row in O(1) without re-parsing JSON content. */
-  taskNumberBySeq: Map<number, number>
+  payload: TaskEventPayload
 }
 
 /**
- * Reduce a message stream into per-task state + a seq→taskNumber inverse
- * index. Pure function: same input yields same output. Non-task_event
- * messages are ignored. Out-of-order arrivals are tolerated — events are
- * applied in seq order.
- *
- * Internally builds each task's `events` list with in-place `push`, not
- * spread-copy, so the cost is O(n) over n total events, not O(k²) over
- * k events per task.
+ * Reduce a message stream to an ordered list of task_event rows. Pure
+ * function: same input yields same output. Non-task_event messages are
+ * ignored. Out-of-order arrivals are tolerated — entries are sorted by seq
+ * before return.
  */
-export function deriveTaskStates(messages: HistoryMessage[]): TaskEventIndex {
-  const parsed: { msg: HistoryMessage; ev: TaskEventPayload }[] = []
+export function deriveTaskEventRows(messages: HistoryMessage[]): TaskEventRecord[] {
+  const rows: TaskEventRecord[] = []
   for (const msg of messages) {
     if (msg.senderType !== 'system') continue
-    const ev = parseTaskEvent(msg.content)
-    if (!ev) continue
-    parsed.push({ msg, ev })
-  }
-  parsed.sort((a, b) => a.msg.seq - b.msg.seq)
-
-  const byTaskNumber = new Map<number, TaskState>()
-  const taskNumberBySeq = new Map<number, number>()
-
-  for (const { msg, ev } of parsed) {
-    taskNumberBySeq.set(msg.seq, ev.taskNumber)
-
-    const record: TaskEventRecord = {
+    const payload = parseTaskEvent(msg.content)
+    if (!payload) continue
+    rows.push({
       eventId: msg.id,
       seq: msg.seq,
-      action: ev.action,
-      actor: ev.actor,
-      prevStatus: ev.prevStatus,
-      nextStatus: ev.nextStatus,
       createdAt: msg.createdAt,
-    }
-
-    const prev = byTaskNumber.get(ev.taskNumber)
-    if (!prev) {
-      byTaskNumber.set(ev.taskNumber, {
-        taskNumber: ev.taskNumber,
-        title: ev.title,
-        subChannelId: ev.subChannelId,
-        status: ev.nextStatus,
-        claimedBy: ev.claimedBy ?? null,
-        events: [record],
-        latestSeq: msg.seq,
-      })
-    } else {
-      // Mutation is safe: `prev` is a local object owned by this call, and
-      // the returned Map is built fresh on every memo recompute.
-      prev.title = ev.title
-      prev.subChannelId = ev.subChannelId
-      prev.status = ev.nextStatus
-      if (ev.claimedBy !== undefined) {
-        prev.claimedBy = ev.claimedBy ?? null
-      }
-      prev.events.push(record)
-      prev.latestSeq = msg.seq
-    }
+      payload,
+    })
   }
-  return { byTaskNumber, taskNumberBySeq }
+  rows.sort((a, b) => a.seq - b.seq)
+  return rows
 }
 
-/** React hook wrapping `deriveTaskStates` with memoization. */
-export function useTaskEventLog(messages: HistoryMessage[]): TaskEventIndex {
-  return useMemo(() => deriveTaskStates(messages), [messages])
+/** React hook wrapping `deriveTaskEventRows` with memoization. */
+export function useTaskEventLog(messages: HistoryMessage[]): TaskEventRecord[] {
+  return useMemo(() => deriveTaskEventRows(messages), [messages])
 }
