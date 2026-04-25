@@ -50,23 +50,27 @@ use super::*;
 /// Build the `-c mcp_servers.chat.*` override flags for `codex app-server`.
 ///
 /// Produces the native HTTP MCP shape, connecting the runtime to the shared
-/// bridge at `{endpoint}/token/{token}/mcp`. Returns a flat `Vec<String>`
-/// ready to be extended onto the args list; each config override is already
-/// preceded by its own `-c` flag.
+/// bridge at `{endpoint}/mcp`. Returns a flat `Vec<String>` ready to be
+/// extended onto the args list; each config override is already preceded by
+/// its own `-c` flag.
+///
+/// Codex does not support arbitrary HTTP headers for MCP servers, so the
+/// agent key is passed via `bearer_token_env_var` which sets an
+/// `Authorization: Bearer <key>` header. The bridge accepts this as a
+/// fallback when `X-Agent-Id` is absent.
 ///
 /// Factored out so config-shape tests don't need a live bridge.
-fn build_codex_mcp_args(bridge_endpoint: &str, agent_key: &str) -> Vec<String> {
+fn build_codex_mcp_args(bridge_endpoint: &str, _agent_key: &str) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
     let url = super::bridge_mcp_url(bridge_endpoint);
     let url_json = serde_json::to_string(&url).expect("url serialization cannot fail");
-    let headers = serde_json::json!({"X-Agent-Id": agent_key});
-    let headers_json = serde_json::to_string(&headers).expect("headers serialization cannot fail");
+    let env_var_json = serde_json::to_string("CHORUS_AGENT_KEY").expect("env var name serialization cannot fail");
 
     args.push("-c".into());
     args.push(format!("mcp_servers.chat.url={url_json}"));
     args.push("-c".into());
-    args.push(format!("mcp_servers.chat.headers={headers_json}"));
+    args.push(format!("mcp_servers.chat.bearer_token_env_var={env_var_json}"));
     args.push("-c".into());
     args.push("mcp_servers.chat.enabled=true".into());
     args.push("-c".into());
@@ -594,7 +598,8 @@ impl CodexHandle {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("NO_COLOR", "1");
+            .env("NO_COLOR", "1")
+            .env("CHORUS_AGENT_KEY", &self.key);
         for ev in &self.spec.env_vars {
             cmd.env(&ev.key, &ev.value);
         }
@@ -1493,8 +1498,8 @@ mod tests {
             "expected url override, got: {joined}"
         );
         assert!(
-            joined.contains("tok-xyz"),
-            "expected token in url, got: {joined}"
+            joined.contains("CHORUS_AGENT_KEY"),
+            "expected bearer_token_env_var pointing to CHORUS_AGENT_KEY, got: {joined}"
         );
         assert!(
             !joined.contains("mcp_servers.chat.command="),

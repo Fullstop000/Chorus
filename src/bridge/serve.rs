@@ -56,26 +56,46 @@ impl BridgeServer {
 // Axum handler — validates X-Agent-Id header and delegates to shared service
 // ---------------------------------------------------------------------------
 
+/// Extract agent key from `X-Agent-Id` header or `Authorization: Bearer <key>`.
+fn extract_agent_key_from_request(request: &Request<axum::body::Body>) -> Option<&str> {
+    // Prefer X-Agent-Id
+    if let Some(key) = request.headers().get("X-Agent-Id").and_then(|v| v.to_str().ok()) {
+        return Some(key);
+    }
+    // Fallback: Authorization: Bearer <key>
+    if let Some(auth) = request.headers().get("Authorization").and_then(|v| v.to_str().ok()) {
+        let prefix = "Bearer ";
+        if auth.starts_with(prefix) {
+            return Some(&auth[prefix.len()..]);
+        }
+    }
+    None
+}
+
 async fn handle_mcp(
     State(server): State<Arc<BridgeServer>>,
-    request: Request<axum::body::Body>,
+    mut request: Request<axum::body::Body>,
 ) -> Response {
-    // Validate X-Agent-Id header is present and safe.
-    match request
-        .headers()
-        .get("X-Agent-Id")
-        .and_then(|v| v.to_str().ok())
-    {
-        Some(key) if agent_key_is_safe(key) => {}
+    // Validate agent identity header is present and safe.
+    let agent_key = match extract_agent_key_from_request(&request) {
+        Some(key) if agent_key_is_safe(key) => key.to_string(),
         _ => {
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
+                .header("Content-Type", "text/plain")
                 .body(axum::body::Body::from(
                     "Invalid or missing X-Agent-Id header",
                 ))
                 .expect("valid response");
         }
     };
+
+    // Ensure X-Agent-Id is set on the request so ChatBridge can read it
+    // from Extension<Parts> regardless of whether the client used the
+    // native header or the bearer-token fallback.
+    request
+        .headers_mut()
+        .insert("X-Agent-Id", agent_key.parse().unwrap());
 
     let response = server.service.handle(request).await;
     response.into_response()
