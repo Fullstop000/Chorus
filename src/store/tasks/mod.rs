@@ -6,9 +6,22 @@ use rusqlite::{params, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use self::events::{post_task_card_message_tx, TaskEventAction, TaskEventPayload};
-use super::channels::ChannelType;
+use self::events::{
+    post_task_card_message_tx, post_task_event_tx, TaskEventAction, TaskEventPayload,
+};
+use super::channels::{Channel, ChannelType};
+use super::messages::types::InsertedMessage;
 use super::Store;
+
+/// Typed error returned by [`Store::update_task_status`] when a transition is
+/// not permitted by [`TaskStatus::can_transition_to`]. HTTP handlers can
+/// `downcast_ref` this to map to 422.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid task transition: {from:?} -> {to:?}")]
+pub struct InvalidTaskTransition {
+    pub from: TaskStatus,
+    pub to: TaskStatus,
+}
 
 /// Normalize a timestamp string to RFC3339 UTC form (`"YYYY-MM-DDTHH:MM:SSZ"`).
 ///
@@ -256,6 +269,86 @@ pub struct ClaimResult {
     pub reason: Option<String>,
 }
 
+/// Mint a `ChannelType::Task` sub-channel for a task and seed membership with
+/// the task's creator and the accepting actor. Both `create_tasks` (direct
+/// create) and `update_task_status` (proposed → todo acceptance) use this so
+/// the sub-channel shape stays identical regardless of entry point.
+///
+/// Membership rules:
+///   - `task.created_by` is always seeded. Sender type is resolved inside the
+///     same transaction via [`resolve_sender_type_inner`].
+///   - `actor` is seeded when it differs from `task.created_by`. `INSERT OR
+///     IGNORE` keeps this idempotent if the caller somehow hands us the same
+///     name twice.
+///
+/// Returns the freshly-created `Channel` row so callers can pass it to
+/// [`Store::emit_system_stream_events`] without a second lookup.
+fn mint_sub_channel_tx(
+    tx: &Transaction<'_>,
+    parent: &Channel,
+    task: &TaskInfo,
+    actor: &str,
+) -> Result<Channel> {
+    let sub_channel_id = Uuid::new_v4().to_string();
+    let sub_channel_name = format!("{}__task-{}", parent.name, task.task_number);
+    let task_channel_type = ChannelType::Task.as_api_str();
+
+    tx.execute(
+        "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
+         VALUES (?1, ?2, NULL, ?3, ?4)",
+        params![sub_channel_id, sub_channel_name, task_channel_type, parent.id],
+    )?;
+
+    // Resolve sender types inside the tx so the humans/agents lookup stays
+    // consistent with the rest of this transaction's writes.
+    let creator_type = crate::store::resolve_sender_type_inner(tx, &task.created_by)?;
+    tx.execute(
+        "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
+         VALUES (?1, ?2, ?3, 0)",
+        params![sub_channel_id, task.created_by, creator_type.as_str()],
+    )?;
+
+    if actor != task.created_by {
+        let actor_type = crate::store::resolve_sender_type_inner(tx, actor)?;
+        tx.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
+             VALUES (?1, ?2, ?3, 0)",
+            params![sub_channel_id, actor, actor_type.as_str()],
+        )?;
+    }
+
+    Store::get_channel_by_id_inner(tx, &sub_channel_id)?
+        .ok_or_else(|| anyhow!("sub-channel vanished immediately after insert: {}", sub_channel_id))
+}
+
+/// Post the kickoff system message in a task's sub-channel. Two shapes:
+///   - With snapshot (proposal acceptance):
+///       "Task opened: {title}\n\nFrom @{sender}'s message in #{parent}:\n> {content}"
+///   - Without snapshot (direct-created todo):
+///       "Task opened: {title}"
+///
+/// Exact format matches PR #96's contract asserted by Playwright TSK-005.
+/// Returns `(InsertedMessage, String)` for the caller's pending-events buffer.
+fn post_kickoff_message_tx(
+    tx: &Transaction<'_>,
+    parent: &Channel,
+    sub_channel: &Channel,
+    task: &TaskInfo,
+) -> Result<(InsertedMessage, String)> {
+    let content = match (
+        task.snapshot_sender_name.as_deref(),
+        task.snapshot_content.as_deref(),
+    ) {
+        (Some(sender), Some(source)) => format!(
+            "Task opened: {}\n\nFrom @{}'s message in #{}:\n> {}",
+            task.title, sender, parent.name, source
+        ),
+        _ => format!("Task opened: {}", task.title),
+    };
+    let msg = Store::create_system_message_tx(tx, sub_channel, &content)?;
+    Ok((msg, content))
+}
+
 impl Store {
     /// Create one or more tasks under `channel_name`, each with its own
     /// `ChannelType::Task` sub-channel and the creator enrolled as the first
@@ -274,10 +367,6 @@ impl Store {
         let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-
-        // Resolve creator kind up-front so the transaction only does writes.
-        let creator_type = crate::store::resolve_sender_type_inner(&conn, creator_name)?;
-        let task_channel_type = ChannelType::Task.as_api_str();
 
         // `transaction_with_behavior(Immediate)` issues BEGIN IMMEDIATE, which
         // acquires the SQLite write lock eagerly. A concurrent `create_tasks`
@@ -300,38 +389,39 @@ impl Store {
         // `&Channel` it receives — mixing sub-channel events into the parent
         // vector would misroute them to parent subscribers. Each vector is
         // keyed to its owning channel and fanned out in its own call below.
-        // `sub_events` currently stays empty (no kickoff in direct-create
-        // today); the structure is scaffolded for Task 4 which adds kickoff.
-        let mut parent_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
-            Vec::new();
-        let sub_events: Vec<(
-            String,
-            crate::store::messages::types::InsertedMessage,
-            String,
-        )> = Vec::new();
+        let mut parent_events: Vec<(InsertedMessage, String)> = Vec::new();
+        // Sub-channel events carry their owning `Channel` so we can fan out per
+        // channel without re-reading the row post-commit. Each direct-create
+        // task pushes its kickoff row here.
+        let mut sub_events: Vec<(Channel, InsertedMessage, String)> = Vec::new();
 
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
             let task_id = Uuid::new_v4().to_string();
             let task_number = max_num + 1 + i as i64;
-            let sub_channel_id = Uuid::new_v4().to_string();
-            let sub_channel_name = format!("{}__task-{}", channel.name, task_number);
 
-            tx.execute(
-                "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
-                 VALUES (?1, ?2, NULL, ?3, ?4)",
-                params![
-                    sub_channel_id,
-                    sub_channel_name,
-                    task_channel_type,
-                    channel.id
-                ],
-            )?;
-            tx.execute(
-                "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
-                 VALUES (?1, ?2, ?3, 0)",
-                params![sub_channel_id, creator_name, creator_type.as_str()],
-            )?;
+            // Build a partial TaskInfo first so `mint_sub_channel_tx` has the
+            // task_number + created_by it needs. The sub-channel + membership
+            // inserts happen inside the helper.
+            let partial = TaskInfo {
+                id: task_id.clone(),
+                task_number,
+                title: title.to_string(),
+                status: TaskStatus::Todo,
+                owner: None,
+                created_by: creator_name.to_string(),
+                created_at: String::new(),
+                updated_at: String::new(),
+                sub_channel_id: None,
+                sub_channel_name: None,
+                source_message_id: None,
+                snapshot_sender_name: None,
+                snapshot_sender_type: None,
+                snapshot_content: None,
+                snapshot_created_at: None,
+            };
+            let sub_channel = mint_sub_channel_tx(&tx, &channel, &partial, creator_name)?;
+
             // `RETURNING created_at, updated_at` reads the DB-default
             // `datetime('now')` values SQLite applies to the row, so the
             // returned `TaskInfo` carries exact-match timestamps without a
@@ -346,7 +436,7 @@ impl Store {
                     task_number,
                     title,
                     creator_name,
-                    sub_channel_id
+                    sub_channel.id
                 ],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
@@ -360,8 +450,8 @@ impl Store {
                 created_by: creator_name.to_string(),
                 created_at,
                 updated_at,
-                sub_channel_id: Some(sub_channel_id.clone()),
-                sub_channel_name: Some(sub_channel_name),
+                sub_channel_id: Some(sub_channel.id.clone()),
+                sub_channel_name: Some(sub_channel.name.clone()),
                 source_message_id: None,
                 snapshot_sender_name: None,
                 snapshot_sender_type: None,
@@ -375,20 +465,23 @@ impl Store {
             // in place on every subsequent `task_update` SSE event.
             parent_events.push(post_task_card_message_tx(&tx, &channel, &task)?);
 
+            // Kickoff is posted unconditionally so the sub-channel's first
+            // message is the same "Task opened: {title}" divider regardless
+            // of whether the task was accepted from a proposal or created
+            // directly. Direct-created tasks have no snapshot → the short
+            // form of the kickoff (title only).
+            let (kickoff_msg, kickoff_content) =
+                post_kickoff_message_tx(&tx, &channel, &sub_channel, &task)?;
+            sub_events.push((sub_channel, kickoff_msg, kickoff_content));
+
             result.push(task);
         }
         tx.commit()?;
         drop(conn); // release the mutex guard before the stream fanout
 
-        // Two separate fanouts — one per channel the events belong to. The
-        // `sub_events` group is keyed by `sub_channel_id`; today it's empty
-        // (no kickoff yet), but Task 4 fills it with kickoff rows when the
-        // `proposed → todo` transition mints a sub-channel.
+        // Two separate fanouts — one per channel the events belong to.
         self.emit_system_stream_events(&channel, parent_events)?;
-        for (sub_channel_id, inserted, content) in sub_events {
-            let sub_channel = self
-                .get_channel_by_id(&sub_channel_id)?
-                .ok_or_else(|| anyhow!("sub-channel vanished post-commit: {}", sub_channel_id))?;
+        for (sub_channel, inserted, content) in sub_events {
             self.emit_system_stream_events(&sub_channel, vec![(inserted, content)])?;
         }
         Ok(result)
@@ -746,13 +839,27 @@ impl Store {
         Ok(())
     }
 
+    /// Drive a task forward through its state machine. Validates the
+    /// transition against [`TaskStatus::can_transition_to`] (forward-only in
+    /// v1 — no reverse edges), mints a sub-channel + posts kickoff on
+    /// `Proposed → Todo`, fires a `task_event` in the sub-channel on
+    /// post-acceptance transitions, and archives the sub-channel on `→ Done`.
+    ///
+    /// `actor` is the caller's handle — used as the `task_event.actor` field
+    /// and as a seeded member of the sub-channel on first acceptance. It is
+    /// NOT an ownership gate: per spec, owner is a label, not permission.
+    /// Membership is the only authorization gate and lives in the HTTP
+    /// handler layer.
+    ///
+    /// Returns the updated [`TaskInfo`] so the HTTP handler can surface the
+    /// new `sub_channel_id` + `status` in the response body.
     pub fn update_task_status(
         &self,
         channel_name: &str,
         task_number: i64,
-        requester_name: &str,
+        actor: &str,
         new_status: TaskStatus,
-    ) -> Result<()> {
+    ) -> Result<TaskInfo> {
         // `transaction()` needs `&mut Connection`. The status UPDATE and the
         // sub-channel archive (when `new_status == Done`) must commit together
         // so an observer never sees a task marked Done whose sub-channel is
@@ -762,51 +869,82 @@ impl Store {
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
 
-        let (current_status_str, claimed_by, sub_channel_id, title): (
-            String,
-            Option<String>,
-            Option<String>,
-            String,
-        ) = tx.query_row(
-            "SELECT status, claimed_by, sub_channel_id, title FROM tasks \
-             WHERE channel_id = ?1 AND task_number = ?2",
-            params![channel.id, task_number],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        )?;
+        let mut task = Self::get_task_info_tx(&tx, &channel.id, task_number)?
+            .ok_or_else(|| anyhow!("task not found: {}#{}", channel_name, task_number))?;
+        let current_status = task.status;
 
-        let current_status = TaskStatus::from_status_str(&current_status_str)
-            .ok_or_else(|| anyhow!("invalid task status: {}", current_status_str))?;
-
-        if claimed_by.as_deref() != Some(requester_name) {
-            return Err(anyhow!("task not claimed by {}", requester_name));
-        }
         if !current_status.can_transition_to(new_status) {
-            return Err(anyhow!(
-                "cannot transition from {} to {}",
-                current_status.as_str(),
-                new_status.as_str()
-            ));
+            // Typed error so the HTTP handler can map to 422 via downcast_ref.
+            return Err(InvalidTaskTransition {
+                from: current_status,
+                to: new_status,
+            }
+            .into());
         }
 
-        tx.execute(
-            "UPDATE tasks SET status = ?1, updated_at = datetime('now') WHERE channel_id = ?2 AND task_number = ?3",
-            params![new_status.as_str(), channel.id, task_number],
-        )?;
+        // Per-turn sub-channel fanout — populated when we mint a sub-channel
+        // this turn OR when we post a task_event into an existing one. Tagged
+        // with the owning `Channel` so the final fanout call routes correctly.
+        let mut sub_pending: Vec<(InsertedMessage, String)> = Vec::new();
+        let mut sub_channel_for_emit: Option<Channel> = None;
 
-        // Emit the event inside the tx, BEFORE the optional archive below
-        // (which consumes `sub_channel_id`).
-        let payload = TaskEventPayload {
-            action: TaskEventAction::StatusChanged,
-            task_number,
-            title,
-            sub_channel_id: sub_channel_id.clone().unwrap_or_default(),
-            actor: requester_name.to_string(),
-            prev_status: Some(current_status),
-            next_status: new_status,
-            claimed_by: claimed_by.clone(),
-        };
-        let content = payload.to_json_string()?;
-        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+        // Proposed → Todo: mint a sub-channel + post the kickoff message.
+        // The kickoff carries the snapshot (if any) so the sub-channel's first
+        // message is "Task opened: ..." grounded in the proposal's source
+        // message. Proposed → Dismissed is pure state mutation — no channel.
+        if current_status == TaskStatus::Proposed && new_status == TaskStatus::Todo {
+            let sub = mint_sub_channel_tx(&tx, &channel, &task, actor)?;
+            task.sub_channel_id = Some(sub.id.clone());
+            task.sub_channel_name = Some(sub.name.clone());
+            sub_pending.push(post_kickoff_message_tx(&tx, &channel, &sub, &task)?);
+            sub_channel_for_emit = Some(sub);
+        }
+
+        // Apply status change + (when we minted one this turn) the new
+        // sub_channel_id. COALESCE keeps the existing value when we pass NULL
+        // so we don't clobber the sub-channel on post-acceptance transitions.
+        tx.execute(
+            "UPDATE tasks \
+             SET status = ?1, sub_channel_id = COALESCE(?2, sub_channel_id), updated_at = datetime('now') \
+             WHERE channel_id = ?3 AND task_number = ?4",
+            params![
+                new_status.as_str(),
+                task.sub_channel_id,
+                channel.id,
+                task_number
+            ],
+        )?;
+        task.status = new_status;
+
+        // Fire the `task_event` only for post-acceptance transitions. Pre-
+        // acceptance transitions (Proposed → Todo, Proposed → Dismissed) are
+        // signaled by the parent-channel `task_card` re-render via the
+        // `task_update` SSE event — no separate system message.
+        if current_status != TaskStatus::Proposed {
+            let sub_id = task.sub_channel_id.as_deref().ok_or_else(|| {
+                anyhow!("post-acceptance transition requires sub-channel: task #{task_number}")
+            })?;
+            let payload = TaskEventPayload {
+                action: TaskEventAction::StatusChanged,
+                task_number,
+                title: task.title.clone(),
+                sub_channel_id: sub_id.to_string(),
+                actor: actor.to_string(),
+                prev_status: Some(current_status),
+                next_status: new_status,
+                claimed_by: task.owner.clone(),
+            };
+            let ev = post_task_event_tx(&tx, sub_id, payload)?;
+
+            // Load the sub-channel for fan-out if we didn't mint it above.
+            if sub_channel_for_emit.is_none() {
+                sub_channel_for_emit = Some(
+                    Self::get_channel_by_id_inner(&tx, sub_id)?
+                        .ok_or_else(|| anyhow!("sub-channel vanished: {}", sub_id))?,
+                );
+            }
+            sub_pending.push(ev);
+        }
 
         // `Done` is terminal (`can_transition_to` has no outbound edges from
         // `Done`), so archiving here is safe — there is no path back that would
@@ -814,7 +952,7 @@ impl Store {
         // that guard rejects direct callers; the task lifecycle is the sole
         // path that may archive a task sub-channel.
         if new_status == TaskStatus::Done {
-            if let Some(sub_id) = sub_channel_id {
+            if let Some(sub_id) = task.sub_channel_id.as_deref() {
                 tx.execute(
                     "UPDATE channels SET archived = 1 WHERE id = ?1",
                     params![sub_id],
@@ -824,8 +962,12 @@ impl Store {
 
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
-        Ok(())
+
+        if let Some(sc) = sub_channel_for_emit {
+            self.emit_system_stream_events(&sc, sub_pending)?;
+        }
+        // Task 7 will add `self.emit_task_update(&task);` for global fan-out.
+        Ok(task)
     }
 }
 
@@ -1290,5 +1432,206 @@ mod sub_channel_tests {
                 .contains("only user and team channels can be archived"),
             "expected guard message, got: {err}"
         );
+    }
+
+    // ── Task 4: state machine tests (claim-independent) ──
+    // Tests that require going through update_tasks_claim (e.g. todo → in_progress
+    // → in_review → done end-to-end) live in Task 13 because update_tasks_claim
+    // is still broken against the renamed `owner` column until Task 5.
+
+    fn seed_source_message(store: &Store, channel: &str, sender: &str, body: &str) -> String {
+        use crate::store::messages::{posting::CreateMessage, types::SenderType};
+        store
+            .create_message(CreateMessage {
+                channel_name: channel,
+                sender_name: sender,
+                sender_type: SenderType::Human,
+                content: body,
+                attachment_ids: &[],
+                suppress_event: true,
+                run_id: None,
+            })
+            .unwrap()
+    }
+
+    fn proposed_task_args(
+        store: &Store,
+        parent_channel: &str,
+        title: &str,
+        sender: &str,
+        content: &str,
+    ) -> CreateProposedTaskArgs {
+        let src_id = seed_source_message(store, parent_channel, sender, content);
+        CreateProposedTaskArgs {
+            title: title.to_string(),
+            created_by: "bob".to_string(),
+            source_message_id: src_id,
+            snapshot_sender_name: sender.to_string(),
+            snapshot_sender_type: "human".to_string(),
+            snapshot_content: content.to_string(),
+            snapshot_created_at: "2026-04-25T00:00:00Z".to_string(),
+        }
+    }
+
+    #[test]
+    fn proposed_to_todo_mints_sub_channel_posts_kickoff_no_task_event_in_parent() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+
+        let proposed = store
+            .create_proposed_task(
+                "eng",
+                proposed_task_args(
+                    &store,
+                    "eng",
+                    "investigate login 500",
+                    "alice",
+                    "login breaks on Safari",
+                ),
+            )
+            .unwrap();
+        assert_eq!(proposed.status, TaskStatus::Proposed);
+        assert!(proposed.sub_channel_id.is_none());
+
+        let accepted = store
+            .update_task_status("eng", proposed.task_number, "alice", TaskStatus::Todo)
+            .unwrap();
+        assert_eq!(accepted.status, TaskStatus::Todo);
+        let sub_id = accepted
+            .sub_channel_id
+            .as_deref()
+            .expect("sub-channel minted on proposed -> todo")
+            .to_string();
+        let (parent_id, _) =
+            read_task_channel_ids(&store, "eng", proposed.task_number);
+
+        // Now batch the verification SQL inside one conn-lock acquire to
+        // avoid mid-test re-entry into Store methods (which would deadlock
+        // on the Mutex<Connection>).
+        let (kickoff, task_event_count_in_parent): (String, i64) = {
+            let conn = store.conn_for_test();
+            let kickoff: String = conn
+                .query_row(
+                    "SELECT content FROM messages WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq ASC LIMIT 1",
+                    params![sub_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let task_event_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_type = 'system' AND content LIKE '%\"action\":\"%'",
+                    params![parent_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            (kickoff, task_event_count)
+        };
+
+        assert!(
+            kickoff.contains("Task opened: investigate login 500")
+                && kickoff.contains("From @alice's message in #eng:")
+                && kickoff.contains("> login breaks on Safari"),
+            "kickoff missing title/attribution/blockquote: {kickoff}"
+        );
+        assert_eq!(
+            task_event_count_in_parent, 0,
+            "acceptance must not post task_event in the parent channel"
+        );
+    }
+
+    #[test]
+    fn proposed_to_dismissed_pure_state_mutation_no_sub_channel_no_events() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+
+        let proposed = store
+            .create_proposed_task("eng", proposed_task_args(&store, "eng", "redo nav", "alice", "fix the nav"))
+            .unwrap();
+        let dismissed = store
+            .update_task_status("eng", proposed.task_number, "alice", TaskStatus::Dismissed)
+            .unwrap();
+        assert_eq!(dismissed.status, TaskStatus::Dismissed);
+        assert!(
+            dismissed.sub_channel_id.is_none(),
+            "dismissed proposal must never mint a sub-channel"
+        );
+
+        // No task_event anywhere — the card mutation (SSE task_update) is the signal.
+        let conn = store.conn_for_test();
+        let task_event_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE sender_type = 'system' AND content LIKE '%\"action\":\"%'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            task_event_count, 0,
+            "dismissal must not emit any task_event"
+        );
+    }
+
+    #[test]
+    fn proposed_to_in_progress_rejected_with_invalid_transition_error() {
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+
+        let proposed = store
+            .create_proposed_task("eng", proposed_task_args(&store, "eng", "skip", "alice", "no"))
+            .unwrap();
+        let err = store
+            .update_task_status("eng", proposed.task_number, "alice", TaskStatus::InProgress)
+            .unwrap_err();
+        let downcast = err.downcast_ref::<InvalidTaskTransition>();
+        assert!(
+            downcast.is_some(),
+            "expected typed InvalidTaskTransition error, got: {err}"
+        );
+        let ite = downcast.unwrap();
+        assert_eq!(ite.from, TaskStatus::Proposed);
+        assert_eq!(ite.to, TaskStatus::InProgress);
+    }
+
+    #[test]
+    fn reverse_transitions_rejected() {
+        // Walk a task to Todo via create_tasks (direct, skips the Proposed state).
+        // Then try reverse/invalid transitions and confirm they all return typed errors.
+        let store = Store::open(":memory:").unwrap();
+        store
+            .create_channel("eng", None, ChannelType::Channel, None)
+            .unwrap();
+        store.create_human("alice").unwrap();
+        seed_agent(&store, "bob");
+        store.create_tasks("eng", "alice", &["Ship it"]).unwrap();
+
+        // Todo -> Proposed (reverse) rejected.
+        let err = store
+            .update_task_status("eng", 1, "alice", TaskStatus::Proposed)
+            .unwrap_err();
+        assert!(err.downcast_ref::<InvalidTaskTransition>().is_some());
+
+        // Todo -> Done (skip in_progress + in_review) rejected.
+        let err = store
+            .update_task_status("eng", 1, "alice", TaskStatus::Done)
+            .unwrap_err();
+        assert!(err.downcast_ref::<InvalidTaskTransition>().is_some());
+
+        // Todo -> InReview (skip in_progress) rejected.
+        let err = store
+            .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+            .unwrap_err();
+        assert!(err.downcast_ref::<InvalidTaskTransition>().is_some());
     }
 }

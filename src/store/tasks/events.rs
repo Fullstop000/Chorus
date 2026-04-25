@@ -177,7 +177,6 @@ pub(crate) fn post_task_card_message_tx(
 ///
 /// Returns `(InsertedMessage, String)` on the same fanout contract as
 /// [`post_task_card_message_tx`].
-#[allow(dead_code)] // consumed by Task 5+ (claim/unclaim + status transition rewire)
 pub(crate) fn post_task_event_tx(
     tx: &Transaction<'_>,
     sub_channel_id: &str,
