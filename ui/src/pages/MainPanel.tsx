@@ -11,6 +11,7 @@ import {
 } from "../hooks/data";
 import { useHistory } from "../hooks/useHistory";
 import { useTraceSubscription } from "../hooks/useTraceSubscription";
+import { useTaskUpdateStream } from "../hooks/useTaskUpdateStream";
 import { TabBar } from "./TabBar";
 import { ChatHeader, ChatPanel } from "../components/chat/ChatPanel";
 import { TasksPanel } from "../components/tasks/TasksPanel";
@@ -57,6 +58,7 @@ export function MainPanel() {
     activeConversationId,
   );
   useTraceSubscription(currentUser);
+  useTaskUpdateStream(currentUser);
   const [members, setMembers] = useState<ChannelMemberInfo[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [showMembersPanel, setShowMembersPanel] = useState(false);

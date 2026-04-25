@@ -1,0 +1,32 @@
+/*
+ * Inline narrative row for a single task_event in a sub-channel feed.
+ * Mono content, zero-radius, muted-foreground — matches `docs/DESIGN.md`
+ * "system narrative" surface conventions. No card, no animation: the parent
+ * channel's TaskCard owns the visual state; this is just a log line.
+ */
+
+.task-event-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--color-muted-foreground);
+}
+
+.task-event-row__num {
+  text-transform: lowercase;
+  color: var(--color-muted-foreground);
+  opacity: 0.7;
+}
+
+.task-event-row__body {
+  color: var(--color-foreground);
+  opacity: 0.85;
+}
+
+.task-event-row[data-action="status_changed"] .task-event-row__body {
+  color: var(--color-foreground);
+}

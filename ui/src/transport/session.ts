@@ -2,7 +2,7 @@
 // WebSocket lifecycle, subscriber registry, frame dispatch.
 // No app logic — consumers decide what events mean.
 
-import type { RealtimeFrame, TraceFrame } from './types'
+import type { RealtimeFrame, TaskUpdateFrame, TraceFrame } from './types'
 
 // ── Subscriber entry stored in the registry ──
 
@@ -22,6 +22,7 @@ export class RealtimeSession {
   private disposed = false
   private subscribers = new Map<string, Subscriber>()
   private traceSubscribers = new Map<string, (frame: TraceFrame) => void>()
+  private taskUpdateSubscribers = new Map<string, (frame: TaskUpdateFrame) => void>()
 
   constructor(private readonly viewer: string) {}
 
@@ -43,10 +44,24 @@ export class RealtimeSession {
     return () => { this.traceSubscribers.delete(id) }
   }
 
+  /**
+   * Subscribe to cross-channel task_update frames. Returns unsubscribe fn.
+   * Frames carry the latest task state (status, owner, sub-channel, updatedAt)
+   * so consumers can patch their in-memory `tasksById` slice without an
+   * extra fetch.
+   */
+  subscribeTaskUpdates(onUpdate: (frame: TaskUpdateFrame) => void): () => void {
+    const id = `task-update-${nextSubId++}`
+    this.taskUpdateSubscribers.set(id, onUpdate)
+    this.ensureSocket()
+    return () => { this.taskUpdateSubscribers.delete(id) }
+  }
+
   dispose() {
     this.disposed = true
     this.subscribers.clear()
     this.traceSubscribers.clear()
+    this.taskUpdateSubscribers.clear()
     if (this.reconnectTimer != null) {
       window.clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
@@ -94,6 +109,16 @@ export class RealtimeSession {
       // Route trace frames to dedicated trace subscribers only.
       if (frame.type === 'trace') {
         for (const cb of this.traceSubscribers.values()) {
+          cb(frame.event)
+        }
+        return
+      }
+
+      // Route task_update frames to dedicated task_update subscribers only.
+      // These bypass the per-channel routing — task updates fan out globally
+      // so cards re-render even when the viewer isn't a sub-channel member.
+      if (frame.type === 'task_update') {
+        for (const cb of this.taskUpdateSubscribers.values()) {
           cb(frame.event)
         }
         return

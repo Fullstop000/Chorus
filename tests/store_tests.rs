@@ -974,50 +974,11 @@ fn test_tasks_crud() {
     assert_eq!(listed.len(), 2);
 }
 
-#[test]
-fn test_task_claim_and_status() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel("eng", None, ChannelType::Channel, None)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "o3",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store.create_tasks("eng", "bot1", &["Task A"]).unwrap();
-
-    let results = store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
-    assert!(results[0].success);
-
-    let results = store.update_tasks_claim("eng", "bot2", &[1]).unwrap();
-    assert!(!results[0].success);
-
-    store
-        .update_task_status("eng", 1, "bot1", TaskStatus::InReview)
-        .unwrap();
-    let tasks = store.get_tasks("eng", Some(TaskStatus::InReview)).unwrap();
-    assert_eq!(tasks.len(), 1);
-}
+// Removed `test_task_claim_and_status` (asserted the old first-claim-wins +
+// auto-advance-to-in_progress semantics + Todo→InReview skip). Coverage for
+// the new permissive-claim + decoupled-status semantics lives in
+// `claim_sets_owner_does_not_advance_status` (src/store/tasks/mod.rs) and
+// `task_lifecycle_emits_four_events_in_parent_channel` (tests/e2e_tests.rs).
 
 #[test]
 fn test_resolve_target() {
@@ -1717,7 +1678,10 @@ fn task_event_payload_serializes_none_fields_as_json_null() {
 }
 
 #[test]
-fn create_tasks_emits_task_event_to_parent_channel() {
+fn create_tasks_posts_task_card_host_message_to_parent_channel() {
+    // Task 3: the unified create path posts a `task_card` host message (not
+    // a `task_event(Created)`) in the parent channel. The card carries the
+    // full TaskInfo shape so the UI renders without a separate fetch.
     let (store, _dir) = make_store();
     let parent_id = store
         .create_channel(
@@ -1740,6 +1704,7 @@ fn create_tasks_emits_task_event_to_parent_channel() {
         .create_tasks("eng", "bob", &["wire up the bridge"])
         .unwrap();
     assert_eq!(result.len(), 1);
+    let task = &result[0];
 
     let event_rows: Vec<(String, String)> = store
         .conn_for_test()
@@ -1750,20 +1715,73 @@ fn create_tasks_emits_task_event_to_parent_channel() {
         .filter_map(|r| r.ok())
         .collect();
 
-    assert_eq!(event_rows.len(), 1);
+    assert_eq!(
+        event_rows.len(),
+        1,
+        "direct-create emits exactly one parent-channel system message (task_card)"
+    );
     assert_eq!(event_rows[0].0, "system");
 
     let parsed: serde_json::Value = serde_json::from_str(&event_rows[0].1).unwrap();
-    assert_eq!(parsed["kind"], "task_event");
-    assert_eq!(parsed["action"], "created");
-    assert_eq!(parsed["actor"], "bob");
+    assert_eq!(
+        parsed["kind"], "task_card",
+        "parent-channel host message must be task_card, not task_event"
+    );
+    assert_eq!(parsed["taskId"], task.id);
     assert_eq!(parsed["taskNumber"], 1);
-    assert_eq!(parsed["nextStatus"], "todo");
     assert_eq!(parsed["title"], "wire up the bridge");
+    assert_eq!(parsed["status"], "todo");
+    assert_eq!(parsed["createdBy"], "bob");
+    assert!(
+        parsed["owner"].is_null(),
+        "direct-create starts unclaimed: {:?}",
+        parsed["owner"]
+    );
+    assert!(
+        parsed["sourceMessageId"].is_null(),
+        "direct-create has no source message: {:?}",
+        parsed["sourceMessageId"]
+    );
 }
 
 #[test]
-fn claim_task_emits_claimed_event_to_parent_channel() {
+fn create_task_direct_mints_sub_channel_and_has_null_snapshot_fields() {
+    // Task 3: human direct-create produces a task with status=Todo, a fully
+    // minted sub-channel, and all snapshot fields null (no source message).
+    let (store, _dir) = make_store();
+    store
+        .create_channel(
+            "eng",
+            None,
+            chorus::store::channels::ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    let result = store.create_tasks("eng", "alice", &["ship it"]).unwrap();
+    assert_eq!(result.len(), 1);
+    let task = &result[0];
+
+    assert_eq!(task.status, TaskStatus::Todo);
+    assert!(task.sub_channel_id.is_some(), "direct-create mints sub-channel");
+    assert_eq!(task.sub_channel_name.as_deref(), Some("eng__task-1"));
+    assert!(task.owner.is_none(), "direct-create starts unclaimed");
+    assert!(task.source_message_id.is_none());
+    assert!(task.snapshot_sender_name.is_none());
+    assert!(task.snapshot_sender_type.is_none());
+    assert!(task.snapshot_content.is_none());
+    assert!(task.snapshot_created_at.is_none());
+}
+
+#[test]
+fn create_proposed_task_inserts_snapshot_and_posts_task_card() {
+    // Task 3: agent-driven create. Task row is `status='proposed'` with no
+    // sub-channel, all snapshot fields populated. The parent channel receives
+    // exactly one `task_card` host message — no `task_event` fires pre-
+    // acceptance.
+    use chorus::store::tasks::CreateProposedTaskArgs;
+
     let (store, _dir) = make_store();
     let parent_id = store
         .create_channel(
@@ -1773,49 +1791,95 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
             None,
         )
         .unwrap();
-    store.create_human("bob").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "bob",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
     store.create_human("alice").unwrap();
     store
-        .join_channel(
+        .join_channel("eng", "alice", SenderType::Human)
+        .unwrap();
+
+    // Seed a real source message so `source_message_id` points at a real row
+    // (FK is ON DELETE SET NULL; a garbage id still validates the snapshot
+    // CHECK, but pointing at a real message is more realistic).
+    let source_msg_id = store
+        .create_message(CreateMessage {
+            channel_name: "eng",
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "we should fix the login bug",
+            attachment_ids: &[],
+            run_id: None,
+            suppress_event: false,
+        })
+        .unwrap();
+
+    let task = store
+        .create_proposed_task(
             "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
+            CreateProposedTaskArgs {
+                title: "fix login".into(),
+                created_by: "agent-1".into(),
+                source_message_id: source_msg_id.clone(),
+                snapshot_sender_name: "alice".into(),
+                snapshot_sender_type: "human".into(),
+                snapshot_content: "we should fix the login bug".into(),
+                snapshot_created_at: "2026-04-24T12:00:00Z".into(),
+            },
         )
         .unwrap();
 
-    store.create_tasks("eng", "bob", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+    assert_eq!(task.status, TaskStatus::Proposed);
+    assert!(task.sub_channel_id.is_none(), "proposals have no sub-channel");
+    assert!(task.sub_channel_name.is_none());
+    assert!(task.owner.is_none());
+    assert_eq!(task.created_by, "agent-1");
+    assert_eq!(task.source_message_id.as_deref(), Some(source_msg_id.as_str()));
+    assert_eq!(task.snapshot_sender_name.as_deref(), Some("alice"));
+    assert_eq!(task.snapshot_sender_type.as_deref(), Some("human"));
+    assert_eq!(
+        task.snapshot_content.as_deref(),
+        Some("we should fix the login bug")
+    );
+    assert_eq!(
+        task.snapshot_created_at.as_deref(),
+        Some("2026-04-24T12:00:00Z")
+    );
 
-    let events: Vec<serde_json::Value> = store
+    // Parent channel: one human message (seed) + one system task_card.
+    let rows: Vec<(String, String)> = store
         .conn_for_test()
-        .prepare("SELECT content FROM messages WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq")
+        .prepare(
+            "SELECT sender_type, content FROM messages \
+             WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq",
+        )
         .unwrap()
-        .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
+        .query_map(rusqlite::params![parent_id], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .filter_map(|r| r.ok())
-        .map(|s| serde_json::from_str(&s).unwrap())
         .collect();
 
-    assert_eq!(events.len(), 2); // created + claimed
-    assert_eq!(events[1]["action"], "claimed");
-    assert_eq!(events[1]["actor"], "alice");
-    assert_eq!(events[1]["taskNumber"], 1);
-    assert_eq!(events[1]["prevStatus"], "todo");
-    assert_eq!(events[1]["nextStatus"], "in_progress");
-    assert_eq!(events[1]["claimedBy"], "alice");
+    assert_eq!(
+        rows.len(),
+        1,
+        "create_proposed_task posts exactly one system message (task_card)"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&rows[0].1).unwrap();
+    assert_eq!(parsed["kind"], "task_card");
+    assert_eq!(parsed["taskId"], task.id);
+    assert_eq!(parsed["status"], "proposed");
+    assert_eq!(parsed["createdBy"], "agent-1");
+    assert_eq!(parsed["sourceMessageId"], source_msg_id);
+    assert_eq!(parsed["snapshotSenderName"], "alice");
+    assert_eq!(parsed["snapshotSenderType"], "human");
+    assert_eq!(parsed["snapshotContent"], "we should fix the login bug");
+    assert_eq!(parsed["snapshotCreatedAt"], "2026-04-24T12:00:00Z");
 }
 
 #[test]
-fn unclaim_task_emits_unclaimed_event() {
+fn create_proposed_task_rejects_partial_snapshot_via_check_constraint() {
+    // Schema CHECK: snapshot columns are all-or-none. A direct INSERT with
+    // `source_message_id` set but one snapshot_* field NULL must fail —
+    // this is the DB-level invariant that guards every create path.
     let (store, _dir) = make_store();
-    store
+    let channel_id = store
         .create_channel(
             "eng",
             None,
@@ -1823,78 +1887,43 @@ fn unclaim_task_emits_unclaimed_event() {
             None,
         )
         .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
+
+    let conn = store.conn_for_test();
+    let err = conn
+        .execute(
+            "INSERT INTO tasks \
+               (id, channel_id, task_number, title, status, created_by, \
+                source_message_id, snapshot_sender_name, snapshot_sender_type, \
+                snapshot_content, snapshot_created_at) \
+             VALUES ('t-1', ?1, 1, 'partial', 'proposed', 'agent-1', \
+                     'msg-1', NULL, 'human', 'oops', '2026-04-24T12:00:00Z')",
+            rusqlite::params![channel_id],
         )
-        .unwrap();
-    store.create_tasks("eng", "alice", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+        .unwrap_err();
 
-    store.update_task_unclaim("eng", "alice", 1).unwrap();
-
-    let last_event: serde_json::Value = {
-        let content: String = store
-            .conn_for_test()
-            .query_row(
-                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        serde_json::from_str(&content).unwrap()
-    };
-    assert_eq!(last_event["action"], "unclaimed");
-    assert_eq!(last_event["prevStatus"], "in_progress");
-    assert_eq!(last_event["nextStatus"], "todo");
-    assert_eq!(last_event["claimedBy"], serde_json::Value::Null);
+    let err_str = err.to_string();
+    assert!(
+        err_str.to_lowercase().contains("check"),
+        "expected CHECK constraint violation, got: {err_str}"
+    );
 }
 
-#[test]
-fn update_task_status_emits_status_changed_event() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel(
-            "eng",
-            None,
-            chorus::store::channels::ChannelType::Channel,
-            None,
-        )
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
-    store.create_tasks("eng", "alice", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
-
-    store
-        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
-        .unwrap();
-
-    let last_event: serde_json::Value = {
-        let content: String = store
-            .conn_for_test()
-            .query_row(
-                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        serde_json::from_str(&content).unwrap()
-    };
-    assert_eq!(last_event["action"], "status_changed");
-    assert_eq!(last_event["actor"], "alice");
-    assert_eq!(last_event["prevStatus"], "in_progress");
-    assert_eq!(last_event["nextStatus"], "in_review");
-}
+// Removed three obsolete tests that pinned the old "events post in parent
+// channel" + "claim auto-advances to in_progress" semantics:
+//   - claim_task_emits_claimed_event_to_parent_channel
+//   - unclaim_task_emits_unclaimed_event
+//   - update_task_status_emits_status_changed_event
+// Under the unified model, claim/unclaim/status events post in the
+// **sub-channel**, and claim does not auto-advance status. Coverage for
+// the new contract:
+//   - task_lifecycle_emits_four_events_in_parent_channel (e2e_tests.rs):
+//     end-to-end assertion of one task_card in parent + 4 task_events in
+//     sub-channel
+//   - proposed_to_todo_mints_sub_channel_posts_kickoff_no_task_event_in_parent
+//     (src/store/tasks/mod.rs sub_channel_tests): pre-acceptance contract
+//   - task_create_emits_task_update_event +
+//     task_status_transitions_emit_task_update_per_step (this file):
+//     cross-channel realtime broadcast contract
 
 #[test]
 fn get_unread_summary_excludes_archived_task_sub_channels() {
@@ -1953,4 +1982,194 @@ fn get_unread_summary_excludes_archived_task_sub_channels() {
          got {:?}",
         after
     );
+}
+
+#[test]
+fn task_create_emits_task_update_event() {
+    // Cross-channel task fanout: every mutation that lands a row in `tasks`
+    // must broadcast a `TaskUpdateEvent` so the parent-channel task_card
+    // host can re-render even when the viewer is not a member of the
+    // task's sub-channel.
+    use chorus::store::channels::ChannelType;
+    let store = Store::open(":memory:").unwrap();
+    let parent_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    let mut rx = store.subscribe_task_updates();
+    let created = store.create_tasks("eng", "alice", &["wire it"]).unwrap();
+    let task = &created[0];
+
+    let event = rx
+        .try_recv()
+        .expect("task_update event delivered synchronously");
+    assert_eq!(event.task_id, task.id);
+    assert_eq!(event.channel_id, parent_id);
+    assert_eq!(event.task_number, task.task_number);
+    assert_eq!(event.status, "todo");
+    assert!(event.owner.is_none());
+    assert_eq!(
+        event.sub_channel_id.as_deref(),
+        task.sub_channel_id.as_deref()
+    );
+}
+
+#[test]
+fn task_snapshot_check_constraint_rejects_partial_population() {
+    // The schema-level CHECK requires all four `snapshot_*` columns to be
+    // either all populated or all NULL. Partial population is the failure
+    // mode that would let a "stub" snapshot leak into chat history without
+    // the full provenance — the constraint is the durable enforcement.
+    let store = Store::open(":memory:").unwrap();
+    use chorus::store::channels::ChannelType;
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+
+    let result = store.conn_for_test().execute(
+        "INSERT INTO tasks (id, channel_id, task_number, title, status, created_by, \
+         source_message_id, snapshot_sender_name) \
+         VALUES ('t1', ?1, 1, 'partial', 'todo', 'alice', \
+                 'msg-1', 'alice')",
+        rusqlite::params![channel_id],
+    );
+    assert!(
+        result.is_err(),
+        "INSERT with only 2 of 4 snapshot fields populated must fail the CHECK"
+    );
+    assert!(
+        result.unwrap_err().to_string().to_lowercase().contains("check"),
+        "error must reference the CHECK constraint"
+    );
+}
+
+#[test]
+fn source_message_delete_nulls_pointer_preserves_snapshot() {
+    // Pointer-vs-truth invariant: ON DELETE SET NULL on the FK from
+    // tasks.source_message_id -> messages.id, but the four `snapshot_*`
+    // columns persist verbatim. Provenance survives source deletion.
+    use chorus::store::channels::ChannelType;
+    use chorus::store::messages::SenderType;
+    use chorus::store::tasks::CreateProposedTaskArgs;
+    let store = Store::open(":memory:").unwrap();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot",
+            display_name: "Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    // Seed a real source message.
+    let src_id = store
+        .create_message(CreateMessage {
+            channel_name: "eng",
+            sender_name: "alice",
+            sender_type: SenderType::Human,
+            content: "broken on safari mobile",
+            attachment_ids: &[],
+            suppress_event: true,
+            run_id: None,
+        })
+        .unwrap();
+
+    // Agent proposes a task tied to that message.
+    let proposed = store
+        .create_proposed_task(
+            "eng",
+            CreateProposedTaskArgs {
+                title: "fix safari".into(),
+                created_by: "bot".into(),
+                source_message_id: src_id.clone(),
+                snapshot_sender_name: "alice".into(),
+                snapshot_sender_type: "human".into(),
+                snapshot_content: "broken on safari mobile".into(),
+                snapshot_created_at: "2026-04-25T00:00:00Z".into(),
+            },
+        )
+        .unwrap();
+
+    // Pre-delete: pointer + snapshot both populated.
+    let (sm_id, sender, content): (Option<String>, Option<String>, Option<String>) = store
+        .conn_for_test()
+        .query_row(
+            "SELECT source_message_id, snapshot_sender_name, snapshot_content \
+             FROM tasks WHERE id = ?1",
+            rusqlite::params![proposed.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(sm_id.as_deref(), Some(src_id.as_str()));
+    assert_eq!(sender.as_deref(), Some("alice"));
+    assert_eq!(content.as_deref(), Some("broken on safari mobile"));
+
+    // Delete the source message directly; FK ON DELETE SET NULL fires.
+    store
+        .conn_for_test()
+        .execute(
+            "DELETE FROM messages WHERE id = ?1",
+            rusqlite::params![src_id],
+        )
+        .unwrap();
+
+    // Post-delete: pointer is NULL, snapshot fields preserved verbatim.
+    let (sm_id, sender, content): (Option<String>, Option<String>, Option<String>) = store
+        .conn_for_test()
+        .query_row(
+            "SELECT source_message_id, snapshot_sender_name, snapshot_content \
+             FROM tasks WHERE id = ?1",
+            rusqlite::params![proposed.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert!(sm_id.is_none(), "source pointer must NULL on cascade");
+    assert_eq!(
+        sender.as_deref(),
+        Some("alice"),
+        "snapshot sender survives source deletion"
+    );
+    assert_eq!(
+        content.as_deref(),
+        Some("broken on safari mobile"),
+        "snapshot content survives source deletion"
+    );
+}
+
+#[test]
+fn task_status_transitions_emit_task_update_per_step() {
+    use chorus::store::channels::ChannelType;
+    use chorus::store::tasks::TaskStatus;
+    let store = Store::open(":memory:").unwrap();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.create_tasks("eng", "alice", &["x"]).unwrap();
+
+    let mut rx = store.subscribe_task_updates();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InProgress)
+        .unwrap();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+        .unwrap();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::Done)
+        .unwrap();
+
+    let mut statuses = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        statuses.push(ev.status);
+    }
+    assert_eq!(statuses, vec!["in_progress", "in_review", "done"]);
 }

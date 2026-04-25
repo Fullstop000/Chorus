@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { deriveTaskStates } from './useTaskEventLog'
+import { deriveTaskEventRows } from './useTaskEventLog'
 import type { HistoryMessage } from '../data/chat'
 
 function taskEventMsg(
@@ -17,8 +17,8 @@ function taskEventMsg(
   }
 }
 
-describe('deriveTaskStates', () => {
-  it('returns empty map when no task events present', () => {
+describe('deriveTaskEventRows', () => {
+  it('returns an empty array when no task events present', () => {
     const msgs: HistoryMessage[] = [
       {
         id: 'm1',
@@ -30,21 +30,11 @@ describe('deriveTaskStates', () => {
         senderDeleted: false,
       },
     ]
-    const index = deriveTaskStates(msgs)
-    expect(index.byTaskNumber.size).toBe(0)
-    expect(index.taskNumberBySeq.size).toBe(0)
+    expect(deriveTaskEventRows(msgs)).toEqual([])
   })
 
-  it('converges to the correct state after create → claim → in_review → done', () => {
+  it('captures every task_event message in seq order', () => {
     const msgs: HistoryMessage[] = [
-      taskEventMsg(1, {
-        action: 'created',
-        taskNumber: 7,
-        title: 't',
-        subChannelId: 's',
-        actor: 'alice',
-        nextStatus: 'todo',
-      }),
       taskEventMsg(2, {
         action: 'claimed',
         taskNumber: 7,
@@ -55,101 +45,57 @@ describe('deriveTaskStates', () => {
         nextStatus: 'in_progress',
         claimedBy: 'alice',
       }),
-      taskEventMsg(3, {
-        action: 'status_changed',
-        taskNumber: 7,
-        title: 't',
-        subChannelId: 's',
-        actor: 'alice',
-        prevStatus: 'in_progress',
-        nextStatus: 'in_review',
-      }),
-      taskEventMsg(4, {
-        action: 'status_changed',
-        taskNumber: 7,
-        title: 't',
-        subChannelId: 's',
-        actor: 'alice',
-        prevStatus: 'in_review',
-        nextStatus: 'done',
-      }),
-    ]
-    const index = deriveTaskStates(msgs)
-    const task = index.byTaskNumber.get(7)!
-    expect(task.status).toBe('done')
-    expect(task.claimedBy).toBe('alice')
-    expect(task.events).toHaveLength(4)
-    expect(task.title).toBe('t')
-    // Inverse index covers every emitted task_event seq.
-    expect(index.taskNumberBySeq.get(1)).toBe(7)
-    expect(index.taskNumberBySeq.get(4)).toBe(7)
-  })
-
-  it('applies events in seq order regardless of array order', () => {
-    const msgs: HistoryMessage[] = [
-      taskEventMsg(3, {
-        action: 'status_changed',
-        taskNumber: 1,
-        title: 't',
-        subChannelId: 's',
-        actor: 'a',
-        prevStatus: 'in_progress',
-        nextStatus: 'in_review',
-      }),
       taskEventMsg(1, {
         action: 'created',
-        taskNumber: 1,
+        taskNumber: 7,
         title: 't',
         subChannelId: 's',
-        actor: 'a',
+        actor: 'alice',
         nextStatus: 'todo',
       }),
-      taskEventMsg(2, {
-        action: 'claimed',
-        taskNumber: 1,
+      taskEventMsg(3, {
+        action: 'status_changed',
+        taskNumber: 7,
         title: 't',
         subChannelId: 's',
-        actor: 'a',
+        actor: 'alice',
+        prevStatus: 'in_progress',
+        nextStatus: 'in_review',
+      }),
+    ]
+    const rows = deriveTaskEventRows(msgs)
+    expect(rows.map((r) => r.seq)).toEqual([1, 2, 3])
+    expect(rows.map((r) => r.payload.action)).toEqual([
+      'created',
+      'claimed',
+      'status_changed',
+    ])
+  })
+
+  it('skips messages whose content is not a parseable task_event', () => {
+    const msgs: HistoryMessage[] = [
+      taskEventMsg(1, {
+        action: 'claimed',
+        taskNumber: 7,
+        title: 't',
+        subChannelId: 's',
+        actor: 'alice',
         prevStatus: 'todo',
         nextStatus: 'in_progress',
-        claimedBy: 'a',
+        claimedBy: 'alice',
       }),
+      {
+        id: 'm-bad',
+        seq: 2,
+        content: '{"kind":"some_other_thing"}',
+        senderName: 'system',
+        senderType: 'system',
+        createdAt: '2026-04-23T10:00:00Z',
+        senderDeleted: false,
+      },
     ]
-    const index = deriveTaskStates(msgs)
-    expect(index.byTaskNumber.get(1)!.status).toBe('in_review')
-  })
-
-  it('handles unclaimed by clearing claimedBy', () => {
-    const msgs: HistoryMessage[] = [
-      taskEventMsg(1, {
-        action: 'created',
-        taskNumber: 1,
-        title: 't',
-        subChannelId: 's',
-        actor: 'a',
-        nextStatus: 'todo',
-      }),
-      taskEventMsg(2, {
-        action: 'claimed',
-        taskNumber: 1,
-        title: 't',
-        subChannelId: 's',
-        actor: 'a',
-        nextStatus: 'in_progress',
-        claimedBy: 'a',
-      }),
-      taskEventMsg(3, {
-        action: 'unclaimed',
-        taskNumber: 1,
-        title: 't',
-        subChannelId: 's',
-        actor: 'a',
-        nextStatus: 'todo',
-        claimedBy: null,
-      }),
-    ]
-    const index = deriveTaskStates(msgs)
-    expect(index.byTaskNumber.get(1)!.claimedBy).toBeNull()
-    expect(index.byTaskNumber.get(1)!.status).toBe('todo')
+    const rows = deriveTaskEventRows(msgs)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].payload.action).toBe('claimed')
   })
 })

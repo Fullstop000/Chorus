@@ -1,6 +1,7 @@
 import { Settings2, Users } from "lucide-react";
 import { useStore } from "../../store";
 import { useChannels } from "../../hooks/data";
+import { useTasks } from "../../hooks/useTasks";
 import { MessageList } from "./MessageList";
 import type { HistoryMessage } from "./types";
 import "./ChatPanel.css";
@@ -93,6 +94,13 @@ export function ChatPanel({
   emptyLabel,
 }: ChatPanelProps) {
   const { currentUser } = useStore();
+  // Side effect: prime the global tasksStore for this conversation. Required
+  // so `task_card` system messages in the chat stream find their live row in
+  // `tasksById` — without this, TaskCardContainer renders nothing on a fresh
+  // load until the user visits the Tasks tab. Realtime `task_update` events
+  // keep the store fresh after the initial seed; the 5s poll inside
+  // `useTasks` is belt-and-suspenders for missed broadcasts.
+  useTasks(currentUser, conversationId ?? null);
 
   if (!target) {
     return (

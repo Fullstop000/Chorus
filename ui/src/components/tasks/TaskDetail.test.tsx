@@ -9,6 +9,25 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+/**
+ * Minimal TaskInfo factory for TaskDetailView tests. Required wire fields
+ * (id, createdBy, createdAt, updatedAt) get plausible defaults; any test
+ * that cares about a specific field overrides it via the partial.
+ */
+function task(partial: Partial<TaskInfo> & Pick<TaskInfo, "taskNumber" | "status">): TaskInfo {
+  return {
+    id: `task-${partial.taskNumber}`,
+    title: "untitled",
+    owner: null,
+    createdBy: "alice",
+    createdAt: "2026-04-23T10:00:00Z",
+    updatedAt: "2026-04-23T10:00:00Z",
+    subChannelId: null,
+    subChannelName: null,
+    ...partial,
+  } as TaskInfo;
+}
+
 describe("TaskDetailView", () => {
   const target = {
     parentChannelId: "11111111-1111-1111-1111-111111111111",
@@ -38,17 +57,20 @@ describe("TaskDetailView", () => {
   });
 
   it("renders title, status, claimer, and creator when task is loaded", () => {
-    const task: TaskInfo = {
-      taskNumber: 7,
-      title: "wire up the bridge",
-      status: "in_progress",
-      claimedByName: "alice",
-      createdByName: "bob",
-      subChannelId: "22222222-2222-2222-2222-222222222222",
-      subChannelName: "eng__task-7",
-    };
     const html = renderToStaticMarkup(
-      <TaskDetailView {...baseProps} task={task} error={null} />,
+      <TaskDetailView
+        {...baseProps}
+        task={task({
+          taskNumber: 7,
+          title: "wire up the bridge",
+          status: "in_progress",
+          owner: "alice",
+          createdBy: "bob",
+          subChannelId: "22222222-2222-2222-2222-222222222222",
+          subChannelName: "eng__task-7",
+        })}
+        error={null}
+      />,
     );
 
     expect(html).toContain("wire up the bridge");
@@ -62,17 +84,14 @@ describe("TaskDetailView", () => {
   });
 
   it("falls back to 'unknown' when creator is missing", () => {
-    const task: TaskInfo = {
-      taskNumber: 3,
-      title: "orphan task",
-      status: "todo",
-      subChannelId: null,
-      subChannelName: null,
-    };
+    // `createdBy` is a required wire field; this test simulates a corrupted
+    // row where it's been stripped at the API layer. The view must still
+    // render — the badge falls back to 'unknown' rather than blowing up.
+    const t = task({ taskNumber: 3, title: "orphan task", status: "todo" });
+    (t as { createdBy: string | undefined }).createdBy = undefined;
     const html = renderToStaticMarkup(
-      <TaskDetailView {...baseProps} task={task} error={null} />,
+      <TaskDetailView {...baseProps} task={t} error={null} />,
     );
-
     expect(html).toContain("created by unknown");
   });
 
@@ -99,17 +118,16 @@ describe("TaskDetailView", () => {
   });
 
   it("renders the advance button when canAdvance and subChannelId is set", () => {
-    const task: TaskInfo = {
-      taskNumber: 7,
-      title: "wire it",
-      status: "todo",
-      subChannelId: "22222222-2222-2222-2222-222222222222",
-      subChannelName: "eng__task-7",
-    };
     const html = renderToStaticMarkup(
       <TaskDetailView
         {...baseProps}
-        task={task}
+        task={task({
+          taskNumber: 7,
+          title: "wire it",
+          status: "todo",
+          subChannelId: "22222222-2222-2222-2222-222222222222",
+          subChannelName: "eng__task-7",
+        })}
         error={null}
         canAdvance
         advanceLabel="Start"
@@ -120,17 +138,14 @@ describe("TaskDetailView", () => {
   });
 
   it("disables the advance button with a tooltip for legacy tasks without a sub-channel", () => {
-    const task: TaskInfo = {
-      taskNumber: 3,
-      title: "legacy",
-      status: "todo",
-      subChannelId: null,
-      subChannelName: null,
-    };
     const html = renderToStaticMarkup(
       <TaskDetailView
         {...baseProps}
-        task={task}
+        task={task({
+          taskNumber: 3,
+          title: "legacy",
+          status: "todo",
+        })}
         error={null}
         canAdvance
         advanceLabel="Start"
@@ -144,18 +159,17 @@ describe("TaskDetailView", () => {
   });
 
   it("renders the advance button disabled with an owner tooltip when a non-claimer views the task", () => {
-    const task: TaskInfo = {
-      taskNumber: 7,
-      title: "claimed by someone else",
-      status: "in_progress",
-      claimedByName: "alice",
-      subChannelId: "22222222-2222-2222-2222-222222222222",
-      subChannelName: "eng__task-7",
-    };
     const html = renderToStaticMarkup(
       <TaskDetailView
         {...baseProps}
-        task={task}
+        task={task({
+          taskNumber: 7,
+          title: "claimed by someone else",
+          status: "in_progress",
+          owner: "alice",
+          subChannelId: "22222222-2222-2222-2222-222222222222",
+          subChannelName: "eng__task-7",
+        })}
         error={null}
         canAdvance={false}
         advanceLabel="Submit for review"
@@ -170,18 +184,17 @@ describe("TaskDetailView", () => {
   });
 
   it("shows advanceError banner when present", () => {
-    const task: TaskInfo = {
-      taskNumber: 7,
-      title: "t",
-      status: "in_progress",
-      claimedByName: "alice",
-      subChannelId: "22222222-2222-2222-2222-222222222222",
-      subChannelName: "eng__task-7",
-    };
     const html = renderToStaticMarkup(
       <TaskDetailView
         {...baseProps}
-        task={task}
+        task={task({
+          taskNumber: 7,
+          title: "t",
+          status: "in_progress",
+          owner: "alice",
+          subChannelId: "22222222-2222-2222-2222-222222222222",
+          subChannelName: "eng__task-7",
+        })}
         error={null}
         advanceError="HTTP 403 not the claimer"
         canAdvance
@@ -261,13 +274,13 @@ describe("currentTaskDetail store behaviour", () => {
 
 describe("getTaskDetail fetcher", () => {
   it("GETs the task detail endpoint with encoded channel id", async () => {
-    const payload: TaskInfo = {
+    const payload: TaskInfo = task({
       taskNumber: 5,
       title: "t",
       status: "todo",
       subChannelId: "sub-1",
       subChannelName: "eng__task-5",
-    };
+    });
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(payload), {
         status: 200,

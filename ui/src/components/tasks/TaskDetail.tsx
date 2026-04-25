@@ -14,10 +14,14 @@ import {
 import "./TaskDetail.css";
 
 /**
- * Next legal status for the "advance" affordance, in the Todo → InProgress →
- * InReview → Done kanban chain. `null` means no further advancement (Done).
+ * Next legal status for the "advance" affordance, in the unified lifecycle.
+ * Pre-acceptance states (`proposed`/`dismissed`) and the terminal `done`
+ * collapse to `null` — those branches don't have a single "next" step in
+ * this surface; proposals are accepted via the parent-channel TaskCard.
  */
 const NEXT_STATUS: Record<TaskStatus, TaskStatus | null> = {
+  proposed: null,
+  dismissed: null,
   todo: "in_progress",
   in_progress: "in_review",
   in_review: "done",
@@ -30,6 +34,8 @@ const NEXT_STATUS: Record<TaskStatus, TaskStatus | null> = {
  * behalf (claim + status bump in one click).
  */
 const ADVANCE_LABEL: Record<TaskStatus, string | null> = {
+  proposed: null,
+  dismissed: null,
   todo: "Start",
   in_progress: "Submit for review",
   in_review: "Mark done",
@@ -43,6 +49,8 @@ const ADVANCE_LABEL: Record<TaskStatus, string | null> = {
  * "in review") and the advance button vocabulary.
  */
 const STATUS_LABEL: Record<TaskStatus, string> = {
+  proposed: "proposed",
+  dismissed: "dismissed",
   todo: "todo",
   in_progress: "in progress",
   in_review: "in review",
@@ -56,11 +64,17 @@ const STATUS_LABEL: Record<TaskStatus, string> = {
  * `TaskCard.advance()` logic from pre-Task-8 TasksPanel.
  */
 function canAdvanceTask(task: TaskInfo, currentUser: string): boolean {
+  // Pre-acceptance and terminal states have no advance affordance — proposals
+  // accept/dismiss through the parent-channel TaskCard, dismissed/done are
+  // sinks. Returning false here also short-circuits the disabled-tooltip
+  // logic in TaskDetailView so we don't surface a misleading "Only X can
+  // advance" message for proposals.
+  if (task.status === "proposed" || task.status === "dismissed") return false;
   if (task.status === "done") return false;
   if (task.status === "todo") {
-    return !task.claimedByName || task.claimedByName === currentUser;
+    return !task.owner || task.owner === currentUser;
   }
-  return task.claimedByName === currentUser;
+  return task.owner === currentUser;
 }
 
 interface TaskDetailViewProps {
@@ -108,8 +122,8 @@ export function TaskDetailView({
   if (!hasSubChannel) {
     advanceTitle =
       "This task was created before sub-channels existed and cannot be advanced. Create a new task to collaborate.";
-  } else if (!canAdvance && task?.claimedByName) {
-    advanceTitle = `Only ${task.claimedByName} can advance this task.`;
+  } else if (!canAdvance && task?.owner) {
+    advanceTitle = `Only ${task.owner} can advance this task.`;
   }
 
   return (
@@ -132,10 +146,10 @@ export function TaskDetailView({
           <h1 className="task-detail__title">{task.title}</h1>
           <div className="task-detail__meta">
             <span className="task-detail__status">{STATUS_LABEL[task.status]}</span>
-            {task.claimedByName && (
-              <span>claimed by {task.claimedByName}</span>
+            {task.owner && (
+              <span>claimed by {task.owner}</span>
             )}
-            <span>created by {task.createdByName ?? "unknown"}</span>
+            <span>created by {task.createdBy ?? "unknown"}</span>
             {showAdvance && (
               <button
                 type="button"

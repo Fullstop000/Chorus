@@ -96,20 +96,42 @@ CREATE TABLE IF NOT EXISTS humans (
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the user was created
 );
 
--- Tasks tracked within channels.
+-- Tasks tracked within channels. Unified lifecycle: proposed and dismissed
+-- sit alongside todo/in_progress/in_review/done in a single table. Proposed
+-- rows carry an optional snapshot of the source message so the proposal
+-- survives edits/deletes of the origin message (all-or-none via CHECK).
 CREATE TABLE IF NOT EXISTS tasks (
-    id TEXT PRIMARY KEY, -- Unique UUID for the task
-    channel_id TEXT NOT NULL, -- Channel where the task is tracked
-    task_number INTEGER NOT NULL, -- Sequential task number within the channel
-    title TEXT NOT NULL, -- Title/summary of the task
-    status TEXT NOT NULL DEFAULT 'todo', -- Current status (e.g., 'todo', 'in_progress', 'done')
-    claimed_by TEXT, -- Optional user/agent who claimed the task
-    created_by TEXT NOT NULL, -- User/agent who created the task
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the task was created
-    updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the task was last updated
-    sub_channel_id TEXT REFERENCES channels(id), -- Child channel owned by this task (ChannelType::Task)
-    UNIQUE(channel_id, task_number)
+    id TEXT PRIMARY KEY,
+    channel_id TEXT NOT NULL,
+    task_number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'todo'
+        CHECK (status IN ('proposed','dismissed','todo','in_progress','in_review','done')),
+    owner TEXT,
+    created_by TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    sub_channel_id TEXT REFERENCES channels(id),
+    source_message_id TEXT REFERENCES messages(id) ON DELETE SET NULL,
+    snapshot_sender_name TEXT,
+    snapshot_sender_type TEXT,
+    snapshot_content TEXT,
+    snapshot_created_at TEXT,
+    UNIQUE(channel_id, task_number),
+    CHECK (
+      (source_message_id IS NULL
+         AND snapshot_sender_name IS NULL
+         AND snapshot_sender_type IS NULL
+         AND snapshot_content IS NULL
+         AND snapshot_created_at IS NULL)
+      OR
+      (snapshot_sender_name IS NOT NULL
+         AND snapshot_sender_type IS NOT NULL
+         AND snapshot_content IS NOT NULL
+         AND snapshot_created_at IS NOT NULL)
+    )
 );
+CREATE INDEX IF NOT EXISTS idx_tasks_channel_status ON tasks(channel_id, status);
 
 -- Uploaded files and attachments.
 CREATE TABLE IF NOT EXISTS attachments (

@@ -8,11 +8,12 @@ import {
 /**
  * Catalog: `qa/cases/tasks.md` — TSK-004 Channel Task-Event Feed
  *
- * Verifies the channel chat tab shows task activity as a living card that
- * mutates through the lifecycle and collapses on done:
- *   - creating a task surfaces a card in the parent channel chat
- *   - claim / advance / done each update the SAME card in place
- *   - terminal done collapses to the compact done-pill
+ * Verifies that the parent-channel chat surfaces a task as a single living
+ * `TaskCard` host message that mutates through the unified lifecycle and
+ * collapses to the compact `task-card-done-pill` on Done:
+ *   - direct create posts a parent-channel `task_card` system message
+ *   - claim → start → review → done each update the SAME card in place
+ *   - Done collapses the card to the pill view (data-status="done")
  */
 test.describe('TSK-004', () => {
   test('Channel Task-Event Feed @case TSK-004', async ({ page }) => {
@@ -48,37 +49,35 @@ test.describe('TSK-004', () => {
       ).toBeVisible()
     })
 
+    const card = page
+      .locator('[data-testid^="task-card-"]')
+      .filter({ hasText: title })
+      .first()
+
     await test.step('Step 3: Parent channel chat shows a task card in todo', async () => {
       await page.getByRole('button', { name: 'Chat', exact: true }).click()
-      const thread = page.locator('[data-testid^="task-thread-"]').first()
-      await expect(thread).toBeVisible()
-      await expect(thread).toHaveAttribute('data-state', 'todo')
-      await expect(thread).toContainText(title)
+      await expect(card).toBeVisible({ timeout: 15_000 })
+      await expect(card).toHaveAttribute('data-status', 'todo')
+      await expect(card).toContainText(title)
     })
 
-    const thread = page.locator('[data-testid^="task-thread-"]').first()
-
-    await test.step('Step 4: Start the task (todo → in_progress) — card mutates in place', async () => {
-      await thread.click()
-      await page.getByRole('button', { name: /start/i }).click()
-      await page.getByRole('button', { name: /back to channel/i }).click()
-      await expect(thread).toHaveAttribute('data-state', 'in_progress')
+    await test.step('Step 4: Claim then start; same card flips to in_progress', async () => {
+      await card.locator('[data-testid="task-card-claim-btn"]').click()
+      await expect(card).toHaveAttribute('data-claimed', 'true', { timeout: 15_000 })
+      await card.locator('[data-testid="task-card-start-btn"]').click()
+      await expect(card).toHaveAttribute('data-status', 'in_progress', { timeout: 15_000 })
     })
 
-    await test.step('Step 5: Submit for review — status pill updates', async () => {
-      await thread.click()
-      await page.getByRole('button', { name: /submit for review/i }).click()
-      await page.getByRole('button', { name: /back to channel/i }).click()
-      await expect(thread).toHaveAttribute('data-state', 'in_review')
+    await test.step('Step 5: Send for review; same card flips to in_review', async () => {
+      await card.locator('[data-testid="task-card-review-btn"]').click()
+      await expect(card).toHaveAttribute('data-status', 'in_review', { timeout: 15_000 })
     })
 
-    await test.step('Step 6: Mark done — card collapses to done pill', async () => {
-      await thread.click()
-      await page.getByRole('button', { name: /mark done/i }).click()
-      await page.getByRole('button', { name: /back to channel/i }).click()
-      await expect(thread).toHaveAttribute('data-state', 'done')
-      await expect(thread.locator('.task-event-done-row')).toBeVisible()
-      await expect(thread.locator('.task-event-done-row')).toContainText(title)
+    await test.step('Step 6: Mark done; card collapses to the done pill', async () => {
+      await card.locator('[data-testid="task-card-done-btn"]').click()
+      await expect(card).toHaveAttribute('data-status', 'done', { timeout: 15_000 })
+      await expect(card.locator('[data-testid="task-card-done-pill"]')).toBeVisible()
+      await expect(card.locator('[data-testid="task-card-done-pill"]')).toContainText(title)
     })
 
     expect(failed, 'no 4xx/5xx responses during the lifecycle').toEqual([])

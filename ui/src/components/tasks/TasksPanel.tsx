@@ -7,6 +7,11 @@ import type { TaskInfo, TaskStatus } from "./types";
 import { FormError } from "@/components/ui/form";
 import "./TasksPanel.css";
 
+/**
+ * Kanban columns. The unified lifecycle adds `proposed` and `dismissed`, but
+ * those live on the parent-channel TaskCard (one for each proposal pending a
+ * decision) — the kanban only shows committed work.
+ */
 const COLUMNS: { status: TaskStatus; label: string }[] = [
   { status: "todo", label: "To Do" },
   { status: "in_progress", label: "In Progress" },
@@ -51,14 +56,14 @@ function TaskCard({
       <span className="task-card-number">#{task.taskNumber}</span>
       <span className="task-card-title">{task.title}</span>
       <span className="task-card-meta">
-        {task.claimedByName && (
+        {task.owner && (
           <span className="task-card-claimed">
             <User size={11} aria-hidden="true" />
-            {task.claimedByName}
+            {task.owner}
           </span>
         )}
-        {!task.claimedByName && task.createdByName && (
-          <span>by {task.createdByName}</span>
+        {!task.owner && task.createdBy && (
+          <span>by {task.createdBy}</span>
         )}
       </span>
     </button>

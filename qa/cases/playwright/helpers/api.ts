@@ -304,6 +304,48 @@ export async function sendAsUser(
   expect(res.ok(), await res.text()).toBeTruthy()
 }
 
+/**
+ * Like {@link sendAsUser}, but returns the inserted message id. Used by task
+ * propose flows that need to bind a proposal to a specific source message.
+ */
+export async function sendAsUserGetId(
+  request: APIRequestContext,
+  username: string,
+  target: string,
+  content: string
+): Promise<string> {
+  const res = await request.post(`/internal/agent/${encodeURIComponent(username)}/send`, {
+    data: { target, content },
+  })
+  expect(res.ok(), await res.text()).toBeTruthy()
+  const json = (await res.json()) as { messageId: string }
+  return json.messageId
+}
+
+/**
+ * Agent-scoped propose endpoint. Snapshots the source message into the
+ * proposal so the parent-channel TaskCard can render the blockquote without
+ * a follow-up fetch. Returns the freshly created `TaskInfo` shape.
+ */
+export async function proposeTaskAsAgent(
+  request: APIRequestContext,
+  agentName: string,
+  body: { channel: string; title: string; sourceMessageId: string }
+): Promise<{ taskNumber: number; id: string; status: string }> {
+  const res = await request.post(
+    `/internal/agent/${encodeURIComponent(agentName)}/tasks/propose`,
+    {
+      data: {
+        channel: body.channel,
+        title: body.title,
+        source_message_id: body.sourceMessageId,
+      },
+    }
+  )
+  expect(res.ok(), await res.text()).toBeTruthy()
+  return res.json()
+}
+
 export interface HistoryMessage {
   id?: string
   seq?: number

@@ -32,6 +32,7 @@ pub use messages::{
 };
 pub use sessions::AgentSession;
 pub use stream::StreamEvent;
+pub use stream::TaskUpdateEvent;
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
 
@@ -45,6 +46,11 @@ pub struct Store {
     stream_tx: broadcast::Sender<StreamEvent>,
     /// Broadcast channel for agent trace events (tool calls, thinking, etc.).
     trace_tx: broadcast::Sender<TraceEvent>,
+    /// Broadcast channel for cross-channel task state deltas. Fanned out to
+    /// every connected realtime client (no per-channel membership gate) so
+    /// the parent-channel `task_card` host can re-render when its task moves
+    /// even if the viewer is not a member of the task's sub-channel.
+    task_updates_tx: broadcast::Sender<TaskUpdateEvent>,
     /// Root data directory (db parent, attachments, teams).
     data_dir: PathBuf,
     /// Optional override for the per-agent workspace root. When set, takes
@@ -65,10 +71,12 @@ impl Store {
         migrations::run_migrations(&conn)?;
         let (stream_tx, _) = broadcast::channel(256);
         let (trace_tx, _) = broadcast::channel(1024);
+        let (task_updates_tx, _) = broadcast::channel(256);
         Ok(Self {
             conn: Mutex::new(conn),
             stream_tx,
             trace_tx,
+            task_updates_tx,
             data_dir: derive_data_dir(path),
             agents_dir_override: None,
         })
@@ -134,6 +142,30 @@ impl Store {
 
     pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
         self.stream_tx.subscribe()
+    }
+
+    /// Subscribe to cross-channel task state deltas. Used by the realtime
+    /// websocket session to fan task updates out to every connected client.
+    /// Receivers are dropped silently when no one is subscribed (broadcast
+    /// channel semantics).
+    pub fn subscribe_task_updates(&self) -> broadcast::Receiver<TaskUpdateEvent> {
+        self.task_updates_tx.subscribe()
+    }
+
+    /// Best-effort emit a `TaskUpdateEvent` to every realtime subscriber.
+    /// Called from every `tasks` row mutation after `tx.commit()` and
+    /// `drop(conn)`. `NoReceivers` is silently ignored — DB rows are the
+    /// source of truth and a missed broadcast is recoverable via reload.
+    pub(crate) fn emit_task_update(&self, task: &TaskInfo, channel_id: &str) {
+        let _ = self.task_updates_tx.send(TaskUpdateEvent {
+            task_id: task.id.clone(),
+            channel_id: channel_id.to_string(),
+            task_number: task.task_number,
+            status: task.status.as_str().to_string(),
+            owner: task.owner.clone(),
+            sub_channel_id: task.sub_channel_id.clone(),
+            updated_at: task.updated_at.clone(),
+        });
     }
 
     pub fn subscribe_traces(&self) -> broadcast::Receiver<TraceEvent> {

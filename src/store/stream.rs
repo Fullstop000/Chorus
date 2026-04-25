@@ -21,3 +21,23 @@ impl StreamEvent {
         }
     }
 }
+
+/// Cross-channel task state delta. Fanned out globally to every connected
+/// realtime client so the parent-channel `task_card` host message can
+/// re-render even when the viewer is not a member of the task's sub-channel.
+/// Mutations: create, status transition, claim, unclaim. The frontend keys
+/// updates by `task_id` and patches its in-memory `tasksById` slice.
+///
+/// camelCase serialization matches the existing realtime envelope contract
+/// (see `forward_stream_event` payload shape).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskUpdateEvent {
+    pub task_id: String,
+    pub channel_id: String,
+    pub task_number: i64,
+    pub status: String,
+    pub owner: Option<String>,
+    pub sub_channel_id: Option<String>,
+    pub updated_at: String,
+}

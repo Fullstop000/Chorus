@@ -104,6 +104,18 @@ pub trait Backend: Send + Sync {
         status: &str,
     ) -> Result<String, BridgeError>;
 
+    /// Propose a task tied to a chat message. Server snapshots the source
+    /// (sender, content, created_at) so provenance survives source deletion.
+    /// Resulting task starts in `proposed` state and only enters the active
+    /// kanban after a human accepts via `update_task_status(..., "todo")`.
+    async fn propose_task(
+        &self,
+        agent_key: &str,
+        channel: &str,
+        title: &str,
+        source_message_id: &str,
+    ) -> Result<String, BridgeError>;
+
     /// Upload a file.
     async fn upload_file(
         &self,
@@ -869,6 +881,58 @@ impl Backend for ChorusBackend {
         }
 
         Ok(format!("#t{} moved to {}.", task_number, status))
+    }
+
+    async fn propose_task(
+        &self,
+        agent_key: &str,
+        channel: &str,
+        title: &str,
+        source_message_id: &str,
+    ) -> Result<String, BridgeError> {
+        let body = serde_json::json!({
+            "channel": channel,
+            "title": title,
+            "source_message_id": source_message_id,
+        });
+        let url = format!("{}/tasks/propose", self.base_url(agent_key));
+        let res = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.clone(),
+                cause: e.to_string(),
+            })?;
+
+        if !res.status().is_success() {
+            let status = res.status().as_u16();
+            let body = res.text().await.unwrap_or_default();
+            return Err(BridgeError::ServerError { status, body });
+        }
+
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
+        })?;
+        if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
+        }
+
+        let task_number = data
+            .get("taskNumber")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Ok(format!(
+            "Proposed #t{} \"{}\" in {} \u{2014} awaiting human acceptance.",
+            task_number, title, channel
+        ))
     }
 
     async fn upload_file(

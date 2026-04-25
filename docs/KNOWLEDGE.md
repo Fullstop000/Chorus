@@ -11,6 +11,18 @@ Update in the same PR that created the knowledge.
 
 ## Decisions
 
+### Unified task lifecycle (2026-04-25)
+
+Six-state forward-only enum (`proposed | dismissed | todo | in_progress | in_review | done`) on a single `tasks` table. Replaces what would have been a two-table proposal+task split. The proposal is just a task in `status='proposed'`; acceptance is the `→ todo` transition that mints the sub-channel. Owner is a label, not a gate — membership is the only authorization check. Decoupled claim from "start" so the user gets two distinct affordances on the card.
+
+Wire surfaces: ONE `task_card` system message in the parent channel per task (host for the live-rendered card, JSON payload), `task_event` system messages in the sub-channel for post-acceptance actions, plus a cross-channel `TaskUpdateEvent` realtime broadcast so the parent card re-renders even when the viewer is not a member of the sub-channel. The `claimedBy` wire field is preserved verbatim for chat-history compat — in-memory rename to `owner` happens at the parser boundary.
+
+Pointer-vs-truth: source-message snapshot is stored as four `snapshot_*` columns on the task row, with `source_message_id` as a separately nullable FK (`ON DELETE SET NULL`). A schema CHECK enforces all-or-none population on the four snapshot columns. Provenance survives source deletion.
+
+Rejected alternatives: (i) two tables (proposal + task) with a join — would have made the "task is one row" mental model leak through the API; (ii) advancing status on claim — coupled two concepts the UI treats as separate; (iii) renaming `claimedBy` on the wire — would break persisted chat history.
+
+PRs #93 and #96 (incremental v1+v2 proposal flow) were closed and superseded by this unified design. See `docs/plans/2026-04-24-task-lifecycle-unified-*.md`.
+
 ### Task = sub-channel (2026-04-22)
 
 A task is a 1:1 child channel (`ChannelType::Task`) of its parent channel. Chosen over the earlier thread-based approach because (a) threads were ripped out in PR #63 and (b) reusing the channel primitive means every existing message / inbox / realtime path works unchanged. Membership tracks task state. Archive on `Done` preserves the trace without cluttering the sidebar. Existing migration backfills sub-channels for pre-existing task rows so the upgrade is seamless.

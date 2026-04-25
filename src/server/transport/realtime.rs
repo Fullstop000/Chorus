@@ -13,7 +13,7 @@ use tracing::{debug, warn};
 use crate::agent::trace::TraceEvent;
 use crate::server::error::{app_err, ErrorResponse};
 use crate::server::handlers::AppState;
-use crate::store::{Store, StreamEvent};
+use crate::store::{Store, StreamEvent, TaskUpdateEvent};
 
 #[derive(Debug, Deserialize)]
 pub struct RealtimeParams {
@@ -44,6 +44,7 @@ pub async fn handle_events_ws(
 async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: String) {
     let mut stream_rx = store.subscribe();
     let mut trace_rx = store.subscribe_traces();
+    let mut task_update_rx = store.subscribe_task_updates();
 
     loop {
         tokio::select! {
@@ -94,8 +95,47 @@ async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: Stri
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
+            // Cross-channel task fan-out. No membership filter — task updates
+            // patch the client's tasksById store keyed by task_id, so the
+            // parent-channel task_card host re-renders even when the viewer
+            // is not a member of the task's sub-channel.
+            task_update = task_update_rx.recv() => {
+                match task_update {
+                    Ok(event) => {
+                        if let Err(err) =
+                            forward_task_update_event(&mut socket, &event).await
+                        {
+                            warn!(viewer = %viewer, error = %err, "realtime websocket task_update send failed");
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        debug!(viewer = %viewer, lagged = n, "task_update broadcast lagged");
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
         }
     }
+}
+
+/// Send a task_update frame to the viewer. No membership gate — task
+/// updates flow to every connected client so cards re-render in place
+/// regardless of sub-channel scope. Envelope shape mirrors `forward_*` —
+/// `{ type, event }` — to match the existing `RealtimeFrame` discriminator
+/// the TS transport layer expects.
+async fn forward_task_update_event(
+    socket: &mut WebSocket,
+    event: &TaskUpdateEvent,
+) -> anyhow::Result<()> {
+    send_json(
+        socket,
+        json!({
+            "type": "task_update",
+            "event": event,
+        }),
+    )
+    .await
 }
 
 async fn forward_stream_event(

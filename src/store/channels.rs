@@ -787,9 +787,12 @@ mod task_channel_tests {
                 [],
             )
             .unwrap();
+            // seq=2 because create_tasks now posts a kickoff system message
+            // at seq=1 in the sub-channel; UNIQUE(channel_id, seq) would fail
+            // if this test tried to reuse seq=1.
             conn.execute(
                 "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq) \
-                 VALUES ('m-sub', ?1, 'alice', 'human', 'here', 1)",
+                 VALUES ('m-sub', ?1, 'alice', 'human', 'here', 2)",
                 params![sub_id],
             )
             .unwrap();

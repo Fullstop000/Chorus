@@ -1,6 +1,5 @@
 import { test, expect } from './helpers/fixtures'
 import { gotoApp } from './helpers/ui'
-import { ensureMixedRuntimeTrio } from "./helpers/api";
 import { createUserChannelViaUi, clickSidebarChannel } from "./helpers/ui";
 
 /**
@@ -10,22 +9,18 @@ import { createUserChannelViaUi, clickSidebarChannel } from "./helpers/ui";
  * - tasks tab available
  *
  * Steps:
- * 1. Open `Tasks`.
- * 2. Create a new task with an unambiguous title.
- * 3. Verify it appears in `To Do`.
- * 4. Click the card to open TaskDetail.
- * 5. Click `Start` in TaskDetail to claim + advance.
- * 6. Return to the board via the back button.
- * 7. Verify the card has moved to `in_progress`.
+ * 1. Open `Tasks` on a fresh channel.
+ * 2. Create a new task with an unambiguous title; verify it appears in `To Do`.
+ * 3. Switch to `Chat`; verify the parent-channel TaskCard renders in `todo`.
+ * 4. Click `[claim]` on the card; verify owner badge appears.
+ * 5. Click `[start]` on the card; verify status flips to `in_progress`.
+ * 6. Re-open `Tasks`; verify the card has moved to `In Progress`.
  *
  * Expected:
- * - state change succeeds without server error; card moves once; UI matches backend
+ * - claim and start are two separate user actions on the parent-channel card;
+ *   each one updates the same card in place; UI matches backend.
  */
 test.describe("TSK-001", () => {
-  test.beforeAll(async ({ request }) => {
-    await ensureMixedRuntimeTrio(request);
-  });
-
   test("Create And Advance A Task @case TSK-001", async ({ page }) => {
     const slug = `qa-tasks-${Date.now()}`;
     const title = `TSK-001 ${Date.now()}`;
@@ -44,7 +39,7 @@ test.describe("TSK-001", () => {
       await page.getByRole("button", { name: "Tasks", exact: true }).click();
     });
 
-    await test.step("Steps 2–3: Create task; appears in To Do", async () => {
+    await test.step("Step 2: Create task; appears in To Do", async () => {
       await page.locator(".new-task-input").fill(title);
       await page.locator(".new-task-submit").click();
       await expect(
@@ -54,22 +49,43 @@ test.describe("TSK-001", () => {
       ).toBeVisible();
     });
 
-    await test.step("Steps 4–5: Click card, then Start in TaskDetail", async () => {
-      await page
-        .locator(".task-card")
-        .filter({ hasText: title })
-        .first()
-        .click();
-      await expect(page.locator('[data-testid="task-detail"]')).toBeVisible();
-      await page.getByRole("button", { name: "Start", exact: true }).click();
-      // Status pill should flip once the refetch lands.
-      await expect(
-        page.locator(".task-detail__status").filter({ hasText: "in_progress" }),
-      ).toBeVisible({ timeout: 15_000 });
+    // Visiting the Tasks tab populates the tasksStore via useTasks polling, so
+    // the TaskCard host message in chat can resolve `useTask(taskId)` to the
+    // freshly created row. Without this hop the card would render as null.
+    const card = page
+      .locator('[data-testid^="task-card-"]')
+      .filter({ hasText: title })
+      .first();
+
+    await test.step("Step 3: Chat shows the parent-channel TaskCard in todo", async () => {
+      await page.getByRole("button", { name: "Chat", exact: true }).click();
+      await expect(card).toBeVisible({ timeout: 15_000 });
+      await expect(card).toHaveAttribute("data-status", "todo");
+      await expect(card).toHaveAttribute("data-claimed", "false");
     });
 
-    await test.step("Steps 6–7: Back to board; card is in In Progress", async () => {
-      await page.getByRole("button", { name: "back to channel" }).click();
+    await test.step("Step 4: Click [claim]; owner badge appears", async () => {
+      await card.locator('[data-testid="task-card-claim-btn"]').click();
+      // Claim is decoupled from status — card stays on `todo`, but `data-claimed`
+      // flips and the start CTA replaces the claim CTA.
+      await expect(card).toHaveAttribute("data-claimed", "true", {
+        timeout: 15_000,
+      });
+      await expect(card).toContainText(/claimed by @/);
+      await expect(
+        card.locator('[data-testid="task-card-start-btn"]'),
+      ).toBeVisible();
+    });
+
+    await test.step("Step 5: Click [start]; status flips to in_progress", async () => {
+      await card.locator('[data-testid="task-card-start-btn"]').click();
+      await expect(card).toHaveAttribute("data-status", "in_progress", {
+        timeout: 15_000,
+      });
+    });
+
+    await test.step("Step 6: Tasks board shows the card in In Progress", async () => {
+      await page.getByRole("button", { name: "Tasks", exact: true }).click();
       await expect(
         page
           .locator('.task-column[data-status="in_progress"] .task-card-title')

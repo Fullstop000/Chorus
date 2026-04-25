@@ -1,0 +1,220 @@
+/*
+ * Parent-channel TaskCard host message — unified card surface for the full
+ * task lifecycle. Six branches of `data-status` drive every visual variant.
+ *
+ * Conventions (`docs/DESIGN.md`):
+ *   - Zero radius. No shadows.
+ *   - Mono content for status / number / pill text; sans for title.
+ *   - Existing palette tokens only — no raw hex.
+ */
+
+.task-card {
+  border: 1px solid var(--color-border);
+  background: var(--color-popover);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-sans);
+}
+
+.task-card--muted {
+  background: var(--color-muted);
+  opacity: 0.75;
+}
+
+.task-card--pill {
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.task-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.task-card__num {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.07em;
+  text-transform: lowercase;
+  color: var(--color-muted-foreground);
+}
+
+.task-card__status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.07em;
+  text-transform: lowercase;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-muted-foreground);
+  color: var(--color-muted-foreground);
+}
+
+.task-card__status[data-status="proposed"] {
+  border-left-color: var(--color-warning);
+  color: var(--color-warning);
+}
+.task-card__status[data-status="dismissed"] {
+  border-left-color: var(--color-muted-foreground);
+  color: var(--color-muted-foreground);
+}
+.task-card__status[data-status="todo"] {
+  border-left-color: var(--color-foreground);
+  color: var(--color-foreground);
+}
+.task-card__status[data-status="in_progress"] {
+  border-left-color: var(--color-accent-foreground);
+  color: var(--color-foreground);
+}
+.task-card__status[data-status="in_review"] {
+  border-left-color: var(--color-warning);
+  color: var(--color-warning);
+}
+.task-card__status[data-status="done"] {
+  border-left-color: var(--status-online);
+  color: var(--status-online);
+}
+
+.task-card__title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--color-foreground);
+}
+
+.task-card__title--strike {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.task-card__snapshot {
+  margin: 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--color-border);
+  background: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.task-card__snapshot-source {
+  text-transform: lowercase;
+  letter-spacing: 0.05em;
+  color: var(--color-muted-foreground);
+  opacity: 0.7;
+}
+.task-card__snapshot-content {
+  color: var(--color-foreground);
+}
+
+.task-card__meta {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--color-muted-foreground);
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.task-card__owner {
+  text-transform: lowercase;
+}
+.task-card__owner--unowned {
+  opacity: 0.6;
+}
+
+.task-card__actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.task-card__btn {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: lowercase;
+  padding: 4px 10px;
+  border: 1px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-foreground);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.task-card__btn:hover:not(:disabled) {
+  background: var(--color-accent);
+}
+
+.task-card__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.task-card__btn--primary {
+  background: var(--color-foreground);
+  color: var(--color-background);
+  border-color: var(--color-foreground);
+}
+
+.task-card__btn--primary:hover:not(:disabled) {
+  background: var(--color-accent-foreground);
+  color: var(--color-background);
+}
+
+.task-card__link {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: lowercase;
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.task-card__link:hover {
+  color: var(--color-foreground);
+}
+
+.task-card__done-pill {
+  display: flex;
+  gap: 10px;
+  padding: 6px 12px;
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--status-online);
+  background: var(--color-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  align-items: center;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-card__done-pill:hover {
+  background: var(--color-accent);
+}
+
+.task-card__done-tag {
+  color: var(--status-online);
+  font-weight: 600;
+}
+
+.task-card__done-open {
+  margin-left: auto;
+  border: 1px solid var(--color-border);
+  padding: 1px 6px;
+  color: var(--color-muted-foreground);
+}
