@@ -2,7 +2,11 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 
 function exactText(text: string): RegExp {
-  return new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`)
+  return new RegExp(`^${escapeRegex(text)}$`)
+}
+
+function escapeRegex(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /**
@@ -32,8 +36,12 @@ export async function expectProfileStatus(
   statuses: string | string[]
 ): Promise<void> {
   const allowed = Array.isArray(statuses) ? statuses : [statuses]
-  const pattern = new RegExp(`\\b(${allowed.join('|')})\\b`)
-  await expect(page.locator('.profile-config-grid')).toContainText(pattern)
+  const pattern = new RegExp(`^(${allowed.map(escapeRegex).join('|')})$`)
+  const statusBadge = page
+    .locator('.profile-config-key')
+    .filter({ hasText: /^Status$/ })
+    .locator('xpath=following-sibling::*[1]')
+  await expect(statusBadge).toHaveText(pattern)
 }
 
 export async function createAgentViaUi(

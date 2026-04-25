@@ -181,9 +181,11 @@ fn resolve_history_target(
     store: &Store,
     agent_id: &str,
     channel_target: &str,
+    workspace_id: Option<&str>,
 ) -> anyhow::Result<String> {
     if channel_target.starts_with('#') || channel_target.starts_with("dm:@") {
-        let channel_id = store.resolve_target(channel_target, agent_id)?;
+        let channel_id =
+            store.resolve_target_for_workspace(channel_target, agent_id, workspace_id)?;
         let channel = store
             .get_channel_by_id(&channel_id)?
             .ok_or_else(|| anyhow::anyhow!("channel not found: {}", channel_target))?;
@@ -214,7 +216,7 @@ fn require_channel_membership(
 ) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
     if !state
         .store
-        .is_member(&channel.name, actor_id)
+        .channel_member_exists(&channel.id, actor_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
     {
         return Err(app_err!(
@@ -336,7 +338,7 @@ async fn send_message_to_channel(
     info!(agent = %actor_id, msg = %message_id, content=%content, "send_message ok");
 
     if !suppress_agent_delivery {
-        forward_team_mentions(state, &channel.name, actor_id, sender_type, content)
+        forward_team_mentions(state, channel, actor_id, sender_type, content)
             .await
             .map_err(internal_err)?;
     }
@@ -378,7 +380,7 @@ static MENTION_RE: LazyLock<Regex> =
 /// Mirror `@team-name` mentions into the corresponding team channel.
 async fn forward_team_mentions(
     state: &AppState,
-    channel_name: &str,
+    channel: &Channel,
     sender_name: &str,
     sender_type: SenderType,
     content: &str,
@@ -389,10 +391,16 @@ async fn forward_team_mentions(
         .collect::<std::collections::BTreeSet<_>>();
 
     for mention in mentions {
-        let Some(team) = state.store.get_team(&mention)? else {
+        let Some(team) = state
+            .store
+            .get_team_by_workspace_and_name(&channel.workspace_id, &mention)?
+        else {
             continue;
         };
-        let Some(team_channel) = state.store.get_channel_by_name(&team.name)? else {
+        let Some(team_channel) = state
+            .store
+            .get_channel_by_workspace_and_name(&team.workspace_id, &team.name)?
+        else {
             continue;
         };
 
@@ -403,7 +411,7 @@ async fn forward_team_mentions(
             content,
             &[],
             Some(ForwardedFrom {
-                channel_name: channel_name.to_string(),
+                channel_name: channel.name.clone(),
                 sender_name: sender_name.to_string(),
             }),
         )?;
@@ -423,8 +431,9 @@ pub async fn handle_send(
     Json(req): Json<SendRequest>,
 ) -> ApiResult<SendResponse> {
     let store = &state.store;
+    let active_workspace_id = state.active_workspace_id().await;
     let channel_id = store
-        .resolve_target(&req.target, &agent_id)
+        .resolve_target_for_workspace(&req.target, &agent_id, active_workspace_id.as_deref())
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let channel = load_channel_by_id(store, &channel_id)?;
@@ -514,8 +523,14 @@ pub async fn handle_history(
     }
 
     let store = &state.store;
-    let channel_name = resolve_history_target(store, &agent_id, &channel_target)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let active_workspace_id = state.active_workspace_id().await;
+    let channel_name = resolve_history_target(
+        store,
+        &agent_id,
+        &channel_target,
+        active_workspace_id.as_deref(),
+    )
+    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     let limit = params.limit.unwrap_or(50);
     let channel = store
         .get_channel_by_name(&channel_name)
@@ -539,7 +554,11 @@ pub async fn handle_resolve_channel(
 ) -> ApiResult<ResolveChannelResponse> {
     let channel_id = state
         .store
-        .resolve_target(&req.target, &agent_id)
+        .resolve_target_for_workspace(
+            &req.target,
+            &agent_id,
+            state.active_workspace_id().await.as_deref(),
+        )
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(ResolveChannelResponse { channel_id }))
 }
@@ -590,7 +609,7 @@ pub async fn handle_public_conversation_inbox_notification(
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     if !state
         .store
-        .is_member(&channel.name, &actor_id)
+        .channel_member_exists(&channel.id, &actor_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
     {
         return Err(app_err!(

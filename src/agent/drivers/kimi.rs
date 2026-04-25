@@ -655,17 +655,13 @@ impl KimiHandle {
     /// Send `session/load` on the live stdin and return the resolved session id.
     /// Requires `ensure_started()` to have already succeeded.
     async fn send_session_load(&self, sid: &str) -> anyhow::Result<String> {
-        // Note: pairing_token is only needed for session/new (MCP re-pair on new sessions).
-        // session/load reuses the bootstrap session's MCP state with mcpServers=[].
-        let (stdin_tx, shared, _pairing_token) = self.acquire_stdin_and_shared().await?;
+        let (stdin_tx, shared, pairing_token) = self.acquire_stdin_and_shared().await?;
         let id = self.alloc_id().await;
         let (tx, rx) = oneshot::channel();
-        // Secondary sessions send an empty `mcpServers` array. Kimi
-        // accepts this on `session/load` — the bootstrap session's MCP
-        // state is reused.
+        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &pairing_token);
         let params = serde_json::json!({
             "cwd": self.core.spec.working_directory,
-            "mcpServers": [],
+            "mcpServers": mcp_servers,
         });
         {
             let mut s = shared.lock().unwrap();
@@ -801,6 +797,16 @@ impl Session for KimiHandle {
     }
 
     fn process_state(&self) -> ProcessState {
+        if let Some(ref sid) = self.session_id {
+            if let Ok(inner) = self.core.inner.try_lock() {
+                if let Some(shared) = inner.shared.as_ref() {
+                    let shared = shared.lock().unwrap();
+                    if let Some(session) = shared.sessions.get(sid) {
+                        return session.state.clone();
+                    }
+                }
+            }
+        }
         self.state.clone()
     }
 

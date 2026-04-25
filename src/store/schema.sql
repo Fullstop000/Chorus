@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS local_workspace_state (
 -- Channels represent chat rooms, direct messages, system broadcasts, or task sub-channels.
 CREATE TABLE IF NOT EXISTS channels (
     id TEXT PRIMARY KEY, -- Unique UUID for the channel
-    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     name TEXT NOT NULL, -- Human-readable name unique within a workspace
     description TEXT, -- Optional topic or description for the channel
     channel_type TEXT NOT NULL DEFAULT 'channel', -- Type of channel: 'channel' | 'dm' | 'system' | 'team' | 'task'
@@ -37,9 +37,6 @@ CREATE TABLE IF NOT EXISTS channels (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_workspace_name
     ON channels(workspace_id, name);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_legacy_name
-    ON channels(name)
-    WHERE workspace_id IS NULL;
 
 -- Memberships linking users/agents to channels.
 CREATE TABLE IF NOT EXISTS channel_members (
@@ -99,7 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq)
 -- AI Agents configuration and status.
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY, -- Unique UUID for the agent
-    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     name TEXT UNIQUE NOT NULL, -- Unique machine name; workspace scoping requires agent_env_vars migration first.
     display_name TEXT NOT NULL, -- Human-readable display name
     description TEXT, -- Description of the agent's role/capabilities
@@ -157,7 +154,7 @@ CREATE TABLE IF NOT EXISTS attachments (
 -- Teams of agents.
 CREATE TABLE IF NOT EXISTS teams (
     id TEXT PRIMARY KEY, -- Unique UUID for the team
-    workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE,
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     name TEXT NOT NULL, -- Unique machine name for the team within a workspace
     display_name TEXT NOT NULL, -- Human-readable display name
     collaboration_model TEXT NOT NULL, -- Collaboration model used by the team
@@ -166,9 +163,6 @@ CREATE TABLE IF NOT EXISTS teams (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_workspace_name
     ON teams(workspace_id, name);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_legacy_name
-    ON teams(name)
-    WHERE workspace_id IS NULL;
 
 -- Memberships within teams.
 CREATE TABLE IF NOT EXISTS team_members (

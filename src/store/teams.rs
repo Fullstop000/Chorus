@@ -11,6 +11,8 @@ use super::{parse_datetime, ChannelType, Store};
 pub struct Team {
     /// UUID primary key.
     pub id: String,
+    /// Owning workspace id.
+    pub workspace_id: String,
     /// URL-safe slug (matches backing channel name when present).
     pub name: String,
     /// Human-facing team title.
@@ -52,16 +54,19 @@ pub struct TeamMembership {
 }
 
 impl Team {
-    /// Parse the standard 7-column team listing row: id, name, display_name, channel_id (join), collaboration_model, leader_agent_name, created_at.
+    /// Parse the standard team listing row: id, workspace_id, name,
+    /// display_name, channel_id (join), collaboration_model,
+    /// leader_agent_name, created_at.
     pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
-            name: row.get(1)?,
-            display_name: row.get(2)?,
-            channel_id: row.get(3)?,
-            collaboration_model: row.get(4)?,
-            leader_agent_name: row.get(5)?,
-            created_at: super::parse_datetime(&row.get::<_, String>(6)?),
+            workspace_id: row.get(1)?,
+            name: row.get(2)?,
+            display_name: row.get(3)?,
+            channel_id: row.get(4)?,
+            collaboration_model: row.get(5)?,
+            leader_agent_name: row.get(6)?,
+            created_at: super::parse_datetime(&row.get::<_, String>(7)?),
         })
     }
 }
@@ -76,9 +81,10 @@ impl Store {
         leader_agent_name: Option<&str>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
+        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
         Self::create_team_inner(
             &conn,
-            None,
+            &workspace_id,
             name,
             display_name,
             collaboration_model,
@@ -97,7 +103,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         Self::create_team_inner(
             &conn,
-            Some(workspace_id),
+            workspace_id,
             name,
             display_name,
             collaboration_model,
@@ -112,8 +118,11 @@ impl Store {
         collaboration_model: &str,
         leader_agent_name: Option<&str>,
     ) -> Result<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
+        drop(conn);
         self.create_team_with_channel_inner(
-            None,
+            &workspace_id,
             name,
             display_name,
             collaboration_model,
@@ -130,7 +139,7 @@ impl Store {
         leader_agent_name: Option<&str>,
     ) -> Result<(String, String)> {
         self.create_team_with_channel_inner(
-            Some(workspace_id),
+            workspace_id,
             name,
             display_name,
             collaboration_model,
@@ -140,7 +149,7 @@ impl Store {
 
     fn create_team_with_channel_inner(
         &self,
-        workspace_id: Option<&str>,
+        workspace_id: &str,
         name: &str,
         display_name: &str,
         collaboration_model: &str,
@@ -173,7 +182,7 @@ impl Store {
 
     fn create_team_inner(
         conn: &rusqlite::Connection,
-        workspace_id: Option<&str>,
+        workspace_id: &str,
         name: &str,
         display_name: &str,
         collaboration_model: &str,
@@ -198,16 +207,36 @@ impl Store {
     /// Look up a team by its unique short name. Returns `None` if not found.
     pub fn get_team(&self, name: &str) -> Result<Option<Team>> {
         let conn = self.conn.lock().unwrap();
+        let Some(workspace_id) = Self::workspace_id_for_lookup_inner(&conn)? else {
+            return Ok(None);
+        };
+        Self::get_team_by_workspace_and_name_inner(&conn, &workspace_id, name)
+    }
+
+    pub fn get_team_by_workspace_and_name(
+        &self,
+        workspace_id: &str,
+        name: &str,
+    ) -> Result<Option<Team>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_team_by_workspace_and_name_inner(&conn, workspace_id, name)
+    }
+
+    fn get_team_by_workspace_and_name_inner(
+        conn: &rusqlite::Connection,
+        workspace_id: &str,
+        name: &str,
+    ) -> Result<Option<Team>> {
         let mut stmt = conn.prepare(
-            "SELECT t.id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
+            "SELECT t.id, t.workspace_id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
              FROM teams t
              LEFT JOIN channels c ON c.name = t.name
                 AND c.channel_type = 'team'
                 AND c.archived = 0
-                AND (c.workspace_id = t.workspace_id OR (c.workspace_id IS NULL AND t.workspace_id IS NULL))
-             WHERE t.name = ?1",
+                AND c.workspace_id = t.workspace_id
+             WHERE t.workspace_id = ?1 AND t.name = ?2",
         )?;
-        let mut rows = stmt.query_map(params![name], Team::from_row)?;
+        let mut rows = stmt.query_map(params![workspace_id, name], Team::from_row)?;
         Ok(rows.next().transpose()?)
     }
 
@@ -215,12 +244,12 @@ impl Store {
     pub fn get_team_by_id(&self, id: &str) -> Result<Option<Team>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT t.id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
+            "SELECT t.id, t.workspace_id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
              FROM teams t
              LEFT JOIN channels c ON c.name = t.name
                 AND c.channel_type = 'team'
                 AND c.archived = 0
-                AND (c.workspace_id = t.workspace_id OR (c.workspace_id IS NULL AND t.workspace_id IS NULL))
+                AND c.workspace_id = t.workspace_id
              WHERE t.id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Team::from_row)?;
@@ -242,24 +271,25 @@ impl Store {
 
     fn get_teams_inner(&self, workspace_id: Option<&str>) -> Result<Vec<Team>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT t.id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
+        let workspace_id = match workspace_id {
+            Some(workspace_id) => workspace_id.to_string(),
+            None => match Self::workspace_id_for_lookup_inner(&conn)? {
+                Some(workspace_id) => workspace_id,
+                None => return Ok(Vec::new()),
+            },
+        };
+        let mut sql = "SELECT t.id, t.workspace_id, t.name, t.display_name, c.id, t.collaboration_model, t.leader_agent_name, t.created_at
              FROM teams t
              LEFT JOIN channels c ON c.name = t.name
                 AND c.channel_type = 'team'
                 AND c.archived = 0
-                AND (c.workspace_id = t.workspace_id OR (c.workspace_id IS NULL AND t.workspace_id IS NULL))"
+                AND c.workspace_id = t.workspace_id"
             .to_string();
-        let mut values = Vec::new();
-        if let Some(workspace_id) = workspace_id {
-            sql.push_str(" WHERE t.workspace_id = ?1");
-            values.push(workspace_id.to_string());
-        } else {
-            sql.push_str(" WHERE t.workspace_id IS NULL");
-        }
+        sql.push_str(" WHERE t.workspace_id = ?1");
         sql.push_str(" ORDER BY t.name");
         let rows = conn
             .prepare(&sql)?
-            .query_map(rusqlite::params_from_iter(values), Team::from_row)?
+            .query_map(params![workspace_id], Team::from_row)?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)

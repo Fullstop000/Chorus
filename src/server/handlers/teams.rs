@@ -336,7 +336,7 @@ pub async fn handle_delete_team(
 
     if let Some(channel) = state
         .store
-        .get_channel_by_name(&team.name)
+        .get_channel_by_workspace_and_name(&team.workspace_id, &team.name)
         .map_err(internal_err)?
     {
         state
@@ -385,7 +385,13 @@ pub async fn handle_add_team_member(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .store
-        .join_channel(&team.name, &req.member_name, sender_type)
+        .join_channel_by_id(
+            team.channel_id
+                .as_deref()
+                .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team channel not found"))?,
+            &req.member_name,
+            sender_type,
+        )
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if sender_type == SenderType::Agent {

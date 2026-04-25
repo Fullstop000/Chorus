@@ -104,7 +104,7 @@ async fn workspace_create_list_switch_current_and_rename() {
     assert!(list.contains("Acme"), "got: {list}");
     assert!(list.contains("Beta"), "got: {list}");
     assert!(list.contains("* Acme"), "got: {list}");
-    assert!(list.contains("channels=0 agents=0 humans=1"), "got: {list}");
+    assert!(list.contains("channels=1 agents=0 humans=1"), "got: {list}");
 
     let out = run_workspace(&url, &["rename", "Acme Renamed"]).await;
     assert!(out.status.success(), "rename failed: {}", combined(&out));
