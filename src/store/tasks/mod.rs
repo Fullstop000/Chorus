@@ -483,6 +483,12 @@ impl Store {
         for (sub_channel, inserted, content) in sub_events {
             self.emit_system_stream_events(&sub_channel, vec![(inserted, content)])?;
         }
+        // Cross-channel task fan-out: every connected client patches their
+        // tasksById store, so the parent-channel task_card host re-renders
+        // even for non-members of the sub-channel.
+        for task in &result {
+            self.emit_task_update(task, &channel.id);
+        }
         Ok(result)
     }
 
@@ -557,7 +563,7 @@ impl Store {
         drop(conn);
 
         self.emit_system_stream_events(&channel, pending)?;
-        // Note: `task_update` SSE emission is wired up in Task 7.
+        self.emit_task_update(&task, &channel.id);
         Ok(task)
     }
 
@@ -804,6 +810,14 @@ impl Store {
                 .ok_or_else(|| anyhow!("sub-channel vanished after commit: {}", sub_id))?;
             self.emit_system_stream_events(&sub_channel, events)?;
         }
+        // Cross-channel task fan-out for every successful claim. Re-load
+        // post-commit so the broadcast carries the freshly-stamped owner +
+        // updated_at. Failures here are logged-only.
+        for r in results.iter().filter(|r| r.success) {
+            if let Ok(Some(t)) = self.get_task_info(channel_name, r.task_number) {
+                self.emit_task_update(&t, &channel.id);
+            }
+        }
         Ok(results)
     }
 
@@ -884,6 +898,9 @@ impl Store {
             .get_channel_by_id(&sub_id)?
             .ok_or_else(|| anyhow!("sub-channel vanished after commit: {}", sub_id))?;
         self.emit_system_stream_events(&sub_channel, vec![event])?;
+        if let Ok(Some(t)) = self.get_task_info(channel_name, task_number) {
+            self.emit_task_update(&t, &channel.id);
+        }
         Ok(())
     }
 
@@ -1014,7 +1031,7 @@ impl Store {
         if let Some(sc) = sub_channel_for_emit {
             self.emit_system_stream_events(&sc, sub_pending)?;
         }
-        // Task 7 will add `self.emit_task_update(&task);` for global fan-out.
+        self.emit_task_update(&task, &channel.id);
         Ok(task)
     }
 }

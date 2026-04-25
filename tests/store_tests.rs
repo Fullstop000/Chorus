@@ -2139,3 +2139,63 @@ fn get_unread_summary_excludes_archived_task_sub_channels() {
         after
     );
 }
+
+#[test]
+fn task_create_emits_task_update_event() {
+    // Cross-channel task fanout: every mutation that lands a row in `tasks`
+    // must broadcast a `TaskUpdateEvent` so the parent-channel task_card
+    // host can re-render even when the viewer is not a member of the
+    // task's sub-channel.
+    use chorus::store::channels::ChannelType;
+    let store = Store::open(":memory:").unwrap();
+    let parent_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+
+    let mut rx = store.subscribe_task_updates();
+    let created = store.create_tasks("eng", "alice", &["wire it"]).unwrap();
+    let task = &created[0];
+
+    let event = rx
+        .try_recv()
+        .expect("task_update event delivered synchronously");
+    assert_eq!(event.task_id, task.id);
+    assert_eq!(event.channel_id, parent_id);
+    assert_eq!(event.task_number, task.task_number);
+    assert_eq!(event.status, "todo");
+    assert!(event.owner.is_none());
+    assert_eq!(
+        event.sub_channel_id.as_deref(),
+        task.sub_channel_id.as_deref()
+    );
+}
+
+#[test]
+fn task_status_transitions_emit_task_update_per_step() {
+    use chorus::store::channels::ChannelType;
+    use chorus::store::tasks::TaskStatus;
+    let store = Store::open(":memory:").unwrap();
+    store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.create_human("alice").unwrap();
+    store.create_tasks("eng", "alice", &["x"]).unwrap();
+
+    let mut rx = store.subscribe_task_updates();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InProgress)
+        .unwrap();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+        .unwrap();
+    store
+        .update_task_status("eng", 1, "alice", TaskStatus::Done)
+        .unwrap();
+
+    let mut statuses = Vec::new();
+    while let Ok(ev) = rx.try_recv() {
+        statuses.push(ev.status);
+    }
+    assert_eq!(statuses, vec!["in_progress", "in_review", "done"]);
+}
