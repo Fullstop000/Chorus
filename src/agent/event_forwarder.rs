@@ -176,13 +176,15 @@ pub(super) fn spawn_event_forwarder(
         let mut pending_thinking: HashMap<String, String> = HashMap::new();
         let mut pending_text: HashMap<String, String> = HashMap::new();
         let mut last_tool_raw_name: HashMap<String, String> = HashMap::new();
-        // Tracks "did this session produce any user-visible output during its
-        // current run?" — counts Text and ToolCall events. On Completed with
-        // zero events, we surface ACTIVITY_ERROR with a "no response" detail
-        // so the user sees an explicit signal instead of a silent no-op
-        // (e.g. when codex auth dies, the run still reaches `FinishReason::Natural`
-        // but the agent produced nothing). Cleared in Completed/Failed.
-        let mut output_count: HashMap<String, u32> = HashMap::new();
+        // Tracks "did this session perform a user-facing side effect during
+        // its current run?" — counts ToolCall events only. Plain Text events
+        // stream into the agent's trace panel but do NOT post to chat; the
+        // user only sees the agent in the chat stream when it tool-calls
+        // (send_message, propose_task, etc.). Counting Text was too lenient:
+        // a codex run that hits 401 still emits one Text fragment before
+        // failing, so the count would be 1 and the silent-finish check would
+        // miss it. Cleared in Completed/Failed.
+        let mut tool_calls_in_run: HashMap<String, u32> = HashMap::new();
 
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -205,12 +207,23 @@ pub(super) fn spawn_event_forwarder(
                         );
                     }
                     ProcessState::Active { .. } => {
-                        activity_log::set_activity_state(
-                            &activity_logs,
-                            key,
-                            ACTIVITY_ONLINE,
-                            "Idle",
-                        );
+                        // Don't clobber a sticky ACTIVITY_ERROR set by the
+                        // silent-finish detector. The driver almost always
+                        // emits Lifecycle::Active right after Completed (the
+                        // process is back to idle), which would race with
+                        // the Completed branch's error-set and erase the
+                        // user-visible signal. Leave it ERROR until the
+                        // next successful ToolCall flips it back to working.
+                        if activity_log::current_activity(&activity_logs, key)
+                            != ACTIVITY_ERROR
+                        {
+                            activity_log::set_activity_state(
+                                &activity_logs,
+                                key,
+                                ACTIVITY_ONLINE,
+                                "Idle",
+                            );
+                        }
                     }
                     ProcessState::Closed => {
                         activity_log::set_activity_state(
@@ -265,7 +278,6 @@ pub(super) fn spawn_event_forwarder(
                                 .entry(session_id.clone())
                                 .or_default()
                                 .push_str(text);
-                            *output_count.entry(session_id.clone()).or_default() += 1;
                             continue;
                         }
                         _ => {
@@ -294,7 +306,7 @@ pub(super) fn spawn_event_forwarder(
                         AgentEventItem::ToolCall { name, input } => {
                             info!(agent = %key, tool = %name, "tool call");
                             last_tool_raw_name.insert(session_id.clone(), name.clone());
-                            *output_count.entry(session_id.clone()).or_default() += 1;
+                            *tool_calls_in_run.entry(session_id.clone()).or_default() += 1;
                             let tool_input = summarize_input(input);
                             activity_log::push_activity(
                                 &activity_logs,
@@ -383,11 +395,11 @@ pub(super) fn spawn_event_forwarder(
                     // Drop this session's tool-name binding so it can't leak
                     // into a future run reusing the same session_id.
                     last_tool_raw_name.remove(session_id);
-                    let produced = output_count.remove(session_id).unwrap_or(0);
+                    let tool_calls = tool_calls_in_run.remove(session_id).unwrap_or(0);
                     info!(
                         agent = %key,
                         reason = ?result.finish_reason,
-                        produced,
+                        tool_calls,
                         "run completed",
                     );
                     if !session_id.is_empty() {
@@ -395,13 +407,17 @@ pub(super) fn spawn_event_forwarder(
                     }
                     trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
                     trace_store.end_run(key);
-                    if produced == 0 {
+                    if tool_calls == 0 {
                         // Soft-failure surface: the run reached its natural end
-                        // without ever calling a tool or emitting text. The user
-                        // who triggered this run sees nothing in chat unless we
-                        // mark the agent as errored — common cause is codex auth
-                        // dying mid-run (the underlying CLI prints ERROR to stderr
-                        // and then `respond` returns silently with reason=Natural).
+                        // without ever calling a tool, which means the agent
+                        // produced nothing user-facing in the chat (`send_message`,
+                        // `propose_task`, etc. are all tool calls). Plain Text
+                        // events stream to the trace panel but never reach the
+                        // chat — counting them here would make a codex 401
+                        // (which still streams a single Text fragment before
+                        // dying) look like a successful turn. Common cause:
+                        // codex auth dying mid-run, or the agent deciding to
+                        // do nothing when it should have replied.
                         let detail = format!(
                             "Finished without responding (reason: {:?})",
                             result.finish_reason
@@ -463,7 +479,7 @@ pub(super) fn spawn_event_forwarder(
                     pending_thinking.remove(session_id);
                     pending_text.remove(session_id);
                     last_tool_raw_name.remove(session_id);
-                    output_count.remove(session_id);
+                    tool_calls_in_run.remove(session_id);
                     let msg = format!("{error:?}");
                     error!(agent = %key, error = %msg, "run failed");
                     trace::emit_active_event(
@@ -621,5 +637,295 @@ mod tests {
                 "cross-contamination: flushed text {t:?} is not exactly one session's payload"
             );
         }
+    }
+
+    /// A run that reaches `Completed { reason: Natural }` without ever
+    /// emitting Text or ToolCall events should flip the agent's activity to
+    /// ACTIVITY_ERROR with a "Finished without responding" detail. Before
+    /// this change those runs left the agent looking idle, so users had no
+    /// signal when codex/kimi/opencode silently no-op'd a turn.
+    ///
+    /// Companion case: a run that did emit text MUST land on ACTIVITY_ONLINE.
+    #[tokio::test]
+    async fn silent_completed_run_flips_activity_to_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            Arc::clone(&activity_logs),
+            trace_store,
+            trace_tx.clone(),
+            store,
+            agents,
+        );
+
+        let key = "silent-bot".to_string();
+        let sid = "sid-silent".to_string();
+
+        // No Text/ToolCall events — straight from session-attach to Completed.
+        event_tx
+            .send(DriverEvent::SessionAttached {
+                key: key.clone(),
+                session_id: sid.clone(),
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id: uuid::Uuid::new_v4(),
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+
+        // Activity should be ACTIVITY_ERROR with a detail mentioning "without
+        // responding" — that is the user-facing signal we wired in.
+        let states = activity_log::all_activity_states(&activity_logs);
+        let state = states
+            .iter()
+            .find(|(k, _, _)| k == &key)
+            .unwrap_or_else(|| panic!("activity state for {key} missing: {states:?}"));
+        assert_eq!(state.1, ACTIVITY_ERROR, "expected error activity, got {states:?}");
+        assert!(
+            state.2.contains("without responding"),
+            "expected detail to mention 'without responding', got {:?}",
+            state.2
+        );
+    }
+
+    /// Sanity counter-test: when a run makes a tool call, the same code path
+    /// must land on ACTIVITY_ONLINE — we can't trade an idle false-negative
+    /// for an errored false-positive on every successful run.
+    #[tokio::test]
+    async fn productive_completed_run_stays_online() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            Arc::clone(&activity_logs),
+            trace_store,
+            trace_tx.clone(),
+            store,
+            agents,
+        );
+
+        let key = "talkative-bot".to_string();
+        let sid = "sid-talk".to_string();
+
+        event_tx
+            .send(DriverEvent::SessionAttached {
+                key: key.clone(),
+                session_id: sid.clone(),
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id: uuid::Uuid::new_v4(),
+                item: AgentEventItem::ToolCall {
+                    name: "send_message".to_string(),
+                    input: serde_json::json!({"target": "#all", "content": "hi"}),
+                },
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id: uuid::Uuid::new_v4(),
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+
+        let states = activity_log::all_activity_states(&activity_logs);
+        let state = states
+            .iter()
+            .find(|(k, _, _)| k == &key)
+            .unwrap_or_else(|| panic!("activity state for {key} missing: {states:?}"));
+        assert_eq!(
+            state.1, ACTIVITY_ONLINE,
+            "productive run must end ONLINE, got {states:?}"
+        );
+    }
+
+    /// After a silent run flips the agent to ACTIVITY_ERROR, the driver
+    /// almost always emits `Lifecycle::Active` immediately afterwards (the
+    /// process is back to idle). Without a guard, the Active branch would
+    /// reset the activity to ONLINE and erase the user-visible signal — a
+    /// classic race where the bad state is overwritten before the user can
+    /// see it. The Lifecycle::Active branch must leave ACTIVITY_ERROR
+    /// alone.
+    #[tokio::test]
+    async fn lifecycle_active_does_not_overwrite_silent_finish_error() {
+        use crate::agent::drivers::ProcessState;
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            Arc::clone(&activity_logs),
+            trace_store,
+            trace_tx.clone(),
+            store,
+            agents,
+        );
+
+        let key = "sticky-error-bot".to_string();
+        let sid = "sid-sticky".to_string();
+
+        event_tx
+            .send(DriverEvent::SessionAttached {
+                key: key.clone(),
+                session_id: sid.clone(),
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id: uuid::Uuid::new_v4(),
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+        // The race: driver pushes Active right after Completed.
+        event_tx
+            .send(DriverEvent::Lifecycle {
+                key: key.clone(),
+                state: ProcessState::Active {
+                    session_id: sid.clone(),
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+
+        let states = activity_log::all_activity_states(&activity_logs);
+        let state = states
+            .iter()
+            .find(|(k, _, _)| k == &key)
+            .unwrap_or_else(|| panic!("activity state for {key} missing: {states:?}"));
+        assert_eq!(
+            state.1, ACTIVITY_ERROR,
+            "Lifecycle::Active must not erase ACTIVITY_ERROR set by silent-finish, got {states:?}"
+        );
+    }
+
+    /// The codex-401 reproduction: streams a Text fragment then completes
+    /// "naturally" with no tool calls. Before the threshold tightening,
+    /// produced=1 (one Text event) made the silent-finish check skip this
+    /// case. With ToolCall-only counting, this is correctly flagged as
+    /// silent.
+    #[tokio::test]
+    async fn text_only_completed_run_is_still_silent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            Arc::clone(&activity_logs),
+            trace_store,
+            trace_tx.clone(),
+            store,
+            agents,
+        );
+
+        let key = "trace-only-bot".to_string();
+        let sid = "sid-trace".to_string();
+
+        event_tx
+            .send(DriverEvent::SessionAttached {
+                key: key.clone(),
+                session_id: sid.clone(),
+            })
+            .await
+            .unwrap();
+        // Single Text fragment — what codex emits before its 401.
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id: uuid::Uuid::new_v4(),
+                item: AgentEventItem::Text {
+                    text: "I'll help with that".to_string(),
+                },
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id: uuid::Uuid::new_v4(),
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+
+        let states = activity_log::all_activity_states(&activity_logs);
+        let state = states
+            .iter()
+            .find(|(k, _, _)| k == &key)
+            .unwrap_or_else(|| panic!("activity state for {key} missing: {states:?}"));
+        assert_eq!(
+            state.1, ACTIVITY_ERROR,
+            "text-only run must still flag ERROR (no chat-visible output), got {states:?}"
+        );
     }
 }

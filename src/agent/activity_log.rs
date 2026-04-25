@@ -222,6 +222,17 @@ pub fn all_activity_states(logs: &ActivityLogMap) -> Vec<(String, String, String
         .collect()
 }
 
+/// Current activity string for one agent, or `"offline"` if untracked.
+/// Used by the event forwarder to gate transitions that would clobber a
+/// sticky ACTIVITY_ERROR set by silent-finish detection.
+pub fn current_activity(logs: &ActivityLogMap, agent_name: &str) -> String {
+    logs.lock()
+        .unwrap()
+        .get(agent_name)
+        .map(|log| log.activity.clone())
+        .unwrap_or_else(|| "offline".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
