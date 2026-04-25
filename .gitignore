@@ -66,3 +66,13 @@ node_modules
 .superpowers
 .codex
 .context/
+# Added by code-review-graph
+.code-review-graph/
+
+# AI agent / IDE config files
+.cursor/
+.cursorrules
+.kiro/
+.mcp.json
+.opencode.json
+.windsurfrules
