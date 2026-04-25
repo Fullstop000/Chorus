@@ -250,7 +250,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 if !is_tty {
                     return Err(crate::cli::UserError(format!(
                         "refusing to delete @{name} without --yes on non-interactive stdin"
-                    )).into());
+                    ))
+                    .into());
                 }
                 if locked.read_line(&mut line).is_err() {
                     return Err(crate::cli::UserError("Abort.".into()).into());
@@ -290,7 +291,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 if wipe {
                     return Err(crate::cli::UserError(format!(
                         "Agent deleted but workspace cleanup failed: {warning}"
-                    )).into());
+                    ))
+                    .into());
                 }
                 tracing::warn!("{warning}");
             }
