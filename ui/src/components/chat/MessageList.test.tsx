@@ -1,6 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect, vi } from "vitest";
-import { MessageList } from "./MessageList";
+import {
+  getScopedAgentNames,
+  MessageList,
+  traceBelongsToConversation,
+} from "./MessageList";
 import type { HistoryMessage } from "../../data/chat";
 
 // MessageList calls the store in TWO shapes:
@@ -32,6 +36,9 @@ vi.mock("@tanstack/react-query", async (importOriginal) => {
     }),
   };
 });
+vi.mock("../../hooks/data", () => ({
+  useAgents: () => [],
+}));
 
 describe("MessageList — task_event rendering", () => {
   it("renders exactly one task-thread for a sequence of events on the same task", () => {
@@ -87,5 +94,66 @@ describe("MessageList — task_event rendering", () => {
       .length;
     expect(occurrences).toBe(1);
     expect(html).toContain('data-state="in_progress"');
+  });
+});
+
+describe("MessageList — live Telescope scoping", () => {
+  it("rejects another agent's active trace in the current DM", () => {
+    const scoped = getScopedAgentNames(
+      "dm:@opencode-1800",
+      [],
+      ["opencode-1800"],
+    );
+
+    expect(
+      traceBelongsToConversation(
+        "dm-opencode",
+        "gemini-e192",
+        { channelId: "dm-gemini" },
+        scoped,
+      ),
+    ).toBe(false);
+  });
+
+  it("accepts an active trace when it belongs to the current conversation", () => {
+    const scoped = getScopedAgentNames(
+      "dm:@opencode-1800",
+      [],
+      ["opencode-1800"],
+    );
+
+    expect(
+      traceBelongsToConversation(
+        "dm-opencode",
+        "opencode-1800",
+        { channelId: "dm-opencode" },
+        scoped,
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to current conversation agents when old trace frames have no channel id", () => {
+    const scoped = getScopedAgentNames(
+      "dm:@opencode-1800",
+      [],
+      ["opencode-1800"],
+    );
+
+    expect(
+      traceBelongsToConversation(
+        "dm-opencode",
+        "opencode-1800",
+        { channelId: undefined },
+        scoped,
+      ),
+    ).toBe(true);
+    expect(
+      traceBelongsToConversation(
+        "dm-opencode",
+        "gemini-e192",
+        { channelId: undefined },
+        scoped,
+      ),
+    ).toBe(false);
   });
 });

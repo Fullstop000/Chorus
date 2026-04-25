@@ -568,6 +568,20 @@ impl Session for OpencodeHandle {
     }
 
     fn process_state(&self) -> ProcessState {
+        let shared_session_id = match &self.local_state {
+            ProcessState::Active { session_id } => Some(session_id.as_str()),
+            ProcessState::PromptInFlight { session_id, .. } => Some(session_id.as_str()),
+            _ => self.preassigned_session_id.as_deref(),
+        };
+
+        if let Some(session_id) = shared_session_id {
+            if let Ok(shared) = self.proc.shared.lock() {
+                if let Some(session) = shared.sessions.get(session_id) {
+                    return session.agent_state.clone();
+                }
+            }
+        }
+
         self.local_state.clone()
     }
 
@@ -1171,6 +1185,51 @@ fn classify_line(line: &str, shared: &Arc<Mutex<SharedReaderState>>) -> Classifi
     }
 }
 
+fn send_deferred_bootstrap_prompt(
+    key: &AgentKey,
+    session_id: &str,
+    event_tx: &mpsc::Sender<DriverEvent>,
+    shared: &Arc<Mutex<SharedReaderState>>,
+    stdin_tx: &mpsc::Sender<String>,
+) {
+    let Some((prompt_id, prompt_text, run_id)) = ({
+        let mut s = shared.lock().unwrap();
+        s.bootstrap_pending_prompt
+            .take()
+            .map(|(prompt_id, prompt_text)| {
+                let run_id = RunId::new_v4();
+                if let Some(sess) = s.sessions.get_mut(session_id) {
+                    sess.run_id = Some(run_id);
+                    sess.agent_state = ProcessState::PromptInFlight {
+                        run_id,
+                        session_id: session_id.to_string(),
+                    };
+                }
+                s.pending_requests.insert(
+                    prompt_id,
+                    PendingKind::Prompt {
+                        session_id: session_id.to_string(),
+                        run_id,
+                    },
+                );
+                (prompt_id, prompt_text, run_id)
+            })
+    }) else {
+        return;
+    };
+
+    let _ = event_tx.try_send(DriverEvent::Lifecycle {
+        key: key.clone(),
+        state: ProcessState::PromptInFlight {
+            run_id,
+            session_id: session_id.to_string(),
+        },
+    });
+
+    let req = acp_protocol::build_session_prompt_request(prompt_id, session_id, &prompt_text);
+    let _ = stdin_tx.try_send(req);
+}
+
 /// Handle a classified line: emit events, respond on oneshots, mutate state.
 async fn dispatch_line(
     frame: ClassifiedFrame,
@@ -1230,7 +1289,7 @@ async fn dispatch_line(
             };
 
             // Seed per-session state.
-            let deferred_prompt = {
+            {
                 let mut s = shared.lock().unwrap();
                 s.sessions
                     .entry(sid.clone())
@@ -1243,8 +1302,7 @@ async fn dispatch_line(
                 if responder.is_none() && s.bootstrap_session_id.is_none() {
                     s.bootstrap_session_id = Some(sid.clone());
                 }
-                s.bootstrap_pending_prompt.take()
-            };
+            }
 
             let is_bootstrap = responder.is_none();
             if let Some(responder) = responder {
@@ -1270,41 +1328,7 @@ async fn dispatch_line(
                         session_id: sid.clone(),
                     },
                 });
-            }
-
-            if let Some((prompt_id, prompt_text)) = deferred_prompt {
-                let run_id = RunId::new_v4();
-                {
-                    let mut s = shared.lock().unwrap();
-                    if let Some(sess) = s.sessions.get_mut(&sid) {
-                        sess.run_id = Some(run_id);
-                        sess.agent_state = ProcessState::PromptInFlight {
-                            run_id,
-                            session_id: sid.clone(),
-                        };
-                    }
-                    // Track the deferred prompt id (reserved up-front in
-                    // `start_bootstrap_child` via `alloc_id`) in
-                    // `pending_requests` so the classifier recognizes the
-                    // eventual response.
-                    s.pending_requests.insert(
-                        prompt_id,
-                        PendingKind::Prompt {
-                            session_id: sid.clone(),
-                            run_id,
-                        },
-                    );
-                }
-                let _ = event_tx.try_send(DriverEvent::Lifecycle {
-                    key: key.clone(),
-                    state: ProcessState::PromptInFlight {
-                        run_id,
-                        session_id: sid.clone(),
-                    },
-                });
-
-                let req = acp_protocol::build_session_prompt_request(prompt_id, &sid, &prompt_text);
-                let _ = stdin_tx.try_send(req);
+                send_deferred_bootstrap_prompt(key, &sid, event_tx, shared, stdin_tx);
             }
         }
 
@@ -1347,6 +1371,7 @@ async fn dispatch_line(
                         session_id: sid.clone(),
                     },
                 });
+                send_deferred_bootstrap_prompt(key, &sid, event_tx, shared, stdin_tx);
             }
         }
 
@@ -1821,6 +1846,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bootstrap_load_session_response_sends_deferred_prompt() {
+        let (proc, mut stdin_rx, mut event_rx) = build_test_process("agent-bootstrap-load");
+        let prompt_id = proc.alloc_id();
+        assert_eq!(
+            prompt_id, 3,
+            "bootstrap deferred prompt should reserve id 3"
+        );
+
+        {
+            let mut s = proc.shared.lock().unwrap();
+            s.pending_requests.insert(
+                2,
+                PendingKind::LoadSession {
+                    requested_session_id: "stored-xyz".to_string(),
+                    responder: None,
+                },
+            );
+            s.bootstrap_requested_session_id = Some("stored-xyz".to_string());
+            s.bootstrap_pending_prompt = Some((prompt_id, "check your messages".to_string()));
+        }
+
+        let resp = r#"{"jsonrpc":"2.0","id":2,"result":{}}"#;
+        feed_line(&proc, resp).await;
+
+        let prompt_line = tokio::time::timeout(Duration::from_secs(1), stdin_rx.recv())
+            .await
+            .expect("deferred prompt should be sent after bootstrap session/load")
+            .expect("stdin channel should remain open");
+        let prompt: serde_json::Value = serde_json::from_str(&prompt_line).unwrap();
+
+        assert_eq!(prompt["id"], prompt_id);
+        assert_eq!(prompt["method"], "session/prompt");
+        assert_eq!(prompt["params"]["sessionId"], "stored-xyz");
+        assert_eq!(prompt["params"]["prompt"][0]["text"], "check your messages");
+
+        let mut saw_attached = false;
+        let mut saw_prompt_in_flight = false;
+        for _ in 0..4 {
+            match tokio::time::timeout(Duration::from_millis(200), event_rx.recv()).await {
+                Ok(Some(DriverEvent::SessionAttached { session_id, .. })) => {
+                    assert_eq!(session_id, "stored-xyz");
+                    saw_attached = true;
+                }
+                Ok(Some(DriverEvent::Lifecycle {
+                    state: ProcessState::PromptInFlight { session_id, .. },
+                    ..
+                })) => {
+                    assert_eq!(session_id, "stored-xyz");
+                    saw_prompt_in_flight = true;
+                }
+                Ok(Some(_)) => {}
+                _ => break,
+            }
+        }
+
+        assert!(saw_attached, "bootstrap load should emit SessionAttached");
+        assert!(
+            saw_prompt_in_flight,
+            "bootstrap load should transition to PromptInFlight after sending deferred prompt"
+        );
+
+        let s = proc.shared.lock().unwrap();
+        assert!(
+            s.bootstrap_pending_prompt.is_none(),
+            "deferred prompt should be consumed"
+        );
+        assert!(
+            matches!(
+                s.sessions.get("stored-xyz").map(|slot| &slot.agent_state),
+                Some(ProcessState::PromptInFlight { .. })
+            ),
+            "resumed bootstrap session should be marked PromptInFlight"
+        );
+    }
+
+    #[tokio::test]
     async fn child_process_is_reused_across_sessions() {
         // Two `open_session` calls on the same key must hand back the same
         // `Arc<OpencodeAgentProcess>`.
@@ -1972,6 +2073,41 @@ mod tests {
         assert!(
             seen_a && seen_b,
             "multi-session routing lost an event: seen_a={seen_a}, seen_b={seen_b}"
+        );
+    }
+
+    #[tokio::test]
+    async fn process_state_prefers_shared_session_state_over_stale_local_state() {
+        let (proc, _stdin_rx, _event_rx) = build_test_process("agent-shared-state");
+        let run_id = RunId::new_v4();
+        let session_id = "sess-shared".to_string();
+
+        {
+            let mut shared = proc.shared.lock().unwrap();
+            shared
+                .sessions
+                .insert(session_id.clone(), SessionRuntimeState::active(&session_id));
+        }
+
+        let handle = OpencodeHandle {
+            key: proc.key.clone(),
+            local_state: ProcessState::PromptInFlight {
+                run_id,
+                session_id: session_id.clone(),
+            },
+            spec: test_spec(),
+            proc,
+            preassigned_session_id: Some(session_id.clone()),
+            factory_path: FactoryPath::Secondary,
+        };
+
+        assert!(
+            matches!(
+                handle.process_state(),
+                ProcessState::Active { session_id: active_session_id }
+                    if active_session_id == session_id
+            ),
+            "shared session state should be authoritative when local state is stale"
         );
     }
 

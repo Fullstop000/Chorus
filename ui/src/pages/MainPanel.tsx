@@ -61,6 +61,13 @@ export function MainPanel() {
   const [membersLoading, setMembersLoading] = useState(false);
   const [showMembersPanel, setShowMembersPanel] = useState(false);
   const [showTeamSettings, setShowTeamSettings] = useState(false);
+  const chatAgentNames = currentAgent
+    ? [currentAgent.name]
+    : currentChannel
+      ? members
+          .filter((member) => member.memberType === "agent")
+          .map((member) => member.memberName)
+      : [];
 
   const [teamDetails, setTeamDetails] = useState<TeamResponse | null>(null);
   const [teamSettingsLoading, setTeamSettingsLoading] = useState(false);
@@ -223,6 +230,7 @@ export function MainPanel() {
               <ChatPanel
                 target={chatTarget}
                 conversationId={activeConversationId}
+                conversationAgentNames={chatAgentNames}
                 messages={chatHistory.messages}
                 loading={chatHistory.loading}
                 lastReadSeq={chatHistory.lastReadSeq}

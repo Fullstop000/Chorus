@@ -77,6 +77,7 @@ export function ChatHeader({
 interface ChatPanelProps {
   target: string | null;
   conversationId: string | null;
+  conversationAgentNames?: string[];
   messages: HistoryMessage[];
   loading: boolean;
   lastReadSeq: number;
@@ -87,6 +88,7 @@ interface ChatPanelProps {
 export function ChatPanel({
   target,
   conversationId,
+  conversationAgentNames = [],
   messages,
   loading,
   lastReadSeq,
@@ -109,6 +111,7 @@ export function ChatPanel({
       <MessageList
         targetKey={target}
         conversationId={conversationId}
+        conversationAgentNames={conversationAgentNames}
         messages={messages}
         loading={loading}
         lastReadSeq={lastReadSeq}

@@ -888,6 +888,83 @@ mod tests {
         );
     }
 
+    /// Some runtimes report MCP tool calls using display titles like
+    /// `send_message (chat MCP Server)`. These are still real replies and
+    /// must suppress the empty-run warning.
+    #[tokio::test]
+    async fn no_warn_when_send_message_display_title_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            activity_logs,
+            trace_store.clone(),
+            trace_tx.clone(),
+            store.clone(),
+            agents,
+        );
+
+        let key = "bot".to_string();
+        let sid = "session-1".to_string();
+        let run_id = uuid::Uuid::new_v4();
+
+        let channel_id = store
+            .create_channel("dm-with-bot", None, crate::store::ChannelType::Dm, None)
+            .unwrap();
+        trace_store.set_run_channel(&key, &channel_id);
+
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id,
+                item: AgentEventItem::ToolCall {
+                    name: "send_message (chat MCP Server)".to_string(),
+                    input: serde_json::Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid,
+                run_id,
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+        drop(trace_tx);
+
+        let count: i64 = store
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            count, 0,
+            "expected no system warning when send_message display title was used"
+        );
+    }
+
     /// In a group channel an agent may be watching without replying; silence
     /// should not trigger a warning.
     #[tokio::test]
