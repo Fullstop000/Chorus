@@ -13,6 +13,8 @@ use super::{parse_datetime, Store};
 pub struct Agent {
     /// UUID primary key.
     pub id: String,
+    /// Owning workspace id.
+    pub workspace_id: String,
     /// Unique handle used in channels and APIs.
     pub name: String,
     /// Human-readable title in the UI.
@@ -67,7 +69,8 @@ pub struct AgentRecordUpsert<'a> {
 impl Store {
     pub fn create_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<String> {
         let conn = self.conn.lock().unwrap();
-        Self::create_agent_record_inner(&conn, None, record)
+        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
+        Self::create_agent_record_inner(&conn, &workspace_id, record)
     }
 
     pub fn create_agent_record_in_workspace(
@@ -76,12 +79,12 @@ impl Store {
         record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
-        Self::create_agent_record_inner(&conn, Some(workspace_id), record)
+        Self::create_agent_record_inner(&conn, workspace_id, record)
     }
 
     fn create_agent_record_inner(
         conn: &rusqlite::Connection,
-        workspace_id: Option<&str>,
+        workspace_id: &str,
         record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
         let id = Uuid::new_v4().to_string();
@@ -90,18 +93,11 @@ impl Store {
             params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
         )?;
         Self::replace_agent_env_vars_inner(conn, record.name, record.env_vars)?;
-        let all_channel = match workspace_id {
-            Some(workspace_id) => conn
-                .query_row(
-                    "SELECT id, name, description, channel_type, created_at, parent_channel_id
-                     FROM channels
-                     WHERE workspace_id = ?1 AND name = ?2",
-                    params![workspace_id, Self::DEFAULT_SYSTEM_CHANNEL],
-                    super::channels::Channel::from_row,
-                )
-                .ok(),
-            None => Self::get_channel_by_name_inner(conn, Self::DEFAULT_SYSTEM_CHANNEL)?,
-        };
+        let all_channel = Self::get_channel_by_workspace_and_name_inner(
+            conn,
+            workspace_id,
+            Self::DEFAULT_SYSTEM_CHANNEL,
+        )?;
         if let Some(all_channel) = all_channel {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
@@ -136,19 +132,18 @@ impl Store {
 
     fn get_agents_inner(&self, workspace_id: Option<&str>) -> Result<Vec<Agent>> {
         let conn = self.conn.lock().unwrap();
-        let (sql, params) = match workspace_id {
-            Some(workspace_id) => (
-                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE workspace_id = ?1 ORDER BY name",
-                vec![workspace_id.to_string()],
-            ),
-            None => (
-                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE workspace_id IS NULL ORDER BY name",
-                Vec::new(),
-            ),
+        let workspace_id = match workspace_id {
+            Some(workspace_id) => workspace_id.to_string(),
+            None => match Self::workspace_id_for_lookup_inner(&conn)? {
+                Some(workspace_id) => workspace_id,
+                None => return Ok(Vec::new()),
+            },
         };
+        let sql = "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at
+                   FROM agents WHERE workspace_id = ?1 ORDER BY name";
         let rows = conn
             .prepare(sql)?
-            .query_map(rusqlite::params_from_iter(params), Self::agent_from_row)?
+            .query_map(params![workspace_id], Self::agent_from_row)?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
@@ -157,7 +152,7 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE name = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -170,7 +165,7 @@ impl Store {
     pub fn get_agent_by_id(&self, id: &str, hydrate_env: bool) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE id = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -231,16 +226,17 @@ impl Store {
     }
 
     fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Agent> {
-        let created_at = row.get::<_, String>(8)?;
+        let created_at = row.get::<_, String>(9)?;
         Ok(Agent {
             id: row.get(0)?,
-            name: row.get(1)?,
-            display_name: row.get(2)?,
-            description: row.get(3)?,
-            system_prompt: row.get(4)?,
-            runtime: row.get(5)?,
-            model: row.get(6)?,
-            reasoning_effort: row.get(7)?,
+            workspace_id: row.get(1)?,
+            name: row.get(2)?,
+            display_name: row.get(3)?,
+            description: row.get(4)?,
+            system_prompt: row.get(5)?,
+            runtime: row.get(6)?,
+            model: row.get(7)?,
+            reasoning_effort: row.get(8)?,
             env_vars: Vec::new(),
             created_at: parse_datetime(&created_at),
         })

@@ -79,10 +79,17 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("db.sqlite");
         let store = Store::open(db_path.to_str().expect("utf-8 path")).unwrap();
-        store.conn.lock().unwrap().execute(
-            "INSERT INTO agents (id, name, display_name, runtime, model) VALUES ('a1', 'a', 'A', 'fake', 'fake')",
-            [],
-        ).unwrap();
+        let workspace = store.create_local_workspace("Test", "alice").unwrap();
+        store
+            .conn
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
+             VALUES ('a1', ?1, 'a', 'A', 'fake', 'fake')",
+                params![workspace.id],
+            )
+            .unwrap();
         (store, dir)
     }
 
@@ -127,7 +134,14 @@ mod tests {
             // Re-add the legacy column to simulate an upgrade path.
             let _ = conn.execute("ALTER TABLE agents ADD COLUMN session_id TEXT", []);
             conn.execute(
-                "INSERT INTO agents (id, name, display_name, runtime, model, session_id) VALUES ('a1', 'a', 'A', 'fake', 'fake', 'legacy-sess')",
+                "INSERT INTO workspaces (id, name, slug, mode)
+                 VALUES ('w1', 'Test', 'test', 'local_only')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, session_id)
+                 VALUES ('a1', 'w1', 'a', 'A', 'fake', 'fake', 'legacy-sess')",
                 [],
             ).unwrap();
         }

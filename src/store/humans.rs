@@ -23,9 +23,20 @@ impl Store {
             "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
             params![name],
         )?;
-        if let Some(all_channel) =
-            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
-        {
+        let Some(workspace_id) = Self::workspace_id_for_lookup_inner(&conn)? else {
+            return Ok(());
+        };
+        conn.execute(
+            "INSERT OR IGNORE INTO workspace_members (workspace_id, human_name, role)
+             VALUES (?1, ?2, 'member')",
+            params![workspace_id, name],
+        )?;
+        let all_channel = Self::get_channel_by_workspace_and_name_inner(
+            &conn,
+            &workspace_id,
+            Self::DEFAULT_SYSTEM_CHANNEL,
+        )?;
+        if let Some(all_channel) = all_channel {
             conn.execute(
                 "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
                  VALUES (?1, ?2, 'human', 0)",

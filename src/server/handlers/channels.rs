@@ -256,7 +256,7 @@ pub async fn handle_update_channel(
     if name != channel.name
         && state
             .store
-            .get_channel_by_name(&name)
+            .get_channel_by_workspace_and_name(&channel.workspace_id, &name)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
             .is_some()
     {

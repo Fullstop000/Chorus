@@ -101,6 +101,22 @@ impl Store {
              VALUES (?1, ?2, 'owner')",
             params![id, owner_human],
         )?;
+        let all_channel_id = Uuid::new_v4().to_string();
+        tx.execute(
+            "INSERT INTO channels (id, workspace_id, name, description, channel_type)
+             VALUES (?1, ?2, ?3, ?4, 'system')",
+            params![
+                all_channel_id,
+                id,
+                Store::DEFAULT_SYSTEM_CHANNEL,
+                Store::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION
+            ],
+        )?;
+        tx.execute(
+            "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             VALUES (?1, ?2, 'human', 0)",
+            params![all_channel_id, owner_human],
+        )?;
         if activate {
             tx.execute(
                 "INSERT INTO local_workspace_state (key, workspace_id)
@@ -118,17 +134,65 @@ impl Store {
 
     pub fn get_active_workspace(&self) -> Result<Option<Workspace>> {
         let conn = self.conn.lock().unwrap();
-        let workspace_id: Option<String> = conn
-            .query_row(
-                "SELECT workspace_id FROM local_workspace_state WHERE key = 'active_workspace_id'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let workspace_id = Self::active_workspace_id_inner(&conn)?;
         match workspace_id {
             Some(id) => Self::get_workspace_by_id_inner(&conn, &id),
             None => Ok(None),
         }
+    }
+
+    pub(crate) fn active_workspace_id_inner(conn: &rusqlite::Connection) -> Result<Option<String>> {
+        conn.query_row(
+            "SELECT workspace_id FROM local_workspace_state WHERE key = 'active_workspace_id'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub(crate) fn workspace_id_for_lookup_inner(
+        conn: &rusqlite::Connection,
+    ) -> Result<Option<String>> {
+        if let Some(workspace_id) = Self::active_workspace_id_inner(conn)? {
+            return Ok(Some(workspace_id));
+        }
+        conn.query_row(
+            "SELECT id FROM workspaces ORDER BY created_at, name LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub(crate) fn workspace_id_for_write_inner(conn: &rusqlite::Connection) -> Result<String> {
+        if let Some(workspace_id) = Self::active_workspace_id_inner(conn)? {
+            return Ok(workspace_id);
+        }
+
+        let existing_count: i64 =
+            conn.query_row("SELECT COUNT(*) FROM workspaces", [], |row| row.get(0))?;
+        if existing_count > 0 {
+            return Err(anyhow!(
+                "no active workspace; run `chorus setup` or `chorus workspace switch <name>`"
+            ));
+        }
+
+        let id = Uuid::new_v4().to_string();
+        let slug = Self::unique_workspace_slug_inner(conn, "Chorus Local")?;
+
+        conn.execute(
+            "INSERT INTO workspaces (id, name, slug, mode, created_by_human)
+             VALUES (?1, 'Chorus Local', ?2, ?3, NULL)",
+            params![id, slug, WorkspaceMode::LocalOnly.as_db_str()],
+        )?;
+        conn.execute(
+            "INSERT INTO local_workspace_state (key, workspace_id)
+             VALUES ('active_workspace_id', ?1)",
+            params![id],
+        )?;
+        Ok(id)
     }
 
     pub fn set_active_workspace(&self, workspace_id: &str) -> Result<()> {

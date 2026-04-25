@@ -67,12 +67,6 @@ fn migrate_add_workspace_foundation(conn: &Connection) -> Result<()> {
         [],
     )?;
     conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_legacy_name
-         ON channels(name)
-         WHERE workspace_id IS NULL",
-        [],
-    )?;
-    conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name
          ON agents(workspace_id, name)",
         [],
@@ -80,12 +74,6 @@ fn migrate_add_workspace_foundation(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_workspace_name
          ON teams(workspace_id, name)",
-        [],
-    )?;
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_legacy_name
-         ON teams(name)
-         WHERE workspace_id IS NULL",
         [],
     )?;
     Ok(())
@@ -378,6 +366,7 @@ fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
         return Ok(());
     }
 
+    let channels_have_workspace_id = column_exists(conn, "channels", "workspace_id")?;
     let tx = conn.unchecked_transaction()?;
     for (task_id, parent_id, parent_name, task_number, creator_name) in orphans {
         let sub_id = uuid::Uuid::new_v4().to_string();
@@ -414,11 +403,24 @@ fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
                 "human"
             }
         };
-        tx.execute(
-            "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
-             VALUES (?1, ?2, NULL, 'task', ?3)",
-            rusqlite::params![sub_id, sub_name, parent_id],
-        )?;
+        if channels_have_workspace_id {
+            let parent_workspace_id: Option<String> = tx.query_row(
+                "SELECT workspace_id FROM channels WHERE id = ?1",
+                rusqlite::params![parent_id],
+                |row| row.get(0),
+            )?;
+            tx.execute(
+                "INSERT INTO channels (id, workspace_id, name, description, channel_type, parent_channel_id) \
+                 VALUES (?1, ?2, ?3, NULL, 'task', ?4)",
+                rusqlite::params![sub_id, parent_workspace_id, sub_name, parent_id],
+            )?;
+        } else {
+            tx.execute(
+                "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
+                 VALUES (?1, ?2, NULL, 'task', ?3)",
+                rusqlite::params![sub_id, sub_name, parent_id],
+            )?;
+        }
         tx.execute(
             "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq) \
              VALUES (?1, ?2, ?3, 0)",

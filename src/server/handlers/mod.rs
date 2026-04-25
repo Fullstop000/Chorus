@@ -54,7 +54,15 @@ pub struct AppState {
 
 impl AppState {
     pub async fn active_workspace_id(&self) -> Option<String> {
-        self.active_workspace_id.read().await.clone()
+        if let Some(workspace_id) = self.active_workspace_id.read().await.clone() {
+            return Some(workspace_id);
+        }
+        if let Ok(Some(workspace)) = self.store.get_active_workspace() {
+            self.set_active_workspace_id(Some(workspace.id.clone()))
+                .await;
+            return Some(workspace.id);
+        }
+        None
     }
 
     pub async fn set_active_workspace_id(&self, workspace_id: Option<String>) {

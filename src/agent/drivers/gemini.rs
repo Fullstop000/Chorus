@@ -612,6 +612,16 @@ impl Session for GeminiHandle {
     }
 
     fn process_state(&self) -> ProcessState {
+        if let Some(ref sid) = self.session_id {
+            if let Ok(inner) = self.core.inner.try_lock() {
+                if let Some(shared) = inner.shared.as_ref() {
+                    let shared = shared.lock().unwrap();
+                    if let Some(session) = shared.sessions.get(sid) {
+                        return session.state.clone();
+                    }
+                }
+            }
+        }
         self.state.clone()
     }
 
