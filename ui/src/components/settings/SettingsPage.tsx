@@ -46,6 +46,10 @@ function formatDate(value: string): string {
   })
 }
 
+function formatCount(value: number, label: string): string {
+  return `${value} ${label}${value === 1 ? '' : 's'}`
+}
+
 function ProfileSection({ username }: { username: string }) {
   const queryClient = useQueryClient()
   const humans = useHumans()
@@ -145,12 +149,18 @@ function WorkspaceSection() {
     setActiveTab('chat')
   }
 
-  async function runWorkspaceAction(actionId: string, action: () => Promise<WorkspaceInfo | null>) {
+  async function runWorkspaceAction(
+    actionId: string,
+    action: () => Promise<WorkspaceInfo | null>,
+    options: { clearSelection?: boolean } = {},
+  ) {
     setPendingAction(actionId)
     setActionError(null)
     try {
       const active = await action()
-      clearWorkspaceScopedSelection()
+      if (options.clearSelection ?? true) {
+        clearWorkspaceScopedSelection()
+      }
       await refreshWorkspaceShell()
       if (active) {
         pushToast({
@@ -169,11 +179,15 @@ function WorkspaceSection() {
   async function handleCreate() {
     const nextName = name.trim()
     if (!nextName) return
-    await runWorkspaceAction('create', async () => {
-      const workspace = await createWorkspace(nextName)
-      setName('')
-      return workspace
-    })
+    await runWorkspaceAction(
+      'create',
+      async () => {
+        await createWorkspace(nextName)
+        setName('')
+        return null
+      },
+      { clearSelection: false },
+    )
   }
 
   async function handleSwitch(workspace: WorkspaceInfo) {
@@ -185,11 +199,15 @@ function WorkspaceSection() {
       setDeleteConfirmId(workspace.id)
       return
     }
-    await runWorkspaceAction(`delete:${workspace.id}`, async () => {
-      const response = await deleteWorkspace(workspace.id)
-      setDeleteConfirmId(null)
-      return response.active_workspace
-    })
+    await runWorkspaceAction(
+      `delete:${workspace.id}`,
+      async () => {
+        const response = await deleteWorkspace(workspace.id)
+        setDeleteConfirmId(null)
+        return workspace.active ? response.active_workspace : null
+      },
+      { clearSelection: workspace.active },
+    )
   }
 
   return (
@@ -284,6 +302,9 @@ function WorkspaceRow({
         <div className="settings-workspace-meta">
           <span>{workspace.slug}</span>
           <span>{workspace.mode}</span>
+          <span>{formatCount(workspace.channel_count, 'channel')}</span>
+          <span>{formatCount(workspace.agent_count, 'agent')}</span>
+          <span>{formatCount(workspace.human_count, 'human')}</span>
           <span>{workspace.created_by_human ?? 'local'}</span>
           <span>{formatDate(workspace.created_at)}</span>
         </div>

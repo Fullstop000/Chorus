@@ -142,7 +142,7 @@ impl Store {
                 vec![workspace_id.to_string()],
             ),
             None => (
-                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents ORDER BY name",
+                "SELECT id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE workspace_id IS NULL ORDER BY name",
                 Vec::new(),
             ),
         };

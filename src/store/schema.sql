@@ -33,9 +33,10 @@ CREATE TABLE IF NOT EXISTS channels (
     channel_type TEXT NOT NULL DEFAULT 'channel', -- Type of channel: 'channel' | 'dm' | 'system' | 'team' | 'task'
     archived INTEGER NOT NULL DEFAULT 0, -- 1 if archived, 0 if active
     created_at TEXT NOT NULL DEFAULT (datetime('now')), -- Timestamp of creation
-    parent_channel_id TEXT REFERENCES channels(id), -- Parent channel for task sub-channels; NULL for all other types.
-    UNIQUE(workspace_id, name)
+    parent_channel_id TEXT REFERENCES channels(id) -- Parent channel for task sub-channels; NULL for all other types.
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_workspace_name
+    ON channels(workspace_id, name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_legacy_name
     ON channels(name)
     WHERE workspace_id IS NULL;
@@ -106,9 +107,10 @@ CREATE TABLE IF NOT EXISTS agents (
     runtime TEXT NOT NULL, -- The runtime driver used (e.g., 'claude', 'codex')
     model TEXT NOT NULL, -- The specific LLM model used
     reasoning_effort TEXT, -- The reasoning effort configuration
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the agent was created
-    UNIQUE(workspace_id, name)
+    created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the agent was created
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name
+    ON agents(workspace_id, name);
 
 -- Environment variables for agents.
 CREATE TABLE IF NOT EXISTS agent_env_vars (
@@ -160,9 +162,10 @@ CREATE TABLE IF NOT EXISTS teams (
     display_name TEXT NOT NULL, -- Human-readable display name
     collaboration_model TEXT NOT NULL, -- Collaboration model used by the team
     leader_agent_name TEXT, -- Optional name of the leader agent
-    created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the team was created
-    UNIQUE(workspace_id, name)
+    created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the team was created
 );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_workspace_name
+    ON teams(workspace_id, name);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_legacy_name
     ON teams(name)
     WHERE workspace_id IS NULL;

@@ -7,7 +7,7 @@ use super::path_params::{PublicResourceIdPath, TeamMemberPath};
 use super::{app_err, internal_err, ApiResult, AppState};
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
 use crate::server::error::AppErrorCode;
-use crate::store::channels::{normalize_channel_name, ChannelType};
+use crate::store::channels::normalize_channel_name;
 use crate::store::messages::SenderType;
 use crate::store::teams::{Team, TeamMember};
 
@@ -156,15 +156,15 @@ pub async fn handle_create_team(
     }
 
     let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
-    let team_id = match active_workspace_id.as_deref() {
-        Some(workspace_id) => state.store.create_team_in_workspace(
+    let (team_id, team_channel_id) = match active_workspace_id.as_deref() {
+        Some(workspace_id) => state.store.create_team_with_channel_in_workspace(
             workspace_id,
             &name,
             display_name,
             req.collaboration_model.as_deref().unwrap_or_default(),
             req.leader_agent_name.as_deref(),
         ),
-        None => state.store.create_team(
+        None => state.store.create_team_with_channel(
             &name,
             display_name,
             req.collaboration_model.as_deref().unwrap_or_default(),
@@ -179,20 +179,6 @@ pub async fn handle_create_team(
             app_err!(StatusCode::BAD_REQUEST, msg)
         }
     })?;
-
-    let team_channel_id = match active_workspace_id.as_deref() {
-        Some(workspace_id) => state.store.create_channel_in_workspace(
-            workspace_id,
-            &name,
-            None,
-            ChannelType::Team,
-            None,
-        ),
-        None => state
-            .store
-            .create_channel(&name, None, ChannelType::Team, None),
-    }
-    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     // Auto-join the creator to the team channel and add them as a team member
     // unless they already included themselves in the explicit members list.

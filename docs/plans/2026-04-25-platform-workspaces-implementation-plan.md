@@ -24,10 +24,10 @@ Add first-class CLI commands for platform workspaces on top of the existing work
 3. CLI behavior
    - `current` prints the active workspace name, slug, mode, and id.
    - `list` marks the active workspace.
-   - `create <name>` creates a local platform workspace for the local human and switches to it.
+   - `create <name>` creates a local platform workspace for the local human without switching to it.
    - `switch <workspace>` accepts slug or exact name.
    - `rename <new-name>` renames the active workspace unless a selector is added later.
-   - `switch` and `rename` print a restart hint when they change local state while a server may already be running.
+   - `switch` updates the running server's active workspace state through the API.
 
 4. Core resource isolation
    - Resolve the active workspace at server startup.
@@ -37,7 +37,7 @@ Add first-class CLI commands for platform workspaces on top of the existing work
    - Do not claim complete workspace isolation until mutation routes and bridge credentials are scoped in later slices.
 
 5. Error handling
-   - Missing active workspace points users to `chorus setup` or `chorus workspace create`.
+   - Missing active workspace points users to `chorus setup` or `chorus workspace switch <name>`.
    - Unknown selector includes a short list of available workspaces.
    - Duplicate slug fails loudly.
    - Invalid name fails before mutation.
@@ -58,6 +58,6 @@ Add first-class CLI commands for platform workspaces on top of the existing work
 
 - Cloud account sign-in/sign-up.
 - Workspace invitations or role management beyond owner membership.
-- Live server workspace switching without restart.
+- Full cloud-platform user auth and remote workspace sync.
 - Full route-level workspace scoping for every object and mutation.
 - Bridge credential workspace enforcement.

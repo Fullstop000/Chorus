@@ -35,7 +35,7 @@ pub use sessions::AgentSession;
 pub use stream::StreamEvent;
 pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
-pub use workspaces::{Workspace, WorkspaceMode};
+pub use workspaces::{Workspace, WorkspaceCounts, WorkspaceMode};
 
 use crate::agent::trace::TraceEvent;
 

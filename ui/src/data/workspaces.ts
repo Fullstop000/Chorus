@@ -11,6 +11,9 @@ export interface WorkspaceInfo {
   created_by_human?: string | null
   created_at: string
   active: boolean
+  channel_count: number
+  agent_count: number
+  human_count: number
 }
 
 export interface DeleteWorkspaceResponse {

@@ -6,9 +6,9 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::config::ChorusConfig;
-use crate::server::error::{app_err, internal_err, ApiResult};
+use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::server::handlers::AppState;
-use crate::store::{Workspace, WorkspaceMode};
+use crate::store::{Workspace, WorkspaceCounts, WorkspaceMode};
 
 #[derive(Debug, Serialize)]
 pub struct WorkspaceResponse {
@@ -19,6 +19,9 @@ pub struct WorkspaceResponse {
     pub created_by_human: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub active: bool,
+    pub channel_count: i64,
+    pub agent_count: i64,
+    pub human_count: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -28,7 +31,11 @@ pub struct DeleteWorkspaceResponse {
 }
 
 impl WorkspaceResponse {
-    fn from_workspace(workspace: Workspace, active_workspace_id: Option<&str>) -> Self {
+    fn from_workspace(
+        workspace: Workspace,
+        active_workspace_id: Option<&str>,
+        counts: WorkspaceCounts,
+    ) -> Self {
         let active = active_workspace_id.is_some_and(|id| id == workspace.id);
         Self {
             id: workspace.id,
@@ -38,8 +45,27 @@ impl WorkspaceResponse {
             created_by_human: workspace.created_by_human,
             created_at: workspace.created_at,
             active,
+            channel_count: counts.channel_count,
+            agent_count: counts.agent_count,
+            human_count: counts.human_count,
         }
     }
+}
+
+fn workspace_response(
+    state: &AppState,
+    workspace: Workspace,
+    active_workspace_id: Option<&str>,
+) -> Result<WorkspaceResponse, (StatusCode, Json<ErrorResponse>)> {
+    let counts = state
+        .store
+        .count_workspace_resources(&workspace.id)
+        .map_err(internal_err)?;
+    Ok(WorkspaceResponse::from_workspace(
+        workspace,
+        active_workspace_id,
+        counts,
+    ))
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,13 +93,14 @@ pub async fn handle_current_workspace(
         .ok_or_else(|| {
             app_err!(
                 StatusCode::BAD_REQUEST,
-                "no active workspace; run `chorus setup` or `chorus workspace create <name>`"
+                "no active workspace; run `chorus setup` or `chorus workspace switch <name>`"
             )
         })?;
-    Ok(Json(WorkspaceResponse::from_workspace(
+    Ok(Json(workspace_response(
+        &state,
         workspace.clone(),
         Some(&workspace.id),
-    )))
+    )?))
 }
 
 pub async fn handle_list_workspaces(
@@ -84,10 +111,8 @@ pub async fn handle_list_workspaces(
     Ok(Json(
         workspaces
             .into_iter()
-            .map(|workspace| {
-                WorkspaceResponse::from_workspace(workspace, active_workspace_id.as_deref())
-            })
-            .collect(),
+            .map(|workspace| workspace_response(&state, workspace, active_workspace_id.as_deref()))
+            .collect::<Result<Vec<_>, _>>()?,
     ))
 }
 
@@ -105,15 +130,14 @@ pub async fn handle_create_workspace(
     let human = local_human_for_store(&state);
     let workspace = state
         .store
-        .create_local_workspace(name, &human)
+        .create_local_workspace_without_activation(name, &human)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
-    state
-        .set_active_workspace_id(Some(workspace.id.clone()))
-        .map_err(internal_err)?;
-    Ok(Json(WorkspaceResponse::from_workspace(
-        workspace.clone(),
-        Some(&workspace.id),
-    )))
+    let active_workspace_id = state.active_workspace_id().map_err(internal_err)?;
+    Ok(Json(workspace_response(
+        &state,
+        workspace,
+        active_workspace_id.as_deref(),
+    )?))
 }
 
 pub async fn handle_switch_workspace(
@@ -139,10 +163,11 @@ pub async fn handle_switch_workspace(
     state
         .set_active_workspace_id(Some(workspace.id.clone()))
         .map_err(internal_err)?;
-    Ok(Json(WorkspaceResponse::from_workspace(
+    Ok(Json(workspace_response(
+        &state,
         workspace.clone(),
         Some(&workspace.id),
-    )))
+    )?))
 }
 
 pub async fn handle_rename_current_workspace(
@@ -163,17 +188,18 @@ pub async fn handle_rename_current_workspace(
         .ok_or_else(|| {
             app_err!(
                 StatusCode::BAD_REQUEST,
-                "no active workspace; run `chorus setup` or `chorus workspace create <name>`"
+                "no active workspace; run `chorus setup` or `chorus workspace switch <name>`"
             )
         })?;
     let workspace = state
         .store
         .rename_workspace(&active.id, name)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
-    Ok(Json(WorkspaceResponse::from_workspace(
+    Ok(Json(workspace_response(
+        &state,
         workspace.clone(),
         Some(&workspace.id),
-    )))
+    )?))
 }
 
 pub async fn handle_delete_workspace(
@@ -219,10 +245,11 @@ pub async fn handle_delete_workspace(
                 state
                     .set_active_workspace_id(Some(next_workspace.id.clone()))
                     .map_err(internal_err)?;
-                Some(WorkspaceResponse::from_workspace(
+                Some(workspace_response(
+                    &state,
                     next_workspace.clone(),
                     Some(&next_workspace.id),
-                ))
+                )?)
             }
             None => {
                 state.set_active_workspace_id(None).map_err(internal_err)?;
@@ -234,7 +261,8 @@ pub async fn handle_delete_workspace(
             .store
             .get_active_workspace()
             .map_err(internal_err)?
-            .map(|active| WorkspaceResponse::from_workspace(active.clone(), Some(&active.id)))
+            .map(|active| workspace_response(&state, active.clone(), Some(&active.id)))
+            .transpose()?
     };
 
     Ok(Json(DeleteWorkspaceResponse {
@@ -244,12 +272,12 @@ pub async fn handle_delete_workspace(
 }
 
 fn local_human_for_store(state: &AppState) -> String {
-    let data_dir = state
+    let config_root = state
         .store
         .data_dir()
         .parent()
         .unwrap_or_else(|| state.store.data_dir());
-    ChorusConfig::load(data_dir)
+    ChorusConfig::load(config_root)
         .ok()
         .flatten()
         .and_then(|cfg| cfg.local_human.name)

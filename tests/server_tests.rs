@@ -3060,7 +3060,38 @@ async fn test_workspace_api_lifecycle() {
     let body = body_json(resp).await;
     assert_eq!(body["name"], "Acme");
     assert_eq!(body["slug"], "acme");
-    assert_eq!(body["active"], true);
+    assert_eq!(body["active"], false);
+    assert_eq!(body["channel_count"], 0);
+    assert_eq!(body["agent_count"], 0);
+    assert_eq!(body["human_count"], 1);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/workspaces/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+
+    let req = serde_json::json!({ "workspace": "acme" });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/workspaces/switch")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["slug"], "acme");
 
     let req = serde_json::json!({ "name": "Beta" });
     let resp = app
@@ -3076,7 +3107,9 @@ async fn test_workspace_api_lifecycle() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["slug"], "beta");
+    let body = body_json(resp).await;
+    assert_eq!(body["slug"], "beta");
+    assert_eq!(body["active"], false);
 
     let resp = app
         .clone()
@@ -3084,22 +3117,6 @@ async fn test_workspace_api_lifecycle() {
             Request::builder()
                 .uri("/api/workspaces/current")
                 .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["slug"], "beta");
-
-    let req = serde_json::json!({ "workspace": "acme" });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/workspaces/switch")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
                 .unwrap(),
         )
         .await

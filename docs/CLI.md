@@ -44,10 +44,10 @@ chorus workspace --server-url http://localhost:3001 current
 
 **Behavior:**
 - Calls the running Chorus server API; start Chorus first with `chorus start` or `chorus serve`
-- `create` creates a local platform workspace and switches to it immediately
+- `create` creates a local platform workspace without changing the active workspace
 - `switch` accepts a workspace slug or exact display name
 - `rename` changes the display name but keeps the slug stable
-- `list` marks the active workspace with `*`
+- `list` marks the active workspace with `*` and shows channel, agent, and human counts
 - switching applies to the running server immediately
 
 **Mutates:** yes for `create`, `switch`, and `rename`; no for `current` and `list`.

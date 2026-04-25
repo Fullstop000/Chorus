@@ -50,17 +50,42 @@ pub struct Workspace {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct WorkspaceCounts {
+    pub channel_count: i64,
+    pub agent_count: i64,
+    pub human_count: i64,
+}
+
 impl Store {
     pub fn create_local_workspace(&self, name: &str, owner_human: &str) -> Result<Workspace> {
-        let conn = self.conn.lock().unwrap();
-        let id = Uuid::new_v4().to_string();
-        let slug = Self::unique_workspace_slug_inner(&conn, name)?;
+        self.create_local_workspace_inner(name, owner_human, true)
+    }
 
-        conn.execute(
+    pub fn create_local_workspace_without_activation(
+        &self,
+        name: &str,
+        owner_human: &str,
+    ) -> Result<Workspace> {
+        self.create_local_workspace_inner(name, owner_human, false)
+    }
+
+    fn create_local_workspace_inner(
+        &self,
+        name: &str,
+        owner_human: &str,
+        activate: bool,
+    ) -> Result<Workspace> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let id = Uuid::new_v4().to_string();
+        let slug = Self::unique_workspace_slug_inner(&tx, name)?;
+
+        tx.execute(
             "INSERT OR IGNORE INTO humans (name, display_name) VALUES (?1, ?1)",
             params![owner_human],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO workspaces (id, name, slug, mode, created_by_human)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -71,20 +96,24 @@ impl Store {
                 owner_human
             ],
         )?;
-        conn.execute(
+        tx.execute(
             "INSERT INTO workspace_members (workspace_id, human_name, role)
              VALUES (?1, ?2, 'owner')",
             params![id, owner_human],
         )?;
-        conn.execute(
-            "INSERT INTO local_workspace_state (key, workspace_id)
-             VALUES ('active_workspace_id', ?1)
-             ON CONFLICT(key) DO UPDATE SET workspace_id = excluded.workspace_id",
-            params![id],
-        )?;
+        if activate {
+            tx.execute(
+                "INSERT INTO local_workspace_state (key, workspace_id)
+                 VALUES ('active_workspace_id', ?1)
+                 ON CONFLICT(key) DO UPDATE SET workspace_id = excluded.workspace_id",
+                params![id],
+            )?;
+        }
 
-        Self::get_workspace_by_id_inner(&conn, &id)?
-            .ok_or_else(|| anyhow!("workspace not found after insert: {id}"))
+        let workspace = Self::get_workspace_by_id_inner(&tx, &id)?
+            .ok_or_else(|| anyhow!("workspace not found after insert: {id}"))?;
+        tx.commit()?;
+        Ok(workspace)
     }
 
     pub fn get_active_workspace(&self) -> Result<Option<Workspace>> {
@@ -195,6 +224,30 @@ impl Store {
         let rows = stmt.query_map([], Self::workspace_from_row)?;
         let workspaces: rusqlite::Result<Vec<_>> = rows.collect();
         Ok(workspaces?)
+    }
+
+    pub fn count_workspace_resources(&self, workspace_id: &str) -> Result<WorkspaceCounts> {
+        let conn = self.conn.lock().unwrap();
+        let channel_count = conn.query_row(
+            "SELECT COUNT(*) FROM channels WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )?;
+        let agent_count = conn.query_row(
+            "SELECT COUNT(*) FROM agents WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )?;
+        let human_count = conn.query_row(
+            "SELECT COUNT(*) FROM workspace_members WHERE workspace_id = ?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )?;
+        Ok(WorkspaceCounts {
+            channel_count,
+            agent_count,
+            human_count,
+        })
     }
 
     pub fn delete_workspace(&self, workspace_id: &str) -> Result<()> {

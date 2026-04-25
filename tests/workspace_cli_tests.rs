@@ -83,20 +83,28 @@ async fn workspace_create_list_switch_current_and_rename() {
     );
 
     let out = run_workspace(&url, &["current"]).await;
+    assert!(
+        !out.status.success(),
+        "create should not select a workspace automatically: {}",
+        combined(&out)
+    );
+
+    let out = run_workspace(&url, &["switch", "acme"]).await;
+    assert!(out.status.success(), "switch failed: {}", combined(&out));
+
+    let out = run_workspace(&url, &["current"]).await;
     assert!(out.status.success(), "current failed: {}", combined(&out));
     let current = combined(&out);
-    assert!(current.contains("Beta"), "got: {current}");
-    assert!(current.contains("beta"), "got: {current}");
+    assert!(current.contains("Acme"), "got: {current}");
+    assert!(current.contains("acme"), "got: {current}");
 
     let out = run_workspace(&url, &["list"]).await;
     assert!(out.status.success(), "list failed: {}", combined(&out));
     let list = combined(&out);
     assert!(list.contains("Acme"), "got: {list}");
     assert!(list.contains("Beta"), "got: {list}");
-    assert!(list.contains("* Beta"), "got: {list}");
-
-    let out = run_workspace(&url, &["switch", "acme"]).await;
-    assert!(out.status.success(), "switch failed: {}", combined(&out));
+    assert!(list.contains("* Acme"), "got: {list}");
+    assert!(list.contains("channels=0 agents=0 humans=1"), "got: {list}");
 
     let out = run_workspace(&url, &["rename", "Acme Renamed"]).await;
     assert!(out.status.success(), "rename failed: {}", combined(&out));

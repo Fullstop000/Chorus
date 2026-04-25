@@ -37,12 +37,18 @@ describe('workspace api client', () => {
       mode: 'local_only',
       created_by_human: 'alice',
       created_at: '2026-04-25T00:00:00Z',
-      active: true,
+      active: false,
+      channel_count: 0,
+      agent_count: 0,
+      human_count: 1,
     }
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse(workspace)))
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse(workspace))
+      .mockResolvedValueOnce(jsonResponse({ ...workspace, active: true }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(createWorkspace('Alpha')).resolves.toMatchObject({ slug: 'alpha' })
+    await expect(createWorkspace('Alpha')).resolves.toMatchObject({ slug: 'alpha', active: false })
     await expect(switchWorkspace('ws-1')).resolves.toMatchObject({ active: true })
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/workspaces', {

@@ -49,7 +49,7 @@ chorus workspace switch "Acme"
 chorus workspace rename "Acme AI"
 ```
 
-`chorus workspace create` switches to the new workspace immediately. Creation usually means the user wants to work there now, and `workspace current` makes the state visible.
+`chorus workspace create` does not switch automatically. Creation is a provisioning action; `chorus workspace switch <workspace>` is the explicit activation step, and `workspace current` makes that state visible.
 
 ## Architecture
 
@@ -94,7 +94,7 @@ Local human identity must be consistent. `chorus setup` should persist the local
 
 ## Failure Rules
 
-- No active workspace: fail loudly with `run chorus setup or chorus workspace create`.
+- No active workspace: fail loudly with `run chorus setup or chorus workspace switch <name>`.
 - Unknown workspace: fail with a short candidate list.
 - Ambiguous selector: fail and ask for the slug.
 - Invalid rename: fail before mutating state.
@@ -102,14 +102,14 @@ Local human identity must be consistent. `chorus setup` should persist the local
 - Legacy unscoped resources exist after upgrade: no migration/backfill. The product is still in rapid development, so scoped workspace results may ignore old unscoped rows.
 - Bridge credential with the wrong workspace: reject.
 
-Switching workspace while a server is already running only updates local state in the first slice. The server picks up the active workspace on restart. Live workspace switching can be designed later.
+Switching workspace while a server is already running updates the server's active workspace state through the API. CLI workspace commands call the running server instead of mutating SQLite directly.
 
 ## Implementation Slice
 
 Keep the next PR focused on the workspace control plane:
 
 1. Add `chorus workspace current/list/create/switch/rename`.
-2. Make `workspace create` auto-switch to the new workspace.
+2. Keep `workspace create` non-activating; make `workspace switch` the only activation command.
 3. Keep `chorus setup` responsible for first workspace creation.
 4. Scope core resource list paths (`channels`, `agents`, `teams`, and `status`) to the active workspace.
 5. Add docs and tests for CLI behavior and resource isolation.

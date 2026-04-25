@@ -12,7 +12,7 @@ pub(crate) enum WorkspaceCommands {
     Current,
     /// List workspaces
     List,
-    /// Create a workspace and switch to it
+    /// Create a workspace
     Create {
         /// Display name for the new workspace
         name: String,
@@ -36,6 +36,9 @@ struct WorkspaceDto {
     slug: String,
     mode: String,
     active: bool,
+    channel_count: i64,
+    agent_count: i64,
+    human_count: i64,
 }
 
 pub async fn run(server_url: String, cmd: WorkspaceCommands) -> anyhow::Result<()> {
@@ -59,10 +62,7 @@ pub async fn run(server_url: String, cmd: WorkspaceCommands) -> anyhow::Result<(
                 serde_json::json!({ "name": name }),
             )
             .await?;
-            println!(
-                "Created and switched to workspace {} ({})",
-                workspace.name, workspace.slug
-            );
+            println!("Created workspace {} ({})", workspace.name, workspace.slug);
         }
         WorkspaceCommands::Switch { workspace } => {
             let workspace = post_workspace(
@@ -176,5 +176,9 @@ fn print_workspace(workspace: &WorkspaceDto) {
     println!(
         "{marker} {} ({}) [{}] id={}",
         workspace.name, workspace.slug, workspace.mode, workspace.id
+    );
+    println!(
+        "  channels={} agents={} humans={}",
+        workspace.channel_count, workspace.agent_count, workspace.human_count
     );
 }

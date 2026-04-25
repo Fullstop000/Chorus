@@ -274,6 +274,106 @@ fn test_workspace_scoped_core_resource_lists() {
     assert_eq!(alpha_teams[0].name, "alpha-team");
 }
 
+#[test]
+fn test_workspace_scoped_team_channel_join_uses_workspace_id() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+
+    let alpha_channel_id = store
+        .create_channel_in_workspace(&alpha.id, "ops", None, ChannelType::Team, None)
+        .unwrap();
+    store
+        .create_channel_in_workspace(&beta.id, "ops", None, ChannelType::Team, None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&alpha.id, "ops", "Alpha Ops", "swarm", None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&beta.id, "ops", "Beta Ops", "swarm", None)
+        .unwrap();
+
+    let alpha_teams = store.get_teams_in_workspace(&alpha.id).unwrap();
+    assert_eq!(alpha_teams.len(), 1);
+    assert_eq!(alpha_teams[0].display_name, "Alpha Ops");
+    assert_eq!(
+        alpha_teams[0].channel_id.as_deref(),
+        Some(alpha_channel_id.as_str())
+    );
+}
+
+#[test]
+fn test_team_with_channel_create_rolls_back_when_channel_insert_fails() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("ops", None, ChannelType::Team, None)
+        .unwrap();
+
+    let err = store
+        .create_team_with_channel("ops", "Ops", "swarm", None)
+        .unwrap_err();
+    assert!(
+        err.to_string().contains("UNIQUE constraint"),
+        "expected channel uniqueness failure, got: {err}"
+    );
+
+    let team_count: i64 = store
+        .conn_for_test()
+        .query_row("SELECT COUNT(*) FROM teams WHERE name = 'ops'", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(team_count, 0, "team row should roll back with channel row");
+}
+
+#[test]
+fn test_unscoped_agent_and_team_lists_exclude_workspace_rows() {
+    let (store, _dir) = make_store();
+    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "legacy-bot",
+            display_name: "Legacy Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &alpha.id,
+            &AgentRecordUpsert {
+                name: "alpha-bot",
+                display_name: "Alpha Bot",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+    store
+        .create_team("legacy-team", "Legacy Team", "swarm", None)
+        .unwrap();
+    store
+        .create_team_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
+        .unwrap();
+
+    let agents = store.get_agents().unwrap();
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].name, "legacy-bot");
+
+    let teams = store.get_teams().unwrap();
+    assert_eq!(teams.len(), 1);
+    assert_eq!(teams[0].name, "legacy-team");
+}
+
 /// Channel archive, team creation, and agent record update as performed by shell/API layers.
 /// Lives in store tests (not `server_tests`) so we do not build the HTTP router: constructing
 /// `ServeDir::new("ui/dist")` can block for a long time when that tree is huge or on a slow volume.
