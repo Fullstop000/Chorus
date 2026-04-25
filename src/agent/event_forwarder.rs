@@ -408,21 +408,29 @@ pub(super) fn spawn_event_forwarder(
                     // Post-run empty-response detection: if the run finished
                     // naturally but never invoked send_message, warn the channel
                     // so the user isn't left staring at silence.
+                    // Only warn in DMs; in group channels an agent may be
+                    // watching without replying.
                     let channel_id = run_channel_id.remove(&run_id);
                     let had_send_message = run_had_send_message.remove(&run_id).unwrap_or(false);
                     if result.finish_reason == FinishReason::Natural && !had_send_message {
                         if let Some(channel_id) = channel_id {
-                            let warning = format!(
-                                "⚠️ @{} completed a run without replying. Common causes: not authenticated, authentication expired, or a runtime error. Check agent logs for details.",
-                                key
-                            );
-                            if let Err(e) = store.create_system_message(&channel_id, &warning) {
-                                warn!(
-                                    agent = %key,
-                                    channel_id = %channel_id,
-                                    error = %e,
-                                    "failed to post empty-run warning"
-                                );
+                            if let Ok(Some(channel)) = store.get_channel_by_id(&channel_id) {
+                                if channel.channel_type == crate::store::ChannelType::Dm {
+                                    let warning = format!(
+                                        "⚠️ @{} completed a run without replying. Common causes: not authenticated, authentication expired, or a runtime error. Check agent logs for details.",
+                                        key
+                                    );
+                                    if let Err(e) =
+                                        store.create_system_message(&channel_id, &warning)
+                                    {
+                                        warn!(
+                                            agent = %key,
+                                            channel_id = %channel_id,
+                                            error = %e,
+                                            "failed to post empty-run warning"
+                                        );
+                                    }
+                                }
                             }
                         }
                     }
@@ -628,9 +636,9 @@ mod tests {
         }
     }
 
-    /// When a run completes naturally without invoking send_message, a system
-    /// warning should be posted to the triggering channel so the user isn't
-    /// left staring at silence.
+    /// When a run completes naturally in a DM without producing any channel
+    /// output, a system warning should be posted so the user isn't left
+    /// staring at silence.
     #[tokio::test]
     async fn warn_on_empty_run() {
         let tmp = tempfile::tempdir().unwrap();
@@ -657,7 +665,7 @@ mod tests {
         let run_id = uuid::Uuid::new_v4();
 
         let channel_id = store
-            .create_channel("eng", None, crate::store::ChannelType::Channel, None)
+            .create_channel("dm-with-bot", None, crate::store::ChannelType::Dm, None)
             .unwrap();
         trace_store.set_run_channel(&key, &channel_id);
 
@@ -735,10 +743,10 @@ mod tests {
         let run_id = uuid::Uuid::new_v4();
 
         let first_channel_id = store
-            .create_channel("first", None, crate::store::ChannelType::Channel, None)
+            .create_channel("first-dm", None, crate::store::ChannelType::Dm, None)
             .unwrap();
         let second_channel_id = store
-            .create_channel("second", None, crate::store::ChannelType::Channel, None)
+            .create_channel("second-dm", None, crate::store::ChannelType::Dm, None)
             .unwrap();
 
         trace_store.set_run_channel(&key, &first_channel_id);
@@ -832,7 +840,7 @@ mod tests {
         let run_id = uuid::Uuid::new_v4();
 
         let channel_id = store
-            .create_channel("eng", None, crate::store::ChannelType::Channel, None)
+            .create_channel("dm-with-bot", None, crate::store::ChannelType::Dm, None)
             .unwrap();
         trace_store.set_run_channel(&key, &channel_id);
 
@@ -878,5 +886,78 @@ mod tests {
             count, 0,
             "expected no system warning when send_message was used"
         );
+    }
+
+    /// In a group channel an agent may be watching without replying; silence
+    /// should not trigger a warning.
+    #[tokio::test]
+    async fn no_warn_in_channel_when_empty_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            activity_logs,
+            trace_store.clone(),
+            trace_tx.clone(),
+            store.clone(),
+            agents,
+        );
+
+        let key = "bot".to_string();
+        let sid = "session-1".to_string();
+        let run_id = uuid::Uuid::new_v4();
+
+        let channel_id = store
+            .create_channel("eng", None, crate::store::ChannelType::Channel, None)
+            .unwrap();
+        trace_store.set_run_channel(&key, &channel_id);
+
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id,
+                item: AgentEventItem::ToolCall {
+                    name: "bash".to_string(),
+                    input: serde_json::Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid,
+                run_id,
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+        drop(trace_tx);
+
+        let count: i64 = store
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(count, 0, "expected no system warning in a group channel");
     }
 }
