@@ -18,6 +18,10 @@ function agentColor(name: string): string {
 }
 
 function agentDotClass(status: string, activity?: string): string {
+  // ACTIVITY_ERROR (e.g. silent run finish — agent produced no text or tool
+  // calls during the turn) wins over status: a "ready" agent that just
+  // errored should still show errored until its next successful run.
+  if (activity === 'error') return 'error'
   if (status === 'working') {
     if (activity === 'thinking' || activity === 'working') return activity
     return 'working'

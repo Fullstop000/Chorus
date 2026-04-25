@@ -112,6 +112,7 @@ body {
 }
 .status-dot.offline { background: var(--status-inactive); }
 .status-dot.failed { background: var(--status-failed); }
+.status-dot.error { background: var(--color-destructive, #b23a2f); }
 
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }

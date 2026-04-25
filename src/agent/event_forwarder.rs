@@ -176,6 +176,13 @@ pub(super) fn spawn_event_forwarder(
         let mut pending_thinking: HashMap<String, String> = HashMap::new();
         let mut pending_text: HashMap<String, String> = HashMap::new();
         let mut last_tool_raw_name: HashMap<String, String> = HashMap::new();
+        // Tracks "did this session produce any user-visible output during its
+        // current run?" — counts Text and ToolCall events. On Completed with
+        // zero events, we surface ACTIVITY_ERROR with a "no response" detail
+        // so the user sees an explicit signal instead of a silent no-op
+        // (e.g. when codex auth dies, the run still reaches `FinishReason::Natural`
+        // but the agent produced nothing). Cleared in Completed/Failed.
+        let mut output_count: HashMap<String, u32> = HashMap::new();
 
         while let Some(event) = event_rx.recv().await {
             match event {
@@ -258,6 +265,7 @@ pub(super) fn spawn_event_forwarder(
                                 .entry(session_id.clone())
                                 .or_default()
                                 .push_str(text);
+                            *output_count.entry(session_id.clone()).or_default() += 1;
                             continue;
                         }
                         _ => {
@@ -286,6 +294,7 @@ pub(super) fn spawn_event_forwarder(
                         AgentEventItem::ToolCall { name, input } => {
                             info!(agent = %key, tool = %name, "tool call");
                             last_tool_raw_name.insert(session_id.clone(), name.clone());
+                            *output_count.entry(session_id.clone()).or_default() += 1;
                             let tool_input = summarize_input(input);
                             activity_log::push_activity(
                                 &activity_logs,
@@ -374,13 +383,52 @@ pub(super) fn spawn_event_forwarder(
                     // Drop this session's tool-name binding so it can't leak
                     // into a future run reusing the same session_id.
                     last_tool_raw_name.remove(session_id);
-                    info!(agent = %key, reason = ?result.finish_reason, "run completed");
+                    let produced = output_count.remove(session_id).unwrap_or(0);
+                    info!(
+                        agent = %key,
+                        reason = ?result.finish_reason,
+                        produced,
+                        "run completed",
+                    );
                     if !session_id.is_empty() {
                         persist_session(&store, key, session_id, "completed");
                     }
                     trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
                     trace_store.end_run(key);
-                    activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ONLINE, "Idle");
+                    if produced == 0 {
+                        // Soft-failure surface: the run reached its natural end
+                        // without ever calling a tool or emitting text. The user
+                        // who triggered this run sees nothing in chat unless we
+                        // mark the agent as errored — common cause is codex auth
+                        // dying mid-run (the underlying CLI prints ERROR to stderr
+                        // and then `respond` returns silently with reason=Natural).
+                        let detail = format!(
+                            "Finished without responding (reason: {:?})",
+                            result.finish_reason
+                        );
+                        warn!(agent = %key, %detail, "silent run finish");
+                        trace::emit_event(
+                            &trace_store,
+                            &trace_tx,
+                            key,
+                            TraceEventKind::Error {
+                                message: detail.clone(),
+                            },
+                        );
+                        activity_log::set_activity_state(
+                            &activity_logs,
+                            key,
+                            ACTIVITY_ERROR,
+                            &detail,
+                        );
+                    } else {
+                        activity_log::set_activity_state(
+                            &activity_logs,
+                            key,
+                            ACTIVITY_ONLINE,
+                            "Idle",
+                        );
+                    }
 
                     // Deliver any notifications that queued up while the
                     // agent was mid-turn. The debounce path in
@@ -415,6 +463,7 @@ pub(super) fn spawn_event_forwarder(
                     pending_thinking.remove(session_id);
                     pending_text.remove(session_id);
                     last_tool_raw_name.remove(session_id);
+                    output_count.remove(session_id);
                     let msg = format!("{error:?}");
                     error!(agent = %key, error = %msg, "run failed");
                     trace::emit_active_event(

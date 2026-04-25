@@ -55,6 +55,7 @@ function agentColor(name: string): string {
 function activityLabel(activity?: string, detail?: string): string {
   if (!activity || activity === "offline") return "Offline";
   if (detail) return detail;
+  if (activity === "error") return "Errored";
   return activity.charAt(0).toUpperCase() + activity.slice(1);
 }
 
@@ -65,6 +66,11 @@ function activityDotColor(activity?: string): string {
     case "thinking":
     case "working":
       return "var(--status-sleeping)";
+    case "error":
+      // Distinct red dot so silent-finish runs (codex auth death, agent
+      // produced no output, etc.) actually surface to the user instead of
+      // looking identical to "offline."
+      return "var(--color-destructive, #b23a2f)";
     default:
       return "var(--status-inactive)";
   }
