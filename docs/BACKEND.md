@@ -91,23 +91,26 @@ Unread counts are computed by **SQL VIEW**, not Rust code. The view excludes:
 
 They are intentionally kept in sync but exist for different call paths.
 
-### Task sub-channels
+### Task lifecycle (unified, 2026-04-25)
 
-**Task sub-channels.** Every task owns a child channel (`ChannelType::Task`, `parent_channel_id` FK). Created when the task is created; the creator is its first member. Claim/unclaim syncs membership. Transitioning to `Done` archives the sub-channel. Task sub-channels are excluded from default channel listings; reach them via the parent task board and the task detail view (a full-panel view backed by Zustand's `currentTaskDetail` state). Legacy tasks from before 2026-04-22 are backfilled on migration.
+**Six-state forward-only enum.** `TaskStatus` is `proposed | dismissed | todo | in_progress | in_review | done`. Transitions: `proposed → todo` (acceptance) | `proposed → dismissed`; `todo → in_progress`; `in_progress → in_review`; `in_review → done`. No reverse edges. Reverts go through unclaim or a fresh task. Validation lives on the enum (`can_transition_to`) and in `update_task_status`; HTTP handlers downcast `InvalidTaskTransition` to 422.
 
-### Task event system messages
+**`owner` is a label, not a gate.** Renamed from `claimed_by`. Any channel member can advance any state. Claim sets `owner` only — it does NOT auto-advance to `in_progress` (decoupled). Unclaim clears `owner` only. The owner-only authorization gate that PR #93 had is gone; membership is the only check (and it lives in the HTTP handler layer).
 
-Task mutations in `src/store/tasks/mod.rs` post a `sender_type = 'system'`
-message to the parent channel for every successful `create` / `claim` /
-`unclaim` / status change. The `content` column carries a JSON payload with
-`kind: "task_event"` and a camelCase schema (`taskNumber`, `prevStatus`,
-`nextStatus`, `claimedBy`, ...). The frontend renders these via
-`TaskEventMessage` in the chat feed; the bridge layer formats them as a
-one-line human sentence before handing them to agents (see
-`src/bridge/format.rs::format_message_for_agent`).
+**Task sub-channels.** Every task that lives past `proposed` owns a child channel (`ChannelType::Task`, `parent_channel_id` FK). Minted on the first `→ todo` transition (or at create-time for direct-created tasks). Creator + first acceptor are seeded as members; claim/unclaim syncs the claimer in/out. Transitioning to `Done` archives the sub-channel. Excluded from default channel listings — reach them via the parent task card or the task detail view. `proposed` and `dismissed` tasks have no sub-channel.
 
-The task-row write and the event-message insert share the same `tx`, so a
-failure on either rolls both back.
+**Provenance: source-message snapshot.** When an agent proposes a task tied to a chat message, the four `snapshot_*` columns (`snapshot_sender_name`, `snapshot_sender_type`, `snapshot_content`, `snapshot_created_at`) capture the source verbatim, with `source_message_id` carrying the live FK. `ON DELETE SET NULL` on the FK + a CHECK constraint requiring all four `snapshot_*` columns either all-populated or all-null = the snapshot survives source deletion. The `source_message_id` is independently nullable; the `snapshot_*` quadruple is all-or-none. The constraint is the durable enforcement against partial-snapshot writes.
+
+**Wire surfaces.** Two system message kinds in chat:
+
+- `task_card` in the **parent channel**, posted ONCE per task at creation. The host message for the rendered card; subsequent state changes do not post more — the card re-renders via the cross-channel `task_update` SSE event. JSON payload: `{ kind: "task_card", task_id, task_number, title, status, owner, created_by, source_message_id?, snapshot_*? }` (camelCase on the wire via `#[serde(rename_all = "camelCase")]`).
+- `task_event` in the **sub-channel**, posted on every post-acceptance action: `claimed`, `unclaimed`, `status_changed`. **Wire field name `claimedBy` is immutable** — chat history depends on it. Pre-acceptance transitions (`proposed → todo`, `proposed → dismissed`) do NOT post `task_event`; the parent `task_card` re-renders is the sole signal.
+
+The kickoff message format is preserved verbatim from PR #96's contract: `"Task opened: {title}\n\nFrom @{sender}'s message in #{parent}:\n> {content}"` (with snapshot) or just `"Task opened: {title}"` (direct-create). Asserted by Playwright TSK-005.
+
+**Cross-channel realtime fan-out.** `Store::task_updates_tx` is a dedicated `broadcast::Sender<TaskUpdateEvent>` (cap 256). Every mutation (`create_tasks`, `create_proposed_task`, `update_tasks_claim`, `update_task_unclaim`, `update_task_status`) calls `emit_task_update(task, channel_id)` after `tx.commit()` + `drop(conn)`. The realtime WebSocket forwards every event to every connected client (NO membership gate) so the parent-channel `task_card` host re-renders even when the viewer is not a member of the task's sub-channel. `TaskUpdateEvent` payload: `{ taskId, channelId, taskNumber, status, owner, subChannelId, updatedAt }`.
+
+**Atomicity.** The task-row write, sub-channel mint (when applicable), kickoff/event posts, and channel-membership inserts share the same `IMMEDIATE` transaction. A failure on any rolls all back. Stream fan-out happens after the lock is released.
 
 ### Sender Type Resolution (Security Boundary)
 
