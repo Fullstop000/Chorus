@@ -974,50 +974,11 @@ fn test_tasks_crud() {
     assert_eq!(listed.len(), 2);
 }
 
-#[test]
-fn test_task_claim_and_status() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel("eng", None, ChannelType::Channel, None)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "o3",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store.create_tasks("eng", "bot1", &["Task A"]).unwrap();
-
-    let results = store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
-    assert!(results[0].success);
-
-    let results = store.update_tasks_claim("eng", "bot2", &[1]).unwrap();
-    assert!(!results[0].success);
-
-    store
-        .update_task_status("eng", 1, "bot1", TaskStatus::InReview)
-        .unwrap();
-    let tasks = store.get_tasks("eng", Some(TaskStatus::InReview)).unwrap();
-    assert_eq!(tasks.len(), 1);
-}
+// Removed `test_task_claim_and_status` (asserted the old first-claim-wins +
+// auto-advance-to-in_progress semantics + Todo→InReview skip). Coverage for
+// the new permissive-claim + decoupled-status semantics lives in
+// `claim_sets_owner_does_not_advance_status` (src/store/tasks/mod.rs) and
+// `task_lifecycle_emits_four_events_in_parent_channel` (tests/e2e_tests.rs).
 
 #[test]
 fn test_resolve_target() {
@@ -1947,139 +1908,22 @@ fn create_proposed_task_rejects_partial_snapshot_via_check_constraint() {
     );
 }
 
-#[test]
-fn claim_task_emits_claimed_event_to_parent_channel() {
-    let (store, _dir) = make_store();
-    let parent_id = store
-        .create_channel(
-            "eng",
-            None,
-            chorus::store::channels::ChannelType::Channel,
-            None,
-        )
-        .unwrap();
-    store.create_human("bob").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "bob",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
-
-    store.create_tasks("eng", "bob", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
-
-    let events: Vec<serde_json::Value> = store
-        .conn_for_test()
-        .prepare("SELECT content FROM messages WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq")
-        .unwrap()
-        .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .map(|s| serde_json::from_str(&s).unwrap())
-        .collect();
-
-    assert_eq!(events.len(), 2); // created + claimed
-    assert_eq!(events[1]["action"], "claimed");
-    assert_eq!(events[1]["actor"], "alice");
-    assert_eq!(events[1]["taskNumber"], 1);
-    assert_eq!(events[1]["prevStatus"], "todo");
-    assert_eq!(events[1]["nextStatus"], "in_progress");
-    assert_eq!(events[1]["claimedBy"], "alice");
-}
-
-#[test]
-fn unclaim_task_emits_unclaimed_event() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel(
-            "eng",
-            None,
-            chorus::store::channels::ChannelType::Channel,
-            None,
-        )
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
-    store.create_tasks("eng", "alice", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
-
-    store.update_task_unclaim("eng", "alice", 1).unwrap();
-
-    let last_event: serde_json::Value = {
-        let content: String = store
-            .conn_for_test()
-            .query_row(
-                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        serde_json::from_str(&content).unwrap()
-    };
-    assert_eq!(last_event["action"], "unclaimed");
-    assert_eq!(last_event["prevStatus"], "in_progress");
-    assert_eq!(last_event["nextStatus"], "todo");
-    assert_eq!(last_event["claimedBy"], serde_json::Value::Null);
-}
-
-#[test]
-fn update_task_status_emits_status_changed_event() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel(
-            "eng",
-            None,
-            chorus::store::channels::ChannelType::Channel,
-            None,
-        )
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
-    store.create_tasks("eng", "alice", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
-
-    store
-        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
-        .unwrap();
-
-    let last_event: serde_json::Value = {
-        let content: String = store
-            .conn_for_test()
-            .query_row(
-                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        serde_json::from_str(&content).unwrap()
-    };
-    assert_eq!(last_event["action"], "status_changed");
-    assert_eq!(last_event["actor"], "alice");
-    assert_eq!(last_event["prevStatus"], "in_progress");
-    assert_eq!(last_event["nextStatus"], "in_review");
-}
+// Removed three obsolete tests that pinned the old "events post in parent
+// channel" + "claim auto-advances to in_progress" semantics:
+//   - claim_task_emits_claimed_event_to_parent_channel
+//   - unclaim_task_emits_unclaimed_event
+//   - update_task_status_emits_status_changed_event
+// Under the unified model, claim/unclaim/status events post in the
+// **sub-channel**, and claim does not auto-advance status. Coverage for
+// the new contract:
+//   - task_lifecycle_emits_four_events_in_parent_channel (e2e_tests.rs):
+//     end-to-end assertion of one task_card in parent + 4 task_events in
+//     sub-channel
+//   - proposed_to_todo_mints_sub_channel_posts_kickoff_no_task_event_in_parent
+//     (src/store/tasks/mod.rs sub_channel_tests): pre-acceptance contract
+//   - task_create_emits_task_update_event +
+//     task_status_transitions_emit_task_update_per_step (this file):
+//     cross-channel realtime broadcast contract
 
 #[test]
 fn get_unread_summary_excludes_archived_task_sub_channels() {
