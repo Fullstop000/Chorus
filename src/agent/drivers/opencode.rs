@@ -53,10 +53,13 @@ use super::*;
 /// Produces the remote HTTP MCP shape, connecting the runtime to the shared
 /// bridge at `{endpoint}/token/{token}/mcp`. Factored out so config-shape
 /// tests don't need a live bridge.
-fn build_mcp_chat_config(bridge_endpoint: &str, token: &str) -> serde_json::Value {
+fn build_mcp_chat_config(bridge_endpoint: &str, agent_key: &str) -> serde_json::Value {
     serde_json::json!({
         "type": "remote",
-        "url": crate::bridge::token_mcp_url(bridge_endpoint, token),
+        "url": super::bridge_mcp_url(bridge_endpoint),
+        "headers": {
+            "X-Agent-Id": agent_key,
+        },
     })
 }
 
@@ -820,21 +823,11 @@ impl OpencodeHandle {
             _ => self.spec.model.clone(),
         };
 
-        // Pair with the shared HTTP bridge. If pairing fails we surface the
-        // error — misconfiguration is loud.
         let endpoint = &self.spec.bridge_endpoint;
-        let pairing_token = super::request_pairing_token(endpoint, &self.key)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to pair with bridge at {endpoint} for agent {}",
-                    self.key
-                )
-            })?;
 
         // Write opencode.json to the working directory.
         let config_path = wd.join("opencode.json");
-        let mcp_chat = build_mcp_chat_config(endpoint, &pairing_token);
+        let mcp_chat = build_mcp_chat_config(endpoint, &self.key);
         let opencode_config = serde_json::json!({
             "model": model_id,
             "mcp": {
@@ -1714,7 +1707,7 @@ mod tests {
         // Remote HTTP MCP shape — the only shape we produce.
         let config = build_mcp_chat_config("http://127.0.0.1:4321", "tok-xyz");
         assert_eq!(config["type"], "remote");
-        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(config["url"], "http://127.0.0.1:4321/mcp");
         assert!(config.get("command").is_none());
     }
 
@@ -1722,7 +1715,7 @@ mod tests {
     fn build_mcp_chat_config_trims_trailing_slash() {
         // Endpoint with trailing slash must not produce `//token/` in the URL.
         let config = build_mcp_chat_config("http://127.0.0.1:4321/", "tok-xyz");
-        assert_eq!(config["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(config["url"], "http://127.0.0.1:4321/mcp");
     }
 
     // -----------------------------------------------------------------------

@@ -64,13 +64,16 @@ use super::*;
 /// Produces the native HTTP MCP shape, connecting the runtime to the shared
 /// bridge at `{endpoint}/token/{token}/mcp`. Factored out so config-shape
 /// tests don't need a live bridge.
-fn build_mcp_config(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+fn build_mcp_config(bridge_endpoint: &str, agent_key: &str) -> serde_json::Value {
+    let url = super::bridge_mcp_url(bridge_endpoint);
     serde_json::json!({
         "mcpServers": {
             "chat": {
                 "type": "http",
-                "url": url
+                "url": url,
+                "headers": {
+                    "X-Agent-Id": agent_key
+                }
             }
         }
     })
@@ -497,10 +500,7 @@ impl ClaudeHandle {
         let wd = &self.spec.working_directory;
         let mcp_nonce = uuid::Uuid::new_v4().simple().to_string();
         let mcp_config_path = wd.join(format!(".chorus-claude-mcp-{}.json", mcp_nonce));
-        let token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
-            .await
-            .context("failed to pair with shared bridge")?;
-        let mcp_config = build_mcp_config(&self.spec.bridge_endpoint, &token);
+        let mcp_config = build_mcp_config(&self.spec.bridge_endpoint, &self.key);
         tokio::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
             .await
             .context("failed to write MCP config")?;
@@ -1143,7 +1143,7 @@ mod tests {
         let config = build_mcp_config("http://127.0.0.1:4321", "tok-xyz");
         let chat = &config["mcpServers"]["chat"];
         assert_eq!(chat["type"], "http");
-        assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(chat["url"], "http://127.0.0.1:4321/mcp");
         assert!(chat.get("command").is_none());
         assert!(chat.get("args").is_none());
     }
@@ -1153,7 +1153,7 @@ mod tests {
         // Endpoint with trailing slash must not produce `//token/` in the URL.
         let config = build_mcp_config("http://127.0.0.1:4321/", "tok-xyz");
         let chat = &config["mcpServers"]["chat"];
-        assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(chat["url"], "http://127.0.0.1:4321/mcp");
     }
 
     /// Feed captured JSONL through spawn_stdout_reader via a mock pipe and
@@ -1360,10 +1360,8 @@ mod tests {
     }
 
     fn install_fake_factory(proc: &Arc<ClaudeAgentProcess>) -> Arc<Mutex<FakeFactoryState>> {
-        // Short-circuit the pairing HTTP call: we never hit the real bridge
-        // because the test factory is invoked AFTER `request_pairing_token`
-        // in `start()`. The tests that use this factory bypass the bridge
-        // call by disabling pairing — see `start_with_fake` helper below.
+        // Short-circuit the real bridge: the test factory bypasses the actual
+        // HTTP transport so no connection to the bridge is attempted.
         let state = Arc::new(Mutex::new(FakeFactoryState::default()));
         let state_cl = Arc::clone(&state);
         let factory: TransportFactory = Arc::new(move |args, _spec| {
@@ -1395,8 +1393,8 @@ mod tests {
         state
     }
 
-    /// Spawn a mock bridge that always returns `{"token": "tok-test"}` so
-    /// `request_pairing_token` in `start()` succeeds without a live runtime.
+    /// Spawn a minimal HTTP server to provide a bridge URL for tests.
+    /// The fake transport factory means no real bridge connection is made.
     async fn spawn_mock_bridge() -> (String, tokio::task::JoinHandle<()>) {
         use axum::routing::post;
         use axum::Router;

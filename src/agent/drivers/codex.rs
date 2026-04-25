@@ -55,13 +55,18 @@ use super::*;
 /// preceded by its own `-c` flag.
 ///
 /// Factored out so config-shape tests don't need a live bridge.
-fn build_codex_mcp_args(bridge_endpoint: &str, token: &str) -> Vec<String> {
+fn build_codex_mcp_args(bridge_endpoint: &str, agent_key: &str) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
-    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+    let url = super::bridge_mcp_url(bridge_endpoint);
     let url_json = serde_json::to_string(&url).expect("url serialization cannot fail");
+    let headers = serde_json::json!({"X-Agent-Id": agent_key});
+    let headers_json = serde_json::to_string(&headers).expect("headers serialization cannot fail");
+
     args.push("-c".into());
     args.push(format!("mcp_servers.chat.url={url_json}"));
+    args.push("-c".into());
+    args.push(format!("mcp_servers.chat.headers={headers_json}"));
     args.push("-c".into());
     args.push("mcp_servers.chat.enabled=true".into());
     args.push("-c".into());
@@ -647,10 +652,7 @@ impl CodexHandle {
     /// `-c mcp_servers.chat.*` overrides pointing at the shared bridge.
     async fn build_child_args(&self) -> anyhow::Result<Vec<String>> {
         let mut args: Vec<String> = vec!["app-server".into()];
-        let token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
-            .await
-            .context("failed to pair with shared bridge")?;
-        let mcp_args = build_codex_mcp_args(&self.spec.bridge_endpoint, &token);
+        let mcp_args = build_codex_mcp_args(&self.spec.bridge_endpoint, &self.key);
         args.extend(mcp_args);
         Ok(args)
     }
@@ -1518,7 +1520,7 @@ mod tests {
         let json_val = url_arg.trim_start_matches("mcp_servers.chat.url=");
         let decoded: String =
             serde_json::from_str(json_val).expect("url value should be JSON string");
-        assert_eq!(decoded, "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(decoded, "http://127.0.0.1:4321/mcp");
     }
 
     #[test]
@@ -1532,7 +1534,7 @@ mod tests {
         let json_val = url_arg.trim_start_matches("mcp_servers.chat.url=");
         let decoded: String =
             serde_json::from_str(json_val).expect("url value should be JSON string");
-        assert_eq!(decoded, "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(decoded, "http://127.0.0.1:4321/mcp");
         assert!(
             !decoded.contains("//token/"),
             "double-slash in URL: {decoded}"
