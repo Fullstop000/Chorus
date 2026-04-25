@@ -1,9 +1,18 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { X } from 'lucide-react'
-import { updateHuman, channelQueryKeys, getSystemInfo, getLogs } from '../../data'
-import type { SystemInfo, ConfigInfo } from '../../data'
-import { useHumans } from '../../hooks/data'
+import { Check, Plus, Trash2, X } from 'lucide-react'
+import {
+  updateHuman,
+  channelQueryKeys,
+  getSystemInfo,
+  getLogs,
+  createWorkspace,
+  switchWorkspace,
+  deleteWorkspace,
+  workspaceQueryKeys,
+} from '../../data'
+import type { SystemInfo, ConfigInfo, WorkspaceInfo } from '../../data'
+import { useHumans, useRefresh, useWorkspaces } from '../../hooks/data'
 import { useStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,10 +20,11 @@ import { FormField, FormError } from '@/components/ui/form'
 import { Label } from '@/components/ui/label'
 import './SettingsPage.css'
 
-type SettingsSection = 'profile' | 'appearance' | 'system' | 'logs'
+type SettingsSection = 'profile' | 'workspaces' | 'appearance' | 'system' | 'logs'
 
 const NAV_ITEMS: { id: SettingsSection; label: string }[] = [
   { id: 'profile', label: 'Profile' },
+  { id: 'workspaces', label: 'Workspaces' },
   { id: 'appearance', label: 'Appearance' },
   { id: 'system', label: 'System' },
   { id: 'logs', label: 'Logs' },
@@ -24,6 +34,16 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatDate(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleDateString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: '2-digit',
+  })
 }
 
 function ProfileSection({ username }: { username: string }) {
@@ -94,6 +114,230 @@ function ProfileSection({ username }: { username: string }) {
   )
 }
 
+function WorkspaceSection() {
+  const queryClient = useQueryClient()
+  const { refreshServerInfo } = useRefresh()
+  const { workspaces, isLoading, error } = useWorkspaces()
+  const setCurrentAgent = useStore((s) => s.setCurrentAgent)
+  const setCurrentChannel = useStore((s) => s.setCurrentChannel)
+  const setCurrentTaskDetail = useStore((s) => s.setCurrentTaskDetail)
+  const setActiveTab = useStore((s) => s.setActiveTab)
+  const pushToast = useStore((s) => s.pushToast)
+  const [name, setName] = useState('')
+  const [pendingAction, setPendingAction] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
+
+  const activeWorkspace = workspaces.find((workspace) => workspace.active) ?? null
+
+  async function refreshWorkspaceShell() {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.workspaces }),
+      queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.current }),
+      refreshServerInfo(),
+    ])
+  }
+
+  function clearWorkspaceScopedSelection() {
+    setCurrentAgent(null)
+    setCurrentChannel(null)
+    setCurrentTaskDetail(null)
+    setActiveTab('chat')
+  }
+
+  async function runWorkspaceAction(actionId: string, action: () => Promise<WorkspaceInfo | null>) {
+    setPendingAction(actionId)
+    setActionError(null)
+    try {
+      const active = await action()
+      clearWorkspaceScopedSelection()
+      await refreshWorkspaceShell()
+      if (active) {
+        pushToast({
+          id: crypto.randomUUID(),
+          message: `Workspace active: ${active.name}`,
+          level: 'info',
+        })
+      }
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPendingAction(null)
+    }
+  }
+
+  async function handleCreate() {
+    const nextName = name.trim()
+    if (!nextName) return
+    await runWorkspaceAction('create', async () => {
+      const workspace = await createWorkspace(nextName)
+      setName('')
+      return workspace
+    })
+  }
+
+  async function handleSwitch(workspace: WorkspaceInfo) {
+    await runWorkspaceAction(`switch:${workspace.id}`, () => switchWorkspace(workspace.id))
+  }
+
+  async function handleDelete(workspace: WorkspaceInfo) {
+    if (deleteConfirmId !== workspace.id) {
+      setDeleteConfirmId(workspace.id)
+      return
+    }
+    await runWorkspaceAction(`delete:${workspace.id}`, async () => {
+      const response = await deleteWorkspace(workspace.id)
+      setDeleteConfirmId(null)
+      return response.active_workspace
+    })
+  }
+
+  return (
+    <div className="settings-section settings-section-wide">
+      <div className="settings-section-header">
+        <h2 className="settings-section-title">Workspaces</h2>
+        <p className="settings-section-desc">
+          Active workspace: <span className="font-mono">{activeWorkspace?.name ?? 'none'}</span>
+        </p>
+      </div>
+
+      <div className="settings-workspace-create">
+        <FormField className="settings-workspace-name-field">
+          <Label htmlFor="workspace-name">New workspace</Label>
+          <Input
+            id="workspace-name"
+            placeholder="Chorus Local"
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            disabled={pendingAction === 'create'}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void handleCreate()
+              }
+            }}
+          />
+        </FormField>
+        <Button
+          type="button"
+          onClick={handleCreate}
+          disabled={!name.trim() || pendingAction === 'create'}
+        >
+          <Plus size={14} />
+          {pendingAction === 'create' ? 'Creating' : 'Create'}
+        </Button>
+      </div>
+
+      {actionError && <FormError>{actionError}</FormError>}
+      {error && <FormError>Failed to load workspaces: {error.message}</FormError>}
+
+      <div className="settings-workspace-list">
+        {isLoading && <div className="settings-workspace-empty">Loading workspaces…</div>}
+        {!isLoading && workspaces.length === 0 && (
+          <div className="settings-workspace-empty">No workspaces.</div>
+        )}
+        {workspaces.map((workspace) => (
+          <WorkspaceRow
+            key={workspace.id}
+            workspace={workspace}
+            pendingAction={pendingAction}
+            confirmingDelete={deleteConfirmId === workspace.id}
+            onSwitch={handleSwitch}
+            onDelete={handleDelete}
+            onCancelDelete={() => setDeleteConfirmId(null)}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function WorkspaceRow({
+  workspace,
+  pendingAction,
+  confirmingDelete,
+  onSwitch,
+  onDelete,
+  onCancelDelete,
+}: {
+  workspace: WorkspaceInfo
+  pendingAction: string | null
+  confirmingDelete: boolean
+  onSwitch: (workspace: WorkspaceInfo) => Promise<void>
+  onDelete: (workspace: WorkspaceInfo) => Promise<void>
+  onCancelDelete: () => void
+}) {
+  const isPending =
+    pendingAction === `switch:${workspace.id}` || pendingAction === `delete:${workspace.id}`
+  return (
+    <div className={`settings-workspace-row${workspace.active ? ' is-active' : ''}`}>
+      <div className="settings-workspace-main">
+        <div className="settings-workspace-title-row">
+          <span className="settings-workspace-name">{workspace.name}</span>
+          {workspace.active && (
+            <span className="settings-workspace-active">
+              <Check size={12} />
+              active
+            </span>
+          )}
+        </div>
+        <div className="settings-workspace-meta">
+          <span>{workspace.slug}</span>
+          <span>{workspace.mode}</span>
+          <span>{workspace.created_by_human ?? 'local'}</span>
+          <span>{formatDate(workspace.created_at)}</span>
+        </div>
+      </div>
+      <div className="settings-workspace-actions">
+        {!workspace.active && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled={isPending}
+            onClick={() => void onSwitch(workspace)}
+          >
+            {pendingAction === `switch:${workspace.id}` ? 'Switching' : 'Switch'}
+          </Button>
+        )}
+        {confirmingDelete ? (
+          <>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={isPending}
+              onClick={onCancelDelete}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              disabled={isPending}
+              onClick={() => void onDelete(workspace)}
+            >
+              Confirm
+            </Button>
+          </>
+        ) : (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={isPending}
+            onClick={() => void onDelete(workspace)}
+          >
+            <Trash2 size={13} />
+            Delete
+          </Button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function AppearanceSection() {
   const showConversationIds = useStore((s) => s.showConversationIds)
   const setShowConversationIds = useStore((s) => s.setShowConversationIds)
@@ -131,6 +375,8 @@ function ConfigSection({ config }: { config: ConfigInfo }) {
         <div className="settings-info-grid">
           <span className="settings-info-label">Machine ID</span>
           <span className="settings-info-value">{config.machine_id ?? '—'}</span>
+          <span className="settings-info-label">Local human</span>
+          <span className="settings-info-value">{config.local_human?.name ?? '—'}</span>
         </div>
       </div>
 
@@ -340,6 +586,7 @@ export function SettingsPage() {
 
         <div className="settings-content">
           {activeSection === 'profile' && <ProfileSection username={currentUser} />}
+          {activeSection === 'workspaces' && <WorkspaceSection />}
           {activeSection === 'appearance' && <AppearanceSection />}
           {activeSection === 'system' && <SystemSection />}
           {activeSection === 'logs' && <LogsSection />}

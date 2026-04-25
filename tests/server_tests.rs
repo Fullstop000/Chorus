@@ -526,6 +526,7 @@ async fn test_send_notifies_active_agent_without_restart() {
 async fn test_server_info() {
     let (store, app) = setup();
     let resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/internal/agent/bot1/server")
@@ -550,6 +551,7 @@ async fn test_server_info() {
 async fn test_list_agents_via_public_api_includes_ids() {
     let (store, app) = setup();
     let resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/agents")
@@ -3124,6 +3126,7 @@ async fn test_workspace_api_lifecycle() {
     assert_eq!(body["slug"], "acme");
 
     let resp = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/workspaces")
@@ -3136,6 +3139,59 @@ async fn test_workspace_api_lifecycle() {
     let list = body_json(resp).await;
     assert!(list.to_string().contains("Acme Renamed"));
     assert!(list.to_string().contains("Beta"));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/workspaces/beta")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert_eq!(body["active_workspace"]["slug"], "acme");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/workspaces/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await["slug"], "acme");
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/workspaces/acme")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert!(body_json(resp).await["active_workspace"].is_null());
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/workspaces/current")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]

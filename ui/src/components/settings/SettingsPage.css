@@ -93,6 +93,10 @@
   max-width: 480px;
 }
 
+.settings-section-wide {
+  max-width: 760px;
+}
+
 .settings-section-header {
   display: flex;
   flex-direction: column;
@@ -118,6 +122,95 @@
   align-items: center;
   gap: 8px;
   margin-top: 16px;
+}
+
+.settings-workspace-create {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.settings-workspace-name-field {
+  margin-bottom: 0;
+}
+
+.settings-workspace-list {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--color-border);
+}
+
+.settings-workspace-empty {
+  padding: 18px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+}
+
+.settings-workspace-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-workspace-row.is-active {
+  border-left: 2px solid var(--color-foreground);
+  padding-left: 10px;
+}
+
+.settings-workspace-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.settings-workspace-title-row,
+.settings-workspace-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-workspace-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-workspace-active {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--color-border);
+  background: var(--color-secondary);
+  padding: 2px 6px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.settings-workspace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+}
+
+.settings-workspace-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
 }
 
 /* Appearance toggle row. Flat checkbox left, stacked label+description right. */

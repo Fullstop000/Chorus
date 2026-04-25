@@ -127,7 +127,7 @@ impl Store {
             .query_row(
                 "SELECT id, name, slug, mode, created_by_human, created_at
                  FROM workspaces
-                 WHERE slug = ?1",
+                 WHERE id = ?1 OR slug = ?1",
                 params![selector],
                 Self::workspace_from_row,
             )
@@ -195,6 +195,18 @@ impl Store {
         let rows = stmt.query_map([], Self::workspace_from_row)?;
         let workspaces: rusqlite::Result<Vec<_>> = rows.collect();
         Ok(workspaces?)
+    }
+
+    pub fn delete_workspace(&self, workspace_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let deleted = conn.execute(
+            "DELETE FROM workspaces WHERE id = ?1",
+            params![workspace_id],
+        )?;
+        if deleted == 0 {
+            return Err(anyhow!("workspace not found: {workspace_id}"));
+        }
+        Ok(())
     }
 
     fn get_workspace_by_id_inner(

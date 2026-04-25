@@ -1,6 +1,6 @@
 //! Public platform workspace API.
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,12 @@ pub struct WorkspaceResponse {
     pub created_by_human: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub active: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteWorkspaceResponse {
+    pub deleted_id: String,
+    pub active_workspace: Option<WorkspaceResponse>,
 }
 
 impl WorkspaceResponse {
@@ -168,6 +174,73 @@ pub async fn handle_rename_current_workspace(
         workspace.clone(),
         Some(&workspace.id),
     )))
+}
+
+pub async fn handle_delete_workspace(
+    State(state): State<AppState>,
+    Path(selector): Path<String>,
+) -> ApiResult<DeleteWorkspaceResponse> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "workspace selector is required"
+        ));
+    }
+    let workspace = state
+        .store
+        .get_workspace_by_selector(selector)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "workspace not found: {selector}"))?;
+    let deleted_id = workspace.id.clone();
+    let was_active = state
+        .active_workspace_id()
+        .map_err(internal_err)?
+        .is_some_and(|id| id == deleted_id);
+
+    state
+        .store
+        .delete_workspace(&deleted_id)
+        .map_err(internal_err)?;
+
+    let active_workspace = if was_active {
+        let next = state
+            .store
+            .list_workspaces()
+            .map_err(internal_err)?
+            .into_iter()
+            .next();
+        match next {
+            Some(next_workspace) => {
+                state
+                    .store
+                    .set_active_workspace(&next_workspace.id)
+                    .map_err(internal_err)?;
+                state
+                    .set_active_workspace_id(Some(next_workspace.id.clone()))
+                    .map_err(internal_err)?;
+                Some(WorkspaceResponse::from_workspace(
+                    next_workspace.clone(),
+                    Some(&next_workspace.id),
+                ))
+            }
+            None => {
+                state.set_active_workspace_id(None).map_err(internal_err)?;
+                None
+            }
+        }
+    } else {
+        state
+            .store
+            .get_active_workspace()
+            .map_err(internal_err)?
+            .map(|active| WorkspaceResponse::from_workspace(active.clone(), Some(&active.id)))
+    };
+
+    Ok(Json(DeleteWorkspaceResponse {
+        deleted_id,
+        active_workspace,
+    }))
 }
 
 fn local_human_for_store(state: &AppState) -> String {

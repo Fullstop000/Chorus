@@ -193,6 +193,11 @@ pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto:
             }
             dto::ConfigInfo {
                 machine_id: cfg.machine_id,
+                local_human: cfg
+                    .local_human
+                    .name
+                    .filter(|name| !name.trim().is_empty())
+                    .map(|name| dto::LocalHumanInfo { name }),
                 agent_template: dto::AgentTemplateInfo {
                     dir: cfg.agent_template.dir,
                     default: cfg.agent_template.default,

@@ -40,9 +40,16 @@ pub struct SystemInfo {
 pub struct ConfigInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub machine_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_human: Option<LocalHumanInfo>,
     pub agent_template: AgentTemplateInfo,
     pub logs: LogsInfo,
     pub runtimes: Vec<RuntimeInfo>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct LocalHumanInfo {
+    pub name: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

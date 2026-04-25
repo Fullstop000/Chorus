@@ -10,6 +10,8 @@ import {
   channelQueryKeys,
   agentQueryKeys,
   teamQueryKeys,
+  workspacesQuery,
+  workspaceQueryKeys,
 } from '../data'
 import type { ChannelInfo } from '../data'
 import type { InboxState } from '../store/inbox'
@@ -78,6 +80,16 @@ export function useHumans() {
   return data ?? []
 }
 
+/** Platform workspaces for the running Chorus server. */
+export function useWorkspaces() {
+  const { data, isLoading, error } = useQuery(workspacesQuery)
+  return {
+    workspaces: data ?? [],
+    isLoading,
+    error,
+  }
+}
+
 /** Members of a specific channel. Returns empty array for DMs or when no channelId. */
 export function useChannelMembers(channelId: string | null) {
   const { data } = useQuery(channelMembersQuery(channelId))
@@ -119,6 +131,8 @@ export function useRefresh() {
       queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUser) }),
       queryClient.invalidateQueries({ queryKey: teamQueryKeys.teams }),
       queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans }),
+      queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.workspaces }),
+      queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.current }),
     ])
   }, [currentUser, queryClient])
 

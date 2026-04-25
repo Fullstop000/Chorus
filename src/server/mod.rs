@@ -8,7 +8,7 @@ use std::{collections::HashSet, sync::Mutex, sync::RwLock};
 use axum::body::Body;
 use axum::http::{header, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::Router;
 use rust_embed::RustEmbed;
 use tower_http::cors::{Any, CorsLayer};
@@ -171,6 +171,7 @@ pub fn build_router_with_services(
             "/workspaces/current",
             get(handle_current_workspace).patch(handle_rename_current_workspace),
         )
+        .route("/workspaces/{workspace}", delete(handle_delete_workspace))
         .route("/workspaces/switch", post(handle_switch_workspace))
         .route(
             "/teams/{id}/members/{member}",
