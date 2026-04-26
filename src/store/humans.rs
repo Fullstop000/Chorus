@@ -1,93 +1,111 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::params;
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use super::{parse_datetime, Store};
 
-/// Registered human user (can post and own channels).
+/// Registered human user. `id` is identity; `name` is the display/lookup label.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Human {
-    /// Username (typically OS login) used as sender id.
+    pub id: String,
     pub name: String,
-    /// Optional user-chosen display name.
-    pub display_name: Option<String>,
-    /// When the human row was inserted.
+    pub auth_provider: String,
+    pub email: Option<String>,
+    pub disabled_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
 }
 
 impl Store {
-    pub fn create_human(&self, name: &str) -> Result<()> {
+    pub fn create_local_human(&self, name: &str) -> Result<Human> {
         let conn = self.conn.lock().unwrap();
+        let id = format!("human_{}", Uuid::new_v4());
+        Self::ensure_human_with_id_inner(&conn, &id, name)
+    }
+
+    pub fn ensure_human_with_id(&self, id: &str, name: &str) -> Result<Human> {
+        let conn = self.conn.lock().unwrap();
+        Self::ensure_human_with_id_inner(&conn, id, name)
+    }
+
+    pub(crate) fn ensure_human_with_id_inner(
+        conn: &Connection,
+        id: &str,
+        name: &str,
+    ) -> Result<Human> {
         conn.execute(
-            "INSERT OR IGNORE INTO humans (name) VALUES (?1)",
+            "INSERT INTO humans (id, name, auth_provider)
+             VALUES (?1, ?2, 'local')
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+            params![id, name],
+        )?;
+        Self::get_human_by_id_inner(conn, id)?
+            .ok_or_else(|| anyhow::anyhow!("human not found after ensure: {id}"))
+    }
+
+    /// Compatibility wrapper for transitional call sites. New identity-aware
+    /// code should keep the returned `Human` from `create_local_human` or
+    /// `ensure_human_with_id` and store its id.
+    pub fn create_human(&self, name: &str) -> Result<()> {
+        self.create_local_human(name).map(|_| ())
+    }
+
+    pub fn get_human_by_id(&self, id: &str) -> Result<Option<Human>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_human_by_id_inner(&conn, id)
+    }
+
+    pub(crate) fn get_human_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Human>> {
+        conn.query_row(
+            "SELECT id, name, auth_provider, email, disabled_at, created_at
+             FROM humans WHERE id = ?1",
+            params![id],
+            Self::human_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+    }
+
+    pub fn get_human_by_name(&self, name: &str) -> Result<Option<Human>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_human_by_name_inner(&conn, name)
+    }
+
+    pub(crate) fn get_human_by_name_inner(conn: &Connection, name: &str) -> Result<Option<Human>> {
+        conn.query_row(
+            "SELECT id, name, auth_provider, email, disabled_at, created_at
+             FROM humans WHERE name = ?1",
             params![name],
-        )?;
-        let Some(workspace_id) = Self::workspace_id_for_lookup_inner(&conn)? else {
-            return Ok(());
-        };
-        conn.execute(
-            "INSERT OR IGNORE INTO workspace_members (workspace_id, human_name, role)
-             VALUES (?1, ?2, 'member')",
-            params![workspace_id, name],
-        )?;
-        let all_channel = Self::get_channel_by_workspace_and_name_inner(
-            &conn,
-            &workspace_id,
-            Self::DEFAULT_SYSTEM_CHANNEL,
-        )?;
-        if let Some(all_channel) = all_channel {
-            conn.execute(
-                "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
-                 VALUES (?1, ?2, 'human', 0)",
-                params![all_channel.id, name],
-            )?;
-        }
-        Ok(())
+            Self::human_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
     }
 
     pub fn get_humans(&self) -> Result<Vec<Human>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
-            .prepare("SELECT name, display_name, created_at FROM humans ORDER BY name")?
-            .query_map([], |row| {
-                Ok(Human {
-                    name: row.get(0)?,
-                    display_name: row.get(1)?,
-                    created_at: parse_datetime(&row.get::<_, String>(2)?),
-                })
-            })?
+            .prepare(
+                "SELECT id, name, auth_provider, email, disabled_at, created_at
+                 FROM humans ORDER BY name",
+            )?
+            .query_map([], Self::human_from_row)?
             .filter_map(|r| r.ok())
             .collect();
         Ok(rows)
     }
 
-    /// Update the display name for a human user. Pass `None` to clear.
-    pub fn update_human_display_name(
-        &self,
-        name: &str,
-        display_name: Option<&str>,
-    ) -> Result<Human> {
-        let conn = self.conn.lock().unwrap();
-        let updated = conn.execute(
-            "UPDATE humans SET display_name = ?2 WHERE name = ?1",
-            params![name, display_name],
-        )?;
-        if updated == 0 {
-            anyhow::bail!("human not found: {name}");
-        }
-        let human = conn.query_row(
-            "SELECT name, display_name, created_at FROM humans WHERE name = ?1",
-            params![name],
-            |row| {
-                Ok(Human {
-                    name: row.get(0)?,
-                    display_name: row.get(1)?,
-                    created_at: parse_datetime(&row.get::<_, String>(2)?),
-                })
-            },
-        )?;
-        Ok(human)
+    fn human_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Human> {
+        let disabled_at_raw: Option<String> = row.get(4)?;
+        Ok(Human {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            auth_provider: row.get(2)?,
+            email: row.get(3)?,
+            disabled_at: disabled_at_raw.as_deref().map(parse_datetime),
+            created_at: parse_datetime(&row.get::<_, String>(5)?),
+        })
     }
 }
 
@@ -100,43 +118,32 @@ mod tests {
     }
 
     #[test]
-    fn create_human_has_no_display_name() {
+    fn create_human_has_stable_id() {
         let store = test_store();
-        store.create_human("alice").unwrap();
+        store.ensure_human_with_id("human_alice", "alice").unwrap();
         let humans = store.get_humans().unwrap();
         assert_eq!(humans.len(), 1);
+        assert_eq!(humans[0].id, "human_alice");
         assert_eq!(humans[0].name, "alice");
-        assert!(humans[0].display_name.is_none());
+        assert_eq!(humans[0].auth_provider, "local");
     }
 
     #[test]
-    fn set_display_name() {
+    fn ensure_human_with_id_updates_label_only() {
         let store = test_store();
-        store.create_human("bob").unwrap();
+        store.ensure_human_with_id("human_carol", "carol").unwrap();
         let updated = store
-            .update_human_display_name("bob", Some("Bob Smith"))
+            .ensure_human_with_id("human_carol", "caroline")
             .unwrap();
-        assert_eq!(updated.display_name.as_deref(), Some("Bob Smith"));
-        let humans = store.get_humans().unwrap();
-        assert_eq!(humans[0].display_name.as_deref(), Some("Bob Smith"));
+        assert_eq!(updated.id, "human_carol");
+        assert_eq!(updated.name, "caroline");
     }
 
     #[test]
-    fn clear_display_name() {
+    fn get_human_by_name_is_lookup_only() {
         let store = test_store();
-        store.create_human("carol").unwrap();
-        store
-            .update_human_display_name("carol", Some("Carol"))
-            .unwrap();
-        let updated = store.update_human_display_name("carol", None).unwrap();
-        assert!(updated.display_name.is_none());
-    }
-
-    #[test]
-    fn update_unknown_human_errors() {
-        let store = test_store();
-        let result = store.update_human_display_name("nobody", Some("Ghost"));
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("human not found"));
+        store.ensure_human_with_id("human_dana", "dana").unwrap();
+        let human = store.get_human_by_name("dana").unwrap().unwrap();
+        assert_eq!(human.id, "human_dana");
     }
 }

@@ -59,7 +59,11 @@ pub struct AgentTemplateConfig {
 /// Local human identity for single-user local platform deployments.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LocalHumanConfig {
-    /// Stable human name used for workspace ownership and membership.
+    /// Stable human id used for ownership, membership, and authorship.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+
+    /// Human-facing local label. This is display/lookup text, not identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }

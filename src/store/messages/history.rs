@@ -29,7 +29,7 @@ impl Store {
     pub fn get_history_snapshot(
         &self,
         channel_name: &str,
-        member_name: &str,
+        member_id: &str,
         limit: i64,
         before: Option<i64>,
         after: Option<i64>,
@@ -39,13 +39,10 @@ impl Store {
             Self::get_conversation_history_view_inner(&conn, channel_name, limit, before, after)?;
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let last_read_seq = Self::get_inbox_conversation_state_by_channel_id_inner(
-            &conn,
-            &channel.id,
-            member_name,
-        )?
-        .map(|state| state.last_read_seq)
-        .unwrap_or(0);
+        let last_read_seq =
+            Self::get_inbox_conversation_state_by_channel_id_inner(&conn, &channel.id, member_id)?
+                .map(|state| state.last_read_seq)
+                .unwrap_or(0);
         Ok(HistorySnapshot {
             messages: message_views
                 .iter()

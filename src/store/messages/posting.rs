@@ -9,7 +9,7 @@ use crate::store::Store;
 
 pub struct CreateMessage<'a> {
     pub channel_name: &'a str,
-    pub sender_name: &'a str,
+    pub sender_id: &'a str,
     pub sender_type: SenderType,
     pub content: &'a str,
     pub attachment_ids: &'a [String],
@@ -22,7 +22,7 @@ impl Store {
     pub(crate) fn insert_message_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
-        sender_name: &str,
+        sender_id: &str,
         sender_type: SenderType,
         content: &str,
         attachment_ids: &[String],
@@ -38,12 +38,12 @@ impl Store {
         let forwarded_from_json = forwarded_from.map(serde_json::to_string).transpose()?;
         tx.execute(
             "INSERT INTO messages (
-                id, channel_id, sender_name, sender_type, sender_deleted, content, seq, forwarded_from, run_id
+                id, channel_id, sender_id, sender_type, sender_deleted, content, seq, forwarded_from, run_id
              ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8)",
             params![
                 msg_id,
                 channel.id,
-                sender_name,
+                sender_id,
                 sender_type.as_str(),
                 content,
                 seq,
@@ -66,7 +66,7 @@ impl Store {
     pub fn create_message_with_forwarded_from(
         &self,
         channel_id: &str,
-        sender_name: &str,
+        sender_id: &str,
         sender_type: SenderType,
         content: &str,
         attachment_ids: &[String],
@@ -79,19 +79,20 @@ impl Store {
         let inserted = Self::insert_message_tx(
             &tx,
             &channel,
-            sender_name,
+            sender_id,
             sender_type,
             content,
             attachment_ids,
             forwarded_from.as_ref(),
             None,
         )?;
+        let sender_name = Self::sender_name_for_id_tx(&tx, sender_id, sender_type)?;
         tx.commit()?;
 
         let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
-            sender_name,
+            &sender_name,
             sender_type.as_str(),
             content,
         );
@@ -184,7 +185,7 @@ impl Store {
         let inserted = Self::insert_message_tx(
             &tx,
             &channel,
-            message.sender_name,
+            message.sender_id,
             message.sender_type,
             message.content,
             message.attachment_ids,
@@ -194,17 +195,18 @@ impl Store {
         Self::set_inbox_read_cursor_tx(
             &tx,
             &channel,
-            message.sender_name,
+            message.sender_id,
             message.sender_type.as_str(),
             inserted.seq,
             Some(&inserted.id),
         )?;
+        let sender_name = Self::sender_name_for_id_tx(&tx, message.sender_id, message.sender_type)?;
         tx.commit()?;
 
         let payload = inserted.to_event_payload(
             channel.id.as_str(),
             channel.channel_type.as_api_str(),
-            message.sender_name,
+            &sender_name,
             message.sender_type.as_str(),
             message.content,
         );
@@ -217,6 +219,30 @@ impl Store {
             let _ = self.stream_tx.send(stream_event);
         }
         Ok(inserted.id)
+    }
+
+    pub(crate) fn sender_name_for_id_tx(
+        tx: &Transaction<'_>,
+        sender_id: &str,
+        sender_type: SenderType,
+    ) -> Result<String> {
+        match sender_type {
+            SenderType::Human => tx
+                .query_row(
+                    "SELECT name FROM humans WHERE id = ?1",
+                    params![sender_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into),
+            SenderType::Agent => tx
+                .query_row(
+                    "SELECT name FROM agents WHERE id = ?1",
+                    params![sender_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into),
+            SenderType::System => Ok(sender_id.to_string()),
+        }
     }
 }
 
@@ -251,17 +277,17 @@ mod tests {
         };
 
         // Verify ALL invariants the helper owns, not just content.
-        let (content, sender_type, sender_name, seq): (String, String, String, i64) = store
+        let (content, sender_type, sender_id, seq): (String, String, String, i64) = store
             .conn_for_test()
             .query_row(
-                "SELECT content, sender_type, sender_name, seq FROM messages WHERE id = ?1",
+                "SELECT content, sender_type, sender_id, seq FROM messages WHERE id = ?1",
                 params![msg_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
         assert_eq!(content, "hello");
         assert_eq!(sender_type, "system");
-        assert_eq!(sender_name, "system");
+        assert_eq!(sender_id, "system");
         assert_eq!(seq, 1);
     }
 

@@ -57,7 +57,7 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const { currentUser, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings } = useStore()
+  const { currentUser, currentUserId, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings } = useStore()
   const showConversationIds = useStore((s) => s.showConversationIds)
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
@@ -77,7 +77,7 @@ export function Sidebar() {
   const [humansCollapsed, setHumansCollapsed] = useState(false)
 
   const channels = loadedChannels.filter(isVisibleSidebarChannel)
-  const currentHumanInfo = humans.find((h) => h.name === currentUser)
+  const currentHumanInfo = humans.find((h) => h.id === currentUserId)
   const activeWorkspace = workspaces.find((workspace) => workspace.active) ?? null
 
   useEffect(() => {
@@ -348,10 +348,10 @@ export function Sidebar() {
                   {h.name[0]?.toUpperCase()}
                 </div>
                 <span className="sidebar-item-main">
-                  <span className="sidebar-item-text">{h.display_name ?? h.name}</span>
+                  <span className="sidebar-item-text">{h.name}</span>
                   <span className="sidebar-item-meta">:: human</span>
                 </span>
-                {h.name === currentUser && <span className="you-badge">you</span>}
+                {h.id === currentUserId && <span className="you-badge">you</span>}
               </div>
             ))}
           </div>
@@ -364,7 +364,7 @@ export function Sidebar() {
               width: 32,
               height: 32,
               borderRadius: 6,
-              background: agentColor(currentUser),
+              background: agentColor(currentHumanInfo?.name ?? currentUser),
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -377,7 +377,7 @@ export function Sidebar() {
             {currentUser[0]?.toUpperCase() ?? '?'}
           </div>
           <div className="sidebar-footer-main">
-            <span className="sidebar-footer-name">{currentHumanInfo?.display_name ?? currentUser}</span>
+            <span className="sidebar-footer-name">{currentHumanInfo?.name ?? currentUser}</span>
             <span className="sidebar-footer-meta">[operator::active]</span>
           </div>
           <button className="sidebar-footer-cog" type="button" aria-label="Open settings" onClick={() => setShowSettings(!showSettings)}>

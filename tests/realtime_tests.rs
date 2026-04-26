@@ -12,15 +12,30 @@ use serde_json::Value;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-async fn start_test_server() -> (String, Arc<Store>) {
+struct TestIdentities {
+    alice_id: String,
+    zoe_id: String,
+}
+
+async fn start_test_server() -> (String, Arc<Store>, TestIdentities) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.create_human("alice").unwrap();
-    store.create_human("zoe").unwrap();
+    let alice = store.create_local_human("alice").unwrap();
+    let zoe = store.create_local_human("zoe").unwrap();
+    // Pre-create `#all` so the bootstrap migration in `ensure_builtin_channels`
+    // does not rename `#general` to `#all` when the router is built below.
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store
-        .join_channel("general", "alice", SenderType::Human)
+        .join_channel("general", &alice.id, SenderType::Human)
         .unwrap();
     let router = build_router(store.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -28,7 +43,14 @@ async fn start_test_server() -> (String, Arc<Store>) {
     let url = format!("ws://{addr}");
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    (url, store)
+    (
+        url,
+        store,
+        TestIdentities {
+            alice_id: alice.id,
+            zoe_id: zoe.id,
+        },
+    )
 }
 
 async fn read_json_frame(
@@ -51,17 +73,18 @@ async fn read_json_frame(
 
 #[tokio::test]
 async fn test_realtime_delivers_message_created_for_joined_channel() {
-    let (base_url, store) = start_test_server().await;
+    let (base_url, store, ids) = start_test_server().await;
     let general_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
-    let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
-        .await
-        .unwrap();
+    let (mut socket, _) =
+        connect_async(format!("{base_url}/api/events/ws?viewer={}", ids.alice_id))
+            .await
+            .unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: &ids.alice_id,
             sender_type: SenderType::Human,
             content: "hello",
             attachment_ids: &[],
@@ -81,22 +104,23 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
 
 #[tokio::test]
 async fn test_realtime_skips_non_member_channel() {
-    let (base_url, store) = start_test_server().await;
+    let (base_url, store, ids) = start_test_server().await;
     store
         .create_channel("private", Some("Private"), ChannelType::Channel, None)
         .unwrap();
     store
-        .join_channel("private", "zoe", SenderType::Human)
+        .join_channel("private", &ids.zoe_id, SenderType::Human)
         .unwrap();
 
-    let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
-        .await
-        .unwrap();
+    let (mut socket, _) =
+        connect_async(format!("{base_url}/api/events/ws?viewer={}", ids.alice_id))
+            .await
+            .unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: "private",
-            sender_name: "zoe",
+            sender_id: &ids.zoe_id,
             sender_type: SenderType::Human,
             content: "secret",
             attachment_ids: &[],
@@ -114,16 +138,17 @@ async fn test_realtime_skips_non_member_channel() {
 
 #[tokio::test]
 async fn test_realtime_member_receives_live_messages_without_subscribe_frame() {
-    let (base_url, store) = start_test_server().await;
+    let (base_url, store, ids) = start_test_server().await;
 
-    let (mut socket, _) = connect_async(format!("{base_url}/api/events/ws?viewer=alice"))
-        .await
-        .unwrap();
+    let (mut socket, _) =
+        connect_async(format!("{base_url}/api/events/ws?viewer={}", ids.alice_id))
+            .await
+            .unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: &ids.alice_id,
             sender_type: SenderType::Human,
             content: "live",
             attachment_ids: &[],

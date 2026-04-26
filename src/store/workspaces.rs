@@ -46,7 +46,7 @@ pub struct Workspace {
     pub name: String,
     pub slug: String,
     pub mode: WorkspaceMode,
-    pub created_by_human: Option<String>,
+    pub created_by_human_id: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -58,48 +58,46 @@ pub struct WorkspaceCounts {
 }
 
 impl Store {
-    pub fn create_local_workspace(&self, name: &str, owner_human: &str) -> Result<Workspace> {
-        self.create_local_workspace_inner(name, owner_human, true)
+    pub fn create_local_workspace(&self, name: &str, owner_human_id: &str) -> Result<Workspace> {
+        self.create_local_workspace_inner(name, owner_human_id, true)
     }
 
     pub fn create_local_workspace_without_activation(
         &self,
         name: &str,
-        owner_human: &str,
+        owner_human_id: &str,
     ) -> Result<Workspace> {
-        self.create_local_workspace_inner(name, owner_human, false)
+        self.create_local_workspace_inner(name, owner_human_id, false)
     }
 
     fn create_local_workspace_inner(
         &self,
         name: &str,
-        owner_human: &str,
+        owner_human_id: &str,
         activate: bool,
     ) -> Result<Workspace> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let id = Uuid::new_v4().to_string();
         let slug = Self::unique_workspace_slug_inner(&tx, name)?;
-
+        if Self::get_human_by_id_inner(&tx, owner_human_id)?.is_none() {
+            return Err(anyhow!("human not found: {owner_human_id}"));
+        }
         tx.execute(
-            "INSERT OR IGNORE INTO humans (name, display_name) VALUES (?1, ?1)",
-            params![owner_human],
-        )?;
-        tx.execute(
-            "INSERT INTO workspaces (id, name, slug, mode, created_by_human)
+            "INSERT INTO workspaces (id, name, slug, mode, created_by_human_id)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
                 id,
                 name,
                 slug,
                 WorkspaceMode::LocalOnly.as_db_str(),
-                owner_human
+                owner_human_id
             ],
         )?;
         tx.execute(
-            "INSERT INTO workspace_members (workspace_id, human_name, role)
+            "INSERT INTO workspace_members (workspace_id, human_id, role)
              VALUES (?1, ?2, 'owner')",
-            params![id, owner_human],
+            params![id, owner_human_id],
         )?;
         let all_channel_id = Uuid::new_v4().to_string();
         tx.execute(
@@ -113,9 +111,9 @@ impl Store {
             ],
         )?;
         tx.execute(
-            "INSERT INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+            "INSERT INTO channel_members (channel_id, member_id, member_type, last_read_seq)
              VALUES (?1, ?2, 'human', 0)",
-            params![all_channel_id, owner_human],
+            params![all_channel_id, owner_human_id],
         )?;
         if activate {
             tx.execute(
@@ -183,7 +181,7 @@ impl Store {
         let slug = Self::unique_workspace_slug_inner(conn, "Chorus Local")?;
 
         conn.execute(
-            "INSERT INTO workspaces (id, name, slug, mode, created_by_human)
+            "INSERT INTO workspaces (id, name, slug, mode, created_by_human_id)
              VALUES (?1, 'Chorus Local', ?2, ?3, NULL)",
             params![id, slug, WorkspaceMode::LocalOnly.as_db_str()],
         )?;
@@ -218,7 +216,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         if let Some(workspace) = conn
             .query_row(
-                "SELECT id, name, slug, mode, created_by_human, created_at
+                "SELECT id, name, slug, mode, created_by_human_id, created_at
                  FROM workspaces
                  WHERE id = ?1 OR slug = ?1",
                 params![selector],
@@ -231,7 +229,7 @@ impl Store {
 
         let rows = conn
             .prepare(
-                "SELECT id, name, slug, mode, created_by_human, created_at
+                "SELECT id, name, slug, mode, created_by_human_id, created_at
                  FROM workspaces
                  WHERE name = ?1
                  ORDER BY created_at, slug",
@@ -264,16 +262,16 @@ impl Store {
             .ok_or_else(|| anyhow!("workspace not found after rename: {workspace_id}"))
     }
 
-    pub fn list_workspaces_for_human(&self, human_name: &str) -> Result<Vec<Workspace>> {
+    pub fn list_workspaces_for_human(&self, human_id: &str) -> Result<Vec<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT w.id, w.name, w.slug, w.mode, w.created_by_human, w.created_at
+            "SELECT w.id, w.name, w.slug, w.mode, w.created_by_human_id, w.created_at
              FROM workspaces w
              JOIN workspace_members wm ON wm.workspace_id = w.id
-             WHERE wm.human_name = ?1
+             WHERE wm.human_id = ?1
              ORDER BY w.created_at, w.name",
         )?;
-        let rows = stmt.query_map(params![human_name], Self::workspace_from_row)?;
+        let rows = stmt.query_map(params![human_id], Self::workspace_from_row)?;
         let workspaces: rusqlite::Result<Vec<_>> = rows.collect();
         Ok(workspaces?)
     }
@@ -281,7 +279,7 @@ impl Store {
     pub fn list_workspaces(&self) -> Result<Vec<Workspace>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, name, slug, mode, created_by_human, created_at
+            "SELECT id, name, slug, mode, created_by_human_id, created_at
              FROM workspaces
              ORDER BY created_at, name",
         )?;
@@ -498,7 +496,7 @@ impl Store {
         id: &str,
     ) -> Result<Option<Workspace>> {
         conn.query_row(
-            "SELECT id, name, slug, mode, created_by_human, created_at
+            "SELECT id, name, slug, mode, created_by_human_id, created_at
              FROM workspaces
              WHERE id = ?1",
             params![id],
@@ -516,7 +514,7 @@ impl Store {
             name: row.get(1)?,
             slug: row.get(2)?,
             mode: WorkspaceMode::from_db_str(&mode)?,
-            created_by_human: row.get(4)?,
+            created_by_human_id: row.get(4)?,
             created_at: parse_datetime(&created_at),
         })
     }

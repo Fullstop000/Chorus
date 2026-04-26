@@ -36,6 +36,7 @@ import {
 export function MainPanel() {
   const {
     currentUser,
+    currentUserId,
     activeTab,
     currentChannel,
     currentAgent,
@@ -52,11 +53,11 @@ export function MainPanel() {
     currentChannel?.id ??
     (currentAgent ? getAgentConversationId(currentAgent.name) : null);
   const chatHistory = useHistory(
-    currentUser,
+    currentUserId,
     activeTab === "chat" ? chatTarget : null,
     activeConversationId,
   );
-  useTraceSubscription(currentUser);
+  useTraceSubscription(currentUserId || null);
   const [members, setMembers] = useState<ChannelMemberInfo[]>([]);
   const [membersLoading, setMembersLoading] = useState(false);
   const [showMembersPanel, setShowMembersPanel] = useState(false);

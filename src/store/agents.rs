@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::params;
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -100,9 +100,9 @@ impl Store {
         )?;
         if let Some(all_channel) = all_channel {
             conn.execute(
-                "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+                "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq)
                  VALUES (?1, ?2, 'agent', 0)",
-                params![all_channel.id, record.name],
+                params![all_channel.id, id],
             )?;
         }
         Ok(id)
@@ -110,9 +110,19 @@ impl Store {
 
     pub fn delete_agent_record(&self, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let agent_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM agents WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(agent_id) = agent_id else {
+            return Ok(());
+        };
         conn.execute(
-            "DELETE FROM channel_members WHERE member_name = ?1",
-            params![name],
+            "DELETE FROM channel_members WHERE member_id = ?1 AND member_type = 'agent'",
+            params![agent_id],
         )?;
         conn.execute("DELETE FROM agents WHERE name = ?1", params![name])?;
         Ok(())
@@ -263,10 +273,20 @@ impl Store {
     /// Get all channel IDs where an agent is a member (includes DM channels).
     pub fn agent_channel_ids(&self, agent_name: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
+        let agent_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM agents WHERE name = ?1",
+                params![agent_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(agent_id) = agent_id else {
+            return Ok(Vec::new());
+        };
         let mut stmt =
-            conn.prepare("SELECT DISTINCT channel_id FROM channel_members WHERE member_name = ?1")?;
+            conn.prepare("SELECT DISTINCT channel_id FROM channel_members WHERE member_id = ?1")?;
         let ids = stmt
-            .query_map(rusqlite::params![agent_name], |row| row.get(0))?
+            .query_map(rusqlite::params![agent_id], |row| row.get(0))?
             .filter_map(|r| r.ok())
             .collect();
         Ok(ids)

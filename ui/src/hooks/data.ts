@@ -19,11 +19,12 @@ import { dmConversationNameForParticipants } from '../data'
 import type { AgentInfo } from '../data'
 
 function useAppInboxSelectors(params: {
-  currentUser: string
+  /** Local human display name — used only for DM channel title composition. */
+  currentHumanDisplayName: string
   inboxState: InboxState
   dmChannels: ChannelInfo[]
 }) {
-  const { currentUser, inboxState, dmChannels } = params
+  const { currentHumanDisplayName, inboxState, dmChannels } = params
 
   const getConversationUnread = useCallback(
     (conversationId?: string | null) => {
@@ -37,19 +38,19 @@ function useAppInboxSelectors(params: {
 
   const getAgentUnread = useCallback(
     (agentName: string) => {
-      const dmName = dmConversationNameForParticipants(currentUser, agentName)
+      const dmName = dmConversationNameForParticipants(currentHumanDisplayName, agentName)
       const conversationId = dmChannels.find((ch: ChannelInfo) => ch.name === dmName)?.id ?? null
       return getConversationUnread(conversationId)
     },
-    [currentUser, dmChannels, getConversationUnread]
+    [currentHumanDisplayName, dmChannels, getConversationUnread]
   )
 
   const getAgentConversationId = useCallback(
     (agentName: string) => {
-      const dmName = dmConversationNameForParticipants(currentUser, agentName)
+      const dmName = dmConversationNameForParticipants(currentHumanDisplayName, agentName)
       return dmChannels.find((ch: ChannelInfo) => ch.name === dmName)?.id ?? null
     },
-    [currentUser, dmChannels]
+    [currentHumanDisplayName, dmChannels]
   )
 
   return {
@@ -61,22 +62,22 @@ function useAppInboxSelectors(params: {
 
 /** Registered agents. Empty array until auth + query settle. */
 export function useAgents(): AgentInfo[] {
-  const currentUser = useStore((s) => s.currentUser)
-  const { data } = useQuery(agentsQuery(currentUser))
+  const currentUserId = useStore((s) => s.currentUserId)
+  const { data } = useQuery(agentsQuery(currentUserId))
   return data ?? []
 }
 
 /** Teams the current user belongs to. */
 export function useTeams() {
-  const currentUser = useStore((s) => s.currentUser)
-  const { data } = useQuery(teamsQuery(currentUser))
+  const currentUserId = useStore((s) => s.currentUserId)
+  const { data } = useQuery(teamsQuery(currentUserId))
   return data ?? []
 }
 
 /** Human (non-agent) users on the server. */
 export function useHumans() {
-  const currentUser = useStore((s) => s.currentUser)
-  const { data } = useQuery(humansQuery(currentUser))
+  const currentUserId = useStore((s) => s.currentUserId)
+  const { data } = useQuery(humansQuery(currentUserId))
   return data ?? []
 }
 
@@ -101,8 +102,8 @@ export function useChannelMembers(channelId: string | null) {
  * Returns `{ allChannels, channels, systemChannels, dmChannels }`.
  */
 export function useChannels() {
-  const currentUser = useStore((s) => s.currentUser)
-  const { data } = useQuery(channelsQuery(currentUser))
+  const currentUserId = useStore((s) => s.currentUserId)
+  const { data } = useQuery(channelsQuery(currentUserId))
   return data ?? { allChannels: [], channels: [], systemChannels: [], dmChannels: [] }
 }
 
@@ -110,12 +111,12 @@ export function useChannels() {
  * Cache-invalidation actions: refreshChannels, refreshAgents, refreshTeams, refreshServerInfo.
  */
 export function useRefresh() {
-  const currentUser = useStore((s) => s.currentUser)
+  const currentUserId = useStore((s) => s.currentUserId)
   const queryClient = useQueryClient()
 
   const refreshChannels = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUser) })
-  }, [currentUser, queryClient])
+    await queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUserId) })
+  }, [currentUserId, queryClient])
 
   const refreshAgents = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents })
@@ -128,13 +129,13 @@ export function useRefresh() {
   const refreshServerInfo = useCallback(async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents }),
-      queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUser) }),
+      queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUserId) }),
       queryClient.invalidateQueries({ queryKey: teamQueryKeys.teams }),
       queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans }),
       queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.workspaces }),
       queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.current }),
     ])
-  }, [currentUser, queryClient])
+  }, [currentUserId, queryClient])
 
   return {
     refreshChannels,
@@ -154,7 +155,7 @@ export function useInbox() {
   const { dmChannels } = useChannels()
 
   const selectors = useAppInboxSelectors({
-    currentUser,
+    currentHumanDisplayName: currentUser,
     inboxState,
     dmChannels,
   })

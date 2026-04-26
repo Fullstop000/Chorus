@@ -2,12 +2,12 @@ import { useState, useEffect, useCallback } from 'react'
 import { getTasks } from '../data'
 import type { TaskInfo } from '../data'
 
-export function useTasks(username: string, conversationId: string | null) {
+export function useTasks(viewerHumanId: string, conversationId: string | null) {
   const [tasks, setTasks] = useState<TaskInfo[]>([])
   const [loading, setLoading] = useState(false)
 
   const fetchTasks = useCallback(async () => {
-    if (!username || !conversationId) return
+    if (!viewerHumanId || !conversationId) return
     try {
       const res = await getTasks(conversationId, 'all')
       setTasks(res.tasks)
@@ -16,7 +16,7 @@ export function useTasks(username: string, conversationId: string | null) {
     } finally {
       setLoading(false)
     }
-  }, [conversationId, username])
+  }, [conversationId, viewerHumanId])
 
   useEffect(() => {
     if (!conversationId) {

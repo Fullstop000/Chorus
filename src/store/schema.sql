@@ -7,16 +7,16 @@ CREATE TABLE IF NOT EXISTS workspaces (
     name TEXT NOT NULL,
     slug TEXT NOT NULL UNIQUE,
     mode TEXT NOT NULL DEFAULT 'local_only',
-    created_by_human TEXT,
+    created_by_human_id TEXT REFERENCES humans(id),
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    human_name TEXT NOT NULL,
+    human_id TEXT NOT NULL REFERENCES humans(id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    PRIMARY KEY (workspace_id, human_name)
+    PRIMARY KEY (workspace_id, human_id)
 );
 
 CREATE TABLE IF NOT EXISTS local_workspace_state (
@@ -41,28 +41,28 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_workspace_name
 -- Memberships linking users/agents to channels.
 CREATE TABLE IF NOT EXISTS channel_members (
     channel_id TEXT NOT NULL, -- Foreign key to channels.id
-    member_name TEXT NOT NULL, -- Name of the member (human or agent)
+    member_id TEXT NOT NULL, -- ID of the member (human or agent)
     member_type TEXT NOT NULL, -- Type of member: 'human' or 'agent'
     last_read_seq INTEGER NOT NULL DEFAULT 0, -- The highest message sequence number read by this member
-    PRIMARY KEY (channel_id, member_name)
+    PRIMARY KEY (channel_id, member_type, member_id)
 );
 
 -- Read state for the conversation inbox.
 CREATE TABLE IF NOT EXISTS inbox_read_state (
     conversation_id TEXT NOT NULL, -- ID of the conversation/channel
-    member_name TEXT NOT NULL, -- Name of the member
+    member_id TEXT NOT NULL, -- ID of the member
     member_type TEXT NOT NULL, -- Type of member
     last_read_seq INTEGER NOT NULL DEFAULT 0, -- Highest read sequence
     last_read_message_id TEXT, -- ID of the last read message
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the read state was last updated
-    PRIMARY KEY (conversation_id, member_name)
+    PRIMARY KEY (conversation_id, member_type, member_id)
 );
 
 -- Chat messages.
 CREATE TABLE IF NOT EXISTS messages (
     id TEXT PRIMARY KEY, -- Unique UUID for the message
     channel_id TEXT NOT NULL, -- ID of the channel where the message was sent
-    sender_name TEXT NOT NULL, -- Name of the sender
+    sender_id TEXT NOT NULL, -- ID of the sender
     sender_type TEXT NOT NULL, -- Type of sender: 'human', 'agent', or 'system'
     sender_deleted INTEGER NOT NULL DEFAULT 0, -- 1 if deleted by the sender, 0 otherwise
     content TEXT NOT NULL, -- The actual text content of the message
@@ -121,8 +121,11 @@ CREATE TABLE IF NOT EXISTS agent_env_vars (
 
 -- Human users.
 CREATE TABLE IF NOT EXISTS humans (
-    name TEXT PRIMARY KEY, -- Unique username
-    display_name TEXT, -- Optional user-chosen display name
+    id TEXT PRIMARY KEY, -- Stable human identity
+    name TEXT NOT NULL UNIQUE, -- Unique user-facing name
+    auth_provider TEXT NOT NULL DEFAULT 'local', -- Future auth provider marker
+    email TEXT UNIQUE, -- Future cloud auth email
+    disabled_at TEXT, -- Future account disable timestamp
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the user was created
 );
 
@@ -133,8 +136,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     task_number INTEGER NOT NULL, -- Sequential task number within the channel
     title TEXT NOT NULL, -- Title/summary of the task
     status TEXT NOT NULL DEFAULT 'todo', -- Current status (e.g., 'todo', 'in_progress', 'done')
-    claimed_by TEXT, -- Optional user/agent who claimed the task
-    created_by TEXT NOT NULL, -- User/agent who created the task
+    claimed_by_id TEXT, -- Optional user/agent ID who claimed the task
+    claimed_by_type TEXT, -- Type of claimer: 'human' or 'agent'
+    created_by_id TEXT NOT NULL, -- User/agent ID who created the task
+    created_by_type TEXT NOT NULL, -- Type of creator: 'human' or 'agent'
     created_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the task was created
     updated_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the task was last updated
     sub_channel_id TEXT REFERENCES channels(id), -- Child channel owned by this task (ChannelType::Task)
@@ -167,12 +172,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_workspace_name
 -- Memberships within teams.
 CREATE TABLE IF NOT EXISTS team_members (
     team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE, -- Foreign key to teams.id
-    member_name TEXT NOT NULL, -- Name of the member
-    member_type TEXT NOT NULL, -- Type of member (e.g., 'agent')
     member_id TEXT NOT NULL, -- ID of the member
+    member_type TEXT NOT NULL, -- Type of member (e.g., 'agent')
     role TEXT NOT NULL, -- Role within the team (e.g., 'leader', 'member')
     joined_at TEXT NOT NULL DEFAULT (datetime('now')), -- When the member joined
-    PRIMARY KEY (team_id, member_name)
+    PRIMARY KEY (team_id, member_type, member_id)
 );
 
 -- Views
@@ -185,7 +189,8 @@ SELECT
     m.channel_id AS conversation_id,
     c.name AS conversation_name,
     c.channel_type AS conversation_type,
-    m.sender_name AS sender_name,
+    m.sender_id AS sender_id,
+    COALESCE(h.name, a.name, m.sender_id) AS sender_name,
     m.sender_type AS sender_type,
     m.sender_deleted AS sender_deleted,
     m.content AS content,
@@ -195,7 +200,9 @@ SELECT
     m.run_id AS run_id,
     m.trace_summary AS trace_summary
 FROM messages m
-JOIN channels c ON c.id = m.channel_id;
+JOIN channels c ON c.id = m.channel_id
+LEFT JOIN humans h ON m.sender_type = 'human' AND h.id = m.sender_id
+LEFT JOIN agents a ON m.sender_type = 'agent' AND a.id = m.sender_id;
 
 -- Inbox conversation state view
 DROP VIEW IF EXISTS inbox_conversation_state_view;
@@ -204,7 +211,8 @@ SELECT
     cm.channel_id AS conversation_id,
     c.name AS conversation_name,
     c.channel_type AS conversation_type,
-    cm.member_name AS member_name,
+    cm.member_id AS member_id,
+    COALESCE(h.name, a.name, cm.member_id) AS member_name,
     cm.member_type AS member_type,
     COALESCE(irs.last_read_seq, 0) AS last_read_seq,
     irs.last_read_message_id AS last_read_message_id,
@@ -217,15 +225,18 @@ SELECT
           AND m.seq > COALESCE(irs.last_read_seq, 0)
           AND m.sender_type != 'system'
           AND NOT (
-            m.sender_name = cm.member_name
+                        m.sender_id = cm.member_id
             AND m.sender_type = cm.member_type
           )
     ) AS unread_count
 FROM channel_members cm
 JOIN channels c ON c.id = cm.channel_id
+LEFT JOIN humans h ON cm.member_type = 'human' AND h.id = cm.member_id
+LEFT JOIN agents a ON cm.member_type = 'agent' AND a.id = cm.member_id
 LEFT JOIN inbox_read_state irs
   ON irs.conversation_id = cm.channel_id
- AND irs.member_name = cm.member_name;
+ AND irs.member_type = cm.member_type
+ AND irs.member_id = cm.member_id;
 -- Note: archived task sub-channels still appear in this view so the
 -- per-conversation read-cursor + notification lookup can find them when the
 -- user is viewing an archived sub-channel via the task detail page. The

@@ -174,7 +174,7 @@ export function TaskDetailView({
  * so the hook call is stable across renders and satisfies Rules of Hooks.
  */
 export function TaskDetail() {
-  const { currentUser, currentTaskDetail, setCurrentTaskDetail, setActiveTab } =
+  const { currentUser, currentUserId, currentTaskDetail, setCurrentTaskDetail, setActiveTab } =
     useStore();
   const [task, setTask] = useState<TaskInfo | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -251,7 +251,7 @@ export function TaskDetail() {
   // return. `useHistory` tolerates null args and stays idle until both are set.
   const subChannelName = task?.subChannelName ?? null;
   const subChannelId = task?.subChannelId ?? null;
-  const history = useHistory(currentUser, subChannelName, subChannelId);
+  const history = useHistory(currentUserId, subChannelName, subChannelId);
 
   async function handleAdvance() {
     if (!task || !currentTaskDetail) return;

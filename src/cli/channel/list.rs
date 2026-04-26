@@ -1,23 +1,22 @@
 //! `chorus channel list` — print channels known to the server.
 //!
-//! Default shows only channels the current user has joined; `--all` includes
-//! every non-archived channel. `joined` is computed server-side from the
-//! `member` query param, so we always pass the current user for an accurate
-//! status column.
+//! Default shows only channels the local human has joined; `--all` includes
+//! every non-archived channel. The `member` query param drives the server's
+//! `joined` flag — we pass `humans.id`, never the OS username.
 
 use anyhow::Context;
 
 pub async fn run(all: bool, server_url: &str) -> anyhow::Result<()> {
-    let username = whoami::username();
+    let client = super::http::client();
+    let me = crate::cli::fetch_local_human_identity(&client, server_url).await?;
     // Always request system channels so the default path can surface rooms
     // like `#all` that every human is auto-joined to. The client-side filter
     // below drops rows with `joined=false` when `!all`, which keeps the
     // default output to "channels you've joined" as the help text promises.
     let url = format!(
         "{server_url}/api/channels?member={}&include_system=true",
-        urlencoding::encode(&username)
+        urlencoding::encode(&me.id)
     );
-    let client = super::http::client();
     let res = client
         .get(&url)
         .send()

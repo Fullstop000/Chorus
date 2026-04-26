@@ -79,7 +79,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let db_path = dir.path().join("db.sqlite");
         let store = Store::open(db_path.to_str().expect("utf-8 path")).unwrap();
-        let workspace = store.create_local_workspace("Test", "alice").unwrap();
+        let alice = store.ensure_human_with_id("alice", "alice").unwrap();
+        let workspace = store.create_local_workspace("Test", &alice.id).unwrap();
         store
             .conn
             .lock()

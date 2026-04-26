@@ -240,6 +240,68 @@ pub(crate) fn default_data_dir() -> String {
     format!("{home}/.chorus")
 }
 
+/// Local human identity as reported by `GET /api/whoami`. The CLI used to use
+/// `whoami::username()` as identity, which conflated the OS user running the
+/// CLI process with the Chorus human row. The server is now the source of
+/// truth: it resolves identity from `ChorusConfig::local_human` (or seeds a
+/// fresh `humans.id` on first run), and the CLI reads it back over HTTP.
+#[derive(Debug, Clone)]
+pub(crate) struct LocalHumanIdentity {
+    pub id: String,
+    pub name: String,
+}
+
+/// Fetch the local human's `(id, name)` from a running server.
+///
+/// Fails with setup guidance when the server returns a malformed or empty
+/// response — the plan requires CLI human actions to refuse to fall back to
+/// the OS username, so we surface a clear error instead of silently using a
+/// wrong identity.
+pub(crate) async fn fetch_local_human_identity(
+    client: &reqwest::Client,
+    server_url: &str,
+) -> anyhow::Result<LocalHumanIdentity> {
+    use anyhow::Context;
+    let url = format!("{server_url}/api/whoami");
+    let res = client
+        .get(&url)
+        .send()
+        .await
+        .with_context(|| format!("is the Chorus server running at {server_url}?"))?;
+    let status = res.status();
+    let body = res.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(anyhow::anyhow!(
+            "{status} from {url}: {body}; run `chorus setup` to initialize local identity"
+        ));
+    }
+    let value: serde_json::Value = serde_json::from_str(&body)
+        .with_context(|| format!("unexpected /api/whoami response from {server_url}"))?;
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            UserError(
+                "server has no local human id; run `chorus setup` to initialize local identity"
+                    .into(),
+            )
+        })?
+        .to_string();
+    let name = value
+        .get("name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+        .ok_or_else(|| {
+            UserError(
+                "server has no local human name; run `chorus setup` to initialize local identity"
+                    .into(),
+            )
+        })?
+        .to_string();
+    Ok(LocalHumanIdentity { id, name })
+}
+
 pub(crate) fn default_model_for_runtime(runtime: &str) -> &str {
     match AgentRuntime::parse(runtime) {
         Some(AgentRuntime::Codex) => "gpt-5.4",

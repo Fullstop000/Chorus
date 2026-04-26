@@ -21,8 +21,10 @@ export interface ChannelInfo {
 }
 
 export interface HumanInfo {
+  /** Stable human id (canonical identity). */
+  id: string
+  /** Display / lookup label. */
   name: string
-  display_name?: string
 }
 
 export interface SystemInfo {
@@ -100,8 +102,14 @@ export interface ServerInfo {
   humans: HumanInfo[]
 }
 
+/**
+ * `/api/whoami` exposes the local human's stable id alongside the display
+ * name. Identity-keyed UI logic (e.g. `senderId === me.id`) MUST use `id`;
+ * `name` is for display and label-only flows.
+ */
 export interface WhoamiResponse {
-  username: string
+  id: string
+  name: string
 }
 
 // ── API functions ──
@@ -152,10 +160,6 @@ export function listHumans(): Promise<HumanInfo[]> {
   return get('/api/humans')
 }
 
-export function updateHuman(name: string, body: { display_name?: string | null }): Promise<HumanInfo> {
-  return patch(`/api/humans/${encodeURIComponent(name)}`, body)
-}
-
 export function getSystemInfo(): Promise<SystemInfo> {
   return get('/api/system-info')
 }
@@ -201,30 +205,32 @@ export function sliceChannels(raw: ChannelInfo[]): ChannelSlices {
 
 export const channelQueryKeys = {
   whoami: ['whoami'] as const,
-  channels: (user: string) => ['channels', user] as const,
+  /** React-query cache segment keyed by the local human's stable id. */
+  channels: (humanId: string) => ['channels', humanId] as const,
   humans: ['humans'] as const,
   members: (channelId: string | null) => ['channelMembers', channelId] as const,
 } as const
 
 export const whoamiQuery = queryOptions({
   queryKey: channelQueryKeys.whoami,
-  queryFn: () => getWhoami().then((r) => r.username),
+  queryFn: () => getWhoami(),
   staleTime: Infinity,
 })
 
-export const channelsQuery = (currentUser: string) =>
+export const channelsQuery = (memberHumanId: string) =>
   queryOptions({
-    queryKey: channelQueryKeys.channels(currentUser),
-    queryFn: () => listChannels({ member: currentUser, include_dm: true, include_system: true }),
-    enabled: !!currentUser,
+    queryKey: channelQueryKeys.channels(memberHumanId),
+    queryFn: () =>
+      listChannels({ member: memberHumanId, include_dm: true, include_system: true }),
+    enabled: !!memberHumanId,
     select: sliceChannels,
   })
 
-export const humansQuery = (currentUser: string) =>
+export const humansQuery = (memberHumanId: string) =>
   queryOptions({
     queryKey: channelQueryKeys.humans,
     queryFn: listHumans,
-    enabled: !!currentUser,
+    enabled: !!memberHumanId,
   })
 
 export const channelMembersQuery = (channelId: string | null) =>

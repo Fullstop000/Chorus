@@ -17,12 +17,13 @@ impl Store {
     pub fn get_agent_message_recipients(
         &self,
         channel_id: &str,
-        sender_name: &str,
+        sender_id: &str,
     ) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
         let recipients = Self::get_channel_agent_members_inner(&conn, channel_id)?
             .into_iter()
-            .filter(|member_name| member_name != sender_name)
+            .filter(|(member_id, _)| member_id != sender_id)
+            .map(|(_, member_name)| member_name)
             .collect();
         Ok(recipients)
     }
@@ -32,7 +33,9 @@ impl Store {
         let tx = conn.transaction()?;
         tx.execute(
             "UPDATE messages SET sender_deleted = 1
-             WHERE sender_type = 'agent' AND sender_name = ?1 AND sender_deleted = 0",
+             WHERE sender_type = 'agent'
+               AND sender_id = (SELECT id FROM agents WHERE name = ?1)
+               AND sender_deleted = 0",
             params![name],
         )?;
         tx.commit()?;
@@ -45,7 +48,8 @@ impl Store {
             .prepare(
                 "SELECT m.id, m.seq, m.content, c.name, m.created_at
                  FROM messages m JOIN channels c ON c.id = m.channel_id
-                 WHERE m.sender_name = ?1 ORDER BY m.created_at DESC LIMIT ?2",
+                  JOIN agents a ON a.id = m.sender_id
+                  WHERE a.name = ?1 ORDER BY m.created_at DESC LIMIT ?2",
             )?
             .query_map(params![agent_name, limit], |row| {
                 Ok(ActivityMessage {
@@ -61,16 +65,19 @@ impl Store {
         Ok(rows)
     }
 
-    /// Agent member names for a channel (delivery policy builds on this list).
+    /// Agent member ids and names for a channel (delivery policy builds on this list).
     pub(crate) fn get_channel_agent_members_inner(
         conn: &Connection,
         channel_id: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, String)>> {
         let rows = conn
             .prepare(
-                "SELECT member_name FROM channel_members WHERE channel_id = ?1 AND member_type = 'agent'",
+                "SELECT cm.member_id, a.name
+                 FROM channel_members cm
+                 JOIN agents a ON a.id = cm.member_id
+                 WHERE cm.channel_id = ?1 AND cm.member_type = 'agent'",
             )?
-            .query_map(params![channel_id], |row| row.get(0))?
+            .query_map(params![channel_id], |row| Ok((row.get(0)?, row.get(1)?)))?
             .filter_map(|row| row.ok())
             .collect();
         Ok(rows)

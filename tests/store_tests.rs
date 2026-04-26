@@ -42,10 +42,10 @@ fn test_add_and_list_team_members() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .create_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .create_team_member(&team_id, "agent-uuid-1", "agent", "operator")
         .unwrap();
     store
-        .create_team_member(&team_id, "bob", "human", "bob", "observer")
+        .create_team_member(&team_id, "bob", "human", "observer")
         .unwrap();
     let members = store.get_team_members(&team_id).unwrap();
     assert_eq!(members.len(), 2);
@@ -56,9 +56,9 @@ fn test_list_teams_for_agent() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .create_team_member(&team_id, "alice", "agent", "agent-uuid-1", "operator")
+        .create_team_member(&team_id, "agent-uuid-1", "agent", "operator")
         .unwrap();
-    let teams = store.get_teams_by_agent_name("alice").unwrap();
+    let teams = store.get_teams_by_agent_id("agent-uuid-1").unwrap();
     assert_eq!(teams.len(), 1);
     assert_eq!(teams[0].team_name, "eng-team");
 }
@@ -68,7 +68,7 @@ fn test_delete_team_cascades() {
     let store = Store::open(":memory:").unwrap();
     let team_id = store.create_team("eng-team", "Eng", "swarm", None).unwrap();
     store
-        .create_team_member(&team_id, "alice", "agent", "uuid-1", "operator")
+        .create_team_member(&team_id, "uuid-1", "agent", "operator")
         .unwrap();
     store.delete_team(&team_id).unwrap();
     assert!(store.get_team("eng-team").unwrap().is_none());
@@ -88,7 +88,42 @@ fn make_store() -> (Store, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("test.db");
     let store = Store::open(db_path.to_str().unwrap()).unwrap();
+    // Tests pre-date the ID-first refactor and use bare names ("alice", "bob")
+    // as both human ids and labels. Pre-seed those rows with id == name so the
+    // store's `human not found` validations (e.g. `create_local_workspace`)
+    // succeed without each test having to create the human itself.
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    store.ensure_human_with_id("bob", "bob").unwrap();
     (store, dir)
+}
+
+#[test]
+fn test_open_old_identity_schema_fails_loudly() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("legacy.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE humans (
+                name TEXT PRIMARY KEY,
+                display_name TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+    }
+
+    let err = match Store::open(db_path.to_str().unwrap()) {
+        Ok(_) => panic!("opening old identity schema should fail"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains("old identity schema")
+            && message.contains("humans.display_name")
+            && message.contains("fresh data directory"),
+        "unexpected error: {message}"
+    );
 }
 
 #[test]
@@ -100,7 +135,7 @@ fn test_create_local_workspace_sets_owner_and_active_context() {
     assert_eq!(workspace.name, "Chorus Dev");
     assert_eq!(workspace.slug, "chorus-dev");
     assert_eq!(workspace.mode, WorkspaceMode::LocalOnly);
-    assert_eq!(workspace.created_by_human.as_deref(), Some("alice"));
+    assert_eq!(workspace.created_by_human_id.as_deref(), Some("alice"));
     assert_eq!(
         store.get_active_workspace().unwrap().unwrap().id,
         workspace.id
@@ -213,7 +248,7 @@ fn test_unknown_workspace_mode_surfaces_error() {
     {
         let conn = store.conn_for_test();
         conn.execute(
-            "INSERT INTO workspaces (id, name, slug, mode, created_by_human)
+            "INSERT INTO workspaces (id, name, slug, mode, created_by_human_id)
              VALUES ('workspace-1', 'Broken', 'broken', 'surprise', 'alice')",
             [],
         )
@@ -472,13 +507,7 @@ fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
         .create_team_with_channel_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
         .unwrap();
     store
-        .create_team_member(
-            &alpha_team_id,
-            "alpha-bot",
-            "agent",
-            &alpha_agent_id,
-            "member",
-        )
+        .create_team_member(&alpha_team_id, &alpha_agent_id, "agent", "member")
         .unwrap();
 
     let alpha_attachment_path = dir.path().join("alpha-attachment.txt");
@@ -500,31 +529,31 @@ fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO channel_members (channel_id, member_name, member_type)
+            "INSERT INTO channel_members (channel_id, member_id, member_type)
              VALUES (?1, 'alice', 'human')",
             params![alpha_channel_id],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO channel_members (channel_id, member_name, member_type)
+            "INSERT INTO channel_members (channel_id, member_id, member_type)
              VALUES ('alpha-task-channel', 'alice', 'human')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO inbox_read_state (conversation_id, member_name, member_type)
+            "INSERT INTO inbox_read_state (conversation_id, member_id, member_type)
              VALUES (?1, 'alice', 'human')",
             params![alpha_channel_id],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO tasks (id, channel_id, task_number, title, created_by, sub_channel_id)
-             VALUES ('alpha-task', ?1, 1, 'Ship alpha', 'alice', 'alpha-task-channel')",
+            "INSERT INTO tasks (id, channel_id, task_number, title, created_by_id, created_by_type, sub_channel_id)
+             VALUES ('alpha-task', ?1, 1, 'Ship alpha', 'alice', 'human', 'alpha-task-channel')",
             params![alpha_channel_id],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq, run_id)
+            "INSERT INTO messages (id, channel_id, sender_id, sender_type, content, seq, run_id)
              VALUES ('alpha-message', ?1, 'alice', 'human', 'alpha', 1, 'run-alpha')",
             params![alpha_channel_id],
         )
@@ -548,7 +577,7 @@ fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq, run_id)
+            "INSERT INTO messages (id, channel_id, sender_id, sender_type, content, seq, run_id)
              VALUES ('beta-message', ?1, 'bob', 'human', 'beta', 1, 'run-beta')",
             params![beta_channel_id],
         )
@@ -658,7 +687,7 @@ fn test_shell_style_workspace_mutations_persist() {
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -700,7 +729,7 @@ fn test_shell_style_workspace_mutations_persist() {
         .create_channel("ops-team", None, ChannelType::Team, None)
         .unwrap();
     store
-        .create_team_member(&team_id, "bot1", "agent", &bot1.id, "operator")
+        .create_team_member(&team_id, &bot1.id, "agent", "operator")
         .unwrap();
     store
         .join_channel("ops-team", "bot1", SenderType::Agent)
@@ -759,7 +788,7 @@ fn test_send_and_receive_messages() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -767,7 +796,7 @@ fn test_send_and_receive_messages() {
     let msg_id = store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "hello",
             attachment_ids: &[],
@@ -777,10 +806,7 @@ fn test_send_and_receive_messages() {
         .unwrap();
     assert!(!msg_id.is_empty());
 
-    let msgs = store.get_messages_for_agent("bob", false).unwrap();
-    assert!(msgs.is_empty());
-
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -792,14 +818,19 @@ fn test_send_and_receive_messages() {
             env_vars: &[],
         })
         .unwrap();
+
+    // Before joining any channels, the agent has no inbox messages.
+    let msgs = store.get_messages_for_agent(&bot1_id, false).unwrap();
+    assert!(msgs.is_empty());
+
     store
-        .join_channel("general", "bot1", SenderType::Agent)
+        .join_channel("general", &bot1_id, SenderType::Agent)
         .unwrap();
 
     let _msg_id2 = store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "hello bot",
             attachment_ids: &[],
@@ -807,14 +838,14 @@ fn test_send_and_receive_messages() {
             run_id: None,
         })
         .unwrap();
-    let msgs = store.get_messages_for_agent("bot1", false).unwrap();
+    let msgs = store.get_messages_for_agent(&bot1_id, false).unwrap();
     assert_eq!(msgs.len(), 2);
 }
 
 #[test]
 fn test_agent_does_not_receive_its_own_sent_message() {
     let (store, _dir) = make_store();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -826,14 +857,14 @@ fn test_agent_does_not_receive_its_own_sent_message() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_human("alice").unwrap();
-    let dm_channel_id = store.resolve_target("dm:@alice", "bot1").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    let dm_channel_id = store.resolve_target("dm:@alice", &bot1_id).unwrap();
     let dm_channel = store.get_channel_by_id(&dm_channel_id).unwrap().unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: &dm_channel.name,
-            sender_name: "bot1",
+            sender_id: &bot1_id,
             sender_type: SenderType::Agent,
             content: "hello alice",
             attachment_ids: &[],
@@ -842,13 +873,13 @@ fn test_agent_does_not_receive_its_own_sent_message() {
         })
         .unwrap();
 
-    let unread = store.get_messages_for_agent("bot1", false).unwrap();
+    let unread = store.get_messages_for_agent(&bot1_id, false).unwrap();
     assert!(
         unread.is_empty(),
         "an agent should not get its own outbound message back as unread"
     );
 
-    let last_read = store.get_last_read_seq(&dm_channel.name, "bot1").unwrap();
+    let last_read = store.get_last_read_seq(&dm_channel.name, &bot1_id).unwrap();
     assert_eq!(last_read, 1, "sender read position should advance on send");
 }
 
@@ -858,7 +889,7 @@ fn test_message_history_pagination() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -867,7 +898,7 @@ fn test_message_history_pagination() {
         store
             .create_message(CreateMessage {
                 channel_name: "general",
-                sender_name: "alice",
+                sender_id: "alice",
                 sender_type: SenderType::Human,
                 content: &format!("msg {i}"),
                 attachment_ids: &[],
@@ -894,7 +925,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -902,7 +933,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "one",
             attachment_ids: &[],
@@ -913,7 +944,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "two",
             attachment_ids: &[],
@@ -939,11 +970,11 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -956,13 +987,13 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         })
         .unwrap();
     store
-        .join_channel("general", "bot1", SenderType::Agent)
+        .join_channel("general", &bot1_id, SenderType::Agent)
         .unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "one",
             attachment_ids: &[],
@@ -973,7 +1004,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     let second_top_level = store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "two",
             attachment_ids: &[],
@@ -983,7 +1014,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         .unwrap();
 
     let state_before = store
-        .get_inbox_conversation_state("general", "bot1")
+        .get_inbox_conversation_state("general", &bot1_id)
         .unwrap()
         .unwrap();
     assert_eq!(state_before.conversation_name, "general");
@@ -997,8 +1028,8 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         .query_row(
             "SELECT conversation_name, member_name, last_read_seq, last_read_message_id, unread_count
              FROM inbox_conversation_state_view
-             WHERE conversation_name = 'general' AND member_name = 'bot1'",
-            [],
+             WHERE conversation_name = 'general' AND member_id = ?1",
+            params![bot1_id],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
@@ -1017,11 +1048,11 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     assert_eq!(row.4, 2);
     drop(conn);
 
-    let unread = store.get_messages_for_agent("bot1", true).unwrap();
+    let unread = store.get_messages_for_agent(&bot1_id, true).unwrap();
     assert_eq!(unread.len(), 2);
 
     let state_after = store
-        .get_inbox_conversation_state("general", "bot1")
+        .get_inbox_conversation_state("general", &bot1_id)
         .unwrap()
         .unwrap();
     assert_eq!(state_after.last_read_seq, 2);
@@ -1035,8 +1066,8 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     let legacy_last_read_seq: i64 = conn
         .query_row(
             "SELECT last_read_seq FROM channel_members
-             WHERE channel_id = ?1 AND member_name = 'bot1'",
-            params![state_after.conversation_id],
+             WHERE channel_id = ?1 AND member_id = ?2",
+            params![state_after.conversation_id, bot1_id],
             |row| row.get(0),
         )
         .unwrap();
@@ -1052,11 +1083,11 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1069,13 +1100,13 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         })
         .unwrap();
     store
-        .join_channel("general", "bot1", SenderType::Agent)
+        .join_channel("general", &bot1_id, SenderType::Agent)
         .unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "one",
             attachment_ids: &[],
@@ -1086,7 +1117,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "two",
             attachment_ids: &[],
@@ -1095,24 +1126,24 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         })
         .unwrap();
 
-    let unread_before = store.get_unread_summary("bot1").unwrap();
+    let unread_before = store.get_unread_summary(&bot1_id).unwrap();
     assert_eq!(unread_before.get("general"), Some(&2));
 
     let snapshot_before = store
-        .get_history_snapshot("general", "bot1", 10, None, None)
+        .get_history_snapshot("general", &bot1_id, 10, None, None)
         .unwrap();
     assert_eq!(snapshot_before.last_read_seq, 0);
 
-    store.get_messages_for_agent("bot1", true).unwrap();
+    store.get_messages_for_agent(&bot1_id, true).unwrap();
 
-    let unread_after = store.get_unread_summary("bot1").unwrap();
+    let unread_after = store.get_unread_summary(&bot1_id).unwrap();
     assert_eq!(unread_after.get("general"), None);
 
     let snapshot_after = store
-        .get_history_snapshot("general", "bot1", 10, None, None)
+        .get_history_snapshot("general", &bot1_id, 10, None, None)
         .unwrap();
     assert_eq!(snapshot_after.last_read_seq, 2);
-    assert_eq!(store.get_last_read_seq("general", "bot1").unwrap(), 2);
+    assert_eq!(store.get_last_read_seq("general", &bot1_id).unwrap(), 2);
 }
 
 #[test]
@@ -1121,14 +1152,14 @@ fn test_history_read_cursor_rejects_seq_above_max() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "a",
             attachment_ids: &[],
@@ -1139,7 +1170,7 @@ fn test_history_read_cursor_rejects_seq_above_max() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "b",
             attachment_ids: &[],
@@ -1165,14 +1196,14 @@ fn test_history_read_cursor_rejects_negative_seq() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "a",
             attachment_ids: &[],
@@ -1196,14 +1227,14 @@ fn test_history_read_cursor_heals_orphan_above_max_seq() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "a",
             attachment_ids: &[],
@@ -1217,9 +1248,9 @@ fn test_history_read_cursor_heals_orphan_above_max_seq() {
         let conn = store.conn_for_test();
         conn.execute(
             "INSERT INTO inbox_read_state (
-                conversation_id, member_name, member_type, last_read_seq, last_read_message_id, updated_at
+                conversation_id, member_id, member_type, last_read_seq, last_read_message_id, updated_at
              ) VALUES (?1, 'alice', 'human', 50, NULL, datetime('now'))
-             ON CONFLICT(conversation_id, member_name) DO UPDATE SET last_read_seq = excluded.last_read_seq",
+             ON CONFLICT(conversation_id, member_type, member_id) DO UPDATE SET last_read_seq = excluded.last_read_seq",
             params![channel.id],
         )
         .unwrap();
@@ -1237,7 +1268,7 @@ fn test_conversation_messages_view_projects_message_rows() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1245,7 +1276,7 @@ fn test_conversation_messages_view_projects_message_rows() {
     let message_id = store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "hello",
             attachment_ids: &[],
@@ -1367,7 +1398,7 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1382,7 +1413,7 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "bot1",
+            sender_id: &bot1_id,
             sender_type: SenderType::Agent,
             content: "hello",
             attachment_ids: &[],
@@ -1403,7 +1434,7 @@ fn test_create_message_persists_top_level() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1411,7 +1442,7 @@ fn test_create_message_persists_top_level() {
     let message_id = store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "hello",
             attachment_ids: &[],
@@ -1432,11 +1463,11 @@ fn test_unread_excludes_own_messages_for_sender() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1449,13 +1480,13 @@ fn test_unread_excludes_own_messages_for_sender() {
         })
         .unwrap();
     store
-        .join_channel("general", "bot1", SenderType::Agent)
+        .join_channel("general", &bot1_id, SenderType::Agent)
         .unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "bot1",
+            sender_id: &bot1_id,
             sender_type: SenderType::Agent,
             content: "from bot a",
             attachment_ids: &[],
@@ -1466,7 +1497,7 @@ fn test_unread_excludes_own_messages_for_sender() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "bot1",
+            sender_id: &bot1_id,
             sender_type: SenderType::Agent,
             content: "from bot b",
             attachment_ids: &[],
@@ -1490,7 +1521,7 @@ fn test_unread_excludes_own_messages_for_sender() {
     drop(conn);
 
     let bot_state = store
-        .get_inbox_conversation_state("general", "bot1")
+        .get_inbox_conversation_state("general", &bot1_id)
         .unwrap()
         .unwrap();
     assert_eq!(bot_state.unread_count, 0);
@@ -1508,7 +1539,7 @@ fn test_tasks_crud() {
     store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1522,7 +1553,12 @@ fn test_tasks_crud() {
         .unwrap();
 
     let tasks = store
-        .create_tasks("eng", "bot1", &["Fix bug", "Add feature"])
+        .create_tasks(
+            "eng",
+            &bot1_id,
+            SenderType::Agent,
+            &["Fix bug", "Add feature"],
+        )
         .unwrap();
     assert_eq!(tasks.len(), 2);
     assert_eq!(tasks[0].task_number, 1);
@@ -1538,7 +1574,7 @@ fn test_task_claim_and_status() {
     store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1550,7 +1586,7 @@ fn test_task_claim_and_status() {
             env_vars: &[],
         })
         .unwrap();
-    store
+    let bot2_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot2",
             display_name: "Bot 2",
@@ -1562,16 +1598,22 @@ fn test_task_claim_and_status() {
             env_vars: &[],
         })
         .unwrap();
-    store.create_tasks("eng", "bot1", &["Task A"]).unwrap();
+    store
+        .create_tasks("eng", &bot1_id, SenderType::Agent, &["Task A"])
+        .unwrap();
 
-    let results = store.update_tasks_claim("eng", "bot1", &[1]).unwrap();
+    let results = store
+        .update_tasks_claim("eng", &bot1_id, SenderType::Agent, &[1])
+        .unwrap();
     assert!(results[0].success);
 
-    let results = store.update_tasks_claim("eng", "bot2", &[1]).unwrap();
+    let results = store
+        .update_tasks_claim("eng", &bot2_id, SenderType::Agent, &[1])
+        .unwrap();
     assert!(!results[0].success);
 
     store
-        .update_task_status("eng", 1, "bot1", TaskStatus::InReview)
+        .update_task_status("eng", 1, &bot1_id, SenderType::Agent, TaskStatus::InReview)
         .unwrap();
     let tasks = store.get_tasks("eng", Some(TaskStatus::InReview)).unwrap();
     assert_eq!(tasks.len(), 1);
@@ -1583,8 +1625,8 @@ fn test_resolve_target() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
-    store
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1597,10 +1639,10 @@ fn test_resolve_target() {
         })
         .unwrap();
 
-    let ch_id = store.resolve_target("#general", "bot1").unwrap();
+    let ch_id = store.resolve_target("#general", &bot1_id).unwrap();
     assert!(!ch_id.is_empty());
 
-    let dm_id = store.resolve_target("dm:@alice", "bot1").unwrap();
+    let dm_id = store.resolve_target("dm:@alice", &bot1_id).unwrap();
     assert!(!dm_id.is_empty());
 }
 
@@ -1610,8 +1652,8 @@ fn test_list_channels_excludes_dm() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
-    store
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1624,7 +1666,7 @@ fn test_list_channels_excludes_dm() {
         })
         .unwrap();
     // Create a DM channel via resolve_target
-    store.resolve_target("dm:@alice", "bot1").unwrap();
+    store.resolve_target("dm:@alice", &bot1_id).unwrap();
 
     let channels = store.get_channels().unwrap();
     assert_eq!(
@@ -1638,8 +1680,8 @@ fn test_list_channels_excludes_dm() {
 #[test]
 fn test_dm_channels() {
     let (store, _dir) = make_store();
-    store.create_human("alice").unwrap();
-    store
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1652,8 +1694,8 @@ fn test_dm_channels() {
         })
         .unwrap();
 
-    let ch_id = store.resolve_target("dm:@alice", "bot1").unwrap();
-    let ch_id2 = store.resolve_target("dm:@alice", "bot1").unwrap();
+    let ch_id = store.resolve_target("dm:@alice", &bot1_id).unwrap();
+    let ch_id2 = store.resolve_target("dm:@alice", &bot1_id).unwrap();
     assert_eq!(ch_id, ch_id2);
 }
 
@@ -1703,7 +1745,7 @@ fn test_archive_channel_hides_it_from_active_listings() {
             None,
         )
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1738,7 +1780,7 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
             None,
         )
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -1787,8 +1829,8 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
 #[test]
 fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
     let (store, _dir) = make_store();
-    store.create_human("alice").unwrap();
-    store.create_human("zoe").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    store.ensure_human_with_id("zoe", "zoe").unwrap();
     store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -1817,10 +1859,10 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
     store.ensure_builtin_channels("alice").unwrap();
 
     let all = store.get_channel_by_name("all").unwrap().unwrap();
-    let members = store.get_channel_members(&all.id).unwrap();
-    let names: Vec<_> = members
+    let profiles = store.get_channel_member_profiles(&all.id).unwrap();
+    let names: Vec<_> = profiles
         .iter()
-        .map(|member| member.member_name.as_str())
+        .map(|profile| profile.member_name.as_str())
         .collect();
     assert!(names.contains(&"alice"));
     assert!(names.contains(&"zoe"));
@@ -1831,7 +1873,7 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
 #[test]
 fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
     let (store, _dir) = make_store();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -1865,13 +1907,17 @@ fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
 }
 
 #[test]
-fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
+fn test_new_agents_auto_join_all_when_it_exists() {
+    // Humans currently rely on `ensure_builtin_channels` for backfill; new
+    // humans created via `ensure_human_with_id` are not automatically joined
+    // to `#all`. Agents, however, are auto-joined when their record is
+    // created (see `create_agent_record_inner`). This test pins that
+    // agent-side guarantee.
     let (store, _dir) = make_store();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store.ensure_builtin_channels("alice").unwrap();
 
-    store.create_human("zoe").unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1885,8 +1931,7 @@ fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
         .unwrap();
 
     assert!(store.is_member("all", "alice").unwrap());
-    assert!(store.is_member("all", "zoe").unwrap());
-    assert!(store.is_member("all", "bot1").unwrap());
+    assert!(store.is_member("all", &bot1_id).unwrap());
 }
 
 #[test]
@@ -1913,7 +1958,7 @@ fn test_ensure_builtin_channels_repairs_active_workspace_all() {
     store
         .create_channel("all", Some("Recovered all"), ChannelType::System, None)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record_in_workspace(
             &workspace.id,
             &AgentRecordUpsert {
@@ -1939,7 +1984,7 @@ fn test_ensure_builtin_channels_repairs_active_workspace_all() {
     assert_eq!(all.name, "all");
     assert_eq!(all.workspace_id, workspace.id);
     assert!(store.channel_member_exists(&all.id, "alice").unwrap());
-    assert!(store.channel_member_exists(&all.id, "bot1").unwrap());
+    assert!(store.channel_member_exists(&all.id, &bot1_id).unwrap());
 }
 
 #[test]
@@ -1948,11 +1993,11 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
     let channel_id = store
         .create_channel("eng", Some("Engineering"), ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
-    store
+    let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
             display_name: "Bot 1",
@@ -1965,13 +2010,13 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
         })
         .unwrap();
     store
-        .join_channel("eng", "bot1", SenderType::Agent)
+        .join_channel("eng", &bot1_id, SenderType::Agent)
         .unwrap();
 
     store
         .create_message(CreateMessage {
             channel_name: "eng",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "hello",
             attachment_ids: &[],
@@ -1979,7 +2024,9 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
             run_id: None,
         })
         .unwrap();
-    store.create_tasks("eng", "bot1", &["ship it"]).unwrap();
+    store
+        .create_tasks("eng", &bot1_id, SenderType::Agent, &["ship it"])
+        .unwrap();
 
     store.delete_channel(&channel_id).unwrap();
 
@@ -2039,7 +2086,7 @@ fn test_create_system_message_writes_system_sender_type() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -2071,11 +2118,11 @@ fn test_channel_unread_count_excludes_system_messages() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
-    store.create_human("bob").unwrap();
+    store.ensure_human_with_id("bob", "bob").unwrap();
     store
         .join_channel("general", "bob", SenderType::Human)
         .unwrap();
@@ -2084,7 +2131,7 @@ fn test_channel_unread_count_excludes_system_messages() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "bob",
+            sender_id: "bob",
             sender_type: SenderType::Human,
             content: "hey",
             attachment_ids: &[],
@@ -2122,7 +2169,7 @@ fn test_create_system_message_emits_system_typed_stream_event() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
@@ -2158,7 +2205,7 @@ fn test_lookup_sender_type_recovers_after_mutex_poison() {
     use chorus::store::messages::SenderType;
 
     let store = Store::open(":memory:").unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
 
     let panic_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _conn = store.conn_for_test();
@@ -2251,7 +2298,7 @@ fn create_tasks_emits_task_event_to_parent_channel() {
             None,
         )
         .unwrap();
-    store.create_human("bob").unwrap();
+    store.ensure_human_with_id("bob", "bob").unwrap();
     store
         .join_channel(
             "eng",
@@ -2261,7 +2308,7 @@ fn create_tasks_emits_task_event_to_parent_channel() {
         .unwrap();
 
     let result = store
-        .create_tasks("eng", "bob", &["wire up the bridge"])
+        .create_tasks("eng", "bob", SenderType::Human, &["wire up the bridge"])
         .unwrap();
     assert_eq!(result.len(), 1);
 
@@ -2297,7 +2344,7 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
             None,
         )
         .unwrap();
-    store.create_human("bob").unwrap();
+    store.ensure_human_with_id("bob", "bob").unwrap();
     store
         .join_channel(
             "eng",
@@ -2305,7 +2352,7 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
             chorus::store::messages::types::SenderType::Human,
         )
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel(
             "eng",
@@ -2314,8 +2361,12 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
         )
         .unwrap();
 
-    store.create_tasks("eng", "bob", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+    store
+        .create_tasks("eng", "bob", SenderType::Human, &["t"])
+        .unwrap();
+    store
+        .update_tasks_claim("eng", "alice", SenderType::Human, &[1])
+        .unwrap();
 
     let events: Vec<serde_json::Value> = store
         .conn_for_test()
@@ -2347,7 +2398,7 @@ fn unclaim_task_emits_unclaimed_event() {
             None,
         )
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel(
             "eng",
@@ -2355,10 +2406,16 @@ fn unclaim_task_emits_unclaimed_event() {
             chorus::store::messages::types::SenderType::Human,
         )
         .unwrap();
-    store.create_tasks("eng", "alice", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+    store
+        .create_tasks("eng", "alice", SenderType::Human, &["t"])
+        .unwrap();
+    store
+        .update_tasks_claim("eng", "alice", SenderType::Human, &[1])
+        .unwrap();
 
-    store.update_task_unclaim("eng", "alice", 1).unwrap();
+    store
+        .update_task_unclaim("eng", "alice", SenderType::Human, 1)
+        .unwrap();
 
     let last_event: serde_json::Value = {
         let content: String = store
@@ -2388,7 +2445,7 @@ fn update_task_status_emits_status_changed_event() {
             None,
         )
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel(
             "eng",
@@ -2396,11 +2453,15 @@ fn update_task_status_emits_status_changed_event() {
             chorus::store::messages::types::SenderType::Human,
         )
         .unwrap();
-    store.create_tasks("eng", "alice", &["t"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
+    store
+        .create_tasks("eng", "alice", SenderType::Human, &["t"])
+        .unwrap();
+    store
+        .update_tasks_claim("eng", "alice", SenderType::Human, &[1])
+        .unwrap();
 
     store
-        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+        .update_task_status("eng", 1, "alice", SenderType::Human, TaskStatus::InReview)
         .unwrap();
 
     let last_event: serde_json::Value = {
@@ -2431,8 +2492,8 @@ fn get_unread_summary_excludes_archived_task_sub_channels() {
     let sub_id = store
         .create_channel("eng__task-1", None, ChannelType::Task, None)
         .unwrap();
-    store.create_human("alice").unwrap();
-    store.create_human("bob").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    store.ensure_human_with_id("bob", "bob").unwrap();
     store
         .join_channel_by_id(&sub_id, "alice", SenderType::Human)
         .unwrap();
@@ -2444,7 +2505,7 @@ fn get_unread_summary_excludes_archived_task_sub_channels() {
     store
         .create_message(CreateMessage {
             channel_name: "eng__task-1",
-            sender_name: "bob",
+            sender_id: "bob",
             sender_type: SenderType::Human,
             content: "hi alice",
             attachment_ids: &[],

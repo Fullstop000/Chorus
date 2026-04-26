@@ -71,11 +71,22 @@ pub fn build_router_with_services(
         .ok()
         .flatten()
         .map(|workspace| workspace.id);
-    let local_human_name = resolve_local_human_name(store.as_ref());
+    let (local_human_id, local_human_name) = resolve_local_human_identity(store.as_ref());
+
+    // Built-in channels (`#all`) and the local human's membership are seeded
+    // here, after identity resolution: the legacy CLI bootstrap used the OS
+    // username as both the human row PK and the `#all` member key, which is
+    // incompatible with the ID-first model. Failing here would leave the API
+    // running against a database with no `#all` channel, so we log and
+    // continue; the server is still useful for diagnostics.
+    if let Err(err) = store.ensure_builtin_channels(&local_human_id) {
+        tracing::error!(err = %err, "failed to ensure built-in channels for local human");
+    }
 
     let state = AppState {
         store,
         active_workspace_id: Arc::new(RwLock::new(active_workspace_id)),
+        local_human_id,
         local_human_name,
         lifecycle,
         runtime_status_provider,
@@ -114,7 +125,7 @@ pub fn build_router_with_services(
         .route("/attachments", post(handle_public_upload))
         .route("/whoami", get(handle_whoami))
         .route("/humans", get(handle_list_humans))
-        .route("/humans/{name}", patch(handle_update_human))
+        .route("/humans/{id}", patch(handle_update_human))
         .route("/inbox", get(handle_public_inbox))
         .route("/dms/{peer_name}", put(handle_public_ensure_dm))
         .route(
@@ -229,15 +240,32 @@ pub fn build_router_with_services(
         .with_state(state)
 }
 
-fn resolve_local_human_name(store: &Store) -> String {
+fn resolve_local_human_identity(store: &Store) -> (String, String) {
     let config_root = store
         .data_dir()
         .parent()
         .unwrap_or_else(|| store.data_dir());
-    ChorusConfig::load(config_root)
+    let configured = ChorusConfig::load(config_root)
         .ok()
         .flatten()
-        .and_then(|cfg| cfg.local_human.name)
+        .map(|cfg| cfg.local_human);
+    if let Some(local_human) = configured.as_ref() {
+        if let (Some(id), Some(name)) = (&local_human.id, &local_human.name) {
+            if !id.trim().is_empty() && !name.trim().is_empty() {
+                return (id.clone(), name.clone());
+            }
+        }
+    }
+    if let Ok(Some(human)) = store.get_humans().map(|mut humans| humans.pop()) {
+        return (human.id, human.name);
+    }
+    let name = configured
+        .and_then(|local_human| local_human.name)
         .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(whoami::username)
+        // This is only a fresh local label suggestion; it is not identity.
+        .unwrap_or_else(whoami::username);
+    match store.create_local_human(&name) {
+        Ok(human) => (human.id, human.name),
+        Err(_) => (format!("human_{}", uuid::Uuid::new_v4()), name),
+    }
 }

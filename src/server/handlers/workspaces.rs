@@ -15,7 +15,7 @@ pub struct WorkspaceResponse {
     pub name: String,
     pub slug: String,
     pub mode: WorkspaceMode,
-    pub created_by_human: Option<String>,
+    pub created_by_human_id: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
     pub active: bool,
     pub channel_count: i64,
@@ -41,7 +41,7 @@ impl WorkspaceResponse {
             name: workspace.name,
             slug: workspace.slug,
             mode: workspace.mode,
-            created_by_human: workspace.created_by_human,
+            created_by_human_id: workspace.created_by_human_id,
             created_at: workspace.created_at,
             active,
             channel_count: counts.channel_count,
@@ -128,7 +128,7 @@ pub async fn handle_create_workspace(
     }
     let workspace = state
         .store
-        .create_local_workspace_without_activation(name, &state.local_human_name)
+        .create_local_workspace_without_activation(name, &state.local_human_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     let active_workspace_id = state.active_workspace_id().await;
     Ok(Json(workspace_response(

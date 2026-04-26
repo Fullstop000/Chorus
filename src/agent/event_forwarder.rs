@@ -763,7 +763,7 @@ mod tests {
         let content: String = store
             .conn_for_test()
             .query_row(
-                "SELECT content FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                "SELECT content FROM messages WHERE channel_id = ?1 AND sender_type = 'system'",
                 rusqlite::params![channel_id],
                 |r| r.get(0),
             )
@@ -857,7 +857,7 @@ mod tests {
         let first_count: i64 = store
             .conn_for_test()
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_type = 'system'",
                 rusqlite::params![first_channel_id],
                 |r| r.get(0),
             )
@@ -865,7 +865,7 @@ mod tests {
         let second_count: i64 = store
             .conn_for_test()
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_type = 'system'",
                 rusqlite::params![second_channel_id],
                 |r| r.get(0),
             )
@@ -960,7 +960,7 @@ mod tests {
         let count: i64 = store
             .conn_for_test()
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_type = 'system'",
                 rusqlite::params![channel_id],
                 |r| r.get(0),
             )
@@ -1041,7 +1041,7 @@ mod tests {
         let count: i64 = store
             .conn_for_test()
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_type = 'system'",
                 rusqlite::params![channel_id],
                 |r| r.get(0),
             )
@@ -1118,7 +1118,7 @@ mod tests {
         let count: i64 = store
             .conn_for_test()
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_type = 'system'",
                 rusqlite::params![channel_id],
                 |r| r.get(0),
             )
@@ -1194,7 +1194,7 @@ mod tests {
         let count: i64 = store
             .conn_for_test()
             .query_row(
-                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_type = 'system'",
                 rusqlite::params![channel_id],
                 |r| r.get(0),
             )

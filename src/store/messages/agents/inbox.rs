@@ -1,7 +1,7 @@
 //! Agent **receive** path: unread rows from SQLite, shaping into [`ReceivedMessage`], optional read-cursor updates.
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use tracing::warn;
 
 use crate::store::channels::{Channel, ChannelType};
@@ -48,25 +48,26 @@ fn channel_type_wire_label(kind: ChannelType) -> &'static str {
 impl Store {
     pub fn get_messages_for_agent(
         &self,
-        agent_name: &str,
+        agent_ref: &str,
         update_read_pos: bool,
     ) -> Result<Vec<ReceivedMessage>> {
         let mut conn = self.conn.lock().unwrap();
-        let memberships = Self::load_agent_channel_memberships(&conn, agent_name)?;
+        let (agent_id, _agent_name) = Self::resolve_agent_ref_inner(&conn, agent_ref)?;
+        let memberships = Self::load_agent_channel_memberships(&conn, &agent_id)?;
 
         let mut out = Vec::new();
         for (channel_id, member_type, last_read_seq) in &memberships {
             let ctx = Self::load_agent_inbox_channel_context(
                 &conn,
                 channel_id,
-                agent_name,
+                &agent_id,
                 *last_read_seq,
             )?;
             let scan = Self::scan_agent_inbox_channel(&conn, &ctx)?;
             Self::persist_agent_inbox_read_cursors(
                 &mut conn,
                 &ctx.channel,
-                agent_name,
+                &agent_id,
                 member_type,
                 *last_read_seq,
                 update_read_pos,
@@ -91,7 +92,7 @@ impl Store {
 
     fn load_agent_channel_memberships(
         conn: &Connection,
-        agent_name: &str,
+        agent_id: &str,
     ) -> Result<Vec<(String, String, i64)>> {
         let mut list = Vec::new();
         let mut stmt = conn.prepare(
@@ -101,16 +102,17 @@ impl Store {
              FROM channel_members cm
              LEFT JOIN inbox_read_state irs
                ON irs.conversation_id = cm.channel_id
-              AND irs.member_name = cm.member_name
-             WHERE cm.member_name = ?1",
+                AND irs.member_id = cm.member_id
+                AND irs.member_type = cm.member_type
+               WHERE cm.member_id = ?1 AND cm.member_type = 'agent'",
         )?;
-        for row in stmt.query_map(params![agent_name], |row| {
+        for row in stmt.query_map(params![agent_id], |row| {
             Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })? {
             match row {
                 Ok(entry) => list.push(entry),
                 Err(e) => warn!(
-                    agent = %agent_name,
+                    agent_id = %agent_id,
                     error = %e,
                     "get_messages_for_agent: skip bad membership row"
                 ),
@@ -123,18 +125,18 @@ impl Store {
         conn: &Connection,
         channel_id: &str,
         after_seq: i64,
-        agent_name: &str,
+        agent_id: &str,
     ) -> Result<Vec<AgentUnreadMessageRow>> {
         let mut rows = Vec::new();
         let mut stmt = conn.prepare(
-            "SELECT m.id, m.sender_name, m.sender_type, m.content, m.created_at, m.seq, m.forwarded_from
-             FROM messages m
-             WHERE m.channel_id = ?1
-               AND m.seq > ?2
-               AND NOT (m.sender_name = ?3 AND m.sender_type = 'agent')
-             ORDER BY m.seq ASC",
+            "SELECT message_id, sender_name, sender_type, content, created_at, seq, forwarded_from
+                         FROM conversation_messages_view
+                         WHERE conversation_id = ?1
+               AND seq > ?2
+                             AND NOT (sender_id = ?3 AND sender_type = 'agent')
+                         ORDER BY seq ASC",
         )?;
-        for row in stmt.query_map(params![channel_id, after_seq, agent_name], |row| {
+        for row in stmt.query_map(params![channel_id, after_seq, agent_id], |row| {
             Ok(AgentUnreadMessageRow {
                 message_id: row.get(0)?,
                 sender_name: row.get(1)?,
@@ -148,7 +150,7 @@ impl Store {
             match row {
                 Ok(entry) => rows.push(entry),
                 Err(e) => warn!(
-                    agent = %agent_name,
+                    agent_id = %agent_id,
                     channel_id = %channel_id,
                     error = %e,
                     "get_messages_for_agent: skip bad message row"
@@ -162,7 +164,7 @@ impl Store {
     fn resolve_dm_peer_display_name(
         conn: &Connection,
         channel_id: &str,
-        agent_name: &str,
+        agent_id: &str,
         channel_type: ChannelType,
     ) -> Result<Option<String>> {
         if channel_type != ChannelType::Dm {
@@ -170,9 +172,14 @@ impl Store {
         }
         let peer: Option<String> = conn
             .prepare(
-                "SELECT member_name FROM channel_members WHERE channel_id = ?1 AND member_name != ?2 LIMIT 1",
+                "SELECT COALESCE(h.name, a.name, cm.member_id)
+                 FROM channel_members cm
+                 LEFT JOIN humans h ON cm.member_type = 'human' AND h.id = cm.member_id
+                 LEFT JOIN agents a ON cm.member_type = 'agent' AND a.id = cm.member_id
+                 WHERE cm.channel_id = ?1 AND cm.member_id != ?2
+                 LIMIT 1",
             )?
-            .query_row(params![channel_id, agent_name], |row| row.get(0))
+            .query_row(params![channel_id, agent_id], |row| row.get(0))
             .ok();
         Ok(peer)
     }
@@ -180,7 +187,7 @@ impl Store {
     fn load_agent_inbox_channel_context(
         conn: &Connection,
         channel_id: &str,
-        agent_name: &str,
+        agent_id: &str,
         last_read_seq: i64,
     ) -> Result<AgentInboxChannelContext> {
         let channel = Self::get_channel_by_id_inner(conn, channel_id)?
@@ -190,12 +197,12 @@ impl Store {
                 conn,
                 channel_id,
                 last_read_seq,
-                agent_name,
+                agent_id,
             )?,
             dm_peer_name: Self::resolve_dm_peer_display_name(
                 conn,
                 channel_id,
-                agent_name,
+                agent_id,
                 channel.channel_type,
             )?,
             channel,
@@ -260,7 +267,7 @@ impl Store {
     fn persist_agent_inbox_read_cursors(
         conn: &mut Connection,
         channel: &Channel,
-        agent_name: &str,
+        agent_id: &str,
         member_type: &str,
         last_read_seq: i64,
         update_read_pos: bool,
@@ -277,12 +284,22 @@ impl Store {
         Self::set_inbox_read_cursor_tx(
             &tx,
             channel,
-            agent_name,
+            agent_id,
             member_type,
             scan.max_conversation_seq,
             scan.last_conversation_message_id.as_deref(),
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    fn resolve_agent_ref_inner(conn: &Connection, agent_ref: &str) -> Result<(String, String)> {
+        conn.query_row(
+            "SELECT id, name FROM agents WHERE id = ?1 OR name = ?1",
+            params![agent_ref],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| anyhow!("agent not found: {agent_ref}"))
     }
 }

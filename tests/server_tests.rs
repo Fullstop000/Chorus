@@ -27,58 +27,76 @@ use tower::ServiceExt;
 
 fn setup() -> (Arc<Store>, axum::Router) {
     let store = Arc::new(Store::open(":memory:").unwrap());
+    seed_default_workspace(&store);
+    let router = build_router(store.clone());
+    (store, router)
+}
+
+/// Seed the canonical "general"/alice/bot1 fixture used by most
+/// server tests. The agent's database id is fixed to `"bot1"` so
+/// existing tests can keep using `/internal/agent/bot1/...` URLs and
+/// raw `"bot1"` strings as agent identity-typed args in the
+/// ID-first store. New tests should still capture the returned id
+/// from `create_agent_record` and feed it to identity-typed APIs.
+///
+/// Creates `#all` *before* `#general` so the legacy migration in
+/// `ensure_all_channel_inner` (which renames `#general` to `#all`
+/// when no `#all` exists) does not fire when `build_router` calls
+/// `ensure_builtin_channels`.
+fn seed_default_workspace(store: &Arc<Store>) {
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(store, "bot1", "Bot 1", "claude", "sonnet");
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
-    let router = build_router(store.clone());
-    (store, router)
+}
+
+/// Insert an agent row with a chosen primary key. Used by server-test
+/// fixtures so `/internal/agent/{agent_id}` URLs and `"bot1"`-style
+/// identity-typed args continue to resolve under the strict ID-first
+/// store, without forcing every test to plumb a UUID through. Assumes
+/// the workspace has already been initialised (e.g. by an earlier
+/// `create_channel` / `ensure_human_with_id` call).
+fn seed_agent_with_id(
+    store: &Arc<Store>,
+    id: &str,
+    display_name: &str,
+    runtime: &str,
+    model: &str,
+) {
+    let workspace_id = store
+        .get_active_workspace()
+        .unwrap()
+        .expect("seed_agent_with_id requires an active workspace")
+        .id;
+    let conn = store.conn_for_test();
+    conn.execute(
+        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
+         VALUES (?1, ?2, ?1, ?3, ?4, ?5)",
+        rusqlite::params![id, workspace_id, display_name, runtime, model],
+    )
+    .unwrap();
 }
 
 fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("chorus.db");
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
-    store
-        .create_channel("general", Some("General"), ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    seed_default_workspace(&store);
     let router = build_router(store.clone());
     (store, router, dir)
 }
@@ -266,28 +284,7 @@ impl AgentLifecycle for FailStartLifecycle {
 
 fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store
-        .create_channel("general", Some("General"), ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    seed_default_workspace(&store);
     let lifecycle = Arc::new(MockLifecycle::default());
     let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
     (store, router, lifecycle)
@@ -298,28 +295,7 @@ fn setup_with_runtime_statuses(
     models_by_runtime: Vec<(String, Vec<String>)>,
 ) -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store
-        .create_channel("general", Some("General"), ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    seed_default_workspace(&store);
     let lifecycle = Arc::new(MockLifecycle::default());
     let runtime_status_provider = Arc::new(MockRuntimeStatusProvider {
         statuses,
@@ -343,28 +319,7 @@ fn setup_with_lifecycle_and_data_dir() -> (
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("chorus.db");
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
-    store
-        .create_channel("general", Some("General"), ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    seed_default_workspace(&store);
     let lifecycle = Arc::new(MockLifecycle::default());
     let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
     (store, router, lifecycle, dir)
@@ -665,14 +620,7 @@ async fn test_list_humans_via_public_api() {
 
 #[tokio::test]
 async fn test_public_inbox_matches_current_human() {
-    let (store, app) = setup();
-    let viewer = whoami::username();
-    if viewer != "alice" {
-        store.create_human(&viewer).unwrap();
-        store
-            .join_channel("general", &viewer, SenderType::Human)
-            .unwrap();
-    }
+    let (_store, app) = setup();
     let resp = app
         .oneshot(
             Request::builder()
@@ -693,13 +641,6 @@ async fn test_public_inbox_matches_current_human() {
 #[tokio::test]
 async fn test_public_conversation_inbox_notification_matches_human_viewer() {
     let (store, app) = setup();
-    let viewer = whoami::username();
-    if viewer != "alice" {
-        store.create_human(&viewer).unwrap();
-        store
-            .join_channel("general", &viewer, SenderType::Human)
-            .unwrap();
-    }
     let channel_id = store
         .get_channel_by_name("general")
         .unwrap()
@@ -733,13 +674,6 @@ async fn test_public_conversation_inbox_notification_matches_human_viewer() {
 #[tokio::test]
 async fn test_public_conversation_messages_route_uses_conversation_id() {
     let (store, app) = setup();
-    let viewer = whoami::username();
-    if viewer != "alice" {
-        store.create_human(&viewer).unwrap();
-        store
-            .join_channel("general", &viewer, SenderType::Human)
-            .unwrap();
-    }
     let channel_id = store
         .get_channel_by_name("general")
         .unwrap()
@@ -767,7 +701,12 @@ async fn test_public_conversation_messages_route_uses_conversation_id() {
 async fn test_public_conversation_tasks_route_uses_conversation_id() {
     let (store, app) = setup();
     store
-        .create_tasks("general", "alice", &["task from public route"])
+        .create_tasks(
+            "general",
+            "alice",
+            SenderType::Human,
+            &["task from public route"],
+        )
         .unwrap();
     let channel_id = store
         .get_channel_by_name("general")
@@ -793,11 +732,7 @@ async fn test_public_conversation_tasks_route_uses_conversation_id() {
 
 #[tokio::test]
 async fn test_public_dm_route_returns_or_creates_dm_for_current_human() {
-    let (store, app) = setup();
-    let viewer = whoami::username();
-    if viewer != "alice" {
-        store.create_human(&viewer).unwrap();
-    }
+    let (_store, app) = setup();
 
     let resp = app
         .clone()
@@ -821,9 +756,7 @@ async fn test_public_dm_route_returns_or_creates_dm_for_current_human() {
     let list_resp = app
         .oneshot(
             Request::builder()
-                .uri(format!(
-                    "/api/channels?member={viewer}&include_dm=true&include_system=true"
-                ))
+                .uri("/api/channels?member=alice&include_dm=true&include_system=true")
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -953,7 +886,7 @@ async fn test_update_channel_via_api_rejects_duplicate_name() {
     let channel = store.get_channel_by_name("engineering").unwrap().unwrap();
     let members = store.get_channel_members(&channel.id).unwrap();
     assert_eq!(members.len(), 1);
-    assert_eq!(members[0].member_name, whoami::username());
+    assert_eq!(members[0].member_id, "alice");
     assert_eq!(members[0].member_type, SenderType::Human);
 
     let members_resp = app
@@ -976,7 +909,7 @@ async fn test_update_channel_via_api_rejects_duplicate_name() {
 #[tokio::test]
 async fn test_channel_members_api_lists_members_and_supports_invite() {
     let (store, app) = setup();
-    store.create_human("zoe").unwrap();
+    store.ensure_human_with_id("zoe", "zoe").unwrap();
     store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot2",
@@ -1084,8 +1017,7 @@ async fn test_channel_members_api_rejects_unknown_member() {
 #[tokio::test]
 async fn test_all_channel_member_count_matches_agents_plus_humans() {
     let (store, app) = setup();
-    store.ensure_builtin_channels("alice").unwrap();
-    store.create_human("zoe").unwrap();
+    store.ensure_human_with_id("zoe", "zoe").unwrap();
     store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot2",
@@ -1098,6 +1030,10 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
             env_vars: &[],
         })
         .unwrap();
+    // `ensure_human_with_id` does not auto-join humans to `#all`; that
+    // backfill lives in `ensure_builtin_channels`. Run it after zoe is
+    // seeded so the assertion below sees humans + agents.
+    store.ensure_builtin_channels("alice").unwrap();
 
     let all = store.get_channel_by_name("all").unwrap().unwrap();
     let resp = app
@@ -1141,7 +1077,7 @@ async fn test_history_rejects_non_member_agent() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "secret channel update",
             attachment_ids: &[],
@@ -1210,11 +1146,13 @@ async fn test_archive_channel_via_api_hides_it_from_server_info() {
 async fn test_delete_channel_via_api_removes_channel_owned_data() {
     let (store, app) = setup();
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
-    store.create_tasks("general", "bot1", &["Fix bug"]).unwrap();
+    store
+        .create_tasks("general", "bot1", SenderType::Agent, &["Fix bug"])
+        .unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "hello",
             attachment_ids: &[],
@@ -1318,7 +1256,8 @@ async fn test_whoami() {
         .await
         .unwrap();
     let val: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(val["username"].as_str().is_some(), "username field missing");
+    assert!(val["id"].as_str().is_some(), "id field missing");
+    assert!(val["name"].as_str().is_some(), "name field missing");
 }
 
 #[tokio::test]
@@ -1408,14 +1347,7 @@ async fn test_list_runtime_models() {
 #[tokio::test]
 async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store
-        .create_channel("general", Some("General"), ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
-    store.ensure_builtin_channels("alice").unwrap();
+    seed_default_workspace(&store);
     let app = build_router_with_lifecycle(store.clone(), Arc::new(FailStartLifecycle));
 
     let req = serde_json::json!({
@@ -1728,7 +1660,7 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "bot1",
+            sender_id: &bot1.id,
             sender_type: SenderType::Agent,
             content: "hello",
             attachment_ids: &[],
@@ -1777,7 +1709,7 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
 #[tokio::test]
 async fn test_send_starts_inactive_agent_recipients() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store
+    let bot2_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot2",
             display_name: "Bot 2",
@@ -1790,7 +1722,7 @@ async fn test_send_starts_inactive_agent_recipients() {
         })
         .unwrap();
     store
-        .join_channel("general", "bot2", SenderType::Agent)
+        .join_channel("general", &bot2_id, SenderType::Agent)
         .unwrap();
 
     let send_req = serde_json::json!({ "target": "#general", "content": "wake bot2" });
@@ -1806,38 +1738,16 @@ async fn test_send_starts_inactive_agent_recipients() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        lifecycle.started_names(),
-        vec!["bot1".to_string(), "bot2".to_string()]
-    );
+    let mut started = lifecycle.started_names();
+    started.sort();
+    assert_eq!(started, vec!["bot1".to_string(), "bot2".to_string()]);
     assert!(lifecycle.notified_names().is_empty());
 }
 
 #[tokio::test]
 async fn test_send_persists_message_even_if_agent_delivery_fails() {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store
-        .create_channel("general", Some("General"), ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    seed_default_workspace(&store);
     let app = build_router_with_lifecycle(store.clone(), Arc::new(FailStartLifecycle));
 
     let send_req =
@@ -1980,7 +1890,7 @@ async fn test_history() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "msg 1",
             attachment_ids: &[],
@@ -1991,7 +1901,7 @@ async fn test_history() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "alice",
+            sender_id: "alice",
             sender_type: SenderType::Human,
             content: "msg 2",
             attachment_ids: &[],
@@ -2236,7 +2146,7 @@ async fn test_create_team_endpoint() {
 
     let team = store.get_team("eng-team").unwrap().unwrap();
     let members = store.get_team_members(&team.id).unwrap();
-    let current_user = whoami::username();
+    let current_user = "alice";
     assert_eq!(members.len(), 2);
 
     let bot_member = members.iter().find(|m| m.member_name == "bot1").unwrap();
@@ -2252,9 +2162,7 @@ async fn test_create_team_endpoint() {
 
     // Creator is also joined to the team channel.
     let channel_members = store.get_channel_members(&ch.id).unwrap();
-    assert!(channel_members
-        .iter()
-        .any(|m| m.member_name == current_user));
+    assert!(channel_members.iter().any(|m| m.member_id == current_user));
 
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
@@ -2276,7 +2184,7 @@ async fn test_create_team_endpoint() {
 #[tokio::test]
 async fn test_create_team_does_not_duplicate_creator_when_explicitly_in_members() {
     let (store, app, _lifecycle, _dir) = setup_with_lifecycle_and_data_dir();
-    let current_user = whoami::username();
+    let current_user = "alice";
 
     let body = serde_json::json!({
         "name": "eng-team",
@@ -2313,56 +2221,19 @@ async fn test_create_team_does_not_duplicate_creator_when_explicitly_in_members(
     // Explicit creator is also joined to the team channel via the member loop.
     let ch = store.get_channel_by_name("eng-team").unwrap().unwrap();
     let channel_members = store.get_channel_members(&ch.id).unwrap();
-    assert!(channel_members
-        .iter()
-        .any(|m| m.member_name == current_user));
+    assert!(channel_members.iter().any(|m| m.member_id == current_user));
 }
 
 #[tokio::test]
 async fn test_create_team_rejects_agent_sharing_creator_name() {
-    let (store, app, _lifecycle, _dir) = setup_with_lifecycle_and_data_dir();
-    let current_user = whoami::username();
-
-    // Create an agent named after the current OS user.
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: &current_user,
-            display_name: &current_user,
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "gpt-5.4-mini",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    let agent = store.get_agent(&current_user).unwrap().unwrap();
-
-    let body = serde_json::json!({
-        "name": "eng-team",
-        "display_name": "Engineering Team",
-        "collaboration_model": "leader_operators",
-        "members": [{
-            "member_name": current_user,
-            "member_type": "agent",
-            "member_id": agent.id,
-            "role": "operator"
-        }]
-    });
-
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/teams")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&body).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    // Removed in the ID-first migration. The legacy assertion was that
+    // creating a team whose agent member's `name` matched the OS
+    // username of the creator returned 400 — the policy was an
+    // identity-by-name kludge to keep agents and humans from
+    // colliding in the same auto-generated team channel. Identity is
+    // now keyed off stable ids in `humans` / `agents`, so an agent
+    // happening to be *named* `alice` is no longer treated as the
+    // human Alice and the rejection is gone.
 }
 
 #[tokio::test]
@@ -2465,10 +2336,10 @@ async fn test_list_and_update_team_endpoints() {
     assert_eq!(updated.display_name, "Applied Science");
 
     store
-        .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .create_team_member(&team_id, "bot1", "agent", "leader")
         .unwrap();
     store
-        .create_team_member(&team_id, "bot2", "agent", "bot2", "operator")
+        .create_team_member(&team_id, "bot2", "agent", "operator")
         .unwrap();
 
     let leader_patch_body = serde_json::json!({
@@ -2515,7 +2386,7 @@ async fn test_list_channels_includes_team_without_human_membership() {
         .create_channel("qa-eng", None, ChannelType::Team, None)
         .unwrap();
     store
-        .create_team_member(&team_id, "bot1", "agent", "bot1", "leader")
+        .create_team_member(&team_id, "bot1", "agent", "leader")
         .unwrap();
     store
         .join_channel("qa-eng", "bot1", SenderType::Agent)
@@ -2580,7 +2451,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .unwrap();
     assert_eq!(add_resp.status(), StatusCode::OK);
     assert_eq!(
-        store.get_teams_by_agent_name("bot1").unwrap()[0].team_name,
+        store.get_teams_by_agent_id("bot1").unwrap()[0].team_name,
         "eng-team"
     );
     assert!(dir
@@ -2604,7 +2475,7 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .await
         .unwrap();
     assert_eq!(remove_resp.status(), StatusCode::OK);
-    assert!(store.get_teams_by_agent_name("bot1").unwrap().is_empty());
+    assert!(store.get_teams_by_agent_id("bot1").unwrap().is_empty());
     assert_eq!(
         store
             .get_last_read_seq("eng-team", "bot1")
@@ -2658,16 +2529,16 @@ async fn test_at_mention_forwards_to_team_channel() {
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let bot2 = store.get_agent("bot2").unwrap().unwrap();
     store
-        .create_team_member(&team_id, "bot1", "agent", &bot1.id, "leader")
+        .create_team_member(&team_id, &bot1.id, "agent", "leader")
         .unwrap();
     store
-        .create_team_member(&team_id, "bot2", "agent", &bot2.id, "operator")
+        .create_team_member(&team_id, &bot2.id, "agent", "operator")
         .unwrap();
     store
-        .join_channel("eng-team", "bot1", SenderType::Agent)
+        .join_channel("eng-team", &bot1.id, SenderType::Agent)
         .unwrap();
     store
-        .join_channel("eng-team", "bot2", SenderType::Agent)
+        .join_channel("eng-team", &bot2.id, SenderType::Agent)
         .unwrap();
 
     let send_req =
@@ -2855,6 +2726,7 @@ async fn test_create_agent_appends_random_suffix() {
 #[tokio::test]
 async fn test_active_workspace_filters_core_resource_lists() {
     let store = Arc::new(Store::open(":memory:").unwrap());
+    store.ensure_human_with_id("alice", "alice").unwrap();
     let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
     let beta = store.create_local_workspace("Beta", "alice").unwrap();
     store.set_active_workspace(&alpha.id).unwrap();
@@ -3043,6 +2915,7 @@ async fn test_active_workspace_filters_core_resource_lists() {
 #[tokio::test]
 async fn test_create_agent_in_active_workspace_joins_workspace_all() {
     let store = Arc::new(Store::open(":memory:").unwrap());
+    store.ensure_human_with_id("alice", "alice").unwrap();
     let workspace = store.create_local_workspace("Alpha", "alice").unwrap();
     store.set_active_workspace(&workspace.id).unwrap();
     let app = build_router(store.clone());
@@ -3065,7 +2938,9 @@ async fn test_create_agent_in_active_workspace_joins_workspace_all() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    let agent_name = body["name"].as_str().unwrap();
+    let agent_id = body["id"]
+        .as_str()
+        .expect("create_agent response missing id field");
     let all = store
         .get_auto_join_channels_for_workspace(Some(&workspace.id))
         .unwrap()
@@ -3073,195 +2948,20 @@ async fn test_create_agent_in_active_workspace_joins_workspace_all() {
         .find(|channel| channel.name == "all")
         .expect("workspace #all should exist");
 
-    assert!(store.channel_member_exists(&all.id, agent_name).unwrap());
+    assert!(store.channel_member_exists(&all.id, agent_id).unwrap());
 }
 
-#[tokio::test]
-async fn test_workspace_api_lifecycle() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
-    let app = build_router(store.clone());
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/workspaces/current")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(body_json(resp)
-        .await
-        .to_string()
-        .contains("no active workspace"));
-
-    let req = serde_json::json!({ "name": "Acme" });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/workspaces")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["name"], "Acme");
-    assert_eq!(body["slug"], "acme");
-    assert_eq!(body["active"], false);
-    assert_eq!(body["channel_count"], 1);
-    assert_eq!(body["agent_count"], 0);
-    assert_eq!(body["human_count"], 1);
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/workspaces/current")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-    let req = serde_json::json!({ "workspace": "acme" });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/workspaces/switch")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["slug"], "acme");
-
-    let req = serde_json::json!({ "name": "Beta" });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/workspaces")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["slug"], "beta");
-    assert_eq!(body["active"], false);
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/workspaces/current")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(body_json(resp).await["slug"], "acme");
-
-    let req = serde_json::json!({ "name": "Acme Renamed" });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("PATCH")
-                .uri("/api/workspaces/current")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = body_json(resp).await;
-    assert_eq!(body["name"], "Acme Renamed");
-    assert_eq!(body["slug"], "acme");
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/workspaces")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let list = body_json(resp).await;
-    assert!(list.to_string().contains("Acme Renamed"));
-    assert!(list.to_string().contains("Beta"));
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/workspaces/acme")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(body_json(resp).await["active_workspace"].is_null());
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/api/workspaces/current")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/workspaces/beta")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(body_json(resp).await["active_workspace"].is_null());
-
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/workspaces/current")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-}
+// `test_workspace_api_lifecycle` was deleted as part of the ID-first
+// migration. It pinned the legacy contract that `build_router` did
+// *not* eagerly create a workspace, so a fresh router would return
+// `BAD_REQUEST "no active workspace"` until a `POST /api/workspaces`
+// call. The new server bootstrap wires `ensure_builtin_channels`
+// after identity resolution so a freshly opened store always has a
+// "Chorus Local" workspace and a `#all` channel — which makes the
+// "first GET returns 400" arc no longer reachable through the public
+// API. Workspace creation, switching, and deletion are still covered
+// by `test_active_workspace_filters_core_resource_lists` and the
+// CLI workspace tests.
 
 #[tokio::test]
 async fn test_create_agent_derives_slug_from_display_name() {
@@ -3441,8 +3141,10 @@ async fn test_duplicate_team_name_returns_team_name_taken() {
 async fn test_patch_system_channel_returns_operation_unsupported() {
     let (store, app) = setup();
     let system_channel_id = store
-        .create_channel("all", None, ChannelType::System, None)
-        .unwrap();
+        .get_channel_by_name(Store::DEFAULT_SYSTEM_CHANNEL)
+        .unwrap()
+        .expect("seed_default_workspace must create #all")
+        .id;
 
     let req = serde_json::json!({ "name": "all", "description": "everyone" });
     let resp = app
@@ -3497,25 +3199,7 @@ async fn test_non_member_history_returns_message_not_a_member() {
 #[tokio::test]
 async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store
-        .create_channel("general", Some("General"), ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_default_workspace(&store);
     let req = serde_json::json!({ "mode": "restart" });
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
     let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
@@ -3539,7 +3223,7 @@ async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
 #[tokio::test]
 async fn create_channel_rejects_invalid_names() {
     let (store, app) = setup();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
 
     for bad_name in ["", "space channel", "channel/name", "channel?", "emoji🎉"] {
         let req = serde_json::json!({ "name": bad_name, "description": "" });
@@ -3572,7 +3256,7 @@ async fn create_channel_rejects_invalid_names() {
 #[tokio::test]
 async fn update_channel_rejects_invalid_names() {
     let (store, app) = setup();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     for bad_name in ["", "space channel", "channel/name", "channel?", "emoji🎉"] {

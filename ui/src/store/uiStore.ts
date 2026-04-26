@@ -55,8 +55,17 @@ export interface TaskDetailTarget {
 }
 
 interface UIState {
-  /** Logged-in username, set once after /api/whoami resolves */
+  /**
+   * Logged-in human's display name, set once after `/api/whoami` resolves.
+   * Use `currentUserId` for identity-keyed comparisons; `currentUser` is for
+   * display, label, and DM-name composition only.
+   */
   currentUser: string
+  /**
+   * Logged-in human's stable id (the canonical identity for the local
+   * session). Empty string until `/api/whoami` resolves.
+   */
+  currentUserId: string
   /** Currently selected sidebar channel (team/dm/system); null when an agent is selected instead */
   currentChannel: ChannelInfo | null
   /** Currently selected agent profile; null when a channel is selected */
@@ -82,7 +91,8 @@ interface UIState {
 }
 
 interface UIActions {
-  setCurrentUser: (user: string) => void
+  /** Set the local human identity (id + name) after /api/whoami resolves. */
+  setCurrentUser: (identity: { id: string; name: string }) => void
   setCurrentChannel: (channel: ChannelInfo | null) => void
   setCurrentAgent: (agent: AgentInfo | null) => void
   setActiveTab: (tab: ActiveTab) => void
@@ -106,6 +116,7 @@ export type UIStore = UIState & UIActions
 
 const initialState: UIState = {
   currentUser: '',
+  currentUserId: '',
   currentChannel: null,
   currentAgent: null,
   activeTab: 'chat',
@@ -120,7 +131,8 @@ const initialState: UIState = {
 export const useStore = create<UIStore>((set) => ({
   ...initialState,
 
-  setCurrentUser: (currentUser: string) => set({ currentUser }),
+  setCurrentUser: ({ id, name }) =>
+    set({ currentUser: name, currentUserId: id }),
 
   setCurrentAgent: (agent: AgentInfo | null) =>
     set((state) => {

@@ -1,22 +1,24 @@
 //! `chorus channel history <name>` — print recent messages from a channel.
 //!
-//! Calls `GET /internal/agent/<username>/history?channel=<name>&limit=<limit>`
-//! and prints each message as `[<timestamp>] @<sender>: <content>`.
+//! Identity resolution mirrors `chorus send`: `GET /api/whoami` returns the
+//! server's `(human.id, human.name)`, and the history endpoint is keyed on
+//! that id (not on the OS username running the CLI).
 
 use anyhow::Context;
 
 use super::surface_http_error;
 
 pub async fn run(name: String, limit: i64, server_url: &str) -> anyhow::Result<()> {
-    let username = whoami::username();
     let client = super::http::client();
+    let me = crate::cli::fetch_local_human_identity(&client, server_url).await?;
     // Normalize the user input (trim, strip leading `#`, lowercase) and then
     // send it back with a leading `#`. The server's `resolve_history_target`
     // only runs its own normalization on targets that already start with `#`
     // or `dm:@`; a bare `General` would otherwise be looked up literally.
     let channel_target = format!("#{}", super::normalize_channel_name(&name));
     let url = format!(
-        "{server_url}/internal/agent/{username}/history?channel={}&limit={limit}",
+        "{server_url}/internal/agent/{}/history?channel={}&limit={limit}",
+        me.id,
         urlencoding::encode(&channel_target)
     );
     let res = client

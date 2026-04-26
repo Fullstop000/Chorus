@@ -48,6 +48,7 @@ const parentChannel: ChannelInfo = {
 vi.mock("../../store", () => {
   const state = {
     currentUser: "alice",
+    currentUserId: "alice",
     currentChannel: parentChannel as ChannelInfo | null,
     pushToast: () => {},
   };

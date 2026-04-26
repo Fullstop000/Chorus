@@ -58,17 +58,17 @@ function GlobalToasts() {
 }
 
 function loadAppData(
-  currentUser: string,
+  currentHumanId: string,
   shellBootstrapped: boolean,
   channelsData?: import("./data").ChannelInfo[],
 ) {
   const whoamiResult = useQuery(whoamiQuery);
-  const agentsResult = useQuery(agentsQuery(currentUser));
-  const channelsResult = useQuery(channelsQuery(currentUser));
-  const teamsResult = useQuery(teamsQuery(currentUser));
-  const humansResult = useQuery(humansQuery(currentUser));
+  const agentsResult = useQuery(agentsQuery(currentHumanId));
+  const channelsResult = useQuery(channelsQuery(currentHumanId));
+  const teamsResult = useQuery(teamsQuery(currentHumanId));
+  const humansResult = useQuery(humansQuery(currentHumanId));
   const inboxResult = useQuery(
-    inboxQuery(currentUser, shellBootstrapped, channelsData),
+    inboxQuery(currentHumanId, shellBootstrapped, channelsData),
   );
 
   return {
@@ -82,17 +82,20 @@ function loadAppData(
 }
 
 function syncWhoami(
-  username: string | undefined,
-  currentUser: string,
-  setCurrentUser: (u: string) => void,
+  whoami: { id: string; name: string } | undefined,
+  currentUserId: string,
+  setCurrentUser: (identity: { id: string; name: string }) => void,
   resetUserSession: () => void,
 ): void {
   useEffect(() => {
-    if (!username) return;
-    if (username === currentUser) return;
-    if (currentUser) resetUserSession();
-    setCurrentUser(username);
-  }, [username, currentUser, setCurrentUser, resetUserSession]);
+    if (!whoami) return;
+    if (whoami.id === currentUserId) return;
+    // Switching local human identity invalidates the cached selection state
+    // (current channel/agent, inbox cursors). Reset before adopting the new id
+    // so stale ids/cursors from the previous session don't leak in.
+    if (currentUserId) resetUserSession();
+    setCurrentUser(whoami);
+  }, [whoami, currentUserId, setCurrentUser, resetUserSession]);
 }
 
 /** Keep inbox conversations in sync as new channels arrive from the channels query. */
@@ -166,14 +169,16 @@ function autoSelectChannel(params: {
 
 /** Create the DM channel for the selected agent if it doesn't exist yet, then register it in the query cache and inbox state. */
 function ensureAgentDm(params: {
-  currentUser: string;
+  currentHumanDisplayName: string;
+  currentHumanId: string;
   currentAgentName: string | null;
   dmChannels: ChannelInfo[];
   queryClient: QueryClient;
   updateInboxState: (u: (c: InboxState) => InboxState) => void;
 }): void {
   const {
-    currentUser,
+    currentHumanDisplayName,
+    currentHumanId,
     currentAgentName,
     dmChannels,
     queryClient,
@@ -181,9 +186,9 @@ function ensureAgentDm(params: {
   } = params;
 
   useEffect(() => {
-    if (!currentUser || !currentAgentName) return;
+    if (!currentHumanDisplayName || !currentHumanId || !currentAgentName) return;
     const dmName = dmConversationNameForParticipants(
-      currentUser,
+      currentHumanDisplayName,
       currentAgentName,
     );
     if (dmChannels.some((ch: ChannelInfo) => ch.name === dmName)) return;
@@ -193,7 +198,7 @@ function ensureAgentDm(params: {
       .then((channel) => {
         if (cancelled) return;
         queryClient.setQueryData<ChannelInfo[]>(
-          channelQueryKeys.channels(currentUser),
+          channelQueryKeys.channels(currentHumanId),
           (current = []) => {
             if (
               current.some(
@@ -219,7 +224,8 @@ function ensureAgentDm(params: {
       cancelled = true;
     };
   }, [
-    currentUser,
+    currentHumanDisplayName,
+    currentHumanId,
     dmChannels,
     currentAgentName,
     queryClient,
@@ -229,15 +235,15 @@ function ensureAgentDm(params: {
 
 /** Advance latestSeq for ALL conversations on realtime messages so sidebar badges update. */
 function useGlobalSeqListener(
-  currentUser: string,
+  currentHumanId: string,
   shellBootstrapped: boolean,
 ): void {
   const advanceConversationLatestSeq = useStore(
     (s) => s.advanceConversationLatestSeq,
   );
   useEffect(() => {
-    if (!currentUser || !shellBootstrapped) return;
-    return getSession(currentUser).subscribeAll((frame) => {
+    if (!currentHumanId || !shellBootstrapped) return;
+    return getSession(currentHumanId).subscribeAll((frame) => {
       if (frame.type === "error") return;
       if (frame.event.eventType !== EventType.MessageCreated) return;
       const seq = frame.event.payload?.seq;
@@ -245,11 +251,12 @@ function useGlobalSeqListener(
         advanceConversationLatestSeq(frame.event.channelId, seq);
       }
     });
-  }, [currentUser, shellBootstrapped, advanceConversationLatestSeq]);
+  }, [currentHumanId, shellBootstrapped, advanceConversationLatestSeq]);
 }
 
 export default function App() {
   const currentUser = useStore((s) => s.currentUser);
+  const currentUserId = useStore((s) => s.currentUserId);
   const shellBootstrapped = useStore((s) => s.shellBootstrapped);
   const setCurrentUser = useStore((s) => s.setCurrentUser);
   const resetUserSession = useStore((s) => s.resetUserSession);
@@ -261,7 +268,7 @@ export default function App() {
   const prevAllChannelsRef = useRef<ChannelInfo[] | undefined>(undefined);
 
   const queries = loadAppData(
-    currentUser,
+    currentUserId,
     shellBootstrapped,
     prevAllChannelsRef.current,
   );
@@ -275,7 +282,7 @@ export default function App() {
   const systemChannels = channelsData?.systemChannels ?? [];
   const dmChannels = channelsData?.dmChannels ?? [];
 
-  syncWhoami(whoamiQuery.data, currentUser, setCurrentUser, resetUserSession);
+  syncWhoami(whoamiQuery.data, currentUserId, setCurrentUser, resetUserSession);
   syncSelectedAgent(agents, setCurrentAgent);
 
   mirrorChannels(allChannels, updateInboxState);
@@ -289,7 +296,8 @@ export default function App() {
 
   const currentAgentName = useStore((s) => s.currentAgent?.name ?? null);
   ensureAgentDm({
-    currentUser,
+    currentHumanDisplayName: currentUser,
+    currentHumanId: currentUserId,
     currentAgentName,
     dmChannels,
     queryClient: appQueryClient,
@@ -306,7 +314,7 @@ export default function App() {
     setShellBootstrapped(true);
   }, [inboxBootstrapData, updateInboxState, setShellBootstrapped]);
 
-  useGlobalSeqListener(currentUser, shellBootstrapped);
+  useGlobalSeqListener(currentUserId, shellBootstrapped);
 
   return (
     <div className="app-shell">

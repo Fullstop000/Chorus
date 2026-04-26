@@ -31,7 +31,7 @@ impl Store {
     pub fn set_history_read_cursor(
         &self,
         channel_name: &str,
-        member_name: &str,
+        member_id: &str,
         member_type: SenderType,
         last_read_seq: i64,
     ) -> Result<()> {
@@ -50,8 +50,8 @@ impl Store {
             .query_row(
                 "SELECT last_read_seq
                  FROM inbox_read_state
-                 WHERE conversation_id = ?1 AND member_name = ?2",
-                params![channel.id, member_name],
+                 WHERE conversation_id = ?1 AND member_id = ?2",
+                params![channel.id, member_id],
                 |row| row.get(0),
             )
             .optional()?
@@ -75,7 +75,7 @@ impl Store {
         Self::set_inbox_read_cursor_tx(
             &tx,
             &channel,
-            member_name,
+            member_id,
             member_type.as_str(),
             final_read,
             last_read_message_id.as_deref(),
