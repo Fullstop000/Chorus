@@ -156,13 +156,49 @@ The prompt must be explicit about these points:
   - deliberately explain why no reply is needed
 - when idle, the agent must return to `wait_for_message()`
 
+### Standing System Prompt
+
+Every driver must inject the Chorus standing prompt into the runtime so the
+agent learns the chat protocol, message format, task board, and MEMORY.md
+convention. Build it via:
+
+```rust
+use crate::agent::drivers::prompt::{build_system_prompt, PromptOptions, MessageNotificationStyle};
+
+let standing = build_system_prompt(&spec, &PromptOptions {
+    tool_prefix: String::new(),                   // "" for ACP, "mcp__chat__" for Claude
+    extra_critical_rules: vec![/* runtime quirks */],
+    post_startup_notes: vec![/* runtime quirks */],
+    include_stdin_notification_section: true,     // true if process stays alive across messages
+    message_notification_style: MessageNotificationStyle::Poll,  // or Direct
+});
+```
+
+Inject `standing` via the most-native channel the runtime offers. The
+shipping drivers use:
+
+| Driver   | Channel                                                              |
+|----------|----------------------------------------------------------------------|
+| Claude   | `--append-system-prompt <standing>` CLI flag                         |
+| Codex    | `developerInstructions` JSON-RPC param on `thread/start` and `thread/resume` |
+| Kimi     | prepend to first `session/prompt` text (acp ignores `--agent-file`; wire is single-session) |
+| Gemini   | `GEMINI_SYSTEM_MD=<abs path>` env var (file = baseline + standing)   |
+| OpenCode | `instructions: ["./.chorus/opencode-system.md"]` in `opencode.json`  |
+
+When adding a new driver, prefer in this order: native system-prompt slot in
+the JSON-RPC handshake → runtime config file or env var that loads at process
+start → first-turn prepend. The user's per-agent persona override
+(`spec.system_prompt`) is consumed inside the builder as the trailing
+`## Initial role` section. Drivers should never reference `spec.system_prompt`
+directly — always go through `build_system_prompt`.
+
 ### Tool Naming Rule
 
 Use the runtime's actual MCP-exposed names in the prompt and wake-up instructions.
 
 Do not assume they match another runtime.
 
-If the runtime emits bare names like `send_message`, the prompt should teach bare names. If the parser wants to normalize internally, do that in your stdout parser, not in the prompt text.
+If the runtime emits bare names like `send_message`, the prompt should teach bare names (`tool_prefix: ""`). Claude binds the chat MCP server as `chat` and surfaces tools as `mcp__chat__send_message` etc., so the Claude driver passes `tool_prefix: "mcp__chat__"`. If the parser wants to normalize internally, do that in your stdout parser, not in the prompt text.
 
 ## Phase 3: Register It End To End
 
