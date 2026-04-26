@@ -12,6 +12,7 @@ pub mod fake;
 pub mod gemini;
 pub mod kimi;
 pub mod opencode;
+pub mod prompt;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
