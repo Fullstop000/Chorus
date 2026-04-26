@@ -1,7 +1,7 @@
 //! Agent **receive** path: unread rows from SQLite, shaping into [`ReceivedMessage`], optional read-cursor updates.
 
 use anyhow::{anyhow, Result};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection};
 use tracing::warn;
 
 use crate::store::channels::{Channel, ChannelType};
@@ -46,13 +46,12 @@ fn channel_type_wire_label(kind: ChannelType) -> &'static str {
 // ── `Store` ────────────────────────────────────────────────────────────────
 
 impl Store {
-    pub fn get_messages_for_agent(
+    pub fn get_messages_for_agent_id(
         &self,
-        agent_ref: &str,
+        agent_id: &str,
         update_read_pos: bool,
     ) -> Result<Vec<ReceivedMessage>> {
         let mut conn = self.conn.lock().unwrap();
-        let (agent_id, _agent_name) = Self::resolve_agent_ref_inner(&conn, agent_ref)?;
         let memberships = Self::load_agent_channel_memberships(&conn, &agent_id)?;
 
         let mut out = Vec::new();
@@ -60,14 +59,14 @@ impl Store {
             let ctx = Self::load_agent_inbox_channel_context(
                 &conn,
                 channel_id,
-                &agent_id,
+                agent_id,
                 *last_read_seq,
             )?;
             let scan = Self::scan_agent_inbox_channel(&conn, &ctx)?;
             Self::persist_agent_inbox_read_cursors(
                 &mut conn,
                 &ctx.channel,
-                &agent_id,
+                agent_id,
                 member_type,
                 *last_read_seq,
                 update_read_pos,
@@ -78,13 +77,16 @@ impl Store {
         Ok(out)
     }
 
-    /// Same shaping as the normal receive path (`get_messages_for_agent`), for wake-up prompts.
-    pub fn get_received_message_for_agent(
+    /// Same shaping as the normal receive path, for wake-up prompts keyed by lifecycle agent name.
+    pub fn get_received_message_for_agent_name(
         &self,
         agent_name: &str,
         message_id: &str,
     ) -> Result<Option<ReceivedMessage>> {
-        let unread = self.get_messages_for_agent(agent_name, false)?;
+        let agent = self
+            .get_agent(agent_name)?
+            .ok_or_else(|| anyhow!("agent not found: {agent_name}"))?;
+        let unread = self.get_messages_for_agent_id(&agent.id, false)?;
         Ok(unread
             .into_iter()
             .find(|message| message.message_id == message_id))
@@ -291,15 +293,5 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
-    }
-
-    fn resolve_agent_ref_inner(conn: &Connection, agent_ref: &str) -> Result<(String, String)> {
-        conn.query_row(
-            "SELECT id, name FROM agents WHERE id = ?1 OR name = ?1",
-            params![agent_ref],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?
-        .ok_or_else(|| anyhow!("agent not found: {agent_ref}"))
     }
 }

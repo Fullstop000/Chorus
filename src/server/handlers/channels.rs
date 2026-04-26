@@ -209,12 +209,11 @@ pub async fn handle_invite_channel_member(
     if member_name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "memberName is required"));
     }
-    // Resolve the human-friendly handle (id or name) into the canonical
-    // (id, type) pair. `channel_members` is keyed by id, so even when the
-    // client passes a display name we persist the immutable id.
+    // Resolve the explicit `memberName` API field into the canonical
+    // (id, type) pair; `channel_members` is keyed by immutable id.
     let (member_id, member_type) = state
         .store
-        .lookup_sender_ref(member_name)
+        .lookup_sender_by_name(member_name)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "member not found: {member_name}"))?;
 

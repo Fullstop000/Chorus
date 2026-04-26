@@ -18,13 +18,42 @@ import type { InboxState } from '../store/inbox'
 import { dmConversationNameForParticipants } from '../data'
 import type { AgentInfo } from '../data'
 
+function findAgentByName(agents: AgentInfo[], agentName: string): AgentInfo | undefined {
+  return agents.find((agent) => agent.name === agentName)
+}
+
+function findDmChannelForAgentName(params: {
+  currentHumanDisplayName: string
+  currentHumanId: string
+  agentName: string
+  agents: AgentInfo[]
+  dmChannels: ChannelInfo[]
+}): ChannelInfo | undefined {
+  const { currentHumanDisplayName, currentHumanId, agentName, agents, dmChannels } = params
+  const agent = findAgentByName(agents, agentName)
+  const candidates = new Set<string>()
+
+  if (currentHumanId && agent?.id) {
+    candidates.add(dmConversationNameForParticipants(currentHumanId, agent.id))
+  }
+
+  if (currentHumanDisplayName && agent?.name) {
+    candidates.add(dmConversationNameForParticipants(currentHumanDisplayName, agent.name))
+  }
+
+  return dmChannels.find((channel) => candidates.has(channel.name))
+}
+
 function useAppInboxSelectors(params: {
   /** Local human display name — used only for DM channel title composition. */
   currentHumanDisplayName: string
+  /** Local human id — canonical DM participant identity. */
+  currentHumanId: string
   inboxState: InboxState
+  agents: AgentInfo[]
   dmChannels: ChannelInfo[]
 }) {
-  const { currentHumanDisplayName, inboxState, dmChannels } = params
+  const { currentHumanDisplayName, currentHumanId, inboxState, agents, dmChannels } = params
 
   const getConversationUnread = useCallback(
     (conversationId?: string | null) => {
@@ -38,19 +67,29 @@ function useAppInboxSelectors(params: {
 
   const getAgentUnread = useCallback(
     (agentName: string) => {
-      const dmName = dmConversationNameForParticipants(currentHumanDisplayName, agentName)
-      const conversationId = dmChannels.find((ch: ChannelInfo) => ch.name === dmName)?.id ?? null
+      const conversationId = findDmChannelForAgentName({
+        currentHumanDisplayName,
+        currentHumanId,
+        agentName,
+        agents,
+        dmChannels,
+      })?.id ?? null
       return getConversationUnread(conversationId)
     },
-    [currentHumanDisplayName, dmChannels, getConversationUnread]
+    [currentHumanDisplayName, currentHumanId, agents, dmChannels, getConversationUnread]
   )
 
   const getAgentConversationId = useCallback(
     (agentName: string) => {
-      const dmName = dmConversationNameForParticipants(currentHumanDisplayName, agentName)
-      return dmChannels.find((ch: ChannelInfo) => ch.name === dmName)?.id ?? null
+      return findDmChannelForAgentName({
+        currentHumanDisplayName,
+        currentHumanId,
+        agentName,
+        agents,
+        dmChannels,
+      })?.id ?? null
     },
-    [currentHumanDisplayName, dmChannels]
+    [currentHumanDisplayName, currentHumanId, agents, dmChannels]
   )
 
   return {
@@ -151,12 +190,16 @@ export function useRefresh() {
  */
 export function useInbox() {
   const currentUser = useStore((s) => s.currentUser)
+  const currentUserId = useStore((s) => s.currentUserId)
   const inboxState = useStore((s) => s.inboxState)
+  const agents = useAgents()
   const { dmChannels } = useChannels()
 
   const selectors = useAppInboxSelectors({
     currentHumanDisplayName: currentUser,
+    currentHumanId: currentUserId,
     inboxState,
+    agents,
     dmChannels,
   })
 

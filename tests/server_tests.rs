@@ -358,6 +358,50 @@ async fn test_send_and_receive() {
 }
 
 #[tokio::test]
+async fn test_internal_agent_name_send_uses_canonical_agent_id() {
+    let (store, app) = setup();
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "uuid-bot",
+            display_name: "UUID Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    store
+        .join_channel("general", &agent_id, SenderType::Agent)
+        .unwrap();
+
+    let send_req = serde_json::json!({ "target": "#general", "content": "uuid reply" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/uuid-bot/send")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let sender_id: String = store
+        .conn_for_test()
+        .query_row(
+            "SELECT sender_id FROM messages WHERE content = 'uuid reply'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(sender_id, agent_id);
+}
+
+#[tokio::test]
 async fn test_history_includes_last_read_seq() {
     let (_store, app) = setup();
 
@@ -768,6 +812,50 @@ async fn test_public_dm_route_returns_or_creates_dm_for_current_human() {
         .unwrap();
     let channels: Vec<ChannelInfo> = serde_json::from_slice(&body).unwrap();
     assert!(channels.iter().any(|channel| channel.id == dm.id));
+}
+
+#[tokio::test]
+async fn test_public_dm_route_accepts_agent_id_and_stores_canonical_member_id() {
+    let (store, app) = setup();
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "uuid-bot",
+            display_name: "UUID Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/dms/{agent_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let dm: ChannelInfo = serde_json::from_slice(&body).unwrap();
+
+    let member_id: String = store
+        .conn_for_test()
+        .query_row(
+            "SELECT member_id FROM channel_members WHERE channel_id = ?1 AND member_type = 'agent'",
+            rusqlite::params![dm.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(member_id, agent_id);
+    assert!(dm.name.contains(&agent_id));
 }
 
 #[tokio::test]
@@ -2557,7 +2645,7 @@ async fn test_at_mention_forwards_to_team_channel() {
     assert_eq!(response.status(), StatusCode::OK);
 
     let forwarded = store
-        .get_messages_for_agent("bot1", false)
+        .get_messages_for_agent_id("bot1", false)
         .unwrap()
         .into_iter()
         .find(|msg| msg.channel_name == "eng-team")

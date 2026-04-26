@@ -169,16 +169,16 @@ function autoSelectChannel(params: {
 
 /** Create the DM channel for the selected agent if it doesn't exist yet, then register it in the query cache and inbox state. */
 function ensureAgentDm(params: {
-  currentHumanDisplayName: string;
   currentHumanId: string;
+  currentAgentId: string | null;
   currentAgentName: string | null;
   dmChannels: ChannelInfo[];
   queryClient: QueryClient;
   updateInboxState: (u: (c: InboxState) => InboxState) => void;
 }): void {
   const {
-    currentHumanDisplayName,
     currentHumanId,
+    currentAgentId,
     currentAgentName,
     dmChannels,
     queryClient,
@@ -186,15 +186,15 @@ function ensureAgentDm(params: {
   } = params;
 
   useEffect(() => {
-    if (!currentHumanDisplayName || !currentHumanId || !currentAgentName) return;
+    if (!currentHumanId || !currentAgentId || !currentAgentName) return;
     const dmName = dmConversationNameForParticipants(
-      currentHumanDisplayName,
-      currentAgentName,
+      currentHumanId,
+      currentAgentId,
     );
     if (dmChannels.some((ch: ChannelInfo) => ch.name === dmName)) return;
 
     let cancelled = false;
-    ensureDirectMessageConversation(currentAgentName)
+    ensureDirectMessageConversation(currentAgentId)
       .then((channel) => {
         if (cancelled) return;
         queryClient.setQueryData<ChannelInfo[]>(
@@ -224,8 +224,8 @@ function ensureAgentDm(params: {
       cancelled = true;
     };
   }, [
-    currentHumanDisplayName,
     currentHumanId,
+    currentAgentId,
     dmChannels,
     currentAgentName,
     queryClient,
@@ -255,7 +255,6 @@ function useGlobalSeqListener(
 }
 
 export default function App() {
-  const currentUser = useStore((s) => s.currentUser);
   const currentUserId = useStore((s) => s.currentUserId);
   const shellBootstrapped = useStore((s) => s.shellBootstrapped);
   const setCurrentUser = useStore((s) => s.setCurrentUser);
@@ -294,11 +293,11 @@ export default function App() {
     setCurrentChannel,
   });
 
-  const currentAgentName = useStore((s) => s.currentAgent?.name ?? null);
+  const currentAgent = useStore((s) => s.currentAgent);
   ensureAgentDm({
-    currentHumanDisplayName: currentUser,
     currentHumanId: currentUserId,
-    currentAgentName,
+    currentAgentId: currentAgent?.id ?? null,
+    currentAgentName: currentAgent?.name ?? null,
     dmChannels,
     queryClient: appQueryClient,
     updateInboxState,

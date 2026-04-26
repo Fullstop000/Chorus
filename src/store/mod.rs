@@ -303,14 +303,40 @@ impl Store {
         Self::lookup_sender_type_inner(&conn, id)
     }
 
-    /// Resolve a free-form name-or-id to the canonical (id, SenderType) pair.
+    /// Resolve a stable sender name to the canonical (id, SenderType) pair.
     ///
-    /// Used by API handlers that accept human-friendly names from clients
-    /// (e.g. channel invite by `memberName`) but persist the canonical id.
-    /// Prefers humans over agents on collision; this matches `lookup_sender_ref_inner`.
-    pub fn lookup_sender_ref(&self, value: &str) -> Result<Option<(String, SenderType)>> {
+    /// Used by API handlers that explicitly accept human-friendly names from
+    /// clients but persist immutable ids.
+    pub fn lookup_sender_by_name(&self, name: &str) -> Result<Option<(String, SenderType)>> {
         let conn = self.lock_conn();
-        Self::lookup_sender_ref_inner(&conn, value)
+        Self::lookup_sender_by_name_inner(&conn, name)
+    }
+
+    fn lookup_sender_by_name_inner(
+        conn: &Connection,
+        name: &str,
+    ) -> Result<Option<(String, SenderType)>> {
+        if let Some(id) = conn
+            .query_row(
+                "SELECT id FROM humans WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(Some((id, SenderType::Human)));
+        }
+        if let Some(id) = conn
+            .query_row(
+                "SELECT id FROM agents WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(Some((id, SenderType::Agent)));
+        }
+        Ok(None)
     }
 
     fn lookup_sender_type_inner(conn: &Connection, id: &str) -> Result<Option<SenderType>> {

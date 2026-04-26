@@ -34,13 +34,7 @@ Living list of follow-ups that are out of scope for the current branch but worth
   - **Depends on:** Nothing.
   - **Discovered:** 2026-04-18 during Codex review of PR #61.
 
-- [ ] **`chorus channel create` auto-joins the server-side OS user, not the CLI caller** — `handle_create_channel` in `src/server/handlers/channels.rs` calls `whoami::username()` on the server process. When the CLI runs on machine A against a server on machine B (or a daemon under a different account), `create` reports success but the caller isn't a member of their own new channel.
-  - **Why:** Today Chorus mostly runs as the same OS user who invokes the CLI, so this hasn't bitten anyone. It will the moment someone runs `chorus serve` as a system daemon or points `--server-url` at a shared host.
-  - **Pros:** Removes a foot-gun for distributed setups. Unblocks "CLI against remote server" as a real workflow.
-  - **Cons:** Requires the CLI to pass the joining identity, or a new `/api/channels` request field. Touches the server.
-  - **How to start:** Option A: extend `CreateChannelRequest` with an optional `joiner` field the CLI fills with `whoami::username()`; server joins that member instead of its own. Option B: CLI chains a `POST /api/channels/{id}/members` after create, mirroring `join`. Option A is cleaner but server-side; B is CLI-only and works today.
-  - **Depends on:** Nothing blocking.
-  - **Discovered:** 2026-04-18 during Codex review of PR #61.
+- [x] **`chorus channel create` auto-joins the server-side OS user, not the CLI caller** — fixed by the ID-first human identity foundation on `identity-foundation-id-first` (`559dfb6`) and verified by `/gstack-qa` on 2026-04-26. `handle_create_channel` now joins the configured local human ID from server state instead of calling `whoami::username()` on the server process. Hosted/multi-user caller identity remains tracked under the architecture TODO below.
 
 - [ ] **`chorus channel members <name>`** — list who's in a channel from the CLI.
   - **Why:** Server already exposes `GET /api/channels/{id}/members`. Today only the web UI consumes it. Scripters and debuggers would benefit from CLI access.
@@ -60,10 +54,10 @@ Living list of follow-ups that are out of scope for the current branch but worth
   - **Depends on:** Nothing blocking.
   - **Discovered:** 2026-04-23 during Gemini CLI review of dogfooding fixes #87–#92.
 
-- [ ] **`whoami::username()` as identity assumption** — Server handlers (`handle_create_team`, `handle_create_channel`, etc.) use `whoami::username()` to determine the caller's identity. This assumes the server runs as the same OS user who performs the action, which breaks for multi-user or hosted deployments.
-  - **Why:** Pre-existing architectural decision (local-first design). A proper fix requires passing identity via request context (auth token, session cookie, or explicit request field) through the entire API surface.
-  - **Pros:** Unlocks hosted/multi-user Chorus.
-  - **Cons:** Touches every server handler, all CLI commands, and the auth subsystem. Massive scope.
-  - **How to start:** Design an `Identity` extractor for Axum that resolves from a session token or API key. Migrate one handler at a time.
+- [ ] **Server-local identity fallback before auth/session identity** — public handlers now use the configured local human ID from server state instead of `whoami::username()`, but Chorus still does not resolve a distinct caller identity per request. This is correct for the current local-first mode and remains insufficient for hosted or multi-user deployments.
+  - **Why:** Hosted/multi-user Chorus needs request-scoped identity from auth/session context, not one server-local human.
+  - **Pros:** Unlocks hosted/multi-user Chorus and remote CLI/API clients with distinct human identities.
+  - **Cons:** Touches every public server handler, all CLI commands that need caller identity, and the auth subsystem. Massive scope.
+  - **How to start:** Design an `Identity` extractor for Axum that resolves from a session token or API key. Migrate one handler at a time from `AppState.local_human_id` to request-scoped identity after auth/session support lands.
   - **Depends on:** Auth/session system design.
-  - **Discovered:** 2026-04-23 during Gemini CLI review of dogfooding fixes #87–#92.
+  - **Discovered:** 2026-04-23 during Gemini CLI review of dogfooding fixes #87–#92. Updated 2026-04-26 after ID-first human identity foundation QA.

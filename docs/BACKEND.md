@@ -124,6 +124,10 @@ sender_type_for_actor()
 - `System` is never returned from this lookup
 - `create_system_message` is internal-only. Current callers: channel-kickoff in `templates.rs` and the task mutation hooks in `src/store/tasks/mod.rs` (create / claim / unclaim / status change). Clients cannot forge `sender_type = 'system'` — the HTTP surface has no endpoint that accepts it.
 
+### Identity Lookup Boundary
+
+Store/core APIs take canonical IDs. Do not add a `name_or_id` or `ref` lookup helper to the store layer. User-facing and bridge-facing routes may accept names for compatibility, but those handlers must translate the route value or `dm:@name` target into an ID before calling store methods. `display_name` is presentation-only and must never participate in identity lookup.
+
 ---
 
 ## Type System Conventions

@@ -820,7 +820,7 @@ fn test_send_and_receive_messages() {
         .unwrap();
 
     // Before joining any channels, the agent has no inbox messages.
-    let msgs = store.get_messages_for_agent(&bot1_id, false).unwrap();
+    let msgs = store.get_messages_for_agent_id(&bot1_id, false).unwrap();
     assert!(msgs.is_empty());
 
     store
@@ -838,7 +838,7 @@ fn test_send_and_receive_messages() {
             run_id: None,
         })
         .unwrap();
-    let msgs = store.get_messages_for_agent(&bot1_id, false).unwrap();
+    let msgs = store.get_messages_for_agent_id(&bot1_id, false).unwrap();
     assert_eq!(msgs.len(), 2);
 }
 
@@ -873,7 +873,7 @@ fn test_agent_does_not_receive_its_own_sent_message() {
         })
         .unwrap();
 
-    let unread = store.get_messages_for_agent(&bot1_id, false).unwrap();
+    let unread = store.get_messages_for_agent_id(&bot1_id, false).unwrap();
     assert!(
         unread.is_empty(),
         "an agent should not get its own outbound message back as unread"
@@ -1048,7 +1048,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
     assert_eq!(row.4, 2);
     drop(conn);
 
-    let unread = store.get_messages_for_agent(&bot1_id, true).unwrap();
+    let unread = store.get_messages_for_agent_id(&bot1_id, true).unwrap();
     assert_eq!(unread.len(), 2);
 
     let state_after = store
@@ -1134,7 +1134,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         .unwrap();
     assert_eq!(snapshot_before.last_read_seq, 0);
 
-    store.get_messages_for_agent(&bot1_id, true).unwrap();
+    store.get_messages_for_agent_id(&bot1_id, true).unwrap();
 
     let unread_after = store.get_unread_summary(&bot1_id).unwrap();
     assert_eq!(unread_after.get("general"), None);
@@ -1625,7 +1625,7 @@ fn test_resolve_target() {
     store
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
-    store.ensure_human_with_id("alice", "alice").unwrap();
+    store.ensure_human_with_id("carol-id", "carol").unwrap();
     let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -1642,7 +1642,9 @@ fn test_resolve_target() {
     let ch_id = store.resolve_target("#general", &bot1_id).unwrap();
     assert!(!ch_id.is_empty());
 
-    let dm_id = store.resolve_target("dm:@alice", &bot1_id).unwrap();
+    assert!(store.resolve_target("dm:@carol", &bot1_id).is_err());
+
+    let dm_id = store.resolve_target("dm:@carol-id", &bot1_id).unwrap();
     assert!(!dm_id.is_empty());
 }
 

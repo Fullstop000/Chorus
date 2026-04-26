@@ -148,12 +148,12 @@ export function inviteChannelMember(
   return post(`/api/channels/${encodeURIComponent(channelId)}/members`, { memberName } satisfies InviteChannelMemberRequest)
 }
 
-export function ensureDirectMessageConversation(peerName: string): Promise<ChannelInfo> {
-  return putDm(peerName)
+export function ensureDirectMessageConversation(peerId: string): Promise<ChannelInfo> {
+  return putDm(peerId)
 }
 
-function putDm(peerName: string): Promise<ChannelInfo> {
-  return post(`/api/dms/${encodeURIComponent(peerName)}`, undefined, { method: 'PUT' })
+function putDm(peerId: string): Promise<ChannelInfo> {
+  return post(`/api/dms/${encodeURIComponent(peerId)}`, undefined, { method: 'PUT' })
 }
 
 export function listHumans(): Promise<HumanInfo[]> {

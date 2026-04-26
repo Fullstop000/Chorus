@@ -14,13 +14,12 @@ pub async fn run(name: String, server_url: &str) -> anyhow::Result<()> {
     let channel_id = super::resolve_channel_id(&client, server_url, &normalized).await?;
 
     // Piggybacks on the invite endpoint because there is no dedicated self-join
-    // route; server-side self-invites are idempotent joins. The invite handler
-    // resolves a name OR id via `lookup_sender_ref`, so passing `humans.id`
-    // here keeps the round-trip stable even if the human's name changes.
+    // route; server-side self-invites are idempotent joins. The API field is
+    // explicitly `memberName`; the server persists the immutable id after lookup.
     let url = format!("{server_url}/api/channels/{channel_id}/members");
     let res = client
         .post(&url)
-        .json(&serde_json::json!({ "memberName": me.id }))
+        .json(&serde_json::json!({ "memberName": me.name }))
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;

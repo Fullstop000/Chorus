@@ -1,13 +1,12 @@
 use anyhow::{anyhow, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use uuid::Uuid;
 
 use crate::store::channels::{Channel, ChannelType};
-use crate::store::messages::*;
 use crate::store::Store;
 
 impl Store {
-    /// Resolve a `#channel` or `dm:@name` target into a `channel_id`.
+    /// Resolve a `#channel` or canonical `dm:@peer-id` target into a `channel_id`.
     pub fn resolve_target(&self, target: &str, sender_id: &str) -> Result<String> {
         self.resolve_target_for_workspace(target, sender_id, None)
     }
@@ -28,13 +27,13 @@ impl Store {
         };
 
         if let Some(rest) = target.strip_prefix("dm:@") {
-            let other_lookup = rest;
+            let other_id = rest;
             let sender_type = Self::lookup_sender_type_inner(&conn, sender_id)?
                 .ok_or_else(|| anyhow!("sender not found: {sender_id}"))?;
-            let (other_id, other_type) = Self::lookup_sender_ref_inner(&conn, other_lookup)?
-                .ok_or_else(|| anyhow!("peer not found: {other_lookup}"))?;
+            let other_type = Self::lookup_sender_type_inner(&conn, other_id)?
+                .ok_or_else(|| anyhow!("peer not found: {other_id}"))?;
 
-            let mut participant_ids = [sender_id.to_string(), other_id.clone()];
+            let mut participant_ids = [sender_id.to_string(), other_id.to_string()];
             participant_ids.sort();
             let dm_name = format!("dm-{}-{}", participant_ids[0], participant_ids[1]);
 
@@ -79,32 +78,5 @@ impl Store {
         } else {
             Err(anyhow!("invalid target format: {}", target))
         }
-    }
-
-    pub(crate) fn lookup_sender_ref_inner(
-        conn: &rusqlite::Connection,
-        value: &str,
-    ) -> Result<Option<(String, SenderType)>> {
-        if let Some(id) = conn
-            .query_row(
-                "SELECT id FROM humans WHERE id = ?1 OR name = ?1",
-                params![value],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            return Ok(Some((id, SenderType::Human)));
-        }
-        if let Some(id) = conn
-            .query_row(
-                "SELECT id FROM agents WHERE id = ?1 OR name = ?1",
-                params![value],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-        {
-            return Ok(Some((id, SenderType::Agent)));
-        }
-        Ok(None)
     }
 }
