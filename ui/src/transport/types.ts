@@ -19,6 +19,7 @@ export interface TraceFrame {
   eventType: 'agent.trace'
   runId: string
   agentName: string
+  channelId?: string | null
   seq: number
   timestampMs: number
   kind: string

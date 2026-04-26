@@ -13,6 +13,7 @@ import { useTaskEventLog } from "../../hooks/useTaskEventLog";
 import { TaskEventMessage } from "./TaskEventMessage";
 import "./MessageList.css";
 import type { RefObject } from "react";
+import type { AgentTrace } from "../../store/traceStore";
 
 type ScrollMetrics = {
   scrollHeight: number;
@@ -38,11 +39,41 @@ export function getBottomTransition(
   return "none";
 }
 
+export function getScopedAgentNames(
+  targetKey: string,
+  messages: Pick<HistoryMessage, "senderName" | "senderType">[],
+  conversationAgentNames: string[] = [],
+): Set<string> {
+  const names = new Set(conversationAgentNames);
+  if (targetKey.startsWith("dm:@")) {
+    names.add(targetKey.slice("dm:@".length));
+  }
+  for (const msg of messages) {
+    if (msg.senderType === "agent") names.add(msg.senderName);
+  }
+  return names;
+}
+
+export function traceBelongsToConversation(
+  conversationId: string | null,
+  agentName: string,
+  trace: Pick<AgentTrace, "channelId">,
+  scopedAgentNames: ReadonlySet<string>,
+): boolean {
+  if (conversationId && trace.channelId) {
+    return trace.channelId === conversationId;
+  }
+  return scopedAgentNames.has(agentName);
+}
+
 interface MessageListProps {
   // Stable store key for the current channel or DM.
   targetKey: string;
   // Conversation id for read-cursor tracking.
   conversationId: string | null;
+  // Agent names that belong to the current conversation. Used as a fallback
+  // for trace frames that predate channelId propagation.
+  conversationAgentNames?: string[];
   // Messages rendered in visual order.
   messages: HistoryMessage[];
   // True while history is still loading.
@@ -62,6 +93,7 @@ interface MessageListProps {
 export function MessageList({
   targetKey,
   conversationId,
+  conversationAgentNames = [],
   messages,
   loading,
   lastReadSeq,
@@ -277,6 +309,23 @@ export function MessageList({
   const expandedAgents = useTraceStore((s) => s.expandedAgents);
   const toggleExpanded = useTraceStore((s) => s.toggleExpanded);
 
+  const scopedAgentNames = useMemo(
+    () => getScopedAgentNames(targetKey, messages, conversationAgentNames),
+    [conversationAgentNames, messages, targetKey],
+  );
+
+  const traceInCurrentConversation = useCallback(
+    (agentName: string, trace: (typeof traces)[string]) => {
+      return traceBelongsToConversation(
+        conversationId,
+        agentName,
+        trace,
+        scopedAgentNames,
+      );
+    },
+    [conversationId, scopedAgentNames],
+  );
+
   // Map: agentName:runId → message id with that runId (for exact binding)
   // Map: agentName → last message id (fallback for inactive traces with no runId match)
   // Map: runId → first message id (only first message per run shows static telescope)
@@ -300,8 +349,14 @@ export function MessageList({
 
   // Collect active run IDs from live traces
   const activeRunIds = new Set<string>();
-  for (const trace of Object.values(traces)) {
-    if (trace.isActive && trace.runId) activeRunIds.add(trace.runId);
+  for (const [agentName, trace] of Object.entries(traces)) {
+    if (
+      trace.isActive &&
+      trace.runId &&
+      traceInCurrentConversation(agentName, trace)
+    ) {
+      activeRunIds.add(trace.runId);
+    }
   }
 
   // Compute orphaned traces: active traces whose runId has no matching message.
@@ -309,6 +364,7 @@ export function MessageList({
   const orphanedTraces: Array<[string, (typeof traces)[string]]> = [];
   for (const [agentName, trace] of Object.entries(traces)) {
     if (!trace.isActive) continue;
+    if (!traceInCurrentConversation(agentName, trace)) continue;
     const matchKey = `${agentName}:${trace.runId}`;
     if (!agentRunIdMsgId.has(matchKey)) {
       orphanedTraces.push([agentName, trace]);
@@ -385,7 +441,7 @@ export function MessageList({
         let agentTrace: (typeof traces)[string] | undefined;
         if (msg.senderType === "agent") {
           const trace = traces[msg.senderName];
-          if (trace) {
+          if (trace && traceInCurrentConversation(msg.senderName, trace)) {
             const matchKey = `${msg.senderName}:${trace.runId}`;
             if (
               msg.runId &&

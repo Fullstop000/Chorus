@@ -2918,6 +2918,24 @@ async fn test_active_workspace_filters_core_resource_lists() {
         .clone()
         .oneshot(
             Request::builder()
+                .uri("/api/server-info")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let server_info = body_json(resp).await;
+    assert!(server_info["system_channels"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|channel| channel["name"] == "all"));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
                 .uri("/api/channels")
                 .body(Body::empty())
                 .unwrap(),
@@ -3023,6 +3041,42 @@ async fn test_active_workspace_filters_core_resource_lists() {
 }
 
 #[tokio::test]
+async fn test_create_agent_in_active_workspace_joins_workspace_all() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    let workspace = store.create_local_workspace("Alpha", "alice").unwrap();
+    store.set_active_workspace(&workspace.id).unwrap();
+    let app = build_router(store.clone());
+
+    let req = serde_json::json!({
+        "display_name": "Basic Agent",
+        "runtime": "claude",
+        "model": "sonnet"
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let agent_name = body["name"].as_str().unwrap();
+    let all = store
+        .get_auto_join_channels_for_workspace(Some(&workspace.id))
+        .unwrap()
+        .into_iter()
+        .find(|channel| channel.name == "all")
+        .expect("workspace #all should exist");
+
+    assert!(store.channel_member_exists(&all.id, agent_name).unwrap());
+}
+
+#[tokio::test]
 async fn test_workspace_api_lifecycle() {
     let store = Arc::new(Store::open(":memory:").unwrap());
     let app = build_router(store.clone());
@@ -3061,7 +3115,7 @@ async fn test_workspace_api_lifecycle() {
     assert_eq!(body["name"], "Acme");
     assert_eq!(body["slug"], "acme");
     assert_eq!(body["active"], false);
-    assert_eq!(body["channel_count"], 0);
+    assert_eq!(body["channel_count"], 1);
     assert_eq!(body["agent_count"], 0);
     assert_eq!(body["human_count"], 1);
 

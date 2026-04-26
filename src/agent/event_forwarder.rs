@@ -405,14 +405,28 @@ pub(super) fn spawn_event_forwarder(
                     last_tool_raw_name.remove(session_id);
                     info!(agent = %key, reason = ?result.finish_reason, "run completed");
 
+                    let has_pending_notification = {
+                        let guard = agents.lock().await;
+                        guard
+                            .get(key)
+                            .map(|agent| agent.pending_notification_count > 0)
+                            .unwrap_or(false)
+                    };
+
                     // Post-run empty-response detection: if the run finished
                     // naturally but never invoked send_message, warn the channel
                     // so the user isn't left staring at silence.
                     // Only warn in DMs; in group channels an agent may be
-                    // watching without replying.
+                    // watching without replying. If a notification arrived
+                    // while this run was busy, the next prompt is already
+                    // queued; warning here would attach silence from the old
+                    // run to the new conversation and create a false positive.
                     let channel_id = run_channel_id.remove(&run_id);
                     let had_send_message = run_had_send_message.remove(&run_id).unwrap_or(false);
-                    if result.finish_reason == FinishReason::Natural && !had_send_message {
+                    if result.finish_reason == FinishReason::Natural
+                        && !had_send_message
+                        && !has_pending_notification
+                    {
                         if let Some(channel_id) = channel_id {
                             if let Ok(Some(channel)) = store.get_channel_by_id(&channel_id) {
                                 if channel.channel_type == crate::store::ChannelType::Dm {
@@ -499,7 +513,55 @@ pub(super) fn spawn_event_forwarder(
 mod tests {
     use super::*;
     use crate::agent::drivers::RunResult;
+    use async_trait::async_trait;
     use tokio::sync::mpsc;
+
+    struct TestSession {
+        key: String,
+        session_id: String,
+    }
+
+    #[async_trait]
+    impl crate::agent::drivers::Session for TestSession {
+        fn key(&self) -> &crate::agent::drivers::AgentKey {
+            &self.key
+        }
+
+        fn session_id(&self) -> Option<&str> {
+            Some(&self.session_id)
+        }
+
+        fn process_state(&self) -> ProcessState {
+            ProcessState::Active {
+                session_id: self.session_id.clone(),
+            }
+        }
+
+        async fn run(
+            &mut self,
+            _init_prompt: Option<crate::agent::drivers::PromptReq>,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn prompt(
+            &mut self,
+            _req: crate::agent::drivers::PromptReq,
+        ) -> anyhow::Result<crate::agent::drivers::RunId> {
+            Ok(uuid::Uuid::new_v4())
+        }
+
+        async fn cancel(
+            &mut self,
+            _run: crate::agent::drivers::RunId,
+        ) -> anyhow::Result<crate::agent::drivers::CancelOutcome> {
+            Ok(crate::agent::drivers::CancelOutcome::NotInFlight)
+        }
+
+        async fn close(&mut self) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
 
     /// Collect every TraceEvent emitted on `rx` until the sender is dropped.
     async fn collect_traces(mut rx: broadcast::Receiver<TraceEvent>) -> Vec<TraceEvent> {
@@ -813,6 +875,109 @@ mod tests {
         assert_eq!(second_count, 0, "warning drifted to later channel");
     }
 
+    /// If a DM arrives while the agent is busy, the completing run belongs to
+    /// the previous turn. The queued notification will be delivered next, so
+    /// posting an empty-run warning now would falsely blame the new DM.
+    #[tokio::test]
+    async fn no_warn_when_notification_is_pending_for_next_turn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let key = "bot".to_string();
+        let sid = "session-1".to_string();
+        agents.lock().await.insert(
+            key.clone(),
+            ManagedAgent {
+                handle: Box::new(TestSession {
+                    key: key.clone(),
+                    session_id: sid.clone(),
+                }),
+                _event_tasks: vec![],
+                pending_notification_count: 1,
+            },
+        );
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            activity_logs,
+            trace_store.clone(),
+            trace_tx.clone(),
+            store.clone(),
+            agents.clone(),
+        );
+
+        let run_id = uuid::Uuid::new_v4();
+        let channel_id = store
+            .create_channel("dm-with-bot", None, crate::store::ChannelType::Dm, None)
+            .unwrap();
+        trace_store.set_run_channel(&key, &channel_id);
+
+        event_tx
+            .send(DriverEvent::Lifecycle {
+                key: key.clone(),
+                state: ProcessState::PromptInFlight {
+                    run_id,
+                    session_id: sid.clone(),
+                },
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id,
+                item: AgentEventItem::ToolCall {
+                    name: "check_messages".to_string(),
+                    input: serde_json::Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid,
+                run_id,
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+        drop(trace_tx);
+
+        let count: i64 = store
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(count, 0, "pending notification should suppress warning");
+        assert_eq!(
+            agents
+                .lock()
+                .await
+                .get(&key)
+                .map(|agent| agent.pending_notification_count),
+            Some(0),
+            "pending notification should still be delivered after completion"
+        );
+    }
+
     /// When a run does invoke send_message, no system warning should be posted.
     #[tokio::test]
     async fn no_warn_when_send_message_used() {
@@ -885,6 +1050,83 @@ mod tests {
         assert_eq!(
             count, 0,
             "expected no system warning when send_message was used"
+        );
+    }
+
+    /// Some runtimes report MCP tool calls using display titles like
+    /// `send_message (chat MCP Server)`. These are still real replies and
+    /// must suppress the empty-run warning.
+    #[tokio::test]
+    async fn no_warn_when_send_message_display_title_used() {
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("chorus.db");
+        let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
+        let activity_logs = Arc::new(ActivityLogMap::default());
+        let trace_store = Arc::new(AgentTraceStore::new());
+        let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+
+        let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
+        let forwarder = spawn_event_forwarder(
+            event_rx,
+            activity_logs,
+            trace_store.clone(),
+            trace_tx.clone(),
+            store.clone(),
+            agents,
+        );
+
+        let key = "bot".to_string();
+        let sid = "session-1".to_string();
+        let run_id = uuid::Uuid::new_v4();
+
+        let channel_id = store
+            .create_channel("dm-with-bot", None, crate::store::ChannelType::Dm, None)
+            .unwrap();
+        trace_store.set_run_channel(&key, &channel_id);
+
+        event_tx
+            .send(DriverEvent::Output {
+                key: key.clone(),
+                session_id: sid.clone(),
+                run_id,
+                item: AgentEventItem::ToolCall {
+                    name: "send_message (chat MCP Server)".to_string(),
+                    input: serde_json::Value::Null,
+                },
+            })
+            .await
+            .unwrap();
+
+        event_tx
+            .send(DriverEvent::Completed {
+                key: key.clone(),
+                session_id: sid,
+                run_id,
+                result: RunResult {
+                    finish_reason: FinishReason::Natural,
+                },
+            })
+            .await
+            .unwrap();
+
+        drop(event_tx);
+        forwarder.await.unwrap();
+        drop(trace_tx);
+
+        let count: i64 = store
+            .conn_for_test()
+            .query_row(
+                "SELECT COUNT(*) FROM messages WHERE channel_id = ?1 AND sender_name = 'system'",
+                rusqlite::params![channel_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            count, 0,
+            "expected no system warning when send_message display title was used"
         );
     }
 

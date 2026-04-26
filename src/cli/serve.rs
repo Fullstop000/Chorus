@@ -43,7 +43,7 @@ pub async fn run(
     store.ensure_builtin_channels(&username)?;
 
     let server_url = format!("http://localhost:{port}");
-    let manager = Arc::new(AgentManager::new(store.clone(), agents_dir));
+    let mut manager = AgentManager::new(store.clone(), agents_dir);
 
     // Shared cancellation token — cancelled on Ctrl-C and used to shut down
     // both the main server and the bridge together.
@@ -74,11 +74,18 @@ pub async fn run(
     }
     let actual_bridge_port = bridge_local_addr.port();
 
-    // Write discovery info so drivers can find the bridge.
-    // `AlreadyExists` means another live `chorus serve` owns the discovery
-    // file — abort hard so we don't silently steal its agents' routing.
-    // Other errors (permissions, disk) warn-and-continue so the bridge still
-    // runs for same-process agents.
+    // Same-process agents do not need the global discovery file: point this
+    // server's agent manager at its co-hosted bridge directly so temp QA
+    // instances can run alongside another Chorus without fighting over
+    // ~/.chorus/bridge.json.
+    manager.set_bridge_endpoint_override(format!("http://127.0.0.1:{actual_bridge_port}"));
+    let manager = Arc::new(manager);
+
+    // Write discovery info so external drivers can find the bridge.
+    // A live discovery file owned by another Chorus is no longer fatal here:
+    // this server's own agents use the explicit in-process bridge override
+    // above, so isolated QA instances can coexist without stealing the global
+    // discovery slot from the user's main server.
     let _discovery_guard = match chorus::bridge::discovery::write_bridge_info(
         &chorus::bridge::discovery::BridgeInfo {
             port: actual_bridge_port,
@@ -96,10 +103,12 @@ pub async fn run(
             Some(chorus::bridge::discovery::DiscoveryGuard)
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-            anyhow::bail!(
-                "shared bridge: {e}. Stop the other chorus server (or wait for it to exit) \
-                 before starting a new one."
+            tracing::warn!(
+                err = %e,
+                port = actual_bridge_port,
+                "shared bridge discovery file already owned by another chorus; continuing without publishing discovery"
             );
+            None
         }
         Err(e) => {
             tracing::warn!(err = %e, "shared bridge: failed to write discovery file; bridge will still run");

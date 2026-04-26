@@ -666,43 +666,15 @@ pub trait Session: Send {
 }
 
 // ---------------------------------------------------------------------------
-// Shared bridge pairing helper (Phase 2)
+// Shared bridge MCP URL helper
 // ---------------------------------------------------------------------------
 
-/// Request a pairing token from the shared bridge's admin endpoint.
+/// Build the MCP endpoint URL a runtime uses to reach the shared bridge.
 ///
-/// Called by drivers when `AgentSpec.bridge_endpoint` is set. The returned
-/// token is used to construct the MCP URL `{endpoint}/token/{token}/mcp`
-/// which the runtime connects to for its MCP session.
-///
-/// Errors if the bridge is unreachable, returns a non-2xx status, or
-/// omits the `token` field in the response.
-pub async fn request_pairing_token(
-    bridge_endpoint: &str,
-    agent_key: &str,
-) -> anyhow::Result<String> {
-    use anyhow::Context;
-    let url = format!("{}/admin/pair", bridge_endpoint.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .context("build reqwest client")?;
-    let res = client
-        .post(&url)
-        .json(&serde_json::json!({"agent_key": agent_key}))
-        .send()
-        .await
-        .context("bridge unreachable")?;
-    if !res.status().is_success() {
-        let status = res.status();
-        let body = res.text().await.unwrap_or_default();
-        anyhow::bail!("bridge-pair failed: {} {}", status, body);
-    }
-    let json: serde_json::Value = res.json().await.context("invalid JSON from bridge")?;
-    json["token"]
-        .as_str()
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("missing 'token' in bridge response"))
+/// The bridge expects all agents to connect to `{endpoint}/mcp` and pass
+/// their identity via the `X-Agent-Id` HTTP header.
+pub fn bridge_mcp_url(endpoint: &str) -> String {
+    format!("{}/mcp", endpoint.trim_end_matches('/'))
 }
 
 // ---------------------------------------------------------------------------
@@ -852,7 +824,6 @@ impl<P: AgentProcess> AgentRegistry<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use std::time::Duration;
     use tokio::time::timeout;
 
@@ -1089,87 +1060,17 @@ mod tests {
         );
     }
 
-    // ---- request_pairing_token ----
+    // ---- bridge_mcp_url ----
 
-    async fn spawn_mock_bridge(
-        response: axum::response::Response,
-    ) -> (String, tokio::task::JoinHandle<()>) {
-        use axum::routing::post;
-        use axum::Router;
-        use std::sync::Mutex as StdMutex;
-
-        let shared = Arc::new(StdMutex::new(Some(response)));
-        let app = Router::new().route(
-            "/admin/pair",
-            post(move || {
-                let shared = shared.clone();
-                async move {
-                    shared
-                        .lock()
-                        .unwrap()
-                        .take()
-                        .expect("mock bridge only answers once")
-                }
-            }),
+    #[test]
+    fn bridge_mcp_url_builds_correctly() {
+        assert_eq!(
+            bridge_mcp_url("http://127.0.0.1:4321"),
+            "http://127.0.0.1:4321/mcp"
         );
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let url = format!("http://127.0.0.1:{port}");
-        let handle = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        // Give the listener a tick to be ready.
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        (url, handle)
-    }
-
-    #[tokio::test]
-    async fn request_pairing_token_parses_success_response() {
-        let response = axum::response::Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({"token": "tok-123"}).to_string(),
-            ))
-            .unwrap();
-        let (url, handle) = spawn_mock_bridge(response).await;
-
-        let token = request_pairing_token(&url, "agent-abc").await.unwrap();
-        assert_eq!(token, "tok-123");
-        handle.abort();
-    }
-
-    #[tokio::test]
-    async fn request_pairing_token_surfaces_non_2xx() {
-        let response = axum::response::Response::builder()
-            .status(500)
-            .body(axum::body::Body::from("boom"))
-            .unwrap();
-        let (url, handle) = spawn_mock_bridge(response).await;
-
-        let err = request_pairing_token(&url, "agent-abc")
-            .await
-            .expect_err("non-2xx should bubble up");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("bridge-pair failed"), "got: {msg}");
-        handle.abort();
-    }
-
-    #[tokio::test]
-    async fn request_pairing_token_errors_on_missing_field() {
-        let response = axum::response::Response::builder()
-            .status(200)
-            .header("content-type", "application/json")
-            .body(axum::body::Body::from(
-                serde_json::json!({"wrong_field": "x"}).to_string(),
-            ))
-            .unwrap();
-        let (url, handle) = spawn_mock_bridge(response).await;
-
-        let err = request_pairing_token(&url, "agent-abc")
-            .await
-            .expect_err("missing token field should fail");
-        let msg = format!("{err:#}");
-        assert!(msg.contains("missing 'token'"), "got: {msg}");
-        handle.abort();
+        assert_eq!(
+            bridge_mcp_url("http://127.0.0.1:4321/"),
+            "http://127.0.0.1:4321/mcp"
+        );
     }
 }

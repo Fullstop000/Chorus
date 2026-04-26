@@ -112,6 +112,66 @@ fn test_create_local_workspace_sets_owner_and_active_context() {
 }
 
 #[test]
+fn test_create_local_workspace_provisions_all_channel() {
+    let (store, _dir) = make_store();
+
+    let workspace = store.create_local_workspace("Chorus Dev", "alice").unwrap();
+
+    let channels = store
+        .get_channels_by_params(&chorus::store::ChannelListParams {
+            workspace_id: Some(&workspace.id),
+            include_system: true,
+            ..Default::default()
+        })
+        .unwrap();
+    let all = channels
+        .iter()
+        .find(|channel| channel.name == "all")
+        .expect("workspace should have #all");
+    assert_eq!(all.channel_type, ChannelType::System);
+    assert!(store.channel_member_exists(&all.id, "alice").unwrap());
+}
+
+#[test]
+fn test_scoped_resource_schema_requires_workspace_id() {
+    let store = Store::open(":memory:").unwrap();
+    let conn = store.conn_for_test();
+
+    let channel_err = conn
+        .execute(
+            "INSERT INTO channels (id, name, channel_type)
+             VALUES ('missing-workspace-channel', 'orphan', 'channel')",
+            [],
+        )
+        .unwrap_err();
+    assert!(channel_err
+        .to_string()
+        .contains("NOT NULL constraint failed: channels.workspace_id"));
+
+    let agent_err = conn
+        .execute(
+            "INSERT INTO agents (id, name, display_name, runtime, model)
+             VALUES ('missing-workspace-agent', 'orphan-agent', 'Orphan Agent', 'claude', 'sonnet')",
+            [],
+        )
+        .unwrap_err();
+    assert!(agent_err
+        .to_string()
+        .contains("NOT NULL constraint failed: agents.workspace_id"));
+
+    let team_err = conn
+        .execute(
+            "INSERT INTO teams (id, name, display_name, collaboration_model)
+             VALUES ('missing-workspace-team', 'orphan-team', 'Orphan Team', 'swarm')",
+            [],
+        )
+        .unwrap_err();
+    assert!(team_err
+        .to_string()
+        .contains("NOT NULL constraint failed: teams.workspace_id"));
+}
+
+#[test]
 fn test_workspace_scoped_names_allow_same_channel_name_in_different_workspaces() {
     let (store, _dir) = make_store();
     let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
@@ -327,14 +387,14 @@ fn test_team_with_channel_create_rolls_back_when_channel_insert_fails() {
 }
 
 #[test]
-fn test_unscoped_agent_and_team_lists_exclude_workspace_rows() {
+fn test_compat_agent_and_team_helpers_write_active_workspace_rows() {
     let (store, _dir) = make_store();
     let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
 
     store
         .create_agent_record(&AgentRecordUpsert {
-            name: "legacy-bot",
-            display_name: "Legacy Bot",
+            name: "compat-bot",
+            display_name: "Compat Bot",
             description: None,
             system_prompt: None,
             runtime: "claude",
@@ -359,19 +419,23 @@ fn test_unscoped_agent_and_team_lists_exclude_workspace_rows() {
         )
         .unwrap();
     store
-        .create_team("legacy-team", "Legacy Team", "swarm", None)
+        .create_team("compat-team", "Compat Team", "swarm", None)
         .unwrap();
     store
         .create_team_in_workspace(&alpha.id, "alpha-team", "Alpha Team", "swarm", None)
         .unwrap();
 
     let agents = store.get_agents().unwrap();
-    assert_eq!(agents.len(), 1);
-    assert_eq!(agents[0].name, "legacy-bot");
+    assert_eq!(agents.len(), 2);
+    assert!(agents.iter().all(|agent| agent.workspace_id == alpha.id));
+    assert!(agents.iter().any(|agent| agent.name == "compat-bot"));
+    assert!(agents.iter().any(|agent| agent.name == "alpha-bot"));
 
     let teams = store.get_teams().unwrap();
-    assert_eq!(teams.len(), 1);
-    assert_eq!(teams[0].name, "legacy-team");
+    assert_eq!(teams.len(), 2);
+    assert!(teams.iter().all(|team| team.workspace_id == alpha.id));
+    assert!(teams.iter().any(|team| team.name == "compat-team"));
+    assert!(teams.iter().any(|team| team.name == "alpha-team"));
 }
 
 #[test]
@@ -430,9 +494,9 @@ fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO channels (id, name, channel_type, parent_channel_id)
-             VALUES ('alpha-task-channel', 'alpha-general__task-1', 'task', ?1)",
-            params![alpha_channel_id],
+            "INSERT INTO channels (id, workspace_id, name, channel_type, parent_channel_id)
+             VALUES ('alpha-task-channel', ?1, 'alpha-general__task-1', 'task', ?2)",
+            params![alpha.id, alpha_channel_id],
         )
         .unwrap();
         conn.execute(
@@ -1572,63 +1636,6 @@ fn test_list_channels_excludes_dm() {
 }
 
 #[test]
-fn test_dm_only_has_two_members() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel("general", None, ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-
-    // Create DM between alice and bot1
-    let dm_id = store.resolve_target("dm:@alice", "bot1").unwrap();
-
-    // Simulate old bug: manually add bot2 as a spurious member
-    store
-        .join_channel("dm-alice-bot1", "bot2", SenderType::Agent)
-        .unwrap();
-
-    let members = store.get_channel_members(&dm_id).unwrap();
-    assert_eq!(members.len(), 3, "precondition: spurious member added");
-
-    // Re-open store to trigger the migration
-    let db_path = _dir.path().join("test.db");
-    let store2 = Store::open(db_path.to_str().unwrap()).unwrap();
-    let members2 = store2.get_channel_members(&dm_id).unwrap();
-    assert_eq!(
-        members2.len(),
-        2,
-        "migration must remove spurious DM members"
-    );
-    let names: Vec<_> = members2.iter().map(|m| m.member_name.as_str()).collect();
-    assert!(names.contains(&"alice"), "alice must remain");
-    assert!(names.contains(&"bot1"), "bot1 must remain");
-}
-
-#[test]
 fn test_dm_channels() {
     let (store, _dir) = make_store();
     store.create_human("alice").unwrap();
@@ -1858,36 +1865,6 @@ fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
 }
 
 #[test]
-fn test_store_open_removes_legacy_shared_memory_system_channel() {
-    let (store, dir) = make_store();
-    store.create_human("alice").unwrap();
-    store.ensure_builtin_channels("alice").unwrap();
-    store
-        .ensure_system_channel("shared-memory", "Agent group memory")
-        .unwrap();
-    drop(store);
-
-    let db_path = dir.path().join("test.db");
-    let reopened = Store::open(db_path.to_str().unwrap()).unwrap();
-
-    assert!(
-        reopened
-            .get_channel_by_name("shared-memory")
-            .unwrap()
-            .is_none(),
-        "legacy shared-memory system channel should be removed during startup migration"
-    );
-
-    let server_info = chorus::server::build_server_info(&reopened, "alice").unwrap();
-    let system_names: Vec<_> = server_info
-        .system_channels
-        .iter()
-        .map(|channel| channel.name.as_str())
-        .collect();
-    assert_eq!(system_names, vec!["all"]);
-}
-
-#[test]
 fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
     let (store, _dir) = make_store();
     store.create_human("alice").unwrap();
@@ -1910,6 +1887,59 @@ fn test_new_humans_and_agents_auto_join_all_when_it_exists() {
     assert!(store.is_member("all", "alice").unwrap());
     assert!(store.is_member("all", "zoe").unwrap());
     assert!(store.is_member("all", "bot1").unwrap());
+}
+
+#[test]
+fn test_ensure_builtin_channels_repairs_active_workspace_all() {
+    let (store, _dir) = make_store();
+    let workspace = store
+        .create_local_workspace("Chorus Local", "alice")
+        .unwrap();
+
+    {
+        let conn = store.conn_for_test();
+        conn.execute(
+            "DELETE FROM channel_members
+             WHERE channel_id IN (SELECT id FROM channels WHERE workspace_id = ?1 AND name = 'all')",
+            params![workspace.id],
+        )
+        .unwrap();
+        conn.execute(
+            "DELETE FROM channels WHERE workspace_id = ?1 AND name = 'all'",
+            params![workspace.id],
+        )
+        .unwrap();
+    }
+    store
+        .create_channel("all", Some("Recovered all"), ChannelType::System, None)
+        .unwrap();
+    store
+        .create_agent_record_in_workspace(
+            &workspace.id,
+            &AgentRecordUpsert {
+                name: "bot1",
+                display_name: "Bot 1",
+                description: None,
+                system_prompt: None,
+                runtime: "claude",
+                model: "sonnet",
+                reasoning_effort: None,
+                env_vars: &[],
+            },
+        )
+        .unwrap();
+
+    store.ensure_builtin_channels("alice").unwrap();
+
+    let auto_join_channels = store
+        .get_auto_join_channels_for_workspace(Some(&workspace.id))
+        .unwrap();
+    assert_eq!(auto_join_channels.len(), 1);
+    let all = &auto_join_channels[0];
+    assert_eq!(all.name, "all");
+    assert_eq!(all.workspace_id, workspace.id);
+    assert!(store.channel_member_exists(&all.id, "alice").unwrap());
+    assert!(store.channel_member_exists(&all.id, "bot1").unwrap());
 }
 
 #[test]

@@ -1,4 +1,5 @@
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::Extension;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
@@ -7,9 +8,7 @@ pub mod backend;
 pub mod discovery;
 pub mod error;
 pub mod format;
-pub mod pairing;
 pub mod serve;
-pub mod smoke_test;
 mod types;
 
 use backend::{Backend, ChorusBackend};
@@ -20,11 +19,55 @@ use types::*;
 /// `chorus bridge-serve --listen`) so changing it touches one place.
 pub const DEFAULT_BRIDGE_PORT: u16 = 4321;
 
-/// Build the token-pair URL a runtime uses to reach the shared bridge:
-/// `{endpoint}/token/{token}/mcp`. Trimming the trailing slash on `endpoint`
-/// is a defensive chore the five drivers used to duplicate; put it here once.
-pub fn token_mcp_url(endpoint: &str, token: &str) -> String {
-    format!("{}/token/{}/mcp", endpoint.trim_end_matches('/'), token)
+/// Reject agent_keys that could pivot to other endpoints or traverse the
+/// filesystem, but accept the full set of names Chorus allows elsewhere.
+///
+/// Chorus only enforces `!name.is_empty()` at create time (see
+/// `handle_create_agent` in `src/server/handlers/agents.rs`), so existing
+/// agents may have spaces, dots, or Unicode in their names.
+pub fn agent_key_is_safe(key: &str) -> bool {
+    !(key.trim().is_empty()
+        || key.len() > 256
+        || key.contains('/')
+        || key.contains('\\')
+        || key.contains("..")
+        || key.chars().any(|c| c.is_control()))
+}
+
+/// Extract the agent identity from the `X-Agent-Id` HTTP header injected
+/// by rmcp's `StreamableHttpService` into request extensions.
+///
+/// Every tool handler calls this to obtain the per-request agent_id rather
+/// than relying on a struct field.
+fn extract_agent_id(parts: &axum::http::request::Parts) -> Result<String, rmcp::ErrorData> {
+    let header = parts
+        .headers
+        .get("X-Agent-Id")
+        .ok_or_else(|| {
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "Missing X-Agent-Id header".to_string(),
+                None,
+            )
+        })?
+        .to_str()
+        .map_err(|_| {
+            rmcp::ErrorData::new(
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "Invalid X-Agent-Id header encoding".to_string(),
+                None,
+            )
+        })?;
+
+    if !agent_key_is_safe(header) {
+        return Err(rmcp::ErrorData::new(
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            "Invalid X-Agent-Id value".to_string(),
+            None,
+        ));
+    }
+
+    Ok(header.to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -33,15 +76,13 @@ pub fn token_mcp_url(endpoint: &str, token: &str) -> String {
 
 #[derive(Clone)]
 pub struct ChatBridge {
-    agent_id: String,
     backend: ChorusBackend,
     tool_router: ToolRouter<Self>,
 }
 
 impl ChatBridge {
-    pub fn new(agent_id: String, server_url: String) -> Self {
+    pub fn new(server_url: String) -> Self {
         Self {
-            agent_id,
             backend: ChorusBackend::new(server_url),
             tool_router: Self::tool_router(),
         }
@@ -55,11 +96,13 @@ impl ChatBridge {
     )]
     async fn send_message(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<SendMessageParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
             .send_message(
-                &self.agent_id,
+                &agent_id,
                 &params.target,
                 &params.content,
                 params.attachment_ids.clone(),
@@ -73,10 +116,12 @@ impl ChatBridge {
     )]
     async fn check_messages(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         _params: Parameters<EmptyParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
-            .check_messages(&self.agent_id)
+            .check_messages(&agent_id)
             .await
             .map_err(Into::into)
     }
@@ -86,11 +131,13 @@ impl ChatBridge {
     )]
     async fn read_history(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<ReadHistoryParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
             .read_history(
-                &self.agent_id,
+                &agent_id,
                 &params.channel,
                 params.limit,
                 params.before,
@@ -103,9 +150,13 @@ impl ChatBridge {
     #[tool(
         description = "List all channels in this server, including which ones you have joined, plus all agents and humans. Use this to discover who and where you can message."
     )]
-    async fn list_server(&self) -> Result<String, rmcp::ErrorData> {
+    async fn list_server(
+        &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
-            .list_channels(&self.agent_id)
+            .list_channels(&agent_id)
             .await
             .map_err(Into::into)
     }
@@ -115,10 +166,12 @@ impl ChatBridge {
     )]
     async fn list_tasks(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<ListTasksParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
-            .list_tasks(&self.agent_id, &params.channel, params.status.clone())
+            .list_tasks(&agent_id, &params.channel, params.status.clone())
             .await
             .map_err(Into::into)
     }
@@ -128,11 +181,13 @@ impl ChatBridge {
     )]
     async fn create_tasks(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<CreateTasksParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         let task_titles: Vec<String> = params.tasks.iter().map(|t| t.title.clone()).collect();
         self.backend
-            .create_tasks(&self.agent_id, &params.channel, task_titles)
+            .create_tasks(&agent_id, &params.channel, task_titles)
             .await
             .map_err(Into::into)
     }
@@ -142,10 +197,12 @@ impl ChatBridge {
     )]
     async fn claim_tasks(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<ClaimTasksParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
-            .claim_tasks(&self.agent_id, &params.channel, params.task_numbers.clone())
+            .claim_tasks(&agent_id, &params.channel, params.task_numbers.clone())
             .await
             .map_err(Into::into)
     }
@@ -153,10 +210,12 @@ impl ChatBridge {
     #[tool(description = "Release your claim on a task, setting it back to open.")]
     async fn unclaim_task(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<UnclaimTaskParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
-            .unclaim_task(&self.agent_id, &params.channel, params.task_number)
+            .unclaim_task(&agent_id, &params.channel, params.task_number)
             .await
             .map_err(Into::into)
     }
@@ -166,11 +225,13 @@ impl ChatBridge {
     )]
     async fn update_task_status(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<UpdateTaskStatusParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
             .update_task_status(
-                &self.agent_id,
+                &agent_id,
                 &params.channel,
                 params.task_number,
                 &params.status,
@@ -184,10 +245,12 @@ impl ChatBridge {
     )]
     async fn upload_file(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<UploadFileParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
-            .upload_file(&self.agent_id, &params.file_path, &params.channel)
+            .upload_file(&agent_id, &params.file_path, &params.channel)
             .await
             .map_err(Into::into)
     }
@@ -197,10 +260,12 @@ impl ChatBridge {
     )]
     async fn view_file(
         &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<ViewFileParams>,
     ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
         self.backend
-            .view_file(&self.agent_id, &params.attachment_id)
+            .view_file(&agent_id, &params.attachment_id)
             .await
             .map_err(Into::into)
     }
@@ -231,7 +296,28 @@ mod tests {
 
     #[test]
     fn chat_bridge_constructs() {
-        let bridge = ChatBridge::new("agent-1".into(), "http://localhost:3001".into());
-        assert_eq!(bridge.agent_id, "agent-1");
+        let _bridge = ChatBridge::new("http://localhost:3001".into());
+    }
+
+    #[test]
+    fn agent_key_accepts_chorus_names() {
+        assert!(agent_key_is_safe("bot1"));
+        assert!(agent_key_is_safe("Agent Smith"));
+        assert!(agent_key_is_safe("bot.with.dots"));
+        assert!(agent_key_is_safe("unicode-名字"));
+        assert!(agent_key_is_safe("a"));
+        assert!(agent_key_is_safe(&"x".repeat(256)));
+    }
+
+    #[test]
+    fn agent_key_rejects_dangerous_input() {
+        assert!(!agent_key_is_safe(""));
+        assert!(!agent_key_is_safe(&"x".repeat(257)));
+        assert!(!agent_key_is_safe("../etc/passwd"));
+        assert!(!agent_key_is_safe("a/b"));
+        assert!(!agent_key_is_safe("a\\b"));
+        assert!(!agent_key_is_safe("with\0null"));
+        assert!(!agent_key_is_safe("with\nnewline"));
+        assert!(!agent_key_is_safe(".."));
     }
 }

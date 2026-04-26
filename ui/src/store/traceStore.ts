@@ -3,6 +3,7 @@ import type { TraceFrame } from '../transport/types'
 
 export interface AgentTrace {
   runId: string
+  channelId?: string | null
   events: TraceFrame[]
   isActive: boolean
   isError: boolean
@@ -119,6 +120,7 @@ export const useTraceStore = create<TraceState>((set) => ({
           ...state.traces,
           [frame.agentName]: {
             runId: frame.runId,
+            channelId: frame.channelId,
             events,
             isActive,
             isError,

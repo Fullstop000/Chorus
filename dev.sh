@@ -2,6 +2,8 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+CHORUS_HOME="${HOME}/.chorus"
+WIPED_DATA=false
 
 # ── Colors ──
 GREEN='\033[0;32m'
@@ -11,9 +13,36 @@ RESET='\033[0m'
 
 echo -e "${CYAN}Chorus dev environment${RESET}"
 
-# ── First-run setup (idempotent — chorus setup skips when config already exists) ──
-"$ROOT/target/debug/chorus" setup 2>/dev/null || \
-  cargo run --quiet -- setup
+prompt_wipe_chorus_data() {
+  if [ ! -t 0 ]; then
+    return
+  fi
+
+  echo -e "${YELLOW}Optional reset:${RESET} wipe local Chorus data in ${CYAN}${CHORUS_HOME}${RESET} and re-initialize."
+  printf "Wipe local Chorus data and re-init before start? [y/N] "
+  read -r WIPE_ANSWER
+  case "$WIPE_ANSWER" in
+    y|Y|yes|YES)
+      printf "Type 'wipe' to confirm data deletion: "
+      read -r WIPE_CONFIRM
+      if [ "$WIPE_CONFIRM" != "wipe" ]; then
+        echo "Confirmation mismatch; skipping data wipe."
+        return
+      fi
+
+      if [ -d "$CHORUS_HOME" ]; then
+        echo -e "${YELLOW}▶ Deleting ${CHORUS_HOME}...${RESET}"
+        rm -rf "$CHORUS_HOME"
+        echo -e "${GREEN}✓ Local Chorus data wiped${RESET}"
+      else
+        echo "No existing ${CHORUS_HOME} directory found."
+      fi
+      WIPED_DATA=true
+      ;;
+    *)
+      ;;
+  esac
+}
 
 port_in_use() {
   lsof -iTCP:"$1" -sTCP:LISTEN >/dev/null 2>&1
@@ -84,6 +113,17 @@ if port_in_use "$API_PORT"; then
     pick_alternate_port
   fi
 fi
+
+prompt_wipe_chorus_data
+
+# ── Setup (idempotent — reruns after optional wipe/re-init) ──
+if [ "$WIPED_DATA" = true ]; then
+  echo -e "${YELLOW}▶ Re-initializing Chorus config after wipe...${RESET}"
+else
+  echo -e "${YELLOW}▶ Ensuring Chorus setup is initialized...${RESET}"
+fi
+"$ROOT/target/debug/chorus" setup 2>/dev/null || \
+  cargo run --quiet -- setup
 
 # ── Build Rust binary if needed ──
 echo -e "${YELLOW}▶ Building chorus...${RESET}"

@@ -171,10 +171,11 @@ impl Store {
             let sub_channel_name = format!("{}__task-{}", channel.name, task_number);
 
             tx.execute(
-                "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) \
-                 VALUES (?1, ?2, NULL, ?3, ?4)",
+                "INSERT INTO channels (id, workspace_id, name, description, channel_type, parent_channel_id) \
+                 VALUES (?1, ?2, ?3, NULL, ?4, ?5)",
                 params![
                     sub_channel_id,
+                    channel.workspace_id,
                     sub_channel_name,
                     task_channel_type,
                     channel.id
@@ -671,10 +672,17 @@ mod sub_channel_tests {
         // all roll back when `tx.commit()` is never reached.
         {
             let conn = store.conn_for_test();
+            let workspace_id: String = conn
+                .query_row(
+                    "SELECT workspace_id FROM channels WHERE name = 'eng'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
             conn.execute(
-                "INSERT INTO channels (id, name, channel_type) \
-                 VALUES ('squat', 'eng__task-2', 'channel')",
-                [],
+                "INSERT INTO channels (id, workspace_id, name, channel_type) \
+                 VALUES ('squat', ?1, 'eng__task-2', 'channel')",
+                params![workspace_id],
             )
             .unwrap();
         }

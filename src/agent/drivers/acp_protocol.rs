@@ -28,6 +28,8 @@ use tracing::{debug, trace, warn};
 /// short human-readable names like `send_message` instead of
 /// `mcp__chat__send_message`.
 pub(crate) fn strip_mcp_prefix(name: &str) -> &str {
+    let name = name.strip_suffix(" (chat MCP Server)").unwrap_or(name);
+
     // Standard MCP prefix forms: mcp__chat__, mcp_chat_, chat_
     if let Some(s) = name
         .strip_prefix("mcp__chat__")

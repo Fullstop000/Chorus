@@ -197,6 +197,7 @@ async fn forward_trace_event(
                 "eventType": "agent.trace",
                 "runId": event.run_id,
                 "agentName": event.agent_name,
+                "channelId": event.channel_id,
                 "seq": event.seq,
                 "timestampMs": event.timestamp_ms,
                 "kind": kind_str,

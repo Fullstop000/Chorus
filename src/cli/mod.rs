@@ -120,16 +120,6 @@ enum Commands {
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
     },
-    /// Mint a one-time pairing token for an agent to connect to the running bridge.
-    #[command(name = "bridge-pair")]
-    BridgePair {
-        /// Agent key to pair (matches the Chorus agent name).
-        #[arg(long)]
-        agent: String,
-    },
-    /// Run a self-test of the shared MCP bridge (no Chorus server required)
-    #[command(name = "bridge-smoke-test")]
-    BridgeSmokeTest,
     /// Read-only environment diagnostic
     Check {
         #[arg(long)]
@@ -320,12 +310,6 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::BridgeServe { listen, server_url }) => {
             chorus::bridge::serve::run_bridge_server(&listen, &server_url).await
         }
-
-        Some(Commands::BridgePair { agent }) => {
-            chorus::bridge::pairing::run_bridge_pair(&agent).await
-        }
-
-        Some(Commands::BridgeSmokeTest) => chorus::bridge::smoke_test::run_smoke_test().await,
 
         Some(Commands::Send {
             target,

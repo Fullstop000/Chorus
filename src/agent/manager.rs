@@ -71,7 +71,8 @@ impl ManagedAgent {
         let them = if count > 1 { "them" } else { "it" };
         let text = format!(
             "[System notification: You have {count} new message{plural} \
-             waiting. Call check_messages to read {them} when you're ready.]"
+               waiting. Call check_messages to read {them} when you're ready. \
+               If a message asks you to respond, reply in the same conversation with send_message.]"
         );
         self.handle
             .prompt(PromptReq {
@@ -92,9 +93,10 @@ pub struct AgentManager {
     trace_store: Arc<AgentTraceStore>,
     store: Arc<Store>,
     data_dir: PathBuf,
-    /// Test-only override for the bridge endpoint. Production code leaves this
-    /// `None` and discovery reads `~/.chorus/bridge.json`; tests set it to a
-    /// synthetic URL so they don't depend on a real bridge being up.
+    /// Optional explicit bridge endpoint. When `None`, agent startup reads the
+    /// shared discovery file from `~/.chorus/bridge.json`. Tests set this to a
+    /// synthetic URL, and `chorus serve` points it at the co-hosted bridge so
+    /// same-process agents do not depend on global discovery ownership.
     bridge_endpoint_override: Option<String>,
 }
 
@@ -237,6 +239,7 @@ impl AgentManager {
         let events = attach_result.events;
         let event_rx = events.subscribe(); // subscribe BEFORE run
         let unread_summary = self.store.get_unread_summary(agent_name)?;
+        let has_wake_message = wake_message.is_some();
         let init_prompt_text = build_start_prompt(
             &agent.display_name,
             is_resume,
@@ -279,7 +282,10 @@ impl AgentManager {
                 ManagedAgent {
                     handle,
                     _event_tasks: vec![forwarder],
-                    pending_notification_count: 0,
+                    // Wake previews can be ignored by some runtimes during
+                    // resume. Keep the normal unread-message notification
+                    // queued so the post-start path still calls check_messages.
+                    pending_notification_count: u32::from(has_wake_message),
                 },
             );
         }
@@ -448,8 +454,7 @@ impl AgentManager {
         self.driver_registry.insert(runtime, driver);
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
+    pub fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
         self.bridge_endpoint_override = Some(url.into());
     }
 
@@ -495,7 +500,8 @@ fn build_start_prompt(
         let mut prompt = format!(
             "You were just woken by a new unread message.\n\
              Treat this preview as wake-up context only. The message is still unread.\n\
-             Call check_messages() now to load unread messages before you respond.\n\n\
+             Call check_messages() now to load unread messages before you respond.\n\
+             If the message asks you to respond, reply in the same conversation with send_message.\n\n\
              Triggering message:\n\
              - From: {}\n\
              - Target: {target}\n\

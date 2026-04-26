@@ -126,9 +126,9 @@ for agents and tools; it should not become the cloud credential authority.
 
 | Resource | Workspace relationship |
 | --- | --- |
-| `channels.workspace_id` | Direct workspace ownership. Messages, inbox state, tasks, and attachments are reached through channels. |
-| `agents.workspace_id` | Direct workspace ownership. Agent names are still globally unique while `agent_env_vars` and runtime lifecycle remain name-keyed. |
-| `teams.workspace_id` | Direct workspace ownership. Team backing channels are created in the same workspace transaction. |
+| `channels.workspace_id` | Required direct workspace ownership. Messages, inbox state, tasks, and attachments are reached through channels. |
+| `agents.workspace_id` | Required direct workspace ownership. Agent names are still globally unique while `agent_env_vars` and runtime lifecycle remain name-keyed. |
+| `teams.workspace_id` | Required direct workspace ownership. Team backing channels are created in the same workspace transaction. |
 | `tasks` | Indirect ownership through `tasks.channel_id`. Task sub-channels inherit workspace through their channel row. |
 | `messages` | Indirect ownership through `messages.channel_id`. |
 | `attachments` | Indirect ownership through message attachment links. |
@@ -136,7 +136,7 @@ for agents and tools; it should not become the cloud credential authority.
 ### Uniqueness
 
 Workspace slugs are globally unique. Channel and team names are unique inside a
-workspace, with partial legacy indexes for rows where `workspace_id IS NULL`.
+workspace. Directly scoped resources cannot be written without a `workspace_id`.
 
 Agent names are currently still globally unique because `agent_env_vars` uses
 `agent_name` as its foreign key and some runtime/session paths are name-keyed.
@@ -150,8 +150,12 @@ Workspace creation is transactional:
 1. ensure the local human exists
 2. insert the workspace
 3. insert the owner membership
-4. optionally activate it
-5. return the inserted workspace
+4. provision the workspace-scoped writable `#all` system channel
+5. optionally activate it
+6. return the inserted workspace
+
+Channel, agent, and team creation paths require an explicit workspace id or
+resolve the active local workspace before writing rows.
 
 Team creation with its backing team channel is also transactional so a failed
 channel insert cannot leave a team without its channel.
@@ -186,6 +190,8 @@ goals.
 - Active workspace is a single pointer for the local running server. It is not
   per browser tab or per CLI shell.
 - Creating a workspace does not switch to it.
+- New local workspaces auto-provision a writable `#all` system channel scoped
+  to that workspace, and add the workspace owner as its first member.
 - Deleting a workspace is destructive: workspace-scoped channels, messages,
   tasks, agents, teams, memberships, trace events, attachment links, orphaned
   attachment rows, and orphaned attachment files are removed.
@@ -196,9 +202,6 @@ goals.
 - The CLI requires a running Chorus server and must call the API instead of
   opening SQLite directly.
 - Agent names are not fully workspace-scoped yet.
-- New workspaces do not auto-provision a default `#all` channel yet.
-- Legacy rows with `workspace_id IS NULL` are separated by query filters but are
-  not backfilled into a workspace.
 - The local bridge is not a cloud credential store. Agent bridge credentials and
   human auth tokens are separate concerns.
 

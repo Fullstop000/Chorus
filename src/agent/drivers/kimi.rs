@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
@@ -40,13 +40,16 @@ use super::*;
 /// alongside `url` — without it, the runtime defaults to stdio and fails to
 /// connect. Verified against the format emitted by `kimi mcp add --transport
 /// http`.
-fn build_mcp_config_file(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+fn build_mcp_config_file(bridge_endpoint: &str, agent_key: &str) -> serde_json::Value {
+    let url = super::bridge_mcp_url(bridge_endpoint);
     serde_json::json!({
         "mcpServers": {
             "chat": {
                 "url": url,
-                "transport": "http"
+                "transport": "http",
+                "headers": {
+                    "X-Agent-Id": agent_key
+                }
             }
         }
     })
@@ -61,13 +64,15 @@ fn build_mcp_config_file(bridge_endpoint: &str, token: &str) -> serde_json::Valu
 ///
 /// See <https://agentclientprotocol.com/protocol/session-setup> — sending the
 /// wrong shape produces ACP "Invalid params" errors.
-fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+fn build_acp_mcp_servers(bridge_endpoint: &str, agent_key: &str) -> serde_json::Value {
+    let url = super::bridge_mcp_url(bridge_endpoint);
     serde_json::json!([{
         "type": "http",
         "name": "chat",
         "url": url,
-        "headers": []
+        "headers": [
+            {"name": "X-Agent-Id", "value": agent_key}
+        ]
     }])
 }
 
@@ -97,12 +102,7 @@ struct KimiAgentCore {
     /// thread actually runs spawn + initialize. Non-recursive (tokio::Mutex
     /// is fair and async-friendly).
     start_in_progress: tokio::sync::Mutex<()>,
-    /// Pairing token minted by the bridge during `spawn_and_initialize`.
-    /// Cached here so every subsequent `session/new` or `session/load` call
-    /// reuses it without an extra HTTP round-trip. Written exactly once
-    /// (by `spawn_and_initialize`); all reads use `get()` which returns
-    /// `None` if the core was never started.
-    pairing_token: OnceLock<String>,
+
     /// Number of times `spawn_and_initialize` has been called on this core.
     /// Only compiled under `#[cfg(test)]`; used by concurrency + failure
     /// non-stickiness tests to assert the slow path ran the expected number
@@ -156,7 +156,7 @@ impl KimiAgentCore {
             }),
             started: AtomicBool::new(false),
             start_in_progress: tokio::sync::Mutex::new(()),
-            pairing_token: OnceLock::new(),
+
             #[cfg(test)]
             spawn_call_count: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -204,20 +204,9 @@ impl KimiAgentCore {
         #[cfg(test)]
         self.spawn_call_count.fetch_add(1, Ordering::Relaxed);
 
-        // Pair with the shared HTTP bridge. The token is cached on the core so
-        // subsequent session opens (session/new, session/load) reuse it without
-        // an extra HTTP round-trip.
-        let pairing_token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
-            .await
-            .context("failed to pair with shared bridge")?;
-        // Store in the OnceLock. The lock was never set before this point
-        // (spawn_and_initialize is only called once per core lifetime under
-        // the start_in_progress serialiser), so set() always succeeds here.
-        let _ = self.pairing_token.set(pairing_token.clone());
-
         let wd = &self.spec.working_directory;
         let mcp_config_path = wd.join(".chorus-kimi-mcp.json");
-        let mcp_config = build_mcp_config_file(&self.spec.bridge_endpoint, &pairing_token);
+        let mcp_config = build_mcp_config_file(&self.spec.bridge_endpoint, &self.key);
         tokio::fs::write(&mcp_config_path, serde_json::to_string(&mcp_config)?)
             .await
             .context("failed to write MCP config")?;
@@ -629,10 +618,10 @@ impl KimiHandle {
     /// Send `session/new` on the live stdin and return the minted session id.
     /// Requires `ensure_started()` to have already succeeded.
     async fn send_session_new(&self) -> anyhow::Result<String> {
-        let (stdin_tx, shared, pairing_token) = self.acquire_stdin_and_shared().await?;
+        let (stdin_tx, shared) = self.acquire_stdin_and_shared().await?;
         let id = self.alloc_id().await;
         let (tx, rx) = oneshot::channel();
-        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &pairing_token);
+        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &self.core.key);
         let params = serde_json::json!({
             "cwd": self.core.spec.working_directory,
             "mcpServers": mcp_servers,
@@ -655,17 +644,13 @@ impl KimiHandle {
     /// Send `session/load` on the live stdin and return the resolved session id.
     /// Requires `ensure_started()` to have already succeeded.
     async fn send_session_load(&self, sid: &str) -> anyhow::Result<String> {
-        // Note: pairing_token is only needed for session/new (MCP re-pair on new sessions).
-        // session/load reuses the bootstrap session's MCP state with mcpServers=[].
-        let (stdin_tx, shared, _pairing_token) = self.acquire_stdin_and_shared().await?;
+        let (stdin_tx, shared) = self.acquire_stdin_and_shared().await?;
         let id = self.alloc_id().await;
         let (tx, rx) = oneshot::channel();
-        // Secondary sessions send an empty `mcpServers` array. Kimi
-        // accepts this on `session/load` — the bootstrap session's MCP
-        // state is reused.
+        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &self.core.key);
         let params = serde_json::json!({
             "cwd": self.core.spec.working_directory,
-            "mcpServers": [],
+            "mcpServers": mcp_servers,
         });
         {
             let mut s = shared.lock().unwrap();
@@ -692,19 +677,7 @@ impl KimiHandle {
     /// it first).
     async fn acquire_stdin_and_shared(
         &self,
-    ) -> anyhow::Result<(mpsc::Sender<String>, Arc<Mutex<SharedReaderState>>, String)> {
-        // Reuse the pairing token that was cached by spawn_and_initialize.
-        // Callers must have called ensure_started() first; if the cache is
-        // empty that invariant was violated — surface a clear error instead of
-        // making a fresh HTTP request that would indicate incorrect usage.
-        let pairing_token = self
-            .core
-            .pairing_token
-            .get()
-            .ok_or_else(|| {
-                anyhow!("kimi: pairing token not available — ensure_started() must complete first")
-            })?
-            .clone();
+    ) -> anyhow::Result<(mpsc::Sender<String>, Arc<Mutex<SharedReaderState>>)> {
         let inner = self.core.inner.lock().await;
         let stdin_tx = inner.stdin_tx.clone().ok_or_else(|| {
             anyhow!("kimi: stdin not available — ensure_started() must complete first")
@@ -713,7 +686,7 @@ impl KimiHandle {
             .shared
             .clone()
             .ok_or_else(|| anyhow!("kimi: shared reader state missing"))?;
-        Ok((stdin_tx, shared, pairing_token))
+        Ok((stdin_tx, shared))
     }
 
     /// Core session-startup logic. Reads `self.preassigned_session_id` (set by
@@ -801,6 +774,16 @@ impl Session for KimiHandle {
     }
 
     fn process_state(&self) -> ProcessState {
+        if let Some(ref sid) = self.session_id {
+            if let Ok(inner) = self.core.inner.try_lock() {
+                if let Some(shared) = inner.shared.as_ref() {
+                    let shared = shared.lock().unwrap();
+                    if let Some(session) = shared.sessions.get(sid) {
+                        return session.state.clone();
+                    }
+                }
+            }
+        }
         self.state.clone()
     }
 
@@ -1613,7 +1596,7 @@ mod tests {
     fn build_mcp_config_file_http_shape() {
         let config = build_mcp_config_file("http://127.0.0.1:4321", "tok-xyz");
         let chat = &config["mcpServers"]["chat"];
-        assert_eq!(chat["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(chat["url"], "http://127.0.0.1:4321/mcp");
         assert_eq!(chat["transport"], "http");
         assert!(chat.get("command").is_none());
     }
@@ -1623,7 +1606,7 @@ mod tests {
         let config = build_mcp_config_file("http://127.0.0.1:4321/", "tok-xyz");
         assert_eq!(
             config["mcpServers"]["chat"]["url"],
-            "http://127.0.0.1:4321/token/tok-xyz/mcp"
+            "http://127.0.0.1:4321/mcp"
         );
     }
 
@@ -1637,7 +1620,7 @@ mod tests {
         let entry = &arr[0];
         assert_eq!(entry["type"], "http");
         assert_eq!(entry["name"], "chat");
-        assert_eq!(entry["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(entry["url"], "http://127.0.0.1:4321/mcp");
         // Headers array is required by ACP spec (can be empty)
         assert!(entry["headers"].is_array());
         assert!(entry.get("command").is_none());
@@ -1647,7 +1630,7 @@ mod tests {
     fn build_acp_mcp_servers_trims_trailing_slash() {
         let servers = build_acp_mcp_servers("http://127.0.0.1:4321/", "tok-xyz");
         let arr = servers.as_array().expect("array");
-        assert_eq!(arr[0]["url"], "http://127.0.0.1:4321/token/tok-xyz/mcp");
+        assert_eq!(arr[0]["url"], "http://127.0.0.1:4321/mcp");
     }
 
     // -----------------------------------------------------------------------
@@ -2517,8 +2500,6 @@ mod tests {
             inner.next_request_id = 3;
         }
         core.started.store(true, Ordering::Release);
-        // Seed the pairing token so send_session_new doesn't error.
-        let _ = core.pairing_token.set("fake-token".to_string());
 
         // Retrieve the handle (mutable) — SessionAttachment owns the Box<dyn …>.
         // We need to call run() on it. Re-acquire a fresh handle via open_session
@@ -2627,7 +2608,6 @@ mod tests {
             inner.next_request_id = 3;
         }
         core.started.store(true, Ordering::Release);
-        let _ = core.pairing_token.set("fake-token".to_string());
 
         // Re-acquire a handle with the resume intent.
         let ar2 = driver

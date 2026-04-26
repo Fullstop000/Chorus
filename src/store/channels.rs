@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -35,6 +35,8 @@ pub fn is_valid_channel_name(name: &str) -> bool {
 pub struct Channel {
     /// UUID primary key.
     pub id: String,
+    /// Owning workspace id.
+    pub workspace_id: String,
     /// Unique slug (no `#`); used in URLs and mentions.
     pub name: String,
     /// Optional human-facing blurb.
@@ -80,21 +82,23 @@ impl ChannelType {
 }
 
 impl Channel {
-    /// Parse the standard 6-column `channels` row: id, name, description, channel_type, created_at, parent_channel_id.
+    /// Parse the standard `channels` row: id, workspace_id, name, description,
+    /// channel_type, created_at, parent_channel_id.
     pub(crate) fn from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         Ok(Self {
             id: row.get(0)?,
-            name: row.get(1)?,
-            description: row.get(2)?,
-            channel_type: match row.get::<_, String>(3)?.as_str() {
+            workspace_id: row.get(1)?,
+            name: row.get(2)?,
+            description: row.get(3)?,
+            channel_type: match row.get::<_, String>(4)?.as_str() {
                 "team" => ChannelType::Team,
                 "dm" => ChannelType::Dm,
                 "system" => ChannelType::System,
                 "task" => ChannelType::Task,
                 _ => ChannelType::Channel,
             },
-            created_at: super::parse_datetime(&row.get::<_, String>(4)?),
-            parent_channel_id: row.get(5)?,
+            created_at: super::parse_datetime(&row.get::<_, String>(5)?),
+            parent_channel_id: row.get(6)?,
         })
     }
 }
@@ -127,8 +131,7 @@ pub struct ChannelMemberProfile {
 /// listings so handlers can request exactly the channel set they need.
 #[derive(Debug, Clone, Default)]
 pub struct ChannelListParams<'a> {
-    /// Restrict results to one workspace. When set, legacy unscoped rows are
-    /// intentionally hidden.
+    /// Restrict results to one workspace.
     pub workspace_id: Option<&'a str>,
     /// When set, callers can derive per-row `joined` from membership.
     pub for_member: Option<&'a str>,
@@ -169,7 +172,7 @@ impl Store {
         params: &ChannelListParams<'_>,
     ) -> Result<Vec<Channel>> {
         let mut sql =
-            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels".to_string();
+            "SELECT id, workspace_id, name, description, channel_type, created_at, parent_channel_id FROM channels".to_string();
         let mut conditions = Vec::new();
 
         if !params.include_archived {
@@ -211,11 +214,13 @@ impl Store {
         parent_channel_id: Option<&str>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
+        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
         let id = Uuid::new_v4().to_string();
         let ct = channel_type.as_api_str();
         conn.execute(
-            "INSERT INTO channels (id, name, description, channel_type, parent_channel_id) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![id, name, description, ct, parent_channel_id],
+            "INSERT INTO channels (id, workspace_id, name, description, channel_type, parent_channel_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![id, workspace_id, name, description, ct, parent_channel_id],
         )?;
         Ok(id)
     }
@@ -283,19 +288,48 @@ impl Store {
         workspace_id: Option<&str>,
     ) -> Result<Vec<Channel>> {
         let conn = self.conn.lock().unwrap();
-        let mut sql = "SELECT id, name, description, channel_type, created_at, parent_channel_id
+        let workspace_id = match workspace_id {
+            Some(workspace_id) => workspace_id.to_string(),
+            None => match Self::workspace_id_for_lookup_inner(&conn)? {
+                Some(workspace_id) => workspace_id,
+                None => return Ok(Vec::new()),
+            },
+        };
+        let mut sql = "SELECT id, workspace_id, name, description, channel_type, created_at, parent_channel_id
              FROM channels
              WHERE archived = 0 AND channel_type = 'system'"
             .to_string();
-        let mut values = Vec::new();
-        if let Some(workspace_id) = workspace_id {
-            sql.push_str(" AND workspace_id = ?1");
-            values.push(workspace_id.to_string());
-        }
+        sql.push_str(" AND workspace_id = ?1");
+        let values = vec![workspace_id];
         sql.push_str(" ORDER BY CASE WHEN name = 'all' THEN 0 ELSE 1 END, created_at");
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt.query_map(rusqlite::params_from_iter(values), Channel::from_row)?;
         Ok(rows.filter_map(|row| row.ok()).collect())
+    }
+
+    pub(crate) fn get_channel_by_workspace_and_name_inner(
+        conn: &Connection,
+        workspace_id: &str,
+        name: &str,
+    ) -> Result<Option<Channel>> {
+        Ok(conn
+            .query_row(
+                "SELECT id, workspace_id, name, description, channel_type, created_at, parent_channel_id
+                 FROM channels
+                 WHERE workspace_id = ?1 AND name = ?2",
+                params![workspace_id, name],
+                Channel::from_row,
+            )
+            .optional()?)
+    }
+
+    pub fn get_channel_by_workspace_and_name(
+        &self,
+        workspace_id: &str,
+        name: &str,
+    ) -> Result<Option<Channel>> {
+        let conn = self.conn.lock().unwrap();
+        Self::get_channel_by_workspace_and_name_inner(&conn, workspace_id, name)
     }
 
     /// Update a user channel in place so message/task data continues to
@@ -462,11 +496,10 @@ impl Store {
         conn: &Connection,
         name: &str,
     ) -> Result<Option<Channel>> {
-        let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels WHERE name = ?1",
-        )?;
-        let mut rows = stmt.query_map(params![name], Channel::from_row)?;
-        Ok(rows.next().transpose()?)
+        let Some(workspace_id) = Self::workspace_id_for_lookup_inner(conn)? else {
+            return Ok(None);
+        };
+        Self::get_channel_by_workspace_and_name_inner(conn, &workspace_id, name)
     }
 
     pub fn get_channel_by_id(&self, id: &str) -> Result<Option<Channel>> {
@@ -476,7 +509,7 @@ impl Store {
 
     pub(crate) fn get_channel_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Channel>> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, description, channel_type, created_at, parent_channel_id FROM channels WHERE id = ?1",
+            "SELECT id, workspace_id, name, description, channel_type, created_at, parent_channel_id FROM channels WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Channel::from_row)?;
         Ok(rows.next().transpose()?)
@@ -589,50 +622,12 @@ impl Store {
         Ok(())
     }
 
-    /// Ensure built-in channels exist and upgrade legacy `#general` installs to
-    /// the new writable `#all` system channel without changing its stable id.
+    /// Ensure built-in channels exist and upgrade `#general` to the writable
+    /// `#all` system channel without changing its stable id.
     pub fn ensure_builtin_channels(&self, default_human: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
-        let all_id = if let Some(existing) =
-            Self::get_channel_by_name_inner(&conn, Self::DEFAULT_SYSTEM_CHANNEL)?
-        {
-            conn.execute(
-                "UPDATE channels
-                 SET description = ?1, channel_type = 'system', archived = 0
-                 WHERE id = ?2",
-                params![Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION, existing.id],
-            )?;
-            existing.id
-        } else if let Some(legacy) = Self::get_channel_by_name_inner(&conn, "general")? {
-            conn.execute(
-                "UPDATE channels
-                 SET name = ?1, description = ?2, channel_type = 'system', archived = 0
-                 WHERE id = ?3",
-                params![
-                    Self::DEFAULT_SYSTEM_CHANNEL,
-                    Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION,
-                    legacy.id
-                ],
-            )?;
-            tracing::info!("migrated built-in channel #general to #all");
-            legacy.id
-        } else {
-            let id = uuid::Uuid::new_v4().to_string();
-            conn.execute(
-                "INSERT INTO channels (id, name, description, channel_type)
-                 VALUES (?1, ?2, ?3, 'system')",
-                params![
-                    id,
-                    Self::DEFAULT_SYSTEM_CHANNEL,
-                    Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION
-                ],
-            )?;
-            tracing::info!(
-                channel = Self::DEFAULT_SYSTEM_CHANNEL,
-                "created built-in system channel"
-            );
-            id
-        };
+        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
+        let all_id = Self::ensure_all_channel_inner(&conn, &workspace_id)?;
 
         conn.execute(
             "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
@@ -640,30 +635,87 @@ impl Store {
             params![all_id, default_human],
         )?;
         conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
-             SELECT ?1, name, 'human', 0 FROM humans",
-            params![all_id],
+            "INSERT OR IGNORE INTO workspace_members (workspace_id, human_name, role)
+             SELECT ?1, name, 'member' FROM humans",
+            params![workspace_id],
         )?;
         conn.execute(
             "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
-             SELECT ?1, name, 'agent', 0 FROM agents",
-            params![all_id],
+             SELECT ?1, human_name, 'human', 0 FROM workspace_members WHERE workspace_id = ?2",
+            params![all_id, workspace_id],
+        )?;
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+             SELECT ?1, name, 'agent', 0 FROM agents WHERE workspace_id = ?2",
+            params![all_id, workspace_id],
         )?;
 
         Ok(())
     }
 
+    fn ensure_all_channel_inner(conn: &Connection, workspace_id: &str) -> Result<String> {
+        if let Some(existing) = Self::get_channel_by_workspace_and_name_inner(
+            conn,
+            workspace_id,
+            Self::DEFAULT_SYSTEM_CHANNEL,
+        )? {
+            conn.execute(
+                "UPDATE channels
+                 SET description = ?1, channel_type = 'system', archived = 0
+                 WHERE id = ?2",
+                params![Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION, existing.id],
+            )?;
+            return Ok(existing.id);
+        }
+
+        if let Some(general_channel) =
+            Self::get_channel_by_workspace_and_name_inner(conn, workspace_id, "general")?
+        {
+            conn.execute(
+                "UPDATE channels
+                 SET name = ?1, description = ?2, channel_type = 'system', archived = 0
+                 WHERE id = ?3",
+                params![
+                    Self::DEFAULT_SYSTEM_CHANNEL,
+                    Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION,
+                    general_channel.id
+                ],
+            )?;
+            tracing::info!(workspace_id, "migrated scoped #general to workspace #all");
+            return Ok(general_channel.id);
+        }
+
+        let id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT INTO channels (id, workspace_id, name, description, channel_type)
+             VALUES (?1, ?2, ?3, ?4, 'system')",
+            params![
+                id,
+                workspace_id,
+                Self::DEFAULT_SYSTEM_CHANNEL,
+                Self::DEFAULT_SYSTEM_CHANNEL_DESCRIPTION
+            ],
+        )?;
+        tracing::info!(
+            channel = Self::DEFAULT_SYSTEM_CHANNEL,
+            workspace_id = ?workspace_id,
+            "created built-in system channel"
+        );
+        Ok(id)
+    }
+
     fn ensure_system_channel_inner(conn: &Connection, name: &str, description: &str) -> Result<()> {
+        let workspace_id = Self::workspace_id_for_write_inner(conn)?;
         let exists: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM channels WHERE name = ?1 AND channel_type = 'system'",
-            params![name],
+            "SELECT COUNT(*) FROM channels WHERE workspace_id = ?1 AND name = ?2 AND channel_type = 'system'",
+            params![workspace_id, name],
             |row| row.get(0),
         )?;
         if exists == 0 {
             let id = uuid::Uuid::new_v4().to_string();
             conn.execute(
-                "INSERT INTO channels (id, name, description, channel_type) VALUES (?1, ?2, ?3, 'system')",
-                params![id, name, description],
+                "INSERT INTO channels (id, workspace_id, name, description, channel_type) VALUES (?1, ?2, ?3, ?4, 'system')",
+                params![id, workspace_id, name, description],
             )?;
             tracing::info!(channel = %name, "created system channel");
         }

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, Context};
 use async_trait::async_trait;
@@ -27,13 +27,13 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 /// Build the `mcpServers` array for the ACP `session/new` inline params.
-fn build_acp_mcp_servers(bridge_endpoint: &str, token: &str) -> serde_json::Value {
-    let url = crate::bridge::token_mcp_url(bridge_endpoint, token);
+fn build_acp_mcp_servers(bridge_endpoint: &str, agent_key: &str) -> serde_json::Value {
+    let url = super::bridge_mcp_url(bridge_endpoint);
     serde_json::json!([{
         "type": "http",
         "name": "chat",
         "url": url,
-        "headers": []
+        "headers": [{"name":"X-Agent-Id","value":agent_key}]
     }])
 }
 
@@ -70,7 +70,6 @@ struct GeminiAgentCore {
     inner: tokio::sync::Mutex<CoreInner>,
     started: AtomicBool,
     start_in_progress: tokio::sync::Mutex<()>,
-    pairing_token: OnceLock<String>,
     #[cfg(test)]
     spawn_call_count: std::sync::atomic::AtomicUsize,
 }
@@ -108,7 +107,6 @@ impl GeminiAgentCore {
             }),
             started: AtomicBool::new(false),
             start_in_progress: tokio::sync::Mutex::new(()),
-            pairing_token: OnceLock::new(),
             #[cfg(test)]
             spawn_call_count: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -139,11 +137,6 @@ impl GeminiAgentCore {
     async fn spawn_and_initialize(self: &Arc<Self>) -> anyhow::Result<()> {
         #[cfg(test)]
         self.spawn_call_count.fetch_add(1, Ordering::Relaxed);
-
-        let pairing_token = super::request_pairing_token(&self.spec.bridge_endpoint, &self.key)
-            .await
-            .context("failed to pair with shared bridge")?;
-        let _ = self.pairing_token.set(pairing_token.clone());
 
         let mut cmd = build_gemini_command(&self.spec);
         let mut child = cmd.spawn().context("failed to spawn gemini")?;
@@ -245,17 +238,6 @@ impl AgentProcess for GeminiAgentCore {
             None => false,
             Some(tx) => tx.is_closed(),
         }
-    }
-}
-
-#[cfg(test)]
-impl GeminiAgentCore {
-    pub(crate) fn spawn_and_initialize_call_count_for_test(&self) -> usize {
-        self.spawn_call_count.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn is_started_for_test(&self) -> bool {
-        self.started.load(Ordering::Acquire)
     }
 }
 
@@ -473,10 +455,10 @@ impl GeminiHandle {
     }
 
     async fn send_session_new(&self) -> anyhow::Result<String> {
-        let (stdin_tx, shared, pairing_token) = self.acquire_stdin_and_shared().await?;
+        let (stdin_tx, shared) = self.acquire_stdin_and_shared().await?;
         let id = self.alloc_id().await;
         let (tx, rx) = oneshot::channel();
-        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &pairing_token);
+        let mcp_servers = build_acp_mcp_servers(&self.core.spec.bridge_endpoint, &self.core.key);
         let params = serde_json::json!({
             "cwd": self.core.spec.working_directory,
             "mcpServers": mcp_servers,
@@ -497,7 +479,7 @@ impl GeminiHandle {
     }
 
     async fn send_session_load(&self, sid: &str) -> anyhow::Result<String> {
-        let (stdin_tx, shared, _pairing_token) = self.acquire_stdin_and_shared().await?;
+        let (stdin_tx, shared) = self.acquire_stdin_and_shared().await?;
         let id = self.alloc_id().await;
         let (tx, rx) = oneshot::channel();
         let params = serde_json::json!({
@@ -526,7 +508,7 @@ impl GeminiHandle {
 
     async fn acquire_stdin_and_shared(
         &self,
-    ) -> anyhow::Result<(mpsc::Sender<String>, Arc<Mutex<SharedReaderState>>, String)> {
+    ) -> anyhow::Result<(mpsc::Sender<String>, Arc<Mutex<SharedReaderState>>)> {
         let inner = self.core.inner.lock().await;
         let tx = inner
             .stdin_tx
@@ -536,13 +518,7 @@ impl GeminiHandle {
             .shared
             .clone()
             .ok_or_else(|| anyhow!("gemini: shared state missing"))?;
-        let token = self
-            .core
-            .pairing_token
-            .get()
-            .ok_or_else(|| anyhow!("gemini: pairing token missing — core not initialized"))?
-            .clone();
-        Ok((tx, shared, token))
+        Ok((tx, shared))
     }
 
     async fn register_session_in_shared_state(&self, session_id: &str) {
@@ -612,6 +588,16 @@ impl Session for GeminiHandle {
     }
 
     fn process_state(&self) -> ProcessState {
+        if let Some(ref sid) = self.session_id {
+            if let Ok(inner) = self.core.inner.try_lock() {
+                if let Some(shared) = inner.shared.as_ref() {
+                    let shared = shared.lock().unwrap();
+                    if let Some(session) = shared.sessions.get(sid) {
+                        return session.state.clone();
+                    }
+                }
+            }
+        }
         self.state.clone()
     }
 
@@ -1380,26 +1366,6 @@ mod tests {
             .await
             .expect("list_sessions should succeed");
         assert!(sessions.is_empty());
-    }
-
-    #[tokio::test]
-    async fn ensure_started_is_non_sticky_on_failure() {
-        let (events, event_tx) = EventFanOut::new();
-        let core = GeminiAgentCore::new("agent-1".into(), test_spec(), events, event_tx);
-
-        // First call should fail (no bridge at :9999).
-        let first = core.ensure_started().await;
-        assert!(first.is_err(), "should fail without bridge");
-        assert!(!core.is_started_for_test());
-
-        // Second call should retry (non-sticky).
-        let second = core.ensure_started().await;
-        assert!(second.is_err(), "should still fail without bridge");
-        assert_eq!(
-            core.spawn_and_initialize_call_count_for_test(),
-            2,
-            "should have retried spawn"
-        );
     }
 
     #[tokio::test]

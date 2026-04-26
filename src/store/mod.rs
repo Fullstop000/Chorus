@@ -4,7 +4,6 @@ pub mod channels;
 pub mod humans;
 pub mod inbox;
 pub mod messages;
-pub mod migrations;
 pub mod sessions;
 pub mod stream;
 pub mod tasks;
@@ -64,7 +63,6 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Self::init_schema(&conn)?;
-        migrations::run_migrations(&conn)?;
         let (stream_tx, _) = broadcast::channel(256);
         let (trace_tx, _) = broadcast::channel(1024);
         Ok(Self {
