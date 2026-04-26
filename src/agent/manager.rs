@@ -93,9 +93,10 @@ pub struct AgentManager {
     trace_store: Arc<AgentTraceStore>,
     store: Arc<Store>,
     data_dir: PathBuf,
-    /// Test-only override for the bridge endpoint. Production code leaves this
-    /// `None` and discovery reads `~/.chorus/bridge.json`; tests set it to a
-    /// synthetic URL so they don't depend on a real bridge being up.
+    /// Optional explicit bridge endpoint. When `None`, agent startup reads the
+    /// shared discovery file from `~/.chorus/bridge.json`. Tests set this to a
+    /// synthetic URL, and `chorus serve` points it at the co-hosted bridge so
+    /// same-process agents do not depend on global discovery ownership.
     bridge_endpoint_override: Option<String>,
 }
 
@@ -453,8 +454,7 @@ impl AgentManager {
         self.driver_registry.insert(runtime, driver);
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
+    pub fn set_bridge_endpoint_override(&mut self, url: impl Into<String>) {
         self.bridge_endpoint_override = Some(url.into());
     }
 

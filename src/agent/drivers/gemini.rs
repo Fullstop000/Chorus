@@ -241,17 +241,6 @@ impl AgentProcess for GeminiAgentCore {
     }
 }
 
-#[cfg(test)]
-impl GeminiAgentCore {
-    pub(crate) fn spawn_and_initialize_call_count_for_test(&self) -> usize {
-        self.spawn_call_count.load(Ordering::Relaxed)
-    }
-
-    pub(crate) fn is_started_for_test(&self) -> bool {
-        self.started.load(Ordering::Acquire)
-    }
-}
-
 impl Drop for GeminiAgentCore {
     fn drop(&mut self) {
         if let Ok(mut inner) = self.inner.try_lock() {

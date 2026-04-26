@@ -8,7 +8,7 @@ use tokio_util::sync::CancellationToken;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{Router, routing::any};
+use axum::{routing::any, Router};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
@@ -46,9 +46,7 @@ impl BridgeServer {
             config,
         );
 
-        Self {
-            service,
-        }
+        Self { service }
     }
 }
 
@@ -59,14 +57,21 @@ impl BridgeServer {
 /// Extract agent key from `X-Agent-Id` header or `Authorization: Bearer <key>`.
 fn extract_agent_key_from_request(request: &Request<axum::body::Body>) -> Option<&str> {
     // Prefer X-Agent-Id
-    if let Some(key) = request.headers().get("X-Agent-Id").and_then(|v| v.to_str().ok()) {
+    if let Some(key) = request
+        .headers()
+        .get("X-Agent-Id")
+        .and_then(|v| v.to_str().ok())
+    {
         return Some(key);
     }
     // Fallback: Authorization: Bearer <key>
-    if let Some(auth) = request.headers().get("Authorization").and_then(|v| v.to_str().ok()) {
-        let prefix = "Bearer ";
-        if auth.starts_with(prefix) {
-            return Some(&auth[prefix.len()..]);
+    if let Some(auth) = request
+        .headers()
+        .get("Authorization")
+        .and_then(|v| v.to_str().ok())
+    {
+        if let Some(token) = auth.strip_prefix("Bearer ") {
+            return Some(token);
         }
     }
     None
@@ -110,10 +115,7 @@ async fn handle_mcp(
 /// Useful for tests that want to plug the router into their own listener.
 pub fn build_bridge_router(server_url: &str) -> (Router, CancellationToken) {
     let ct = CancellationToken::new();
-    let server = Arc::new(BridgeServer::new(
-        server_url.to_string(),
-        ct.clone(),
-    ));
+    let server = Arc::new(BridgeServer::new(server_url.to_string(), ct.clone()));
 
     let app = Router::new()
         .route("/mcp", any(handle_mcp))
