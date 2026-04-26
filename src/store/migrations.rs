@@ -52,6 +52,9 @@ fn migrate_add_workspace_foundation(conn: &Connection) -> Result<()> {
          );",
     )?;
 
+    // Add columns if they don't exist yet. These start as nullable because
+    // ALTER TABLE ADD COLUMN doesn't support NOT NULL on SQLite, but we
+    // backfill them below.
     if !column_exists(conn, "channels", "workspace_id")? {
         conn.execute("ALTER TABLE channels ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE", [])?;
     }
@@ -61,6 +64,60 @@ fn migrate_add_workspace_foundation(conn: &Connection) -> Result<()> {
     if !column_exists(conn, "teams", "workspace_id")? {
         conn.execute("ALTER TABLE teams ADD COLUMN workspace_id TEXT REFERENCES workspaces(id) ON DELETE CASCADE", [])?;
     }
+
+    // Backfill legacy NULL workspace_ids into a default workspace so the NOT NULL
+    // constraint in schema.sql doesn't reject upgraded stores. This ensures all
+    // rows have an explicit workspace owner from this point forward.
+    let has_legacy_nulls = conn
+        .query_row(
+            "SELECT COUNT(*) FROM channels WHERE workspace_id IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0
+        || conn
+            .query_row(
+                "SELECT COUNT(*) FROM agents WHERE workspace_id IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0
+        || conn
+            .query_row(
+                "SELECT COUNT(*) FROM teams WHERE workspace_id IS NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+
+    if has_legacy_nulls {
+        let default_ws_id = uuid::Uuid::new_v4().to_string();
+        conn.execute(
+            "INSERT OR IGNORE INTO workspaces (id, name, slug, mode)\n             VALUES (?1, 'Chorus Local', 'chorus-local', 'local_only')",
+            rusqlite::params![default_ws_id],
+        )?;
+
+        conn.execute(
+            "UPDATE channels SET workspace_id = ?1 WHERE workspace_id IS NULL",
+            rusqlite::params![default_ws_id],
+        )?;
+        conn.execute(
+            "UPDATE agents SET workspace_id = ?1 WHERE workspace_id IS NULL",
+            rusqlite::params![default_ws_id],
+        )?;
+        conn.execute(
+            "UPDATE teams SET workspace_id = ?1 WHERE workspace_id IS NULL",
+            rusqlite::params![default_ws_id],
+        )?;
+        tracing::info!(
+            workspace_id = %default_ws_id,
+            "backfilled legacy NULL workspace_ids into default workspace"
+        );
+    }
+
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_channels_workspace_name
          ON channels(workspace_id, name)",
@@ -370,16 +427,44 @@ fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
     let tx = conn.unchecked_transaction()?;
     for (task_id, parent_id, parent_name, task_number, creator_name) in orphans {
         let sub_id = uuid::Uuid::new_v4().to_string();
-        // Preferred name mirrors what live `create_tasks` would spawn. Channel
-        // names are user-controlled and globally unique, so an existing row
-        // like `eng__task-1` (created manually before upgrade) would fail this
-        // INSERT on the UNIQUE constraint and block startup. Fall back to a
-        // uuid-suffixed name in that case — uglier but guaranteed collision-free
-        // and still traceable via `tasks.sub_channel_id → channels.id`.
+
+        // Fetch parent workspace_id early (if needed) so we can scope the name
+        // collision check by workspace when channels are workspace-scoped.
+        let parent_workspace_id: Option<String> = if channels_have_workspace_id {
+            tx.query_row(
+                "SELECT workspace_id FROM channels WHERE id = ?1",
+                rusqlite::params![parent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            None
+        };
+
+        // Verify that if workspace_id column exists, the parent channel has a
+        // non-NULL workspace_id. This ensures data consistency and prevents
+        // creating task sub-channels in an inconsistent state.
+        if channels_have_workspace_id && parent_workspace_id.is_none() {
+            anyhow::bail!(
+                "backfill task {}: parent channel {} has NULL workspace_id (data integrity issue)",
+                task_id,
+                parent_id
+            );
+        }
+
+        // Preferred name mirrors what live `create_tasks` would spawn. Check
+        // for collision within the workspace (if workspace-scoped) or globally.
+        // An existing row like `eng__task-1` (created manually before upgrade)
+        // would fail this INSERT on the UNIQUE constraint and block startup.
+        // Fall back to a uuid-suffixed name in that case — uglier but guaranteed
+        // collision-free and still traceable via `tasks.sub_channel_id → channels.id`.
         let preferred = format!("{}__task-{}", parent_name, task_number);
-        let name_taken: bool = tx
-            .prepare("SELECT 1 FROM channels WHERE name = ?1")?
-            .exists(rusqlite::params![preferred])?;
+        let name_taken: bool = if let Some(ref workspace_id) = parent_workspace_id {
+            tx.prepare("SELECT 1 FROM channels WHERE workspace_id = ?1 AND name = ?2")?
+                .exists(rusqlite::params![workspace_id, preferred])?
+        } else {
+            tx.prepare("SELECT 1 FROM channels WHERE name = ?1")?
+                .exists(rusqlite::params![preferred])?
+        };
         let sub_name = if name_taken {
             let short = sub_id.split('-').next().unwrap_or("bk");
             let fallback = format!("{}__task-{}-{}", parent_name, task_number, short);
@@ -404,11 +489,6 @@ fn migrate_add_task_sub_channel_id(conn: &Connection) -> Result<()> {
             }
         };
         if channels_have_workspace_id {
-            let parent_workspace_id: Option<String> = tx.query_row(
-                "SELECT workspace_id FROM channels WHERE id = ?1",
-                rusqlite::params![parent_id],
-                |row| row.get(0),
-            )?;
             tx.execute(
                 "INSERT INTO channels (id, workspace_id, name, description, channel_type, parent_channel_id) \
                  VALUES (?1, ?2, ?3, NULL, 'task', ?4)",

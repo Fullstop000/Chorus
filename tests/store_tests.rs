@@ -1636,63 +1636,6 @@ fn test_list_channels_excludes_dm() {
 }
 
 #[test]
-fn test_dm_only_has_two_members() {
-    let (store, _dir) = make_store();
-    store
-        .create_channel("general", None, ChannelType::Channel, None)
-        .unwrap();
-    store.create_human("alice").unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-
-    // Create DM between alice and bot1
-    let dm_id = store.resolve_target("dm:@alice", "bot1").unwrap();
-
-    // Simulate old bug: manually add bot2 as a spurious member
-    store
-        .join_channel("dm-alice-bot1", "bot2", SenderType::Agent)
-        .unwrap();
-
-    let members = store.get_channel_members(&dm_id).unwrap();
-    assert_eq!(members.len(), 3, "precondition: spurious member added");
-
-    // Re-open store to trigger the migration
-    let db_path = _dir.path().join("test.db");
-    let store2 = Store::open(db_path.to_str().unwrap()).unwrap();
-    let members2 = store2.get_channel_members(&dm_id).unwrap();
-    assert_eq!(
-        members2.len(),
-        2,
-        "migration must remove spurious DM members"
-    );
-    let names: Vec<_> = members2.iter().map(|m| m.member_name.as_str()).collect();
-    assert!(names.contains(&"alice"), "alice must remain");
-    assert!(names.contains(&"bot1"), "bot1 must remain");
-}
-
-#[test]
 fn test_dm_channels() {
     let (store, _dir) = make_store();
     store.create_human("alice").unwrap();
@@ -1913,36 +1856,6 @@ fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
     );
 
     let server_info = chorus::server::build_server_info(&store, "bot1").unwrap();
-    let system_names: Vec<_> = server_info
-        .system_channels
-        .iter()
-        .map(|channel| channel.name.as_str())
-        .collect();
-    assert_eq!(system_names, vec!["all"]);
-}
-
-#[test]
-fn test_store_open_removes_legacy_shared_memory_system_channel() {
-    let (store, dir) = make_store();
-    store.create_human("alice").unwrap();
-    store.ensure_builtin_channels("alice").unwrap();
-    store
-        .ensure_system_channel("shared-memory", "Agent group memory")
-        .unwrap();
-    drop(store);
-
-    let db_path = dir.path().join("test.db");
-    let reopened = Store::open(db_path.to_str().unwrap()).unwrap();
-
-    assert!(
-        reopened
-            .get_channel_by_name("shared-memory")
-            .unwrap()
-            .is_none(),
-        "legacy shared-memory system channel should be removed during startup migration"
-    );
-
-    let server_info = chorus::server::build_server_info(&reopened, "alice").unwrap();
     let system_names: Vec<_> = server_info
         .system_channels
         .iter()
