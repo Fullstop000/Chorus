@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.3.0] - 2026-04-27
+
+### Added
+- **Standing system prompt restored across every runtime** — every agent now starts with a ~9 KB instruction set teaching it the chat protocol, RFC-5424 message format, task board, MEMORY.md convention, and conversation etiquette. The prompt was deleted in the v2 driver refactor (`86299f9`); without it, agents had no idea how to use Chorus and reverse-engineered behavior from raw message history. Lifted from `@slock-ai/daemon`'s prompt with three deliberate edits (Chorus branding, threads removed, bare tool names by default).
+
+### Fixed
+- **Codex `thread/start` no longer fails on every spawn** — the previous code put the system prompt in the `personality` field, which Codex's JSON schema defines as a 3-value enum (`none|friendly|pragmatic`). Free-form text was rejected with `-32600 unknown variant`, breaking every Codex agent that had a configured system prompt. Switched to the documented `developerInstructions` field.
+- **Codex `initialize` schema mismatch** — `clientCapabilities` (silently dropped by Codex) renamed to the schema-correct `capabilities`; unschematized `protocolVersion` removed.
+- **Concurrent-spawn race in driver file writes** — Gemini and OpenCode wrote system-prompt and config files via truncating writes; two concurrent same-agent spawns could observe a half-written file. Now use write-tmp + atomic rename.
+
+### Changed
+- **Per-driver system prompt injection mechanism**: Claude `--append-system-prompt`, Codex `developerInstructions`, Kimi first-turn prepend (acp ignores `--agent-file`, wire is single-session), Gemini `GEMINI_SYSTEM_MD` env var, OpenCode `instructions` array in `opencode.json`.
+
 ## [0.0.2.0] - 2026-04-24
 
 ### Added
