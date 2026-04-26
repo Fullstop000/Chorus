@@ -738,10 +738,34 @@ impl KimiHandle {
             },
         });
 
-        // Fire the initial prompt, if supplied.
-        if let Some(req) = init_prompt {
-            self.prompt(req).await?;
-        }
+        // Fire the initial prompt with the standing system prompt prepended.
+        // Kimi's `acp` subcommand silently ignores `--agent-file`, and
+        // `--wire` is single-session-per-process (would break Chorus's
+        // multi-session multiplexing). The least-bad place to teach Kimi the
+        // chat protocol is the leading user-role text on turn 1.
+        let standing_prompt = super::prompt::build_system_prompt(
+            &self.core.spec,
+            &super::prompt::PromptOptions {
+                tool_prefix: String::new(),
+                extra_critical_rules: vec![
+                    "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
+                ],
+                post_startup_notes: Vec::new(),
+                include_stdin_notification_section: true,
+                message_notification_style: super::prompt::MessageNotificationStyle::Direct,
+            },
+        );
+        let first_turn = match init_prompt {
+            Some(req) => PromptReq {
+                text: format!("{standing_prompt}\n\n---\n\n{}", req.text),
+                attachments: req.attachments,
+            },
+            None => PromptReq {
+                text: standing_prompt,
+                attachments: Vec::new(),
+            },
+        };
+        self.prompt(first_turn).await?;
 
         Ok(())
     }
