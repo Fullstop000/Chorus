@@ -122,23 +122,21 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             Ok(())
         }
         AgentCommands::List { server_url } => {
+            // Use the public agents endpoint instead of the bridge's
+            // per-agent server-info route. The old code shoved the OS
+            // username into `/internal/agent/{agent_id}/server`, which only
+            // worked when the OS user happened to share a name with an
+            // agent and conflated identity types.
             let client = chorus::utils::http::client();
-            let username = whoami::username();
-            let res = client
-                .get(format!("{server_url}/internal/agent/{username}/server"))
-                .send()
-                .await?;
-            let data: serde_json::Value = res.json().await?;
-            if let Some(agents) = data.get("agents").and_then(|v| v.as_array()) {
-                if agents.is_empty() {
-                    tracing::info!("No agents.");
-                } else {
-                    for a in agents {
-                        let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let status = a.get("status").and_then(|v| v.as_str()).unwrap_or("?");
-                        let runtime = a.get("runtime").and_then(|v| v.as_str()).unwrap_or("?");
-                        tracing::info!("  @{name} [{status}] (runtime: {runtime})");
-                    }
+            let agents = fetch_agent_list(&client, &server_url).await?;
+            if agents.is_empty() {
+                tracing::info!("No agents.");
+            } else {
+                for a in &agents {
+                    let name = a.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+                    let status = a.get("status").and_then(|v| v.as_str()).unwrap_or("?");
+                    let runtime = a.get("runtime").and_then(|v| v.as_str()).unwrap_or("?");
+                    tracing::info!("  @{name} [{status}] (runtime: {runtime})");
                 }
             }
             Ok(())

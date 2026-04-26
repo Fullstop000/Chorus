@@ -58,25 +58,25 @@ export function ensureInboxConversations(
 // ── Query definitions ──
 
 export const inboxQueryKeys = {
-  inbox: (user: string) => ['inbox', user] as const,
+  inbox: (humanId: string) => ['inbox', humanId] as const,
 } as const
 
 export const inboxQuery = (
-  currentUser: string,
+  memberHumanId: string,
   shellBootstrapped: boolean,
   channelsData?: ChannelInfo[]
 ) =>
   queryOptions({
     queryKey: [
-      ...inboxQueryKeys.inbox(currentUser),
+      ...inboxQueryKeys.inbox(memberHumanId),
       'bootstrapped',
       channelsData !== undefined,
     ],
     queryFn: async () => {
-      const response = await getInboxState(currentUser)
+      const response = await getInboxState(memberHumanId)
       return { response, channels: channelsData ?? [] }
     },
-    enabled: !!currentUser && !shellBootstrapped && channelsData !== undefined,
+    enabled: !!memberHumanId && !shellBootstrapped && channelsData !== undefined,
     staleTime: Infinity,
     select: ({ response, channels }) =>
       bootstrapInboxState(response.conversations, channels),

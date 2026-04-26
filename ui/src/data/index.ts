@@ -36,7 +36,6 @@ export {
   inviteChannelMember,
   ensureDirectMessageConversation,
   listHumans,
-  updateHuman,
   getSystemInfo,
   getLogs,
   type SystemInfo,

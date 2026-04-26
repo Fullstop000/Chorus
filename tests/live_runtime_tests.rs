@@ -147,11 +147,11 @@ impl AgentLifecycle for NoopLifecycle {
 
 /// Start a Chorus server in-process with an in-memory SQLite store. Returns
 /// the server's base URL and the shared `Store`.
-async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>)> {
+async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>, String)> {
     let store = Arc::new(Store::open(":memory:")?);
-    store.create_human("tester")?;
+    let tester = store.create_local_human("tester")?;
     store.create_channel("general", Some("General"), ChannelType::Channel, None)?;
-    store.join_channel("general", "tester", SenderType::Human)?;
+    store.join_channel("general", &tester.id, SenderType::Human)?;
 
     let router = build_router_with_services(
         store.clone(),
@@ -168,7 +168,7 @@ async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>)> {
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    Ok((url, store))
+    Ok((url, store, tester.id))
 }
 
 /// Start the shared bridge pointing at the given Chorus server URL. Returns
@@ -463,14 +463,14 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         std::env::var("OPENCODE_MODEL").unwrap_or_else(|_| "opencode/gpt-5-nano".to_string());
 
     // 2. Start Chorus server + shared bridge.
-    let (server_url, store) = start_chorus_server().await?;
+    let (server_url, store, tester_id) = start_chorus_server().await?;
     let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
 
     // 3. Seed agent record and channel membership. The agent's `sender_name`
     //    must match the key we pass to the driver so messages posted via the
     //    bridge are attributed to it.
     let agent_key = "opencode-live-bot";
-    store.create_agent_record(&AgentRecordUpsert {
+    let agent_id = store.create_agent_record(&AgentRecordUpsert {
         name: agent_key,
         display_name: "OpenCode Live Bot",
         description: None,
@@ -480,7 +480,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", agent_key, SenderType::Agent)?;
+    store.join_channel("general", &agent_id, SenderType::Agent)?;
 
     // 4. Seed a user message in #general so the agent has context to reply to.
     //    The prompt we send directly via the handle instructs the runtime
@@ -488,7 +488,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     //    shape and to have a thread for replies to land in.
     store.create_message(CreateMessage {
         channel_name: "general",
-        sender_name: "tester",
+        sender_id: &tester_id,
         sender_type: SenderType::Human,
         content: "@opencode-live-bot please reply to everyone",
         attachment_ids: &[],
@@ -602,12 +602,12 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let model = std::env::var("CHORUS_TEST_CLAUDE_MODEL").unwrap_or_else(|_| "sonnet".to_string());
 
     // 2. Start Chorus server + shared bridge.
-    let (server_url, store) = start_chorus_server().await?;
+    let (server_url, store, tester_id) = start_chorus_server().await?;
     let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
 
     // 3. Seed agent record and channel membership.
     let agent_key = "claude-live-bot";
-    store.create_agent_record(&AgentRecordUpsert {
+    let agent_id = store.create_agent_record(&AgentRecordUpsert {
         name: agent_key,
         display_name: "Claude Live Bot",
         description: None,
@@ -617,12 +617,12 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", agent_key, SenderType::Agent)?;
+    store.join_channel("general", &agent_id, SenderType::Agent)?;
 
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
         channel_name: "general",
-        sender_name: "tester",
+        sender_id: &tester_id,
         sender_type: SenderType::Human,
         content: "@claude-live-bot please reply to everyone",
         attachment_ids: &[],
@@ -738,12 +738,12 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let model = std::env::var("CHORUS_TEST_CODEX_MODEL").unwrap_or_else(|_| "gpt-5.4".to_string());
 
     // 2. Start Chorus server + shared bridge.
-    let (server_url, store) = start_chorus_server().await?;
+    let (server_url, store, tester_id) = start_chorus_server().await?;
     let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
 
     // 3. Seed agent record and channel membership.
     let agent_key = "codex-live-bot";
-    store.create_agent_record(&AgentRecordUpsert {
+    let agent_id = store.create_agent_record(&AgentRecordUpsert {
         name: agent_key,
         display_name: "Codex Live Bot",
         description: None,
@@ -753,12 +753,12 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", agent_key, SenderType::Agent)?;
+    store.join_channel("general", &agent_id, SenderType::Agent)?;
 
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
         channel_name: "general",
-        sender_name: "tester",
+        sender_id: &tester_id,
         sender_type: SenderType::Human,
         content: "@codex-live-bot please reply to everyone",
         attachment_ids: &[],
@@ -876,11 +876,11 @@ async fn gemini_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
     let model = std::env::var("CHORUS_TEST_GEMINI_MODEL")
         .unwrap_or_else(|_| "gemini-2.5-flash".to_string());
 
-    let (server_url, store) = start_chorus_server().await?;
+    let (server_url, store, tester_id) = start_chorus_server().await?;
     let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
 
     let agent_key = "gemini-live-bot";
-    store.create_agent_record(&AgentRecordUpsert {
+    let agent_id = store.create_agent_record(&AgentRecordUpsert {
         name: agent_key,
         display_name: "Gemini Live Bot",
         description: None,
@@ -890,11 +890,11 @@ async fn gemini_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", agent_key, SenderType::Agent)?;
+    store.join_channel("general", &agent_id, SenderType::Agent)?;
 
     store.create_message(CreateMessage {
         channel_name: "general",
-        sender_name: "tester",
+        sender_id: &tester_id,
         sender_type: SenderType::Human,
         content: "@gemini-live-bot please reply to everyone",
         attachment_ids: &[],
@@ -998,12 +998,12 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         .unwrap_or_else(|_| "kimi-code/kimi-for-coding".to_string());
 
     // 2. Start Chorus server + shared bridge.
-    let (server_url, store) = start_chorus_server().await?;
+    let (server_url, store, tester_id) = start_chorus_server().await?;
     let (bridge_url, bridge_ct) = start_bridge_with_server(&server_url).await?;
 
     // 3. Seed agent record and channel membership.
     let agent_key = "kimi-live-bot";
-    store.create_agent_record(&AgentRecordUpsert {
+    let agent_id = store.create_agent_record(&AgentRecordUpsert {
         name: agent_key,
         display_name: "Kimi Live Bot",
         description: None,
@@ -1013,12 +1013,12 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", agent_key, SenderType::Agent)?;
+    store.join_channel("general", &agent_id, SenderType::Agent)?;
 
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
         channel_name: "general",
-        sender_name: "tester",
+        sender_id: &tester_id,
         sender_type: SenderType::Human,
         content: "@kimi-live-bot please reply to everyone",
         attachment_ids: &[],

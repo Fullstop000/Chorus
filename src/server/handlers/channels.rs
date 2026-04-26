@@ -107,7 +107,7 @@ pub async fn handle_list_channels(
     State(state): State<AppState>,
     Query(query): Query<ListChannelsQuery>,
 ) -> ApiResult<Vec<ChannelInfo>> {
-    let member = query.member.unwrap_or_else(whoami::username);
+    let member = query.member.unwrap_or_else(|| state.local_human_id.clone());
     let active_workspace_id = state.active_workspace_id().await;
     let channels = channel_infos_for(
         state.store.as_ref(),
@@ -162,10 +162,9 @@ pub async fn handle_create_channel(
             app_err!(StatusCode::BAD_REQUEST, msg)
         }
     })?;
-    let username = whoami::username();
     let _ = state
         .store
-        .join_channel_by_id(&channel_id, &username, SenderType::Human);
+        .join_channel_by_id(&channel_id, &state.local_human_id, SenderType::Human);
     Ok(Json(serde_json::json!({ "id": channel_id, "name": name })))
 }
 
@@ -210,15 +209,17 @@ pub async fn handle_invite_channel_member(
     if member_name.is_empty() {
         return Err(app_err!(StatusCode::BAD_REQUEST, "memberName is required"));
     }
-    let member_type = state
+    // Resolve the explicit `memberName` API field into the canonical
+    // (id, type) pair; `channel_members` is keyed by immutable id.
+    let (member_id, member_type) = state
         .store
-        .lookup_sender_type(member_name)
+        .lookup_sender_by_name(member_name)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "member not found: {member_name}"))?;
 
     state
         .store
-        .join_channel_by_id(&channel.id, member_name, member_type)
+        .join_channel_by_id(&channel.id, &member_id, member_type)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let members = state

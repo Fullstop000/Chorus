@@ -32,7 +32,7 @@ pub use messages::{
 };
 pub use sessions::AgentSession;
 pub use stream::StreamEvent;
-pub use tasks::{ClaimResult, Task, TaskInfo, TaskStatus};
+pub use tasks::{ClaimResult, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
 pub use workspaces::{Workspace, WorkspaceCounts, WorkspaceMode};
 
@@ -62,6 +62,7 @@ impl Store {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        Self::validate_supported_identity_schema(&conn)?;
         Self::init_schema(&conn)?;
         let (stream_tx, _) = broadcast::channel(256);
         let (trace_tx, _) = broadcast::channel(1024);
@@ -132,6 +133,83 @@ impl Store {
         Ok(())
     }
 
+    fn validate_supported_identity_schema(conn: &Connection) -> Result<()> {
+        for (table, column) in [
+            ("humans", "display_name"),
+            ("workspaces", "created_by_human"),
+            ("workspace_members", "human_name"),
+            ("channel_members", "member_name"),
+            ("inbox_read_state", "member_name"),
+            ("messages", "sender_name"),
+            ("tasks", "created_by"),
+            ("tasks", "claimed_by"),
+            ("team_members", "member_name"),
+        ] {
+            if Self::schema_column_exists(conn, table, column)? {
+                anyhow::bail!(Self::old_identity_schema_message(table, column));
+            }
+        }
+
+        for (table, columns) in [
+            ("humans", &["id", "name"][..]),
+            ("workspaces", &["created_by_human_id"][..]),
+            ("workspace_members", &["human_id"][..]),
+            ("channel_members", &["member_id", "member_type"][..]),
+            ("inbox_read_state", &["member_id", "member_type"][..]),
+            ("messages", &["sender_id", "sender_type"][..]),
+            (
+                "tasks",
+                &[
+                    "created_by_id",
+                    "created_by_type",
+                    "claimed_by_id",
+                    "claimed_by_type",
+                ][..],
+            ),
+            ("team_members", &["member_id", "member_type"][..]),
+        ] {
+            if !Self::schema_table_exists(conn, table)? {
+                continue;
+            }
+            for column in columns {
+                if !Self::schema_column_exists(conn, table, column)? {
+                    anyhow::bail!(Self::old_identity_schema_message(table, column));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn old_identity_schema_message(table: &str, column: &str) -> String {
+        format!(
+            "local database uses an old identity schema ({table}.{column}); run with a fresh data directory or reset local data"
+        )
+    }
+
+    fn schema_table_exists(conn: &Connection, table: &str) -> Result<bool> {
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                params![table],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    fn schema_column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+        if !Self::schema_table_exists(conn, table)? {
+            return Ok(false);
+        }
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+        let exists = stmt
+            .query_map([], |row| row.get::<_, String>(1))?
+            .filter_map(Result::ok)
+            .any(|name| name == column);
+        Ok(exists)
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
         self.stream_tx.subscribe()
     }
@@ -188,20 +266,22 @@ impl Store {
     /// List recent runs for an agent, filtered to channels the viewer is a member of.
     pub fn get_agent_runs(
         &self,
-        agent_name: &str,
-        viewer: &str,
+        agent_id: &str,
+        viewer_id: &str,
+        viewer_type: &str,
         limit: usize,
     ) -> Result<Vec<serde_json::Value>> {
         let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.run_id, m.trace_summary, m.created_at FROM messages m
-             JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.member_name = ?2
-             WHERE m.sender_name = ?1 AND m.run_id IS NOT NULL AND m.trace_summary IS NOT NULL
+             JOIN channel_members cm ON cm.channel_id = m.channel_id
+               AND cm.member_id = ?2 AND cm.member_type = ?3
+             WHERE m.sender_id = ?1 AND m.run_id IS NOT NULL AND m.trace_summary IS NOT NULL
              GROUP BY m.run_id
-             ORDER BY m.created_at DESC LIMIT ?3",
+             ORDER BY m.created_at DESC LIMIT ?4",
         )?;
         let runs: Vec<serde_json::Value> = stmt
-            .query_map(params![agent_name, viewer, limit as i64], |row| {
+            .query_map(params![agent_id, viewer_id, viewer_type, limit as i64], |row| {
                 let id: String = row.get(0)?;
                 let run_id: String = row.get(1)?;
                 let summary: String = row.get(2)?;
@@ -220,23 +300,59 @@ impl Store {
 
     // ── Sender type lookup ──
 
-    pub fn lookup_sender_type(&self, name: &str) -> Result<Option<SenderType>> {
+    pub fn lookup_sender_type(&self, id: &str) -> Result<Option<SenderType>> {
         let conn = self.lock_conn();
-        Self::lookup_sender_type_inner(&conn, name)
+        Self::lookup_sender_type_inner(&conn, id)
     }
 
-    fn lookup_sender_type_inner(conn: &Connection, name: &str) -> Result<Option<SenderType>> {
+    /// Resolve a stable sender name to the canonical (id, SenderType) pair.
+    ///
+    /// Used by API handlers that explicitly accept human-friendly names from
+    /// clients but persist immutable ids.
+    pub fn lookup_sender_by_name(&self, name: &str) -> Result<Option<(String, SenderType)>> {
+        let conn = self.lock_conn();
+        Self::lookup_sender_by_name_inner(&conn, name)
+    }
+
+    fn lookup_sender_by_name_inner(
+        conn: &Connection,
+        name: &str,
+    ) -> Result<Option<(String, SenderType)>> {
+        if let Some(id) = conn
+            .query_row(
+                "SELECT id FROM humans WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(Some((id, SenderType::Human)));
+        }
+        if let Some(id) = conn
+            .query_row(
+                "SELECT id FROM agents WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+        {
+            return Ok(Some((id, SenderType::Agent)));
+        }
+        Ok(None)
+    }
+
+    fn lookup_sender_type_inner(conn: &Connection, id: &str) -> Result<Option<SenderType>> {
         let agent_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM agents WHERE name = ?1",
-            params![name],
+            "SELECT COUNT(*) FROM agents WHERE id = ?1",
+            params![id],
             |row| row.get(0),
         )?;
         if agent_count > 0 {
             return Ok(Some(SenderType::Agent));
         }
         let human_count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM humans WHERE name = ?1",
-            params![name],
+            "SELECT COUNT(*) FROM humans WHERE id = ?1",
+            params![id],
             |row| row.get(0),
         )?;
         if human_count > 0 {
@@ -244,22 +360,4 @@ impl Store {
         }
         Ok(None)
     }
-}
-
-/// Classify a name as agent or human by consulting the `agents` table.
-/// Returns `SenderType::Human` for any name not registered as an agent.
-///
-/// Synthetic names like `"system"` come back as human; callers that need
-/// stricter handling should validate before calling. Lives at module scope
-/// (not on `Store`) so it can run inside a `rusqlite::Transaction` borrow
-/// without re-locking the store's `Mutex<Connection>`.
-pub(crate) fn resolve_sender_type_inner(conn: &Connection, name: &str) -> Result<SenderType> {
-    let is_agent: bool = conn
-        .prepare("SELECT 1 FROM agents WHERE name = ?1")?
-        .exists(params![name])?;
-    Ok(if is_agent {
-        SenderType::Agent
-    } else {
-        SenderType::Human
-    })
 }

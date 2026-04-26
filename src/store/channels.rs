@@ -108,8 +108,8 @@ impl Channel {
 pub struct ChannelMember {
     /// Foreign key to `channels.id`.
     pub channel_id: String,
-    /// Human username or agent name.
-    pub member_name: String,
+    /// Human id or agent id.
+    pub member_id: String,
     /// Whether the member is a human or agent.
     pub member_type: SenderType,
     /// Last read message seq for unread calculations.
@@ -119,7 +119,9 @@ pub struct ChannelMember {
 /// Member row joined with optional display metadata for API responses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChannelMemberProfile {
-    /// Member handle.
+    /// Stable member id.
+    pub member_id: String,
+    /// Display/lookup label.
     pub member_name: String,
     /// Human vs agent.
     pub member_type: SenderType,
@@ -263,14 +265,20 @@ impl Store {
         Self::get_channels_inner(&conn, params)
     }
 
-    pub fn channel_member_exists(&self, channel_id: &str, member_name: &str) -> Result<bool> {
+    /// Check whether a member belongs to the given channel.
+    ///
+    /// # ID namespace invariant
+    /// Human IDs use a `human_<uuid>` prefix; agent IDs are bare UUIDs. The
+    /// two namespaces are disjoint, so filtering by `member_id` alone uniquely
+    /// identifies the actor type and a `member_type` predicate is not required.
+    pub fn channel_member_exists(&self, channel_id: &str, member_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let exists: i64 = conn.query_row(
             "SELECT EXISTS(
                 SELECT 1 FROM channel_members
-                WHERE channel_id = ?1 AND member_name = ?2
+                WHERE channel_id = ?1 AND member_id = ?2
             )",
-            params![channel_id, member_name],
+            params![channel_id, member_id],
             |row| row.get(0),
         )?;
         Ok(exists != 0)
@@ -518,7 +526,7 @@ impl Store {
     pub fn join_channel(
         &self,
         channel_name: &str,
-        member_name: &str,
+        member_id: &str,
         member_type: SenderType,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
@@ -526,8 +534,8 @@ impl Store {
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let mt = member_type.as_str();
         conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
-            params![channel.id, member_name, mt],
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+            params![channel.id, member_id, mt],
         )?;
         Ok(())
     }
@@ -537,14 +545,14 @@ impl Store {
     pub fn join_channel_by_id(
         &self,
         channel_id: &str,
-        member_name: &str,
+        member_id: &str,
         member_type: SenderType,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let mt = member_type.as_str();
         conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
-            params![channel_id, member_name, mt],
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+            params![channel_id, member_id, mt],
         )?;
         Ok(())
     }
@@ -552,12 +560,12 @@ impl Store {
     pub fn get_channel_members(&self, channel_id: &str) -> Result<Vec<ChannelMember>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT channel_id, member_name, member_type, last_read_seq FROM channel_members WHERE channel_id = ?1",
+            "SELECT channel_id, member_id, member_type, last_read_seq FROM channel_members WHERE channel_id = ?1",
         )?;
         let rows = stmt.query_map(params![channel_id], |row| {
             Ok(ChannelMember {
                 channel_id: row.get(0)?,
-                member_name: row.get(1)?,
+                member_id: row.get(1)?,
                 member_type: SenderType::from_sender_type_str(&row.get::<_, String>(2)?),
                 last_read_seq: row.get(3)?,
             })
@@ -572,42 +580,52 @@ impl Store {
     ) -> Result<Vec<ChannelMemberProfile>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT cm.member_name,
+            "SELECT cm.member_id,
                     cm.member_type,
+                    COALESCE(h.name, a.name, cm.member_id) AS member_name,
                     CASE
                         WHEN cm.member_type = 'agent' THEN a.display_name
+                        WHEN cm.member_type = 'human' THEN h.name
                         ELSE NULL
                     END AS display_name
              FROM channel_members cm
-             LEFT JOIN agents a ON a.name = cm.member_name
+             LEFT JOIN humans h ON cm.member_type = 'human' AND h.id = cm.member_id
+             LEFT JOIN agents a ON cm.member_type = 'agent' AND a.id = cm.member_id
              WHERE cm.channel_id = ?1
              ORDER BY
                 CASE cm.member_type
                     WHEN 'human' THEN 0
                     ELSE 1
                 END,
-                COALESCE(a.display_name, cm.member_name),
-                cm.member_name",
+                COALESCE(a.display_name, h.name, a.name, cm.member_id),
+                cm.member_id",
         )?;
         let rows = stmt.query_map(params![channel_id], |row| {
             Ok(ChannelMemberProfile {
-                member_name: row.get(0)?,
+                member_id: row.get(0)?,
                 member_type: SenderType::from_sender_type_str(&row.get::<_, String>(1)?),
-                display_name: row.get(2)?,
+                member_name: row.get(2)?,
+                display_name: row.get(3)?,
             })
         })?;
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
-    pub fn is_member(&self, channel_name: &str, member_name: &str) -> Result<bool> {
+    /// Check whether a member belongs to the given channel (looked up by name).
+    ///
+    /// # ID namespace invariant
+    /// Human IDs use a `human_<uuid>` prefix; agent IDs are bare UUIDs. The
+    /// two namespaces are disjoint, so filtering by `member_id` alone uniquely
+    /// identifies the actor type and a `member_type` predicate is not required.
+    pub fn is_member(&self, channel_name: &str, member_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?;
         match channel {
             None => Ok(false),
             Some(ch) => {
                 let count: i64 = conn.query_row(
-                    "SELECT COUNT(*) FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
-                    params![ch.id, member_name],
+                    "SELECT COUNT(*) FROM channel_members WHERE channel_id = ?1 AND member_id = ?2",
+                    params![ch.id, member_id],
                     |row| row.get(0),
                 )?;
                 Ok(count > 0)
@@ -624,29 +642,29 @@ impl Store {
 
     /// Ensure built-in channels exist and upgrade `#general` to the writable
     /// `#all` system channel without changing its stable id.
-    pub fn ensure_builtin_channels(&self, default_human: &str) -> Result<()> {
+    pub fn ensure_builtin_channels(&self, default_human_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
         let all_id = Self::ensure_all_channel_inner(&conn, &workspace_id)?;
 
         conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq)
              VALUES (?1, ?2, 'human', 0)",
-            params![all_id, default_human],
+            params![all_id, default_human_id],
         )?;
         conn.execute(
-            "INSERT OR IGNORE INTO workspace_members (workspace_id, human_name, role)
-             SELECT ?1, name, 'member' FROM humans",
+            "INSERT OR IGNORE INTO workspace_members (workspace_id, human_id, role)
+             SELECT ?1, id, 'member' FROM humans",
             params![workspace_id],
         )?;
         conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
-             SELECT ?1, human_name, 'human', 0 FROM workspace_members WHERE workspace_id = ?2",
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq)
+             SELECT ?1, human_id, 'human', 0 FROM workspace_members WHERE workspace_id = ?2",
             params![all_id, workspace_id],
         )?;
         conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq)
-             SELECT ?1, name, 'agent', 0 FROM agents WHERE workspace_id = ?2",
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq)
+             SELECT ?1, id, 'agent', 0 FROM agents WHERE workspace_id = ?2",
             params![all_id, workspace_id],
         )?;
 
@@ -754,6 +772,7 @@ mod channel_name_tests {
 #[cfg(test)]
 mod task_channel_tests {
     use super::*;
+    use crate::store::messages::SenderType;
     use crate::store::Store;
 
     #[test]
@@ -767,8 +786,10 @@ mod task_channel_tests {
         store
             .create_channel("eng", None, ChannelType::Channel, None)
             .unwrap();
-        store.create_human("alice").unwrap();
-        store.create_tasks("eng", "alice", &["t1"]).unwrap();
+        let alice = store.create_local_human("alice").unwrap();
+        store
+            .create_tasks("eng", &alice.id, SenderType::Human, &["t1"])
+            .unwrap();
 
         let channels = store.get_channels().unwrap();
         assert!(channels.iter().any(|c| c.name == "eng"));
@@ -799,8 +820,10 @@ mod task_channel_tests {
         let parent_id = store
             .create_channel("eng", None, ChannelType::Channel, None)
             .unwrap();
-        store.create_human("alice").unwrap();
-        store.create_tasks("eng", "alice", &["t1", "t2"]).unwrap();
+        let alice = store.create_local_human("alice").unwrap();
+        store
+            .create_tasks("eng", &alice.id, SenderType::Human, &["t1", "t2"])
+            .unwrap();
 
         // Verify parent + 2 task sub-channels exist before delete.
         {
@@ -856,8 +879,10 @@ mod task_channel_tests {
         let parent_id = store
             .create_channel("eng", None, ChannelType::Channel, None)
             .unwrap();
-        store.create_human("alice").unwrap();
-        store.create_tasks("eng", "alice", &["t1"]).unwrap();
+        let alice = store.create_local_human("alice").unwrap();
+        store
+            .create_tasks("eng", &alice.id, SenderType::Human, &["t1"])
+            .unwrap();
 
         let sub_id: String = {
             let conn = store.conn_for_test();
@@ -879,10 +904,15 @@ mod task_channel_tests {
                 [],
             )
             .unwrap();
+            let alice_id: String = conn
+                .query_row("SELECT id FROM humans WHERE name = 'alice'", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
             conn.execute(
-                "INSERT INTO messages (id, channel_id, sender_name, sender_type, content, seq) \
-                 VALUES ('m-sub', ?1, 'alice', 'human', 'here', 1)",
-                params![sub_id],
+                "INSERT INTO messages (id, channel_id, sender_id, sender_type, content, seq) \
+                 VALUES ('m-sub', ?1, ?2, 'human', 'here', 1)",
+                params![sub_id, alice_id],
             )
             .unwrap();
             conn.execute(

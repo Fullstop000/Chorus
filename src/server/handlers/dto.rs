@@ -49,6 +49,7 @@ pub struct ConfigInfo {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LocalHumanInfo {
+    pub id: String,
     pub name: String,
 }
 
@@ -142,11 +143,10 @@ pub struct AgentInfo {
 /// Human user row for agent workspace snapshots and the UI shell.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HumanInfo {
-    /// OS / login username used as human id.
+    /// Stable human id used for ownership, membership, and authorship.
+    pub id: String,
+    /// Display/lookup label.
     pub name: String,
-    /// Optional user-chosen display name.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
 }
 
 impl From<(&Channel, bool)> for ChannelInfo {
@@ -187,8 +187,8 @@ impl From<&Agent> for AgentInfo {
 impl From<Human> for HumanInfo {
     fn from(human: Human) -> Self {
         Self {
+            id: human.id,
             name: human.name,
-            display_name: human.display_name,
         }
     }
 }

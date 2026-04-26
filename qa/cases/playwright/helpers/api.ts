@@ -48,10 +48,17 @@ interface TeamRow {
   name: string
 }
 
-export async function getWhoami(request: APIRequestContext): Promise<{ username: string }> {
+export async function getWhoami(request: APIRequestContext): Promise<{ id: string; name: string; username: string }> {
   const res = await request.get('/api/whoami')
   expect(res.ok()).toBeTruthy()
-  return res.json()
+  const json = await res.json() as { id?: string; name?: string; username?: string }
+  const id = json.id ?? json.username
+  expect(id, `whoami response must include id: ${JSON.stringify(json)}`).toBeTruthy()
+  return {
+    id: id!,
+    name: json.name ?? json.username ?? id!,
+    username: id!,
+  }
 }
 
 export async function listAgents(request: APIRequestContext): Promise<AgentRow[]> {
@@ -134,6 +141,29 @@ export async function createAgentApi(
 /** Find the first agent whose name starts with `prefix`. */
 export function findAgentByPrefix(agents: AgentRow[], prefix: string): AgentRow | undefined {
   return agents.find((a) => a.name === prefix || a.name.startsWith(`${prefix}-`))
+}
+
+function looksLikeCanonicalActorId(value: string): boolean {
+  return value.startsWith('human_') || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+}
+
+async function resolveActorRouteValueToId(request: APIRequestContext, actorRouteValue: string): Promise<string> {
+  if (looksLikeCanonicalActorId(actorRouteValue)) return actorRouteValue
+
+  const agents = await listAgents(request)
+  const agent = agents.find(
+    (entry) => entry.id === actorRouteValue || entry.name === actorRouteValue
+  )
+  if (agent) return agent.id
+
+  const humansRes = await request.get('/api/humans')
+  if (humansRes.ok()) {
+    const humans = await humansRes.json() as Array<{ id: string; name: string }>
+    const human = humans.find((entry) => entry.id === actorRouteValue || entry.name === actorRouteValue)
+    if (human) return human.id
+  }
+
+  return actorRouteValue
 }
 
 /** Like requireAgentId but matches by name prefix (handles server-added suffixes). */
@@ -298,7 +328,8 @@ export async function sendAsUser(
   target: string,
   content: string
 ): Promise<void> {
-  const res = await request.post(`/internal/agent/${encodeURIComponent(username)}/send`, {
+  const actorId = await resolveActorRouteValueToId(request, username)
+  const res = await request.post(`/internal/agent/${encodeURIComponent(actorId)}/send`, {
     data: { target, content },
   })
   expect(res.ok(), await res.text()).toBeTruthy()
@@ -343,9 +374,10 @@ export async function historyForUser(
   channel: string,
   limit = 80
 ): Promise<HistoryMessage[]> {
+  const actorId = await resolveActorRouteValueToId(request, username)
   const q = new URLSearchParams({ channel, limit: String(limit) })
   const res = await request.get(
-    `/internal/agent/${encodeURIComponent(username)}/history?${q.toString()}`
+    `/internal/agent/${encodeURIComponent(actorId)}/history?${q.toString()}`
   )
   expect(res.ok(), await res.text()).toBeTruthy()
   const j = await res.json()
@@ -493,7 +525,17 @@ export async function createTeamApi(
     }>
   }
 ): Promise<void> {
-  const res = await request.post('/api/teams', { data: body })
+  const agents = await listAgents(request)
+  const members = body.members.map((member) => {
+    if (member.member_type !== 'agent') return member
+
+    const agent = agents.find(
+      (entry) => entry.id === member.member_id || entry.name === member.member_id || entry.name === member.member_name
+    )
+    if (!agent) throw new Error(`Agent not found for team member: ${member.member_name}`)
+    return { ...member, member_id: agent.id, member_name: agent.name }
+  })
+  const res = await request.post('/api/teams', { data: { ...body, members } })
   expect(res.ok(), await res.text()).toBeTruthy()
 }
 

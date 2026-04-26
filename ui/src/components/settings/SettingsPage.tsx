@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { Check, Plus, Trash2, X } from 'lucide-react'
 import {
-  updateHuman,
-  channelQueryKeys,
   getSystemInfo,
   getLogs,
   createWorkspace,
@@ -12,7 +10,7 @@ import {
   workspaceQueryKeys,
 } from '../../data'
 import type { SystemInfo, ConfigInfo, WorkspaceInfo } from '../../data'
-import { useHumans, useRefresh, useWorkspaces } from '../../hooks/data'
+import { useRefresh, useWorkspaces } from '../../hooks/data'
 import { useStore } from '../../store'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -50,70 +48,25 @@ function formatCount(value: number, label: string): string {
   return `${value} ${label}${value === 1 ? '' : 's'}`
 }
 
-function ProfileSection({ username }: { username: string }) {
-  const queryClient = useQueryClient()
-  const humans = useHumans()
-  const currentHuman = humans.find((h) => h.name === username)
-
-  const [displayName, setDisplayName] = useState(currentHuman?.display_name ?? '')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [saved, setSaved] = useState(false)
-  const savedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (savedTimerRef.current !== null) clearTimeout(savedTimerRef.current)
-    }
-  }, [])
-
-  useEffect(() => {
-    setDisplayName(currentHuman?.display_name ?? '')
-  }, [currentHuman?.display_name])
-
-  async function handleSave() {
-    setSaving(true)
-    setError(null)
-    setSaved(false)
-    try {
-      await updateHuman(username, { display_name: displayName.trim() || null })
-      await queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans })
-      setSaved(true)
-      savedTimerRef.current = setTimeout(() => setSaved(false), 2000)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setSaving(false)
-    }
-  }
-
+function ProfileSection({ humanId, name }: { humanId: string; name: string }) {
   return (
     <div className="settings-section">
       <div className="settings-section-header">
         <h2 className="settings-section-title">Profile</h2>
         <p className="settings-section-desc">
-          Logged in as <span className="font-mono">{username}</span>
+          Logged in as <span className="font-mono">{name}</span>
         </p>
       </div>
 
       <FormField>
-        <Label htmlFor="display-name">Display name</Label>
-        <Input
-          id="display-name"
-          placeholder={username}
-          value={displayName}
-          onChange={(e) => setDisplayName(e.target.value)}
-          disabled={saving}
-        />
+        <Label htmlFor="human-name">Name</Label>
+        <Input id="human-name" value={name} readOnly />
       </FormField>
 
-      {error && <FormError>{error}</FormError>}
-
-      <div className="settings-actions">
-        <Button onClick={handleSave} disabled={saving}>
-          {saving ? 'Saving…' : saved ? 'Saved' : 'Save'}
-        </Button>
-      </div>
+      <FormField>
+        <Label htmlFor="human-id">Human ID</Label>
+        <Input id="human-id" value={humanId} readOnly />
+      </FormField>
     </div>
   )
 }
@@ -574,7 +527,7 @@ function LogsSection() {
 }
 
 export function SettingsPage() {
-  const { currentUser, setShowSettings } = useStore()
+  const { currentUser, currentUserId, setShowSettings } = useStore()
   const [activeSection, setActiveSection] = useState<SettingsSection>('profile')
 
   return (
@@ -606,7 +559,7 @@ export function SettingsPage() {
         </nav>
 
         <div className="settings-content">
-          {activeSection === 'profile' && <ProfileSection username={currentUser} />}
+          {activeSection === 'profile' && <ProfileSection humanId={currentUserId} name={currentUser} />}
           {activeSection === 'workspaces' && <WorkspaceSection />}
           {activeSection === 'appearance' && <AppearanceSection />}
           {activeSection === 'system' && <SystemSection />}

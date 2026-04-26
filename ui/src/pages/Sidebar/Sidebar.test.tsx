@@ -11,6 +11,7 @@ const generalChannel: ChannelInfo = {
 
 const state = {
   currentUser: 'zht',
+  currentUserId: 'zht',
   currentChannel: generalChannel as ChannelInfo | null,
   currentAgent: null,
   showSettings: false,
@@ -37,7 +38,7 @@ vi.mock('../../hooks/data', () => ({
     systemChannels: [],
     dmChannels: [],
   }),
-  useHumans: () => [{ name: 'zht', display_name: 'zht' }],
+  useHumans: () => [{ id: 'zht', name: 'zht' }],
   useInbox: () => ({
     getConversationUnread: () => 0,
     getAgentUnread: () => 0,

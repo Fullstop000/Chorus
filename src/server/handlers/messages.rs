@@ -194,8 +194,67 @@ fn resolve_history_target(
     Ok(channel_target.to_string())
 }
 
-fn public_viewer_name() -> String {
-    whoami::username()
+fn resolve_internal_actor_path_to_id(
+    state: &AppState,
+    actor_path_value: &str,
+) -> Result<String, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    if state
+        .store
+        .lookup_sender_type(actor_path_value)
+        .map_err(|err| app_err!(StatusCode::BAD_REQUEST, err.to_string()))?
+        .is_some()
+    {
+        return Ok(actor_path_value.to_string());
+    }
+
+    state
+        .store
+        .lookup_sender_by_name(actor_path_value)
+        .map_err(|err| app_err!(StatusCode::BAD_REQUEST, err.to_string()))?
+        .map(|(id, _)| id)
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::BAD_REQUEST,
+                "sender not found: {actor_path_value}"
+            )
+        })
+}
+
+fn canonical_message_target_for_store(
+    state: &AppState,
+    target: &str,
+) -> Result<String, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    let Some(peer) = target.strip_prefix("dm:@") else {
+        return Ok(target.to_string());
+    };
+
+    if state
+        .store
+        .lookup_sender_type(peer)
+        .map_err(|err| app_err!(StatusCode::BAD_REQUEST, err.to_string()))?
+        .is_some()
+    {
+        return Ok(target.to_string());
+    }
+
+    let (peer_id, _) = state
+        .store
+        .lookup_sender_by_name(peer)
+        .map_err(|err| app_err!(StatusCode::BAD_REQUEST, err.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "peer not found: {peer}"))?;
+    Ok(format!("dm:@{peer_id}"))
+}
+
+fn lifecycle_agent_name_for_id(
+    state: &AppState,
+    actor_id: &str,
+) -> Result<String, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    state
+        .store
+        .get_agent_by_id(actor_id, false)
+        .map_err(internal_err)?
+        .map(|agent| agent.name)
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found: {actor_id}"))
 }
 
 fn sender_type_for_actor(
@@ -206,6 +265,28 @@ fn sender_type_for_actor(
         .lookup_sender_type(actor_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .unwrap_or(SenderType::Human))
+}
+
+fn actor_label(
+    state: &AppState,
+    actor_id: &str,
+    sender_type: SenderType,
+) -> Result<String, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    match sender_type {
+        SenderType::Human => state
+            .store
+            .get_human_by_id(actor_id)
+            .map_err(internal_err)?
+            .map(|human| human.name)
+            .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "human not found: {actor_id}")),
+        SenderType::Agent => state
+            .store
+            .get_agent_by_id(actor_id, false)
+            .map_err(internal_err)?
+            .map(|agent| agent.name)
+            .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found: {actor_id}")),
+        SenderType::System => Ok(actor_id.to_string()),
+    }
 }
 
 fn require_channel_membership(
@@ -315,7 +396,8 @@ async fn send_message_to_channel(
 
     // Look up active trace run_id for agent senders.
     let run_id = if sender_type == SenderType::Agent {
-        state.lifecycle.active_run_id(actor_id)
+        let agent_name = lifecycle_agent_name_for_id(state, actor_id)?;
+        state.lifecycle.active_run_id(&agent_name)
     } else {
         None
     };
@@ -326,7 +408,7 @@ async fn send_message_to_channel(
     let message_id = store
         .create_message(CreateMessage {
             channel_name: &channel.name,
-            sender_name: actor_id,
+            sender_id: actor_id,
             sender_type,
             content,
             attachment_ids,
@@ -381,7 +463,7 @@ static MENTION_RE: LazyLock<Regex> =
 async fn forward_team_mentions(
     state: &AppState,
     channel: &Channel,
-    sender_name: &str,
+    sender_id: &str,
     sender_type: SenderType,
     content: &str,
 ) -> anyhow::Result<()> {
@@ -404,19 +486,21 @@ async fn forward_team_mentions(
             continue;
         };
 
+        let sender_name = actor_label(state, sender_id, sender_type)
+            .map_err(|(_, Json(error))| anyhow::anyhow!(error.error))?;
         let forwarded_message_id = state.store.create_message_with_forwarded_from(
             &team_channel.id,
-            sender_name,
+            sender_id,
             sender_type,
             content,
             &[],
             Some(ForwardedFrom {
                 channel_name: channel.name.clone(),
-                sender_name: sender_name.to_string(),
+                sender_name,
             }),
         )?;
 
-        deliver_message_to_agents(state, &team_channel.id, sender_name, &forwarded_message_id)
+        deliver_message_to_agents(state, &team_channel.id, sender_id, &forwarded_message_id)
             .await?;
     }
 
@@ -430,16 +514,18 @@ pub async fn handle_send(
     Path(agent_id): Path<String>,
     Json(req): Json<SendRequest>,
 ) -> ApiResult<SendResponse> {
+    let actor_id = resolve_internal_actor_path_to_id(&state, &agent_id)?;
+    let target = canonical_message_target_for_store(&state, &req.target)?;
     let store = &state.store;
     let active_workspace_id = state.active_workspace_id().await;
     let channel_id = store
-        .resolve_target_for_workspace(&req.target, &agent_id, active_workspace_id.as_deref())
+        .resolve_target_for_workspace(&target, &actor_id, active_workspace_id.as_deref())
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let channel = load_channel_by_id(store, &channel_id)?;
     send_message_to_channel(
         &state,
-        &agent_id,
+        &actor_id,
         &channel,
         &req.content,
         &req.attachment_ids,
@@ -455,11 +541,12 @@ pub async fn handle_receive(
     Query(params): Query<ReceiveParams>,
 ) -> ApiResult<ReceiveResponse> {
     let store = &state.store;
+    let actor_id = resolve_internal_actor_path_to_id(&state, &agent_id)?;
     let blocking = params.block.as_deref() != Some("false");
     let timeout_ms = params.timeout.unwrap_or(30_000).min(60_000);
 
     let messages = store
-        .get_messages_for_agent(&agent_id, true)
+        .get_messages_for_agent_id(&actor_id, true)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     if !messages.is_empty() {
@@ -490,7 +577,7 @@ pub async fn handle_receive(
         match tokio::time::timeout(remaining, rx.recv()).await {
             Ok(Ok(_)) => {
                 let messages = store
-                    .get_messages_for_agent(&agent_id, true)
+                    .get_messages_for_agent_id(&actor_id, true)
                     .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
                 if !messages.is_empty() {
                     info!(agent = %agent_id, count = messages.len(), "receive_message: woke up with messages");
@@ -515,6 +602,7 @@ pub async fn handle_history(
     Path(agent_id): Path<String>,
     Query(params): Query<HistoryParams>,
 ) -> ApiResult<HistoryResponse> {
+    let actor_id = resolve_internal_actor_path_to_id(&state, &agent_id)?;
     let channel_target = params
         .channel
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "missing channel parameter"))?;
@@ -523,14 +611,11 @@ pub async fn handle_history(
     }
 
     let store = &state.store;
+    let target = canonical_message_target_for_store(&state, &channel_target)?;
     let active_workspace_id = state.active_workspace_id().await;
-    let channel_name = resolve_history_target(
-        store,
-        &agent_id,
-        &channel_target,
-        active_workspace_id.as_deref(),
-    )
-    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    let channel_name =
+        resolve_history_target(store, &actor_id, &target, active_workspace_id.as_deref())
+            .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     let limit = params.limit.unwrap_or(50);
     let channel = store
         .get_channel_by_name(&channel_name)
@@ -538,7 +623,7 @@ pub async fn handle_history(
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))?;
     history_for_channel(
         &state,
-        &agent_id,
+        &actor_id,
         &channel,
         &channel_target,
         limit,
@@ -552,11 +637,13 @@ pub async fn handle_resolve_channel(
     Path(agent_id): Path<String>,
     Json(req): Json<ResolveChannelRequest>,
 ) -> ApiResult<ResolveChannelResponse> {
+    let actor_id = resolve_internal_actor_path_to_id(&state, &agent_id)?;
+    let target = canonical_message_target_for_store(&state, &req.target)?;
     let channel_id = state
         .store
         .resolve_target_for_workspace(
-            &req.target,
-            &agent_id,
+            &target,
+            &actor_id,
             state.active_workspace_id().await.as_deref(),
         )
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -564,7 +651,7 @@ pub async fn handle_resolve_channel(
 }
 
 pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<InboxResponse> {
-    let actor_id = public_viewer_name();
+    let actor_id = state.local_human_id.clone();
     if state
         .store
         .lookup_sender_type(&actor_id)
@@ -592,7 +679,7 @@ pub async fn handle_public_conversation_inbox_notification(
     State(state): State<AppState>,
     Path(conversation_id): Path<String>,
 ) -> ApiResult<ConversationInboxRefreshResponse> {
-    let actor_id = public_viewer_name();
+    let actor_id = state.local_human_id.clone();
     if state
         .store
         .lookup_sender_type(&actor_id)
@@ -637,10 +724,15 @@ pub async fn handle_public_conversation_inbox_notification(
 
 pub async fn handle_public_ensure_dm(
     State(state): State<AppState>,
-    Path(peer_name): Path<String>,
+    Path(peer_id): Path<String>,
 ) -> ApiResult<ChannelInfo> {
-    let actor_id = public_viewer_name();
-    if peer_name == actor_id {
+    let actor_id = state.local_human_id.clone();
+    state
+        .store
+        .lookup_sender_type(&peer_id)
+        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "peer not found: {}", peer_id))?;
+    if peer_id == actor_id {
         return Err(app_err!(
             StatusCode::BAD_REQUEST,
             "cannot create a dm with yourself"
@@ -658,20 +750,7 @@ pub async fn handle_public_ensure_dm(
             actor_id
         ));
     }
-    if state
-        .store
-        .lookup_sender_type(&peer_name)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
-        .is_none()
-    {
-        return Err(app_err!(
-            StatusCode::BAD_REQUEST,
-            "peer not found: {}",
-            peer_name
-        ));
-    }
-
-    let target = format!("dm:@{}", peer_name);
+    let target = format!("dm:@{}", peer_id);
     let channel_id = state
         .store
         .resolve_target(&target, &actor_id)
@@ -685,7 +764,7 @@ pub async fn handle_public_history(
     Path(conversation_id): Path<String>,
     Query(params): Query<PublicConversationMessagesParams>,
 ) -> ApiResult<HistoryResponse> {
-    let actor_id = public_viewer_name();
+    let actor_id = state.local_human_id.clone();
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     history_for_channel(
         &state,
@@ -703,7 +782,7 @@ pub async fn handle_public_send(
     Path(conversation_id): Path<String>,
     Json(req): Json<PublicConversationSendRequest>,
 ) -> ApiResult<SendResponse> {
-    let actor_id = public_viewer_name();
+    let actor_id = state.local_human_id.clone();
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     send_message_to_channel(
         &state,
@@ -722,7 +801,7 @@ pub async fn handle_public_update_read_cursor(
     Path(conversation_id): Path<String>,
     Json(req): Json<PublicConversationReadCursorRequest>,
 ) -> ApiResult<ReadCursorResponse> {
-    let actor_id = public_viewer_name();
+    let actor_id = state.local_human_id.clone();
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     update_read_cursor_for_channel(
         &state,
@@ -763,7 +842,7 @@ pub(crate) async fn deliver_message_to_agents(
             | crate::agent::process_status::Status::Failed => {
                 let wake_message = state
                     .store
-                    .get_received_message_for_agent(&recipient_name, message_id)?;
+                    .get_received_message_for_agent_name(&recipient_name, message_id)?;
                 state
                     .lifecycle
                     .start_agent(&recipient_name, wake_message)
@@ -785,7 +864,7 @@ pub async fn handle_trace_events(
     State(state): State<AppState>,
     Path(run_id): Path<String>,
 ) -> ApiResult<TraceEventsResponse> {
-    let viewer = public_viewer_name();
+    let viewer = state.local_human_id.clone();
     // Check that the viewer is a member of the channel this run belongs to.
     let run_channel_id = state
         .store
@@ -828,10 +907,10 @@ pub async fn handle_agent_runs(
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentRunsResponse> {
     let agent = resolve_public_agent(&state, &id)?;
-    let viewer = public_viewer_name();
+    let viewer = state.local_human_id.clone();
     let runs = state
         .store
-        .get_agent_runs(&agent.name, &viewer, 20)
+        .get_agent_runs(&agent.id, &viewer, "human", 20)
         .map_err(internal_err)?;
     Ok(Json(AgentRunsResponse { runs }))
 }

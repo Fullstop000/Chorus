@@ -1,16 +1,19 @@
-//! `chorus status` — list all channels, agents, and humans known to the server.
+//! `chorus status` — list channels, agents, and humans known to the server.
 //!
-//! Calls `GET /internal/agent/<username>/server` and prints a formatted summary
-//! of channels (with join status), agents (with runtime status), and humans.
+//! Identity is resolved via `GET /api/whoami`; the resulting `humans.id` is
+//! used to ask the server for that human's view of channels/agents/humans.
+//! The CLI does not assume the OS user matches any Chorus identity.
 
 pub async fn run(server_url: String) -> anyhow::Result<()> {
-    let username = whoami::username();
     let client = chorus::utils::http::client();
+    let me = crate::cli::fetch_local_human_identity(&client, &server_url).await?;
     let res = client
-        .get(format!("{server_url}/internal/agent/{username}/server"))
+        .get(format!("{server_url}/internal/agent/{}/server", me.id))
         .send()
         .await?;
     let data: serde_json::Value = res.json().await?;
+    tracing::info!("== Local Human ==");
+    tracing::info!("  @{} ({})", me.name, me.id);
     tracing::info!("== Channels ==");
     if let Some(channels) = data.get("channels").and_then(|v| v.as_array()) {
         for ch in channels {

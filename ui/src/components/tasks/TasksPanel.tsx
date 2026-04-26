@@ -66,9 +66,9 @@ function TaskCard({
 }
 
 export function TasksPanel() {
-  const { currentUser, currentChannel } = useStore();
+  const { currentUserId, currentChannel } = useStore();
   const channelId = currentChannel?.id ?? null;
-  const { tasks, loading, refresh } = useTasks(currentUser, channelId);
+  const { tasks, loading, refresh } = useTasks(currentUserId, channelId);
   const [newTaskTitle, setNewTaskTitle] = useState("");
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);

@@ -6,7 +6,34 @@ use chorus::bridge::serve::build_bridge_router;
 use chorus::server::build_router_with_services;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{ReceivedMessage, SenderType};
-use chorus::store::{AgentRecordUpsert, Store};
+use chorus::store::Store;
+
+/// Insert an agent row with a chosen primary key. Mirrors the helper used in
+/// `server_tests`/`e2e_tests` so identity-typed args (member_id, sender_id)
+/// can use the agent's name as its id, keeping URL paths like
+/// `/internal/agent/bot1/...` and membership checks consistent under the
+/// strict ID-first store.
+#[allow(dead_code)]
+fn seed_agent_with_id(
+    store: &Arc<Store>,
+    id: &str,
+    display_name: &str,
+    runtime: &str,
+    model: &str,
+) {
+    let workspace_id = store
+        .get_active_workspace()
+        .unwrap()
+        .expect("seed_agent_with_id requires an active workspace")
+        .id;
+    let conn = store.conn_for_test();
+    conn.execute(
+        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
+         VALUES (?1, ?2, ?1, ?3, ?4, ?5)",
+        rusqlite::params![id, workspace_id, display_name, runtime, model],
+    )
+    .unwrap();
+}
 
 /// Helper: start the bridge server on a random port and return the base URL
 /// and a cancellation token for graceful shutdown.
@@ -102,7 +129,17 @@ impl AgentLifecycle for NoopLifecycle {
 /// is spawned on a background task and lives for the duration of the test.
 async fn start_chorus_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.create_human("testuser").unwrap();
+    // Pre-create `#all` so the bootstrap migration in `ensure_builtin_channels`
+    // does not rename `#general` to `#all` when the router is built below.
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
+    store.ensure_human_with_id("testuser", "testuser").unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
@@ -289,18 +326,7 @@ async fn same_agent_reuses_service() {
 async fn bridge_sends_message_to_chorus_server() {
     // 1. Start the Chorus server with a seeded channel + agent.
     let (server_url, store) = start_chorus_server().await;
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
@@ -464,22 +490,11 @@ async fn bridge_read_history_formats_task_event_messages() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "agent-one",
-            display_name: "agent-one",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "agent-one", "agent-one", "claude", "sonnet");
     store
         .join_channel("eng", "agent-one", SenderType::Agent)
         .unwrap();
@@ -515,22 +530,11 @@ async fn bridge_receive_messages_formats_task_event_messages() {
     let channel_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "agent-one",
-            display_name: "agent-one",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "agent-one", "agent-one", "claude", "sonnet");
     store
         .join_channel("eng", "agent-one", SenderType::Agent)
         .unwrap();

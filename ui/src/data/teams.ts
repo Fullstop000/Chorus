@@ -79,9 +79,9 @@ export const teamQueryKeys = {
   teams: ['teams'] as const,
 } as const
 
-export const teamsQuery = (currentUser: string) =>
+export const teamsQuery = (memberHumanId: string) =>
   queryOptions({
     queryKey: teamQueryKeys.teams,
     queryFn: listTeams,
-    enabled: !!currentUser,
+    enabled: !!memberHumanId,
   })

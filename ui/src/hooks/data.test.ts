@@ -44,12 +44,16 @@ function getConversationUnread(
 
 function getAgentUnread(
   inboxState: InboxState,
-  currentUser: string,
-  agentName: string,
+  currentUserId: string,
+  currentUserDisplayName: string,
+  agent: { id: string; name: string; display_name?: string },
   dmChannels: { id: string; name: string }[]
 ): number {
-  const dmName = dmConversationNameForParticipants(currentUser, agentName)
-  const conversationId = dmChannels.find((ch) => ch.name === dmName)?.id ?? null
+  const canonicalDmName = dmConversationNameForParticipants(currentUserId, agent.id)
+  const legacyDmName = dmConversationNameForParticipants(currentUserDisplayName, agent.name)
+  const conversationId = dmChannels.find((ch) =>
+    ch.name === canonicalDmName || ch.name === legacyDmName
+  )?.id ?? null
   return getConversationUnread(inboxState, conversationId)
 }
 
@@ -89,16 +93,24 @@ describe('getConversationUnread', () => {
 })
 
 describe('getAgentUnread', () => {
-  it('returns unread count for the DM channel with the agent', () => {
+  it('returns unread count for the canonical ID-backed DM channel with the agent', () => {
+    const dmChannels = [{ id: 'dm-1', name: 'dm-agent-1-human-1' }]
+    const state = makeInboxState([
+      makeConversation({ conversationId: 'dm-1', latestSeq: 20, lastReadSeq: 15 }),
+    ])
+    expect(getAgentUnread(state, 'human-1', 'alice', { id: 'agent-1', name: 'bot' }, dmChannels)).toBe(5)
+  })
+
+  it('falls back to legacy name-backed DM channels', () => {
     const dmChannels = [{ id: 'dm-1', name: 'dm-alice-bot' }]
     const state = makeInboxState([
       makeConversation({ conversationId: 'dm-1', latestSeq: 20, lastReadSeq: 15 }),
     ])
-    expect(getAgentUnread(state, 'alice', 'bot', dmChannels)).toBe(5)
+    expect(getAgentUnread(state, 'human-1', 'alice', { id: 'agent-1', name: 'bot' }, dmChannels)).toBe(5)
   })
 
   it('returns 0 when no DM channel exists for the agent', () => {
     const state = makeInboxState([])
-    expect(getAgentUnread(state, 'alice', 'bot', [])).toBe(0)
+    expect(getAgentUnread(state, 'human-1', 'alice', { id: 'agent-1', name: 'bot' }, [])).toBe(0)
   })
 })

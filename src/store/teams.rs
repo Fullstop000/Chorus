@@ -27,17 +27,22 @@ pub struct Team {
     pub created_at: DateTime<Utc>,
 }
 
-/// A single member (agent or human) within a team.
+/// A single member (agent or human) within a team. Identity is keyed by
+/// `(member_type, member_id)`; `member_name` is a display label resolved via
+/// JOIN against `humans` / `agents` at read time and is never written into
+/// `team_members`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TeamMember {
     /// Foreign key to `teams.id`.
     pub team_id: String,
-    /// Handle (agent name or human username).
-    pub member_name: String,
+    /// `humans.id` (when `member_type == "human"`) or `agents.id`
+    /// (when `member_type == "agent"`). Always populated at insert.
+    pub member_id: String,
     /// `agent` or `human` string from DB.
     pub member_type: String,
-    /// Agent UUID or human username — always populated at insert.
-    pub member_id: String,
+    /// Display name resolved from `humans.name` / `agents.name`. Falls back
+    /// to `member_id` when the row is missing (e.g. orphaned membership).
+    pub member_name: String,
     /// Role within the team (e.g. leader, operator, observer).
     pub role: String,
     /// When the member joined the team.
@@ -322,30 +327,36 @@ impl Store {
         Ok(())
     }
 
-    /// Add a member to a team. Silently no-ops if the (team_id, member_name) pair already exists.
+    /// Add a member to a team. Silently no-ops if the (team_id, member_type,
+    /// member_id) tuple already exists. Identity is the (type, id) tuple;
+    /// names are not stored on `team_members` and are only resolved at read.
     pub fn create_team_member(
         &self,
         team_id: &str,
-        member_name: &str,
-        member_type: &str,
         member_id: &str,
+        member_type: &str,
         role: &str,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT OR IGNORE INTO team_members (team_id, member_name, member_type, member_id, role)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![team_id, member_name, member_type, member_id, role],
+            "INSERT OR IGNORE INTO team_members (team_id, member_id, member_type, role)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![team_id, member_id, member_type, role],
         )?;
         Ok(())
     }
 
     /// Remove a single member from a team.
-    pub fn delete_team_member(&self, team_id: &str, member_name: &str) -> Result<()> {
+    pub fn delete_team_member(
+        &self,
+        team_id: &str,
+        member_id: &str,
+        member_type: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "DELETE FROM team_members WHERE team_id = ?1 AND member_name = ?2",
-            params![team_id, member_name],
+            "DELETE FROM team_members WHERE team_id = ?1 AND member_id = ?2 AND member_type = ?3",
+            params![team_id, member_id, member_type],
         )?;
         Ok(())
     }
@@ -354,44 +365,69 @@ impl Store {
     pub fn update_team_member_role(
         &self,
         team_id: &str,
-        member_name: &str,
+        member_id: &str,
+        member_type: &str,
         role: &str,
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE team_members SET role = ?1 WHERE team_id = ?2 AND member_name = ?3",
-            params![role, team_id, member_name],
+            "UPDATE team_members SET role = ?1 WHERE team_id = ?2 AND member_id = ?3 AND member_type = ?4",
+            params![role, team_id, member_id, member_type],
         )?;
         Ok(())
     }
 
-    /// Remove a member from a channel by channel name. Used when removing a team member
-    /// so their channel membership is cleaned up alongside the team membership.
-    pub fn leave_channel(&self, channel_name: &str, member_name: &str) -> Result<()> {
+    /// Remove a member from a channel by channel name. Used when removing a
+    /// team member so their channel membership is cleaned up alongside the
+    /// team membership. Identity tuple is `(member_type, member_id)`.
+    pub fn leave_channel(
+        &self,
+        channel_name: &str,
+        member_id: &str,
+        member_type: &str,
+    ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         if let Some(ch) = Self::get_channel_by_name_inner(&conn, channel_name)? {
             conn.execute(
-                "DELETE FROM channel_members WHERE channel_id = ?1 AND member_name = ?2",
-                params![ch.id, member_name],
+                "DELETE FROM channel_members WHERE channel_id = ?1 AND member_id = ?2 AND member_type = ?3",
+                params![ch.id, member_id, member_type],
             )?;
         }
         Ok(())
     }
 
-    /// Return all members of a team ordered by name.
+    /// Return all members of a team ordered by display name. Names are
+    /// resolved by joining against `humans`/`agents`; if no row matches the
+    /// stored `member_id`, the ID itself is exposed as the display label so
+    /// the row is never silently dropped.
     pub fn get_team_members(&self, team_id: &str) -> Result<Vec<TeamMember>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
-                "SELECT team_id, member_name, member_type, member_id, role, joined_at
-                 FROM team_members WHERE team_id = ?1 ORDER BY member_name",
+                "SELECT \
+                    tm.team_id, \
+                    tm.member_id, \
+                    tm.member_type, \
+                    COALESCE( \
+                        CASE tm.member_type \
+                            WHEN 'human' THEN (SELECT h.name FROM humans h WHERE h.id = tm.member_id) \
+                            WHEN 'agent' THEN (SELECT a.name FROM agents a WHERE a.id = tm.member_id) \
+                            ELSE NULL \
+                        END, \
+                        tm.member_id \
+                    ) AS member_name, \
+                    tm.role, \
+                    tm.joined_at \
+                 FROM team_members tm \
+                 WHERE tm.team_id = ?1 \
+                 ORDER BY member_name",
             )?
             .query_map(params![team_id], |row| {
                 Ok(TeamMember {
                     team_id: row.get(0)?,
-                    member_name: row.get(1)?,
+                    member_id: row.get(1)?,
                     member_type: row.get(2)?,
-                    member_id: row.get(3)?,
+                    member_name: row.get(3)?,
                     role: row.get(4)?,
                     joined_at: parse_datetime(&row.get::<_, String>(5)?),
                 })
@@ -401,17 +437,19 @@ impl Store {
         Ok(rows)
     }
 
-    /// List all teams an agent belongs to, along with their role in each team.
-    pub fn get_teams_by_agent_name(&self, agent_name: &str) -> Result<Vec<TeamMembership>> {
+    /// List all teams an agent (identified by `agents.id`) belongs to, along
+    /// with their role in each team. Resolves agent identity by ID — callers
+    /// that only have an agent name must look it up first.
+    pub fn get_teams_by_agent_id(&self, agent_id: &str) -> Result<Vec<TeamMembership>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
                 "SELECT t.name, tm.role FROM team_members tm
                  JOIN teams t ON t.id = tm.team_id
-                 WHERE tm.member_name = ?1 AND tm.member_type = 'agent'
+                 WHERE tm.member_id = ?1 AND tm.member_type = 'agent'
                  ORDER BY t.name",
             )?
-            .query_map(params![agent_name], |row| {
+            .query_map(params![agent_id], |row| {
                 Ok(TeamMembership {
                     team_name: row.get(0)?,
                     role: row.get(1)?,

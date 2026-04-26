@@ -35,12 +35,13 @@ pub async fn run(
     let store =
         Arc::new(Store::open(db_path.to_str().unwrap())?.with_agents_dir(agents_dir.clone()));
 
-    // Default human = OS username
-    let username = whoami::username();
-    let _ = store.create_human(&username);
-
-    // Ensure built-in system channels exist and upgrade legacy installs to #all.
-    store.ensure_builtin_channels(&username)?;
+    // The local human (id + name) is resolved during `build_router_with_services`
+    // from `ChorusConfig::local_human` or, on first run, by inserting a row keyed
+    // by a freshly generated `human_<uuid>` id. Built-in channels and `#all`
+    // membership are seeded against that id inside the router builder, so this
+    // CLI no longer touches identity rows directly. `whoami::username()` is
+    // intentionally absent here — request identity is `humans.id`, never the OS
+    // user running the server process.
 
     let server_url = format!("http://localhost:{port}");
     let mut manager = AgentManager::new(store.clone(), agents_dir);
@@ -171,7 +172,6 @@ pub async fn run(
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!("Chorus running at {server_url}");
-    tracing::info!("Human user: @{username}");
     tracing::info!("Use `chorus send '#all' 'hello'` to send messages");
     tracing::info!("Use `chorus agent create <name>` to create an agent");
 

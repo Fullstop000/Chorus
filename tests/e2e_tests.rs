@@ -4,13 +4,23 @@ use std::sync::Arc;
 
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
-use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use harness::build_router;
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.create_human("testuser").unwrap();
+    // Pre-create `#all` so the migration in `ensure_all_channel_inner`
+    // (which renames `#general` -> `#all` when no `#all` exists)
+    // does not fire when `build_router` calls `ensure_builtin_channels`.
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
+    store.ensure_human_with_id("testuser", "testuser").unwrap();
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
@@ -26,24 +36,38 @@ async fn start_test_server() -> (String, Arc<Store>) {
     (url, store)
 }
 
+/// Insert an agent row with a chosen primary key. Used by e2e
+/// fixtures so `/internal/agent/{agent_id}` URLs and `"bot1"`-style
+/// identity-typed args keep working under the strict ID-first store
+/// without having to thread a UUID through every test body.
+fn seed_agent_with_id(
+    store: &Arc<Store>,
+    id: &str,
+    display_name: &str,
+    runtime: &str,
+    model: &str,
+) {
+    let workspace_id = store
+        .get_active_workspace()
+        .unwrap()
+        .expect("seed_agent_with_id requires an active workspace")
+        .id;
+    let conn = store.conn_for_test();
+    conn.execute(
+        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
+         VALUES (?1, ?2, ?1, ?3, ?4, ?5)",
+        rusqlite::params![id, workspace_id, display_name, runtime, model],
+    )
+    .unwrap();
+}
+
 /// Test 1: Human sends message, agent receives via HTTP
 #[tokio::test]
 async fn test_human_to_agent_message_flow() {
     let (url, store) = start_test_server().await;
     let client = reqwest::Client::new();
 
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
@@ -51,7 +75,7 @@ async fn test_human_to_agent_message_flow() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "testuser",
+            sender_id: "testuser",
             sender_type: SenderType::Human,
             content: "hello bot",
             attachment_ids: &[],
@@ -81,18 +105,7 @@ async fn test_agent_reply_in_history() {
     let (url, store) = start_test_server().await;
     let client = reqwest::Client::new();
 
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
@@ -131,18 +144,7 @@ async fn test_blocking_receive_wakes_on_message() {
     let (url, store) = start_test_server().await;
     let client = reqwest::Client::new();
 
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
@@ -168,7 +170,7 @@ async fn test_blocking_receive_wakes_on_message() {
     store
         .create_message(CreateMessage {
             channel_name: "general",
-            sender_name: "testuser",
+            sender_id: "testuser",
             sender_type: SenderType::Human,
             content: "wake up!",
             attachment_ids: &[],
@@ -193,18 +195,7 @@ async fn test_task_board_e2e() {
     let (url, store) = start_test_server().await;
     let client = reqwest::Client::new();
 
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     store
         .join_channel("general", "bot1", SenderType::Agent)
         .unwrap();
@@ -274,18 +265,7 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
     let (url, store) = start_test_server().await;
     let client = reqwest::Client::new();
 
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot1",
-            display_name: "Bot 1",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
     store
         .join_channel("general", "bot1", SenderType::Agent)
@@ -360,30 +340,8 @@ async fn test_multi_agent_channel_communication() {
     let (url, store) = start_test_server().await;
     let client = reqwest::Client::new();
 
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "claude_bot",
-            display_name: "Claude",
-            description: None,
-            system_prompt: None,
-            runtime: "claude",
-            model: "sonnet",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "codex_bot",
-            display_name: "Codex",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "o3",
-            reasoning_effort: None,
-            env_vars: &[],
-        })
-        .unwrap();
+    seed_agent_with_id(&store, "claude_bot", "Claude", "claude", "sonnet");
+    seed_agent_with_id(&store, "codex_bot", "Codex", "codex", "o3");
     store
         .join_channel("general", "claude_bot", SenderType::Agent)
         .unwrap();
@@ -441,9 +399,9 @@ async fn list_tasks_returns_sub_channel_info() {
     // Create tasks directly in the store so the creator name is stable across
     // machines (the public endpoint stamps `whoami::username()`, which isn't
     // useful for an assertion).
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
-        .create_tasks("general", "alice", &["Ship it"])
+        .create_tasks("general", "alice", SenderType::Human, &["Ship it"])
         .unwrap();
 
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
@@ -470,9 +428,9 @@ async fn get_task_detail_returns_task_and_sub_channel() {
     let (url, store) = start_test_server().await;
     let client = reqwest::Client::new();
 
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
-        .create_tasks("general", "alice", &["Ship it"])
+        .create_tasks("general", "alice", SenderType::Human, &["Ship it"])
         .unwrap();
 
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
@@ -509,19 +467,23 @@ async fn task_lifecycle_emits_four_events_in_parent_channel() {
     let parent_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("eng", "alice", SenderType::Human)
         .unwrap();
 
     // create → claim → in_review → done
-    store.create_tasks("eng", "alice", &["wire up"]).unwrap();
-    store.update_tasks_claim("eng", "alice", &[1]).unwrap();
     store
-        .update_task_status("eng", 1, "alice", TaskStatus::InReview)
+        .create_tasks("eng", "alice", SenderType::Human, &["wire up"])
         .unwrap();
     store
-        .update_task_status("eng", 1, "alice", TaskStatus::Done)
+        .update_tasks_claim("eng", "alice", SenderType::Human, &[1])
+        .unwrap();
+    store
+        .update_task_status("eng", 1, "alice", SenderType::Human, TaskStatus::InReview)
+        .unwrap();
+    store
+        .update_task_status("eng", 1, "alice", SenderType::Human, TaskStatus::Done)
         .unwrap();
 
     let events: Vec<serde_json::Value> = store
@@ -555,13 +517,15 @@ async fn batched_create_tasks_emits_one_event_per_task() {
     let parent_id = store
         .create_channel("eng2", None, ChannelType::Channel, None)
         .unwrap();
-    store.create_human("bob").unwrap();
+    store.ensure_human_with_id("bob", "bob").unwrap();
     store
         .join_channel("eng2", "bob", SenderType::Human)
         .unwrap();
 
     // Three tasks in one call exercises the pending_events Vec with > 1 entry.
-    let created = store.create_tasks("eng2", "bob", &["a", "b", "c"]).unwrap();
+    let created = store
+        .create_tasks("eng2", "bob", SenderType::Human, &["a", "b", "c"])
+        .unwrap();
     assert_eq!(created.len(), 3);
 
     let events: Vec<serde_json::Value> = store

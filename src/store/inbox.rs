@@ -18,7 +18,9 @@ pub struct InboxConversationStateView {
     pub conversation_name: String,
     /// Conversation API kind (`channel`, `dm`, `team`, `system`).
     pub conversation_type: String,
-    /// Member handle.
+    /// Stable member id.
+    pub member_id: String,
+    /// Display/lookup label.
     pub member_name: String,
     /// `human` or `agent`.
     pub member_type: String,
@@ -58,6 +60,7 @@ impl InboxConversationStateView {
             conversation_id: row.get("conversation_id")?,
             conversation_name: row.get("conversation_name")?,
             conversation_type: row.get("conversation_type")?,
+            member_id: row.get("member_id")?,
             member_name: row.get("member_name")?,
             member_type: row.get("member_type")?,
             last_read_seq: row.get("last_read_seq")?,
@@ -78,7 +81,7 @@ impl Store {
     pub(crate) fn set_inbox_read_cursor_tx(
         tx: &Transaction<'_>,
         channel: &Channel,
-        member_name: &str,
+        member_id: &str,
         member_type: &str,
         last_read_seq: i64,
         last_read_message_id: Option<&str>,
@@ -87,8 +90,8 @@ impl Store {
             .query_row(
                 "SELECT last_read_seq
                  FROM inbox_read_state
-                 WHERE conversation_id = ?1 AND member_name = ?2",
-                params![channel.id, member_name],
+                 WHERE conversation_id = ?1 AND member_type = ?2 AND member_id = ?3",
+                params![channel.id, member_type, member_id],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?
@@ -103,7 +106,7 @@ impl Store {
                 info!(
                     conversation_id = %channel.id,
                     channel_name = %channel.name,
-                    member_name = %member_name,
+                    member_id = %member_id,
                     member_type = %member_type,
                     requested_last_read_seq = last_read_seq,
                     current_last_read_seq,
@@ -116,16 +119,16 @@ impl Store {
 
         tx.execute(
             "INSERT INTO inbox_read_state (
-                conversation_id, member_name, member_type, last_read_seq, last_read_message_id
+                     conversation_id, member_id, member_type, last_read_seq, last_read_message_id
              ) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(conversation_id, member_name) DO UPDATE SET
+                 ON CONFLICT(conversation_id, member_type, member_id) DO UPDATE SET
                 member_type = excluded.member_type,
                 last_read_seq = excluded.last_read_seq,
                 last_read_message_id = excluded.last_read_message_id,
                 updated_at = datetime('now')",
             params![
                 channel.id,
-                member_name,
+                member_id,
                 member_type,
                 last_read_seq,
                 last_read_message_id,
@@ -135,7 +138,7 @@ impl Store {
         info!(
             conversation_id = %channel.id,
             channel_name = %channel.name,
-            member_name = %member_name,
+            member_id = %member_id,
             member_type = %member_type,
             last_read_seq,
             last_read_message_id = ?last_read_message_id,
@@ -149,55 +152,58 @@ impl Store {
     pub fn get_inbox_conversation_state(
         &self,
         channel_name: &str,
-        member_name: &str,
+        member_id: &str,
     ) -> Result<Option<InboxConversationStateView>> {
         let conn = self.conn.lock().unwrap();
-        Self::get_inbox_conversation_state_inner(&conn, channel_name, member_name)
+        Self::get_inbox_conversation_state_inner(&conn, channel_name, member_id)
     }
 
     pub(crate) fn get_inbox_conversation_state_inner(
         conn: &Connection,
         channel_name: &str,
-        member_name: &str,
+        member_id: &str,
     ) -> Result<Option<InboxConversationStateView>> {
         let channel = Self::get_channel_by_name_inner(conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        Self::get_inbox_conversation_state_by_channel_id_inner(conn, &channel.id, member_name)
+        Self::get_inbox_conversation_state_by_channel_id_inner(conn, &channel.id, member_id)
     }
 
     pub(crate) fn get_inbox_conversation_state_by_channel_id_inner(
         conn: &Connection,
         channel_id: &str,
-        member_name: &str,
+        member_id: &str,
     ) -> Result<Option<InboxConversationStateView>> {
+        // ID namespace invariant: human IDs use a `human_<uuid>` prefix; agent
+        // IDs are bare UUIDs. The two namespaces are disjoint, so a predicate on
+        // `member_id` alone uniquely identifies a single row in the view.
         Ok(conn
             .query_row(
                 "SELECT conversation_id, conversation_name, conversation_type,
-                        member_name, member_type, last_read_seq,
+                       member_id, member_name, member_type, last_read_seq,
                         last_read_message_id, unread_count
                  FROM inbox_conversation_state_view
-                 WHERE conversation_id = ?1 AND member_name = ?2",
-                params![channel_id, member_name],
+                   WHERE conversation_id = ?1 AND member_id = ?2",
+                params![channel_id, member_id],
                 InboxConversationStateView::from_projection_row,
             )
             .ok())
     }
 
-    pub fn get_last_read_seq(&self, channel_name: &str, member_name: &str) -> Result<i64> {
+    pub fn get_last_read_seq(&self, channel_name: &str, member_id: &str) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let seq: i64 = conn.query_row(
             "SELECT last_read_seq
              FROM inbox_conversation_state_view
-             WHERE conversation_id = ?1 AND member_name = ?2",
-            params![channel.id, member_name],
+             WHERE conversation_id = ?1 AND member_id = ?2",
+            params![channel.id, member_id],
             |row| row.get(0),
         )?;
         Ok(seq)
     }
 
-    pub fn get_unread_summary(&self, member_name: &str) -> Result<HashMap<String, i64>> {
+    pub fn get_unread_summary(&self, member_id: &str) -> Result<HashMap<String, i64>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             // Archived task sub-channels are terminal work; the agent's start
@@ -207,12 +213,12 @@ impl Store {
             "SELECT view.conversation_name, view.unread_count
              FROM inbox_conversation_state_view view
              JOIN channels c ON c.id = view.conversation_id
-             WHERE view.member_name = ?1
+             WHERE view.member_id = ?1
                AND view.unread_count > 0
                AND NOT (c.archived = 1 AND c.channel_type = 'task')",
         )?;
         let rows = stmt
-            .query_map(params![member_name], |row| {
+            .query_map(params![member_id], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })?
             .filter_map(|row| row.ok());
@@ -227,7 +233,7 @@ impl Store {
     /// Load absolute conversation notification state for sidebar/bootstrap use.
     pub fn get_inbox_conversation_notifications(
         &self,
-        member_name: &str,
+        member_id: &str,
     ) -> Result<Vec<InboxConversationNotificationView>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
@@ -258,7 +264,7 @@ impl Store {
                 ) AS last_message_at
              FROM inbox_conversation_state_view view
              JOIN channels c ON c.id = view.conversation_id
-             WHERE view.member_name = ?1
+             WHERE view.member_id = ?1
                -- Archived task sub-channels are completed work; reachable via
                -- the task detail page but not shown in this active-inbox
                -- listing. Per-conversation lookups (read-cursor flush and
@@ -267,7 +273,7 @@ impl Store {
                AND NOT (c.archived = 1 AND c.channel_type = 'task')
              ORDER BY view.conversation_name ASC",
         )?;
-        let rows = stmt.query_map(params![member_name], |row| {
+        let rows = stmt.query_map(params![member_id], |row| {
             Ok(InboxConversationNotificationView {
                 conversation_id: row.get("conversation_id")?,
                 conversation_name: row.get("conversation_name")?,
@@ -286,16 +292,16 @@ impl Store {
     pub fn get_inbox_conversation_notification_for_member(
         &self,
         channel_id: &str,
-        member_name: &str,
+        member_id: &str,
     ) -> Result<Option<InboxConversationNotificationView>> {
         let conn = self.conn.lock().unwrap();
-        Self::get_inbox_conversation_notification_for_member_inner(&conn, channel_id, member_name)
+        Self::get_inbox_conversation_notification_for_member_inner(&conn, channel_id, member_id)
     }
 
     pub(crate) fn get_inbox_conversation_notification_for_member_inner(
         conn: &Connection,
         channel_id: &str,
-        member_name: &str,
+        member_id: &str,
     ) -> Result<Option<InboxConversationNotificationView>> {
         Ok(conn
             .query_row(
@@ -325,8 +331,8 @@ impl Store {
                         LIMIT 1
                     ) AS last_message_at
                  FROM inbox_conversation_state_view view
-                 WHERE view.conversation_id = ?1 AND view.member_name = ?2",
-                params![channel_id, member_name],
+                 WHERE view.conversation_id = ?1 AND view.member_id = ?2",
+                params![channel_id, member_id],
                 |row| {
                     Ok(InboxConversationNotificationView {
                         conversation_id: row.get("conversation_id")?,

@@ -45,6 +45,7 @@ use dto::ServerInfo;
 pub struct AppState {
     pub store: Arc<Store>,
     pub active_workspace_id: Arc<RwLock<Option<String>>>,
+    pub local_human_id: String,
     pub local_human_name: String,
     pub lifecycle: Arc<dyn AgentLifecycle>,
     pub runtime_status_provider: SharedRuntimeStatusProvider,
@@ -108,8 +109,11 @@ pub(super) fn acquire_transition(
 
 // ── Whoami ──
 
-pub async fn handle_whoami() -> Json<serde_json::Value> {
-    Json(serde_json::json!({ "username": whoami::username() }))
+pub async fn handle_whoami(State(state): State<AppState>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "id": state.local_human_id,
+        "name": state.local_human_name,
+    }))
 }
 
 // ── Agent-Scoped Workspace Snapshot (bridge/CLI compatibility) ──
@@ -194,9 +198,10 @@ pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto:
                 machine_id: cfg.machine_id,
                 local_human: cfg
                     .local_human
-                    .name
-                    .filter(|name| !name.trim().is_empty())
-                    .map(|name| dto::LocalHumanInfo { name }),
+                    .id
+                    .zip(cfg.local_human.name)
+                    .filter(|(id, name)| !id.trim().is_empty() && !name.trim().is_empty())
+                    .map(|(id, name)| dto::LocalHumanInfo { id, name }),
                 agent_template: dto::AgentTemplateInfo {
                     dir: cfg.agent_template.dir,
                     default: cfg.agent_template.default,
@@ -260,52 +265,11 @@ pub async fn handle_list_humans(State(state): State<AppState>) -> ApiResult<Vec<
     Ok(Json(humans))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct UpdateHumanRequest {
-    /// `Some(v)` sets the display name; `null` clears it; omitting the field is a no-op.
-    #[serde(default, deserialize_with = "deser_optional_field")]
-    pub display_name: Option<Option<String>>,
-}
-
-/// Deserializer that maps a present JSON field (including `null`) to `Some(...)`,
-/// and a missing field (via `#[serde(default)]`) to `None`.
-fn deser_optional_field<'de, T, D>(de: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: serde::Deserialize<'de>,
-{
-    T::deserialize(de).map(Some)
-}
-
-pub async fn handle_update_human(
-    State(state): State<AppState>,
-    Path(name): Path<String>,
-    Json(body): Json<UpdateHumanRequest>,
-) -> ApiResult<dto::HumanInfo> {
-    // Field absent → no-op: return current state without touching the DB.
-    let Some(raw) = body.display_name else {
-        let human = state
-            .store
-            .get_humans()
-            .map_err(internal_err)?
-            .into_iter()
-            .find(|h| h.name == name)
-            .ok_or_else(|| app_err!(StatusCode::NOT_FOUND, "human not found"))?;
-        return Ok(Json(dto::HumanInfo::from(human)));
-    };
-    let display_name = raw.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let human = state
-        .store
-        .update_human_display_name(&name, display_name)
-        .map_err(|e| {
-            let msg = e.to_string();
-            if msg.to_ascii_lowercase().contains("not found") {
-                app_err!(StatusCode::NOT_FOUND, "human not found")
-            } else {
-                app_err!(StatusCode::INTERNAL_SERVER_ERROR, "internal server error")
-            }
-        })?;
-    Ok(Json(dto::HumanInfo::from(human)))
+pub async fn handle_update_human(Path(_id): Path<String>) -> ApiResult<dto::HumanInfo> {
+    Err(app_err!(
+        StatusCode::NOT_FOUND,
+        "human profile updates are not supported"
+    ))
 }
 
 pub async fn handle_list_runtime_statuses(

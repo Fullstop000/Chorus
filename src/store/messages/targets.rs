@@ -3,13 +3,12 @@ use rusqlite::params;
 use uuid::Uuid;
 
 use crate::store::channels::{Channel, ChannelType};
-use crate::store::messages::*;
 use crate::store::Store;
 
 impl Store {
-    /// Resolve a `#channel` or `dm:@name` target into a `channel_id`.
-    pub fn resolve_target(&self, target: &str, sender_name: &str) -> Result<String> {
-        self.resolve_target_for_workspace(target, sender_name, None)
+    /// Resolve a `#channel` or canonical `dm:@peer-id` target into a `channel_id`.
+    pub fn resolve_target(&self, target: &str, sender_id: &str) -> Result<String> {
+        self.resolve_target_for_workspace(target, sender_id, None)
     }
 
     /// Resolve a target inside an optional workspace context. Compatibility
@@ -18,7 +17,7 @@ impl Store {
     pub fn resolve_target_for_workspace(
         &self,
         target: &str,
-        sender_name: &str,
+        sender_id: &str,
         workspace_id: Option<&str>,
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
@@ -28,11 +27,15 @@ impl Store {
         };
 
         if let Some(rest) = target.strip_prefix("dm:@") {
-            let other_name = rest;
+            let other_id = rest;
+            let sender_type = Self::lookup_sender_type_inner(&conn, sender_id)?
+                .ok_or_else(|| anyhow!("sender not found: {sender_id}"))?;
+            let other_type = Self::lookup_sender_type_inner(&conn, other_id)?
+                .ok_or_else(|| anyhow!("peer not found: {other_id}"))?;
 
-            let mut names = [sender_name.to_string(), other_name.to_string()];
-            names.sort();
-            let dm_name = format!("dm-{}-{}", names[0], names[1]);
+            let mut participant_ids = [sender_id.to_string(), other_id.to_string()];
+            participant_ids.sort();
+            let dm_name = format!("dm-{}-{}", participant_ids[0], participant_ids[1]);
 
             let channel = match Self::get_channel_by_workspace_and_name_inner(
                 &conn,
@@ -46,19 +49,13 @@ impl Store {
                         "INSERT INTO channels (id, workspace_id, name, channel_type) VALUES (?1, ?2, ?3, 'dm')",
                         params![id, workspace_id, dm_name],
                     )?;
-                    let sender_mt = Self::lookup_sender_type_inner(&conn, sender_name)?
-                        .map(SenderType::as_str)
-                        .unwrap_or("agent");
-                    let other_mt = Self::lookup_sender_type_inner(&conn, other_name)?
-                        .map(SenderType::as_str)
-                        .unwrap_or("human");
                     conn.execute(
-                        "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
-                        params![id, sender_name, sender_mt],
+                        "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+                        params![id, sender_id, sender_type.as_str()],
                     )?;
                     conn.execute(
-                        "INSERT OR IGNORE INTO channel_members (channel_id, member_name, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
-                        params![id, other_name, other_mt],
+                        "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+                        params![id, other_id, other_type.as_str()],
                     )?;
                     Channel {
                         id,

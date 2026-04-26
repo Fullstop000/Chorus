@@ -202,9 +202,9 @@ export const agentQueryKeys = {
   agents: ['agents'] as const,
 } as const
 
-export const agentsQuery = (currentUser: string) =>
+export const agentsQuery = (memberHumanId: string) =>
   queryOptions({
     queryKey: agentQueryKeys.agents,
     queryFn: listAgents,
-    enabled: !!currentUser,
+    enabled: !!memberHumanId,
   })

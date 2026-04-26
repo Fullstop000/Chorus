@@ -11,8 +11,9 @@ import type { RealtimeFrame } from '../transport'
 import type { HistoryMessage, HistoryResponse } from '../data'
 import { useStore } from '../store'
 
+/** `viewerHumanId` must match the server's `channel_members.member_id` / WebSocket `viewer` id. */
 export function useHistory(
-  username: string,
+  viewerHumanId: string,
   targetKey: string | null,
   conversationId: string | null,
 ) {
@@ -31,7 +32,7 @@ export function useHistory(
       conversationId
         ? import('../data').then((m) => m.getHistory(conversationId, 50))
         : Promise.resolve(null),
-    enabled: !!username && !!targetKey && !!conversationId,
+    enabled: !!viewerHumanId && !!targetKey && !!conversationId,
   })
 
   const messages = response?.messages ?? []
@@ -87,7 +88,7 @@ export function useHistory(
   )
 
   useEffect(() => {
-    if (!username || !targetKey || !conversationId) return
+    if (!viewerHumanId || !targetKey || !conversationId) return
 
     let cancelled = false
     let unsubscribeRealtime: (() => void) | null = null
@@ -109,13 +110,13 @@ export function useHistory(
       })
     }
 
-    unsubscribeRealtime = getSession(username).subscribe(conversationId, handleFrame)
+    unsubscribeRealtime = getSession(viewerHumanId).subscribe(conversationId, handleFrame)
 
     return () => {
       cancelled = true
       unsubscribeRealtime?.()
     }
-  }, [conversationId, targetKey, username, queryClient, queryKey, commitMessages, advanceConversationLatestSeq])
+  }, [conversationId, targetKey, viewerHumanId, queryClient, queryKey, commitMessages, advanceConversationLatestSeq])
 
   const appendMessage = useCallback(
     (message: HistoryMessage) => {

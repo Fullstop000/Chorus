@@ -126,33 +126,29 @@ pub async fn handle_create_team(
         ));
     }
 
-    // Reject duplicate member names and agent/creator name collisions upfront
-    // to prevent DB/fs state divergence (PK is (team_id, member_name)).
-    // TODO: This handler is not atomic — late-stage failures (e.g. agent restart)
-    // leave DB records behind without rolling back FS state.
-    let username = whoami::username();
-    let mut seen_names = std::collections::HashSet::new();
+    // Reject duplicate (member_type, member_id) pairs and creator collisions
+    // upfront to prevent DB/fs state divergence (PK is (team_id, member_type,
+    // member_id)).
+    // TODO: This handler is not atomic — late-stage failures (e.g. agent
+    // restart) leave DB records behind without rolling back FS state.
+    let local_human_id = state.local_human_id.clone();
+    let mut seen_member_keys = std::collections::HashSet::new();
     let mut creator_in_members = false;
     for member in &req.members {
         parse_member_type(&member.member_type)?;
-        if !seen_names.insert(&member.member_name) {
+        let key = (member.member_type.clone(), member.member_id.clone());
+        if !seen_member_keys.insert(key) {
             return Err(app_err!(
                 StatusCode::BAD_REQUEST,
-                format!("duplicate member name: {}", member.member_name)
+                format!(
+                    "duplicate member: {} ({})",
+                    member.member_name, member.member_id
+                )
             ));
         }
-        if member.member_name == username && member.member_type == "human" {
+        if member.member_type == "human" && member.member_id == local_human_id {
             creator_in_members = true;
         }
-    }
-    if !creator_in_members && seen_names.contains(&username) {
-        return Err(app_err!(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "cannot add a member that shares the team creator's name: {}",
-                username
-            )
-        ));
     }
 
     let active_workspace_id = state.active_workspace_id().await;
@@ -180,19 +176,19 @@ pub async fn handle_create_team(
         }
     })?;
 
-    // Auto-join the creator to the team channel and add them as a team member
-    // unless they already included themselves in the explicit members list.
-    // NOTE: whoami::username() assumes the server runs as the same OS user who
-    // created the team. This is correct for Chorus's local-first architecture
-    // but would need rethinking for a multi-user or hosted deployment.
+    // Auto-join the configured local human to the team channel and add them
+    // as a team member unless they already included themselves in the
+    // explicit members list. Identity is keyed by `humans.id`, not by OS
+    // username — the server stops trusting `whoami::username()` for request
+    // identity entirely.
     if !creator_in_members {
         state
             .store
-            .join_channel_by_id(&team_channel_id, &username, SenderType::Human)
+            .join_channel_by_id(&team_channel_id, &local_human_id, SenderType::Human)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
         state
             .store
-            .create_team_member(&team_id, &username, "human", &username, "operator")
+            .create_team_member(&team_id, &local_human_id, "human", "operator")
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     }
 
@@ -217,15 +213,14 @@ pub async fn handle_create_team(
             .store
             .create_team_member(
                 &team_id,
-                &member.member_name,
-                &member.member_type,
                 &member.member_id,
+                &member.member_type,
                 &member.role,
             )
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
         state
             .store
-            .join_channel_by_id(&team_channel_id, &member.member_name, sender_type)
+            .join_channel_by_id(&team_channel_id, &member.member_id, sender_type)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
         if sender_type == SenderType::Agent {
@@ -375,13 +370,7 @@ pub async fn handle_add_team_member(
 
     state
         .store
-        .create_team_member(
-            &team.id,
-            &req.member_name,
-            &req.member_type,
-            &req.member_id,
-            &req.role,
-        )
+        .create_team_member(&team.id, &req.member_id, &req.member_type, &req.role)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .store
@@ -389,7 +378,7 @@ pub async fn handle_add_team_member(
             team.channel_id
                 .as_deref()
                 .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team channel not found"))?,
-            &req.member_name,
+            &req.member_id,
             sender_type,
         )
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -436,6 +425,10 @@ pub async fn handle_remove_team_member(
         .store
         .get_team_members(&team.id)
         .map_err(internal_err)?;
+    // The URL accepts a name as a friendly handle. Resolve it to the stored
+    // (member_type, member_id) tuple before issuing any deletes — `member` is
+    // a label and may be ambiguous if humans/agents ever share a name (PK is
+    // (member_type, member_id), so they technically can).
     let removed_member = members
         .iter()
         .find(|member_item| member_item.member_name == member)
@@ -444,15 +437,23 @@ pub async fn handle_remove_team_member(
 
     state
         .store
-        .delete_team_member(&team.id, &member)
+        .delete_team_member(
+            &team.id,
+            &removed_member.member_id,
+            &removed_member.member_type,
+        )
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .store
-        .leave_channel(&team.name, &member)
+        .leave_channel(
+            &team.name,
+            &removed_member.member_id,
+            &removed_member.member_type,
+        )
         .map_err(internal_err)?;
 
     if removed_member.member_type == "agent" {
-        restart_agent_member(&state, &member).await?;
+        restart_agent_member(&state, &removed_member.member_name).await?;
     }
     Ok(Json(serde_json::json!({ "ok": true })))
 }
