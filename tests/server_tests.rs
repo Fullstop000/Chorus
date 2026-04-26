@@ -1467,7 +1467,7 @@ async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
         .iter()
         .find(|a| a.name.starts_with("stuck-bot-"))
         .expect("agent should remain in the store after failed start");
-    assert!(store.is_member("all", &agent.name).unwrap());
+    assert!(store.is_member("all", &agent.id).unwrap());
 
     // After a failed start the manager has no live process, so the derived
     // status surfaced through the API must be `asleep`. Regression guard:
