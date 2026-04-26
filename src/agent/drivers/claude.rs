@@ -542,10 +542,18 @@ impl ClaudeHandle {
             args.push("--model".into());
             args.push(self.spec.model.clone());
         }
-        if let Some(ref prompt) = self.spec.system_prompt {
-            args.push("--append-system-prompt".into());
-            args.push(prompt.clone());
-        }
+        let standing_prompt = super::prompt::build_system_prompt(
+            &self.spec,
+            &super::prompt::PromptOptions {
+                tool_prefix: "mcp__chat__".into(),
+                extra_critical_rules: Vec::new(),
+                post_startup_notes: Vec::new(),
+                include_stdin_notification_section: true,
+                message_notification_style: super::prompt::MessageNotificationStyle::Poll,
+            },
+        );
+        args.push("--append-system-prompt".into());
+        args.push(standing_prompt);
         if let Some(ref sid) = resume_id {
             args.push("--resume".into());
             args.push(sid.clone());
