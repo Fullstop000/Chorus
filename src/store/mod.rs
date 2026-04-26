@@ -268,18 +268,20 @@ impl Store {
         &self,
         agent_id: &str,
         viewer_id: &str,
+        viewer_type: &str,
         limit: usize,
     ) -> Result<Vec<serde_json::Value>> {
         let conn = self.lock_conn();
         let mut stmt = conn.prepare(
             "SELECT m.id, m.run_id, m.trace_summary, m.created_at FROM messages m
-             JOIN channel_members cm ON cm.channel_id = m.channel_id AND cm.member_id = ?2
+             JOIN channel_members cm ON cm.channel_id = m.channel_id
+               AND cm.member_id = ?2 AND cm.member_type = ?3
              WHERE m.sender_id = ?1 AND m.run_id IS NOT NULL AND m.trace_summary IS NOT NULL
              GROUP BY m.run_id
-             ORDER BY m.created_at DESC LIMIT ?3",
+             ORDER BY m.created_at DESC LIMIT ?4",
         )?;
         let runs: Vec<serde_json::Value> = stmt
-            .query_map(params![agent_id, viewer_id, limit as i64], |row| {
+            .query_map(params![agent_id, viewer_id, viewer_type, limit as i64], |row| {
                 let id: String = row.get(0)?;
                 let run_id: String = row.get(1)?;
                 let summary: String = row.get(2)?;

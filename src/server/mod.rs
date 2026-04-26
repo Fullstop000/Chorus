@@ -266,6 +266,9 @@ fn resolve_local_human_identity(store: &Store) -> (String, String) {
         .unwrap_or_else(whoami::username);
     match store.create_local_human(&name) {
         Ok(human) => (human.id, human.name),
-        Err(_) => (format!("human_{}", uuid::Uuid::new_v4()), name),
+        Err(err) => {
+            tracing::error!(err = %err, "failed to create local human identity; refusing to start with an unbacked id");
+            panic!("unable to resolve persisted local human identity: {err}");
+        }
     }
 }

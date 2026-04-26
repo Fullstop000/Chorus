@@ -90,8 +90,8 @@ impl Store {
             .query_row(
                 "SELECT last_read_seq
                  FROM inbox_read_state
-                 WHERE conversation_id = ?1 AND member_id = ?2",
-                params![channel.id, member_id],
+                 WHERE conversation_id = ?1 AND member_type = ?2 AND member_id = ?3",
+                params![channel.id, member_type, member_id],
                 |row| row.get::<_, i64>(0),
             )
             .optional()?
@@ -173,6 +173,9 @@ impl Store {
         channel_id: &str,
         member_id: &str,
     ) -> Result<Option<InboxConversationStateView>> {
+        // ID namespace invariant: human IDs use a `human_<uuid>` prefix; agent
+        // IDs are bare UUIDs. The two namespaces are disjoint, so a predicate on
+        // `member_id` alone uniquely identifies a single row in the view.
         Ok(conn
             .query_row(
                 "SELECT conversation_id, conversation_name, conversation_type,

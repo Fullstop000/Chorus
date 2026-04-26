@@ -265,6 +265,12 @@ impl Store {
         Self::get_channels_inner(&conn, params)
     }
 
+    /// Check whether a member belongs to the given channel.
+    ///
+    /// # ID namespace invariant
+    /// Human IDs use a `human_<uuid>` prefix; agent IDs are bare UUIDs. The
+    /// two namespaces are disjoint, so filtering by `member_id` alone uniquely
+    /// identifies the actor type and a `member_type` predicate is not required.
     pub fn channel_member_exists(&self, channel_id: &str, member_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let exists: i64 = conn.query_row(
@@ -605,6 +611,12 @@ impl Store {
         Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
+    /// Check whether a member belongs to the given channel (looked up by name).
+    ///
+    /// # ID namespace invariant
+    /// Human IDs use a `human_<uuid>` prefix; agent IDs are bare UUIDs. The
+    /// two namespaces are disjoint, so filtering by `member_id` alone uniquely
+    /// identifies the actor type and a `member_type` predicate is not required.
     pub fn is_member(&self, channel_name: &str, member_id: &str) -> Result<bool> {
         let conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?;

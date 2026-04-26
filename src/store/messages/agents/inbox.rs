@@ -52,7 +52,7 @@ impl Store {
         update_read_pos: bool,
     ) -> Result<Vec<ReceivedMessage>> {
         let mut conn = self.conn.lock().unwrap();
-        let memberships = Self::load_agent_channel_memberships(&conn, &agent_id)?;
+        let memberships = Self::load_agent_channel_memberships(&conn, agent_id)?;
 
         let mut out = Vec::new();
         for (channel_id, member_type, last_read_seq) in &memberships {

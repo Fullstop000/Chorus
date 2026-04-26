@@ -910,7 +910,7 @@ pub async fn handle_agent_runs(
     let viewer = state.local_human_id.clone();
     let runs = state
         .store
-        .get_agent_runs(&agent.id, &viewer, 20)
+        .get_agent_runs(&agent.id, &viewer, "human", 20)
         .map_err(internal_err)?;
     Ok(Json(AgentRunsResponse { runs }))
 }
