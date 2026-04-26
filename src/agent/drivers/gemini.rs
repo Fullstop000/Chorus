@@ -66,9 +66,10 @@ async fn ensure_gemini_system_md(spec: &AgentSpec) -> anyhow::Result<std::path::
 
     if !baseline_path.exists() {
         let tmp_baseline = chorus_dir.join(format!(
-            "{}.{}.tmp",
+            "{}.{}.{}.tmp",
             GEMINI_BASELINE_FILE,
-            std::process::id()
+            std::process::id(),
+            uuid::Uuid::new_v4().simple(),
         ));
         let status = tokio::process::Command::new("gemini")
             .arg("-p")
@@ -111,9 +112,10 @@ async fn ensure_gemini_system_md(spec: &AgentSpec) -> anyhow::Result<std::path::
         },
     );
     let tmp_system = chorus_dir.join(format!(
-        "{}.{}.tmp",
+        "{}.{}.{}.tmp",
         GEMINI_SYSTEM_FILE,
-        std::process::id()
+        std::process::id(),
+        uuid::Uuid::new_v4().simple(),
     ));
     tokio::fs::write(&tmp_system, format!("{baseline}\n\n---\n\n{standing}"))
         .await

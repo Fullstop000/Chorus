@@ -851,7 +851,11 @@ impl OpencodeHandle {
                 message_notification_style: super::prompt::MessageNotificationStyle::Poll,
             },
         );
-        let tmp_system_md = chorus_dir.join(format!("opencode-system.md.{}.tmp", std::process::id()));
+        let tmp_system_md = chorus_dir.join(format!(
+            "opencode-system.md.{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple(),
+        ));
         tokio::fs::write(&tmp_system_md, standing_prompt)
             .await
             .context("failed to write opencode system.md")?;
@@ -868,7 +872,11 @@ impl OpencodeHandle {
                 "chat": mcp_chat,
             }
         });
-        let tmp_config = wd.join(format!("opencode.json.{}.tmp", std::process::id()));
+        let tmp_config = wd.join(format!(
+            "opencode.json.{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple(),
+        ));
         tokio::fs::write(&tmp_config, serde_json::to_string_pretty(&opencode_config)?)
             .await
             .context("failed to write opencode.json")?;
