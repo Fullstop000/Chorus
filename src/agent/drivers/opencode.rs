@@ -825,13 +825,14 @@ impl OpencodeHandle {
 
         let endpoint = &self.spec.bridge_endpoint;
 
-        // Write the standing system prompt to <wd>/.chorus/opencode-system.md
-        // and reference it from opencode.json's `instructions` array. opencode
-        // merges every file in `instructions` into the model context at
-        // session start (verified per opencode.ai/config.json schema and
+        // opencode merges every file in `instructions` into the model context
+        // at session start (verified per opencode.ai/config.json schema and
         // opencode.ai/docs/en/acp/ which states ACP mode loads instructions
         // identically to terminal mode). Empirically: works for every
         // session/new on the same opencode process.
+        //
+        // Both files use atomic-rename publish so concurrent spawns of the
+        // same agent cannot observe a truncated file mid-write.
         let chorus_dir = wd.join(".chorus");
         tokio::fs::create_dir_all(&chorus_dir)
             .await
@@ -850,11 +851,14 @@ impl OpencodeHandle {
                 message_notification_style: super::prompt::MessageNotificationStyle::Poll,
             },
         );
-        tokio::fs::write(&system_md_path, standing_prompt)
+        let tmp_system_md = chorus_dir.join(format!("opencode-system.md.{}.tmp", std::process::id()));
+        tokio::fs::write(&tmp_system_md, standing_prompt)
             .await
             .context("failed to write opencode system.md")?;
+        tokio::fs::rename(&tmp_system_md, &system_md_path)
+            .await
+            .context("failed to publish opencode system.md")?;
 
-        // Write opencode.json to the working directory.
         let config_path = wd.join("opencode.json");
         let mcp_chat = build_mcp_chat_config(endpoint, &self.key);
         let opencode_config = serde_json::json!({
@@ -864,12 +868,13 @@ impl OpencodeHandle {
                 "chat": mcp_chat,
             }
         });
-        tokio::fs::write(
-            &config_path,
-            serde_json::to_string_pretty(&opencode_config)?,
-        )
-        .await
-        .context("failed to write opencode.json")?;
+        let tmp_config = wd.join(format!("opencode.json.{}.tmp", std::process::id()));
+        tokio::fs::write(&tmp_config, serde_json::to_string_pretty(&opencode_config)?)
+            .await
+            .context("failed to write opencode.json")?;
+        tokio::fs::rename(&tmp_config, &config_path)
+            .await
+            .context("failed to publish opencode.json")?;
 
         let args = vec!["acp".to_string()];
 

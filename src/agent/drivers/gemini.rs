@@ -50,6 +50,12 @@ const GEMINI_SYSTEM_FILE: &str = "gemini-system.md";
 /// safety / approval / tool-use rules. The baseline is captured on first
 /// spawn via `GEMINI_WRITE_SYSTEM_MD=<path> gemini -p ping` and cached in the
 /// agent's workspace; subsequent spawns reuse it.
+///
+/// Both writes use atomic-rename so concurrent spawns of the same agent
+/// can never observe a truncated file. The baseline subprocess is run
+/// against a per-spawn temp path before atomic-renaming into place, so
+/// concurrent first-spawns may both invoke `gemini -p ping` (cheap, idempotent)
+/// but the final file is intact whichever caller wins the rename.
 async fn ensure_gemini_system_md(spec: &AgentSpec) -> anyhow::Result<std::path::PathBuf> {
     let chorus_dir = spec.working_directory.join(GEMINI_CHORUS_SUBDIR);
     tokio::fs::create_dir_all(&chorus_dir)
@@ -59,23 +65,34 @@ async fn ensure_gemini_system_md(spec: &AgentSpec) -> anyhow::Result<std::path::
     let system_path = chorus_dir.join(GEMINI_SYSTEM_FILE);
 
     if !baseline_path.exists() {
+        let tmp_baseline = chorus_dir.join(format!(
+            "{}.{}.tmp",
+            GEMINI_BASELINE_FILE,
+            std::process::id()
+        ));
         let status = tokio::process::Command::new("gemini")
             .arg("-p")
             .arg("ping")
             .arg("--skip-trust")
-            .env("GEMINI_WRITE_SYSTEM_MD", &baseline_path)
+            .env("GEMINI_WRITE_SYSTEM_MD", &tmp_baseline)
             .env("GEMINI_CLI_TRUST_WORKSPACE", "true")
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
             .await
             .context("failed to invoke `gemini` to capture baseline system prompt")?;
-        if !status.success() || !baseline_path.exists() {
+        if !status.success() || !tmp_baseline.exists() {
+            let _ = tokio::fs::remove_file(&tmp_baseline).await;
             anyhow::bail!(
                 "gemini baseline capture failed (status {status}); \
                  ensure `gemini` is installed and authenticated"
             );
         }
+        // Atomic publish. If a sibling caller raced and already wrote the
+        // baseline, our rename overwrites it with identical content.
+        tokio::fs::rename(&tmp_baseline, &baseline_path)
+            .await
+            .context("failed to publish gemini baseline")?;
     }
 
     let baseline = tokio::fs::read_to_string(&baseline_path)
@@ -93,9 +110,17 @@ async fn ensure_gemini_system_md(spec: &AgentSpec) -> anyhow::Result<std::path::
             message_notification_style: super::prompt::MessageNotificationStyle::Poll,
         },
     );
-    tokio::fs::write(&system_path, format!("{baseline}\n\n---\n\n{standing}"))
+    let tmp_system = chorus_dir.join(format!(
+        "{}.{}.tmp",
+        GEMINI_SYSTEM_FILE,
+        std::process::id()
+    ));
+    tokio::fs::write(&tmp_system, format!("{baseline}\n\n---\n\n{standing}"))
         .await
         .context("failed to write gemini system.md")?;
+    tokio::fs::rename(&tmp_system, &system_path)
+        .await
+        .context("failed to publish gemini system.md")?;
 
     tokio::fs::canonicalize(&system_path)
         .await
