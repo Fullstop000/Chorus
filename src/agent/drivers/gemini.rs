@@ -37,7 +37,72 @@ fn build_acp_mcp_servers(bridge_endpoint: &str, agent_key: &str) -> serde_json::
     }])
 }
 
-fn build_gemini_command(spec: &AgentSpec) -> Command {
+const GEMINI_CHORUS_SUBDIR: &str = ".chorus";
+const GEMINI_BASELINE_FILE: &str = "gemini-baseline.md";
+const GEMINI_SYSTEM_FILE: &str = "gemini-system.md";
+
+/// Write `<wd>/.chorus/gemini-system.md` containing Gemini's built-in baseline
+/// system prompt followed by Chorus's standing prompt, returning the absolute
+/// path. The path is consumed via `GEMINI_SYSTEM_MD` on spawn.
+///
+/// `GEMINI_SYSTEM_MD` is a *full replacement* for Gemini's built-in prompt
+/// (per Gemini docs), so the baseline must be included or Gemini loses its
+/// safety / approval / tool-use rules. The baseline is captured on first
+/// spawn via `GEMINI_WRITE_SYSTEM_MD=<path> gemini -p ping` and cached in the
+/// agent's workspace; subsequent spawns reuse it.
+async fn ensure_gemini_system_md(spec: &AgentSpec) -> anyhow::Result<std::path::PathBuf> {
+    let chorus_dir = spec.working_directory.join(GEMINI_CHORUS_SUBDIR);
+    tokio::fs::create_dir_all(&chorus_dir)
+        .await
+        .context("failed to create .chorus dir")?;
+    let baseline_path = chorus_dir.join(GEMINI_BASELINE_FILE);
+    let system_path = chorus_dir.join(GEMINI_SYSTEM_FILE);
+
+    if !baseline_path.exists() {
+        let status = tokio::process::Command::new("gemini")
+            .arg("-p")
+            .arg("ping")
+            .arg("--skip-trust")
+            .env("GEMINI_WRITE_SYSTEM_MD", &baseline_path)
+            .env("GEMINI_CLI_TRUST_WORKSPACE", "true")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .context("failed to invoke `gemini` to capture baseline system prompt")?;
+        if !status.success() || !baseline_path.exists() {
+            anyhow::bail!(
+                "gemini baseline capture failed (status {status}); \
+                 ensure `gemini` is installed and authenticated"
+            );
+        }
+    }
+
+    let baseline = tokio::fs::read_to_string(&baseline_path)
+        .await
+        .context("failed to read gemini baseline")?;
+    let standing = super::prompt::build_system_prompt(
+        spec,
+        &super::prompt::PromptOptions {
+            tool_prefix: String::new(),
+            extra_critical_rules: vec![
+                "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
+            ],
+            post_startup_notes: Vec::new(),
+            include_stdin_notification_section: false,
+            message_notification_style: super::prompt::MessageNotificationStyle::Poll,
+        },
+    );
+    tokio::fs::write(&system_path, format!("{baseline}\n\n---\n\n{standing}"))
+        .await
+        .context("failed to write gemini system.md")?;
+
+    tokio::fs::canonicalize(&system_path)
+        .await
+        .context("failed to canonicalize gemini system.md path")
+}
+
+fn build_gemini_command(spec: &AgentSpec, system_md: &std::path::Path) -> Command {
     let mut args = vec!["--acp".to_string()];
     if !spec.model.is_empty() {
         args.push("--model".to_string());
@@ -51,7 +116,9 @@ fn build_gemini_command(spec: &AgentSpec) -> Command {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .env("FORCE_COLOR", "0")
-        .env("NO_COLOR", "1");
+        .env("NO_COLOR", "1")
+        .env("GEMINI_SYSTEM_MD", system_md)
+        .env("GEMINI_CLI_TRUST_WORKSPACE", "true");
     for ev in &spec.env_vars {
         cmd.env(&ev.key, &ev.value);
     }
@@ -138,7 +205,8 @@ impl GeminiAgentCore {
         #[cfg(test)]
         self.spawn_call_count.fetch_add(1, Ordering::Relaxed);
 
-        let mut cmd = build_gemini_command(&self.spec);
+        let system_md = ensure_gemini_system_md(&self.spec).await?;
+        let mut cmd = build_gemini_command(&self.spec, &system_md);
         let mut child = cmd.spawn().context("failed to spawn gemini")?;
         let stdout = child.stdout.take().context("missing stdout")?;
         let stderr = child.stderr.take().context("missing stderr")?;
@@ -1308,7 +1376,7 @@ mod tests {
     #[test]
     fn build_gemini_command_uses_current_dir_not_work_dir_flag() {
         let spec = test_spec();
-        let cmd = build_gemini_command(&spec);
+        let cmd = build_gemini_command(&spec, std::path::Path::new("/tmp/dummy-system.md"));
         let args: Vec<_> = cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
