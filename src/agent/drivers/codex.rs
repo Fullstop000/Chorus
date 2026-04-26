@@ -670,10 +670,22 @@ impl CodexHandle {
     /// assigned (or confirmed, for resume).
     async fn start_or_resume_thread(&self, resume_id: Option<String>) -> anyhow::Result<String> {
         let req_id = self.process.alloc_request_id();
+        let standing_prompt = super::prompt::build_system_prompt(
+            &self.spec,
+            &super::prompt::PromptOptions {
+                tool_prefix: String::new(),
+                extra_critical_rules: Vec::new(),
+                post_startup_notes: vec![
+                    "**IMPORTANT**: Your process stays alive across turns. New messages may be delivered directly into the current session while you are working.".into(),
+                ],
+                include_stdin_notification_section: true,
+                message_notification_style: super::prompt::MessageNotificationStyle::Direct,
+            },
+        );
         let (method, req_line) = match &resume_id {
             Some(tid) => (
                 "thread/resume".to_string(),
-                codex_app_server::build_thread_resume(req_id, tid),
+                codex_app_server::build_thread_resume(req_id, tid, Some(&standing_prompt)),
             ),
             None => (
                 "thread/start".to_string(),
@@ -684,7 +696,7 @@ impl CodexHandle {
                     req_id,
                     &self.spec.model,
                     &self.spec.working_directory.to_string_lossy(),
-                    self.spec.system_prompt.as_deref(),
+                    Some(&standing_prompt),
                 ),
             ),
         };

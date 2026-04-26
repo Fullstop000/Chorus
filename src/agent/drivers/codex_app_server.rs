@@ -191,18 +191,22 @@ fn app_server_notification(method: &str, params: Value) -> String {
 
 /// Build the `initialize` request (id 0).
 /// `clientInfo` identifies Chorus to the Codex compliance logs.
+///
+/// Schema match per `codex app-server generate-json-schema --experimental`
+/// (verified codex-cli 0.125.0): `InitializeParams` accepts `clientInfo` +
+/// `capabilities`. The earlier `clientCapabilities` key and `protocolVersion`
+/// fields were not in the schema and were silently dropped.
 pub fn build_initialize(id: u64) -> String {
     app_server_request(
         id,
         "initialize",
         json!({
-            "protocolVersion": 1,
             "clientInfo": {
                 "name": "chorus",
                 "title": "Chorus",
                 "version": env!("CARGO_PKG_VERSION"),
             },
-            "clientCapabilities": {},
+            "capabilities": {},
         }),
     )
 }
@@ -215,24 +219,47 @@ pub fn build_initialized() -> String {
 }
 
 /// Build a `thread/start` request.
-/// Sets `approvalPolicy="never"`, `sandbox="danger-full-access"`,
-/// model, cwd. `system_prompt` maps to the `personality` field when present.
-pub fn build_thread_start(id: u64, model: &str, cwd: &str, system_prompt: Option<&str>) -> String {
+/// Sets `approvalPolicy="never"`, `sandbox="danger-full-access"`, model, cwd.
+///
+/// `developer_instructions`, when present, rides as the `developerInstructions`
+/// field. The earlier code put the system prompt in `personality`, but the
+/// codex JSON schema defines `personality` as `enum: ["none", "friendly",
+/// "pragmatic"]` (a tone selector), so a multi-thousand-character string was
+/// rejected with `-32600 unknown variant`. `developerInstructions` is the
+/// documented free-form slot.
+pub fn build_thread_start(
+    id: u64,
+    model: &str,
+    cwd: &str,
+    developer_instructions: Option<&str>,
+) -> String {
     let mut params = json!({
         "model": model,
         "cwd": cwd,
         "approvalPolicy": "never",
         "sandbox": "danger-full-access",
     });
-    if let Some(prompt) = system_prompt {
-        params["personality"] = json!(prompt);
+    if let Some(prompt) = developer_instructions {
+        params["developerInstructions"] = json!(prompt);
     }
     app_server_request(id, "thread/start", params)
 }
 
 /// Build a `thread/resume` request.
-pub fn build_thread_resume(id: u64, thread_id: &str) -> String {
-    app_server_request(id, "thread/resume", json!({ "threadId": thread_id }))
+///
+/// `developer_instructions` is forwarded so the standing prompt survives
+/// resume (codex's `ThreadResumeParams` schema accepts the same field as
+/// `ThreadStartParams`).
+pub fn build_thread_resume(
+    id: u64,
+    thread_id: &str,
+    developer_instructions: Option<&str>,
+) -> String {
+    let mut params = json!({ "threadId": thread_id });
+    if let Some(prompt) = developer_instructions {
+        params["developerInstructions"] = json!(prompt);
+    }
+    app_server_request(id, "thread/resume", params)
 }
 
 /// Build a `turn/start` request.
@@ -707,6 +734,11 @@ mod tests {
         assert_eq!(v["method"], "initialize");
         assert_eq!(v["id"], 0);
         assert_eq!(v["params"]["clientInfo"]["name"], "chorus");
+        // Schema match: codex InitializeParams uses `capabilities`, not
+        // `clientCapabilities`. `protocolVersion` is not in the schema.
+        assert!(v["params"].get("capabilities").is_some());
+        assert!(v["params"].get("clientCapabilities").is_none());
+        assert!(v["params"].get("protocolVersion").is_none());
     }
 
     #[test]
@@ -730,29 +762,38 @@ mod tests {
     }
 
     #[test]
-    fn build_thread_start_with_system_prompt() {
+    fn build_thread_start_with_developer_instructions() {
         let s = build_thread_start(1, "o4-mini", "/tmp", Some("be helpful"));
         let v: Value = serde_json::from_str(&s).unwrap();
-        assert_eq!(v["params"]["personality"], "be helpful");
+        // Schema match: free-form text rides as `developerInstructions`, NOT
+        // `personality` (which is a 3-value enum: none|friendly|pragmatic).
+        assert_eq!(v["params"]["developerInstructions"], "be helpful");
+        assert!(v["params"].get("personality").is_none());
     }
 
     #[test]
-    fn build_thread_start_without_system_prompt() {
+    fn build_thread_start_without_developer_instructions() {
         let s = build_thread_start(1, "o4-mini", "/tmp", None);
         let v: Value = serde_json::from_str(&s).unwrap();
-        assert!(
-            v["params"].get("personality").is_none(),
-            "personality must be absent when system_prompt is None"
-        );
+        assert!(v["params"].get("developerInstructions").is_none());
     }
 
     #[test]
     fn build_thread_resume_shape() {
-        let s = build_thread_resume(1, "thr_123");
+        let s = build_thread_resume(1, "thr_123", None);
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["method"], "thread/resume");
         assert_eq!(v["params"]["threadId"], "thr_123");
         assert!(v.get("jsonrpc").is_none());
+        assert!(v["params"].get("developerInstructions").is_none());
+    }
+
+    #[test]
+    fn build_thread_resume_carries_developer_instructions() {
+        let s = build_thread_resume(2, "thr_abc", Some("standing prompt"));
+        let v: Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(v["params"]["threadId"], "thr_abc");
+        assert_eq!(v["params"]["developerInstructions"], "standing prompt");
     }
 
     #[test]
