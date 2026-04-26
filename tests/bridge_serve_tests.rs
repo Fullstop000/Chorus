@@ -144,7 +144,11 @@ fn initialize_body() -> serde_json::Value {
 
 /// Send an MCP initialize POST to the given URL with the given agent key
 /// in the `X-Agent-Id` header, and return the response.
-async fn send_initialize(client: &reqwest::Client, url: &str, agent_key: &str) -> reqwest::Response {
+async fn send_initialize(
+    client: &reqwest::Client,
+    url: &str,
+    agent_key: &str,
+) -> reqwest::Response {
     client
         .post(url)
         .header("Content-Type", "application/json")

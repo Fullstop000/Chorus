@@ -65,12 +65,15 @@ fn build_codex_mcp_args(bridge_endpoint: &str, _agent_key: &str) -> Vec<String> 
 
     let url = super::bridge_mcp_url(bridge_endpoint);
     let url_json = serde_json::to_string(&url).expect("url serialization cannot fail");
-    let env_var_json = serde_json::to_string("CHORUS_AGENT_KEY").expect("env var name serialization cannot fail");
+    let env_var_json =
+        serde_json::to_string("CHORUS_AGENT_KEY").expect("env var name serialization cannot fail");
 
     args.push("-c".into());
     args.push(format!("mcp_servers.chat.url={url_json}"));
     args.push("-c".into());
-    args.push(format!("mcp_servers.chat.bearer_token_env_var={env_var_json}"));
+    args.push(format!(
+        "mcp_servers.chat.bearer_token_env_var={env_var_json}"
+    ));
     args.push("-c".into());
     args.push("mcp_servers.chat.enabled=true".into());
     args.push("-c".into());
