@@ -521,9 +521,11 @@ async fn bridge_read_history_formats_task_event_messages() {
 }
 
 #[tokio::test]
-async fn bridge_receive_messages_formats_task_event_messages() {
-    use chorus::bridge::backend::ChorusBackend;
+async fn bridge_check_messages_formats_task_event() {
+    use chorus::bridge::backend::{Backend, ChorusBackend};
     use chorus::store::channels::ChannelType;
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     let (server_url, store) = start_chorus_server().await;
 
@@ -539,41 +541,35 @@ async fn bridge_receive_messages_formats_task_event_messages() {
         .join_channel("eng", "agent-one", SenderType::Agent)
         .unwrap();
 
-    let backend = ChorusBackend::new(server_url);
-
-    // Start a receive_messages call (blocking with short timeout) in parallel
-    // with seeding a task_event — the receive path should surface it with the
-    // formatted content.
-    let recv = tokio::spawn({
-        let backend = backend.clone();
-        async move {
-            backend
-                .receive_messages("agent-one", true, 2_000)
-                .await
-                .expect("receive_messages should succeed")
-        }
-    });
-
-    // Give the receive subscription a moment to register before the write
-    // races past it. TODO: replace with a subscription-registered signal once
-    // the store exposes one — a 100ms sleep is a race-deferral, not a sync
-    // primitive, and could flake on a loaded CI box. Matches the pattern at
-    // lines 38 / 61 / 170 / 568 in this file.
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-
     let payload = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"wire up","subChannelId":"s-1","actor":"alice","prevStatus":"todo","nextStatus":"in_progress","claimedBy":"alice"}"#;
     store.create_system_message(&channel_id, payload).unwrap();
 
-    let received = recv.await.expect("recv task");
+    let backend = ChorusBackend::new(server_url);
+    let expected = r#"[task] alice claimed #7 "wire up" (now in_progress)"#;
+
+    let received = timeout(Duration::from_secs(2), async {
+        loop {
+            let messages = backend
+                .check_messages("agent-one")
+                .await
+                .expect("check_messages should succeed");
+            if messages.contains(expected) {
+                break messages;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("timed out waiting for formatted task-event via check_messages");
 
     assert!(
-        received.contains(r#"[task] alice claimed #7 "wire up" (now in_progress)"#),
-        "expected formatted task-event sentence in receive payload, got:\n{}",
+        received.contains(expected),
+        "expected formatted task-event sentence from check_messages, got:\n{}",
         received
     );
     assert!(
         !received.contains(r#""kind":"task_event""#),
-        "raw JSON must NOT appear in agent-facing receive; got:\n{}",
+        "raw JSON must NOT appear in check_messages output; got:\n{}",
         received
     );
 }
