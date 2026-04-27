@@ -1662,8 +1662,6 @@ mod multisession_tests {
     struct Simulator {
         _sim_handle: tokio::task::JoinHandle<()>,
         thread_ids_assigned: Arc<std::sync::Mutex<Vec<String>>>,
-        #[allow(dead_code)]
-        turn_ids_assigned: Arc<std::sync::Mutex<Vec<String>>>,
     }
 
     /// Install a fake transport on a shared [`CodexAgentProcess`]. Flips
@@ -1699,9 +1697,7 @@ mod multisession_tests {
         CodexAgentProcess::wire_transport(proc, Box::new(transport));
 
         let thread_ids = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
-        let turn_ids = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
         let thread_ids_cl = Arc::clone(&thread_ids);
-        let turn_ids_cl = Arc::clone(&turn_ids);
 
         // Wrap the stdout writer in a tokio::Mutex so the spawned
         // simulator task can asynchronously write responses.
@@ -1762,7 +1758,6 @@ mod multisession_tests {
                     "turn/start" => {
                         let tid = format!("turn_{next_turn}");
                         next_turn += 1;
-                        turn_ids_cl.lock().unwrap().push(tid.clone());
                         let resp = serde_json::json!({
                             "id": id,
                             "result": {
@@ -1799,7 +1794,6 @@ mod multisession_tests {
         Simulator {
             _sim_handle: sim_handle,
             thread_ids_assigned: thread_ids,
-            turn_ids_assigned: turn_ids,
         }
     }
 
