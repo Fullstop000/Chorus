@@ -146,10 +146,7 @@ fn spawn_kimi(spec: Arc<AgentSpec>, key: AgentKey) -> SpawnFut {
 // Per-driver static registry + config
 // ---------------------------------------------------------------------------
 
-fn registry() -> &'static AgentRegistry<AcpNativeCore> {
-    static REGISTRY: AgentRegistry<AcpNativeCore> = AgentRegistry::new();
-    &REGISTRY
-}
+static KIMI_REGISTRY: AgentRegistry<AcpNativeCore> = AgentRegistry::new();
 
 static KIMI_CFG: AcpDriverConfig = AcpDriverConfig {
     name: "kimi",
@@ -161,7 +158,7 @@ static KIMI_CFG: AcpDriverConfig = AcpDriverConfig {
     build_session_new_mcp_servers: build_acp_mcp_servers,
     build_first_prompt_prefix: Some(build_kimi_standing_prompt),
     spawn_child: spawn_kimi,
-    registry,
+    registry: &KIMI_REGISTRY,
 };
 
 // ---------------------------------------------------------------------------
@@ -285,7 +282,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result.session.process_state(), ProcessState::Idle));
-        registry().remove(&key);
+        KIMI_REGISTRY.remove(&key);
     }
 
     #[test]

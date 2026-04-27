@@ -48,30 +48,15 @@ impl AcpNativeHandle {
         }
     }
 
-    /// Test-only: simulate a post-`run()` handle state without going through
-    /// the full ensure_started/session_new round-trip. Used by the shared
-    /// tests in `acp_native::tests` that exercise close/cancel paths.
-    #[cfg(test)]
-    pub(super) fn set_session_for_test(&mut self, sid: &str, state: ProcessState) {
-        self.session_id = Some(sid.to_string());
-        self.state = state;
-    }
-
     fn emit(&self, event: DriverEvent) {
         self.core.emit(event);
     }
 
-    async fn alloc_id(&self) -> u64 {
+    pub(super) async fn alloc_id(&self) -> u64 {
         let mut inner = self.core.inner.lock().await;
         let id = inner.next_request_id;
         inner.next_request_id += 1;
         id
-    }
-
-    /// Test-only: invoke `alloc_id` from sibling test modules.
-    #[cfg(test)]
-    pub(super) async fn alloc_id_for_test(&self) -> u64 {
-        self.alloc_id().await
     }
 
     async fn acquire_stdin_and_shared(
@@ -205,34 +190,26 @@ impl AcpNativeHandle {
             state: self.state.clone(),
         });
 
-        match cfg.init_prompt_strategy {
-            InitPromptStrategy::Immediate => {
-                // If the driver carries a standing prompt, ALWAYS send a
-                // prompt — either standing-only (when init_prompt is
-                // None) or `standing + "---" + init_prompt` (when
-                // present). Without a standing prompt, only fire when the
-                // caller passed an explicit init_prompt.
-                let first_turn = match (cfg.build_first_prompt_prefix, init_prompt) {
-                    (Some(build), Some(req)) => Some(PromptReq {
-                        text: format!("{}\n\n---\n\n{}", build(&self.core.spec), req.text),
-                        attachments: req.attachments,
-                    }),
-                    (Some(build), None) => Some(PromptReq {
-                        text: build(&self.core.spec),
-                        attachments: Vec::new(),
-                    }),
-                    (None, Some(req)) => Some(req),
-                    (None, None) => None,
-                };
-                if let Some(req) = first_turn {
-                    self.prompt(req).await?;
-                }
-            }
-            InitPromptStrategy::Deferred => {
-                // Wait for the caller to invoke `prompt()` explicitly.
-                // `init_prompt` is intentionally ignored in this
-                // strategy — opencode (PR2) is the consumer.
-            }
+        let InitPromptStrategy::Immediate = cfg.init_prompt_strategy;
+        // If the driver carries a standing prompt, ALWAYS send a prompt
+        // — either standing-only (when init_prompt is None) or
+        // `standing + "---" + init_prompt` (when present). Without a
+        // standing prompt, only fire when the caller passed an explicit
+        // init_prompt.
+        let first_turn = match (cfg.build_first_prompt_prefix, init_prompt) {
+            (Some(build), Some(req)) => Some(PromptReq {
+                text: format!("{}\n\n---\n\n{}", build(&self.core.spec), req.text),
+                attachments: req.attachments,
+            }),
+            (Some(build), None) => Some(PromptReq {
+                text: build(&self.core.spec),
+                attachments: Vec::new(),
+            }),
+            (None, Some(req)) => Some(req),
+            (None, None) => None,
+        };
+        if let Some(req) = first_turn {
+            self.prompt(req).await?;
         }
 
         Ok(())
@@ -479,9 +456,231 @@ impl Session for AcpNativeHandle {
                 }
             }
             self.core.events.close();
-            (self.core.cfg.registry)().remove(&key);
+            self.core.cfg.registry.remove(&key);
         }
 
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests — close() multi-session teardown invariants. These live here
+// (rather than in `acp_native::tests`) because they construct an
+// `AcpNativeHandle` in a post-`run()` state by writing to private fields
+// directly. Inside this module's child test module, fields are visible
+// without exposing them via test-only setters.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicBool;
+    use std::time::Duration;
+
+    use tokio::time::timeout;
+
+    use super::super::super::EventFanOut;
+    use super::super::test_fixtures::{test_spec, TEST_CFG, TEST_REGISTRY};
+    use super::super::AcpNativeCore;
+
+    /// Construct a handle in a post-run() state and verify that the
+    /// last-session close path tears down the shared child + prunes the
+    /// registry entry.
+    #[tokio::test]
+    async fn close_last_session_prunes_registry_entry() {
+        let key: AgentKey = format!("agent-close-prune-{}", uuid::Uuid::new_v4());
+        let (events, event_tx) = EventFanOut::new();
+        let core = AcpNativeCore::new(&TEST_CFG, key.clone(), test_spec(), events, event_tx);
+        let session_id = "sess-last".to_string();
+
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: {
+                let mut s = HashMap::new();
+                s.insert(session_id.clone(), SessionState::new(&session_id));
+                s
+            },
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+            initialized_notification: None,
+        }));
+
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared);
+            inner.stdin_tx = Some(stdin_tx);
+            inner.next_request_id = 3;
+        }
+        core.started.store(true, Ordering::Release);
+
+        TEST_REGISTRY.insert(key.clone(), core.clone());
+
+        let mut handle = AcpNativeHandle::new(core, None);
+        handle.session_id = Some(session_id.clone());
+        handle.state = ProcessState::Active {
+            session_id: session_id.clone(),
+        };
+        Session::close(&mut handle).await.unwrap();
+
+        assert!(
+            TEST_REGISTRY.get(&key).is_none(),
+            "last-session close must prune the registry entry"
+        );
+    }
+
+    /// Closing one of two live handles must NOT tear down the shared
+    /// child, fan-out, or registry entry while the sibling is still
+    /// active. Teardown only fires when the LAST session closes.
+    #[tokio::test]
+    async fn close_with_live_secondary_keeps_child_alive() {
+        let key: AgentKey = format!("agent-live-secondary-{}", uuid::Uuid::new_v4());
+        let (events, event_tx) = EventFanOut::new();
+        let events_for_assert = events.clone();
+        let core = AcpNativeCore::new(&TEST_CFG, key.clone(), test_spec(), events, event_tx);
+
+        let first_sid = "sess-first".to_string();
+        let secondary_sid = "sess-secondary".to_string();
+        let secondary_run = RunId::new_v4();
+
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: {
+                let mut sessions = HashMap::new();
+                sessions.insert(first_sid.clone(), SessionState::new(&first_sid));
+                let mut sec = SessionState::new(&secondary_sid);
+                sec.run_id = Some(secondary_run);
+                sec.state = ProcessState::PromptInFlight {
+                    run_id: secondary_run,
+                    session_id: secondary_sid.clone(),
+                };
+                sessions.insert(secondary_sid.clone(), sec);
+                sessions
+            },
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+            initialized_notification: None,
+        }));
+
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+        let parked_reader = tokio::spawn(async {
+            let () = std::future::pending().await;
+        });
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared.clone());
+            inner.stdin_tx = Some(stdin_tx);
+            inner.owned.reader_handles.push(parked_reader);
+            inner.next_request_id = 3;
+        }
+        TEST_REGISTRY.insert(key.clone(), core.clone());
+
+        let mut first_handle = AcpNativeHandle::new(core.clone(), None);
+        first_handle.session_id = Some(first_sid.clone());
+        first_handle.state = ProcessState::Active {
+            session_id: first_sid.clone(),
+        };
+        let mut secondary = AcpNativeHandle::new(core.clone(), None);
+        secondary.session_id = Some(secondary_sid.clone());
+        secondary.state = ProcessState::PromptInFlight {
+            run_id: secondary_run,
+            session_id: secondary_sid.clone(),
+        };
+
+        Session::close(&mut first_handle).await.unwrap();
+
+        {
+            let inner = core.inner.lock().await;
+            assert!(
+                inner.stdin_tx.is_some(),
+                "stdin must remain while a sibling is active"
+            );
+            assert_eq!(inner.owned.reader_handles.len(), 1);
+            assert!(!inner.owned.reader_handles[0].is_finished());
+        }
+        assert!(
+            !events_for_assert.inner.closing.load(Ordering::SeqCst),
+            "fan-out must remain open while a sibling is active"
+        );
+        assert!(TEST_REGISTRY.get(&key).is_some());
+        {
+            let s = shared.lock().unwrap();
+            assert!(!s.sessions.contains_key(&first_sid));
+            assert!(matches!(
+                s.sessions.get(&secondary_sid).map(|slot| &slot.state),
+                Some(ProcessState::PromptInFlight { .. })
+            ));
+        }
+
+        Session::close(&mut secondary).await.unwrap();
+
+        {
+            let inner = core.inner.lock().await;
+            assert!(inner.stdin_tx.is_none());
+            assert!(inner.owned.reader_handles.is_empty());
+        }
+        assert!(events_for_assert.inner.closing.load(Ordering::SeqCst));
+        assert!(TEST_REGISTRY.get(&key).is_none());
+    }
+
+    /// Calling `close()` then dropping the handle must emit exactly one
+    /// `Lifecycle::Closed` event — the `Drop` impl is intentionally a
+    /// no-op so close() is the single source of the terminal event.
+    #[tokio::test]
+    async fn close_then_drop_emits_closed_lifecycle_once() {
+        let key: AgentKey = format!("agent-close-once-{}", uuid::Uuid::new_v4());
+        let (events, event_tx) = EventFanOut::new();
+        let mut rx = events.subscribe();
+        let core = AcpNativeCore::new(&TEST_CFG, key, test_spec(), events, event_tx);
+        let session_id = "sess-closed-once".to_string();
+
+        let shared = Arc::new(Mutex::new(SharedReaderState {
+            phase: acp_protocol::AcpPhase::Active,
+            sessions: {
+                let mut s = HashMap::new();
+                s.insert(session_id.clone(), SessionState::new(&session_id));
+                s
+            },
+            pending: HashMap::new(),
+            closed_emitted: Arc::new(AtomicBool::new(false)),
+            initialized_notification: None,
+        }));
+
+        let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
+        {
+            let mut inner = core.inner.lock().await;
+            inner.shared = Some(shared);
+            inner.stdin_tx = Some(stdin_tx);
+            inner.next_request_id = 3;
+        }
+        core.started.store(true, Ordering::Release);
+
+        let mut handle = AcpNativeHandle::new(core, None);
+        handle.session_id = Some(session_id.clone());
+        handle.state = ProcessState::Active {
+            session_id: session_id.clone(),
+        };
+
+        Session::close(&mut handle).await.unwrap();
+        drop(handle);
+
+        let mut closed_count = 0usize;
+        while let Ok(Some(event)) = timeout(Duration::from_millis(100), rx.recv()).await {
+            if matches!(
+                event,
+                DriverEvent::Lifecycle {
+                    state: ProcessState::Closed,
+                    ..
+                }
+            ) {
+                closed_count += 1;
+            }
+        }
+
+        assert_eq!(
+            closed_count, 1,
+            "closing then dropping must emit exactly one Closed lifecycle event"
+        );
     }
 }

@@ -183,10 +183,7 @@ fn spawn_gemini(spec: Arc<AgentSpec>, _key: AgentKey) -> SpawnFut {
 // Per-driver static registry + config
 // ---------------------------------------------------------------------------
 
-fn registry() -> &'static AgentRegistry<AcpNativeCore> {
-    static REGISTRY: AgentRegistry<AcpNativeCore> = AgentRegistry::new();
-    &REGISTRY
-}
+static GEMINI_REGISTRY: AgentRegistry<AcpNativeCore> = AgentRegistry::new();
 
 /// Gemini ACP requires the `initialized` notification after the
 /// `initialize` response (per Gemini's ACP server implementation). The
@@ -204,7 +201,7 @@ static GEMINI_CFG: AcpDriverConfig = AcpDriverConfig {
     build_session_new_mcp_servers: build_acp_mcp_servers,
     build_first_prompt_prefix: None,
     spawn_child: spawn_gemini,
-    registry,
+    registry: &GEMINI_REGISTRY,
 };
 
 // ---------------------------------------------------------------------------
@@ -417,6 +414,6 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result.session.process_state(), ProcessState::Idle));
-        registry().remove(&key);
+        GEMINI_REGISTRY.remove(&key);
     }
 }

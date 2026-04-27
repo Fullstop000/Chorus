@@ -149,10 +149,7 @@ fn spawn_opencode(spec: Arc<AgentSpec>, key: AgentKey) -> SpawnFut {
 // Per-driver static registry + config
 // ---------------------------------------------------------------------------
 
-fn registry() -> &'static AgentRegistry<AcpNativeCore> {
-    static REGISTRY: AgentRegistry<AcpNativeCore> = AgentRegistry::new();
-    &REGISTRY
-}
+static OPENCODE_REGISTRY: AgentRegistry<AcpNativeCore> = AgentRegistry::new();
 
 static OPENCODE_CFG: AcpDriverConfig = AcpDriverConfig {
     name: "opencode",
@@ -164,7 +161,7 @@ static OPENCODE_CFG: AcpDriverConfig = AcpDriverConfig {
     build_session_new_mcp_servers,
     build_first_prompt_prefix: None,
     spawn_child: spawn_opencode,
-    registry,
+    registry: &OPENCODE_REGISTRY,
 };
 
 // ---------------------------------------------------------------------------
@@ -310,7 +307,7 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(result.session.process_state(), ProcessState::Idle));
-        registry().remove(&key);
+        OPENCODE_REGISTRY.remove(&key);
     }
 
     #[test]

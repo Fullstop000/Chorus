@@ -35,106 +35,30 @@
 //! | kimi: `open_session_new_run_emits_session_attached`                     | `run_emits_session_attached_for_new_session`          |
 //! | kimi: `open_session_resume_run_emits_session_attached_with_supplied_id` | `run_emits_session_attached_for_resumed_session`      |
 //! | kimi: `open_session_two_new_on_same_key_share_core`                     | (covered by `open_session_twice_shares_core`)         |
-//! | gemini: `close_last_session_prunes_registry_entry`                      | `close_last_session_prunes_registry_entry`            |
+//! | gemini: `close_last_session_prunes_registry_entry`                      | `handle::tests::close_last_session_prunes_registry_entry`            |
 //! | gemini: `register_session_in_shared_state_tracks_new_handle_session`    | (covered by `run_emits_session_attached_for_new_session`) |
-//! | gemini: `close_with_live_secondary_does_not_tear_down_shared_child`     | `close_with_live_secondary_keeps_child_alive`         |
-//! | gemini: `close_emits_closed_lifecycle_only_once_even_after_drop`        | `close_then_drop_emits_closed_lifecycle_once`         |
+//! | gemini: `close_with_live_secondary_does_not_tear_down_shared_child`     | `handle::tests::close_with_live_secondary_keeps_child_alive`         |
+//! | gemini: `close_emits_closed_lifecycle_only_once_even_after_drop`        | `handle::tests::close_then_drop_emits_closed_lifecycle_once`         |
 
-use std::collections::HashMap;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::timeout;
 
-use super::super::acp_protocol::{self, ToolCallAccumulator};
-use super::super::{
-    AgentKey, AgentRegistry, AgentSpec, DriverEvent, EventFanOut, ProcessState, RunId,
-    SessionAttachment, SessionIntent,
-};
+use super::super::acp_protocol::ToolCallAccumulator;
+use super::super::{AgentKey, DriverEvent, EventFanOut, ProcessState, RunId, SessionIntent};
 
 use super::core::AcpNativeCore;
 use super::handle::AcpNativeHandle;
-use super::reader::handle_response_for_test;
-use super::state::{PendingRequest, SessionState, SharedReaderState};
-use super::{
-    open_session as acp_native_open_session, AcpDriverConfig, InitPromptStrategy, SpawnFut,
+use super::open_session as acp_native_open_session;
+use super::reader::handle_response;
+use super::state::{PendingRequest, SessionState};
+use super::test_fixtures::{
+    fresh_shared, make_core, open_test_session, test_spec, TEST_CFG, TEST_REGISTRY,
 };
-
-use crate::agent::AgentRuntime;
-
-// ---------------------------------------------------------------------------
-// Test fixtures
-// ---------------------------------------------------------------------------
-
-fn test_spec() -> AgentSpec {
-    AgentSpec {
-        display_name: "test".into(),
-        description: None,
-        system_prompt: None,
-        model: "test-model".into(),
-        reasoning_effort: None,
-        env_vars: vec![],
-        working_directory: PathBuf::from("/tmp"),
-        bridge_endpoint: "http://127.0.0.1:1".into(),
-    }
-}
-
-fn test_mcp_servers(_endpoint: &str, _key: &str) -> Value {
-    serde_json::json!([])
-}
-
-/// Spawn function that always fails — intentional, so tests can drive
-/// `ensure_started` without a real runtime binary while observing the
-/// failure-non-stickiness invariant.
-fn test_spawn_always_fails(_spec: Arc<AgentSpec>, _key: AgentKey) -> SpawnFut {
-    Box::pin(async move { Err(anyhow::anyhow!("test spawn always fails")) })
-}
-
-fn test_registry() -> &'static AgentRegistry<AcpNativeCore> {
-    static REG: AgentRegistry<AcpNativeCore> = AgentRegistry::new();
-    &REG
-}
-
-static TEST_CFG: AcpDriverConfig = AcpDriverConfig {
-    name: "test",
-    runtime: AgentRuntime::Kimi, // Reuse an existing variant — runtime tag isn't asserted in shared tests.
-    init_prompt_strategy: InitPromptStrategy::Immediate,
-    initialized_notification_payload: None,
-    session_load_includes_mcp: true,
-    emit_starting_lifecycle: false,
-    build_session_new_mcp_servers: test_mcp_servers,
-    build_first_prompt_prefix: None,
-    spawn_child: test_spawn_always_fails,
-    registry: test_registry,
-};
-
-fn fresh_shared() -> Arc<Mutex<SharedReaderState>> {
-    Arc::new(Mutex::new(SharedReaderState {
-        phase: acp_protocol::AcpPhase::Active,
-        sessions: HashMap::new(),
-        pending: HashMap::new(),
-        closed_emitted: Arc::new(AtomicBool::new(false)),
-        initialized_notification: None,
-    }))
-}
-
-async fn make_core() -> Arc<AcpNativeCore> {
-    let (events, event_tx) = EventFanOut::new();
-    let key: AgentKey = format!("test-{}", uuid::Uuid::new_v4());
-    AcpNativeCore::new(&TEST_CFG, key, test_spec(), events, event_tx)
-}
-
-async fn open_test_session(intent: SessionIntent) -> (AgentKey, SessionAttachment) {
-    let key: AgentKey = format!("test-open-{}", uuid::Uuid::new_v4());
-    let res = acp_native_open_session(&TEST_CFG, key.clone(), test_spec(), intent)
-        .await
-        .expect("open_session must succeed");
-    (key, res)
-}
 
 // ---------------------------------------------------------------------------
 // Response routing — handle_response
@@ -165,8 +89,8 @@ async fn multi_session_pending_dispatch_routes_session_new() {
         serde_json::from_str(r#"{"jsonrpc":"2.0","id":8,"result":{"sessionId":"sess-beta"}}"#)
             .unwrap();
 
-    handle_response_for_test("test", &key, &event_tx, &shared, &stdin_tx, &resp7).await;
-    handle_response_for_test("test", &key, &event_tx, &shared, &stdin_tx, &resp8).await;
+    handle_response("test", &key, &event_tx, &shared, &stdin_tx, &resp7).await;
+    handle_response("test", &key, &event_tx, &shared, &stdin_tx, &resp8).await;
 
     let got7 = timeout(Duration::from_millis(500), rx7)
         .await
@@ -202,7 +126,7 @@ async fn session_load_falls_back_to_expected_id() {
     }
 
     let resp: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","id":9,"result":{}}"#).unwrap();
-    handle_response_for_test(
+    handle_response(
         "test",
         &"k".to_string(),
         &event_tx,
@@ -274,8 +198,8 @@ async fn prompt_response_carries_correct_session_id() {
     let r10: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","id":10,"result":{}}"#).unwrap();
     let r11: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","id":11,"result":{}}"#).unwrap();
 
-    handle_response_for_test("test", &key, &event_tx, &shared, &stdin_tx, &r10).await;
-    handle_response_for_test("test", &key, &event_tx, &shared, &stdin_tx, &r11).await;
+    handle_response("test", &key, &event_tx, &shared, &stdin_tx, &r10).await;
+    handle_response("test", &key, &event_tx, &shared, &stdin_tx, &r11).await;
 
     let mut completed: std::collections::HashSet<String> = Default::default();
     let deadline = Duration::from_millis(500);
@@ -307,7 +231,7 @@ async fn response_for_unknown_id_is_ignored() {
     let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
     let resp: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","id":999,"result":{}}"#).unwrap();
-    handle_response_for_test(
+    handle_response(
         "test",
         &"k".to_string(),
         &event_tx,
@@ -344,13 +268,13 @@ async fn registry_evicts_stale_core() {
         "closed stdin must mark core stale"
     );
 
-    test_registry().insert(key.clone(), core);
+    TEST_REGISTRY.insert(key.clone(), core);
     assert!(
-        test_registry().get_or_evict_stale(&key).is_none(),
+        TEST_REGISTRY.get_or_evict_stale(&key).is_none(),
         "registry must evict stale entry"
     );
     assert!(
-        test_registry().get(&key).is_none(),
+        TEST_REGISTRY.get(&key).is_none(),
         "stale entry must have been pruned"
     );
 }
@@ -366,12 +290,12 @@ async fn registry_keeps_fresh_core() {
         !super::AgentProcess::is_stale(&*core),
         "never-spawned core must not be reported as stale"
     );
-    test_registry().insert(key.clone(), core);
+    TEST_REGISTRY.insert(key.clone(), core);
     assert!(
-        test_registry().get_or_evict_stale(&key).is_some(),
+        TEST_REGISTRY.get_or_evict_stale(&key).is_some(),
         "registry must return fresh core"
     );
-    test_registry().remove(&key);
+    TEST_REGISTRY.remove(&key);
 }
 
 // ---------------------------------------------------------------------------
@@ -447,7 +371,7 @@ async fn alloc_id_starts_at_3_after_spawn_and_initialize() {
     }
 
     let handle = AcpNativeHandle::new(core.clone(), None);
-    let id = handle.alloc_id_for_test().await;
+    let id = handle.alloc_id().await;
     assert_eq!(
         id, 3,
         "alloc_id on a just-spawned core must return 3 (initialize=1, first session=2)"
@@ -512,11 +436,11 @@ async fn handle_session_id_from_preassigned() {
 async fn open_session_works_without_prior_call() {
     let (key_new, ar) = open_test_session(SessionIntent::New).await;
     assert!(matches!(ar.session.process_state(), ProcessState::Idle));
-    test_registry().remove(&key_new);
+    TEST_REGISTRY.remove(&key_new);
 
     let (key_resume, ar) = open_test_session(SessionIntent::Resume("stored-id-xyz".into())).await;
     assert_eq!(ar.session.session_id(), Some("stored-id-xyz"));
-    test_registry().remove(&key_resume);
+    TEST_REGISTRY.remove(&key_resume);
 }
 
 #[tokio::test]
@@ -537,7 +461,7 @@ async fn open_session_twice_shares_core() {
         "open_session calls on the same key must share the same EventFanOut"
     );
 
-    test_registry().remove(&key);
+    TEST_REGISTRY.remove(&key);
 }
 
 #[tokio::test]
@@ -553,7 +477,7 @@ async fn open_session_resume_preserves_supplied_id() {
     .unwrap();
 
     assert_eq!(resumed.session.session_id(), Some("stored-sess-xyz"));
-    test_registry().remove(&key);
+    TEST_REGISTRY.remove(&key);
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +497,7 @@ async fn run_emits_session_attached_for_new_session() {
     let mut event_rx = ar.events.subscribe();
 
     // Seed the registry's core as if ensure_started completed.
-    let core = test_registry()
+    let core = TEST_REGISTRY
         .get(&key)
         .expect("core must be in test registry");
     let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(16);
@@ -609,15 +533,7 @@ async fn run_emits_session_attached_for_new_session() {
                     "result": { "sessionId": "new-sess-from-test" }
                 });
                 let (stdin_tx2, _) = mpsc::channel::<String>(1);
-                handle_response_for_test(
-                    "test",
-                    &key_bg,
-                    &event_tx_bg,
-                    &shared_bg,
-                    &stdin_tx2,
-                    &resp,
-                )
-                .await;
+                handle_response("test", &key_bg, &event_tx_bg, &shared_bg, &stdin_tx2, &resp).await;
                 break;
             }
             tokio::task::yield_now().await;
@@ -642,7 +558,7 @@ async fn run_emits_session_attached_for_new_session() {
         }
     }
 
-    test_registry().remove(&key);
+    TEST_REGISTRY.remove(&key);
 }
 
 #[tokio::test]
@@ -662,7 +578,7 @@ async fn run_emits_session_attached_for_resumed_session() {
 
     let mut event_rx = ar.events.subscribe();
 
-    let core = test_registry().get(&key).expect("core must be registered");
+    let core = TEST_REGISTRY.get(&key).expect("core must be registered");
     let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(16);
     let shared = fresh_shared();
     {
@@ -701,15 +617,7 @@ async fn run_emits_session_attached_for_resumed_session() {
                     "result": {}
                 });
                 let (stdin_tx2, _) = mpsc::channel::<String>(1);
-                handle_response_for_test(
-                    "test",
-                    &key_bg,
-                    &event_tx_bg,
-                    &shared_bg,
-                    &stdin_tx2,
-                    &resp,
-                )
-                .await;
+                handle_response("test", &key_bg, &event_tx_bg, &shared_bg, &stdin_tx2, &resp).await;
                 break;
             }
             tokio::task::yield_now().await;
@@ -734,210 +642,9 @@ async fn run_emits_session_attached_for_resumed_session() {
         }
     }
 
-    test_registry().remove(&key);
+    TEST_REGISTRY.remove(&key);
 }
 
-// ---------------------------------------------------------------------------
-// close() — multi-session teardown invariants.
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn close_last_session_prunes_registry_entry() {
-    let key: AgentKey = format!("agent-close-prune-{}", uuid::Uuid::new_v4());
-    let (events, event_tx) = EventFanOut::new();
-    let core = AcpNativeCore::new(&TEST_CFG, key.clone(), test_spec(), events, event_tx);
-    let session_id = "sess-last".to_string();
-
-    let shared = Arc::new(Mutex::new(SharedReaderState {
-        phase: acp_protocol::AcpPhase::Active,
-        sessions: {
-            let mut s = HashMap::new();
-            s.insert(session_id.clone(), SessionState::new(&session_id));
-            s
-        },
-        pending: HashMap::new(),
-        closed_emitted: Arc::new(AtomicBool::new(false)),
-        initialized_notification: None,
-    }));
-
-    let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
-    {
-        let mut inner = core.inner.lock().await;
-        inner.shared = Some(shared);
-        inner.stdin_tx = Some(stdin_tx);
-        inner.next_request_id = 3;
-    }
-    core.started.store(true, Ordering::Release);
-
-    test_registry().insert(key.clone(), core.clone());
-
-    let mut handle = AcpNativeHandle::new(core, None);
-    handle.set_session_for_test(
-        &session_id,
-        ProcessState::Active {
-            session_id: session_id.clone(),
-        },
-    );
-    super::super::Session::close(&mut handle).await.unwrap();
-
-    assert!(
-        test_registry().get(&key).is_none(),
-        "last-session close must prune the registry entry"
-    );
-}
-
-#[tokio::test]
-async fn close_with_live_secondary_keeps_child_alive() {
-    let key: AgentKey = format!("agent-live-secondary-{}", uuid::Uuid::new_v4());
-    let (events, event_tx) = EventFanOut::new();
-    let events_for_assert = events.clone();
-    let core = AcpNativeCore::new(&TEST_CFG, key.clone(), test_spec(), events, event_tx);
-
-    let first_sid = "sess-first".to_string();
-    let secondary_sid = "sess-secondary".to_string();
-    let secondary_run = RunId::new_v4();
-
-    let shared = Arc::new(Mutex::new(SharedReaderState {
-        phase: acp_protocol::AcpPhase::Active,
-        sessions: {
-            let mut sessions = HashMap::new();
-            sessions.insert(first_sid.clone(), SessionState::new(&first_sid));
-            let mut sec = SessionState::new(&secondary_sid);
-            sec.run_id = Some(secondary_run);
-            sec.state = ProcessState::PromptInFlight {
-                run_id: secondary_run,
-                session_id: secondary_sid.clone(),
-            };
-            sessions.insert(secondary_sid.clone(), sec);
-            sessions
-        },
-        pending: HashMap::new(),
-        closed_emitted: Arc::new(AtomicBool::new(false)),
-        initialized_notification: None,
-    }));
-
-    let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
-    let parked_reader = tokio::spawn(async {
-        let () = std::future::pending().await;
-    });
-    {
-        let mut inner = core.inner.lock().await;
-        inner.shared = Some(shared.clone());
-        inner.stdin_tx = Some(stdin_tx);
-        inner.owned.reader_handles.push(parked_reader);
-        inner.next_request_id = 3;
-    }
-    test_registry().insert(key.clone(), core.clone());
-
-    let mut first_handle = AcpNativeHandle::new(core.clone(), None);
-    first_handle.set_session_for_test(
-        &first_sid,
-        ProcessState::Active {
-            session_id: first_sid.clone(),
-        },
-    );
-    let mut secondary = AcpNativeHandle::new(core.clone(), None);
-    secondary.set_session_for_test(
-        &secondary_sid,
-        ProcessState::PromptInFlight {
-            run_id: secondary_run,
-            session_id: secondary_sid.clone(),
-        },
-    );
-
-    super::super::Session::close(&mut first_handle)
-        .await
-        .unwrap();
-
-    {
-        let inner = core.inner.lock().await;
-        assert!(
-            inner.stdin_tx.is_some(),
-            "stdin must remain while a sibling is active"
-        );
-        assert_eq!(inner.owned.reader_handles.len(), 1);
-        assert!(!inner.owned.reader_handles[0].is_finished());
-    }
-    assert!(
-        !events_for_assert.inner.closing.load(Ordering::SeqCst),
-        "fan-out must remain open while a sibling is active"
-    );
-    assert!(test_registry().get(&key).is_some());
-    {
-        let s = shared.lock().unwrap();
-        assert!(!s.sessions.contains_key(&first_sid));
-        assert!(matches!(
-            s.sessions.get(&secondary_sid).map(|slot| &slot.state),
-            Some(ProcessState::PromptInFlight { .. })
-        ));
-    }
-
-    super::super::Session::close(&mut secondary).await.unwrap();
-
-    {
-        let inner = core.inner.lock().await;
-        assert!(inner.stdin_tx.is_none());
-        assert!(inner.owned.reader_handles.is_empty());
-    }
-    assert!(events_for_assert.inner.closing.load(Ordering::SeqCst));
-    assert!(test_registry().get(&key).is_none());
-}
-
-#[tokio::test]
-async fn close_then_drop_emits_closed_lifecycle_once() {
-    let key: AgentKey = format!("agent-close-once-{}", uuid::Uuid::new_v4());
-    let (events, event_tx) = EventFanOut::new();
-    let mut rx = events.subscribe();
-    let core = AcpNativeCore::new(&TEST_CFG, key, test_spec(), events, event_tx);
-    let session_id = "sess-closed-once".to_string();
-
-    let shared = Arc::new(Mutex::new(SharedReaderState {
-        phase: acp_protocol::AcpPhase::Active,
-        sessions: {
-            let mut s = HashMap::new();
-            s.insert(session_id.clone(), SessionState::new(&session_id));
-            s
-        },
-        pending: HashMap::new(),
-        closed_emitted: Arc::new(AtomicBool::new(false)),
-        initialized_notification: None,
-    }));
-
-    let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
-    {
-        let mut inner = core.inner.lock().await;
-        inner.shared = Some(shared);
-        inner.stdin_tx = Some(stdin_tx);
-        inner.next_request_id = 3;
-    }
-    core.started.store(true, Ordering::Release);
-
-    let mut handle = AcpNativeHandle::new(core, None);
-    handle.set_session_for_test(
-        &session_id,
-        ProcessState::Active {
-            session_id: session_id.clone(),
-        },
-    );
-
-    super::super::Session::close(&mut handle).await.unwrap();
-    drop(handle);
-
-    let mut closed_count = 0usize;
-    while let Ok(Some(event)) = timeout(Duration::from_millis(100), rx.recv()).await {
-        if matches!(
-            event,
-            DriverEvent::Lifecycle {
-                state: ProcessState::Closed,
-                ..
-            }
-        ) {
-            closed_count += 1;
-        }
-    }
-
-    assert_eq!(
-        closed_count, 1,
-        "closing then dropping must emit exactly one Closed lifecycle event"
-    );
-}
+// close() multi-session teardown tests live in `handle.rs::tests` so they
+// can construct `AcpNativeHandle` with private field access (no test-only
+// setter shim).

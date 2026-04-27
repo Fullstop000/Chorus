@@ -37,6 +37,8 @@ mod reader;
 mod state;
 
 #[cfg(test)]
+mod test_fixtures;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use self::core::AcpNativeCore;
@@ -48,19 +50,18 @@ pub(crate) use self::handle::AcpNativeHandle;
 
 /// When and how the first user prompt is delivered after `session/new`
 /// completes.
+///
+/// Currently single-variant. Lives as an enum (rather than implicit always-
+/// immediate behavior) so a future runtime that genuinely needs to defer
+/// the first prompt past `session/new` can extend without a wire-shape
+/// breaking change. Opencode used to need a `Deferred` mode to dodge an
+/// id-collision race; the unified `ensure_started` path eliminated that
+/// race, so the variant was deleted.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum InitPromptStrategy {
     /// Send the prompt immediately after `session/new`. Used by all three
     /// migrated runtimes (gemini, kimi, opencode).
     Immediate,
-    /// Wait for the caller to invoke [`super::Session::prompt`] explicitly.
-    /// Currently unused — kept as a config knob for future runtimes that
-    /// genuinely need to defer the first prompt past `session/new`. Opencode
-    /// no longer needs this: its old "deferred bootstrap prompt" mechanism
-    /// existed to dodge an id-collision race that the unified
-    /// `ensure_started` path eliminated.
-    #[allow(dead_code)]
-    Deferred,
 }
 
 /// Outcome of [`AcpDriverConfig::spawn_child`]. Owns the spawned `Child` plus
@@ -131,9 +132,10 @@ pub(crate) struct AcpDriverConfig {
 
     /// Per-driver static registry of live cores. Each driver owns its own
     /// `AgentRegistry<AcpNativeCore>` so kimi keys never collide with
-    /// gemini keys. The shared core / close path looks up the right
-    /// registry through this fn pointer.
-    pub registry: fn() -> &'static AgentRegistry<AcpNativeCore>,
+    /// gemini keys. Static-ref rather than fn pointer because
+    /// `AgentRegistry::new` is `const fn`, so the driver can hoist its
+    /// registry to a module-level `static` and reference it here directly.
+    pub registry: &'static AgentRegistry<AcpNativeCore>,
 }
 
 // ---------------------------------------------------------------------------
@@ -153,13 +155,12 @@ pub(crate) async fn open_session(
     spec: AgentSpec,
     intent: SessionIntent,
 ) -> anyhow::Result<SessionAttachment> {
-    let registry = (cfg.registry)();
-    let core = if let Some(existing) = registry.get_or_evict_stale(&key) {
+    let core = if let Some(existing) = cfg.registry.get_or_evict_stale(&key) {
         existing
     } else {
         let (events, event_tx) = EventFanOut::new();
         let fresh = AcpNativeCore::new(cfg, key.clone(), spec, events, event_tx);
-        registry.insert(key.clone(), fresh.clone());
+        cfg.registry.insert(key.clone(), fresh.clone());
         fresh
     };
     let events = core.events.clone();

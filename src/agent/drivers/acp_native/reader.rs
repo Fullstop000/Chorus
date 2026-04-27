@@ -183,23 +183,7 @@ pub(super) async fn reader_loop(
     }
 }
 
-/// Test-only re-export of `handle_response`. The shared tests in
-/// `acp_native::tests` exercise the response routing directly; the
-/// production reader_loop is the only other caller, so the function stays
-/// private otherwise.
-#[cfg(test)]
-pub(super) async fn handle_response_for_test(
-    driver: &'static str,
-    key: &AgentKey,
-    event_tx: &mpsc::Sender<DriverEvent>,
-    shared: &Arc<Mutex<SharedReaderState>>,
-    stdin_tx: &mpsc::Sender<String>,
-    msg: &Value,
-) {
-    handle_response(driver, key, event_tx, shared, stdin_tx, msg).await;
-}
-
-async fn handle_response(
+pub(super) async fn handle_response(
     driver: &'static str,
     key: &AgentKey,
     event_tx: &mpsc::Sender<DriverEvent>,
