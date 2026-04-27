@@ -71,8 +71,13 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
         let id = Self::create_agent_record_inner(&conn, &workspace_id, record)?;
-        if let Some(all_channel) = Self::get_channel_by_workspace_and_name_inner(&conn, &workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)? {
-            let event = super::StreamEvent::member_joined(all_channel.id, id.clone(), "agent".to_string());
+        if let Some(all_channel) = Self::get_channel_by_workspace_and_name_inner(
+            &conn,
+            &workspace_id,
+            Self::DEFAULT_SYSTEM_CHANNEL,
+        )? {
+            let event =
+                super::StreamEvent::member_joined(all_channel.id, id.clone(), "agent".to_string());
             let _ = self.stream_tx.send(event);
         }
         Ok(id)
@@ -85,8 +90,13 @@ impl Store {
     ) -> Result<String> {
         let conn = self.conn.lock().unwrap();
         let id = Self::create_agent_record_inner(&conn, workspace_id, record)?;
-        if let Some(all_channel) = Self::get_channel_by_workspace_and_name_inner(&conn, workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)? {
-            let event = super::StreamEvent::member_joined(all_channel.id, id.clone(), "agent".to_string());
+        if let Some(all_channel) = Self::get_channel_by_workspace_and_name_inner(
+            &conn,
+            workspace_id,
+            Self::DEFAULT_SYSTEM_CHANNEL,
+        )? {
+            let event =
+                super::StreamEvent::member_joined(all_channel.id, id.clone(), "agent".to_string());
             let _ = self.stream_tx.send(event);
         }
         Ok(id)

@@ -61,7 +61,7 @@ function MentionPill({ mention, agents, onSelectAgent }: MentionPillProps) {
     <span
       className="mention-pill mention-pill-clickable"
       onClick={() => onSelectAgent(agent)}
-      title={`View @${name} profile`}
+      title={`View @${displayName} profile`}
     >
       @{displayName}
     </span>
