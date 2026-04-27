@@ -3,6 +3,7 @@
 //! This module contains the trait and type scaffolding for the
 //! driver layer backing every agent runtime in production.
 
+pub mod acp_native;
 pub mod acp_protocol;
 pub mod claude;
 pub mod claude_headless;
