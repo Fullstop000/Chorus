@@ -2209,6 +2209,22 @@ fn test_join_channel_creates_notice_and_is_idempotent() {
         .find(|m| m.content.contains("Bot One"))
         .expect("agent join system message should appear");
     assert_eq!(bot_sys_msg.content, "Agent Bot One joined #general");
+
+    // Human with a UUID-style id (not matching name) resolves label correctly.
+    store
+        .ensure_human_with_id("human_carol_123", "carol")
+        .unwrap();
+    let carol_joined = store
+        .join_channel_by_id(&channel.id, "human_carol_123", SenderType::Human)
+        .unwrap();
+    assert!(carol_joined, "UUID-id human first join should return true");
+
+    let (history4, _) = store.get_history("general", 10, None, None).unwrap();
+    let carol_sys_msg = history4
+        .iter()
+        .find(|m| m.content.contains("carol"))
+        .expect("UUID-id human join system message should appear");
+    assert_eq!(carol_sys_msg.content, "carol joined #general");
 }
 
 #[test]
