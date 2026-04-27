@@ -16,8 +16,7 @@ use tracing::{debug, trace, warn};
 
 use super::super::acp_protocol::{self, AcpParsed, AcpUpdateItem};
 use super::super::{
-    AgentError, AgentEventItem, AgentKey, DriverEvent, FinishReason, ProcessState, RunId,
-    RunResult,
+    AgentError, AgentEventItem, AgentKey, DriverEvent, FinishReason, ProcessState, RunId, RunResult,
 };
 
 use super::state::{PendingRequest, SessionState, SharedReaderState};
@@ -100,7 +99,10 @@ pub(super) async fn reader_loop(
                 let option_id = acp_protocol::pick_best_option_id(&options);
                 debug!(
                     driver,
-                    ?tool_name, request_id, option_id, "auto-approving permission"
+                    ?tool_name,
+                    request_id,
+                    option_id,
+                    "auto-approving permission"
                 );
                 let response = acp_protocol::build_permission_response_raw(request_id, option_id);
                 let _ = stdin_tx.try_send(response);

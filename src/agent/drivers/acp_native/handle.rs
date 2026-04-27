@@ -68,6 +68,12 @@ impl AcpNativeHandle {
         id
     }
 
+    /// Test-only: invoke `alloc_id` from sibling test modules.
+    #[cfg(test)]
+    pub(super) async fn alloc_id_for_test(&self) -> u64 {
+        self.alloc_id().await
+    }
+
     async fn acquire_stdin_and_shared(
         &self,
     ) -> anyhow::Result<(mpsc::Sender<String>, Arc<Mutex<SharedReaderState>>)> {
@@ -78,9 +84,10 @@ impl AcpNativeHandle {
                 self.core.cfg.name
             )
         })?;
-        let shared = inner.shared.clone().ok_or_else(|| {
-            anyhow!("{}: shared reader state missing", self.core.cfg.name)
-        })?;
+        let shared = inner
+            .shared
+            .clone()
+            .ok_or_else(|| anyhow!("{}: shared reader state missing", self.core.cfg.name))?;
         Ok((stdin_tx, shared))
     }
 
@@ -289,9 +296,10 @@ impl Session for AcpNativeHandle {
 
         let (stdin_tx, shared) = {
             let inner = self.core.inner.lock().await;
-            let tx = inner.stdin_tx.clone().ok_or_else(|| {
-                anyhow!("{driver}: stdin not available — handle not started")
-            })?;
+            let tx = inner
+                .stdin_tx
+                .clone()
+                .ok_or_else(|| anyhow!("{driver}: stdin not available — handle not started"))?;
             let shared = inner
                 .shared
                 .clone()

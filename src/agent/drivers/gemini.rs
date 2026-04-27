@@ -419,5 +419,4 @@ mod tests {
         assert!(matches!(result.session.process_state(), ProcessState::Idle));
         registry().remove(&key);
     }
-
 }

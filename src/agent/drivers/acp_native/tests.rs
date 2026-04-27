@@ -19,7 +19,7 @@
 //! | kimi: `multi_session_session_load_falls_back_to_expected_id`            | `session_load_falls_back_to_expected_id`              |
 //! | kimi: `multi_session_prompt_response_carries_correct_session_id`        | `prompt_response_carries_correct_session_id`          |
 //! | kimi: `handle_response_ignores_unknown_id`                              | `response_for_unknown_id_is_ignored`                  |
-//! | kimi: `alloc_id_starts_at_3_after_spawn_and_initialize`                 | (covered by `ensure_started_idempotent_after_success`) |
+//! | kimi: `alloc_id_starts_at_3_after_spawn_and_initialize`                 | `alloc_id_starts_at_3_after_spawn_and_initialize`     |
 //! | kimi: `registry_get_evicts_stale_core`                                  | `registry_evicts_stale_core`                          |
 //! | kimi: `registry_get_keeps_fresh_never_spawned_core`                     | `registry_keeps_fresh_core`                           |
 //! | kimi: `bootstrap_close_with_live_secondary_does_not_tear_down_shared`   | `close_with_live_secondary_keeps_child_alive`         |
@@ -60,7 +60,9 @@ use super::core::AcpNativeCore;
 use super::handle::AcpNativeHandle;
 use super::reader::handle_response_for_test;
 use super::state::{PendingRequest, SessionState, SharedReaderState};
-use super::{open_session as acp_native_open_session, AcpDriverConfig, InitPromptStrategy, SpawnFut};
+use super::{
+    open_session as acp_native_open_session, AcpDriverConfig, InitPromptStrategy, SpawnFut,
+};
 
 use crate::agent::AgentRuntime;
 
@@ -156,14 +158,12 @@ async fn multi_session_pending_dispatch_routes_session_new() {
     }
 
     let key: AgentKey = "agent-x".into();
-    let resp7: Value = serde_json::from_str(
-        r#"{"jsonrpc":"2.0","id":7,"result":{"sessionId":"sess-alpha"}}"#,
-    )
-    .unwrap();
-    let resp8: Value = serde_json::from_str(
-        r#"{"jsonrpc":"2.0","id":8,"result":{"sessionId":"sess-beta"}}"#,
-    )
-    .unwrap();
+    let resp7: Value =
+        serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"result":{"sessionId":"sess-alpha"}}"#)
+            .unwrap();
+    let resp8: Value =
+        serde_json::from_str(r#"{"jsonrpc":"2.0","id":8,"result":{"sessionId":"sess-beta"}}"#)
+            .unwrap();
 
     handle_response_for_test("test", &key, &event_tx, &shared, &stdin_tx, &resp7).await;
     handle_response_for_test("test", &key, &event_tx, &shared, &stdin_tx, &resp8).await;
@@ -306,8 +306,7 @@ async fn response_for_unknown_id_is_ignored() {
     let shared = fresh_shared();
     let (stdin_tx, _stdin_rx) = mpsc::channel::<String>(8);
 
-    let resp: Value =
-        serde_json::from_str(r#"{"jsonrpc":"2.0","id":999,"result":{}}"#).unwrap();
+    let resp: Value = serde_json::from_str(r#"{"jsonrpc":"2.0","id":999,"result":{}}"#).unwrap();
     handle_response_for_test(
         "test",
         &"k".to_string(),
@@ -409,7 +408,10 @@ async fn ensure_started_idempotent_after_success() {
     core.ensure_started().await.unwrap();
 
     let inner = core.inner.lock().await;
-    assert!(inner.stdin_tx.is_some(), "ensure_started must not clear stdin_tx");
+    assert!(
+        inner.stdin_tx.is_some(),
+        "ensure_started must not clear stdin_tx"
+    );
 }
 
 #[tokio::test]
@@ -429,6 +431,35 @@ async fn ensure_started_failure_not_sticky() {
     assert_eq!(core.spawn_and_initialize_call_count_for_test(), 2);
 }
 
+/// After `spawn_and_initialize` seeding, `alloc_id` returns 3 (ids 1 =
+/// initialize, 2 = first session request) and no id-3 placeholder is
+/// pre-registered in `pending` — we don't reserve ahead of time.
+#[tokio::test]
+async fn alloc_id_starts_at_3_after_spawn_and_initialize() {
+    let core = make_core().await;
+    let shared = fresh_shared();
+    {
+        let mut inner = core.inner.lock().await;
+        let (tx, _rx) = mpsc::channel::<String>(1);
+        inner.stdin_tx = Some(tx);
+        inner.shared = Some(shared.clone());
+        inner.next_request_id = 3;
+    }
+
+    let handle = AcpNativeHandle::new(core.clone(), None);
+    let id = handle.alloc_id_for_test().await;
+    assert_eq!(
+        id, 3,
+        "alloc_id on a just-spawned core must return 3 (initialize=1, first session=2)"
+    );
+
+    let s = shared.lock().unwrap();
+    assert!(
+        !s.pending.contains_key(&3),
+        "no id-3 reservation must exist after spawn_and_initialize"
+    );
+}
+
 /// **NEW: closes a coverage gap.** Two concurrent `ensure_started` calls
 /// on the same core must serialize through `start_in_progress` — they
 /// never run `spawn_and_initialize` concurrently. Both fail (test spawn
@@ -442,7 +473,12 @@ async fn ensure_started_concurrent() {
 
     let j0 = tokio::spawn(async move { c0.ensure_started().await });
     let j1 = tokio::spawn(async move { c1.ensure_started().await });
-    let (_r0, _r1) = tokio::join!(j0, j1);
+    let (r0, r1) = tokio::join!(j0, j1);
+    // Expect on the JoinHandle so a panic in either task fails the test
+    // loudly. The inner Result<()> is intentionally an Err (test spawn
+    // always fails) — we assert the spawn count separately below.
+    let _ = r0.expect("first ensure_started task panicked");
+    let _ = r1.expect("second ensure_started task panicked");
 
     let n = core.spawn_and_initialize_call_count_for_test();
     assert_eq!(
@@ -478,8 +514,7 @@ async fn open_session_works_without_prior_call() {
     assert!(matches!(ar.session.process_state(), ProcessState::Idle));
     test_registry().remove(&key_new);
 
-    let (key_resume, ar) =
-        open_test_session(SessionIntent::Resume("stored-id-xyz".into())).await;
+    let (key_resume, ar) = open_test_session(SessionIntent::Resume("stored-id-xyz".into())).await;
     assert_eq!(ar.session.session_id(), Some("stored-id-xyz"));
     test_registry().remove(&key_resume);
 }
@@ -737,9 +772,12 @@ async fn close_last_session_prunes_registry_entry() {
     test_registry().insert(key.clone(), core.clone());
 
     let mut handle = AcpNativeHandle::new(core, None);
-    handle.set_session_for_test(&session_id, ProcessState::Active {
-        session_id: session_id.clone(),
-    });
+    handle.set_session_for_test(
+        &session_id,
+        ProcessState::Active {
+            session_id: session_id.clone(),
+        },
+    );
     super::super::Session::close(&mut handle).await.unwrap();
 
     assert!(
@@ -792,20 +830,31 @@ async fn close_with_live_secondary_keeps_child_alive() {
     test_registry().insert(key.clone(), core.clone());
 
     let mut first_handle = AcpNativeHandle::new(core.clone(), None);
-    first_handle.set_session_for_test(&first_sid, ProcessState::Active {
-        session_id: first_sid.clone(),
-    });
+    first_handle.set_session_for_test(
+        &first_sid,
+        ProcessState::Active {
+            session_id: first_sid.clone(),
+        },
+    );
     let mut secondary = AcpNativeHandle::new(core.clone(), None);
-    secondary.set_session_for_test(&secondary_sid, ProcessState::PromptInFlight {
-        run_id: secondary_run,
-        session_id: secondary_sid.clone(),
-    });
+    secondary.set_session_for_test(
+        &secondary_sid,
+        ProcessState::PromptInFlight {
+            run_id: secondary_run,
+            session_id: secondary_sid.clone(),
+        },
+    );
 
-    super::super::Session::close(&mut first_handle).await.unwrap();
+    super::super::Session::close(&mut first_handle)
+        .await
+        .unwrap();
 
     {
         let inner = core.inner.lock().await;
-        assert!(inner.stdin_tx.is_some(), "stdin must remain while a sibling is active");
+        assert!(
+            inner.stdin_tx.is_some(),
+            "stdin must remain while a sibling is active"
+        );
         assert_eq!(inner.owned.reader_handles.len(), 1);
         assert!(!inner.owned.reader_handles[0].is_finished());
     }
@@ -864,9 +913,12 @@ async fn close_then_drop_emits_closed_lifecycle_once() {
     core.started.store(true, Ordering::Release);
 
     let mut handle = AcpNativeHandle::new(core, None);
-    handle.set_session_for_test(&session_id, ProcessState::Active {
-        session_id: session_id.clone(),
-    });
+    handle.set_session_for_test(
+        &session_id,
+        ProcessState::Active {
+            session_id: session_id.clone(),
+        },
+    );
 
     super::super::Session::close(&mut handle).await.unwrap();
     drop(handle);

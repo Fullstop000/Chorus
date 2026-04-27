@@ -331,9 +331,6 @@ mod tests {
     fn parse_opencode_models_strips_blank_lines() {
         let raw = "anthropic/claude-3.5-sonnet\n\n  openai/gpt-4o  \n\n";
         let parsed = parse_opencode_models(raw);
-        assert_eq!(
-            parsed,
-            vec!["anthropic/claude-3.5-sonnet", "openai/gpt-4o"]
-        );
+        assert_eq!(parsed, vec!["anthropic/claude-3.5-sonnet", "openai/gpt-4o"]);
     }
 }

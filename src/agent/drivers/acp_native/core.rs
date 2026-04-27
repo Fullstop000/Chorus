@@ -18,9 +18,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use super::super::acp_protocol::{self, AcpPhase};
-use super::super::{
-    AgentKey, AgentSpec, DriverEvent, EventStreamHandle,
-};
+use super::super::{AgentKey, AgentSpec, DriverEvent, EventStreamHandle};
 
 use super::reader::reader_loop;
 use super::state::{PendingRequest, SharedReaderState};
@@ -151,21 +149,9 @@ impl AcpNativeCore {
         let spec = self.spec.clone();
         let mut spawned = (self.cfg.spawn_child)(spec, self.key.clone()).await?;
 
-        let stdout = spawned
-            .child
-            .stdout
-            .take()
-            .context("missing stdout")?;
-        let stderr = spawned
-            .child
-            .stderr
-            .take()
-            .context("missing stderr")?;
-        let mut stdin = spawned
-            .child
-            .stdin
-            .take()
-            .context("missing stdin")?;
+        let stdout = spawned.child.stdout.take().context("missing stdout")?;
+        let stderr = spawned.child.stderr.take().context("missing stderr")?;
+        let mut stdin = spawned.child.stdin.take().context("missing stdin")?;
 
         // Write `initialize` synchronously before handing stdin to the
         // async writer task.

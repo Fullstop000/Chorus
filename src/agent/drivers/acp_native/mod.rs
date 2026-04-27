@@ -14,8 +14,8 @@
 //! implementations this module replaces. ACP spec compliance gaps (cancel
 //! notification, stopReason parsing, session/close RPC, capability checking,
 //! session/resume, history replay drain, rich update variants, MCP transport
-//! negotiation) are tracked as follow-up work — see the plan at
-//! `docs/plans/2026-04-27-acp-native-driver-unification-plan.md`.
+//! negotiation) are tracked as follow-up work — see issue #111 and the
+//! linked spec references in this module's PR description.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -50,11 +50,15 @@ pub(crate) use self::handle::AcpNativeHandle;
 /// completes.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum InitPromptStrategy {
-    /// Send the prompt immediately after `session/new`. Used by gemini and
-    /// kimi.
+    /// Send the prompt immediately after `session/new`. Used by all three
+    /// migrated runtimes (gemini, kimi, opencode).
     Immediate,
     /// Wait for the caller to invoke [`super::Session::prompt`] explicitly.
-    /// Used by opencode (deferred init prompt — landed in PR2).
+    /// Currently unused — kept as a config knob for future runtimes that
+    /// genuinely need to defer the first prompt past `session/new`. Opencode
+    /// no longer needs this: its old "deferred bootstrap prompt" mechanism
+    /// existed to dodge an id-collision race that the unified
+    /// `ensure_started` path eliminated.
     #[allow(dead_code)]
     Deferred,
 }
