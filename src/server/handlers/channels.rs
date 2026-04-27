@@ -162,9 +162,11 @@ pub async fn handle_create_channel(
             app_err!(StatusCode::BAD_REQUEST, msg)
         }
     })?;
-    let _ = state
-        .store
-        .join_channel_by_id(&channel_id, &state.local_human_id, SenderType::Human);
+    let _ = state.store.join_channel_by_id_with_system_message(
+        &channel_id,
+        &state.local_human_id,
+        SenderType::Human,
+    );
     Ok(Json(serde_json::json!({ "id": channel_id, "name": name })))
 }
 
@@ -219,7 +221,7 @@ pub async fn handle_invite_channel_member(
 
     state
         .store
-        .join_channel_by_id(&channel.id, &member_id, member_type)
+        .join_channel_by_id_with_system_message(&channel.id, &member_id, member_type)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let members = state

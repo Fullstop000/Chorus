@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -571,6 +571,86 @@ impl Store {
             let _ = self.stream_tx.send(event);
         }
         Ok(())
+    }
+
+    /// Resolve a human-readable label for a channel member (display name for
+    /// agents, name for humans). Used when constructing system messages.
+    fn resolve_member_label_tx(
+        tx: &Transaction<'_>,
+        member_id: &str,
+        member_type: SenderType,
+    ) -> Result<String> {
+        match member_type {
+            SenderType::Agent => tx
+                .query_row(
+                    "SELECT COALESCE(display_name, name) FROM agents WHERE id = ?1",
+                    params![member_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into),
+            SenderType::Human => tx
+                .query_row(
+                    "SELECT name FROM humans WHERE id = ?1",
+                    params![member_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into),
+            SenderType::System => Ok(member_id.to_string()),
+        }
+    }
+
+    /// Join a channel and post a server-authored system message announcing the
+    /// join. Idempotent: returns `Ok(false)` when the member is already present.
+    pub fn join_channel_by_id_with_system_message(
+        &self,
+        channel_id: &str,
+        member_id: &str,
+        member_type: SenderType,
+    ) -> Result<bool> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let mt = member_type.as_str();
+        let rows = tx.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+            params![channel_id, member_id, mt],
+        )?;
+        let joined = rows > 0;
+        if joined {
+            let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
+                .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
+            let label = Self::resolve_member_label_tx(&tx, member_id, member_type)?;
+            let content = match member_type {
+                SenderType::Agent => format!("Agent {} joined #{}", label, channel.name),
+                _ => format!("{} joined #{}", label, channel.name),
+            };
+            let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+            tx.commit()?;
+            drop(conn);
+            let event = super::StreamEvent::member_joined(
+                channel_id.to_string(),
+                member_id.to_string(),
+                mt.to_string(),
+            );
+            let _ = self.stream_tx.send(event);
+            self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
+        } else {
+            tx.commit()?;
+        }
+        Ok(joined)
+    }
+
+    /// Convenience wrapper that resolves the channel by name before joining.
+    pub fn join_channel_with_system_message(
+        &self,
+        channel_name: &str,
+        member_id: &str,
+        member_type: SenderType,
+    ) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        drop(conn);
+        self.join_channel_by_id_with_system_message(&channel.id, member_id, member_type)
     }
 
     pub fn get_channel_members(&self, channel_id: &str) -> Result<Vec<ChannelMember>> {

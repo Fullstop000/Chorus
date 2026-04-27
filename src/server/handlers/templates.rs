@@ -101,9 +101,11 @@ pub async fn handle_launch_trio(
     // Join the human user to the channel.
     if let Ok(humans) = state.store.get_humans() {
         if let Some(human) = humans.first() {
-            let _ = state
-                .store
-                .join_channel(&channel_name, &human.name, SenderType::Human);
+            let _ = state.store.join_channel_with_system_message(
+                &channel_name,
+                &human.name,
+                SenderType::Human,
+            );
         }
     }
 
@@ -163,9 +165,11 @@ pub async fn handle_launch_trio(
         }
 
         // Also join the trio channel (auto-join channels handled above).
-        let _ = state
-            .store
-            .join_channel(&channel_name, &result.name, SenderType::Agent);
+        let _ = state.store.join_channel_with_system_message(
+            &channel_name,
+            &result.name,
+            SenderType::Agent,
+        );
 
         agents.push(LaunchTrioAgent {
             id: result.id,

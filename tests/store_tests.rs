@@ -2203,6 +2203,79 @@ fn test_create_system_message_emits_system_typed_stream_event() {
 }
 
 #[test]
+fn test_join_channel_with_system_message_creates_notice_and_is_idempotent() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel, None)
+        .unwrap();
+
+    let channel = store.get_channel_by_name("general").unwrap().unwrap();
+
+    // Human joins — creates system message.
+    let joined = store
+        .join_channel_by_id_with_system_message(
+            &channel.id,
+            "alice",
+            SenderType::Human,
+        )
+        .unwrap();
+    assert!(joined, "first join should return true");
+
+    let (history, _) = store.get_history("general", 10, None, None).unwrap();
+    let sys_msg = history
+        .iter()
+        .find(|m| m.sender_type == "system")
+        .expect("system message should appear in history");
+    assert_eq!(sys_msg.content, "alice joined #general");
+
+    // Idempotent re-join — no duplicate system message.
+    let joined_again = store
+        .join_channel_by_id_with_system_message(
+            &channel.id,
+            "alice",
+            SenderType::Human,
+        )
+        .unwrap();
+    assert!(!joined_again, "re-join should return false");
+
+    let (history2, _) = store.get_history("general", 10, None, None).unwrap();
+    let sys_count = history2
+        .iter()
+        .filter(|m| m.sender_type == "system")
+        .count();
+    assert_eq!(sys_count, 1, "only one system message should exist");
+
+    // Agent joins — system message includes "Agent" prefix.
+    let bot_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot One",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    let bot_joined = store
+        .join_channel_by_id_with_system_message(
+            &channel.id,
+            &bot_id,
+            SenderType::Agent,
+        )
+        .unwrap();
+    assert!(bot_joined, "agent first join should return true");
+
+    let (history3, _) = store.get_history("general", 10, None, None).unwrap();
+    let bot_sys_msg = history3
+        .iter()
+        .find(|m| m.content.contains("Bot One"))
+        .expect("agent join system message should appear");
+    assert_eq!(bot_sys_msg.content, "Agent Bot One joined #general");
+}
+
+#[test]
 fn test_lookup_sender_type_recovers_after_mutex_poison() {
     use chorus::store::messages::SenderType;
 
