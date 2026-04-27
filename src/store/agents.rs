@@ -77,11 +77,7 @@ impl Store {
         if let Ok(Some(all_channel)) =
             self.get_channel_by_workspace_and_name(&workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
         {
-            let _ = self.join_channel_by_id(
-                &all_channel.id,
-                &id,
-                super::SenderType::Agent,
-            );
+            let _ = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent);
         }
         Ok(id)
     }
@@ -98,11 +94,7 @@ impl Store {
         if let Ok(Some(all_channel)) =
             self.get_channel_by_workspace_and_name(workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
         {
-            let _ = self.join_channel_by_id(
-                &all_channel.id,
-                &id,
-                super::SenderType::Agent,
-            );
+            let _ = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent);
         }
         Ok(id)
     }

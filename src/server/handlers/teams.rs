@@ -184,11 +184,7 @@ pub async fn handle_create_team(
     if !creator_in_members {
         state
             .store
-            .join_channel_by_id(
-                &team_channel_id,
-                &local_human_id,
-                SenderType::Human,
-            )
+            .join_channel_by_id(&team_channel_id, &local_human_id, SenderType::Human)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
         state
             .store
@@ -224,11 +220,7 @@ pub async fn handle_create_team(
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
         state
             .store
-            .join_channel_by_id(
-                &team_channel_id,
-                &member.member_id,
-                sender_type,
-            )
+            .join_channel_by_id(&team_channel_id, &member.member_id, sender_type)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
         if sender_type == SenderType::Agent {

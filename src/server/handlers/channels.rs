@@ -162,11 +162,9 @@ pub async fn handle_create_channel(
             app_err!(StatusCode::BAD_REQUEST, msg)
         }
     })?;
-    let _ = state.store.join_channel_by_id(
-        &channel_id,
-        &state.local_human_id,
-        SenderType::Human,
-    );
+    let _ = state
+        .store
+        .join_channel_by_id(&channel_id, &state.local_human_id, SenderType::Human);
     Ok(Json(serde_json::json!({ "id": channel_id, "name": name })))
 }
 

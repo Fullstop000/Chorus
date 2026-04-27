@@ -84,12 +84,7 @@ pub fn build_router_with_lifecycle(
 
 /// Test helper: silently insert a channel membership row without emitting
 /// events or creating a system message.
-pub fn join_channel_silent(
-    store: &Store,
-    channel_name: &str,
-    member_id: &str,
-    member_type: &str,
-) {
+pub fn join_channel_silent(store: &Store, channel_name: &str, member_id: &str, member_type: &str) {
     let conn = store.conn_for_test();
     let channel_id: String = conn
         .query_row(

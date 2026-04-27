@@ -363,10 +363,9 @@ pub(crate) async fn create_and_start_agent(
         .store
         .get_auto_join_channels_for_workspace(active_workspace_id.as_deref())?
     {
-        let _ =
-            state
-                .store
-                .join_channel_by_id(&channel.id, &id, SenderType::Agent);
+        let _ = state
+            .store
+            .join_channel_by_id(&channel.id, &id, SenderType::Agent);
     }
     let start_error = if let Err(err) = state.lifecycle.start_agent(&name, None).await {
         let error_detail = format_anyhow_error(&err);

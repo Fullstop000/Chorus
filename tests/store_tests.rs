@@ -1,10 +1,10 @@
 mod harness;
-use harness::join_channel_silent;
 use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store, WorkspaceMode};
+use harness::join_channel_silent;
 use rusqlite::{params, Connection};
 use tempfile::tempdir;
 
