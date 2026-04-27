@@ -7,6 +7,7 @@ import type { StreamEvent } from '../data/chat'
 export const EventType = {
   MessageCreated: 'message.created',
   TombstoneChanged: 'tombstone_changed',
+  ChannelMemberJoined: 'channel.member_joined',
 } as const
 
 export type EventType = (typeof EventType)[keyof typeof EventType]

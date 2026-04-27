@@ -533,10 +533,18 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let mt = member_type.as_str();
-        conn.execute(
+        let rows = conn.execute(
             "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
             params![channel.id, member_id, mt],
         )?;
+        if rows > 0 {
+            let event = super::StreamEvent::member_joined(
+                channel.id,
+                member_id.to_string(),
+                mt.to_string(),
+            );
+            let _ = self.stream_tx.send(event);
+        }
         Ok(())
     }
 
@@ -550,10 +558,18 @@ impl Store {
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let mt = member_type.as_str();
-        conn.execute(
+        let rows = conn.execute(
             "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
             params![channel_id, member_id, mt],
         )?;
+        if rows > 0 {
+            let event = super::StreamEvent::member_joined(
+                channel_id.to_string(),
+                member_id.to_string(),
+                mt.to_string(),
+            );
+            let _ = self.stream_tx.send(event);
+        }
         Ok(())
     }
 

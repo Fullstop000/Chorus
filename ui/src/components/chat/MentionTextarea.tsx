@@ -4,6 +4,7 @@ import './MentionTextarea.css'
 
 export interface MentionMember {
   name: string
+  displayName?: string
   type: 'agent' | 'human' | 'team'
 }
 
@@ -53,9 +54,13 @@ export function MentionTextarea({
 
   const suggestions =
     mentionQuery !== null
-      ? members.filter((m) =>
-          m.name.toLowerCase().startsWith(mentionQuery.toLowerCase())
-        )
+      ? members.filter((m) => {
+          const q = mentionQuery.toLowerCase()
+          return (
+            m.name.toLowerCase().startsWith(q) ||
+            (m.displayName?.toLowerCase().startsWith(q) ?? false)
+          )
+        })
       : []
 
   function closeMention() {
@@ -148,9 +153,9 @@ export function MentionTextarea({
                 className={`mention-popup-avatar${m.type === 'team' ? ' team' : ''}`}
                 style={m.type === 'team' ? undefined : { background: memberColor(m.name) }}
               >
-                {m.type === 'team' ? <Users size={12} /> : memberInitial(m.name)}
+                {m.type === 'team' ? <Users size={12} /> : memberInitial(m.displayName ?? m.name)}
               </span>
-              <span className="mention-popup-name">@{m.name}</span>
+              <span className="mention-popup-name">@{m.displayName ?? m.name}</span>
               {m.type === 'agent' && <span className="mention-popup-badge">BOT</span>}
               {m.type === 'team' && <span className="mention-popup-badge">TEAM</span>}
             </button>

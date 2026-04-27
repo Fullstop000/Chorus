@@ -127,6 +127,12 @@ impl Store {
         let workspace = Self::get_workspace_by_id_inner(&tx, &id)?
             .ok_or_else(|| anyhow!("workspace not found after insert: {id}"))?;
         tx.commit()?;
+        let event = super::StreamEvent::member_joined(
+            all_channel_id,
+            owner_human_id.to_string(),
+            "human".to_string(),
+        );
+        let _ = self.stream_tx.send(event);
         Ok(workspace)
     }
 
