@@ -20,4 +20,17 @@ impl StreamEvent {
             schema_version: 1,
         }
     }
+
+    pub fn member_joined(channel_id: String, member_id: String, member_type: String) -> Self {
+        Self {
+            event_type: "channel.member_joined".to_string(),
+            channel_id,
+            latest_seq: 0,
+            event_payload: serde_json::json!({
+                "memberId": member_id,
+                "memberType": member_type,
+            }),
+            schema_version: 1,
+        }
+    }
 }

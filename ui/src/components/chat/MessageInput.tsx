@@ -58,7 +58,7 @@ export function MessageInput({
 
   const allMembers: MentionMember[] = useMemo(
     () => [
-      ...agents.map((a) => ({ name: a.name, type: "agent" as const })),
+      ...agents.map((a) => ({ name: a.name, displayName: a.display_name, type: "agent" as const })),
       ...humans.map((h) => ({ name: h.name, type: "human" as const })),
       ...teams.map((team) => ({ name: team.name, type: "team" as const })),
     ],

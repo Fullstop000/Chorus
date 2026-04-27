@@ -245,10 +245,16 @@ function useGlobalSeqListener(
     if (!currentHumanId || !shellBootstrapped) return;
     return getSession(currentHumanId).subscribeAll((frame) => {
       if (frame.type === "error") return;
-      if (frame.event.eventType !== EventType.MessageCreated) return;
-      const seq = frame.event.payload?.seq;
-      if (typeof seq === "number") {
-        advanceConversationLatestSeq(frame.event.channelId, seq);
+      if (frame.event.eventType === EventType.MessageCreated) {
+        const seq = frame.event.payload?.seq;
+        if (typeof seq === "number") {
+          advanceConversationLatestSeq(frame.event.channelId, seq);
+        }
+      }
+      if (frame.event.eventType === EventType.ChannelMemberJoined) {
+        appQueryClient.invalidateQueries({
+          queryKey: channelQueryKeys.members(frame.event.channelId),
+        });
       }
     });
   }, [currentHumanId, shellBootstrapped, advanceConversationLatestSeq]);

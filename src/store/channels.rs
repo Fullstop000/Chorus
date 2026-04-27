@@ -537,6 +537,8 @@ impl Store {
             "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
             params![channel.id, member_id, mt],
         )?;
+        let event = super::StreamEvent::member_joined(channel.id, member_id.to_string(), mt.to_string());
+        let _ = self.stream_tx.send(event);
         Ok(())
     }
 
@@ -554,6 +556,8 @@ impl Store {
             "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
             params![channel_id, member_id, mt],
         )?;
+        let event = super::StreamEvent::member_joined(channel_id.to_string(), member_id.to_string(), mt.to_string());
+        let _ = self.stream_tx.send(event);
         Ok(())
     }
 
