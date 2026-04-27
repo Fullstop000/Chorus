@@ -58,8 +58,6 @@ pub(crate) fn strip_mcp_prefix(name: &str) -> &str {
 pub enum AcpPhase {
     /// Waiting for the `initialize` response (id 1).
     AwaitingInitResponse,
-    /// Waiting for the `session/new` or `session/load` response (id 2).
-    AwaitingSessionResponse,
     /// Handshake complete; parsing `session/update` notifications and
     /// `session/prompt` responses.
     Active,
@@ -124,42 +122,6 @@ pub fn build_session_prompt_request(id: u64, session_id: &str, prompt_text: &str
     json_rpc_request(id, "session/prompt", params)
 }
 
-/// Build a response to `session/request_permission`. When `approved` is true
-/// we select `approve` as the option id (matches v1's unknown-option fallback);
-/// when false we emit a `cancelled` outcome so the runtime surfaces the denial.
-///
-/// Note: v1's `handle_rpc_request` inspects the request's `options[]` and
-/// prefers `allow_always` then `allow_once`. That policy belongs in the
-/// transport (which has the request JSON) — this builder just encodes the
-/// caller's chosen option id. Callers that approve unconditionally pass
-/// `true` and get the generic `"approve"` option id; callers that parsed the
-/// request should use `build_permission_response_raw` with the real option.
-pub fn build_permission_approval_response(request_id: u64, approved: bool) -> String {
-    let body = if approved {
-        json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": {
-                "outcome": {
-                    "outcome": "selected",
-                    "optionId": "approve",
-                },
-            },
-        })
-    } else {
-        json!({
-            "jsonrpc": "2.0",
-            "id": request_id,
-            "result": {
-                "outcome": {
-                    "outcome": "cancelled",
-                },
-            },
-        })
-    };
-    serde_json::to_string(&body).expect("permission response serialization should not fail")
-}
-
 /// Build a `session/request_permission` response with the transport's chosen
 /// option id. Lets transports mirror v1's "prefer allow_always then allow_once"
 /// policy by forwarding the option id they extracted from the request.
@@ -184,8 +146,7 @@ pub fn build_permission_response_raw(request_id: u64, option_id: &str) -> String
 /// Parsed view of a single ACP line.
 #[derive(Debug, Clone)]
 pub enum AcpParsed {
-    /// `initialize` response (id 1). Caller advances phase to
-    /// `AwaitingSessionResponse`.
+    /// `initialize` response (id 1). Caller advances phase to `Active`.
     InitializeResponse,
     /// `session/new` or `session/load` response (id 2). `session_id` is
     /// `None` when the response omits it (kimi's session/load does this);
@@ -1237,23 +1198,6 @@ mod tests {
         let v: Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["params"]["sessionId"], "sess-1");
         assert_eq!(v["params"]["prompt"][0]["text"], "hi");
-    }
-
-    #[test]
-    fn build_permission_approval_response_approved() {
-        let raw = build_permission_approval_response(42, true);
-        let v: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(v["id"], 42);
-        assert_eq!(v["result"]["outcome"]["outcome"], "selected");
-        assert_eq!(v["result"]["outcome"]["optionId"], "approve");
-    }
-
-    #[test]
-    fn build_permission_approval_response_denied() {
-        let raw = build_permission_approval_response(42, false);
-        let v: Value = serde_json::from_str(&raw).unwrap();
-        assert_eq!(v["id"], 42);
-        assert_eq!(v["result"]["outcome"]["outcome"], "cancelled");
     }
 
     #[test]

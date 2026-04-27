@@ -60,7 +60,7 @@ use super::*;
 /// fallback when `X-Agent-Id` is absent.
 ///
 /// Factored out so config-shape tests don't need a live bridge.
-fn build_codex_mcp_args(bridge_endpoint: &str, _agent_key: &str) -> Vec<String> {
+fn build_codex_mcp_args(bridge_endpoint: &str) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
 
     let url = super::bridge_mcp_url(bridge_endpoint);
@@ -240,9 +240,6 @@ impl RuntimeDriver for CodexDriver {
         ])
     }
 
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
-        Ok(vec![])
-    }
 
     /// Allocates a [`CodexHandle`] for the given intent. For
     /// `SessionIntent::Resume(id)` the `resume_session_id` field is set,
@@ -660,7 +657,7 @@ impl CodexHandle {
     /// `-c mcp_servers.chat.*` overrides pointing at the shared bridge.
     async fn build_child_args(&self) -> anyhow::Result<Vec<String>> {
         let mut args: Vec<String> = vec!["app-server".into()];
-        let mcp_args = build_codex_mcp_args(&self.spec.bridge_endpoint, &self.key);
+        let mcp_args = build_codex_mcp_args(&self.spec.bridge_endpoint);
         args.extend(mcp_args);
         Ok(args)
     }
@@ -1421,9 +1418,7 @@ fn resolve_item_target(proc: &CodexAgentProcess, item_id: &str) -> (Option<RunId
 fn item_id_of(item: &ItemEvent) -> Option<String> {
     let id = match item {
         ItemEvent::AgentMessage { id, .. } => id,
-        ItemEvent::Reasoning { id, .. } => id,
         ItemEvent::CommandExecution { id, .. } => id,
-        ItemEvent::FileChange { id, .. } => id,
         ItemEvent::McpToolCall { id, .. } => id,
         ItemEvent::UserMessage { id } => id,
         ItemEvent::Other { id, .. } => id,
@@ -1505,7 +1500,7 @@ mod tests {
 
     #[test]
     fn build_codex_mcp_args_http_shape() {
-        let args = build_codex_mcp_args("http://127.0.0.1:4321", "tok-xyz");
+        let args = build_codex_mcp_args("http://127.0.0.1:4321");
 
         let joined = args.join(" ");
         assert!(
@@ -1545,7 +1540,7 @@ mod tests {
 
     #[test]
     fn build_codex_mcp_args_trims_trailing_slash() {
-        let args = build_codex_mcp_args("http://127.0.0.1:4321/", "tok-xyz");
+        let args = build_codex_mcp_args("http://127.0.0.1:4321/");
 
         let url_arg = args
             .iter()

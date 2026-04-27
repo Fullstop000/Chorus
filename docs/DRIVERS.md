@@ -18,7 +18,6 @@ pub trait RuntimeDriver: Send + Sync + 'static {
     async fn login(&self) -> anyhow::Result<LoginOutcome>;
     async fn list_sessions(&self) -> anyhow::Result<Vec<StoredSessionMeta>>;
     async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>>;
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>>;
 
     // Primary entry point — unified replacement for the old attach/new_session/resume_session trio.
     async fn open_session(
@@ -76,7 +75,7 @@ pub struct SessionAttachment {
 | `SessionId` | Runtime-assigned session identifier. Never synthesized by Chorus. |
 | `RunId` | Per-prompt-in-flight identifier. Correlates `prompt()` call to `Completed`/`Failed` event. |
 | `SessionIntent` | `New` or `Resume(SessionId)`. Passed to `open_session`. |
-| `CapabilitySet` | Bitflags: `LOGIN`, `SESSION_LIST`, `RESUME_SESSION`, `CANCEL`, `SLASH_COMMANDS`, `MODEL_LIST`. |
+| `CapabilitySet` | Bitflags: `LOGIN`, `MODEL_LIST`. |
 | `AgentSpec` | Config handed to `open_session`: model, system prompt, env vars, working dir, bridge endpoint. |
 
 ---
@@ -149,5 +148,5 @@ Helper that wraps `try_send` with uniform warn-on-drop logging. All drivers call
 | Codex | `src/agent/drivers/codex.rs` | `CodexAppServer` — JSONL over stdio |
 | Gemini | `src/agent/drivers/gemini.rs` | `AcpNative` — `gemini --acp` subprocess |
 | Kimi | `src/agent/drivers/kimi.rs` | `AcpNative` — `kimi acp` subprocess |
-| OpenCode | `src/agent/drivers/opencode.rs` | `HttpAppServer` — OpenCode daemon |
+| OpenCode | `src/agent/drivers/opencode.rs` | `AcpNative` — `opencode acp` subprocess |
 | Fake | `src/agent/drivers/fake.rs` | In-memory test double |

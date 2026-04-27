@@ -140,9 +140,6 @@ impl RuntimeDriver for FakeDriver {
         Ok(self.models.clone())
     }
 
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
-        Ok(vec![])
-    }
 
     /// Allocates a handle, stores the intent's session id on
     /// `resumed_session_id` (for `Resume`) or leaves it `None` (for `New`).

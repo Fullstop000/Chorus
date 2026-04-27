@@ -486,9 +486,6 @@ impl RuntimeDriver for GeminiDriver {
         ])
     }
 
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
-        Ok(vec![])
-    }
 
     async fn open_session(
         &self,

@@ -185,9 +185,6 @@ impl RuntimeDriver for OpencodeDriver {
             .collect())
     }
 
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
-        Ok(vec![])
-    }
 
     /// Native unified factory. Bootstrap path (no live child yet): allocates
     /// handle only, zero wire I/O. Secondary path (live child): does eager

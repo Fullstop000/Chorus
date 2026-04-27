@@ -522,7 +522,7 @@ async fn bridge_read_history_formats_task_event_messages() {
 
 #[tokio::test]
 async fn bridge_receive_messages_formats_task_event_messages() {
-    use chorus::bridge::backend::{Backend, ChorusBackend};
+    use chorus::bridge::backend::ChorusBackend;
     use chorus::store::channels::ChannelType;
 
     let (server_url, store) = start_chorus_server().await;

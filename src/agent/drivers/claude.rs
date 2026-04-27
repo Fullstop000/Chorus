@@ -283,9 +283,6 @@ impl RuntimeDriver for ClaudeDriver {
         ])
     }
 
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
-        Ok(vec![])
-    }
 
     /// Allocates a [`ClaudeHandle`] and stores the resume intent from `intent`.
     /// For `SessionIntent::Resume(id)` both `preassigned_session_id` and

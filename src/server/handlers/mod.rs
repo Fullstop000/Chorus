@@ -8,7 +8,7 @@ pub mod server_info;
 pub mod tasks;
 pub mod teams;
 pub mod templates;
-pub mod workspace;
+pub mod agent_workspace;
 pub mod workspaces;
 
 pub use agents::*;
@@ -18,7 +18,7 @@ pub use messages::*;
 pub use tasks::*;
 pub use teams::*;
 pub use templates::*;
-pub use workspace::*;
+pub use agent_workspace::*;
 pub use workspaces::*;
 
 use std::collections::HashSet;
