@@ -365,7 +365,9 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::ToolCall { id, name, input } => {
-                if let Some(sid) = pick_session(driver, key, shared, sid_opt.as_deref()) {
+                if let (Some(sid), _) =
+                    pick_session_and_run(driver, key, shared, sid_opt.as_deref())
+                {
                     let mut s = shared.lock().unwrap();
                     if let Some(slot) = s.sessions.get_mut(&sid) {
                         let flushed = slot.tool_accumulator.drain();
@@ -392,7 +394,9 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::ToolCallUpdate { id, input } => {
-                if let Some(sid) = pick_session(driver, key, shared, sid_opt.as_deref()) {
+                if let (Some(sid), _) =
+                    pick_session_and_run(driver, key, shared, sid_opt.as_deref())
+                {
                     let mut s = shared.lock().unwrap();
                     if let Some(slot) = s.sessions.get_mut(&sid) {
                         slot.tool_accumulator.merge_update(id, input);
@@ -400,7 +404,9 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::ToolResult { content } => {
-                if let Some(sid) = pick_session(driver, key, shared, sid_opt.as_deref()) {
+                if let (Some(sid), _) =
+                    pick_session_and_run(driver, key, shared, sid_opt.as_deref())
+                {
                     let (flushed, run_id) = {
                         let mut s = shared.lock().unwrap();
                         if let Some(slot) = s.sessions.get_mut(&sid) {
@@ -431,7 +437,9 @@ fn handle_session_update(
                 }
             }
             AcpUpdateItem::TurnEnd => {
-                if let Some(sid) = pick_session(driver, key, shared, sid_opt.as_deref()) {
+                if let (Some(sid), _) =
+                    pick_session_and_run(driver, key, shared, sid_opt.as_deref())
+                {
                     let (flushed, run_id) = {
                         let mut s = shared.lock().unwrap();
                         if let Some(slot) = s.sessions.get_mut(&sid) {
@@ -465,44 +473,24 @@ fn handle_session_update(
     }
 }
 
-pub(super) fn pick_session(
-    driver: &'static str,
-    key: &AgentKey,
-    shared: &Arc<Mutex<SharedReaderState>>,
-    hint: Option<&str>,
-) -> Option<String> {
-    let s = shared.lock().unwrap();
-    if let Some(h) = hint {
-        if s.sessions.contains_key(h) {
-            return Some(h.to_string());
-        }
-        // Hint present but not in sessions map — fall through to the
-        // single-session heuristic, but LOUDLY. CLAUDE.md forbids silent
-        // fallbacks; this makes the "stale hint" case visible so the real
-        // cause (close raced with an update, parser returned a bogus sid)
-        // gets diagnosed instead of masked.
-        warn!(
-            driver,
-            agent = %key,
-            hint = %h,
-            session_count = s.sessions.len(),
-            "pick_session hint missing from sessions — falling back to single-session heuristic"
-        );
-    }
-    if s.sessions.len() == 1 {
-        return s.sessions.keys().next().cloned();
-    }
-    if hint.is_none() && !s.sessions.is_empty() {
-        warn!(
-            driver,
-            agent = %key,
-            session_count = s.sessions.len(),
-            "pick_session called with no hint and >1 live sessions — dropping update"
-        );
-    }
-    None
-}
-
+/// Resolve which session a `session/update` notification targets, plus
+/// the in-flight `run_id` (if any) for that session.
+///
+/// Hint resolution policy (preserved from pre-unification kimi/gemini/
+/// opencode behavior):
+///
+///   1. If `hint` matches a known session, use it.
+///   2. If `hint` is missing or stale AND exactly one session is live,
+///      fall back to that single session — but LOUDLY. CLAUDE.md forbids
+///      silent fallbacks; the warn lets the real cause (close raced with
+///      an update, runtime returned a bogus sid) get diagnosed instead
+///      of masked.
+///   3. Otherwise the update can't be attributed; drop it with a warn.
+///
+/// Callers that don't need the run_id destructure with `_`. Computing
+/// `run_id` whether the caller wants it or not costs a single
+/// `Option<Uuid>` lookup — far cheaper than carrying two near-identical
+/// functions.
 pub(super) fn pick_session_and_run(
     driver: &'static str,
     key: &AgentKey,
@@ -510,40 +498,40 @@ pub(super) fn pick_session_and_run(
     hint: Option<&str>,
 ) -> (Option<String>, Option<RunId>) {
     let s = shared.lock().unwrap();
-    let sid = if let Some(h) = hint {
-        if s.sessions.contains_key(h) {
-            Some(h.to_string())
-        } else if s.sessions.len() == 1 {
+    let sid = match hint {
+        Some(h) if s.sessions.contains_key(h) => Some(h.to_string()),
+        Some(h) if s.sessions.len() == 1 => {
             warn!(
                 driver,
                 agent = %key,
                 hint = %h,
                 session_count = s.sessions.len(),
-                "pick_session_and_run hint missing from sessions — falling back to single-session heuristic"
+                "session-update hint missing from sessions — falling back to single-session heuristic"
             );
             s.sessions.keys().next().cloned()
-        } else {
+        }
+        Some(h) => {
             warn!(
                 driver,
                 agent = %key,
                 hint = %h,
                 session_count = s.sessions.len(),
-                "pick_session_and_run hint missing with ambiguous sessions — dropping update"
+                "session-update hint missing with ambiguous sessions — dropping update"
             );
             None
         }
-    } else if s.sessions.len() == 1 {
-        s.sessions.keys().next().cloned()
-    } else {
-        if !s.sessions.is_empty() {
-            warn!(
-                driver,
-                agent = %key,
-                session_count = s.sessions.len(),
-                "pick_session_and_run called with no hint and >1 live sessions — dropping update"
-            );
+        None if s.sessions.len() == 1 => s.sessions.keys().next().cloned(),
+        None => {
+            if !s.sessions.is_empty() {
+                warn!(
+                    driver,
+                    agent = %key,
+                    session_count = s.sessions.len(),
+                    "session-update with no hint and >1 live sessions — dropping update"
+                );
+            }
+            None
         }
-        None
     };
     let run = sid
         .as_ref()
