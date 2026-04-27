@@ -184,7 +184,7 @@ pub async fn handle_create_team(
     if !creator_in_members {
         state
             .store
-            .join_channel_by_id_with_system_message(
+            .join_channel_by_id(
                 &team_channel_id,
                 &local_human_id,
                 SenderType::Human,
@@ -224,7 +224,7 @@ pub async fn handle_create_team(
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
         state
             .store
-            .join_channel_by_id_with_system_message(
+            .join_channel_by_id(
                 &team_channel_id,
                 &member.member_id,
                 sender_type,
@@ -382,7 +382,7 @@ pub async fn handle_add_team_member(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     state
         .store
-        .join_channel_by_id_with_system_message(
+        .join_channel_by_id(
             team.channel_id
                 .as_deref()
                 .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "team channel not found"))?,

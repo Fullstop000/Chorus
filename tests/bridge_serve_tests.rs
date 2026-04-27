@@ -1,3 +1,4 @@
+mod harness;
 use std::sync::Arc;
 
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
@@ -5,8 +6,9 @@ use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
 use chorus::server::build_router_with_services;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::messages::ReceivedMessage;
 use chorus::store::Store;
+use harness::join_channel_silent;
 
 /// Insert an agent row with a chosen primary key. Mirrors the helper used in
 /// `server_tests`/`e2e_tests` so identity-typed args (member_id, sender_id)
@@ -143,9 +145,7 @@ async fn start_chorus_server() -> (String, Arc<Store>) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    store
-        .join_channel("general", "testuser", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "testuser", "human");
 
     let router = build_router_with_services(
         store.clone(),
@@ -327,9 +327,7 @@ async fn bridge_sends_message_to_chorus_server() {
     // 1. Start the Chorus server with a seeded channel + agent.
     let (server_url, store) = start_chorus_server().await;
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
 
     // 2. Start the bridge pointed at the Chorus server.
     let (bridge_addr, bridge_ct) = start_bridge_with_server(&server_url).await;
@@ -491,13 +489,9 @@ async fn bridge_read_history_formats_task_event_messages() {
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("eng", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
     seed_agent_with_id(&store, "agent-one", "agent-one", "claude", "sonnet");
-    store
-        .join_channel("eng", "agent-one", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "eng", "agent-one", "agent");
 
     let payload = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"wire up","subChannelId":"s-1","actor":"alice","prevStatus":"todo","nextStatus":"in_progress","claimedBy":"alice"}"#;
     store.create_system_message(&channel_id, payload).unwrap();
@@ -533,13 +527,9 @@ async fn bridge_check_messages_formats_task_event() {
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("eng", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
     seed_agent_with_id(&store, "agent-one", "agent-one", "claude", "sonnet");
-    store
-        .join_channel("eng", "agent-one", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "eng", "agent-one", "agent");
 
     let payload = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"wire up","subChannelId":"s-1","actor":"alice","prevStatus":"todo","nextStatus":"in_progress","claimedBy":"alice"}"#;
     store.create_system_message(&channel_id, payload).unwrap();

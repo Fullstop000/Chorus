@@ -5,7 +5,7 @@ use std::sync::Arc;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
-use harness::build_router;
+use harness::{build_router, join_channel_silent};
 
 async fn start_test_server() -> (String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
@@ -24,9 +24,7 @@ async fn start_test_server() -> (String, Arc<Store>) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    store
-        .join_channel("general", "testuser", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "testuser", "human");
     let router = build_router(store.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -68,9 +66,7 @@ async fn test_human_to_agent_message_flow() {
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
 
     store
         .create_message(CreateMessage {
@@ -106,9 +102,7 @@ async fn test_agent_reply_in_history() {
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
 
     let resp = client
         .post(format!("{url}/internal/agent/bot1/send"))
@@ -145,9 +139,7 @@ async fn test_blocking_receive_wakes_on_message() {
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
 
     let url2 = url.clone();
     let client2 = client.clone();
@@ -196,9 +188,7 @@ async fn test_task_board_e2e() {
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
 
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
@@ -267,9 +257,7 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
 
     let workspace_dir = store.agents_dir().join("bot1");
     let notes_dir = workspace_dir.join("notes");
@@ -342,12 +330,8 @@ async fn test_multi_agent_channel_communication() {
 
     seed_agent_with_id(&store, "claude_bot", "Claude", "claude", "sonnet");
     seed_agent_with_id(&store, "codex_bot", "Codex", "codex", "o3");
-    store
-        .join_channel("general", "claude_bot", SenderType::Agent)
-        .unwrap();
-    store
-        .join_channel("general", "codex_bot", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "claude_bot", "agent");
+    join_channel_silent(&store, "general", "codex_bot", "agent");
 
     // Claude sends a message
     client
@@ -468,9 +452,7 @@ async fn task_lifecycle_emits_four_events_in_parent_channel() {
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("eng", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
 
     // create → claim → in_review → done
     store
@@ -518,9 +500,7 @@ async fn batched_create_tasks_emits_one_event_per_task() {
         .create_channel("eng2", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("bob", "bob").unwrap();
-    store
-        .join_channel("eng2", "bob", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "eng2", "bob", "human");
 
     // Three tasks in one call exercises the pending_events Vec with > 1 entry.
     let created = store

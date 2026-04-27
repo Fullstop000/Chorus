@@ -96,7 +96,7 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    store.create_human("alice").unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
     store
         .join_channel("general", "alice", SenderType::Human)
         .unwrap();

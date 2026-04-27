@@ -70,6 +70,8 @@
 //! a test hangs, check whether the runtime has valid auth in its config dir.
 //! Re-run with `RUST_LOG=chorus=debug` to see the per-driver handshake traces.
 
+mod harness;
+use harness::join_channel_silent;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -87,7 +89,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
 use chorus::server::build_router_with_services;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::messages::ReceivedMessage;
 use chorus::store::{AgentRecordUpsert, Store};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::timeout;
@@ -159,9 +161,9 @@ impl AgentLifecycle for NoopLifecycle {
 /// the server's base URL and the shared `Store`.
 async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>)> {
     let store = Arc::new(Store::open(":memory:")?);
-    store.create_human("tester")?;
+    store.ensure_human_with_id("tester", "tester")?;
     store.create_channel("general", Some("General"), ChannelType::Channel, None)?;
-    store.join_channel("general", "tester", SenderType::Human)?;
+    join_channel_silent(&store, "general", "tester", "human");
 
     let router = build_router_with_services(
         store.clone(),
@@ -260,7 +262,7 @@ fn seed_agent(
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", agent_key, SenderType::Agent)?;
+    join_channel_silent(store, "general", agent_key, "agent");
     Ok(())
 }
 

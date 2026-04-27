@@ -11,7 +11,7 @@ use harness::build_router;
 
 async fn start_fixture() -> String {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.create_human("testuser").unwrap();
+    store.ensure_human_with_id("testuser", "testuser").unwrap();
     let router = build_router(store);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

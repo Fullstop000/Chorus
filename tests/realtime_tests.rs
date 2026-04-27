@@ -7,7 +7,7 @@ use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
 use futures_util::StreamExt;
-use harness::build_router;
+use harness::{build_router, join_channel_silent};
 use serde_json::Value;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -34,9 +34,7 @@ async fn start_test_server() -> (String, Arc<Store>, TestIdentities) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    store
-        .join_channel("general", &alice.id, SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", &alice.id, "human");
     let router = build_router(store.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -108,9 +106,7 @@ async fn test_realtime_skips_non_member_channel() {
     store
         .create_channel("private", Some("Private"), ChannelType::Channel, None)
         .unwrap();
-    store
-        .join_channel("private", &ids.zoe_id, SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "private", &ids.zoe_id, "human");
 
     let (mut socket, _) =
         connect_async(format!("{base_url}/api/events/ws?viewer={}", ids.alice_id))

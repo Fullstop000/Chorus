@@ -14,7 +14,7 @@ use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
-use harness::{build_router, build_router_with_lifecycle};
+use harness::{build_router, build_router_with_lifecycle, join_channel_silent};
 use std::collections::HashSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -56,13 +56,9 @@ fn seed_default_workspace(store: &Arc<Store>) {
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(store, "general", "alice", "human");
     seed_agent_with_id(store, "bot1", "Bot 1", "claude", "sonnet");
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(store, "general", "bot1", "agent");
 }
 
 /// Insert an agent row with a chosen primary key. Used by server-test
@@ -372,9 +368,7 @@ async fn test_internal_agent_name_send_uses_canonical_agent_id() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .join_channel("general", &agent_id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", &agent_id, "agent");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "uuid reply" });
     let resp = app
@@ -1809,9 +1803,7 @@ async fn test_send_starts_inactive_agent_recipients() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .join_channel("general", &bot2_id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", &bot2_id, "agent");
 
     let send_req = serde_json::json!({ "target": "#general", "content": "wake bot2" });
     let resp = app
@@ -2476,9 +2468,7 @@ async fn test_list_channels_includes_team_without_human_membership() {
     store
         .create_team_member(&team_id, "bot1", "agent", "leader")
         .unwrap();
-    store
-        .join_channel("qa-eng", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "qa-eng", "bot1", "agent");
 
     let resp = app
         .oneshot(
@@ -2622,12 +2612,8 @@ async fn test_at_mention_forwards_to_team_channel() {
     store
         .create_team_member(&team_id, &bot2.id, "agent", "operator")
         .unwrap();
-    store
-        .join_channel("eng-team", &bot1.id, SenderType::Agent)
-        .unwrap();
-    store
-        .join_channel("eng-team", &bot2.id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "eng-team", &bot1.id, "agent");
+    join_channel_silent(&store, "eng-team", &bot2.id, "agent");
 
     let send_req =
         serde_json::json!({ "target": "#general", "content": "hey @eng-team build something" });

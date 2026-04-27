@@ -12,6 +12,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::server::build_router_with_services;
 use chorus::store::messages::ReceivedMessage;
 use chorus::store::Store;
+use rusqlite::params;
 
 pub struct NoopLifecycle;
 
@@ -79,4 +80,28 @@ pub fn build_router_with_lifecycle(
         )) as SharedRuntimeStatusProvider,
         vec![],
     )
+}
+
+/// Test helper: silently insert a channel membership row without emitting
+/// events or creating a system message.
+pub fn join_channel_silent(
+    store: &Store,
+    channel_name: &str,
+    member_id: &str,
+    member_type: &str,
+) {
+    let conn = store.conn_for_test();
+    let channel_id: String = conn
+        .query_row(
+            "SELECT id FROM channels WHERE name = ?1",
+            params![channel_name],
+            |r| r.get(0),
+        )
+        .unwrap();
+    conn.execute(
+        "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq)
+         VALUES (?1, ?2, ?3, 0)",
+        params![channel_id, member_id, member_type],
+    )
+    .unwrap();
 }

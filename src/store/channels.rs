@@ -523,56 +523,6 @@ impl Store {
         Ok(rows.next().transpose()?)
     }
 
-    pub fn join_channel(
-        &self,
-        channel_name: &str,
-        member_id: &str,
-        member_type: SenderType,
-    ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
-            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
-        let mt = member_type.as_str();
-        let rows = conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
-            params![channel.id, member_id, mt],
-        )?;
-        if rows > 0 {
-            let event = super::StreamEvent::member_joined(
-                channel.id,
-                member_id.to_string(),
-                mt.to_string(),
-            );
-            let _ = self.stream_tx.send(event);
-        }
-        Ok(())
-    }
-
-    /// Join a channel by stable id so API handlers do not have to resolve the
-    /// mutable channel name before mutating membership.
-    pub fn join_channel_by_id(
-        &self,
-        channel_id: &str,
-        member_id: &str,
-        member_type: SenderType,
-    ) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
-        let mt = member_type.as_str();
-        let rows = conn.execute(
-            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
-            params![channel_id, member_id, mt],
-        )?;
-        if rows > 0 {
-            let event = super::StreamEvent::member_joined(
-                channel_id.to_string(),
-                member_id.to_string(),
-                mt.to_string(),
-            );
-            let _ = self.stream_tx.send(event);
-        }
-        Ok(())
-    }
-
     /// Resolve a human-readable label for a channel member (display name for
     /// agents, name for humans). Used when constructing system messages.
     fn resolve_member_label_tx(
@@ -601,7 +551,7 @@ impl Store {
 
     /// Join a channel and post a server-authored system message announcing the
     /// join. Idempotent: returns `Ok(false)` when the member is already present.
-    pub fn join_channel_by_id_with_system_message(
+    pub fn join_channel_by_id(
         &self,
         channel_id: &str,
         member_id: &str,
@@ -640,7 +590,7 @@ impl Store {
     }
 
     /// Convenience wrapper that resolves the channel by name before joining.
-    pub fn join_channel_with_system_message(
+    pub fn join_channel(
         &self,
         channel_name: &str,
         member_id: &str,
@@ -650,7 +600,41 @@ impl Store {
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         drop(conn);
-        self.join_channel_by_id_with_system_message(&channel.id, member_id, member_type)
+        self.join_channel_by_id(&channel.id, member_id, member_type)
+    }
+
+    #[cfg(test)]
+    pub fn join_channel_silent(
+        &self,
+        channel_name: &str,
+        member_id: &str,
+        member_type: SenderType,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
+            .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
+        let mt = member_type.as_str();
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+            params![channel.id, member_id, mt],
+        )?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub fn join_channel_by_id_silent(
+        &self,
+        channel_id: &str,
+        member_id: &str,
+        member_type: SenderType,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let mt = member_type.as_str();
+        conn.execute(
+            "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq) VALUES (?1, ?2, ?3, 0)",
+            params![channel_id, member_id, mt],
+        )?;
+        Ok(())
     }
 
     pub fn get_channel_members(&self, channel_id: &str) -> Result<Vec<ChannelMember>> {
