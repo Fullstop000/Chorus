@@ -143,30 +143,6 @@ impl ChorusBackend {
         )
     }
 
-    /// Blocking receive with timeout (used by tests). Prefer [`Backend::check_messages`]
-    /// for non-blocking polling in MCP tool paths.
-    pub async fn receive_messages(
-        &self,
-        agent_key: &str,
-        block: bool,
-        timeout_ms: u64,
-    ) -> Result<String, BridgeError> {
-        let url = format!(
-            "{}/receive?block={}&timeout={}",
-            self.base_url(agent_key),
-            block,
-            timeout_ms
-        );
-        let res = self.send_request(self.client.get(&url), &url).await?;
-
-        let status = res.status().as_u16();
-        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
-            status,
-            body: format!("invalid JSON from server: {}", e),
-        })?;
-        Self::format_received_messages(&data)
-    }
-
     /// Send a request and handle common transport/server errors.
     async fn send_request(
         &self,
