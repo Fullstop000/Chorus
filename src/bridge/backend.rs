@@ -3,7 +3,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 use super::error::BridgeError;
-use super::format::{format_attachments, format_target, to_local_time};
+use super::format::{format_attachments, to_local_time};
 
 // ---------------------------------------------------------------------------
 // Backend trait
@@ -36,15 +36,7 @@ pub trait Backend: Send + Sync {
         attachment_ids: Option<Vec<String>>,
     ) -> Result<String, BridgeError>;
 
-    /// Receive new messages for this agent (blocking or non-blocking).
-    async fn receive_messages(
-        &self,
-        agent_key: &str,
-        block: bool,
-        timeout_ms: u64,
-    ) -> Result<String, BridgeError>;
-
-    /// Check for new messages (non-blocking convenience).
+    /// Check for new messages (non-blocking).
     async fn check_messages(&self, agent_key: &str) -> Result<String, BridgeError>;
 
     /// Read message history from a channel.
@@ -150,76 +142,10 @@ impl ChorusBackend {
             urlencoding::encode(agent_key)
         )
     }
-}
 
-#[async_trait]
-impl Backend for ChorusBackend {
-    async fn send_message(
-        &self,
-        agent_key: &str,
-        target: &str,
-        content: &str,
-        attachment_ids: Option<Vec<String>>,
-    ) -> Result<String, BridgeError> {
-        if target.is_empty() {
-            return Err(BridgeError::InvalidTarget {
-                target: target.to_string(),
-                hint: "use '#channel' for channels or 'dm:@peer' for DMs".to_string(),
-            });
-        }
-
-        let mut body = serde_json::json!({ "target": target, "content": content });
-        if let Some(ids) = &attachment_ids {
-            body["attachmentIds"] = serde_json::json!(ids);
-        }
-
-        let url = format!("{}/send", self.base_url(agent_key));
-        let res = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
-
-        // Capture the status before consuming the body so we can attribute
-        // JSON-parse failures and server-reported errors to the real HTTP
-        // status rather than a zero sentinel.
-        let status = res.status().as_u16();
-        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
-            status,
-            body: format!("invalid JSON from server: {}", e),
-        })?;
-
-        if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-            return Err(BridgeError::ServerError {
-                status,
-                body: err.to_string(),
-            });
-        }
-
-        let message_id = data.get("messageId").and_then(|v| v.as_str()).unwrap_or("");
-        let content_suffix = if !content.is_empty() {
-            format!("\nSent: {}", content)
-        } else {
-            String::new()
-        };
-        Ok(format!(
-            "Message sent to {}. Message ID: {}{}",
-            target, message_id, content_suffix
-        ))
-    }
-
-    async fn receive_messages(
+    /// Blocking receive with timeout (used by tests). Prefer [`Backend::check_messages`]
+    /// for non-blocking polling in MCP tool paths.
+    pub async fn receive_messages(
         &self,
         agent_key: &str,
         block: bool,
@@ -231,28 +157,39 @@ impl Backend for ChorusBackend {
             block,
             timeout_ms
         );
-        let res =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| BridgeError::PlatformUnreachable {
-                    url: url.clone(),
-                    cause: e.to_string(),
-                })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+        let res = self.send_request(self.client.get(&url), &url).await?;
 
         let status = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
             status,
             body: format!("invalid JSON from server: {}", e),
         })?;
+        Self::format_received_messages(&data)
+    }
 
+    /// Send a request and handle common transport/server errors.
+    async fn send_request(
+        &self,
+        req: reqwest::RequestBuilder,
+        url: &str,
+    ) -> Result<reqwest::Response, BridgeError> {
+        let res = req
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.to_string(),
+                cause: e.to_string(),
+            })?;
+        if !res.status().is_success() {
+            let status = res.status().as_u16();
+            let body = res.text().await.unwrap_or_default();
+            return Err(BridgeError::ServerError { status, body });
+        }
+        Ok(res)
+    }
+
+    /// Format the `messages` array from a `/receive` response into an agent-facing string.
+    fn format_received_messages(data: &Value) -> Result<String, BridgeError> {
         let messages = match data.get("messages").and_then(|v| v.as_array()) {
             Some(arr) if !arr.is_empty() => arr,
             _ => return Ok("No new messages.".into()),
@@ -261,7 +198,13 @@ impl Backend for ChorusBackend {
         let formatted: Vec<String> = messages
             .iter()
             .map(|m| {
-                let target = format_target(m);
+                let channel_type = m.get("channel_type").and_then(|v| v.as_str()).unwrap_or("");
+                let channel_name = m.get("channel_name").and_then(|v| v.as_str()).unwrap_or("");
+                let target = if channel_type == "dm" {
+                    format!("dm:@{}", channel_name)
+                } else {
+                    format!("#{}", channel_name)
+                };
                 let msg_id = m
                     .get("message_id")
                     .and_then(|v| v.as_str())
@@ -297,9 +240,72 @@ impl Backend for ChorusBackend {
             formatted.join("\n")
         ))
     }
+}
+
+#[async_trait]
+impl Backend for ChorusBackend {
+    async fn send_message(
+        &self,
+        agent_key: &str,
+        target: &str,
+        content: &str,
+        attachment_ids: Option<Vec<String>>,
+    ) -> Result<String, BridgeError> {
+        if target.is_empty() {
+            return Err(BridgeError::InvalidTarget {
+                target: target.to_string(),
+                hint: "use '#channel' for channels or 'dm:@peer' for DMs".to_string(),
+            });
+        }
+
+        let mut body = serde_json::json!({ "target": target, "content": content });
+        if let Some(ids) = &attachment_ids {
+            body["attachmentIds"] = serde_json::json!(ids);
+        }
+
+        let url = format!("{}/send", self.base_url(agent_key));
+        let res = self
+            .send_request(self.client.post(&url).json(&body), &url)
+            .await?;
+
+        // Capture the status before consuming the body so we can attribute
+        // JSON-parse failures and server-reported errors to the real HTTP
+        // status rather than a zero sentinel.
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
+        })?;
+
+        if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
+            return Err(BridgeError::ServerError {
+                status,
+                body: err.to_string(),
+            });
+        }
+
+        let message_id = data.get("messageId").and_then(|v| v.as_str()).unwrap_or("");
+        let content_suffix = if !content.is_empty() {
+            format!("\nSent: {}", content)
+        } else {
+            String::new()
+        };
+        Ok(format!(
+            "Message sent to {}. Message ID: {}{}",
+            target, message_id, content_suffix
+        ))
+    }
 
     async fn check_messages(&self, agent_key: &str) -> Result<String, BridgeError> {
-        self.receive_messages(agent_key, false, 0).await
+        let url = format!("{}/receive?block=false", self.base_url(agent_key));
+        let res = self.send_request(self.client.get(&url), &url).await?;
+
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
+        })?;
+        Self::format_received_messages(&data)
     }
 
     async fn read_history(
@@ -324,21 +330,7 @@ impl Backend for ChorusBackend {
             url.push_str(&format!("&after={}", a));
         }
 
-        let res =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| BridgeError::PlatformUnreachable {
-                    url: url.clone(),
-                    cause: e.to_string(),
-                })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+        let res = self.send_request(self.client.get(&url), &url).await?;
 
         let status = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
@@ -523,21 +515,7 @@ impl Backend for ChorusBackend {
 
     async fn server_info(&self, agent_key: &str) -> Result<Value, BridgeError> {
         let url = format!("{}/server", self.base_url(agent_key));
-        let res =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| BridgeError::PlatformUnreachable {
-                    url: url.clone(),
-                    cause: e.to_string(),
-                })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+        let res = self.send_request(self.client.get(&url), &url).await?;
 
         let status = res.status().as_u16();
         res.json().await.map_err(|e| BridgeError::ServerError {
@@ -562,21 +540,7 @@ impl Backend for ChorusBackend {
             url.push_str(&format!("&status={}", urlencoding::encode(status_str)));
         }
 
-        let res =
-            self.client
-                .get(&url)
-                .send()
-                .await
-                .map_err(|e| BridgeError::PlatformUnreachable {
-                    url: url.clone(),
-                    cause: e.to_string(),
-                })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+        let res = self.send_request(self.client.get(&url), &url).await?;
 
         let status = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
@@ -648,21 +612,8 @@ impl Backend for ChorusBackend {
 
         let url = format!("{}/tasks", self.base_url(agent_key));
         let res = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+            .send_request(self.client.post(&url).json(&body), &url)
+            .await?;
 
         let status = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
@@ -710,21 +661,8 @@ impl Backend for ChorusBackend {
 
         let url = format!("{}/tasks/claim", self.base_url(agent_key));
         let res = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+            .send_request(self.client.post(&url).json(&body), &url)
+            .await?;
 
         let status = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
@@ -789,21 +727,8 @@ impl Backend for ChorusBackend {
 
         let url = format!("{}/tasks/unclaim", self.base_url(agent_key));
         let res = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+            .send_request(self.client.post(&url).json(&body), &url)
+            .await?;
 
         let status = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
@@ -836,24 +761,8 @@ impl Backend for ChorusBackend {
 
         let url = format!("{}/tasks/update-status", self.base_url(agent_key));
         let res = self
-            .client
-            .post(&url)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.clone(),
-                cause: e.to_string(),
-            })?;
-
-        if !res.status().is_success() {
-            let status_code = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError {
-                status: status_code,
-                body,
-            });
-        }
+            .send_request(self.client.post(&url).json(&body), &url)
+            .await?;
 
         let status_code = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
@@ -898,21 +807,13 @@ impl Backend for ChorusBackend {
         // Resolve channel
         let resolve_url = format!("{}/resolve-channel", self.base_url(agent_key));
         let resolve_res = self
-            .client
-            .post(&resolve_url)
-            .json(&serde_json::json!({ "target": channel }))
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: resolve_url.clone(),
-                cause: e.to_string(),
-            })?;
-
-        if !resolve_res.status().is_success() {
-            let status = resolve_res.status().as_u16();
-            let body = resolve_res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+            .send_request(
+                self.client
+                    .post(&resolve_url)
+                    .json(&serde_json::json!({ "target": channel })),
+                &resolve_url,
+            )
+            .await?;
 
         let resolve_status = resolve_res.status().as_u16();
         let resolve_data: Value =
@@ -967,21 +868,8 @@ impl Backend for ChorusBackend {
 
         let upload_url = format!("{}/upload", self.base_url(agent_key));
         let res = self
-            .client
-            .post(&upload_url)
-            .multipart(form)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: upload_url.clone(),
-                cause: e.to_string(),
-            })?;
-
-        if !res.status().is_success() {
-            let status = res.status().as_u16();
-            let body = res.text().await.unwrap_or_default();
-            return Err(BridgeError::ServerError { status, body });
-        }
+            .send_request(self.client.post(&upload_url).multipart(form), &upload_url)
+            .await?;
 
         let status = res.status().as_u16();
         let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {

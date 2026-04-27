@@ -466,10 +466,6 @@ impl RuntimeDriver for KimiDriver {
         Ok(vec![ModelInfo::from_id("kimi-code/kimi-for-coding".into())])
     }
 
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>> {
-        Ok(vec![])
-    }
-
     /// Native `open_session`: allocates a [`KimiHandle`] and stores the resume
     /// intent from `intent`. Reuses an existing live core for `key`, or builds
     /// a fresh one — removing the "must call attach first" requirement from

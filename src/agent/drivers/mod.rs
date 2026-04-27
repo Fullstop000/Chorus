@@ -51,15 +51,11 @@ bitflags::bitflags! {
     /// Optional features a runtime may advertise during probing.
     ///
     /// Used by [`RuntimeProbe`] to tell the agent manager which surfaces
-    /// (login, session list, resume, cancel, etc.) to expose in the UI.
+    /// (login, model list) to expose in the UI.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
     pub struct CapabilitySet: u32 {
-        const LOGIN          = 1 << 0;
-        const SESSION_LIST   = 1 << 1;
-        const RESUME_SESSION = 1 << 2;
-        const CANCEL         = 1 << 3;
-        const SLASH_COMMANDS = 1 << 4;
-        const MODEL_LIST     = 1 << 5;
+        const LOGIN      = 1 << 0;
+        const MODEL_LIST = 1 << 1;
     }
 }
 
@@ -95,14 +91,12 @@ pub enum LoginOutcome {
 /// - `AcpAdapter`: external adapter binary speaking ACP over stdio.
 /// - `AcpNative`: runtime speaks ACP natively (e.g. Kimi CLI).
 /// - `StreamJson`: bespoke streaming-JSON protocol (e.g. Claude raw).
-/// - `HttpAppServer`: app server model (e.g. OpenCode daemon).
 /// - `CodexAppServer`: native app-server protocol over stdio (JSONL, no `jsonrpc` header on wire).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportKind {
     AcpAdapter,
     AcpNative,
     StreamJson,
-    HttpAppServer,
     /// Codex app-server protocol — JSONL over stdio. Wire format omits the
     /// `"jsonrpc":"2.0"` header present in ACP messages.
     CodexAppServer,
@@ -478,8 +472,6 @@ pub struct PromptReq {
 pub enum CancelOutcome {
     /// The in-flight run was aborted; the session remains usable.
     Aborted,
-    /// The runtime replaced the session as part of cancellation.
-    SessionReplaced { new_session_id: SessionId },
     /// No run was in flight when cancel was invoked.
     NotInFlight,
 }
@@ -508,14 +500,6 @@ impl ModelInfo {
             default_reasoning_effort: None,
         }
     }
-}
-
-/// Slash command description returned by [`RuntimeDriver::list_commands`].
-#[derive(Debug, Clone)]
-pub struct SlashCommand {
-    pub name: String,
-    pub description: String,
-    pub argument_hint: Option<String>,
 }
 
 /// Previously-stored session metadata returned by
@@ -603,9 +587,6 @@ pub trait RuntimeDriver: Send + Sync + 'static {
 
     /// Enumerate the runtime's available models.
     async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>>;
-
-    /// Enumerate runtime-advertised slash commands (if supported).
-    async fn list_commands(&self) -> anyhow::Result<Vec<SlashCommand>>;
 
     /// Open a session on an agent. Unified replacement for the legacy
     /// `attach`, `new_session`, and `resume_session` verbs.

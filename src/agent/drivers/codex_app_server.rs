@@ -28,31 +28,16 @@ pub enum TurnStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct FileChangeInfo {
-    pub path: String,
-    pub kind: String, // "create", "modify", "delete"
-    pub diff: Option<String>,
-}
-
-#[derive(Debug, Clone)]
 pub enum ItemEvent {
     AgentMessage {
         id: String,
         text: String,
-    },
-    Reasoning {
-        id: String,
-        summary: String,
     },
     CommandExecution {
         id: String,
         command: String,
         cwd: Option<String>,
         exit_code: Option<i32>,
-    },
-    FileChange {
-        id: String,
-        changes: Vec<FileChangeInfo>,
     },
     McpToolCall {
         id: String,
@@ -631,14 +616,10 @@ fn parse_item(item: &Value) -> ItemEvent {
                 .to_string();
             ItemEvent::AgentMessage { id, text }
         }
-        "reasoning" => {
-            let summary = item
-                .get("summary")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            ItemEvent::Reasoning { id, summary }
-        }
+        "reasoning" | "fileChange" => ItemEvent::Other {
+            item_type: item_type.clone(),
+            id,
+        },
         "commandExecution" => {
             let command = item
                 .get("command")
@@ -659,33 +640,6 @@ fn parse_item(item: &Value) -> ItemEvent {
                 cwd,
                 exit_code,
             }
-        }
-        "fileChange" => {
-            let changes = item
-                .get("changes")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .map(|c| FileChangeInfo {
-                            path: c
-                                .get("path")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            kind: c
-                                .get("kind")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            diff: c
-                                .get("diff")
-                                .and_then(|v| v.as_str())
-                                .map(|s| s.to_string()),
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            ItemEvent::FileChange { id, changes }
         }
         "mcpToolCall" => {
             let server = item
@@ -1070,14 +1024,12 @@ mod tests {
         let ev = parse_line_with_registry(line, |_| None);
         match ev {
             AppServerEvent::ItemCompleted {
-                item: ItemEvent::FileChange { changes, .. },
+                item: ItemEvent::Other { item_type, id },
             } => {
-                assert_eq!(changes.len(), 1);
-                assert_eq!(changes[0].path, "foo.rs");
-                assert_eq!(changes[0].kind, "modify");
-                assert_eq!(changes[0].diff.as_deref(), Some("..."));
+                assert_eq!(item_type, "fileChange");
+                assert_eq!(id, "item_3");
             }
-            other => panic!("expected ItemCompleted(FileChange), got {other:?}"),
+            other => panic!("expected ItemCompleted(Other), got {other:?}"),
         }
     }
 
