@@ -486,7 +486,6 @@ impl RuntimeDriver for GeminiDriver {
         ])
     }
 
-
     async fn open_session(
         &self,
         key: AgentKey,

@@ -185,7 +185,6 @@ impl RuntimeDriver for OpencodeDriver {
             .collect())
     }
 
-
     /// Native unified factory. Bootstrap path (no live child yet): allocates
     /// handle only, zero wire I/O. Secondary path (live child): does eager
     /// wire I/O to mint/load the session id, but emits **no** `DriverEvent`s

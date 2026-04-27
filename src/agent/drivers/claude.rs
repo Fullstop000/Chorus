@@ -283,7 +283,6 @@ impl RuntimeDriver for ClaudeDriver {
         ])
     }
 
-
     /// Allocates a [`ClaudeHandle`] and stores the resume intent from `intent`.
     /// For `SessionIntent::Resume(id)` both `preassigned_session_id` and
     /// `resumed_session_id` are set: the former lets `session_id()` return

@@ -140,7 +140,6 @@ impl RuntimeDriver for FakeDriver {
         Ok(self.models.clone())
     }
 
-
     /// Allocates a handle, stores the intent's session id on
     /// `resumed_session_id` (for `Resume`) or leaves it `None` (for `New`).
     /// Replaces the three legacy verbs as the single allocation path.

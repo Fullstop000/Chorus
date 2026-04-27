@@ -240,7 +240,6 @@ impl RuntimeDriver for CodexDriver {
         ])
     }
 
-
     /// Allocates a [`CodexHandle`] for the given intent. For
     /// `SessionIntent::Resume(id)` the `resume_session_id` field is set,
     /// letting `run_inner` send `thread/resume` instead of `thread/start`.

@@ -173,10 +173,13 @@ impl ChorusBackend {
         req: reqwest::RequestBuilder,
         url: &str,
     ) -> Result<reqwest::Response, BridgeError> {
-        let res = req.send().await.map_err(|e| BridgeError::PlatformUnreachable {
-            url: url.to_string(),
-            cause: e.to_string(),
-        })?;
+        let res = req
+            .send()
+            .await
+            .map_err(|e| BridgeError::PlatformUnreachable {
+                url: url.to_string(),
+                cause: e.to_string(),
+            })?;
         if !res.status().is_success() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();
@@ -805,7 +808,9 @@ impl Backend for ChorusBackend {
         let resolve_url = format!("{}/resolve-channel", self.base_url(agent_key));
         let resolve_res = self
             .send_request(
-                self.client.post(&resolve_url).json(&serde_json::json!({ "target": channel })),
+                self.client
+                    .post(&resolve_url)
+                    .json(&serde_json::json!({ "target": channel })),
                 &resolve_url,
             )
             .await?;

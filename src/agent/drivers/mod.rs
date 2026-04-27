@@ -502,7 +502,6 @@ impl ModelInfo {
     }
 }
 
-
 /// Previously-stored session metadata returned by
 /// [`RuntimeDriver::list_sessions`].
 #[derive(Debug, Clone)]
@@ -588,7 +587,6 @@ pub trait RuntimeDriver: Send + Sync + 'static {
 
     /// Enumerate the runtime's available models.
     async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>>;
-
 
     /// Open a session on an agent. Unified replacement for the legacy
     /// `attach`, `new_session`, and `resume_session` verbs.
