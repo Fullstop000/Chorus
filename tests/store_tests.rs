@@ -2213,11 +2213,7 @@ fn test_join_channel_with_system_message_creates_notice_and_is_idempotent() {
 
     // Human joins — creates system message.
     let joined = store
-        .join_channel_by_id_with_system_message(
-            &channel.id,
-            "alice",
-            SenderType::Human,
-        )
+        .join_channel_by_id_with_system_message(&channel.id, "alice", SenderType::Human)
         .unwrap();
     assert!(joined, "first join should return true");
 
@@ -2230,11 +2226,7 @@ fn test_join_channel_with_system_message_creates_notice_and_is_idempotent() {
 
     // Idempotent re-join — no duplicate system message.
     let joined_again = store
-        .join_channel_by_id_with_system_message(
-            &channel.id,
-            "alice",
-            SenderType::Human,
-        )
+        .join_channel_by_id_with_system_message(&channel.id, "alice", SenderType::Human)
         .unwrap();
     assert!(!joined_again, "re-join should return false");
 
@@ -2259,11 +2251,7 @@ fn test_join_channel_with_system_message_creates_notice_and_is_idempotent() {
         })
         .unwrap();
     let bot_joined = store
-        .join_channel_by_id_with_system_message(
-            &channel.id,
-            &bot_id,
-            SenderType::Agent,
-        )
+        .join_channel_by_id_with_system_message(&channel.id, &bot_id, SenderType::Agent)
         .unwrap();
     assert!(bot_joined, "agent first join should return true");
 
