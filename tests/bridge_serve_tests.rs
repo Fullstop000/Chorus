@@ -519,3 +519,57 @@ async fn bridge_read_history_formats_task_event_messages() {
         history
     );
 }
+
+#[tokio::test]
+async fn bridge_check_messages_formats_task_event() {
+    use chorus::bridge::backend::{Backend, ChorusBackend};
+    use chorus::store::channels::ChannelType;
+    use std::time::Duration;
+    use tokio::time::timeout;
+
+    let (server_url, store) = start_chorus_server().await;
+
+    let channel_id = store
+        .create_channel("eng", None, ChannelType::Channel, None)
+        .unwrap();
+    store.ensure_human_with_id("alice", "alice").unwrap();
+    store
+        .join_channel("eng", "alice", SenderType::Human)
+        .unwrap();
+    seed_agent_with_id(&store, "agent-one", "agent-one", "claude", "sonnet");
+    store
+        .join_channel("eng", "agent-one", SenderType::Agent)
+        .unwrap();
+
+    let payload = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"wire up","subChannelId":"s-1","actor":"alice","prevStatus":"todo","nextStatus":"in_progress","claimedBy":"alice"}"#;
+    store.create_system_message(&channel_id, payload).unwrap();
+
+    let backend = ChorusBackend::new(server_url);
+    let expected = r#"[task] alice claimed #7 "wire up" (now in_progress)"#;
+
+    let received = timeout(Duration::from_secs(2), async {
+        loop {
+            let messages = backend
+                .check_messages("agent-one")
+                .await
+                .expect("check_messages should succeed");
+            if messages.contains(expected) {
+                break messages;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("timed out waiting for formatted task-event via check_messages");
+
+    assert!(
+        received.contains(expected),
+        "expected formatted task-event sentence from check_messages, got:\n{}",
+        received
+    );
+    assert!(
+        !received.contains(r#""kind":"task_event""#),
+        "raw JSON must NOT appear in check_messages output; got:\n{}",
+        received
+    );
+}
