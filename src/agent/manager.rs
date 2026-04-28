@@ -131,6 +131,7 @@ impl AgentManager {
         &self,
         agent_name: &str,
         wake_message: Option<ReceivedMessage>,
+        init_directive: Option<String>,
     ) -> anyhow::Result<()> {
         // Already running? Inspect the existing handle's state — only
         // bail if it's truly live. Closed/Failed/Idle handles get evicted
@@ -245,6 +246,7 @@ impl AgentManager {
             is_resume,
             &unread_summary,
             wake_message.as_ref(),
+            init_directive.as_deref(),
         );
 
         activity_log::set_activity_state(
@@ -491,7 +493,15 @@ fn build_start_prompt(
     is_resume: bool,
     unread_summary: &std::collections::HashMap<String, i64>,
     wake_message: Option<&ReceivedMessage>,
+    init_directive: Option<&str>,
 ) -> String {
+    // Caller-provided init directive takes precedence over the auto-generated
+    // prompt — used by the agent-creation path to inject a one-shot
+    // "introduce yourself" instruction. See AgentLifecycle::start_agent.
+    if let Some(directive) = init_directive {
+        return directive.to_string();
+    }
+
     if let Some(msg) = wake_message {
         let target = format_message_target(msg);
         let attachment_count = msg.attachments.as_ref().map_or(0, Vec::len);
@@ -550,8 +560,14 @@ impl AgentLifecycle for AgentManager {
         &'a self,
         agent_name: &'a str,
         wake_message: Option<ReceivedMessage>,
+        init_directive: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::start_agent(self, agent_name, wake_message))
+        Box::pin(AgentManager::start_agent(
+            self,
+            agent_name,
+            wake_message,
+            init_directive,
+        ))
     }
 
     fn notify_agent<'a>(
@@ -655,6 +671,44 @@ mod tests {
             .unwrap();
     }
 
+    #[test]
+    fn build_start_prompt_returns_init_directive_verbatim() {
+        let unread = std::collections::HashMap::new();
+        let directive = "say hi please";
+        let out = build_start_prompt("Bot", false, &unread, None, Some(directive));
+        assert_eq!(out, directive);
+    }
+
+    #[test]
+    fn build_start_prompt_directive_overrides_wake_and_resume_branches() {
+        // Even with a wake_message and resume signal set, the directive wins —
+        // it's the explicit override path the agent-creation flow relies on.
+        let unread = std::collections::HashMap::from([("general".to_string(), 3)]);
+        let wake = ReceivedMessage {
+            message_id: "m1".into(),
+            channel_name: "general".into(),
+            channel_type: "channel".into(),
+            sender_name: "alice".into(),
+            sender_type: "human".into(),
+            content: "ping".into(),
+            timestamp: "2026-04-28T00:00:00Z".into(),
+            attachments: None,
+            forwarded_from: None,
+        };
+        let directive = "introduce yourself";
+        let out = build_start_prompt("Bot", true, &unread, Some(&wake), Some(directive));
+        assert_eq!(out, directive);
+    }
+
+    #[test]
+    fn build_start_prompt_falls_through_when_directive_is_none() {
+        // No directive, no wake message, not a resume → existing benign greeting.
+        let unread = std::collections::HashMap::new();
+        let out = build_start_prompt("Bot", false, &unread, None, None);
+        assert!(out.contains("Hello Bot"));
+        assert!(out.contains("acknowledgement"));
+    }
+
     #[tokio::test]
     async fn start_agent_with_fake_driver() {
         let dir = tempdir().unwrap();
@@ -663,7 +717,7 @@ mod tests {
 
         let manager = make_test_manager(store, dir.path());
 
-        let result = manager.start_agent("v2bot", None).await;
+        let result = manager.start_agent("v2bot", None, None).await;
 
         assert!(result.is_ok(), "start_agent should succeed: {result:?}");
 
@@ -687,7 +741,7 @@ mod tests {
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None).await.unwrap();
+        manager.start_agent("v2bot", None, None).await.unwrap();
 
         // First stop should succeed.
         let r1 = manager.stop_agent("v2bot").await;
@@ -712,7 +766,7 @@ mod tests {
 
         let manager = make_test_manager(store.clone(), dir.path());
 
-        manager.start_agent("v2bot", None).await.unwrap();
+        manager.start_agent("v2bot", None, None).await.unwrap();
 
         manager.sleep_agent("v2bot").await.unwrap();
 
@@ -737,10 +791,10 @@ mod tests {
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None).await.unwrap();
+        manager.start_agent("v2bot", None, None).await.unwrap();
 
         // Second start should be a no-op (returns Ok).
-        let r2 = manager.start_agent("v2bot", None).await;
+        let r2 = manager.start_agent("v2bot", None, None).await;
 
         assert!(r2.is_ok(), "duplicate start should be no-op: {r2:?}");
 
@@ -755,7 +809,7 @@ mod tests {
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None).await.unwrap();
+        manager.start_agent("v2bot", None, None).await.unwrap();
 
         let result = manager.notify_agent("v2bot").await;
         assert!(result.is_ok(), "notify should succeed: {result:?}");
@@ -874,7 +928,7 @@ mod tests {
 
         // Before the fix this returned Ok(()) immediately (contains_key hit).
         // After the fix it must evict and restart.
-        let result = manager.start_agent("recovery-bot", None).await;
+        let result = manager.start_agent("recovery-bot", None, None).await;
         assert!(
             result.is_ok(),
             "start_agent should succeed after evicting a Failed handle: {result:?}",
@@ -927,7 +981,7 @@ mod tests {
             .inject_session_for_test("live-bot", Box::new(active_handle))
             .await;
 
-        let result = manager.start_agent("live-bot", None).await;
+        let result = manager.start_agent("live-bot", None, None).await;
         assert!(
             result.is_ok(),
             "start_agent on an Active agent should be Ok: {result:?}",

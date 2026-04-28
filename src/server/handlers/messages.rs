@@ -858,7 +858,7 @@ pub(crate) async fn deliver_message_to_agents(
                     .get_received_message_for_agent_name(&recipient_name, message_id)?;
                 state
                     .lifecycle
-                    .start_agent(&recipient_name, wake_message)
+                    .start_agent(&recipient_name, wake_message, None)
                     .await?
             }
         }

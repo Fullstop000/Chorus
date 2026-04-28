@@ -97,9 +97,13 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
     (store, router, dir)
 }
 
+/// One observed `start_agent` invocation: `(agent_name, wake_message, init_directive)`.
+/// Tests assert against the recorded sequence to pin call-site behavior.
+type StartedCall = (String, Option<ReceivedMessage>, Option<String>);
+
 #[derive(Default)]
 struct MockLifecycle {
-    started: Mutex<Vec<(String, Option<ReceivedMessage>)>>,
+    started: Mutex<Vec<StartedCall>>,
     stopped: Mutex<Vec<String>>,
     notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
@@ -138,7 +142,7 @@ impl MockLifecycle {
             .lock()
             .unwrap()
             .iter()
-            .map(|(name, _)| name.clone())
+            .map(|(name, _, _)| name.clone())
             .collect()
     }
 
@@ -146,7 +150,7 @@ impl MockLifecycle {
         self.notified.lock().unwrap().clone()
     }
 
-    fn started_calls(&self) -> Vec<(String, Option<ReceivedMessage>)> {
+    fn started_calls(&self) -> Vec<StartedCall> {
         self.started.lock().unwrap().clone()
     }
 
@@ -168,12 +172,14 @@ impl AgentLifecycle for MockLifecycle {
         &'a self,
         agent_name: &'a str,
         wake_message: Option<ReceivedMessage>,
+        init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            self.started
-                .lock()
-                .unwrap()
-                .push((agent_name.to_string(), wake_message));
+            self.started.lock().unwrap().push((
+                agent_name.to_string(),
+                wake_message,
+                init_directive,
+            ));
             self.running.lock().unwrap().insert(agent_name.to_string());
             Ok(())
         })
@@ -235,6 +241,7 @@ impl AgentLifecycle for FailStartLifecycle {
         &'a self,
         _agent_name: &'a str,
         _wake_message: Option<ReceivedMessage>,
+        _init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Err(anyhow::anyhow!("runtime unavailable")) })
     }
@@ -3419,5 +3426,89 @@ async fn public_send_allows_empty_content_with_attachments() {
         resp.status(),
         StatusCode::BAD_REQUEST,
         "empty content with attachments should not be rejected"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Agent self-introduction (#108)
+//
+// New agents auto-join the system channel on creation; before this
+// change they did so silently, leaving humans staring at a member list
+// with no idea who the new arrival was for. We now hand the agent's
+// first run an init directive asking it to introduce itself in #all.
+// These tests pin the wiring: the directive flows from
+// create_and_start_agent into AgentLifecycle::start_agent, and the
+// other start paths (manual restart, message wake) do not.
+// ─────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_create_agent_passes_intro_directive_referencing_system_channel() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    store.ensure_builtin_channels("alice").unwrap();
+
+    let req = serde_json::json!({ "name": "newbot", "runtime": "claude", "model": "sonnet" });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&req).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let started = lifecycle.started_calls();
+    assert_eq!(started.len(), 1, "create-agent should fire one start");
+    let directive = started[0]
+        .2
+        .as_ref()
+        .expect("create-agent must pass an init directive");
+    let expected_channel = Store::DEFAULT_SYSTEM_CHANNEL;
+    assert!(
+        directive.contains(expected_channel),
+        "directive should reference #{expected_channel}: {directive:?}"
+    );
+    assert!(
+        directive.contains("introduc"),
+        "directive should mention introducing: {directive:?}"
+    );
+    // Tool name is intentionally NOT asserted: runtimes can prefix tools
+    // (e.g. mcp__chat__send_message), and the agent's standing system
+    // prompt already names the tool. Hardcoding it here would be brittle.
+    // wake_message stays None for a fresh creation — the directive is
+    // the only first-prompt source.
+    assert!(started[0].1.is_none());
+}
+
+#[tokio::test]
+async fn test_manual_restart_does_not_fire_intro_directive() {
+    // setup_with_lifecycle() already seeds bot1 in the default workspace.
+    let (_store, app, lifecycle) = setup_with_lifecycle();
+    lifecycle.mark_running("bot1");
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/agents/bot1/restart")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "mode": "restart" })).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let started = lifecycle.started_calls();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].0, "bot1");
+    assert!(
+        started[0].2.is_none(),
+        "restart must not pass an init directive — only first-time creation does"
     );
 }

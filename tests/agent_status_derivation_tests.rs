@@ -35,6 +35,7 @@ impl AgentLifecycle for MockLifecycle {
         &'a self,
         agent_name: &'a str,
         _wake_message: Option<ReceivedMessage>,
+        _init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
             self.running.lock().unwrap().insert(agent_name.to_string());
