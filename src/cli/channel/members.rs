@@ -24,11 +24,17 @@ pub async fn run(name: String, server_url: &str) -> anyhow::Result<()> {
         .get("memberCount")
         .and_then(|v| v.as_u64())
         .unwrap_or(0);
-    tracing::info!("{member_count} member{} in #{normalized}:", if member_count == 1 { "" } else { "s" });
+    tracing::info!(
+        "{member_count} member{} in #{normalized}:",
+        if member_count == 1 { "" } else { "s" }
+    );
     if let Some(members) = data.get("members").and_then(|v| v.as_array()) {
         for m in members {
             let member_name = m.get("memberName").and_then(|v| v.as_str()).unwrap_or("?");
-            let member_type = m.get("memberType").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let member_type = m
+                .get("memberType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
             let display = m
                 .get("displayName")
                 .and_then(|v| v.as_str())
