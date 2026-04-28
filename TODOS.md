@@ -26,23 +26,25 @@ Living list of follow-ups that are out of scope for the current branch but worth
   - **Depends on:** Nothing.
   - **Discovered:** 2026-04-18 during channel CLI subcommand refactor (spec non-goal).
 
-- [ ] **`chorus channel del` / `join` should find archived channels by name** — `resolve_channel_id` in `src/cli/channel/mod.rs` calls `GET /api/channels` without `include_archived=true`, so archived rows are invisible to the CLI. The server's `handle_delete_channel` accepts archived user channels, but the CLI turns them into "channel not found" and leaves no way to clean up by name.
+- [x] **`chorus channel del` / `join` should find archived channels by name** — `resolve_channel_id` in `src/cli/channel/mod.rs` calls `GET /api/channels` without `include_archived=true`, so archived rows are invisible to the CLI. The server's `handle_delete_channel` accepts archived user channels, but the CLI turns them into "channel not found" and leaves no way to clean up by name.
   - **Why:** Edge case today, but the failure mode is silent and confusing: the channel exists, the server can delete it, yet the CLI claims it doesn't exist.
   - **Pros:** One-line fix (append `?include_archived=true` to the resolver URL).
   - **Cons:** Slightly larger response payloads for the helper. Immaterial at Chorus's scale.
   - **How to start:** Change `let url = format!("{server_url}/api/channels");` in `resolve_channel_id` to include the query param. Add an integration test: create → archive via store → `chorus channel del <name> --yes` succeeds.
   - **Depends on:** Nothing.
   - **Discovered:** 2026-04-18 during Codex review of PR #61.
+  - **Fixed:** 2026-04-28 on `fix/channel-cli-archived-members`.
 
 - [x] **`chorus channel create` auto-joins the server-side OS user, not the CLI caller** — fixed by the ID-first human identity foundation on `identity-foundation-id-first` (`559dfb6`) and verified by `/gstack-qa` on 2026-04-26. `handle_create_channel` now joins the configured local human ID from server state instead of calling `whoami::username()` on the server process. Hosted/multi-user caller identity remains tracked under the architecture TODO below.
 
-- [ ] **`chorus channel members <name>`** — list who's in a channel from the CLI.
+- [x] **`chorus channel members <name>`** — list who's in a channel from the CLI.
   - **Why:** Server already exposes `GET /api/channels/{id}/members`. Today only the web UI consumes it. Scripters and debuggers would benefit from CLI access.
   - **Pros:** Zero new server work — the endpoint exists. Small CLI addition.
   - **Cons:** None material.
   - **How to start:** New `src/cli/channel/members.rs` that resolves name→id via the shared helper, GETs `/api/channels/{id}/members`, and prints a formatted list (mirror `status.rs` row style).
   - **Depends on:** Nothing.
   - **Discovered:** 2026-04-18 during channel CLI subcommand refactor (spec non-goal).
+  - **Fixed:** 2026-04-28 on `fix/channel-cli-archived-members`.
 
 ## Architecture
 

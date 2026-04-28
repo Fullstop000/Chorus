@@ -9,6 +9,7 @@ mod delete;
 mod history;
 mod join;
 mod list;
+mod members;
 
 use anyhow::Context;
 use clap::Subcommand;
@@ -50,6 +51,8 @@ pub(crate) enum ChannelCommands {
         #[arg(long, default_value = "20", value_parser = clap::value_parser!(i64).range(1..=HISTORY_LIMIT_MAX))]
         limit: i64,
     },
+    /// List members of a channel
+    Members { name: String },
 }
 
 pub async fn run(server_url: String, cmd: ChannelCommands) -> anyhow::Result<()> {
@@ -61,6 +64,7 @@ pub async fn run(server_url: String, cmd: ChannelCommands) -> anyhow::Result<()>
         ChannelCommands::Join { name } => join::run(name, &server_url).await,
         ChannelCommands::List { all } => list::run(all, &server_url).await,
         ChannelCommands::History { name, limit } => history::run(name, limit, &server_url).await,
+        ChannelCommands::Members { name } => members::run(name, &server_url).await,
     }
 }
 
@@ -91,7 +95,7 @@ pub(super) async fn resolve_channel_id(
     name: &str,
 ) -> anyhow::Result<String> {
     let normalized = normalize_channel_name(name);
-    let url = format!("{server_url}/api/channels");
+    let url = format!("{server_url}/api/channels?include_archived=true");
     let res = client
         .get(&url)
         .send()
