@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4.0] - 2026-04-28
+
+### Added
+- **Member-joined chips in chat** — when someone joins a channel, the human chat now shows a centered `[actor] joined [target]` row with clickable name and channel chips, replacing the plain hairline divider. Routes to the actor's profile or the target channel on click.
+- **Structural system-notice primitive** — a single `SystemNotice` component renders any `[actor] [verb] [target?]`-shaped event so future kinds (task_claimed, agent_started, …) work the day they ship without changing the renderer.
+
+### Changed
+- **One column for all structured system payloads** — `messages.notice` is renamed to `messages.payload`, and task-event JSON moves out of `content` into the same column. `content` is now always a human-readable English fallback. Two encodings became one.
+- **Audience-based agent filter** — agents stop seeing ambient channel-state markers (member-joined chips) via a structural `payload.audience != 'humans'` SQL check, not a kind allowlist. Operational events like task creation/claim still flow to agents.
+- **Frontend payload type collapses** to a loose `MessagePayload` (`{kind, [k]: unknown}`) with runtime narrowing in each renderer, instead of a fixed `Notice` interface that locked in one shape.
+
+### Fixed
+- **Auto-join system message on agent creation** — moved out of inner helper so the join always emits a chip in `#all`.
+
+### Removed
+- **`format_message_for_agent` bridge formatter** — agents now read `content` directly because producers always write a clean English sentence. Less indirection, no JSON-in-content reparsing.
+
 ## [0.0.3.0] - 2026-04-27
 
 ### Added
