@@ -78,6 +78,7 @@ impl AgentLifecycle for NoopLifecycle {
         &'a self,
         _agent_name: &'a str,
         _wake_message: Option<ReceivedMessage>,
+        _init_directive: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }

@@ -367,7 +367,18 @@ pub(crate) async fn create_and_start_agent(
             .store
             .join_channel_by_id(&channel.id, &id, SenderType::Agent);
     }
-    let start_error = if let Err(err) = state.lifecycle.start_agent(&name, None).await {
+    // Brand-new agent — ask it to introduce itself in the system channel.
+    // The directive is delivered as the first prompt; the agent's model
+    // produces the intro text and posts it via send_message.
+    let intro_directive = format!(
+        "You have just been added to #{ch}. Use the send_message tool to post a brief one-or-two-sentence introduction of yourself in #{ch}, then stop.",
+        ch = crate::store::Store::DEFAULT_SYSTEM_CHANNEL,
+    );
+    let start_error = if let Err(err) = state
+        .lifecycle
+        .start_agent(&name, None, Some(intro_directive))
+        .await
+    {
         let error_detail = format_anyhow_error(&err);
         warn!(agent = %name, error = %error_detail, "agent created but failed to start");
         Some(format!("{err}"))
@@ -454,7 +465,7 @@ pub async fn handle_update_agent(
             .stop_agent(&name)
             .await
             .map_err(internal_err)?;
-        if let Err(err) = state.lifecycle.start_agent(&name, None).await {
+        if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
             return Err(app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent updated but restart failed: {err}"
@@ -506,7 +517,7 @@ pub async fn handle_restart_agent(
         }
     }
 
-    if let Err(err) = state.lifecycle.start_agent(&name, None).await {
+    if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
         return Err(app_err!(
             AppErrorCode::AgentRestartFailed,
             "restart failed: {err}"
@@ -567,7 +578,7 @@ pub async fn handle_agent_start(
     info!(agent = %name, "starting agent");
     state
         .lifecycle
-        .start_agent(&name, None)
+        .start_agent(&name, None, None)
         .await
         .map_err(internal_err)?;
     info!(agent = %name, "agent started");

@@ -7,10 +7,19 @@ use crate::agent::activity_log::ActivityLogResponse;
 use crate::store::messages::ReceivedMessage;
 
 pub trait AgentLifecycle: Send + Sync {
+    /// Start (or wake) an agent process.
+    ///
+    /// `wake_message` carries the unread message that triggered this start, if
+    /// any. `init_directive`, when `Some`, is delivered as the first prompt
+    /// verbatim, overriding the auto-generated greeting/wake/resume prompt.
+    /// Used by the agent-creation path to ask a brand-new agent to introduce
+    /// itself; left `None` for restart, manual-start, and message-driven wake
+    /// paths so existing behavior is unchanged.
     fn start_agent<'a>(
         &'a self,
         agent_name: &'a str,
         wake_message: Option<ReceivedMessage>,
+        init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
     fn notify_agent<'a>(

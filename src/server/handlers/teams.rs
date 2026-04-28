@@ -104,7 +104,7 @@ async fn restart_agent_member(
         .map_err(internal_err)?;
     state
         .lifecycle
-        .start_agent(agent_name, None)
+        .start_agent(agent_name, None, None)
         .await
         .map_err(internal_err)?;
     Ok(())
