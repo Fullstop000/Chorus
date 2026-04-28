@@ -3472,13 +3472,12 @@ async fn test_create_agent_passes_intro_directive_referencing_system_channel() {
         "directive should reference #{expected_channel}: {directive:?}"
     );
     assert!(
-        directive.contains("send_message"),
-        "directive should tell the agent which tool to use: {directive:?}"
-    );
-    assert!(
         directive.contains("introduc"),
         "directive should mention introducing: {directive:?}"
     );
+    // Tool name is intentionally NOT asserted: runtimes can prefix tools
+    // (e.g. mcp__chat__send_message), and the agent's standing system
+    // prompt already names the tool. Hardcoding it here would be brittle.
     // wake_message stays None for a fresh creation — the directive is
     // the only first-prompt source.
     assert!(started[0].1.is_none());
