@@ -696,8 +696,7 @@ mod tests {
             forwarded_from: None,
         };
         let directive = "introduce yourself";
-        let out =
-            build_start_prompt("Bot", true, &unread, Some(&wake), Some(directive));
+        let out = build_start_prompt("Bot", true, &unread, Some(&wake), Some(directive));
         assert_eq!(out, directive);
     }
 

@@ -3495,7 +3495,9 @@ async fn test_manual_restart_does_not_fire_intro_directive() {
                 .method("POST")
                 .uri("/api/agents/bot1/restart")
                 .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&serde_json::json!({ "mode": "restart" })).unwrap()))
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({ "mode": "restart" })).unwrap(),
+                ))
                 .unwrap(),
         )
         .await
