@@ -139,6 +139,11 @@ pub struct HistoryMessage {
     /// JSON summary of the trace run for collapsed Telescope.
     #[serde(rename = "traceSummary", skip_serializing_if = "Option::is_none")]
     pub trace_summary: Option<String>,
+    /// Kind-discriminated structured payload (member_joined, task_event, …).
+    /// Always paired with a human-readable `content` fallback. Storage is
+    /// untyped — each renderer narrows by inspecting `payload.kind` at runtime.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
 }
 
 /// Explicit read-model row for conversation history while `messages` remains
@@ -173,11 +178,14 @@ pub struct ConversationMessageView {
     pub run_id: Option<String>,
     /// JSON trace summary for collapsed Telescope.
     pub trace_summary: Option<String>,
+    /// Kind-discriminated structured payload (parsed from the `payload` JSON column).
+    pub payload: Option<Value>,
 }
 
 impl ConversationMessageView {
     pub(crate) fn from_projection_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Self> {
         let forwarded_from_raw: Option<String> = row.get("forwarded_from")?;
+        let payload_raw: Option<String> = row.get("payload")?;
         Ok(Self {
             message_id: row.get("message_id")?,
             conversation_id: row.get("conversation_id")?,
@@ -193,6 +201,7 @@ impl ConversationMessageView {
             forwarded_from: Store::parse_forwarded_from_raw(forwarded_from_raw.as_deref()),
             run_id: row.get("run_id")?,
             trace_summary: row.get("trace_summary")?,
+            payload: parse_payload_raw(payload_raw.as_deref()),
         })
     }
 
@@ -209,6 +218,7 @@ impl ConversationMessageView {
             forwarded_from: self.forwarded_from.clone(),
             run_id: self.run_id.clone(),
             trace_summary: self.trace_summary.clone(),
+            payload: self.payload.clone(),
         }
     }
 
@@ -236,7 +246,22 @@ impl ConversationMessageView {
             "forwardedFrom": self.forwarded_from,
             "runId": self.run_id,
             "traceSummary": self.trace_summary,
+            "payload": self.payload,
         })
+    }
+}
+
+/// Parse the raw `messages.payload` column into a JSON value. Malformed JSON
+/// returns `None` rather than erroring — the renderer falls back to `content`,
+/// so a corrupt payload degrades visibly instead of crashing the history fetch.
+fn parse_payload_raw(raw: Option<&str>) -> Option<Value> {
+    let raw = raw?;
+    match serde_json::from_str::<Value>(raw) {
+        Ok(p) => Some(p),
+        Err(err) => {
+            tracing::warn!(error = %err, raw = %raw, "failed to parse payload — falling back to content");
+            None
+        }
     }
 }
 
@@ -304,6 +329,9 @@ pub(crate) struct MessageCreatedPayload {
     pub seq: i64,
     /// ISO-8601 timestamp of when the message was persisted.
     pub created_at: String,
+    /// Kind-discriminated structured payload (only set for `senderType == 'system'`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub payload: Option<Value>,
 }
 
 /// Sender identity embedded inside the WebSocket event payload.
@@ -325,6 +353,25 @@ impl InsertedMessage {
         sender_type: &str,
         content: &str,
     ) -> MessageCreatedPayload {
+        self.to_event_payload_with_payload(
+            conversation_id,
+            conversation_type,
+            sender_name,
+            sender_type,
+            content,
+            None,
+        )
+    }
+
+    pub(crate) fn to_event_payload_with_payload(
+        &self,
+        conversation_id: &str,
+        conversation_type: &str,
+        sender_name: &str,
+        sender_type: &str,
+        content: &str,
+        payload: Option<Value>,
+    ) -> MessageCreatedPayload {
         MessageCreatedPayload {
             message_id: self.id.clone(),
             conversation_id: conversation_id.to_string(),
@@ -339,6 +386,7 @@ impl InsertedMessage {
             attachments: Vec::new(),
             seq: self.seq,
             created_at: chrono::Utc::now().to_rfc3339(),
+            payload,
         }
     }
 }

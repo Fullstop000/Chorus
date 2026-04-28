@@ -319,6 +319,7 @@ fn load_channel_by_id(
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "channel not found"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn history_for_channel(
     state: &AppState,
     actor_id: &str,
@@ -327,13 +328,23 @@ fn history_for_channel(
     limit: i64,
     before: Option<i64>,
     after: Option<i64>,
+    for_agent: bool,
 ) -> ApiResult<HistoryResponse> {
     require_channel_membership(state, actor_id, channel, denied_label)?;
 
-    let snapshot = state
-        .store
-        .get_history_snapshot(&channel.name, actor_id, limit, before, after)
-        .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    // Agent reads use the notice-filtering snapshot so member_joined and
+    // future structured notices stay invisible to the bridge — they're
+    // visual ambient markers for the human UI, not agent context.
+    let snapshot = if for_agent {
+        state
+            .store
+            .get_history_snapshot_for_agent(&channel.name, actor_id, limit, before, after)
+    } else {
+        state
+            .store
+            .get_history_snapshot(&channel.name, actor_id, limit, before, after)
+    }
+    .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     Ok(Json(HistoryResponse {
         messages: snapshot.messages,
@@ -629,6 +640,7 @@ pub async fn handle_history(
         limit,
         params.before,
         params.after,
+        true,
     )
 }
 
@@ -774,6 +786,7 @@ pub async fn handle_public_history(
         params.limit.unwrap_or(50),
         params.before,
         params.after,
+        false,
     )
 }
 

@@ -5,6 +5,7 @@ import type { AgentInfo, HistoryMessage, TraceSummary } from "../../data";
 import { attachmentUrl } from "../../data";
 import { useStore } from "../../store";
 import { useAgents } from "../../hooks/data";
+import { SystemNotice } from "./SystemNotice";
 import { Telescope } from "./Telescope";
 import type { AgentTrace } from "../../store/traceStore";
 
@@ -179,6 +180,17 @@ export function MessageItem({
   const itemRef = useRef<HTMLDivElement>(null);
 
   if (message.senderType === "system") {
+    // Structured notices (member_joined, task_claimed, …) render as a
+    // centered chip-row via SystemNotice; legacy and unrecognized system
+    // messages keep the plain hairline divider via the explicit fallback.
+    if (message.payload) {
+      return (
+        <SystemNotice
+          message={message}
+          fallback={<SystemMessageItem message={message} />}
+        />
+      );
+    }
     return <SystemMessageItem message={message} />;
   }
 

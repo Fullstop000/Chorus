@@ -47,7 +47,7 @@ export function deriveTaskStates(messages: HistoryMessage[]): TaskEventIndex {
   const parsed: { msg: HistoryMessage; ev: TaskEventPayload }[] = []
   for (const msg of messages) {
     if (msg.senderType !== 'system') continue
-    const ev = parseTaskEvent(msg.content)
+    const ev = parseTaskEvent(msg.payload)
     if (!ev) continue
     parsed.push({ msg, ev })
   }

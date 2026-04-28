@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS messages (
     forwarded_from TEXT, -- Optional JSON or text indicating where the message was forwarded from
     run_id TEXT, -- Telescope trace run id linking to trace_events
     trace_summary TEXT, -- JSON summary of the trace run (toolCalls, duration, status, categories)
+    payload TEXT, -- Structured JSON for kind-discriminated message variants. Always paired with a human-readable `content` fallback. `audience` field controls agent visibility ("humans" hides from agents; absent = visible to all).
     UNIQUE(channel_id, seq)
 );
 
@@ -198,7 +199,8 @@ SELECT
     m.seq AS seq,
     m.forwarded_from AS forwarded_from,
     m.run_id AS run_id,
-    m.trace_summary AS trace_summary
+    m.trace_summary AS trace_summary,
+    m.payload AS payload
 FROM messages m
 JOIN channels c ON c.id = m.channel_id
 LEFT JOIN humans h ON m.sender_type = 'human' AND h.id = m.sender_id

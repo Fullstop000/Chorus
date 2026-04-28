@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Transaction};
+use serde_json::Value;
 use uuid::Uuid;
 
 use crate::store::channels::Channel;
@@ -29,6 +30,31 @@ impl Store {
         forwarded_from: Option<&ForwardedFrom>,
         run_id: Option<&str>,
     ) -> Result<InsertedMessage> {
+        Self::insert_message_tx_with_payload(
+            tx,
+            channel,
+            sender_id,
+            sender_type,
+            content,
+            attachment_ids,
+            forwarded_from,
+            run_id,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_message_tx_with_payload(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        sender_id: &str,
+        sender_type: SenderType,
+        content: &str,
+        attachment_ids: &[String],
+        forwarded_from: Option<&ForwardedFrom>,
+        run_id: Option<&str>,
+        payload: Option<&Value>,
+    ) -> Result<InsertedMessage> {
         let seq: i64 = tx.query_row(
             "SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE channel_id = ?1",
             params![channel.id],
@@ -36,10 +62,11 @@ impl Store {
         )?;
         let msg_id = Uuid::new_v4().to_string();
         let forwarded_from_json = forwarded_from.map(serde_json::to_string).transpose()?;
+        let payload_json = payload.map(serde_json::to_string).transpose()?;
         tx.execute(
             "INSERT INTO messages (
-                id, channel_id, sender_id, sender_type, sender_deleted, content, seq, forwarded_from, run_id
-             ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8)",
+                id, channel_id, sender_id, sender_type, sender_deleted, content, seq, forwarded_from, run_id, payload
+             ) VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, ?9)",
             params![
                 msg_id,
                 channel.id,
@@ -48,7 +75,8 @@ impl Store {
                 content,
                 seq,
                 forwarded_from_json,
-                run_id
+                run_id,
+                payload_json,
             ],
         )?;
         for att_id in attachment_ids {
@@ -134,6 +162,30 @@ impl Store {
         )
     }
 
+    /// Same as [`create_system_message_tx`] but also persists a structured
+    /// JSON payload in the `payload` column so the UI can render rich variants
+    /// (entity chips for `member_joined`, task cards for `task_event`, …).
+    /// `content` stays as the human-readable fallback used by older clients,
+    /// agents, and any renderer that doesn't know the kind.
+    pub(crate) fn create_system_message_tx_with_payload(
+        tx: &Transaction<'_>,
+        channel: &Channel,
+        content: &str,
+        payload: &Value,
+    ) -> Result<InsertedMessage> {
+        Self::insert_message_tx_with_payload(
+            tx,
+            channel,
+            "system",
+            SenderType::System,
+            content,
+            &[],
+            None,
+            None,
+            Some(payload),
+        )
+    }
+
     /// Emit `message.created` stream events for system messages that were
     /// inserted via `create_system_message_tx` and committed by the caller.
     /// Each `(inserted, content)` tuple produced inside the transaction maps
@@ -144,18 +196,34 @@ impl Store {
         channel: &Channel,
         pending: Vec<(InsertedMessage, String)>,
     ) -> Result<()> {
-        for (inserted, content) in pending {
-            let payload = inserted.to_event_payload(
+        let with_payloads = pending
+            .into_iter()
+            .map(|(inserted, content)| (inserted, content, None))
+            .collect();
+        self.emit_system_stream_events_with_payloads(channel, with_payloads)
+    }
+
+    /// Same as [`emit_system_stream_events`] but each tuple may carry a
+    /// structured JSON payload that ships in the `message.created` event
+    /// alongside the human-readable `content` fallback.
+    pub(crate) fn emit_system_stream_events_with_payloads(
+        &self,
+        channel: &Channel,
+        pending: Vec<(InsertedMessage, String, Option<Value>)>,
+    ) -> Result<()> {
+        for (inserted, content, payload) in pending {
+            let event_payload = inserted.to_event_payload_with_payload(
                 channel.id.as_str(),
                 channel.channel_type.as_api_str(),
                 "system",
                 SenderType::System.as_str(),
                 &content,
+                payload,
             );
             let stream_event = StreamEvent::new(
                 channel.id.clone(),
                 inserted.seq,
-                serde_json::to_value(payload)?,
+                serde_json::to_value(event_payload)?,
             );
             let _ = self.stream_tx.send(stream_event);
         }

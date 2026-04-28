@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { deriveTaskStates } from './useTaskEventLog'
-import type { HistoryMessage } from '../data/chat'
+import type { HistoryMessage, MessagePayload } from '../data/chat'
 
 function taskEventMsg(
   seq: number,
@@ -9,11 +9,12 @@ function taskEventMsg(
   return {
     id: `m-${seq}`,
     seq,
-    content: JSON.stringify({ kind: 'task_event', ...event }),
+    content: 'task event',
     senderName: 'system',
     senderType: 'system',
     createdAt: new Date(seq * 1000).toISOString(),
     senderDeleted: false,
+    payload: { kind: 'task_event', ...event } as MessagePayload,
   }
 }
 

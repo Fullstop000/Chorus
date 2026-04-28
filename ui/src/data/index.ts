@@ -142,6 +142,7 @@ export {
   type ForwardedFrom,
   type HistoryMessage,
   type HistoryResponse,
+  type MessagePayload,
   type StreamEvent,
   type UploadResponse,
   type Target,

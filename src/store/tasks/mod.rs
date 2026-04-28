@@ -209,8 +209,11 @@ impl Store {
             |row| row.get(0),
         )?;
         let creator_name = Self::sender_name_for_id_tx(&tx, creator_id, creator_type)?;
-        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
-            Vec::new();
+        let mut pending_events: Vec<(
+            crate::store::messages::types::InsertedMessage,
+            String,
+            Option<serde_json::Value>,
+        )> = Vec::new();
 
         let mut result = Vec::new();
         for (i, title) in titles.iter().enumerate() {
@@ -262,9 +265,15 @@ impl Store {
                 next_status: TaskStatus::Todo,
                 claimed_by: None,
             };
-            let content = payload.to_json_string()?;
-            let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
-            pending_events.push((inserted, content));
+            let payload_json = payload.to_json_value();
+            let content = payload.as_human_sentence();
+            let inserted = Self::create_system_message_tx_with_payload(
+                &tx,
+                &channel,
+                &content,
+                &payload_json,
+            )?;
+            pending_events.push((inserted, content, Some(payload_json)));
 
             result.push(TaskInfo {
                 task_number,
@@ -279,7 +288,7 @@ impl Store {
         tx.commit()?;
         drop(conn); // release the mutex guard before the stream fanout
 
-        self.emit_system_stream_events(&channel, pending_events)?;
+        self.emit_system_stream_events_with_payloads(&channel, pending_events)?;
         Ok(result)
     }
 
@@ -351,8 +360,11 @@ impl Store {
         let claimer_name = Self::sender_name_for_id_tx(&tx, claimer_id, claimer_type)?;
 
         let mut results = Vec::new();
-        let mut pending_events: Vec<(crate::store::messages::types::InsertedMessage, String)> =
-            Vec::new();
+        let mut pending_events: Vec<(
+            crate::store::messages::types::InsertedMessage,
+            String,
+            Option<serde_json::Value>,
+        )> = Vec::new();
         // Batch semantics: all claims commit together or none do. A hard SQL
         // error on claim N rolls back successful claims 1..N-1. "Soft"
         // rejections (task already claimed / not in todo / stolen mid-flight)
@@ -407,9 +419,15 @@ impl Store {
                         next_status: TaskStatus::InProgress,
                         claimed_by: Some(claimer_name.clone()),
                     };
-                    let content = payload.to_json_string()?;
-                    let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
-                    pending_events.push((inserted, content));
+                    let payload_json = payload.to_json_value();
+                    let content = payload.as_human_sentence();
+                    let inserted = Self::create_system_message_tx_with_payload(
+                        &tx,
+                        &channel,
+                        &content,
+                        &payload_json,
+                    )?;
+                    pending_events.push((inserted, content, Some(payload_json)));
                     results.push(ClaimResult {
                         task_number: tn,
                         success: true,
@@ -434,7 +452,7 @@ impl Store {
         }
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events(&channel, pending_events)?;
+        self.emit_system_stream_events_with_payloads(&channel, pending_events)?;
         Ok(results)
     }
 
@@ -520,11 +538,16 @@ impl Store {
             next_status: TaskStatus::Todo,
             claimed_by: None,
         };
-        let content = payload.to_json_string()?;
-        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+        let payload_json = payload.to_json_value();
+        let content = payload.as_human_sentence();
+        let inserted =
+            Self::create_system_message_tx_with_payload(&tx, &channel, &content, &payload_json)?;
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
+        self.emit_system_stream_events_with_payloads(
+            &channel,
+            vec![(inserted, content, Some(payload_json))],
+        )?;
         Ok(())
     }
 
@@ -609,8 +632,10 @@ impl Store {
             next_status: new_status,
             claimed_by: claimed_by_label,
         };
-        let content = payload.to_json_string()?;
-        let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+        let payload_json = payload.to_json_value();
+        let content = payload.as_human_sentence();
+        let inserted =
+            Self::create_system_message_tx_with_payload(&tx, &channel, &content, &payload_json)?;
 
         // `Done` is terminal (`can_transition_to` has no outbound edges from
         // `Done`), so archiving here is safe — there is no path back that would
@@ -628,7 +653,10 @@ impl Store {
 
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
+        self.emit_system_stream_events_with_payloads(
+            &channel,
+            vec![(inserted, content, Some(payload_json))],
+        )?;
         Ok(())
     }
 }

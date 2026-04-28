@@ -573,7 +573,24 @@ impl Store {
                 SenderType::Agent => format!("Agent {} joined #{}", label, channel.name),
                 _ => format!("{} joined #{}", label, channel.name),
             };
-            let inserted = Self::create_system_message_tx(&tx, &channel, &content)?;
+            // `audience: "humans"` keeps this notice out of agent receive/history paths
+            // — a structural marker, so the SQL filter never has to enumerate kinds.
+            let payload = serde_json::json!({
+                "kind": "member_joined",
+                "audience": "humans",
+                "actor": {
+                    "id": member_id,
+                    "type": member_type.as_str(),
+                },
+                "verb": "joined",
+                "target": {
+                    "id": channel.id,
+                    "type": "channel",
+                    "label": format!("#{}", channel.name),
+                },
+            });
+            let inserted =
+                Self::create_system_message_tx_with_payload(&tx, &channel, &content, &payload)?;
             tx.commit()?;
             drop(conn);
             let event = super::StreamEvent::member_joined(
@@ -582,7 +599,10 @@ impl Store {
                 mt.to_string(),
             );
             let _ = self.stream_tx.send(event);
-            self.emit_system_stream_events(&channel, vec![(inserted, content)])?;
+            self.emit_system_stream_events_with_payloads(
+                &channel,
+                vec![(inserted, content, Some(payload))],
+            )?;
         } else {
             tx.commit()?;
         }

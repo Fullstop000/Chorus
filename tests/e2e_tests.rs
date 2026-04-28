@@ -471,7 +471,7 @@ async fn task_lifecycle_emits_four_events_in_parent_channel() {
     let events: Vec<serde_json::Value> = store
         .conn_for_test()
         .prepare(
-            "SELECT content FROM messages \
+            "SELECT payload FROM messages \
              WHERE channel_id = ?1 AND sender_type = 'system' \
              ORDER BY seq",
         )
@@ -511,7 +511,7 @@ async fn batched_create_tasks_emits_one_event_per_task() {
     let events: Vec<serde_json::Value> = store
         .conn_for_test()
         .prepare(
-            "SELECT content FROM messages \
+            "SELECT payload FROM messages \
              WHERE channel_id = ?1 AND sender_type = 'system' \
              ORDER BY seq",
         )
