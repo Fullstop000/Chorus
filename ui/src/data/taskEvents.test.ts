@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { parseTaskEvent } from './taskEvents'
+import type { MessagePayload } from './chat'
 
 describe('parseTaskEvent', () => {
-  it('parses a well-formed task_event JSON string', () => {
-    const content = JSON.stringify({
+  it('parses a well-formed task_event payload', () => {
+    const payload: MessagePayload = {
       kind: 'task_event',
       action: 'claimed',
       taskNumber: 7,
@@ -13,30 +14,30 @@ describe('parseTaskEvent', () => {
       prevStatus: 'todo',
       nextStatus: 'in_progress',
       claimedBy: 'alice',
-    })
-    const parsed = parseTaskEvent(content)
+    }
+    const parsed = parseTaskEvent(payload)
     expect(parsed).not.toBeNull()
     expect(parsed!.action).toBe('claimed')
     expect(parsed!.taskNumber).toBe(7)
     expect(parsed!.nextStatus).toBe('in_progress')
   })
 
-  it('returns null for non-JSON content', () => {
-    expect(parseTaskEvent('hello world')).toBeNull()
+  it('returns null when payload is undefined', () => {
+    expect(parseTaskEvent(undefined)).toBeNull()
   })
 
   it('returns null when kind is not task_event', () => {
-    expect(parseTaskEvent(JSON.stringify({ kind: 'other' }))).toBeNull()
+    expect(parseTaskEvent({ kind: 'other' } as MessagePayload)).toBeNull()
   })
 
   it('returns null when required fields are missing', () => {
     expect(
-      parseTaskEvent(JSON.stringify({ kind: 'task_event', action: 'claimed' })),
+      parseTaskEvent({ kind: 'task_event', action: 'claimed' } as MessagePayload),
     ).toBeNull()
   })
 
   it('returns null for an unknown action', () => {
-    const content = JSON.stringify({
+    const payload: MessagePayload = {
       kind: 'task_event',
       action: 'deleted',
       taskNumber: 1,
@@ -44,12 +45,12 @@ describe('parseTaskEvent', () => {
       subChannelId: 's',
       actor: 'a',
       nextStatus: 'todo',
-    })
-    expect(parseTaskEvent(content)).toBeNull()
+    }
+    expect(parseTaskEvent(payload)).toBeNull()
   })
 
   it('returns null when prevStatus is present but not a valid status', () => {
-    const content = JSON.stringify({
+    const payload: MessagePayload = {
       kind: 'task_event',
       action: 'claimed',
       taskNumber: 1,
@@ -58,12 +59,12 @@ describe('parseTaskEvent', () => {
       actor: 'a',
       prevStatus: 'garbage',
       nextStatus: 'in_progress',
-    })
-    expect(parseTaskEvent(content)).toBeNull()
+    }
+    expect(parseTaskEvent(payload)).toBeNull()
   })
 
   it('returns null when taskNumber is not an integer', () => {
-    const content = JSON.stringify({
+    const payload: MessagePayload = {
       kind: 'task_event',
       action: 'created',
       taskNumber: 1.5,
@@ -71,12 +72,12 @@ describe('parseTaskEvent', () => {
       subChannelId: 's',
       actor: 'a',
       nextStatus: 'todo',
-    })
-    expect(parseTaskEvent(content)).toBeNull()
+    }
+    expect(parseTaskEvent(payload)).toBeNull()
   })
 
   it('returns null when claimedBy is present but wrong type', () => {
-    const content = JSON.stringify({
+    const payload: MessagePayload = {
       kind: 'task_event',
       action: 'claimed',
       taskNumber: 1,
@@ -85,7 +86,7 @@ describe('parseTaskEvent', () => {
       actor: 'a',
       nextStatus: 'in_progress',
       claimedBy: 42,
-    })
-    expect(parseTaskEvent(content)).toBeNull()
+    }
+    expect(parseTaskEvent(payload)).toBeNull()
   })
 })

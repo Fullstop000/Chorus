@@ -15,6 +15,7 @@ export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
     createdAt: p.createdAt ?? new Date().toISOString(),
     runId: p.runId ?? undefined,
     traceSummary: p.traceSummary ?? undefined,
+    payload: p.payload ?? undefined,
   }
 }
 

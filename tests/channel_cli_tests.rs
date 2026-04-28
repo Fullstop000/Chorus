@@ -21,7 +21,7 @@ use harness::build_router;
 /// the HTTP surface, and dropping the Arc keeps the test bodies short.
 async fn start_fixture() -> String {
     let store = Arc::new(Store::open(":memory:").unwrap());
-    store.create_human("testuser").unwrap();
+    store.ensure_human_with_id("testuser", "testuser").unwrap();
     // Seed a default channel so `list --all` isn't empty even before we create.
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)

@@ -1,4 +1,5 @@
 import type { TaskStatus } from './tasks'
+import type { MessagePayload } from './chat'
 
 export type TaskEventAction =
   | 'created'
@@ -32,22 +33,16 @@ const VALID_STATUSES: readonly TaskStatus[] = [
 ]
 
 /**
- * Safely parse a message.content string into a TaskEventPayload. Returns null
- * for anything that isn't a well-formed task_event JSON. Never throws.
+ * Narrow a generic message `payload` object to a TaskEventPayload. Returns
+ * null for anything that isn't a well-formed task_event payload. Never throws.
  *
  * Called for every system-sender message in the chat feed. Performance matters.
  */
-export function parseTaskEvent(content: string): TaskEventPayload | null {
-  if (!content || content[0] !== '{') return null
-  let raw: unknown
-  try {
-    raw = JSON.parse(content)
-  } catch {
-    return null
-  }
-  if (!raw || typeof raw !== 'object') return null
-  const obj = raw as Record<string, unknown>
-  if (obj.kind !== 'task_event') return null
+export function parseTaskEvent(
+  payload: MessagePayload | undefined,
+): TaskEventPayload | null {
+  if (!payload || payload.kind !== 'task_event') return null
+  const obj = payload as Record<string, unknown>
   if (typeof obj.action !== 'string' || !VALID_ACTIONS.includes(obj.action as TaskEventAction)) {
     return null
   }

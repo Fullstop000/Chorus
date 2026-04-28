@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.4.0] - 2026-04-28
+
+### Added
+- **Member joined chips in chat** — when someone joins a channel, you see a clean `[name] joined #channel` row with clickable chips, instead of a plain divider.
+
+### Changed
+- **System messages share one structured format** so future event types (task claimed, agent started, …) render as chips with no extra plumbing.
+
 ## [0.0.3.0] - 2026-04-27
 
 ### Added

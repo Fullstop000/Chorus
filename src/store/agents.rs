@@ -68,17 +68,16 @@ pub struct AgentRecordUpsert<'a> {
 
 impl Store {
     pub fn create_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<String> {
-        let conn = self.conn.lock().unwrap();
-        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
-        let id = Self::create_agent_record_inner(&conn, &workspace_id, record)?;
-        if let Some(all_channel) = Self::get_channel_by_workspace_and_name_inner(
-            &conn,
-            &workspace_id,
-            Self::DEFAULT_SYSTEM_CHANNEL,
-        )? {
-            let event =
-                super::StreamEvent::member_joined(all_channel.id, id.clone(), "agent".to_string());
-            let _ = self.stream_tx.send(event);
+        let (workspace_id, id) = {
+            let conn = self.conn.lock().unwrap();
+            let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
+            let id = Self::create_agent_record_inner(&conn, &workspace_id, record)?;
+            (workspace_id, id)
+        };
+        if let Ok(Some(all_channel)) =
+            self.get_channel_by_workspace_and_name(&workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
+        {
+            let _ = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent);
         }
         Ok(id)
     }
@@ -88,16 +87,14 @@ impl Store {
         workspace_id: &str,
         record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
-        let conn = self.conn.lock().unwrap();
-        let id = Self::create_agent_record_inner(&conn, workspace_id, record)?;
-        if let Some(all_channel) = Self::get_channel_by_workspace_and_name_inner(
-            &conn,
-            workspace_id,
-            Self::DEFAULT_SYSTEM_CHANNEL,
-        )? {
-            let event =
-                super::StreamEvent::member_joined(all_channel.id, id.clone(), "agent".to_string());
-            let _ = self.stream_tx.send(event);
+        let id = {
+            let conn = self.conn.lock().unwrap();
+            Self::create_agent_record_inner(&conn, workspace_id, record)?
+        };
+        if let Ok(Some(all_channel)) =
+            self.get_channel_by_workspace_and_name(workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
+        {
+            let _ = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent);
         }
         Ok(id)
     }
@@ -113,18 +110,6 @@ impl Store {
             params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
         )?;
         Self::replace_agent_env_vars_inner(conn, record.name, record.env_vars)?;
-        let all_channel = Self::get_channel_by_workspace_and_name_inner(
-            conn,
-            workspace_id,
-            Self::DEFAULT_SYSTEM_CHANNEL,
-        )?;
-        if let Some(all_channel) = all_channel {
-            conn.execute(
-                "INSERT OR IGNORE INTO channel_members (channel_id, member_id, member_type, last_read_seq)
-                 VALUES (?1, ?2, 'agent', 0)",
-                params![all_channel.id, id],
-            )?;
-        }
         Ok(id)
     }
 

@@ -200,9 +200,7 @@ impl ChorusBackend {
                     .get("sender_name")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let raw_content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let content =
-                    crate::bridge::format::format_message_for_agent(sender_type_raw, raw_content);
+                let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let attach_suffix = format_attachments(m.get("attachments"));
                 format!(
                     "[target={} msg={} time={}{}] @{}: {}{}",
@@ -353,9 +351,7 @@ impl Backend for ChorusBackend {
                     .get("senderName")
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown");
-                let raw_content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
-                let content =
-                    crate::bridge::format::format_message_for_agent(sender_type_raw, raw_content);
+                let content = m.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let attach_suffix = format_attachments(m.get("attachments"));
                 format!(
                     "[seq={} msg={} time={}{}] @{}: {}{}",

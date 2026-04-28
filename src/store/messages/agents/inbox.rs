@@ -130,12 +130,17 @@ impl Store {
         agent_id: &str,
     ) -> Result<Vec<AgentUnreadMessageRow>> {
         let mut rows = Vec::new();
+        // Hide rows whose `payload.audience == 'humans'` (e.g. member_joined
+        // chips). Task events and any other operational system messages omit
+        // `audience`, defaulting to "all" — they keep flowing to agents.
+        // Filter is structural (a payload field), not a kind allowlist.
         let mut stmt = conn.prepare(
             "SELECT message_id, sender_name, sender_type, content, created_at, seq, forwarded_from
                          FROM conversation_messages_view
                          WHERE conversation_id = ?1
                AND seq > ?2
                              AND NOT (sender_id = ?3 AND sender_type = 'agent')
+                             AND COALESCE(json_extract(payload, '$.audience'), 'all') != 'humans'
                          ORDER BY seq ASC",
         )?;
         for row in stmt.query_map(params![channel_id, after_seq, agent_id], |row| {

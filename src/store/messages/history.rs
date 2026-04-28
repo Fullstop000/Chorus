@@ -5,6 +5,15 @@ use serde_json::Value;
 use crate::store::messages::*;
 use crate::store::Store;
 
+/// Caller intent for history reads — drives the `payload.audience` filter.
+/// Use `All` for human/UI paths (chips and ambient markers stay visible) and
+/// `AgentVisibleOnly` for agent context (humans-only payloads are hidden).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HistoryAudience {
+    All,
+    AgentVisibleOnly,
+}
+
 impl Store {
     pub fn get_history(
         &self,
@@ -14,8 +23,14 @@ impl Store {
         after: Option<i64>,
     ) -> Result<(Vec<HistoryMessage>, bool)> {
         let conn = self.conn.lock().unwrap();
-        let (messages, has_more) =
-            Self::get_conversation_history_view_inner(&conn, channel_name, limit, before, after)?;
+        let (messages, has_more) = Self::get_conversation_history_view_inner(
+            &conn,
+            channel_name,
+            limit,
+            before,
+            after,
+            HistoryAudience::All,
+        )?;
         Ok((
             messages
                 .iter()
@@ -26,6 +41,8 @@ impl Store {
     }
 
     /// Read a history page with read cursor for the requesting member.
+    /// Includes ambient structured notices — used by the human UI which renders
+    /// them as chip-rows.
     pub fn get_history_snapshot(
         &self,
         channel_name: &str,
@@ -34,9 +51,59 @@ impl Store {
         before: Option<i64>,
         after: Option<i64>,
     ) -> Result<HistorySnapshot> {
-        let conn = self.conn.lock().unwrap();
-        let (message_views, has_more) =
-            Self::get_conversation_history_view_inner(&conn, channel_name, limit, before, after)?;
+        Self::get_history_snapshot_inner(
+            self,
+            channel_name,
+            member_id,
+            limit,
+            before,
+            after,
+            HistoryAudience::All,
+        )
+    }
+
+    /// Same as [`get_history_snapshot`] but excludes rows tagged for human
+    /// audiences (`payload.audience == 'humans'`, e.g. member_joined chips).
+    /// Used by agent-facing history reads so agents don't see ambient channel
+    /// markers in their context window. Mirrors the filter applied to
+    /// [`get_messages_for_agent_id`].
+    pub fn get_history_snapshot_for_agent(
+        &self,
+        channel_name: &str,
+        member_id: &str,
+        limit: i64,
+        before: Option<i64>,
+        after: Option<i64>,
+    ) -> Result<HistorySnapshot> {
+        Self::get_history_snapshot_inner(
+            self,
+            channel_name,
+            member_id,
+            limit,
+            before,
+            after,
+            HistoryAudience::AgentVisibleOnly,
+        )
+    }
+
+    fn get_history_snapshot_inner(
+        store: &Store,
+        channel_name: &str,
+        member_id: &str,
+        limit: i64,
+        before: Option<i64>,
+        after: Option<i64>,
+        audience: HistoryAudience,
+    ) -> Result<HistorySnapshot> {
+        let conn = store.conn.lock().unwrap();
+        let (message_views, has_more) = Self::get_conversation_history_view_inner(
+            &conn,
+            channel_name,
+            limit,
+            before,
+            after,
+            audience,
+        )?;
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
         let last_read_seq =
@@ -59,6 +126,7 @@ impl Store {
         limit: i64,
         before: Option<i64>,
         after: Option<i64>,
+        audience: HistoryAudience,
     ) -> Result<(Vec<ConversationMessageView>, bool)> {
         let channel = Self::get_channel_by_name_inner(conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;
@@ -76,12 +144,22 @@ impl Store {
             ("", "DESC", true)
         };
 
+        // Structural audience filter via payload field — not a kind allowlist.
+        // Rows with no `payload.audience` default to "all" and reach everyone.
+        // Member-joined chips set `audience: "humans"` and are hidden here.
+        let audience_clause = match audience {
+            HistoryAudience::All => "",
+            HistoryAudience::AgentVisibleOnly => {
+                "AND COALESCE(json_extract(payload, '$.audience'), 'all') != 'humans'"
+            }
+        };
+
         let sql = format!(
             "SELECT message_id, conversation_id, conversation_name, conversation_type,
                     sender_name, sender_type, sender_deleted, content, created_at, seq,
-                    forwarded_from, run_id, trace_summary
+                    forwarded_from, run_id, trace_summary, payload
              FROM conversation_messages_view
-             WHERE conversation_id = ?1 {cursor_clause}
+             WHERE conversation_id = ?1 {cursor_clause} {audience_clause}
              ORDER BY seq {order} LIMIT {fetch_limit}"
         );
 
@@ -132,7 +210,7 @@ impl Store {
             .query_row(
                 "SELECT message_id, conversation_id, conversation_name, conversation_type,
                         sender_name, sender_type, sender_deleted, content, created_at, seq,
-                        forwarded_from, run_id, trace_summary
+                        forwarded_from, run_id, trace_summary, payload
                  FROM conversation_messages_view
                  WHERE message_id = ?1",
                 params![message_id],

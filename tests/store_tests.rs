@@ -1,8 +1,10 @@
+mod harness;
 use chorus::store::agents::AgentEnvVar;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::tasks::TaskStatus;
 use chorus::store::{AgentRecordUpsert, Store, WorkspaceMode};
+use harness::join_channel_silent;
 use rusqlite::{params, Connection};
 use tempfile::tempdir;
 
@@ -688,9 +690,7 @@ fn test_shell_style_workspace_mutations_persist() {
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -703,9 +703,7 @@ fn test_shell_style_workspace_mutations_persist() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     store
@@ -716,9 +714,7 @@ fn test_shell_style_workspace_mutations_persist() {
             None,
         )
         .unwrap();
-    store
-        .join_channel("ops-room", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "ops-room", "alice", "human");
     let channel_id = store.get_channel_by_name("ops-room").unwrap().unwrap().id;
     store.archive_channel(&channel_id).unwrap();
 
@@ -731,9 +727,7 @@ fn test_shell_style_workspace_mutations_persist() {
     store
         .create_team_member(&team_id, &bot1.id, "agent", "operator")
         .unwrap();
-    store
-        .join_channel("ops-team", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "ops-team", "bot1", "agent");
 
     store
         .update_agent_record(&AgentRecordUpsert {
@@ -789,9 +783,7 @@ fn test_send_and_receive_messages() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     let msg_id = store
         .create_message(CreateMessage {
@@ -823,9 +815,7 @@ fn test_send_and_receive_messages() {
     let msgs = store.get_messages_for_agent_id(&bot1_id, false).unwrap();
     assert!(msgs.is_empty());
 
-    store
-        .join_channel("general", &bot1_id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", &bot1_id, "agent");
 
     let _msg_id2 = store
         .create_message(CreateMessage {
@@ -890,9 +880,7 @@ fn test_message_history_pagination() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     for i in 0..10 {
         store
@@ -926,9 +914,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     store
         .create_message(CreateMessage {
@@ -971,9 +957,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -986,9 +970,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .join_channel("general", &bot1_id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", &bot1_id, "agent");
 
     store
         .create_message(CreateMessage {
@@ -1084,9 +1066,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -1099,9 +1079,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .join_channel("general", &bot1_id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", &bot1_id, "agent");
 
     store
         .create_message(CreateMessage {
@@ -1153,9 +1131,7 @@ fn test_history_read_cursor_rejects_seq_above_max() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -1197,9 +1173,7 @@ fn test_history_read_cursor_rejects_negative_seq() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -1228,9 +1202,7 @@ fn test_history_read_cursor_heals_orphan_above_max_seq() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -1269,9 +1241,7 @@ fn test_conversation_messages_view_projects_message_rows() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     let message_id = store
         .create_message(CreateMessage {
@@ -1435,9 +1405,7 @@ fn test_create_message_persists_top_level() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     let message_id = store
         .create_message(CreateMessage {
@@ -1464,9 +1432,7 @@ fn test_unread_excludes_own_messages_for_sender() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -1479,9 +1445,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .join_channel("general", &bot1_id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", &bot1_id, "agent");
 
     store
         .create_message(CreateMessage {
@@ -1748,9 +1712,7 @@ fn test_archive_channel_hides_it_from_active_listings() {
         )
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     store.archive_channel(&channel_id).unwrap();
 
@@ -1783,9 +1745,7 @@ fn test_ensure_builtin_channels_migrates_general_to_all_system_channel() {
         )
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     let original = store.get_channel_by_name("general").unwrap().unwrap();
 
@@ -1996,9 +1956,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
         .create_channel("eng", Some("Engineering"), ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("eng", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
     let bot1_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "bot1",
@@ -2011,9 +1969,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
             env_vars: &[],
         })
         .unwrap();
-    store
-        .join_channel("eng", &bot1_id, SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "eng", &bot1_id, "agent");
 
     store
         .create_message(CreateMessage {
@@ -2089,9 +2045,7 @@ fn test_create_system_message_writes_system_sender_type() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     let msg_id = store
@@ -2121,13 +2075,9 @@ fn test_channel_unread_count_excludes_system_messages() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
     store.ensure_human_with_id("bob", "bob").unwrap();
-    store
-        .join_channel("general", "bob", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "bob", "human");
 
     // A regular message from bob — alice should see 1 unread.
     store
@@ -2172,9 +2122,7 @@ fn test_create_system_message_emits_system_typed_stream_event() {
         .create_channel("general", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("general", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "alice", "human");
 
     let mut rx = store.subscribe();
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
@@ -2200,6 +2148,221 @@ fn test_create_system_message_emits_system_typed_stream_event() {
         .and_then(|v| v.as_str())
         .expect("sender.name is a string");
     assert_eq!(sender_name, "system");
+}
+
+#[test]
+fn test_join_channel_creates_notice_and_is_idempotent() {
+    let (store, _dir) = make_store();
+    store
+        .create_channel("general", None, ChannelType::Channel, None)
+        .unwrap();
+
+    let channel = store.get_channel_by_name("general").unwrap().unwrap();
+
+    // Human joins — creates system message.
+    let joined = store
+        .join_channel_by_id(&channel.id, "alice", SenderType::Human)
+        .unwrap();
+    assert!(joined, "first join should return true");
+
+    let (history, _) = store.get_history("general", 10, None, None).unwrap();
+    let sys_msg = history
+        .iter()
+        .find(|m| m.sender_type == "system")
+        .expect("system message should appear in history");
+    assert_eq!(sys_msg.content, "alice joined #general");
+    let alice_payload = sys_msg
+        .payload
+        .as_ref()
+        .expect("structured payload should be populated for member_joined");
+    assert_eq!(alice_payload["kind"], "member_joined");
+    assert_eq!(alice_payload["audience"], "humans");
+    assert_eq!(alice_payload["actor"]["id"], "alice");
+    assert_eq!(alice_payload["actor"]["type"], "human");
+    assert_eq!(alice_payload["verb"], "joined");
+    assert_eq!(alice_payload["target"]["id"], channel.id);
+    assert_eq!(alice_payload["target"]["type"], "channel");
+    assert_eq!(alice_payload["target"]["label"], "#general");
+
+    // Idempotent re-join — no duplicate system message.
+    let joined_again = store
+        .join_channel_by_id(&channel.id, "alice", SenderType::Human)
+        .unwrap();
+    assert!(!joined_again, "re-join should return false");
+
+    let (history2, _) = store.get_history("general", 10, None, None).unwrap();
+    let sys_count = history2
+        .iter()
+        .filter(|m| m.sender_type == "system")
+        .count();
+    assert_eq!(sys_count, 1, "only one system message should exist");
+
+    // Agent joins — system message includes "Agent" prefix; notice carries
+    // the agent's id and Agent actor type so the chip routes to the agent
+    // profile, not a phantom human row.
+    let bot_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "bot1",
+            display_name: "Bot One",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    let bot_joined = store
+        .join_channel_by_id(&channel.id, &bot_id, SenderType::Agent)
+        .unwrap();
+    assert!(bot_joined, "agent first join should return true");
+
+    let (history3, _) = store.get_history("general", 10, None, None).unwrap();
+    let bot_sys_msg = history3
+        .iter()
+        .find(|m| m.content.contains("Bot One"))
+        .expect("agent join system message should appear");
+    assert_eq!(bot_sys_msg.content, "Agent Bot One joined #general");
+    let bot_payload = bot_sys_msg
+        .payload
+        .as_ref()
+        .expect("agent join should carry structured payload");
+    assert_eq!(bot_payload["actor"]["id"], bot_id);
+    assert_eq!(bot_payload["actor"]["type"], "agent");
+
+    // Human with a UUID-style id (not matching name) resolves label correctly.
+    store
+        .ensure_human_with_id("human_carol_123", "carol")
+        .unwrap();
+    let carol_joined = store
+        .join_channel_by_id(&channel.id, "human_carol_123", SenderType::Human)
+        .unwrap();
+    assert!(carol_joined, "UUID-id human first join should return true");
+
+    let (history4, _) = store.get_history("general", 10, None, None).unwrap();
+    let carol_sys_msg = history4
+        .iter()
+        .find(|m| m.content.contains("carol"))
+        .expect("UUID-id human join system message should appear");
+    assert_eq!(carol_sys_msg.content, "carol joined #general");
+    let carol_payload = carol_sys_msg
+        .payload
+        .as_ref()
+        .expect("UUID-id human join should carry structured payload");
+    assert_eq!(carol_payload["actor"]["id"], "human_carol_123");
+}
+
+#[test]
+fn agent_read_paths_exclude_humans_only_payloads_but_ui_keeps_them() {
+    // member_joined payloads carry `audience: "humans"` because they're
+    // visual ambient markers for the human chat UI. Surfacing them to
+    // agents creates noise: every join would wake every agent in the
+    // channel and dump a `"alice joined #x"` line into their context.
+    // Filter is structural — `payload.audience != 'humans'`, not a
+    // kind allowlist — so task events (no audience field, defaults to
+    // `all`) keep flowing.
+    let (store, _dir) = make_store();
+    store
+        .create_channel("crew", None, ChannelType::Channel, None)
+        .unwrap();
+    let channel = store.get_channel_by_name("crew").unwrap().unwrap();
+
+    // Agent joins the channel first so it has a membership row + read cursor.
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "scout",
+            display_name: "Scout",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    join_channel_silent(&store, "crew", &agent_id, "agent");
+
+    // Human joins after the agent — this writes a `member_joined` payload
+    // tagged `audience: "humans"` that the agent should NOT see when it polls.
+    let joined = store
+        .join_channel_by_id(&channel.id, "alice", SenderType::Human)
+        .unwrap();
+    assert!(joined);
+
+    // Inject a regular user message + a task to prove the filter is
+    // structural (audience-driven), not a kind allowlist: regular content
+    // and task events still flow.
+    store
+        .create_message(CreateMessage {
+            channel_name: "crew",
+            sender_id: "alice",
+            sender_type: SenderType::Human,
+            content: "ping",
+            attachment_ids: &[],
+            suppress_event: true,
+            run_id: None,
+        })
+        .unwrap();
+    store
+        .create_tasks("crew", "alice", SenderType::Human, &["ship"])
+        .unwrap();
+
+    // Agent receive — must skip the join chip but include alice's ping
+    // and the task-event row.
+    let received = store.get_messages_for_agent_id(&agent_id, false).unwrap();
+    assert!(
+        received.iter().all(|m| !m.content.contains("alice joined")),
+        "humans-only payload must NOT reach the agent receive path; got: {:?}",
+        received.iter().map(|m| &m.content).collect::<Vec<_>>()
+    );
+    assert!(
+        received.iter().any(|m| m.content == "ping"),
+        "regular human message should still flow to the agent"
+    );
+    assert!(
+        received
+            .iter()
+            .any(|m| m.content.contains("created #1") && m.content.contains("ship")),
+        "task-event system messages should still flow to the agent (audience defaults to all)"
+    );
+
+    // Agent read_history (the bridge tool) must apply the same filter.
+    let agent_snapshot = store
+        .get_history_snapshot_for_agent("crew", &agent_id, 50, None, None)
+        .unwrap();
+    assert!(
+        agent_snapshot.messages.iter().all(|m| m
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("audience"))
+            .and_then(|a| a.as_str())
+            != Some("humans")),
+        "get_history_snapshot_for_agent must hide all rows tagged audience=humans"
+    );
+    assert!(
+        agent_snapshot.messages.iter().any(|m| m
+            .payload
+            .as_ref()
+            .and_then(|p| p.get("kind"))
+            .and_then(|k| k.as_str())
+            == Some("task_event")),
+        "task events must still appear in agent history"
+    );
+
+    // The UI history endpoint preserves the humans-only payload — the
+    // whole point of the structured chip is that the human chat renders it.
+    let ui_snapshot = store
+        .get_history_snapshot("crew", "alice", 50, None, None)
+        .unwrap();
+    let ui_join_msg = ui_snapshot
+        .messages
+        .iter()
+        .find(|m| m.content == "alice joined #crew")
+        .expect("UI history must keep the member_joined payload");
+    assert!(
+        ui_join_msg.payload.is_some(),
+        "UI history should carry the structured payload for chip rendering"
+    );
 }
 
 #[test]
@@ -2240,14 +2403,11 @@ fn task_event_payload_round_trips_through_json() {
         claimed_by: Some("alice".into()),
     };
 
-    let json = original.to_json_string().unwrap();
-    assert!(json.contains(r#""kind":"task_event""#));
-    assert!(json.contains(r#""action":"claimed""#));
-    assert!(json.contains(r#""nextStatus":"in_progress""#));
-    assert!(json.contains(r#""taskNumber":7"#));
-
-    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let parsed = original.to_json_value();
     assert_eq!(parsed["kind"], "task_event");
+    assert_eq!(parsed["action"], "claimed");
+    assert_eq!(parsed["nextStatus"], "in_progress");
+    assert_eq!(parsed["taskNumber"], 7);
     assert_eq!(parsed["actor"], "alice");
     assert_eq!(
         parsed["subChannelId"],
@@ -2273,8 +2433,7 @@ fn task_event_payload_serializes_none_fields_as_json_null() {
         next_status: TaskStatus::Todo,
         claimed_by: None,
     };
-    let parsed: serde_json::Value =
-        serde_json::from_str(&created.to_json_string().unwrap()).unwrap();
+    let parsed = created.to_json_value();
     assert!(
         parsed["prevStatus"].is_null(),
         "expected JSON null, got {:?}",
@@ -2301,32 +2460,32 @@ fn create_tasks_emits_task_event_to_parent_channel() {
         )
         .unwrap();
     store.ensure_human_with_id("bob", "bob").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "bob",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
+    join_channel_silent(&store, "eng", "bob", "human");
 
     let result = store
         .create_tasks("eng", "bob", SenderType::Human, &["wire up the bridge"])
         .unwrap();
     assert_eq!(result.len(), 1);
 
-    let event_rows: Vec<(String, String)> = store
+    let event_rows: Vec<(String, String, String)> = store
         .conn_for_test()
-        .prepare("SELECT sender_type, content FROM messages WHERE channel_id = ?1 ORDER BY seq")
+        .prepare(
+            "SELECT sender_type, content, payload FROM messages \
+             WHERE channel_id = ?1 ORDER BY seq",
+        )
         .unwrap()
-        .query_map(rusqlite::params![parent_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map(rusqlite::params![parent_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
         .unwrap()
         .filter_map(|r| r.ok())
         .collect();
 
     assert_eq!(event_rows.len(), 1);
     assert_eq!(event_rows[0].0, "system");
+    assert_eq!(event_rows[0].1, "bob created #1 \"wire up the bridge\"");
 
-    let parsed: serde_json::Value = serde_json::from_str(&event_rows[0].1).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&event_rows[0].2).unwrap();
     assert_eq!(parsed["kind"], "task_event");
     assert_eq!(parsed["action"], "created");
     assert_eq!(parsed["actor"], "bob");
@@ -2347,21 +2506,9 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
         )
         .unwrap();
     store.ensure_human_with_id("bob", "bob").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "bob",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
+    join_channel_silent(&store, "eng", "bob", "human");
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
 
     store
         .create_tasks("eng", "bob", SenderType::Human, &["t"])
@@ -2372,7 +2519,7 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
 
     let events: Vec<serde_json::Value> = store
         .conn_for_test()
-        .prepare("SELECT content FROM messages WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq")
+        .prepare("SELECT payload FROM messages WHERE channel_id = ?1 AND sender_type = 'system' ORDER BY seq")
         .unwrap()
         .query_map(rusqlite::params![parent_id], |r| r.get::<_, String>(0))
         .unwrap()
@@ -2401,13 +2548,7 @@ fn unclaim_task_emits_unclaimed_event() {
         )
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
     store
         .create_tasks("eng", "alice", SenderType::Human, &["t"])
         .unwrap();
@@ -2420,15 +2561,15 @@ fn unclaim_task_emits_unclaimed_event() {
         .unwrap();
 
     let last_event: serde_json::Value = {
-        let content: String = store
+        let payload: String = store
             .conn_for_test()
             .query_row(
-                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
+                "SELECT payload FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        serde_json::from_str(&content).unwrap()
+        serde_json::from_str(&payload).unwrap()
     };
     assert_eq!(last_event["action"], "unclaimed");
     assert_eq!(last_event["prevStatus"], "in_progress");
@@ -2448,13 +2589,7 @@ fn update_task_status_emits_status_changed_event() {
         )
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel(
-            "eng",
-            "alice",
-            chorus::store::messages::types::SenderType::Human,
-        )
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
     store
         .create_tasks("eng", "alice", SenderType::Human, &["t"])
         .unwrap();
@@ -2467,15 +2602,15 @@ fn update_task_status_emits_status_changed_event() {
         .unwrap();
 
     let last_event: serde_json::Value = {
-        let content: String = store
+        let payload: String = store
             .conn_for_test()
             .query_row(
-                "SELECT content FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
+                "SELECT payload FROM messages WHERE sender_type = 'system' ORDER BY seq DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        serde_json::from_str(&content).unwrap()
+        serde_json::from_str(&payload).unwrap()
     };
     assert_eq!(last_event["action"], "status_changed");
     assert_eq!(last_event["actor"], "alice");

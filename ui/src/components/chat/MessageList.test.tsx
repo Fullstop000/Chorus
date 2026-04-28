@@ -5,7 +5,7 @@ import {
   MessageList,
   traceBelongsToConversation,
 } from "./MessageList";
-import type { HistoryMessage } from "../../data/chat";
+import type { HistoryMessage, MessagePayload } from "../../data/chat";
 
 // MessageList calls the store in TWO shapes:
 //   useStore() — returns full state (destructured for advanceConversationLastReadSeq)
@@ -46,7 +46,12 @@ describe("MessageList — task_event rendering", () => {
       {
         id: "m1",
         seq: 1,
-        content: JSON.stringify({
+        content: 'alice created #7 "wire up"',
+        senderName: "system",
+        senderType: "system",
+        createdAt: "2026-04-23T10:00:00Z",
+        senderDeleted: false,
+        payload: {
           kind: "task_event",
           action: "created",
           taskNumber: 7,
@@ -54,16 +59,17 @@ describe("MessageList — task_event rendering", () => {
           subChannelId: "s",
           actor: "alice",
           nextStatus: "todo",
-        }),
-        senderName: "system",
-        senderType: "system",
-        createdAt: "2026-04-23T10:00:00Z",
-        senderDeleted: false,
+        } as MessagePayload,
       },
       {
         id: "m2",
         seq: 2,
-        content: JSON.stringify({
+        content: 'alice claimed #7 "wire up" (now in_progress)',
+        senderName: "system",
+        senderType: "system",
+        createdAt: "2026-04-23T10:05:00Z",
+        senderDeleted: false,
+        payload: {
           kind: "task_event",
           action: "claimed",
           taskNumber: 7,
@@ -73,11 +79,7 @@ describe("MessageList — task_event rendering", () => {
           prevStatus: "todo",
           nextStatus: "in_progress",
           claimedBy: "alice",
-        }),
-        senderName: "system",
-        senderType: "system",
-        createdAt: "2026-04-23T10:05:00Z",
-        senderDeleted: false,
+        } as MessagePayload,
       },
     ];
     const html = renderToStaticMarkup(

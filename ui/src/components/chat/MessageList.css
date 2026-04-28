@@ -78,6 +78,63 @@
   white-space: normal;
 }
 
+/* Structured server-authored notices (member_joined, task_claimed, …).
+   Centered, all mono, no avatar, no container. Three structural slots:
+   actor chip, muted verb, optional target chip. The chips are the only
+   foreground-colored tokens — the verb stays muted between them. */
+.system-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-muted-foreground);
+  text-align: center;
+}
+
+.system-notice__verb {
+  color: var(--color-muted-foreground);
+}
+
+.system-notice__chip {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--color-foreground);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  padding: 0;
+  cursor: pointer;
+  transition: border-color 0.12s ease;
+}
+
+.system-notice__chip:hover {
+  border-bottom-color: var(--color-foreground);
+}
+
+.system-notice__chip:focus-visible {
+  outline: 1px solid var(--color-ring);
+  outline-offset: 2px;
+}
+
+/* When the click target doesn't exist yet (deleted entity, unknown target
+   type, or a target whose route hasn't shipped), keep the chip readable
+   but drop the affordance. */
+.system-notice__chip--inert {
+  cursor: default;
+  border-bottom-color: transparent;
+}
+
+.system-notice__chip--inert:hover {
+  border-bottom-color: transparent;
+}
+
 .new-message-badge {
   /* Anchored to `.message-list-wrapper` (position: relative) so the badge
      floats in the bottom-right of the chat area, regardless of whether that

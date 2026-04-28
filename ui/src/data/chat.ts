@@ -19,6 +19,20 @@ export interface ForwardedFrom {
   senderName: string
 }
 
+// Kind-discriminated structured payload for any message variant that needs
+// rich rendering on top of the always-readable `content` fallback. Currently
+// used for `member_joined` chips and `task_event` cards; new kinds just add
+// a renderer branch — no schema change.
+//
+// The wire shape is intentionally loose at this layer (`{ kind, ...rest }`).
+// Each renderer narrows the shape it cares about at use time. Producers tag
+// audience-only payloads with `audience: "humans"`; agents filter on it.
+export interface MessagePayload {
+  kind: string
+  audience?: 'humans'
+  [key: string]: unknown
+}
+
 export interface HistoryMessage {
   id: string
   seq: number
@@ -31,6 +45,7 @@ export interface HistoryMessage {
   forwardedFrom?: ForwardedFrom
   runId?: string
   traceSummary?: string
+  payload?: MessagePayload
 }
 
 export interface HistoryResponse {
@@ -57,6 +72,7 @@ export interface MessageCreatedPayload {
   createdAt: string
   runId?: string | null
   traceSummary?: string | null
+  payload?: MessagePayload | null
 }
 
 export interface StreamEvent {

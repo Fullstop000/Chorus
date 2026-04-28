@@ -66,6 +66,8 @@
 //! combination of discovery unit tests + `resolve_bridge_endpoint` override
 //! tests covers everything that doesn't require a real bridge process.
 
+mod harness;
+use harness::join_channel_silent;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -151,7 +153,7 @@ async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>, String)> {
     let store = Arc::new(Store::open(":memory:")?);
     let tester = store.create_local_human("tester")?;
     store.create_channel("general", Some("General"), ChannelType::Channel, None)?;
-    store.join_channel("general", &tester.id, SenderType::Human)?;
+    join_channel_silent(&store, "general", &tester.id, "human");
 
     let router = build_router_with_services(
         store.clone(),
@@ -480,7 +482,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", &agent_id, SenderType::Agent)?;
+    join_channel_silent(&store, "general", &agent_id, "agent");
 
     // 4. Seed a user message in #general so the agent has context to reply to.
     //    The prompt we send directly via the handle instructs the runtime
@@ -617,7 +619,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", &agent_id, SenderType::Agent)?;
+    join_channel_silent(&store, "general", &agent_id, "agent");
 
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
@@ -753,7 +755,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", &agent_id, SenderType::Agent)?;
+    join_channel_silent(&store, "general", &agent_id, "agent");
 
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {
@@ -890,7 +892,7 @@ async fn gemini_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", &agent_id, SenderType::Agent)?;
+    join_channel_silent(&store, "general", &agent_id, "agent");
 
     store.create_message(CreateMessage {
         channel_name: "general",
@@ -1013,7 +1015,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         reasoning_effort: None,
         env_vars: &[],
     })?;
-    store.join_channel("general", &agent_id, SenderType::Agent)?;
+    join_channel_silent(&store, "general", &agent_id, "agent");
 
     // 4. Seed a user message in #general for conversation shape.
     store.create_message(CreateMessage {

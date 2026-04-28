@@ -1,3 +1,4 @@
+mod harness;
 use std::sync::Arc;
 
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
@@ -5,8 +6,9 @@ use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
 use chorus::server::build_router_with_services;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::messages::ReceivedMessage;
 use chorus::store::Store;
+use harness::join_channel_silent;
 
 /// Insert an agent row with a chosen primary key. Mirrors the helper used in
 /// `server_tests`/`e2e_tests` so identity-typed args (member_id, sender_id)
@@ -143,9 +145,7 @@ async fn start_chorus_server() -> (String, Arc<Store>) {
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    store
-        .join_channel("general", "testuser", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "general", "testuser", "human");
 
     let router = build_router_with_services(
         store.clone(),
@@ -327,9 +327,7 @@ async fn bridge_sends_message_to_chorus_server() {
     // 1. Start the Chorus server with a seeded channel + agent.
     let (server_url, store) = start_chorus_server().await;
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
-    store
-        .join_channel("general", "bot1", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "general", "bot1", "agent");
 
     // 2. Start the bridge pointed at the Chorus server.
     let (bridge_addr, bridge_ct) = start_bridge_with_server(&server_url).await;
@@ -428,79 +426,32 @@ async fn bridge_sends_message_to_chorus_server() {
 }
 
 // ---------------------------------------------------------------------------
-// Agent-readability adapter tests (Task 7)
+// Agent-readability tests: task events reach agents as plain English content.
+// The producer writes the human sentence into `messages.content` and the
+// structured shape into `messages.payload`. The bridge no longer reformats —
+// it returns `content` verbatim — so these tests assert the produced sentence
+// flows through both read_history and check_messages.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn bridge_formats_task_event_as_human_sentence_for_agents() {
-    use chorus::bridge::format::format_message_for_agent;
-    use chorus::store::tasks::events::{TaskEventAction, TaskEventPayload};
-    use chorus::store::tasks::TaskStatus;
-
-    let payload = TaskEventPayload {
-        action: TaskEventAction::Claimed,
-        task_number: 7,
-        title: "wire up the bridge".into(),
-        sub_channel_id: "sub-1".into(),
-        actor: "alice".into(),
-        prev_status: Some(TaskStatus::Todo),
-        next_status: TaskStatus::InProgress,
-        claimed_by: Some("alice".into()),
-    };
-    let content = payload.to_json_string().unwrap();
-
-    let formatted = format_message_for_agent("system", &content);
-    assert_eq!(
-        formatted,
-        "[task] alice claimed #7 \"wire up the bridge\" (now in_progress)"
-    );
-
-    // Regular messages pass through unchanged.
-    assert_eq!(
-        format_message_for_agent("human", "hello world"),
-        "hello world"
-    );
-
-    // Malformed system content falls back to the raw string.
-    assert_eq!(format_message_for_agent("system", "not json"), "not json");
-
-    // System content whose JSON parses but has the wrong `kind` also falls back.
-    assert_eq!(
-        format_message_for_agent("system", r#"{"kind":"other","msg":"hi"}"#),
-        r#"{"kind":"other","msg":"hi"}"#
-    );
-
-    // Malformed task_event (invalid prevStatus, wrong-type claimedBy) falls
-    // back to the raw content. Mirrors the frontend parser's "present-invalid
-    // is broken" contract.
-    let bad_prev = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"t","subChannelId":"s","actor":"a","prevStatus":"garbage","nextStatus":"in_progress"}"#;
-    assert_eq!(format_message_for_agent("system", bad_prev), bad_prev);
-
-    let bad_claimed = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"t","subChannelId":"s","actor":"a","nextStatus":"in_progress","claimedBy":42}"#;
-    assert_eq!(format_message_for_agent("system", bad_claimed), bad_claimed);
-}
-
 #[tokio::test]
-async fn bridge_read_history_formats_task_event_messages() {
+async fn bridge_read_history_surfaces_task_event_content() {
     use chorus::bridge::backend::{Backend, ChorusBackend};
     use chorus::store::channels::ChannelType;
+    use chorus::store::messages::SenderType;
 
     let (server_url, store) = start_chorus_server().await;
 
-    let channel_id = store
+    store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("eng", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
     seed_agent_with_id(&store, "agent-one", "agent-one", "claude", "sonnet");
-    store
-        .join_channel("eng", "agent-one", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "eng", "agent-one", "agent");
 
-    let payload = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"wire up","subChannelId":"s-1","actor":"alice","prevStatus":"todo","nextStatus":"in_progress","claimedBy":"alice"}"#;
-    store.create_system_message(&channel_id, payload).unwrap();
+    store
+        .create_tasks("eng", "alice", SenderType::Human, &["wire up"])
+        .unwrap();
 
     let backend = ChorusBackend::new(server_url);
     let history = backend
@@ -509,43 +460,41 @@ async fn bridge_read_history_formats_task_event_messages() {
         .expect("read_history should succeed");
 
     assert!(
-        history.contains(r#"[task] alice claimed #7 "wire up" (now in_progress)"#),
-        "expected formatted task-event sentence in history, got:\n{}",
+        history.contains(r#"alice created #1 "wire up""#),
+        "expected human-readable task-event sentence in history, got:\n{}",
         history
     );
     assert!(
         !history.contains(r#""kind":"task_event""#),
-        "raw JSON must NOT appear in agent-facing history; got:\n{}",
+        "raw payload JSON must NOT appear in agent-facing history; got:\n{}",
         history
     );
 }
 
 #[tokio::test]
-async fn bridge_check_messages_formats_task_event() {
+async fn bridge_check_messages_surfaces_task_event_content() {
     use chorus::bridge::backend::{Backend, ChorusBackend};
     use chorus::store::channels::ChannelType;
+    use chorus::store::messages::SenderType;
     use std::time::Duration;
     use tokio::time::timeout;
 
     let (server_url, store) = start_chorus_server().await;
 
-    let channel_id = store
+    store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
     store.ensure_human_with_id("alice", "alice").unwrap();
-    store
-        .join_channel("eng", "alice", SenderType::Human)
-        .unwrap();
+    join_channel_silent(&store, "eng", "alice", "human");
     seed_agent_with_id(&store, "agent-one", "agent-one", "claude", "sonnet");
-    store
-        .join_channel("eng", "agent-one", SenderType::Agent)
-        .unwrap();
+    join_channel_silent(&store, "eng", "agent-one", "agent");
 
-    let payload = r#"{"kind":"task_event","action":"claimed","taskNumber":7,"title":"wire up","subChannelId":"s-1","actor":"alice","prevStatus":"todo","nextStatus":"in_progress","claimedBy":"alice"}"#;
-    store.create_system_message(&channel_id, payload).unwrap();
+    store
+        .create_tasks("eng", "alice", SenderType::Human, &["wire up"])
+        .unwrap();
 
     let backend = ChorusBackend::new(server_url);
-    let expected = r#"[task] alice claimed #7 "wire up" (now in_progress)"#;
+    let expected = r#"alice created #1 "wire up""#;
 
     let received = timeout(Duration::from_secs(2), async {
         loop {
@@ -560,16 +509,16 @@ async fn bridge_check_messages_formats_task_event() {
         }
     })
     .await
-    .expect("timed out waiting for formatted task-event via check_messages");
+    .expect("timed out waiting for task-event sentence via check_messages");
 
     assert!(
         received.contains(expected),
-        "expected formatted task-event sentence from check_messages, got:\n{}",
+        "expected human-readable task-event sentence from check_messages, got:\n{}",
         received
     );
     assert!(
         !received.contains(r#""kind":"task_event""#),
-        "raw JSON must NOT appear in check_messages output; got:\n{}",
+        "raw payload JSON must NOT appear in check_messages output; got:\n{}",
         received
     );
 }

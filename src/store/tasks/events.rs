@@ -1,11 +1,12 @@
 //! Task-event system messages emitted on every task mutation.
 //!
 //! Every event becomes a `sender_type = 'system'` message in the parent channel
-//! with a JSON `content` payload. The frontend parses the JSON; agents receive
-//! a pre-formatted human sentence via the bridge adapter.
+//! with structured JSON in the `payload` column and a human-readable sentence
+//! in `content`. The frontend renderer reads `payload`; agents and any
+//! kind-unaware consumer read `content`.
 
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::store::tasks::TaskStatus;
 
@@ -47,11 +48,11 @@ pub struct TaskEventPayload {
 }
 
 impl TaskEventPayload {
-    /// Serialize to a JSON string suitable for `messages.content`. Emits
-    /// camelCase field names so the TypeScript frontend can read it without
-    /// mapping.
-    pub fn to_json_string(&self) -> Result<String, serde_json::Error> {
-        let value = json!({
+    /// Serialize to a JSON value suitable for `messages.payload`. Emits
+    /// camelCase field names so the TypeScript frontend reads it directly.
+    /// No `audience` field — task events flow to agents.
+    pub fn to_json_value(&self) -> Value {
+        json!({
             "kind": "task_event",
             "action": self.action.as_str(),
             "taskNumber": self.task_number,
@@ -61,34 +62,34 @@ impl TaskEventPayload {
             "prevStatus": self.prev_status.map(|s| s.as_str()),
             "nextStatus": self.next_status.as_str(),
             "claimedBy": self.claimed_by,
-        });
-        serde_json::to_string(&value)
+        })
     }
 
-    /// Human-readable one-line summary used when serializing for agent
-    /// consumers in the bridge layer.
-    pub fn as_agent_sentence(&self) -> String {
+    /// Human-readable one-line summary written into `messages.content`.
+    /// Acts as the canonical fallback for any consumer that doesn't render
+    /// the structured payload — agents in chat history, older clients, etc.
+    pub fn as_human_sentence(&self) -> String {
         match self.action {
             TaskEventAction::Created => format!(
-                "[task] {} created #{} \"{}\"",
+                "{} created #{} \"{}\"",
                 self.actor, self.task_number, self.title
             ),
             TaskEventAction::Claimed => format!(
-                "[task] {} claimed #{} \"{}\" (now {})",
+                "{} claimed #{} \"{}\" (now {})",
                 self.actor,
                 self.task_number,
                 self.title,
                 self.next_status.as_str()
             ),
             TaskEventAction::Unclaimed => format!(
-                "[task] {} unclaimed #{} \"{}\" (now {})",
+                "{} unclaimed #{} \"{}\" (now {})",
                 self.actor,
                 self.task_number,
                 self.title,
                 self.next_status.as_str()
             ),
             TaskEventAction::StatusChanged => format!(
-                "[task] {} → {} on #{} \"{}\"",
+                "{} → {} on #{} \"{}\"",
                 self.actor,
                 self.next_status.as_str(),
                 self.task_number,
