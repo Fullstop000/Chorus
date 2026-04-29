@@ -159,7 +159,17 @@ function SystemMessageItem({ message }: { message: HistoryMessage }) {
       title={fullTime}
     >
       <div className="system-message-divider__line" />
-      <span className="system-message-divider__label">{message.content}</span>
+      <div className="system-message-divider__label">
+        <ReactMarkdown
+          components={{
+            p({ children }) {
+              return <>{children}</>;
+            },
+          }}
+        >
+          {message.content}
+        </ReactMarkdown>
+      </div>
       <div className="system-message-divider__line" />
     </div>
   );
