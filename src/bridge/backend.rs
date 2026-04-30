@@ -1004,24 +1004,32 @@ impl Backend for ChorusBackend {
 
     async fn create_decision(
         &self,
-        _agent_key: &str,
-        _payload: DecisionPayload,
+        agent_key: &str,
+        payload: DecisionPayload,
     ) -> Result<String, BridgeError> {
-        // Day 1 stub. The server-side handler at
-        // `POST /internal/agent/{agent_key}/decisions` ships in Day 3,
-        // along with the `decisions` table and the
-        // `AgentLifecycle::resume_with_prompt` method.
-        //
-        // Returning ServerError{501} surfaces the gap loudly to any
-        // agent that calls the tool prematurely; per CLAUDE.md, no
-        // silent fallback.
-        Err(BridgeError::ServerError {
-            status: 501,
-            body: "chorus_create_decision: server-side handler not yet implemented \
-                   (Day 1 ships the bridge stub; Day 3 ships the storage handler). \
-                   See docs/DECISIONS.md for status."
-                .to_string(),
-        })
+        let url = format!("{}/decisions", self.base_url(agent_key));
+        let req = self.client.post(&url).json(&payload);
+        let res = self.send_request(req, &url).await?;
+
+        // Try to parse the typed response { decision_id: "..." }; fall
+        // back to surfacing the raw body on any deserialization
+        // mismatch so the agent's retry path sees the actual error
+        // text rather than a generic 500.
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            decision_id: String,
+        }
+
+        let parsed: Resp = res.json().await.map_err(|e| BridgeError::ServerError {
+            status: 502,
+            body: format!("create_decision response not JSON-shaped: {e}"),
+        })?;
+        Ok(format!(
+            "Decision created. decision_id: {}\n\nEnd your turn now. \
+             The human will pick in the inbox; Chorus will resume your \
+             session with a new prompt containing the picked option.",
+            parsed.decision_id
+        ))
     }
 }
 

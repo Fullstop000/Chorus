@@ -26,6 +26,7 @@ import type {
 } from "../components/channels/types";
 import { TeamSettings } from "../components/channels/TeamSettings";
 import { SettingsPage } from "../components/settings/SettingsPage";
+import { DecisionsInbox } from "../components/decisions/DecisionsInbox";
 import {
   Dialog,
   DialogContent,
@@ -41,6 +42,7 @@ export function MainPanel() {
     currentChannel,
     currentAgent,
     showSettings,
+    showDecisions,
     currentTaskDetail,
   } = useStore();
   const agents = useAgents();
@@ -193,6 +195,8 @@ export function MainPanel() {
     >
       {showSettings ? (
         <SettingsPage />
+      ) : showDecisions ? (
+        <DecisionsInbox />
       ) : currentTaskDetail ? (
         <TaskDetail />
       ) : (

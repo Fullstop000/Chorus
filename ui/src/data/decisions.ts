@@ -76,3 +76,46 @@ export interface ResolvePayload {
    *  delivered back to the agent. */
   note?: string | null
 }
+
+// ── Public-shape view returned by GET /api/decisions ──
+//
+// The server returns the row with the agent payload pre-deserialized
+// under `payload`, instead of the raw JSON-string `payload_json`. The
+// snake_case shape matches `src/server/handlers/decisions.rs::DecisionView`.
+
+export interface DecisionView {
+  id: string
+  workspace_id: string
+  channel_id: string
+  agent_id: string
+  session_id: string
+  created_at: string
+  status: DecisionStatus
+  payload: DecisionPayload
+  picked_key: string | null
+  picked_note: string | null
+  resolved_at: string | null
+}
+
+export interface ListDecisionsResponse {
+  decisions: DecisionView[]
+}
+
+export interface ResolveDecisionResponse {
+  decision: DecisionView
+}
+
+// ── API functions ──
+
+import { get, post } from './client'
+
+export function listDecisions(status: 'open' | 'resolved' | 'all' = 'open'): Promise<ListDecisionsResponse> {
+  return get<ListDecisionsResponse>(`/api/decisions?status=${status}`)
+}
+
+export function resolveDecision(
+  id: string,
+  body: ResolvePayload,
+): Promise<ResolveDecisionResponse> {
+  return post<ResolveDecisionResponse>(`/api/decisions/${encodeURIComponent(id)}/resolve`, body)
+}
