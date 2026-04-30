@@ -199,12 +199,12 @@ export function isAgentActive(agent: AgentInfo): boolean {
 // ── Query definitions ──
 
 export const agentQueryKeys = {
-  agents: ['agents'] as const,
+  agents: (humanId: string) => ['agents', humanId] as const,
 } as const
 
 export const agentsQuery = (memberHumanId: string) =>
   queryOptions({
-    queryKey: agentQueryKeys.agents,
+    queryKey: agentQueryKeys.agents(memberHumanId),
     queryFn: listAgents,
     enabled: !!memberHumanId,
   })
