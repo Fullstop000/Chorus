@@ -228,6 +228,13 @@ export function MainPanel() {
         >
           {activeTab === "chat" && (
             <>
+              <h1 className="sr-only">
+                {currentAgent
+                  ? `Chat with ${currentAgent.display_name ?? currentAgent.name}`
+                  : currentChannel
+                    ? `Chat in ${currentChannel.name}`
+                    : "Chat"}
+              </h1>
               <ChatPanel
                 target={chatTarget}
                 conversationId={activeConversationId}
@@ -244,16 +251,40 @@ export function MainPanel() {
               />
             </>
           )}
-          {activeTab === "tasks" && <TasksPanel />}
-          {activeTab === "profile" && <ProfilePanel />}
+          {activeTab === "tasks" && (
+            <>
+              <h1 className="sr-only">Tasks</h1>
+              <TasksPanel />
+            </>
+          )}
+          {activeTab === "profile" && (
+            <>
+              <h1 className="sr-only">
+                {currentAgent
+                  ? `Profile: ${currentAgent.display_name ?? currentAgent.name}`
+                  : "Profile"}
+              </h1>
+              <ProfilePanel />
+            </>
+          )}
           {activeTab === "activity" && currentAgent && (
-            <TelescopeActivity
-              agentId={currentAgent.id}
-              agentName={currentAgent.name}
-            />
+            <>
+              <h1 className="sr-only">
+                Activity: {currentAgent.display_name ?? currentAgent.name}
+              </h1>
+              <TelescopeActivity
+                agentId={currentAgent.id}
+                agentName={currentAgent.name}
+              />
+            </>
           )}
           {activeTab === "workspace" && currentAgent && (
-            <WorkspacePanel agentId={currentAgent.id} />
+            <>
+              <h1 className="sr-only">
+                Workspace: {currentAgent.display_name ?? currentAgent.name}
+              </h1>
+              <WorkspacePanel agentId={currentAgent.id} />
+            </>
           )}
           {!showHeader && (
             <div
@@ -267,6 +298,7 @@ export function MainPanel() {
                 gap: 8,
               }}
             >
+              <h1 className="sr-only">Chorus — Select a channel or agent to get started</h1>
               <span className="empty-state-icon">[chorus::idle]</span>
               <span>Select a channel or agent to get started</span>
             </div>

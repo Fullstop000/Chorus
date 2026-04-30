@@ -128,6 +128,20 @@ Do NOT answer directly or use other tools first.
 | `/project-memory`          | Record a decision, bug postmortem, fact, or pattern |
 
 
+### Issues
+
+When creating GitHub issues, use the matching form in `.github/ISSUE_TEMPLATE/`:
+
+| Form | Use For |
+| --- | --- |
+| `bug_report.yml` | Broken shipped behavior, regressions, or suspected defects |
+| `product_design_request.yml` | Product behavior, UX/design critique, onboarding, copy, and visual refinements |
+| `architecture_investigation.yml` | Technical design notes, root-cause writeups, debt, or systemic issues before concrete work is planned |
+
+If an investigation confirms a defect, open or link a Bug Report instead of
+continuing to track it only as an architecture note.
+
+
 Browser: use `/gstack-browse`. Never use `mcp__claude-in-chrome__`* tools.
 Run `/gstack-upgrade` to update skill inventory.
 
@@ -138,7 +152,6 @@ Run `/gstack-upgrade` to update skill inventory.
 1. **Every rule earns its place by preventing a real problem.** No rule without an incident.
 2. **Adding a rule means deleting a weaker one.** Fixed budget. Growth is not progress.
 3. **Update in the same PR that made you wish it said something.**
-4. **Annual audit.** Read every rule, every doc pointer. Delete what's stale. If you didn't delete anything, you didn't audit.
 
 
 ---

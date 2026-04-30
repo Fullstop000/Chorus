@@ -1,0 +1,60 @@
+name: Architecture / Investigation
+description: Capture technical design notes, root-cause analysis, debt, or systemic behavior before concrete work is planned.
+title: "architecture: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for technical investigations and architecture notes. If investigation confirms a shipped defect, file or link a Bug Report.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What system behavior or architectural concern needs attention?
+      placeholder: "Agent creation blocks the HTTP response on driver handshake round-trips."
+    validations:
+      required: true
+  - type: textarea
+    id: area
+    attributes:
+      label: Area / subsystem
+      placeholder: "Agent manager, runtime drivers, ACP bridge, workspace data model, CLI setup."
+    validations:
+      required: true
+  - type: textarea
+    id: current-behavior
+    attributes:
+      label: Current behavior
+      placeholder: "handle_create_agent waits until driver initialization returns before the agent appears in the sidebar."
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / code references
+      description: Include files, functions, issue links, logs, or traces.
+      placeholder: |
+        src/agent/manager.rs:264
+        src/agent/drivers/codex.rs:584
+        #125
+  - type: textarea
+    id: root-cause
+    attributes:
+      label: Suspected or known root cause
+      placeholder: "The manager inserts active agents only after handle.run(init_prompt).await completes."
+  - type: textarea
+    id: approaches
+    attributes:
+      label: Candidate approaches
+      placeholder: |
+        1. Insert pending agent before driver handshake.
+        2. Split process spawn from session initialization.
+        3. Keep synchronous path but surface progress explicitly.
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks / migration concerns
+      placeholder: "Could create phantom active agents if initialization fails after insertion."
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Related issues, docs, decisions, or follow-up work.

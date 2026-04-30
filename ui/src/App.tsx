@@ -93,7 +93,15 @@ function syncWhoami(
     // Switching local human identity invalidates the cached selection state
     // (current channel/agent, inbox cursors). Reset before adopting the new id
     // so stale ids/cursors from the previous session don't leak in.
-    if (currentUserId) resetUserSession();
+    if (currentUserId) {
+      resetUserSession();
+      // Wipe the React Query cache so stale API data (channels, agents,
+      // messages) from the previous human session doesn't persist.
+      appQueryClient.clear();
+      // Re-seed whoami so the query that just resolved doesn't flicker into
+      // a loading state while components re-mount.
+      appQueryClient.setQueryData(channelQueryKeys.whoami, whoami);
+    }
     setCurrentUser(whoami);
   }, [whoami, currentUserId, setCurrentUser, resetUserSession]);
 }

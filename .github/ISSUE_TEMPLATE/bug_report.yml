@@ -1,0 +1,76 @@
+name: Bug Report
+description: Report broken shipped behavior, regressions, or suspected defects.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this when something is broken. If this is a product idea, UX critique, or architecture note, choose another template.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+      placeholder: "Creating an agent fails after selecting the Codex runtime."
+    validations:
+      required: true
+  - type: dropdown
+    id: affected-area
+    attributes:
+      label: Affected area
+      options:
+        - UI
+        - Backend
+        - CLI
+        - Agents / Drivers
+        - Workspace / Data
+        - QA / Tests
+        - Docs
+        - Unknown
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: List the shortest reliable path to trigger the problem. Partial steps are okay if this came from logs or a screenshot.
+      placeholder: |
+        1. Start Chorus with `./dev.sh`
+        2. Open #all
+        3. Click Create Agent
+        4. Select Codex
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: "The agent appears in the sidebar and reaches an idle/ready state."
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: "The request hangs for several seconds, then the UI shows no new agent."
+    validations:
+      required: true
+  - type: textarea
+    id: logs-screenshots
+    attributes:
+      label: Logs / screenshots
+      description: Paste terminal logs, browser console output, screenshots, traces, or API responses.
+      render: shell
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: |
+        OS:
+        Browser:
+        Chorus commit/branch:
+        Data dir: default ~/.chorus or custom temp dir
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Any related issues, suspected cause, or workaround.

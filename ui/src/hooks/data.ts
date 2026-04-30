@@ -158,8 +158,8 @@ export function useRefresh() {
   }, [currentUserId, queryClient])
 
   const refreshAgents = useCallback(async () => {
-    await queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents })
-  }, [queryClient])
+    await queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents(currentUserId) })
+  }, [currentUserId, queryClient])
 
   const refreshTeams = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: teamQueryKeys.teams })
@@ -167,10 +167,10 @@ export function useRefresh() {
 
   const refreshServerInfo = useCallback(async () => {
     await Promise.all([
-      queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents }),
+      queryClient.invalidateQueries({ queryKey: agentQueryKeys.agents(currentUserId) }),
       queryClient.invalidateQueries({ queryKey: channelQueryKeys.channels(currentUserId) }),
       queryClient.invalidateQueries({ queryKey: teamQueryKeys.teams }),
-      queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans }),
+      queryClient.invalidateQueries({ queryKey: channelQueryKeys.humans(currentUserId) }),
       queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.workspaces }),
       queryClient.invalidateQueries({ queryKey: workspaceQueryKeys.current }),
     ])

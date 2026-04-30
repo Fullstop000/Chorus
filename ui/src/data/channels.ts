@@ -207,14 +207,14 @@ export const channelQueryKeys = {
   whoami: ['whoami'] as const,
   /** React-query cache segment keyed by the local human's stable id. */
   channels: (humanId: string) => ['channels', humanId] as const,
-  humans: ['humans'] as const,
+  humans: (humanId: string) => ['humans', humanId] as const,
   members: (channelId: string | null) => ['channelMembers', channelId] as const,
 } as const
 
 export const whoamiQuery = queryOptions({
   queryKey: channelQueryKeys.whoami,
   queryFn: () => getWhoami(),
-  staleTime: Infinity,
+  staleTime: 5 * 60 * 1000,
 })
 
 export const channelsQuery = (memberHumanId: string) =>
@@ -228,7 +228,7 @@ export const channelsQuery = (memberHumanId: string) =>
 
 export const humansQuery = (memberHumanId: string) =>
   queryOptions({
-    queryKey: channelQueryKeys.humans,
+    queryKey: channelQueryKeys.humans(memberHumanId),
     queryFn: listHumans,
     enabled: !!memberHumanId,
   })
