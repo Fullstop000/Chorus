@@ -405,6 +405,56 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Deliver a self-contained envelope to an agent's runtime session
+    /// as the next turn prompt. See `AgentLifecycle::resume_with_prompt`
+    /// for the contract; this is the inherent-method companion that
+    /// the trait impl forwards to.
+    pub async fn resume_with_prompt(
+        &self,
+        agent_name: &str,
+        envelope: String,
+    ) -> anyhow::Result<()> {
+        // First, peek at the live state. If the agent is `Active`
+        // (between turns, ready to accept a prompt), call
+        // `handle.prompt(envelope)` directly — the same path
+        // message-driven prompts use. If the agent is anything else
+        // (asleep, dead, in-flight, starting), fall through to
+        // `start_agent` with the envelope as the init_directive.
+        let live_active = {
+            let agents = self.agents.lock().await;
+            match agents.get(agent_name) {
+                Some(entry) => matches!(
+                    entry.handle.lock().await.process_state(),
+                    crate::agent::drivers::ProcessState::Active { .. }
+                ),
+                None => false,
+            }
+        };
+
+        if live_active {
+            let agents = self.agents.lock().await;
+            if let Some(entry) = agents.get(agent_name) {
+                let mut handle = entry.handle.lock().await;
+                let req = crate::agent::drivers::PromptReq {
+                    text: envelope,
+                    attachments: vec![],
+                };
+                handle.prompt(req).await?;
+                return Ok(());
+            }
+        }
+
+        // Asleep/dead handle (or vanished): respawn via start_agent
+        // with the envelope as the init_directive. start_agent's
+        // existing eviction logic handles `Closed`/`Failed`/`Idle`.
+        // For `Starting`/`PromptInFlight`, start_agent short-circuits
+        // and the envelope is lost — that race is documented as a
+        // known limitation; v2 adds a per-session FIFO queue. The
+        // system prompt teaches agents to end their turn cleanly
+        // after `chorus_create_decision`, so this should be rare.
+        self.start_agent(agent_name, None, Some(envelope)).await
+    }
+
     /// Deliver a wakeup notification to agent stdin.
     pub async fn notify_agent(&self, agent_name: &str) -> anyhow::Result<()> {
         let mut agents = self.agents.lock().await;
@@ -652,6 +702,14 @@ impl AgentLifecycle for AgentManager {
         Box::pin(AgentManager::notify_agent(self, agent_name))
     }
 
+    fn resume_with_prompt<'a>(
+        &'a self,
+        agent_name: &'a str,
+        envelope: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(AgentManager::resume_with_prompt(self, agent_name, envelope))
+    }
+
     fn stop_agent<'a>(
         &'a self,
         agent_name: &'a str,
@@ -690,6 +748,10 @@ impl AgentLifecycle for AgentManager {
 
     fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
         self.trace_store.set_run_channel(agent_name, channel_id);
+    }
+
+    fn run_channel_id(&self, agent_name: &str) -> Option<String> {
+        self.trace_store.run_channel_id(agent_name)
     }
 }
 

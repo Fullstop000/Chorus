@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use super::error::BridgeError;
 use super::format::{format_attachments, to_local_time};
+use crate::decision::DecisionPayload;
 
 // ---------------------------------------------------------------------------
 // Backend trait
@@ -106,6 +107,19 @@ pub trait Backend: Send + Sync {
 
     /// View/download a file attachment.
     async fn view_file(&self, agent_key: &str, attachment_id: &str) -> Result<String, BridgeError>;
+
+    /// Create a structured decision for the human to pick.
+    ///
+    /// The bridge has already validated the payload via
+    /// `crate::decision::validate` before calling this method.
+    /// Day 1 ships a stub that returns a 501 ServerError; the real
+    /// handler ships in Day 3 once the `decisions` table and the
+    /// `AgentLifecycle::resume_with_prompt` method exist.
+    async fn create_decision(
+        &self,
+        agent_key: &str,
+        payload: DecisionPayload,
+    ) -> Result<String, BridgeError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +999,36 @@ impl Backend for ChorusBackend {
         Ok(format!(
             "Downloaded to: {}\n\nUse your Read tool to view this image.",
             file_path.to_string_lossy()
+        ))
+    }
+
+    async fn create_decision(
+        &self,
+        agent_key: &str,
+        payload: DecisionPayload,
+    ) -> Result<String, BridgeError> {
+        let url = format!("{}/decisions", self.base_url(agent_key));
+        let req = self.client.post(&url).json(&payload);
+        let res = self.send_request(req, &url).await?;
+
+        // Try to parse the typed response { decision_id: "..." }; fall
+        // back to surfacing the raw body on any deserialization
+        // mismatch so the agent's retry path sees the actual error
+        // text rather than a generic 500.
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            decision_id: String,
+        }
+
+        let parsed: Resp = res.json().await.map_err(|e| BridgeError::ServerError {
+            status: 502,
+            body: format!("create_decision response not JSON-shaped: {e}"),
+        })?;
+        Ok(format!(
+            "Decision created. decision_id: {}\n\nEnd your turn now. \
+             The human will pick in the inbox; Chorus will resume your \
+             session with a new prompt containing the picked option.",
+            parsed.decision_id
         ))
     }
 }

@@ -11,6 +11,7 @@ pub mod format;
 pub mod serve;
 mod types;
 
+use crate::decision::DecisionPayload;
 use backend::{Backend, ChorusBackend};
 use types::*;
 
@@ -266,6 +267,27 @@ impl ChatBridge {
         let agent_id = extract_agent_id(&parts)?;
         self.backend
             .view_file(&agent_id, &params.attachment_id)
+            .await
+            .map_err(Into::into)
+    }
+
+    #[tool(
+        description = "Create a structured decision for the human to pick. Returns decision_id; END YOUR TURN immediately. The human picks in their decision inbox; Chorus then resumes your session with a new prompt containing the picked option. See your system prompt for usage rules and the payload contract."
+    )]
+    async fn chorus_create_decision(
+        &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
+        Parameters(payload): Parameters<DecisionPayload>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
+        // Validate at the bridge boundary so malformed payloads never
+        // reach the server-side handler. Surface validation errors
+        // loudly so the agent's retry path can fix them.
+        crate::decision::validate(&payload).map_err(|e| {
+            rmcp::ErrorData::invalid_params(format!("CHORUS-4007: Invalid parameter: {e}"), None)
+        })?;
+        self.backend
+            .create_decision(&agent_id, payload)
             .await
             .map_err(Into::into)
     }
