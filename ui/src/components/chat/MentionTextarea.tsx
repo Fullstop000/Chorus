@@ -171,6 +171,8 @@ export function MentionTextarea({
         onKeyDown={handleKeyDown}
         disabled={disabled}
         rows={rows}
+        aria-label={placeholder ?? 'Message input'}
+        role="textbox"
       />
     </div>
   )
