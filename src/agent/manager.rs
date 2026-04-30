@@ -456,10 +456,9 @@ impl AgentManager {
             let agents = self.agents.lock().await;
             agents.get(agent_name).map(|m| m.handle.clone())
         };
-        match handle {
-            Some(h) => Some(h.lock().await.process_state()),
-            None => None,
-        }
+        let h = handle?;
+        let state = h.lock().await.process_state();
+        Some(state)
     }
 
     /// Test-only constructor: builds an [`AgentManager`] with an empty driver
