@@ -57,7 +57,7 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const { currentUser, currentUserId, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings, showDecisions, setShowDecisions } = useStore()
+  const { currentUser, currentUserId, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings } = useStore()
   const showConversationIds = useStore((s) => s.showConversationIds)
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
@@ -380,16 +380,6 @@ export function Sidebar() {
             <span className="sidebar-footer-name">{currentHumanInfo?.name ?? currentUser}</span>
             <span className="sidebar-footer-meta">[operator::active]</span>
           </div>
-          <button
-            className="sidebar-footer-cog"
-            type="button"
-            aria-label="Open decisions inbox"
-            title="Decisions"
-            onClick={() => setShowDecisions(!showDecisions)}
-            style={{ marginRight: 4 }}
-          >
-            ?!
-          </button>
           <button className="sidebar-footer-cog" type="button" aria-label="Open settings" onClick={() => setShowSettings(!showSettings)}>
             <Settings2 size={15} />
           </button>

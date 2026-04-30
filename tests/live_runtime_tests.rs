@@ -111,14 +111,6 @@ impl AgentLifecycle for NoopLifecycle {
         Box::pin(async { Ok(()) })
     }
 
-    fn resume_with_prompt<'a>(
-        &'a self,
-        _agent_name: &'a str,
-        _envelope: String,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
     fn stop_agent<'a>(
         &'a self,
         _agent_name: &'a str,

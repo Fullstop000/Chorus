@@ -259,26 +259,3 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
     ON agent_sessions(agent_id, is_active);
-
--- Decisions: structured human-pickable choices emitted by agents via the
--- chorus_create_decision MCP tool. v1 is the minimum mechanism (per
--- chorus-design-reviews/explorations/2026-04-30-pr-review-vertical-slice/);
--- urgency, deadline, kind, confidence, reversibility, retry/backoff,
--- delivery_failed terminal state, and per-session FIFO queues are deferred.
-CREATE TABLE IF NOT EXISTS decisions (
-    id TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
-    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-    session_id TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-    status TEXT NOT NULL DEFAULT 'open', -- 'open' | 'resolved'
-    payload_json TEXT NOT NULL,           -- serialized DecisionPayload
-    picked_key TEXT,                      -- set on resolve
-    picked_note TEXT,                     -- optional human note
-    resolved_at TEXT                      -- set on resolve
-);
-CREATE INDEX IF NOT EXISTS idx_decisions_status_created
-    ON decisions(status, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_decisions_workspace_status
-    ON decisions(workspace_id, status, created_at DESC);

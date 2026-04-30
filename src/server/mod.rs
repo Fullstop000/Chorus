@@ -118,8 +118,7 @@ pub fn build_router_with_services(
             "/agent/{agent_id}/tasks/update-status",
             post(handle_update_task_status),
         )
-        .route("/agent/{agent_id}/upload", post(handle_upload))
-        .route("/agent/{agent_id}/decisions", post(handle_create_decision));
+        .route("/agent/{agent_id}/upload", post(handle_upload));
 
     let api_router = Router::new()
         .route("/attachments/{attachment_id}", get(handle_get_attachment))
@@ -128,8 +127,6 @@ pub fn build_router_with_services(
         .route("/humans", get(handle_list_humans))
         .route("/humans/{id}", patch(handle_update_human))
         .route("/inbox", get(handle_public_inbox))
-        .route("/decisions", get(handle_list_decisions))
-        .route("/decisions/{id}/resolve", post(handle_resolve_decision))
         .route("/dms/{peer_name}", put(handle_public_ensure_dm))
         .route(
             "/conversations/{conversation_id}/messages",

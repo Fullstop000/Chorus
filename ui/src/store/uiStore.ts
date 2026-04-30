@@ -80,8 +80,6 @@ interface UIState {
   toasts: ToastEntry[]
   /** Whether the full-page Settings view is open */
   showSettings: boolean
-  /** Whether the full-page Decisions inbox is open */
-  showDecisions: boolean
   /** When non-null, MainPanel renders the task-detail view for this task */
   currentTaskDetail: TaskDetailTarget | null
   /**
@@ -110,7 +108,6 @@ interface UIActions {
   pushToast: (entry: ToastEntry) => void
   dismissToast: (id: string) => void
   setShowSettings: (show: boolean) => void
-  setShowDecisions: (show: boolean) => void
   setCurrentTaskDetail: (target: TaskDetailTarget | null) => void
   setShowConversationIds: (show: boolean) => void
 }
@@ -127,7 +124,6 @@ const initialState: UIState = {
   shellBootstrapped: false,
   toasts: [],
   showSettings: false,
-  showDecisions: false,
   currentTaskDetail: null,
   showConversationIds: readPersistedPrefs().showConversationIds,
 }
@@ -236,7 +232,6 @@ export const useStore = create<UIStore>((set) => ({
     set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
   setShowSettings: (showSettings: boolean) => set({ showSettings }),
-  setShowDecisions: (showDecisions: boolean) => set({ showDecisions }),
 
   setCurrentTaskDetail: (currentTaskDetail: TaskDetailTarget | null) =>
     set({ currentTaskDetail }),
