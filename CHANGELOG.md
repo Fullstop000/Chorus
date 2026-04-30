@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.6.0] - 2026-04-30
+
+### Fixed
+- Agent creation is now non-blocking. Previously, creating an agent with Codex or ACP-native runtimes blocked the HTTP response for 500ms–3s while the server waited for driver handshake round-trips. The agent now appears in the sidebar immediately and starts up in the background. (#127)
+
 ## [0.0.5.0] - 2026-04-28
 
 ### Added
