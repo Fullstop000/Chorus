@@ -247,7 +247,7 @@ mod tests {
         let mut p = ok_payload();
         p.question = "x".repeat(MAX_QUESTION + 1);
         match validate(&p) {
-            Err(ValidationError::TooLong { field, .. }) if field == "question" => {}
+            Err(ValidationError::TooLong { field: "question", .. }) => {}
             other => panic!("expected TooLong{{question}}, got {other:?}"),
         }
     }
@@ -257,7 +257,7 @@ mod tests {
         let mut p = ok_payload();
         p.context = "x".repeat(MAX_CONTEXT + 1);
         match validate(&p) {
-            Err(ValidationError::TooLong { field, .. }) if field == "context" => {}
+            Err(ValidationError::TooLong { field: "context", .. }) => {}
             other => panic!("expected TooLong{{context}}, got {other:?}"),
         }
     }
@@ -291,7 +291,7 @@ mod tests {
         let mut p = ok_payload();
         p.options[0].label = "x".repeat(MAX_OPTION_LABEL + 1);
         match validate(&p) {
-            Err(ValidationError::TooLong { field, .. }) if field == "option label" => {}
+            Err(ValidationError::TooLong { field: "option label", .. }) => {}
             other => panic!("expected TooLong{{option label}}, got {other:?}"),
         }
     }
@@ -301,7 +301,7 @@ mod tests {
         let mut p = ok_payload();
         p.options[0].body = "x".repeat(MAX_OPTION_BODY + 1);
         match validate(&p) {
-            Err(ValidationError::TooLong { field, .. }) if field == "option body" => {}
+            Err(ValidationError::TooLong { field: "option body", .. }) => {}
             other => panic!("expected TooLong{{option body}}, got {other:?}"),
         }
     }
