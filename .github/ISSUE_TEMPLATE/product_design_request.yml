@@ -1,0 +1,62 @@
+name: Product / Design Request
+description: Propose product behavior, UX improvements, onboarding, copy, or visual design work.
+title: "product/design: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for feature ideas, UX/design critiques, onboarding improvements, copy changes, and product refinements.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What should improve?
+      placeholder: "Improve the empty #all state so first-time users know how to create an agent and start collaborating."
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Problem / motivation
+      description: What user problem or product gap does this address?
+      placeholder: "The shell looks complete, but new users have to infer the first useful workflow."
+    validations:
+      required: true
+  - type: textarea
+    id: affected-workflow
+    attributes:
+      label: Screen, flow, or workflow affected
+      placeholder: "Desktop #all empty state, Agents section, Tasks tab, Create Agent modal."
+  - type: textarea
+    id: current-experience
+    attributes:
+      label: Current experience
+      placeholder: "The page says there are no messages, but does not explain how agents, chat, and tasks connect."
+  - type: textarea
+    id: desired-experience
+    attributes:
+      label: Desired experience
+      placeholder: "The empty state gives a clear first action and preserves the flat industrial design language."
+  - type: textarea
+    id: references
+    attributes:
+      label: Screenshots, mockups, or references
+      description: Link images, issue comments, docs, or comparable flows.
+      placeholder: "https://github.com/Fullstop000/Chorus/issues/128#issuecomment-4350377179"
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope / non-goals
+      placeholder: "Desktop first-run only. Mobile is intentionally out of scope."
+  - type: textarea
+    id: design-system-notes
+    attributes:
+      label: Design-system notes
+      description: Mention constraints from docs/DESIGN.md or existing product language.
+      placeholder: "Zero radius, no shadows, no gradients, mono chat-adjacent copy."
+  - type: textarea
+    id: open-questions
+    attributes:
+      label: Open questions
+      placeholder: "Should the primary first action be sending a message or creating an agent?"
