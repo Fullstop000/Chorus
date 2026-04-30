@@ -310,7 +310,11 @@ impl AgentManager {
         let agent_name_owned = agent_name.to_string();
         let agents_ref = self.agents.clone();
         tokio::spawn(async move {
-            match handle.lock().await.run(Some(prompt)).await {
+            let run_result = {
+                let mut guard = handle.lock().await;
+                guard.run(Some(prompt)).await
+            }; // Drop the handle lock before touching agents_ref (lock-order discipline).
+            match run_result {
                 Ok(()) => {
                     debug!(agent = %agent_name_owned, "agent run completed");
                     if let Some(agent) = agents_ref.lock().await.get_mut(&agent_name_owned) {
