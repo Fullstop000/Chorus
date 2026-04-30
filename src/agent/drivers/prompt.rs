@@ -51,6 +51,7 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
     let task_create_cmd = format!("`{}`", t("create_tasks"));
     let task_update_cmd = format!("`{}`", t("update_task_status"));
     let server_info_cmd = format!("`{}`", t("list_server"));
+    let create_decision_cmd = format!("`{}`", t("chorus_create_decision"));
 
     let identity = if spec.display_name.is_empty() {
         "agent"
@@ -65,7 +66,7 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
     };
 
     let mut critical_rules: Vec<String> = vec![format!(
-        "- Always communicate through {send_cmd}. This is your only output channel."
+        "- Always communicate through {send_cmd}. This is your only output channel, with one exception: when you need a human to choose between concrete alternatives, call {create_decision_cmd} (see below) and end your turn — do NOT ask the question through {send_cmd}."
     )];
     critical_rules.extend(opts.extra_critical_rules.iter().cloned());
     critical_rules.push(
@@ -83,7 +84,7 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         "2. Read MEMORY.md (in your cwd) and then only the additional memory/files you need to handle the current turn well.".to_string(),
         format!("3. If there is no concrete incoming message to handle, stop and wait. {message_delivery_text}"),
         format!("4. When you receive a message, process it and reply with {send_cmd}."),
-        "5. **Complete ALL your work before stopping.** If a task requires multi-step work (research, code changes, testing), finish everything, report results, then stop. New messages arrive automatically — you do not need to poll or wait for them.".to_string(),
+        format!("5. **Complete ALL your work before stopping.** If a task requires multi-step work (research, code changes, testing), finish everything, report results, then stop. New messages arrive automatically — you do not need to poll or wait for them. The exception is when you call {create_decision_cmd}: end your turn cleanly after that tool returns; the human's pick will arrive as a new prompt to this same session."),
     ];
 
     let mut prompt = String::with_capacity(16_384);
@@ -219,6 +220,30 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         "\n\n## Workspace & Memory\n\nYour working directory (cwd) is your **persistent workspace**. Everything you write here survives across sessions.\n\n### MEMORY.md — Your Memory Index (CRITICAL)\n\n`MEMORY.md` is the **entry point** to all your knowledge. It is the first file read on every startup (including after context compression). Structure it as an index that points to everything you know. This file is called `MEMORY.md` (not tied to any specific runtime) — keep it updated after every significant interaction or learning.\n\n```markdown\n# <Your Name>\n\n## Role\n<your role definition, evolved over time>\n\n## Key Knowledge\n- Read notes/user-preferences.md for user preferences and conventions\n- Read notes/channels.md for what each channel is about and ongoing work\n- Read notes/domain.md for domain-specific knowledge and conventions\n- ...\n\n## Active Context\n- Currently working on: <brief summary>\n- Last interaction: <brief summary>\n```\n\n### What to memorize\n\n**Actively observe and record** the following kinds of knowledge as you encounter them in conversations:\n\n1. **User preferences** — How the user likes things done, communication style, coding conventions, tool preferences, recurring patterns in their requests.\n2. **World/project context** — The project structure, tech stack, architectural decisions, team conventions, deployment patterns.\n3. **Domain knowledge** — Domain-specific terminology, conventions, best practices you learn through tasks.\n4. **Work history** — What has been done, decisions made and why, problems solved, approaches that worked or failed.\n5. **Channel context** — What each channel is about, who participates, what's being discussed, ongoing tasks per channel.\n6. **Other agents** — What other agents do, their specialties, collaboration patterns, how to work with them effectively.\n\n### How to organize memory\n\n- **MEMORY.md** is always the index. Keep it concise but comprehensive as a table of contents.\n- Create a `notes/` directory for detailed knowledge files. Use descriptive names:\n  - `notes/user-preferences.md` — User's preferences and conventions\n  - `notes/channels.md` — Summary of each channel and its purpose\n  - `notes/work-log.md` — Important decisions and completed work\n  - `notes/<domain>.md` — Domain-specific knowledge\n- You can also create any other files or directories for your work (scripts, notes, data, etc.)\n- **Update notes proactively** — Don't wait to be asked. When you learn something important, write it down.\n- **Keep MEMORY.md current** — After updating notes, update the index in MEMORY.md if new files were added.\n\n### Compaction safety (CRITICAL)\n\nYour context will be periodically compressed to stay within limits. When this happens, you lose your in-context conversation history but MEMORY.md is always re-read. Therefore:\n\n- **MEMORY.md must be self-sufficient as a recovery point.** After reading it, you should be able to understand who you are, what you know, and what you were working on.\n- **Before a long task**, write a brief \"Active Context\" note in MEMORY.md so you can resume if interrupted mid-task.\n- **After completing work**, update your notes and MEMORY.md index so nothing is lost.\n- Keep MEMORY.md complete enough that context compression preserves: which channel is about what, what tasks are in progress, what the user has asked for, and what other agents are doing."
     );
 
+    prompt.push_str(&format!(
+        "\n\n## Decision Inbox\n\n\
+         When you need the human to make a choice, call {create_decision_cmd} instead of asking through {send_cmd}. The tool returns a `decision_id` and you must end your turn cleanly — do not call other tools or continue reasoning. The human picks in their decision inbox; Chorus then resumes your session with a new prompt that contains the picked option's full label and action body, plus the original headline and question. Read it and act.\n\n\
+         **When to use:**\n\
+         - PR review verdicts (merge, approve+comment, request changes, etc.)\n\
+         - Choosing between alternative implementations\n\
+         - Resolving config flags or non-obvious knobs\n\
+         - Any \"should I do X or Y?\" you'd otherwise ask via {send_cmd}\n\n\
+         **When NOT to use:**\n\
+         - Information requests\n\
+         - Open-ended brainstorming\n\
+         - Things you can act on unilaterally\n\n\
+         **Payload (all required):**\n\
+         - `headline` ≤80 chars, one-line summary (carries the category, e.g. \"PR review #121: archived-channel del/join fix\")\n\
+         - `question` ≤120 chars, the actual ask\n\
+         - `options` 2..=6 entries, each `{{key, label, body}}`. `key` is 1-2 alphanumeric chars; `label` ≤40 chars; `body` is markdown ≤2048 chars listing CONSEQUENCES (\"Squash and merge to main. CI green.\"), not pros/cons.\n\
+         - `recommended_key` must equal one option's `key`. Always required — recommend, don't abstain.\n\
+         - `context` markdown body ≤4096 chars. Suggested H2 sections (all optional): `## Why now`, `## Evidence`, `## Risk`, `## Pressure`, `## History`, `## Dep tree`, `## Related`. Inline prefixes for evidence: `[verified · source]`, `[inferred]`, `[agent]`. Audience prefix in `## Risk`: `[external]` / `[team]` / `[private]`.\n\n\
+         **Quality bar:**\n\
+         - Headline + question + recommended-option label should let the human pick in <10 seconds without expanding context.\n\
+         - If the human always needs to expand context, your headline+question is too thin. Rewrite them.\n\n\
+         **Failure:** If the validator rejects the payload, fix it and retry. Common errors: option keys not unique; `recommended_key` not in options; a length cap exceeded."
+    ));
+
     prompt.push_str(
         "\n\n## Capabilities\n\nYou can work with any files or tools on this computer — you are not confined to any directory.\nYou may develop a specialized role over time through your interactions. Embrace it."
     );
@@ -338,6 +363,29 @@ mod tests {
     fn description_appended_when_system_prompt_absent() {
         let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
         assert!(p.contains("Test agent. This may evolve."));
+    }
+
+    #[test]
+    fn decision_inbox_section_present_with_bare_tool_name() {
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert!(p.contains("## Decision Inbox"));
+        assert!(p.contains("`chorus_create_decision`"));
+        assert!(!p.contains("`mcp__chat__chorus_create_decision`"));
+        // Critical-rules exception is wired up so the `send_message`
+        // rule doesn't contradict the new tool.
+        assert!(p.contains("when you need a human to choose between concrete alternatives"));
+        assert!(p.contains("recommended_key"));
+    }
+
+    #[test]
+    fn decision_inbox_uses_claude_prefix_when_set() {
+        let opts = PromptOptions {
+            tool_prefix: "mcp__chat__".into(),
+            ..Default::default()
+        };
+        let p = build_system_prompt(&sample_spec(), &opts);
+        assert!(p.contains("`mcp__chat__chorus_create_decision`"));
+        assert!(!p.contains("`chorus_create_decision`\n"));
     }
 
     #[test]

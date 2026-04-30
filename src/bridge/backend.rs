@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use super::error::BridgeError;
 use super::format::{format_attachments, to_local_time};
+use crate::decision::DecisionPayload;
 
 // ---------------------------------------------------------------------------
 // Backend trait
@@ -106,6 +107,19 @@ pub trait Backend: Send + Sync {
 
     /// View/download a file attachment.
     async fn view_file(&self, agent_key: &str, attachment_id: &str) -> Result<String, BridgeError>;
+
+    /// Create a structured decision for the human to pick.
+    ///
+    /// The bridge has already validated the payload via
+    /// `crate::decision::validate` before calling this method.
+    /// Day 1 ships a stub that returns a 501 ServerError; the real
+    /// handler ships in Day 3 once the `decisions` table and the
+    /// `AgentLifecycle::resume_with_prompt` method exist.
+    async fn create_decision(
+        &self,
+        agent_key: &str,
+        payload: DecisionPayload,
+    ) -> Result<String, BridgeError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -986,6 +1000,28 @@ impl Backend for ChorusBackend {
             "Downloaded to: {}\n\nUse your Read tool to view this image.",
             file_path.to_string_lossy()
         ))
+    }
+
+    async fn create_decision(
+        &self,
+        _agent_key: &str,
+        _payload: DecisionPayload,
+    ) -> Result<String, BridgeError> {
+        // Day 1 stub. The server-side handler at
+        // `POST /internal/agent/{agent_key}/decisions` ships in Day 3,
+        // along with the `decisions` table and the
+        // `AgentLifecycle::resume_with_prompt` method.
+        //
+        // Returning ServerError{501} surfaces the gap loudly to any
+        // agent that calls the tool prematurely; per CLAUDE.md, no
+        // silent fallback.
+        Err(BridgeError::ServerError {
+            status: 501,
+            body: "chorus_create_decision: server-side handler not yet implemented \
+                   (Day 1 ships the bridge stub; Day 3 ships the storage handler). \
+                   See docs/DECISIONS.md for status."
+                .to_string(),
+        })
     }
 }
 
