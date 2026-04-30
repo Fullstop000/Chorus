@@ -894,12 +894,13 @@ mod tests {
         agents.lock().await.insert(
             key.clone(),
             ManagedAgent {
-                handle: Box::new(TestSession {
+                handle: Arc::new(tokio::sync::Mutex::new(Box::new(TestSession {
                     key: key.clone(),
                     session_id: sid.clone(),
-                }),
+                }))),
                 _event_tasks: vec![],
                 pending_notification_count: 1,
+                pre_starting: false,
             },
         );
 
