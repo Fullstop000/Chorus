@@ -131,8 +131,13 @@ impl AgentManager {
 
     /// Start an agent process. Creates the workspace, writes `MEMORY.md`, and
     /// optionally threads through the message that caused the wake-up.
-    // TODO(per-agent-lock): start_agent races with concurrent stop/sleep/start.
-    // See plan task 3.0 for documented interleavings. Fix deferred.
+    ///
+    /// The core lifecycle (open_session + run) is now spawned as a background
+    /// task so the caller (HTTP handler, message-delivery wake) returns
+    /// immediately. `pre_starting` guards the window between insertion and
+    /// the background task reaching `Starting`. Background mutations verify
+    /// handle identity via `Arc::ptr_eq` to avoid touching a newer agent that
+    /// reused the same name.
     pub async fn start_agent(
         &self,
         agent_name: &str,
@@ -305,25 +310,47 @@ impl AgentManager {
         }
 
         // Spawn run() as a background task — do NOT block start_agent on
-        // driver handshake round-trips. On failure, remove the agent from
-        // the map so the next message-wake retries with a fresh process.
+        // driver handshake round-trips. On failure, close the handle and
+        // abort event tasks; on success, clear the pre_starting flag.
+        // Identity is verified via Arc::ptr_eq before touching the map
+        // entry so an old task cannot mutate a newer agent that reused the
+        // same name.
         let agent_name_owned = agent_name.to_string();
         let agents_ref = self.agents.clone();
         tokio::spawn(async move {
             let run_result = {
                 let mut guard = handle.lock().await;
                 guard.run(Some(prompt)).await
-            }; // Drop the handle lock before touching agents_ref (lock-order discipline).
+            };
             match run_result {
                 Ok(()) => {
                     debug!(agent = %agent_name_owned, "agent run completed");
-                    if let Some(agent) = agents_ref.lock().await.get_mut(&agent_name_owned) {
-                        agent.pre_starting = false;
+                    let mut agents = agents_ref.lock().await;
+                    if let Some(agent) = agents.get_mut(&agent_name_owned) {
+                        if Arc::ptr_eq(&agent.handle, &handle) {
+                            agent.pre_starting = false;
+                        }
                     }
                 }
                 Err(err) => {
-                    warn!(agent = %agent_name_owned, error = %err, "agent run failed, removing from map");
-                    agents_ref.lock().await.remove(&agent_name_owned);
+                    warn!(agent = %agent_name_owned, error = %err, "agent run failed");
+                    let dead = {
+                        let mut agents = agents_ref.lock().await;
+                        match agents.get(&agent_name_owned) {
+                            Some(entry) if Arc::ptr_eq(&entry.handle, &handle) => {
+                                agents.remove(&agent_name_owned)
+                            }
+                            _ => None,
+                        }
+                    };
+                    if let Some(mut dead) = dead {
+                        if let Err(e) = dead.handle.lock().await.close().await {
+                            warn!(agent = %agent_name_owned, err = %e, "error closing failed handle");
+                        }
+                        for task in dead._event_tasks.drain(..) {
+                            task.abort();
+                        }
+                    }
                 }
             }
         });
