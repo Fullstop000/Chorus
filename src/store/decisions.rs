@@ -87,7 +87,14 @@ impl Store {
                 id, workspace_id, channel_id, agent_id, session_id,
                 status, payload_json
              ) VALUES (?1, ?2, ?3, ?4, ?5, 'open', ?6)",
-            params![id, workspace_id, channel_id, agent_id, session_id, payload_json],
+            params![
+                id,
+                workspace_id,
+                channel_id,
+                agent_id,
+                session_id,
+                payload_json
+            ],
         )?;
         // Read back the row so the caller gets the canonical
         // server-assigned `created_at` instead of guessing locally.
@@ -242,7 +249,8 @@ mod tests {
             "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
              VALUES ('a1', ?1, 'a', 'A', 'fake', 'fake')",
             params![workspace.id],
-        ).unwrap();
+        )
+        .unwrap();
         drop(conn);
         (store, dir, workspace.id, "c1".to_string())
     }

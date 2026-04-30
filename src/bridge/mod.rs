@@ -284,10 +284,7 @@ impl ChatBridge {
         // reach the server-side handler. Surface validation errors
         // loudly so the agent's retry path can fix them.
         crate::decision::validate(&payload).map_err(|e| {
-            rmcp::ErrorData::invalid_params(
-                format!("CHORUS-4007: Invalid parameter: {e}"),
-                None,
-            )
+            rmcp::ErrorData::invalid_params(format!("CHORUS-4007: Invalid parameter: {e}"), None)
         })?;
         self.backend
             .create_decision(&agent_id, payload)

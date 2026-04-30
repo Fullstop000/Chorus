@@ -58,10 +58,9 @@ impl fmt::Display for ValidationError {
                 f,
                 "recommended_key '{recommended_key}' does not match any option's key"
             ),
-            ValidationError::TooLong { field, got, max } => write!(
-                f,
-                "{field} too long: {got} chars (max {max})"
-            ),
+            ValidationError::TooLong { field, got, max } => {
+                write!(f, "{field} too long: {got} chars (max {max})")
+            }
             ValidationError::OptionKeyLength { key, got } => write!(
                 f,
                 "option key '{key}' has invalid length {got} (must be 1 or 2 characters)"

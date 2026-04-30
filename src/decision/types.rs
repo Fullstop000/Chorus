@@ -116,7 +116,8 @@ mod tests {
                 },
             ],
             recommended_key: "a".into(),
-            context: "## Why now\nCI green at 20:40Z.\n\n## Risk\n[team] minor regression risk.".into(),
+            context: "## Why now\nCI green at 20:40Z.\n\n## Risk\n[team] minor regression risk."
+                .into(),
         }
     }
 

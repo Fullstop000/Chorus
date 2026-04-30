@@ -3635,7 +3635,10 @@ async fn decision_round_trip_agent_creates_human_resolves_agent_resumed() {
     assert_eq!(list_resp.status(), StatusCode::OK);
     let list_body: serde_json::Value =
         serde_json::from_slice(&body_to_bytes(list_resp).await).unwrap();
-    let decisions = list_body.get("decisions").and_then(|v| v.as_array()).unwrap();
+    let decisions = list_body
+        .get("decisions")
+        .and_then(|v| v.as_array())
+        .unwrap();
     assert_eq!(decisions.len(), 1);
     assert_eq!(decisions[0]["id"], decision_id);
     assert_eq!(decisions[0]["status"], "open");
@@ -3665,7 +3668,11 @@ async fn decision_round_trip_agent_creates_human_resolves_agent_resumed() {
     // self-contained envelope text. This is the load-bearing assertion
     // — without this the human's pick never reaches the agent.
     let resumed = lifecycle.resumed_with.lock().unwrap().clone();
-    assert_eq!(resumed.len(), 1, "resume_with_prompt should fire exactly once");
+    assert_eq!(
+        resumed.len(),
+        1,
+        "resume_with_prompt should fire exactly once"
+    );
     assert_eq!(resumed[0].0, "bot1");
     let envelope = &resumed[0].1;
     assert!(envelope.contains("[chorus] Decision"));
@@ -3691,8 +3698,15 @@ async fn decision_round_trip_agent_creates_human_resolves_agent_resumed() {
         .unwrap();
     let after_body: serde_json::Value =
         serde_json::from_slice(&body_to_bytes(list_resp_after).await).unwrap();
-    let after = after_body.get("decisions").and_then(|v| v.as_array()).unwrap();
-    assert_eq!(after.len(), 0, "decision should be Resolved, not in open list");
+    let after = after_body
+        .get("decisions")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    assert_eq!(
+        after.len(),
+        0,
+        "decision should be Resolved, not in open list"
+    );
 }
 
 #[tokio::test]
@@ -3701,11 +3715,7 @@ async fn decision_resolve_double_pick_returns_409() {
     store
         .record_session("bot1", "sess-xyz", "claude")
         .expect("record session");
-    let chan = store
-        .get_channel_by_name("general")
-        .unwrap()
-        .unwrap()
-        .id;
+    let chan = store.get_channel_by_name("general").unwrap().unwrap().id;
     lifecycle.set_run_channel_for_test("bot1", &chan);
 
     let payload = serde_json::json!({
@@ -3802,14 +3812,8 @@ async fn decision_create_without_active_channel_returns_400() {
 #[tokio::test]
 async fn decision_resolve_unknown_picked_key_returns_400() {
     let (store, app, lifecycle) = setup_with_lifecycle();
-    store
-        .record_session("bot1", "sess-xyz", "claude")
-        .unwrap();
-    let chan = store
-        .get_channel_by_name("general")
-        .unwrap()
-        .unwrap()
-        .id;
+    store.record_session("bot1", "sess-xyz", "claude").unwrap();
+    let chan = store.get_channel_by_name("general").unwrap().unwrap().id;
     lifecycle.set_run_channel_for_test("bot1", &chan);
 
     let payload = serde_json::json!({

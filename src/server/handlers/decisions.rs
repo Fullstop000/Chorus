@@ -114,16 +114,13 @@ pub async fn handle_create_decision(
     // channel-triggered run for chorus_create_decision to know where to
     // file the decision. If no active-run channel, return 400 loudly so
     // the agent's retry path can surface the misconfiguration.
-    let channel_id = state
-        .lifecycle
-        .run_channel_id(&agent.name)
-        .ok_or_else(|| {
-            app_err!(
-                StatusCode::BAD_REQUEST,
-                "no active-run channel for agent {agent_id}; chorus_create_decision \
+    let channel_id = state.lifecycle.run_channel_id(&agent.name).ok_or_else(|| {
+        app_err!(
+            StatusCode::BAD_REQUEST,
+            "no active-run channel for agent {agent_id}; chorus_create_decision \
                  requires a channel-triggered agent run (r7 v1 channel-inference contract)"
-            )
-        })?;
+        )
+    })?;
 
     // Pull the agent's active runtime session so the resolve handler
     // can route the envelope back. v1 requires a live session; if the
@@ -282,7 +279,11 @@ pub async fn handle_resolve_decision(
         "delivering resolution envelope"
     );
 
-    if let Err(err) = state.lifecycle.resume_with_prompt(&agent.name, envelope).await {
+    if let Err(err) = state
+        .lifecycle
+        .resume_with_prompt(&agent.name, envelope)
+        .await
+    {
         // Resume failure is real: revert the row to Open so the human
         // can re-pick after they fix the underlying issue (driver
         // crashed, runtime not installed, etc.). Loud failure per
