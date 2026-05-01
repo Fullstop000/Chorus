@@ -259,3 +259,26 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
     ON agent_sessions(agent_id, is_active);
+
+-- Decisions emitted by agents via chorus_create_decision MCP tool.
+-- One row per emission. Status transitions Open → Resolved are CAS-protected
+-- (UPDATE WHERE status='open') so two simultaneous picks can't both succeed.
+-- Stores the full payload as JSON in TEXT (SQLite has no JSONB); shape is
+-- enforced at the validator boundary, not the schema.
+CREATE TABLE IF NOT EXISTS decisions (
+    id TEXT PRIMARY KEY NOT NULL,
+    workspace_id TEXT NOT NULL,
+    channel_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    session_id TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    status TEXT NOT NULL CHECK(status IN ('open','resolved')),
+    payload_json TEXT NOT NULL,
+    picked_key TEXT,
+    picked_note TEXT,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_workspace_status
+    ON decisions(workspace_id, status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_agent_status
+    ON decisions(agent_id, status);

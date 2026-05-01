@@ -38,6 +38,7 @@
 //! [`ClaudeAgentProcess`] (new `EventStreamHandle`, new `event_tx`). Secondary
 //! handles prune only when they were the last live session on the agent.
 
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -146,6 +147,29 @@ impl ClaudeTransport for SpawnedClaudeTransport {
 /// [`ClaudeAgentProcess::set_transport_factory`].
 type TransportFactory =
     Arc<dyn Fn(Vec<String>, &AgentSpec) -> anyhow::Result<Box<dyn ClaudeTransport>> + Send + Sync>;
+
+/// Map an agent's working directory to the path Claude uses for its local
+/// session store: `~/.claude/projects/<encoded-cwd>/<session_id>.jsonl`.
+///
+/// Claude encodes the cwd by replacing `/` and `.` with `-`. So a cwd like
+/// `/agents/.chorus/bot-1` becomes `-agents--chorus-bot-1`. The encoding is
+/// lossy (two distinct paths can collide), but it matches what claude-code
+/// does on disk and that's what we have to match to find the file.
+fn claude_session_file(cwd: &Path, session_id: &str) -> PathBuf {
+    let encoded: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| match c {
+            '/' | '.' => '-',
+            other => other,
+        })
+        .collect();
+    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
+    home.join(".claude")
+        .join("projects")
+        .join(encoded)
+        .join(format!("{session_id}.jsonl"))
+}
 
 fn spawn_real_transport(
     args: Vec<String>,
@@ -509,10 +533,36 @@ impl ClaudeHandle {
         // `resumed_session_id` field set by `open_session(Resume)` or the
         // `start` compat shim. Fall back to the legacy `preassigned_session_id`
         // for callers that still go through `resume_session` → `start` directly.
+        //
+        // Verify the session file exists in claude's local store before passing
+        // `--resume`. Claude's CLI hard-errors with `error_during_execution` and
+        // no further events when given a missing session id, which surfaces in
+        // chorus as an immediate "Natural" turn end with zero output. That used
+        // to silently mask every agent run after a session got pruned — see
+        // the May-2026 dogfood postmortem. Falling back to a fresh session is
+        // safer than dying.
         let resume_id = self
             .resumed_session_id
             .take()
             .or_else(|| self.preassigned_session_id.clone());
+        let resume_id = match resume_id {
+            Some(sid) => {
+                let session_file = claude_session_file(&self.spec.working_directory, &sid);
+                if session_file.exists() {
+                    Some(sid)
+                } else {
+                    warn!(
+                        agent = %self.key.as_str(),
+                        session_id = %sid,
+                        path = %session_file.display(),
+                        "claude session file missing; starting fresh session instead of --resume"
+                    );
+                    self.preassigned_session_id = None;
+                    None
+                }
+            }
+            None => None,
+        };
 
         // Build CLI args
         let mcp_path_str = mcp_config_path.to_string_lossy().into_owned();
@@ -1101,6 +1151,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn claude_session_file_encodes_dots_and_slashes() {
+        // Use synthetic paths so the test runs anywhere and doesn't depend on
+        // the current user's home directory.
+        let p = claude_session_file(
+            Path::new("/agents/.chorus/bot-1"),
+            "00000000-0000-0000-0000-000000000001",
+        );
+        let s = p.to_string_lossy();
+        assert!(
+            s.ends_with(
+                "/.claude/projects/-agents--chorus-bot-1/00000000-0000-0000-0000-000000000001.jsonl"
+            ),
+            "unexpected path: {s}"
+        );
+    }
+
     #[tokio::test]
     async fn test_claude_driver_probe_not_installed() {
         // claude binary is not on PATH in CI/test environments
@@ -1548,6 +1615,15 @@ mod tests {
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
+        // The file-exists guard added for the May-2026 dogfood postmortem
+        // requires a real session file at the path Claude would store it.
+        // Materialize it so this test still asserts the flag passthrough.
+        let session_file = claude_session_file(&spec.working_directory, "sess_xyz");
+        if let Some(parent) = session_file.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&session_file, "").unwrap();
+
         // Bring the agent online first so the registry has an entry we can
         // install the fake factory on.
         let s1 = driver
@@ -1590,6 +1666,7 @@ mod tests {
         // Close s1 too to clean up the registry.
         let mut h1 = s1.session;
         h1.close().await.unwrap();
+        let _ = std::fs::remove_file(&session_file);
         agent_instances().remove(&key);
     }
 
@@ -1900,6 +1977,14 @@ mod tests {
 
         let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
 
+        // Materialize the session file so the file-exists guard (added for
+        // the May-2026 dogfood postmortem) lets --resume through.
+        let session_file = claude_session_file(&spec.working_directory, "sess_xyz");
+        if let Some(parent) = session_file.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
+        std::fs::write(&session_file, "").unwrap();
+
         let result = driver
             .open_session(
                 key.clone(),
@@ -1938,6 +2023,61 @@ mod tests {
         }
 
         handle.close().await.unwrap();
+        let _ = std::fs::remove_file(&session_file);
+        agent_instances().remove(&key);
+    }
+
+    /// Regression test for the May-2026 dogfood postmortem: when chorus
+    /// passes `--resume <id>` for a session whose file is missing in
+    /// claude's local store, the runtime emits `error_during_execution`
+    /// with no other events. The driver must detect the missing file and
+    /// fall back to a fresh session (no `--resume` arg) instead.
+    #[tokio::test]
+    async fn missing_session_file_drops_resume_flag() {
+        let (bridge_url, _bridge) = spawn_mock_bridge().await;
+        let tmp = tempfile::tempdir().unwrap();
+
+        let driver = ClaudeDriver;
+        let key = format!("claude-resume-missing-{}", uuid::Uuid::new_v4());
+        agent_instances().remove(&key);
+
+        let spec = test_spec_with_bridge(tmp.path(), &bridge_url);
+
+        // Deliberately do NOT create the session file. Resume target is a
+        // syntactically valid uuid that the validator would accept.
+        let stale_id = "00000000-0000-0000-0000-deadbeef0000".to_string();
+
+        let s1 = driver
+            .open_session(key.clone(), spec.clone(), SessionIntent::New)
+            .await
+            .unwrap();
+        let factory = install_fake_factory(&driver.ensure_process(&key));
+
+        let resumed = driver
+            .open_session(
+                key.clone(),
+                spec.clone(),
+                SessionIntent::Resume(stale_id.clone()),
+            )
+            .await
+            .unwrap();
+        let mut hr = resumed.session;
+        hr.run(None).await.unwrap();
+
+        {
+            let state = factory.lock().unwrap();
+            assert_eq!(state.spawns.len(), 1);
+            let args = &state.spawns[0].args;
+            let has_resume = args.windows(2).any(|w| w[0] == "--resume");
+            assert!(
+                !has_resume,
+                "missing session file must NOT pass --resume; got: {args:?}"
+            );
+        }
+
+        hr.close().await.unwrap();
+        let mut h1 = s1.session;
+        h1.close().await.unwrap();
         agent_instances().remove(&key);
     }
 }

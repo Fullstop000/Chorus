@@ -106,6 +106,13 @@ pub trait Backend: Send + Sync {
 
     /// View/download a file attachment.
     async fn view_file(&self, agent_key: &str, attachment_id: &str) -> Result<String, BridgeError>;
+
+    /// Create a decision (TRACE-ONLY scaffold; no persistence).
+    ///
+    /// `payload` is the full validated decision JSON
+    /// (`headline`, `question`, `options`, `recommended_key`, `context`).
+    async fn create_decision(&self, agent_key: &str, payload: Value)
+        -> Result<String, BridgeError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -985,6 +992,30 @@ impl Backend for ChorusBackend {
         Ok(format!(
             "Downloaded to: {}\n\nUse your Read tool to view this image.",
             file_path.to_string_lossy()
+        ))
+    }
+
+    async fn create_decision(
+        &self,
+        agent_key: &str,
+        payload: Value,
+    ) -> Result<String, BridgeError> {
+        let url = format!("{}/decisions", self.base_url(agent_key));
+        let res = self
+            .send_request(self.client.post(&url).json(&payload), &url)
+            .await?;
+        let status = res.status().as_u16();
+        let data: Value = res.json().await.map_err(|e| BridgeError::ServerError {
+            status,
+            body: format!("invalid JSON from server: {}", e),
+        })?;
+        let decision_id = data
+            .get("decision_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        Ok(format!(
+            "Decision created. ID: {}\n\nEnd your turn cleanly. The human will pick in their inbox; their pick will arrive as your next session prompt.",
+            decision_id
         ))
     }
 }

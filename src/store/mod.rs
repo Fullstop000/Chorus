@@ -1,6 +1,7 @@
 pub mod agents;
 pub mod attachments;
 pub mod channels;
+pub mod decisions;
 pub mod humans;
 pub mod inbox;
 pub mod messages;
@@ -24,6 +25,7 @@ pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentEnvVar};
 pub use attachments::Attachment;
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
+pub use decisions::{DecisionRow, DecisionStatus};
 pub use humans::Human;
 pub use inbox::{InboxConversationNotificationView, InboxConversationStateView};
 pub use messages::{

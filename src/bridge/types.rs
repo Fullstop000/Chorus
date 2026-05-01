@@ -92,3 +92,37 @@ pub(super) struct ViewFileParams {
     /// The attachment UUID (from the 'id:...' shown in the message)
     pub(super) attachment_id: String,
 }
+
+// ---------------------------------------------------------------------------
+// Decision Inbox — TRACE-ONLY scaffold
+// ---------------------------------------------------------------------------
+//
+// Verifies the agent's proactive-dispatch behavior. The handler logs the
+// payload and returns a synthetic decision_id; nothing persists. Storage,
+// resume_with_prompt, and UI come back only after we see the agent emit
+// this tool unprompted.
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct DecisionOptionParam {
+    /// Short identifier (1-2 alphanumeric chars), e.g. "A", "B", "R1"
+    pub(super) key: String,
+    /// Short button label (≤40 chars)
+    pub(super) label: String,
+    /// Markdown body listing the consequences if the human picks this option (≤2048 chars)
+    pub(super) body: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct CreateDecisionParams {
+    /// One-line headline carrying the category and subject (≤80 chars)
+    pub(super) headline: String,
+    /// The actual ask in one sentence (≤120 chars)
+    pub(super) question: String,
+    /// 2..=6 options the human picks between
+    pub(super) options: Vec<DecisionOptionParam>,
+    /// Must equal one option's `key`. Always recommend; do not abstain.
+    pub(super) recommended_key: String,
+    /// Markdown context body (≤4096 chars). Suggested H2 sections: Why now, Evidence, Risk, Pressure, History, Dep tree, Related.
+    #[serde(default)]
+    pub(super) context: Option<String>,
+}

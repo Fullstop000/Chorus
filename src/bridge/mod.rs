@@ -269,6 +269,104 @@ impl ChatBridge {
             .await
             .map_err(Into::into)
     }
+
+    #[tool(
+        description = "Submit a decision for the human to pick. REQUIRED for any incoming request that asks you to render a verdict, judge, or pick between concrete alternatives — PR review outcomes (merge/approve/request-changes), A-vs-B implementation choices, config flags, \"should I X or Y\" questions. Do NOT post your verdict via send_message; emit this tool with options + a recommended_key, then end your turn. The human's pick arrives as your next session prompt with the picked option's full body."
+    )]
+    async fn chorus_create_decision(
+        &self,
+        Extension(parts): Extension<axum::http::request::Parts>,
+        Parameters(params): Parameters<CreateDecisionParams>,
+    ) -> Result<String, rmcp::ErrorData> {
+        let agent_id = extract_agent_id(&parts)?;
+
+        // Light structural validation at the bridge boundary so a malformed
+        // payload doesn't 500 the handler. The trace target is the agent's
+        // PROACTIVE EMISSION; we surface validator errors back as
+        // rmcp::ErrorData so the agent learns and retries (per CLAUDE.md
+        // "fail loudly with context").
+        validate_decision_payload(&params)?;
+
+        let payload = serde_json::json!({
+            "headline": params.headline,
+            "question": params.question,
+            "options": params.options.iter().map(|o| serde_json::json!({
+                "key": o.key,
+                "label": o.label,
+                "body": o.body,
+            })).collect::<Vec<_>>(),
+            "recommended_key": params.recommended_key,
+            "context": params.context,
+        });
+
+        self.backend
+            .create_decision(&agent_id, payload)
+            .await
+            .map_err(Into::into)
+    }
+}
+
+/// Minimal structural validator. Bridge boundary defense against payloads
+/// that would 500 the stub handler. Intentionally permissive on content —
+/// the goal is to capture the agent's emission, not gatekeep quality.
+fn validate_decision_payload(p: &CreateDecisionParams) -> Result<(), rmcp::ErrorData> {
+    fn invalid(msg: impl Into<String>) -> rmcp::ErrorData {
+        rmcp::ErrorData::new(rmcp::model::ErrorCode::INVALID_PARAMS, msg.into(), None)
+    }
+    if p.headline.trim().is_empty() {
+        return Err(invalid("headline is empty"));
+    }
+    if p.headline.chars().count() > 80 {
+        return Err(invalid("headline exceeds 80 chars"));
+    }
+    if p.question.trim().is_empty() {
+        return Err(invalid("question is empty"));
+    }
+    if p.question.chars().count() > 120 {
+        return Err(invalid("question exceeds 120 chars"));
+    }
+    if p.options.len() < 2 || p.options.len() > 6 {
+        return Err(invalid("options must have 2..=6 entries"));
+    }
+    let mut keys = std::collections::HashSet::new();
+    for o in &p.options {
+        if o.key.trim().is_empty() {
+            return Err(invalid("option key is empty"));
+        }
+        if o.key.chars().count() > 2 {
+            return Err(invalid(format!("option key '{}' exceeds 2 chars", o.key)));
+        }
+        if !keys.insert(o.key.clone()) {
+            return Err(invalid(format!("duplicate option key '{}'", o.key)));
+        }
+        if o.label.trim().is_empty() {
+            return Err(invalid(format!("option '{}' label is empty", o.key)));
+        }
+        if o.label.chars().count() > 40 {
+            return Err(invalid(format!(
+                "option '{}' label exceeds 40 chars",
+                o.key
+            )));
+        }
+        if o.body.chars().count() > 2048 {
+            return Err(invalid(format!(
+                "option '{}' body exceeds 2048 chars",
+                o.key
+            )));
+        }
+    }
+    if !keys.contains(&p.recommended_key) {
+        return Err(invalid(format!(
+            "recommended_key '{}' is not one of the option keys",
+            p.recommended_key
+        )));
+    }
+    if let Some(ctx) = &p.context {
+        if ctx.chars().count() > 4096 {
+            return Err(invalid("context exceeds 4096 chars"));
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
