@@ -51,7 +51,7 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
     let task_create_cmd = format!("`{}`", t("create_tasks"));
     let task_update_cmd = format!("`{}`", t("update_task_status"));
     let server_info_cmd = format!("`{}`", t("list_server"));
-    let create_decision_cmd = format!("`{}`", t("chorus_create_decision"));
+    let dispatch_decision_cmd = format!("`{}`", t("dispatch_decision"));
 
     let identity = if spec.display_name.is_empty() {
         "agent"
@@ -70,7 +70,7 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
             "- For conversation (status updates, replies, info, follow-ups), use {send_cmd}. This is your conversational output channel."
         ),
         format!(
-            "- For verdicts on requests that ask you to PICK, JUDGE, or RECOMMEND between concrete alternatives (PR review outcome, A-vs-B implementation, config knob, \"should I X or Y\"), you MUST call {create_decision_cmd} and end your turn — do NOT reply via {send_cmd}. The human picks; their pick arrives as your next session prompt. See the Decision Inbox section for triggers and payload."
+            "- For verdicts on requests that ask you to PICK, JUDGE, or RECOMMEND between concrete alternatives (PR review outcome, A-vs-B implementation, config knob, \"should I X or Y\"), you MUST call {dispatch_decision_cmd} and end your turn — do NOT reply via {send_cmd}. The human picks; their pick arrives as your next session prompt. See the Decision Inbox section for triggers and payload."
         ),
     ];
     critical_rules.extend(opts.extra_critical_rules.iter().cloned());
@@ -227,8 +227,8 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
 
     prompt.push_str(&format!(
         "\n\n## Decision Inbox\n\n\
-         Some incoming requests ask you to render a verdict or pick between concrete alternatives, not to act unilaterally. For these you MUST emit {create_decision_cmd} — not a {send_cmd} reply. The tool returns a `decision_id`; end your turn cleanly. The human picks in their inbox; their pick arrives as your next session prompt with the picked option's full body, the original headline and question, and any human note. Read it and act.\n\n\
-         **Triggers — when the incoming message does ANY of these, emit {create_decision_cmd}:**\n\
+         Some incoming requests ask you to render a verdict or pick between concrete alternatives, not to act unilaterally. For these you MUST emit {dispatch_decision_cmd} — not a {send_cmd} reply. The tool returns a `decision_id`; end your turn cleanly. The human picks in their inbox; their pick arrives as your next session prompt with the picked option's full body, the original headline and question, and any human note. Read it and act.\n\n\
+         **Triggers — when the incoming message does ANY of these, emit {dispatch_decision_cmd}:**\n\
          - Asks you to review a PR, diff, or commit and recommend an outcome (merge / approve+comment / request-changes / hold).\n\
          - Presents two or more concrete alternatives and asks you to pick.\n\
          - Asks you to resolve a config flag, knob, version pin, or policy choice with no obvious right answer.\n\
@@ -384,7 +384,7 @@ mod tests {
     fn decision_inbox_section_uses_mandatory_framing() {
         let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
         assert!(p.contains("## Decision Inbox"));
-        assert!(p.contains("`chorus_create_decision`"));
+        assert!(p.contains("`dispatch_decision`"));
         // Trigger-based mandatory framing, not "when you need" permission framing.
         assert!(p.contains("you MUST emit"));
         assert!(p.contains("Triggers"));
@@ -393,7 +393,7 @@ mod tests {
         assert!(!p.contains("act on unilaterally"));
         // The contradiction the original patch had: send_message is no longer
         // labeled "your only output channel". It's now the conversational
-        // channel; chorus_create_decision is the verdict channel.
+        // channel; dispatch_decision is the verdict channel.
         assert!(!p.contains("only output channel"));
         assert!(p.contains("conversational output channel"));
     }
@@ -402,14 +402,14 @@ mod tests {
     fn critical_rule_promotes_decision_over_send_for_verdicts() {
         let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
         // The critical rules must contain a MUST-style imperative naming
-        // chorus_create_decision, equally weighted with send_message.
+        // dispatch_decision, equally weighted with send_message.
         let crit_start = p.find("CRITICAL RULES").expect("critical rules section");
         let crit_end = p[crit_start..]
             .find("## Startup sequence")
             .map(|i| crit_start + i)
             .unwrap_or(p.len());
         let crit = &p[crit_start..crit_end];
-        assert!(crit.contains("you MUST call `chorus_create_decision`"));
+        assert!(crit.contains("you MUST call `dispatch_decision`"));
         assert!(crit.contains("PICK, JUDGE, or RECOMMEND"));
     }
 
@@ -420,7 +420,7 @@ mod tests {
             ..Default::default()
         };
         let p = build_system_prompt(&sample_spec(), &opts);
-        assert!(p.contains("`mcp__chat__chorus_create_decision`"));
-        assert!(!p.contains("`chorus_create_decision`\n"));
+        assert!(p.contains("`mcp__chat__dispatch_decision`"));
+        assert!(!p.contains("`dispatch_decision`\n"));
     }
 }

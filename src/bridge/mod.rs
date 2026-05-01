@@ -273,7 +273,7 @@ impl ChatBridge {
     #[tool(
         description = "Submit a decision for the human to pick. REQUIRED for any incoming request that asks you to render a verdict, judge, or pick between concrete alternatives — PR review outcomes (merge/approve/request-changes), A-vs-B implementation choices, config flags, \"should I X or Y\" questions. Do NOT post your verdict via send_message; emit this tool with options + a recommended_key, then end your turn. The human's pick arrives as your next session prompt with the picked option's full body."
     )]
-    async fn chorus_create_decision(
+    async fn dispatch_decision(
         &self,
         Extension(parts): Extension<axum::http::request::Parts>,
         Parameters(params): Parameters<CreateDecisionParams>,

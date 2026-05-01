@@ -59,7 +59,7 @@ pub trait AgentLifecycle: Send + Sync {
 
     /// Return the channel id of the agent's most recent or in-flight run,
     /// if known. Used by the decision-inbox handler to infer which channel
-    /// a `chorus_create_decision` emission belongs to (the agent doesn't
+    /// a `dispatch_decision` emission belongs to (the agent doesn't
     /// pass a channel — channel context is implicit in the active run).
     fn run_channel_id<'a>(
         &'a self,

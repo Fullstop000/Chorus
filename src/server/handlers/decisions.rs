@@ -78,7 +78,7 @@ pub async fn handle_create_decision(
             app_err!(
                 StatusCode::BAD_REQUEST,
                 "no active-run channel for agent {agent_name}; \
-                 chorus_create_decision requires a channel-triggered agent run"
+                 dispatch_decision requires a channel-triggered agent run"
             )
         })?;
 

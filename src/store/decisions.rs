@@ -1,6 +1,6 @@
 //! `decisions` table accessors.
 //!
-//! Decisions emitted by agents via `chorus_create_decision`. Lifecycle:
+//! Decisions emitted by agents via `dispatch_decision`. Lifecycle:
 //! agent → `create_decision` (status=open) → human picks in inbox →
 //! `resolve_decision_cas` (status=resolved) → `revert_decision_to_open` if
 //! the resume_with_prompt envelope delivery fails.

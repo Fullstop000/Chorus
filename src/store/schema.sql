@@ -260,7 +260,7 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_agent_active
     ON agent_sessions(agent_id, is_active);
 
--- Decisions emitted by agents via chorus_create_decision MCP tool.
+-- Decisions emitted by agents via dispatch_decision MCP tool.
 -- One row per emission. Status transitions Open → Resolved are CAS-protected
 -- (UPDATE WHERE status='open') so two simultaneous picks can't both succeed.
 -- Stores the full payload as JSON in TEXT (SQLite has no JSONB); shape is
