@@ -10,8 +10,15 @@ set -euo pipefail
 
 SERVER_URL="${1:-http://localhost:3001}"
 BENCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CASES="$BENCH_DIR/cases.tsv"
-RUN_ID="$(date +%s)"
+# Cases file: defaults to cases.tsv (easy/smoke). Override with CASES=cases-hard.tsv.
+CASES="${CASES:-$BENCH_DIR/cases.tsv}"
+[ -f "$CASES" ] || CASES="$BENCH_DIR/$(basename "$CASES")"
+# Runtime + model: which agent to spin up per case. Defaults are the cheapest
+# stable combo. The matrix runner sets these per sweep.
+RUNTIME="${RUNTIME:-claude}"
+MODEL="${MODEL:-sonnet}"
+RUN_LABEL="${RUN_LABEL:-${RUNTIME}-${MODEL}}"
+RUN_ID="$(date +%s)-${RUN_LABEL}"
 RESULTS_DIR="$BENCH_DIR/results/$RUN_ID"
 mkdir -p "$RESULTS_DIR"
 
@@ -41,10 +48,12 @@ fi
 CURL=(curl --noproxy '*' -sS -m 10)
 
 echo "== bench/decision-trigger run $RUN_ID =="
-echo "  server: $SERVER_URL"
-echo "  log:    $LOG"
-echo "  cases:  $CASES"
-echo "  out:    $RESULTS_DIR"
+echo "  server:  $SERVER_URL"
+echo "  log:     $LOG"
+echo "  cases:   $CASES"
+echo "  runtime: $RUNTIME"
+echo "  model:   $MODEL"
+echo "  out:     $RESULTS_DIR"
 
 # Pause any non-bench agents so they don't flood the bench cohort with welcome
 # messages during boot. We only stop running ones; KEEP_OTHERS=1 disables this.
@@ -91,10 +100,11 @@ declare -a IDS PREDICTS PROMPTS AGENTS
 while IFS=$'\t' read -r id predicted prompt; do
   [ "$id" = "id" ] && continue
   IDS+=("$id"); PREDICTS+=("$predicted"); PROMPTS+=("$prompt")
-  base="bench-dt-${RUN_ID}-${id}"
+  base="bench-dt-${RUN_ID//[^a-zA-Z0-9]/-}-${id}"
+  # Names can't be too long; runtime+model is appended for forensics in case-N description.
   out=$("$CHORUS" agent create \
-    --runtime claude --model sonnet \
-    --description "Decision-trigger bench, case $id. Each DM is one independent test prompt." \
+    --runtime "$RUNTIME" --model "$MODEL" \
+    --description "Decision-trigger bench, case $id, ${RUNTIME}/${MODEL}. Each DM is one independent test prompt." \
     --server-url "$SERVER_URL" \
     "$base" 2>&1)
   # Extract assigned name: "Agent @<name> created"

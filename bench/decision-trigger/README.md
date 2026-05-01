@@ -35,19 +35,57 @@ Total wall time is `max(per_agent_turn) ≈ 2 min`, not `sum`.
 - Claude runtime authed (`chorus setup` confirms)
 - `CHORUS_LOG` env var pointing to the server log (defaults to `/tmp/chorus-qa-server.log`)
 
+## Cases
+
+Two case files at different difficulty:
+
+| File | Style | What it measures |
+|---|---|---|
+| `cases.tsv` | Easy / smoke. Decision-shaped requests use verdict-flavored phrasing (*"merge or hold?"*, *"what do you recommend?"*, *"your call"*). | Sanity check: prompt teaches the rule at all. Both input-pattern and structural-rule prompts hit 15/15 on this. |
+| `cases-hard.tsv` | Realistic narrative scenarios. Decision-shaped requests use **neutral phrasing** (no "recommend", no "verdict", no "X or Y"). Trap cases include rhetorical frustration, retrospectives, exploration, status updates, and facilitation asks. | Differentiates prompts that pattern-match input phrasing from prompts that test the structural shape of the agent's intended reply. |
+
+To use the harder set:
+```bash
+CASES=$PWD/bench/decision-trigger/cases-hard.tsv ./bench/decision-trigger/run.sh
+```
+
 ## Running
 
+Single run against the default model (`claude/sonnet`):
 ```bash
-# from repo root
 ./bench/decision-trigger/run.sh
 ```
 
-Optional:
+Pick a different runtime/model:
+```bash
+RUNTIME=codex MODEL=gpt-5.5 ./bench/decision-trigger/run.sh
+```
+
+Sweep all models in `models.tsv` and produce a side-by-side matrix:
+```bash
+./bench/decision-trigger/run-matrix.sh
+CASES=$PWD/bench/decision-trigger/cases-hard.tsv ./bench/decision-trigger/run-matrix.sh
+```
+
+Common options:
 ```bash
 ./bench/decision-trigger/run.sh http://localhost:3001    # explicit server URL
-KEEP_AGENTS=1 ./bench/decision-trigger/run.sh            # don't auto-delete agents on exit (for forensics)
+KEEP_AGENTS=1 ./bench/decision-trigger/run.sh            # don't auto-delete agents on exit (forensics)
 CHORUS_LOG=/var/log/chorus.log ./bench/decision-trigger/run.sh
 ```
+
+## Models matrix
+
+`models.tsv` lists the (runtime, model, tier) combinations the matrix runner sweeps. Default ships with the two-per-family pattern: best + efficiency for Anthropic and OpenAI.
+
+| runtime | model | tier | resolves to |
+|---|---|---|---|
+| claude | opus | best | Claude Opus 4.7 |
+| claude | sonnet | efficiency | Claude Sonnet 4.6 |
+| codex | gpt-5.5 | best | GPT-5.5 |
+| codex | gpt-5.4-mini | efficiency | GPT-5.4-mini |
+
+Add other rows (kimi, gemini, opencode) as Chorus drivers stabilize. Each row produces one column in the matrix output.
 
 ## A/B testing prompt variants
 

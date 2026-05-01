@@ -1,0 +1,5 @@
+runtime	model	tier	label
+claude	opus	best	claude-opus-4-7
+claude	sonnet	efficiency	claude-sonnet-4-6
+codex	gpt-5.5	best	codex-gpt-5-5
+codex	gpt-5.4-mini	efficiency	codex-gpt-5-4-mini
