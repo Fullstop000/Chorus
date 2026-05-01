@@ -70,7 +70,7 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
             "- For conversation (status updates, replies, info, follow-ups), use {send_cmd}. This is your conversational output channel."
         ),
         format!(
-            "- For verdicts on requests that ask you to PICK, JUDGE, or RECOMMEND between concrete alternatives (PR review outcome, A-vs-B implementation, config knob, \"should I X or Y\"), you MUST call {dispatch_decision_cmd} and end your turn — do NOT reply via {send_cmd}. The human picks; their pick arrives as your next session prompt. See the Decision Inbox section for triggers and payload."
+            "- For verdicts — when your reply would PICK, JUDGE, or RECOMMEND one of N mutually-exclusive paths the asker is blocked on (PR review, time-box call, vendor pick, hiring choice, compliance go/no-go) — you MUST call {dispatch_decision_cmd} and end your turn. Do NOT reply via {send_cmd}. The human picks; their pick arrives as your next session prompt. See the Decision Inbox section for the structural test and payload."
         ),
     ];
     critical_rules.extend(opts.extra_critical_rules.iter().cloned());
@@ -227,17 +227,20 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
 
     prompt.push_str(&format!(
         "\n\n## Decision Inbox\n\n\
-         Some incoming requests ask you to render a verdict or pick between concrete alternatives, not to act unilaterally. For these you MUST emit {dispatch_decision_cmd} — not a {send_cmd} reply. The tool returns a `decision_id`; end your turn cleanly. The human picks in their inbox; their pick arrives as your next session prompt with the picked option's full body, the original headline and question, and any human note. Read it and act.\n\n\
-         **Triggers — when the incoming message does ANY of these, emit {dispatch_decision_cmd}:**\n\
-         - Asks you to review a PR, diff, or commit and recommend an outcome (merge / approve+comment / request-changes / hold).\n\
-         - Presents two or more concrete alternatives and asks you to pick.\n\
-         - Asks you to resolve a config flag, knob, version pin, or policy choice with no obvious right answer.\n\
-         - Uses phrasing like \"should I X or Y?\", \"merge or hold?\", \"approve, request changes, or comment?\", \"which option?\", \"what's your verdict?\".\n\n\
+         Some incoming requests aren't conversational — they're verdicts where the asker is blocked on your pick. For these you MUST emit {dispatch_decision_cmd} — not a {send_cmd} reply. The tool returns a `decision_id`; end your turn cleanly. The human picks in their inbox; their pick arrives as your next session prompt with the picked option's full body, the original headline and question, and any human note. Read it and act.\n\n\
+         **Trigger — apply this structural test before replying.** A request is a decision when ALL FOUR of these hold:\n\n\
+         1. **Mutually exclusive options** — picking one closes the others (merge / hold; vendor A / B / C; ship now / extend; offer to candidate X / Y).\n\
+         2. **Blocking** — the asker can't move forward until the pick lands.\n\
+         3. **Material consequence** — the pick commits resources, releases code, gates a launch, or forecloses paths. Not just \"what should I think about this\".\n\
+         4. **Delegated** — the asker is asking YOU to pick (or to recommend with strong enough signal that they'll act on it). Otherwise they'd pick themselves.\n\n\
+         If all four hold, your reply IS a verdict — frame it as a decision payload with options and `recommended_key`. Do NOT post your verdict as a {send_cmd} reply.\n\n\
+         **Canonical example:** a PR, diff, or commit review where you'd otherwise answer \"merge\" / \"request-changes\" / \"comment\". The human is blocked on the merge button, the options are exclusive, the pick gates landing, and they delegated to you. Decision.\n\n\
+         **The trigger is the shape of YOUR reply, not the asker's phrasing.** Asks like \"what do you think about PR #X\", \"walk me through whether we need a DPIA\", \"status on the auth bug\", or \"tell me which 3 bugs to fix first\" can all be decisions even though they don't say \"merge or hold\" or \"X or Y\". Run the four-property test on your intended reply, not on the asker's words.\n\n\
          **Not triggers — use {send_cmd} as normal:**\n\
-         - Information requests (\"explain X\", \"how does Y work?\").\n\
-         - Status updates, acknowledgments, progress reports.\n\
-         - Open-ended brainstorming with no committed alternatives.\n\
-         - Follow-up replies AFTER a decision has been resolved (the resume prompt is your input; reply via {send_cmd}).\n\n\
+         - Information requests (\"explain X\", \"how does Y work?\") — fails properties 1 and 3.\n\
+         - Status updates, acknowledgments, progress reports — fails property 1.\n\
+         - Open-ended brainstorm or suggestion list with no committed alternatives — fails property 1.\n\
+         - Follow-up replies AFTER a decision has resolved — your input is the resume prompt; you ARE the picker now, so reply via {send_cmd}.\n\n\
          **Do not work around this rule.** If you have a strong opinion on a triggering request, frame it as a decision with options and `recommended_key` — do NOT post your verdict as a {send_cmd} reply. The human's act of picking is the work product; your analysis is the supporting context inside the decision.\n\n\
          **Payload (all required):**\n\
          - `headline` ≤80 chars — one-line summary carrying category and subject (e.g. \"PR review #121: archived-channel del/join fix\").\n\
@@ -387,7 +390,10 @@ mod tests {
         assert!(p.contains("`dispatch_decision`"));
         // Trigger-based mandatory framing, not "when you need" permission framing.
         assert!(p.contains("you MUST emit"));
-        assert!(p.contains("Triggers"));
+        // Structural framing: the rule teaches a four-property test, not an
+        // input-pattern enumeration. "Triggers" still appears in "Not triggers".
+        assert!(p.contains("Trigger"));
+        // PR/diff/commit lives only as the canonical example now.
         assert!(p.contains("PR, diff, or commit"));
         // Anti-loophole: no "things you can act on unilaterally" exclusion.
         assert!(!p.contains("act on unilaterally"));
@@ -396,6 +402,22 @@ mod tests {
         // channel; dispatch_decision is the verdict channel.
         assert!(!p.contains("only output channel"));
         assert!(p.contains("conversational output channel"));
+    }
+
+    #[test]
+    fn decision_inbox_teaches_structural_four_property_test() {
+        // Replacement for input-pattern enumeration: the prompt must teach
+        // the four structural properties so agents generalize beyond the
+        // canonical PR-review example to triage, hiring, time-boxing,
+        // compliance, and any future verdict-shape workflow.
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert!(p.contains("Mutually exclusive"));
+        assert!(p.contains("Blocking"));
+        assert!(p.contains("Material consequence"));
+        assert!(p.contains("Delegated"));
+        // The shift: agent runs the test on its own intended reply, not on
+        // the asker's input phrasing. This is what scales to new workflows.
+        assert!(p.contains("shape of YOUR reply"));
     }
 
     #[test]
@@ -411,6 +433,10 @@ mod tests {
         let crit = &p[crit_start..crit_end];
         assert!(crit.contains("you MUST call `dispatch_decision`"));
         assert!(crit.contains("PICK, JUDGE, or RECOMMEND"));
+        // Structural framing: the rule names what the reply does (commits the
+        // asker to one of N mutually-exclusive paths), not what the asker says.
+        assert!(crit.contains("mutually-exclusive"));
+        assert!(crit.contains("blocked on"));
     }
 
     #[test]
