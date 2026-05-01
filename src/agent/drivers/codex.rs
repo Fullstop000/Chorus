@@ -230,6 +230,7 @@ impl RuntimeDriver for CodexDriver {
 
     async fn list_models(&self) -> anyhow::Result<Vec<ModelInfo>> {
         Ok(vec![
+            ModelInfo::from_id("gpt-5.5".into()),
             ModelInfo::from_id("gpt-5.4".into()),
             ModelInfo::from_id("gpt-5.4-mini".into()),
             ModelInfo::from_id("gpt-5.3-codex".into()),
@@ -1464,14 +1465,15 @@ mod tests {
     async fn test_codex_driver_list_models() {
         let driver = CodexDriver;
         let models = driver.list_models().await.unwrap();
-        assert_eq!(models.len(), 7);
-        assert_eq!(models[0].id, "gpt-5.4");
-        assert_eq!(models[1].id, "gpt-5.4-mini");
-        assert_eq!(models[2].id, "gpt-5.3-codex");
-        assert_eq!(models[3].id, "gpt-5.2-codex");
-        assert_eq!(models[4].id, "gpt-5.2");
-        assert_eq!(models[5].id, "gpt-5.1-codex-max");
-        assert_eq!(models[6].id, "gpt-5.1-codex-mini");
+        assert_eq!(models.len(), 8);
+        assert_eq!(models[0].id, "gpt-5.5");
+        assert_eq!(models[1].id, "gpt-5.4");
+        assert_eq!(models[2].id, "gpt-5.4-mini");
+        assert_eq!(models[3].id, "gpt-5.3-codex");
+        assert_eq!(models[4].id, "gpt-5.2-codex");
+        assert_eq!(models[5].id, "gpt-5.2");
+        assert_eq!(models[6].id, "gpt-5.1-codex-max");
+        assert_eq!(models[7].id, "gpt-5.1-codex-mini");
     }
 
     #[tokio::test]
