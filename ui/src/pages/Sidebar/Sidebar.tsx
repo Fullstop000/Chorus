@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Ellipsis, Pencil, Plus, Settings2, Trash2, Users } from 'lucide-react'
+import { Ellipsis, Inbox, Pencil, Plus, Settings2, Trash2, Users } from 'lucide-react'
 import { useStore } from '../../store'
 import { useAgents, useChannels, useHumans, useInbox, useRefresh, useWorkspaces } from '../../hooks/data'
 import type { AgentInfo } from '../../components/agents/types'
@@ -57,7 +57,7 @@ function AgentAvatar({ name, status, activity }: { name: string; status: string;
 }
 
 export function Sidebar() {
-  const { currentUser, currentUserId, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings } = useStore()
+  const { currentUser, currentUserId, currentChannel, currentAgent, setCurrentChannel, setCurrentAgent, showSettings, setShowSettings, showDecisions, setShowDecisions } = useStore()
   const showConversationIds = useStore((s) => s.showConversationIds)
   const agents = useAgents()
   const { channels: loadedChannels, systemChannels } = useChannels()
@@ -380,6 +380,15 @@ export function Sidebar() {
             <span className="sidebar-footer-name">{currentHumanInfo?.name ?? currentUser}</span>
             <span className="sidebar-footer-meta">[operator::active]</span>
           </div>
+          <button
+            className="sidebar-footer-cog"
+            type="button"
+            aria-label={showDecisions ? 'Close decision inbox' : 'Open decision inbox'}
+            aria-pressed={showDecisions}
+            onClick={() => setShowDecisions(!showDecisions)}
+          >
+            <Inbox size={15} />
+          </button>
           <button className="sidebar-footer-cog" type="button" aria-label="Open settings" onClick={() => setShowSettings(!showSettings)}>
             <Settings2 size={15} />
           </button>

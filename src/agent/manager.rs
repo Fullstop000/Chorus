@@ -405,6 +405,59 @@ impl AgentManager {
         Ok(())
     }
 
+    /// Deliver a self-contained prompt to the agent and continue its work.
+    ///
+    /// Used by the decision-inbox handler after a human picks an option:
+    /// the envelope contains the picked option's body, original headline +
+    /// question, and any human note. If the agent is `Active`, prompt the
+    /// live handle directly. Otherwise wake the agent with the envelope as
+    /// `init_directive` so the same payload arrives on first turn.
+    ///
+    /// The handler reverts the decision to `open` if this returns an error,
+    /// so the human's pick isn't silently lost on a transient delivery
+    /// failure.
+    pub async fn resume_with_prompt(
+        &self,
+        agent_name: &str,
+        envelope: String,
+    ) -> anyhow::Result<()> {
+        // Snapshot liveness without holding the agents lock across the
+        // prompt() call — handle.lock().await may block on the driver, and
+        // start_agent (the fallback) needs to take agents.lock() itself.
+        let live_handle = {
+            let agents = self.agents.lock().await;
+            match agents.get(agent_name) {
+                Some(agent) => {
+                    let h = agent.handle.clone();
+                    let state = h.lock().await.process_state();
+                    if matches!(state, ProcessState::Active { .. }) {
+                        Some(h)
+                    } else {
+                        None
+                    }
+                }
+                None => None,
+            }
+        };
+
+        if let Some(h) = live_handle {
+            h.lock()
+                .await
+                .prompt(PromptReq {
+                    text: envelope,
+                    attachments: vec![],
+                })
+                .await?;
+            return Ok(());
+        }
+
+        // Asleep / not-yet-running / mid-startup: deliver the envelope as
+        // the init directive so it lands on the agent's first prompt turn.
+        // wake_message=None and init_directive=Some(...) takes precedence in
+        // build_start_prompt.
+        self.start_agent(agent_name, None, Some(envelope)).await
+    }
+
     /// Deliver a wakeup notification to agent stdin.
     pub async fn notify_agent(&self, agent_name: &str) -> anyhow::Result<()> {
         let mut agents = self.agents.lock().await;
@@ -690,6 +743,22 @@ impl AgentLifecycle for AgentManager {
 
     fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
         self.trace_store.set_run_channel(agent_name, channel_id);
+    }
+
+    fn run_channel_id<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
+        let id = self.trace_store.run_channel_id(agent_name);
+        Box::pin(async move { id })
+    }
+
+    fn resume_with_prompt<'a>(
+        &'a self,
+        agent_name: &'a str,
+        envelope: String,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(AgentManager::resume_with_prompt(self, agent_name, envelope))
     }
 }
 

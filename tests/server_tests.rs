@@ -110,6 +110,14 @@ struct MockLifecycle {
     /// Tracks which agents are currently "running" so that process_state,
     /// start_agent, and stop_agent share one source of truth.
     running: Mutex<HashSet<String>>,
+    /// Records every (agent_name, envelope) pair delivered via
+    /// `resume_with_prompt`. Decision-inbox round-trip tests assert the
+    /// envelope reached the agent.
+    resumed_with: Mutex<Vec<(String, String)>>,
+    /// Per-agent channel id returned by `run_channel_id`. Tests preset
+    /// this to simulate the trace_store's "current channel for current
+    /// run" record without spinning a real AgentManager.
+    run_channels: Mutex<std::collections::HashMap<String, String>>,
 }
 
 struct MockRuntimeStatusProvider {
@@ -164,6 +172,19 @@ impl MockLifecycle {
     /// is alive and idle.
     fn mark_running(&self, agent_name: &str) {
         self.running.lock().unwrap().insert(agent_name.to_string());
+    }
+
+    /// Pre-populate the run-channel mapping so handlers that call
+    /// `lifecycle.run_channel_id(agent)` see this value during the test.
+    fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
+        self.run_channels
+            .lock()
+            .unwrap()
+            .insert(agent_name.to_string(), channel_id.to_string());
+    }
+
+    fn resumed_calls(&self) -> Vec<(String, String)> {
+        self.resumed_with.lock().unwrap().clone()
     }
 }
 
@@ -233,6 +254,28 @@ impl AgentLifecycle for MockLifecycle {
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         activity_log::all_activity_states(&self.activity_logs)
+    }
+
+    fn run_channel_id<'a>(
+        &'a self,
+        agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>> {
+        let id = self.run_channels.lock().unwrap().get(agent_name).cloned();
+        Box::pin(async move { id })
+    }
+
+    fn resume_with_prompt<'a>(
+        &'a self,
+        agent_name: &'a str,
+        envelope: String,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            self.resumed_with
+                .lock()
+                .unwrap()
+                .push((agent_name.to_string(), envelope));
+            Ok(())
+        })
     }
 }
 
@@ -3511,4 +3554,301 @@ async fn test_manual_restart_does_not_fire_intro_directive() {
         started[0].2.is_none(),
         "restart must not pass an init directive — only first-time creation does"
     );
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Decision Inbox e2e
+// ──────────────────────────────────────────────────────────────────────────
+
+/// Round-trip: agent emits a decision via the bridge endpoint, human picks
+/// an option via the public API, the resume envelope reaches the agent
+/// via `lifecycle.resume_with_prompt` with the picked option's body and
+/// the original headline + question + human note inlined.
+#[tokio::test]
+async fn decision_round_trip_agent_creates_human_resolves_agent_resumed() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+
+    // Channel for inference. Bot1 must be in an active run with this
+    // channel set, otherwise the create endpoint correctly 400s.
+    let channel = store
+        .create_channel(
+            "engineering",
+            Some("Engineering"),
+            ChannelType::Channel,
+            None,
+        )
+        .unwrap();
+    join_channel_silent(&store, "engineering", "bot1", "agent");
+    lifecycle.set_run_channel("bot1", &channel);
+
+    // 1. agent → bridge → POST /internal/agent/bot1/decisions
+    let create_body = serde_json::json!({
+        "headline": "PR #120 retro: archived-channel del/join",
+        "question": "Was the merge the right call, or should we revert?",
+        "options": [
+            {"key": "A", "label": "Keep the merge", "body": "The merge stands. Tests pass."},
+            {"key": "B", "label": "Revert and add tests", "body": "Revert, add the integration test, re-merge."},
+        ],
+        "recommended_key": "A",
+        "context": "## Why now\nUser asked.\n",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/decisions")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "decision create must 200");
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let decision_id = created["decision_id"].as_str().unwrap().to_string();
+    assert_eq!(created["channel_id"].as_str().unwrap(), channel);
+
+    // 2. human → GET /api/decisions?status=open returns the new row.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/decisions?status=open")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let decisions = listed["decisions"].as_array().unwrap();
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(decisions[0]["id"].as_str().unwrap(), decision_id);
+    assert_eq!(decisions[0]["agent_name"].as_str().unwrap(), "bot1");
+    assert_eq!(
+        decisions[0]["channel_name"].as_str().unwrap(),
+        "engineering"
+    );
+
+    // 3. human → POST /api/decisions/{id}/resolve picks B with a note.
+    let resolve_body = serde_json::json!({"picked_key": "B", "note": "needs tests first"});
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/decisions/{decision_id}/resolve"))
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&resolve_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK, "resolve must 200");
+
+    // 4. resume_with_prompt fired with the right payload.
+    let calls = lifecycle.resumed_calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "resume_with_prompt must be called exactly once"
+    );
+    let (agent, envelope) = &calls[0];
+    assert_eq!(agent, "bot1");
+    assert!(
+        envelope.contains("PR #120 retro"),
+        "envelope must include original headline; got: {envelope}"
+    );
+    assert!(envelope.contains("Was the merge the right call"));
+    assert!(envelope.contains("Picked option (B): Revert and add tests"));
+    assert!(envelope.contains("Revert, add the integration test"));
+    assert!(envelope.contains("needs tests first"));
+
+    // 5. The decision row is now resolved, so /open lists nothing.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/decisions?status=open")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(listed["decisions"].as_array().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn decision_resolve_double_pick_returns_409() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    let channel = store
+        .create_channel("eng", Some("Eng"), ChannelType::Channel, None)
+        .unwrap();
+    join_channel_silent(&store, "eng", "bot1", "agent");
+    lifecycle.set_run_channel("bot1", &channel);
+
+    let create_body = serde_json::json!({
+        "headline": "h",
+        "question": "q",
+        "options": [
+            {"key": "A", "label": "L", "body": "B"},
+            {"key": "B", "label": "L2", "body": "B2"},
+        ],
+        "recommended_key": "A",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/decisions")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let decision_id = created["decision_id"].as_str().unwrap().to_string();
+
+    // First pick: 200
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/decisions/{decision_id}/resolve"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({"picked_key": "A"})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Second pick: 409 — CAS-protected.
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/decisions/{decision_id}/resolve"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({"picked_key": "B"})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        StatusCode::CONFLICT,
+        "second pick on a resolved decision must 409"
+    );
+}
+
+#[tokio::test]
+async fn decision_create_without_active_channel_returns_400() {
+    // No set_run_channel — the channel-inference contract must fail
+    // loudly rather than silently routing to #all.
+    let (_store, app, _lifecycle) = setup_with_lifecycle();
+
+    let create_body = serde_json::json!({
+        "headline": "h",
+        "question": "q",
+        "options": [
+            {"key": "A", "label": "L", "body": "B"},
+            {"key": "B", "label": "L2", "body": "B2"},
+        ],
+        "recommended_key": "A",
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/decisions")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let err: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let msg = err["error"].as_str().unwrap();
+    assert!(
+        msg.contains("active-run channel"),
+        "error must name the missing channel context; got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn decision_resolve_unknown_picked_key_returns_400() {
+    let (store, app, lifecycle) = setup_with_lifecycle();
+    let channel = store
+        .create_channel("eng", Some("Eng"), ChannelType::Channel, None)
+        .unwrap();
+    join_channel_silent(&store, "eng", "bot1", "agent");
+    lifecycle.set_run_channel("bot1", &channel);
+
+    let create_body = serde_json::json!({
+        "headline": "h",
+        "question": "q",
+        "options": [
+            {"key": "A", "label": "L", "body": "B"},
+            {"key": "B", "label": "L2", "body": "B2"},
+        ],
+        "recommended_key": "A",
+    });
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/internal/agent/bot1/decisions")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_vec(&create_body).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(resp.into_body(), 1_000_000)
+        .await
+        .unwrap();
+    let created: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let decision_id = created["decision_id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/api/decisions/{decision_id}/resolve"))
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::to_vec(&serde_json::json!({"picked_key": "Z"})).unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }

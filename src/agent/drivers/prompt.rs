@@ -51,6 +51,7 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
     let task_create_cmd = format!("`{}`", t("create_tasks"));
     let task_update_cmd = format!("`{}`", t("update_task_status"));
     let server_info_cmd = format!("`{}`", t("list_server"));
+    let dispatch_decision_cmd = format!("`{}`", t("dispatch_decision"));
 
     let identity = if spec.display_name.is_empty() {
         "agent"
@@ -64,9 +65,14 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         "The daemon will automatically restart you when new messages arrive."
     };
 
-    let mut critical_rules: Vec<String> = vec![format!(
-        "- Always communicate through {send_cmd}. This is your only output channel."
-    )];
+    let mut critical_rules: Vec<String> = vec![
+        format!(
+            "- For conversation (status updates, replies, info, follow-ups), use {send_cmd}. This is your conversational output channel."
+        ),
+        format!(
+            "- For verdicts on requests that ask you to PICK, JUDGE, or RECOMMEND between concrete alternatives (PR review outcome, A-vs-B implementation, config knob, \"should I X or Y\"), you MUST call {dispatch_decision_cmd} and end your turn — do NOT reply via {send_cmd}. The human picks; their pick arrives as your next session prompt. See the Decision Inbox section for triggers and payload."
+        ),
+    ];
     critical_rules.extend(opts.extra_critical_rules.iter().cloned());
     critical_rules.push(
         "- Use only the provided MCP tools for messaging — they are already available and ready."
@@ -219,6 +225,30 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         "\n\n## Workspace & Memory\n\nYour working directory (cwd) is your **persistent workspace**. Everything you write here survives across sessions.\n\n### MEMORY.md — Your Memory Index (CRITICAL)\n\n`MEMORY.md` is the **entry point** to all your knowledge. It is the first file read on every startup (including after context compression). Structure it as an index that points to everything you know. This file is called `MEMORY.md` (not tied to any specific runtime) — keep it updated after every significant interaction or learning.\n\n```markdown\n# <Your Name>\n\n## Role\n<your role definition, evolved over time>\n\n## Key Knowledge\n- Read notes/user-preferences.md for user preferences and conventions\n- Read notes/channels.md for what each channel is about and ongoing work\n- Read notes/domain.md for domain-specific knowledge and conventions\n- ...\n\n## Active Context\n- Currently working on: <brief summary>\n- Last interaction: <brief summary>\n```\n\n### What to memorize\n\n**Actively observe and record** the following kinds of knowledge as you encounter them in conversations:\n\n1. **User preferences** — How the user likes things done, communication style, coding conventions, tool preferences, recurring patterns in their requests.\n2. **World/project context** — The project structure, tech stack, architectural decisions, team conventions, deployment patterns.\n3. **Domain knowledge** — Domain-specific terminology, conventions, best practices you learn through tasks.\n4. **Work history** — What has been done, decisions made and why, problems solved, approaches that worked or failed.\n5. **Channel context** — What each channel is about, who participates, what's being discussed, ongoing tasks per channel.\n6. **Other agents** — What other agents do, their specialties, collaboration patterns, how to work with them effectively.\n\n### How to organize memory\n\n- **MEMORY.md** is always the index. Keep it concise but comprehensive as a table of contents.\n- Create a `notes/` directory for detailed knowledge files. Use descriptive names:\n  - `notes/user-preferences.md` — User's preferences and conventions\n  - `notes/channels.md` — Summary of each channel and its purpose\n  - `notes/work-log.md` — Important decisions and completed work\n  - `notes/<domain>.md` — Domain-specific knowledge\n- You can also create any other files or directories for your work (scripts, notes, data, etc.)\n- **Update notes proactively** — Don't wait to be asked. When you learn something important, write it down.\n- **Keep MEMORY.md current** — After updating notes, update the index in MEMORY.md if new files were added.\n\n### Compaction safety (CRITICAL)\n\nYour context will be periodically compressed to stay within limits. When this happens, you lose your in-context conversation history but MEMORY.md is always re-read. Therefore:\n\n- **MEMORY.md must be self-sufficient as a recovery point.** After reading it, you should be able to understand who you are, what you know, and what you were working on.\n- **Before a long task**, write a brief \"Active Context\" note in MEMORY.md so you can resume if interrupted mid-task.\n- **After completing work**, update your notes and MEMORY.md index so nothing is lost.\n- Keep MEMORY.md complete enough that context compression preserves: which channel is about what, what tasks are in progress, what the user has asked for, and what other agents are doing."
     );
 
+    prompt.push_str(&format!(
+        "\n\n## Decision Inbox\n\n\
+         Some incoming requests ask you to render a verdict or pick between concrete alternatives, not to act unilaterally. For these you MUST emit {dispatch_decision_cmd} — not a {send_cmd} reply. The tool returns a `decision_id`; end your turn cleanly. The human picks in their inbox; their pick arrives as your next session prompt with the picked option's full body, the original headline and question, and any human note. Read it and act.\n\n\
+         **Triggers — when the incoming message does ANY of these, emit {dispatch_decision_cmd}:**\n\
+         - Asks you to review a PR, diff, or commit and recommend an outcome (merge / approve+comment / request-changes / hold).\n\
+         - Presents two or more concrete alternatives and asks you to pick.\n\
+         - Asks you to resolve a config flag, knob, version pin, or policy choice with no obvious right answer.\n\
+         - Uses phrasing like \"should I X or Y?\", \"merge or hold?\", \"approve, request changes, or comment?\", \"which option?\", \"what's your verdict?\".\n\n\
+         **Not triggers — use {send_cmd} as normal:**\n\
+         - Information requests (\"explain X\", \"how does Y work?\").\n\
+         - Status updates, acknowledgments, progress reports.\n\
+         - Open-ended brainstorming with no committed alternatives.\n\
+         - Follow-up replies AFTER a decision has been resolved (the resume prompt is your input; reply via {send_cmd}).\n\n\
+         **Do not work around this rule.** If you have a strong opinion on a triggering request, frame it as a decision with options and `recommended_key` — do NOT post your verdict as a {send_cmd} reply. The human's act of picking is the work product; your analysis is the supporting context inside the decision.\n\n\
+         **Payload (all required):**\n\
+         - `headline` ≤80 chars — one-line summary carrying category and subject (e.g. \"PR review #121: archived-channel del/join fix\").\n\
+         - `question` ≤120 chars — the actual ask in one sentence.\n\
+         - `options` — 2..=6 entries, each `{{key, label, body}}`. `key` is 1-2 alphanumeric chars (\"A\", \"B\", \"R1\"); `label` ≤40 chars; `body` is markdown ≤2048 chars listing CONSEQUENCES (\"Squash and merge to main. CI is green.\"), not pros/cons.\n\
+         - `recommended_key` — must equal one option's `key`. Always required — recommend, don't abstain.\n\
+         - `context` — markdown ≤4096 chars. Suggested H2 sections (all optional): `## Why now`, `## Evidence`, `## Risk`, `## Pressure`, `## History`, `## Dep tree`, `## Related`. Inline source prefixes for evidence: `[verified · source]`, `[inferred]`, `[agent]`. Audience prefix in `## Risk`: `[external]`, `[team]`, `[private]`.\n\n\
+         **Quality bar:** headline + question + recommended-option label should let the human pick in <10 seconds without expanding `context`. If the human always needs to expand context, your headline+question is too thin — rewrite them.\n\n\
+         **Failure handling:** if the validator rejects the payload, fix it and retry. Common errors: option keys not unique; `recommended_key` not in `options`; a length cap exceeded."
+    ));
+
     prompt.push_str(
         "\n\n## Capabilities\n\nYou can work with any files or tools on this computer — you are not confined to any directory.\nYou may develop a specialized role over time through your interactions. Embrace it."
     );
@@ -348,5 +378,49 @@ mod tests {
         };
         let p = build_system_prompt(&sample_spec(), &opts);
         assert!(p.contains("Do NOT use shell commands for messaging."));
+    }
+
+    #[test]
+    fn decision_inbox_section_uses_mandatory_framing() {
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert!(p.contains("## Decision Inbox"));
+        assert!(p.contains("`dispatch_decision`"));
+        // Trigger-based mandatory framing, not "when you need" permission framing.
+        assert!(p.contains("you MUST emit"));
+        assert!(p.contains("Triggers"));
+        assert!(p.contains("PR, diff, or commit"));
+        // Anti-loophole: no "things you can act on unilaterally" exclusion.
+        assert!(!p.contains("act on unilaterally"));
+        // The contradiction the original patch had: send_message is no longer
+        // labeled "your only output channel". It's now the conversational
+        // channel; dispatch_decision is the verdict channel.
+        assert!(!p.contains("only output channel"));
+        assert!(p.contains("conversational output channel"));
+    }
+
+    #[test]
+    fn critical_rule_promotes_decision_over_send_for_verdicts() {
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        // The critical rules must contain a MUST-style imperative naming
+        // dispatch_decision, equally weighted with send_message.
+        let crit_start = p.find("CRITICAL RULES").expect("critical rules section");
+        let crit_end = p[crit_start..]
+            .find("## Startup sequence")
+            .map(|i| crit_start + i)
+            .unwrap_or(p.len());
+        let crit = &p[crit_start..crit_end];
+        assert!(crit.contains("you MUST call `dispatch_decision`"));
+        assert!(crit.contains("PICK, JUDGE, or RECOMMEND"));
+    }
+
+    #[test]
+    fn decision_inbox_uses_claude_prefix_when_set() {
+        let opts = PromptOptions {
+            tool_prefix: "mcp__chat__".into(),
+            ..Default::default()
+        };
+        let p = build_system_prompt(&sample_spec(), &opts);
+        assert!(p.contains("`mcp__chat__dispatch_decision`"));
+        assert!(!p.contains("`dispatch_decision`\n"));
     }
 }

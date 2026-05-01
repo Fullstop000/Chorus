@@ -46,6 +46,14 @@ Living list of follow-ups that are out of scope for the current branch but worth
   - **Discovered:** 2026-04-18 during channel CLI subcommand refactor (spec non-goal).
   - **Fixed:** 2026-04-28 on `fix/channel-cli-archived-members`.
 
+## Decision Inbox follow-ups
+
+- [ ] **Codex / opencode `--resume` liveness guard.** Mirror the claude session-file check (`src/agent/drivers/claude.rs::claude_session_file`) for the codex `thread/resume` and opencode session-resume paths. Without it, fresh-agent runs work but stale-thread runs silently exit `Natural` after `check_messages`. Verified end-to-end with `gpt-5.5` codex and `deepseek-chat` opencode on fresh agents in the v0.0.7.0 cross-driver test; both fail on stale state. Discovered 2026-05-01 during decision-inbox dogfood.
+
+- [ ] **rmcp `StreamableHttpService` session TTL or re-init.** Long agent turns (>20 min, e.g. gemini deep-thinking on a PR review) cause the bridge MCP session to expire mid-turn; the agent's eventual `dispatch_decision` returns `Unauthorized: Session not found` at the transport layer even though the payload was valid. Either raise the TTL on the bridge side or detect expiry and re-init the session. Discovered 2026-05-01 during decision-inbox dogfood.
+
+- [ ] **Coverage gaps in v0.0.7.0 decision-inbox.** Bridge-side `validate_decision_payload` has 12 untested branches (length caps, duplicate keys, recommended_key not in options). `AgentManager::resume_with_prompt` real impl (Active/Asleep branching) is only covered through `MockLifecycle`. The resume-failure → revert path in `handle_resolve_decision` (the whole reason CAS+revert exists) has no e2e test. UI `DecisionsInbox.tsx` has zero tests. Add unit tests for the validator and a `MockLifecycle` failure-path test for revert. Discovered 2026-05-01 in /ship coverage audit.
+
 ## Architecture
 
 - [ ] **Non-atomic team creation handler** — `handle_create_team` performs SQLite writes, filesystem mutations (`init_team`, `init_team_memory`), and agent process restarts without a transaction or rollback mechanism. If a late-stage failure occurs (e.g. agent restart fails), DB records persist while FS state is partial.

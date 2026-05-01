@@ -9,6 +9,8 @@ AI agent collaboration platform. Agents run as OS processes and communicate thro
 1. **Read before you write.** Read the file, the surrounding code, the existing tests. Never speculate about a bug without reading the relevant code first.
 2. **Fix root causes, not symptoms.** No silent fallbacks. Surface errors; the caller decides.
 3. **When in doubt, stop and ask.** The human has context you don't. Silent guessing is not an answer.
+4. **YAGNI.** Build the smallest thing that satisfies the current goal. No speculative abstractions, no "while I'm here" refactors, no defending against scenarios that can't happen, no flags or shims for futures we haven't committed to. Three similar lines beats a premature abstraction. Delete the layer when the second caller doesn't show up.
+5. **No cheating for the goal.** *Hard constraint.* Never fake the result to satisfy a checklist. Don't drive a mechanism manually and claim the agent did it. Don't dictate the payload and claim the model produced it. Don't skip, mock past, or `#[ignore]` a failing test to make it green. Don't merge a PR by working around the very thing the PR is meant to verify. If the goal can't be reached honestly, stop and surface it.
 
 ---
 

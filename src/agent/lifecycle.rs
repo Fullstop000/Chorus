@@ -56,4 +56,36 @@ pub trait AgentLifecycle: Send + Sync {
 
     /// Associate a channel with the agent's current or next trace run.
     fn set_run_channel(&self, _agent_name: &str, _channel_id: &str) {}
+
+    /// Return the channel id of the agent's most recent or in-flight run,
+    /// if known. Used by the decision-inbox handler to infer which channel
+    /// a `dispatch_decision` emission belongs to (the agent doesn't
+    /// pass a channel — channel context is implicit in the active run).
+    fn run_channel_id<'a>(
+        &'a self,
+        _agent_name: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>> {
+        Box::pin(async { None })
+    }
+
+    /// Deliver a self-contained envelope to the agent so it can act on a
+    /// human's pick. Routes to the live session's prompt channel when the
+    /// agent is `Active`; otherwise starts the agent with the envelope as
+    /// the `init_directive` so the same payload arrives on first turn.
+    ///
+    /// The envelope is built by the decision handler and contains the
+    /// original headline + question, the picked option's full label and
+    /// body, and any human note. The agent treats it as a new prompt and
+    /// continues its work without needing to re-read history.
+    fn resume_with_prompt<'a>(
+        &'a self,
+        _agent_name: &'a str,
+        _envelope: String,
+    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        Box::pin(async {
+            Err(anyhow::anyhow!(
+                "resume_with_prompt not implemented on this AgentLifecycle"
+            ))
+        })
+    }
 }
