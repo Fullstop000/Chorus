@@ -49,6 +49,27 @@ KEEP_AGENTS=1 ./bench/decision-trigger/run.sh            # don't auto-delete age
 CHORUS_LOG=/var/log/chorus.log ./bench/decision-trigger/run.sh
 ```
 
+## A/B testing prompt variants
+
+The whole system prompt is injectable via `CHORUS_SYSTEM_PROMPT_OVERRIDE_FILE`. To compare a candidate prompt against the built-in:
+
+```bash
+# 1. Save the current built-in prompt (e.g. by capturing what build_system_prompt
+#    produces from a unit test or a one-shot CLI helper) to baseline.md.
+# 2. Write your candidate prompt to candidate.md.
+# 3. For each variant, restart the chorus server with the env var pointing at it:
+
+CHORUS_SYSTEM_PROMPT_OVERRIDE_FILE=$PWD/baseline.md  chorus serve --port 3001 &
+./bench/decision-trigger/run.sh   # records run as bench/.../results/<ts>/results.tsv
+kill %1
+
+CHORUS_SYSTEM_PROMPT_OVERRIDE_FILE=$PWD/candidate.md chorus serve --port 3001 &
+./bench/decision-trigger/run.sh
+kill %1
+```
+
+The override is a verbatim substitution — the file content becomes the system prompt. No template substitution, no merging. Tool names must already be resolved (use `mcp__chat__send_message` for the claude runtime, bare `send_message` for codex/kimi/gemini/opencode).
+
 ## Output
 
 Each run writes to `bench/decision-trigger/results/<unix_ts>/`:

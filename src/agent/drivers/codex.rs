@@ -670,13 +670,10 @@ impl CodexHandle {
         let standing_prompt = super::prompt::build_system_prompt(
             &self.spec,
             &super::prompt::PromptOptions {
-                tool_prefix: String::new(),
-                extra_critical_rules: Vec::new(),
                 post_startup_notes: vec![
                     "**IMPORTANT**: Your process stays alive across turns. New messages may be delivered directly into the current session while you are working.".into(),
                 ],
-                include_stdin_notification_section: true,
-                message_notification_style: super::prompt::MessageNotificationStyle::Direct,
+                ..Default::default()
             },
         );
         let (method, req_line) = match &resume_id {

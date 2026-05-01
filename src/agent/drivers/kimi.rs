@@ -88,13 +88,10 @@ fn build_kimi_standing_prompt(spec: &AgentSpec) -> String {
     super::prompt::build_system_prompt(
         spec,
         &super::prompt::PromptOptions {
-            tool_prefix: String::new(),
             extra_critical_rules: vec![
                 "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
             ],
-            post_startup_notes: Vec::new(),
-            include_stdin_notification_section: true,
-            message_notification_style: super::prompt::MessageNotificationStyle::Direct,
+            ..Default::default()
         },
     )
 }

@@ -10,38 +10,46 @@
 
 use crate::agent::drivers::AgentSpec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageNotificationStyle {
-    Poll,
-    Direct,
-}
+/// Env-var override for the entire system prompt. When set to a readable file
+/// path, the file's contents become the system prompt verbatim — no template
+/// substitution, no merging with the built-in builder. Lets a benchmark or A/B
+/// harness swap the whole prompt without recompiling.
+const SYSTEM_PROMPT_OVERRIDE_ENV: &str = "CHORUS_SYSTEM_PROMPT_OVERRIDE_FILE";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PromptOptions {
+    /// Tool-name prefix. Empty by default (bare names: `send_message`).
+    /// Claude binds tools as `mcp__chat__send_message` and overrides this.
     pub tool_prefix: String,
     pub extra_critical_rules: Vec<String>,
     pub post_startup_notes: Vec<String>,
-    pub include_stdin_notification_section: bool,
-    pub message_notification_style: MessageNotificationStyle,
-}
-
-impl Default for PromptOptions {
-    fn default() -> Self {
-        Self {
-            // Default to bare tool names. Most runtimes (Codex, Kimi, Gemini,
-            // OpenCode) see the chat tools as bare `send_message` etc.;
-            // Claude binds them as `mcp__chat__send_message` and overrides
-            // this field at the call site.
-            tool_prefix: String::new(),
-            extra_critical_rules: Vec::new(),
-            post_startup_notes: Vec::new(),
-            include_stdin_notification_section: false,
-            message_notification_style: MessageNotificationStyle::Poll,
-        }
-    }
+    /// In-process whole-prompt override. Takes precedence over the env-var
+    /// override. Use for tests/benches that want to swap the prompt
+    /// programmatically without touching the filesystem.
+    pub system_prompt_override: Option<String>,
 }
 
 pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
+    // Whole-prompt overrides bypass the builder entirely. Programmatic override
+    // wins; env-var fallback is for ops/bench convenience.
+    if let Some(ref text) = opts.system_prompt_override {
+        return text.clone();
+    }
+    if let Ok(path) = std::env::var(SYSTEM_PROMPT_OVERRIDE_ENV) {
+        if !path.is_empty() {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => return text,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path,
+                        error = %e,
+                        "{SYSTEM_PROMPT_OVERRIDE_ENV} set but file unreadable; falling back to built-in prompt"
+                    );
+                }
+            }
+        }
+    }
+
     let t = |name: &str| format!("{}{}", opts.tool_prefix, name);
 
     let send_cmd = format!("`{}`", t("send_message"));
@@ -59,11 +67,9 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         spec.display_name.as_str()
     };
 
-    let message_delivery_text = if opts.include_stdin_notification_section {
-        "New messages may be delivered to you automatically while your process stays alive."
-    } else {
-        "The daemon will automatically restart you when new messages arrive."
-    };
+    // One universal line. The LLM doesn't need to know whether messages arrive
+    // via stdin, restart, or polling — it just needs to know not to poll itself.
+    let message_delivery_text = "New messages arrive automatically — do not poll for them.";
 
     let mut critical_rules: Vec<String> = vec![
         format!(
@@ -256,21 +262,9 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         "\n\n## Capabilities\n\nYou can work with any files or tools on this computer — you are not confined to any directory.\nYou may develop a specialized role over time through your interactions. Embrace it."
     );
 
-    if opts.include_stdin_notification_section {
-        match opts.message_notification_style {
-            MessageNotificationStyle::Direct => {
-                prompt.push_str(&format!(
-                    "\n\n## Message Notifications\n\nWhile you are working, new messages may be delivered directly into your current session.\n\nHow to handle these:\n- Treat direct follow-up messages as new user input for the same live session.\n- Adapt if the new message changes priority or direction.\n- You do NOT need to poll just because direct follow-up delivery is available.\n- Use {check_cmd} only when you need to inspect other pending channels or recover broader context."
-                ));
-            }
-            MessageNotificationStyle::Poll => {
-                prompt.push_str(&format!(
-                    "\n\n## Message Notifications\n\nWhile you are busy (executing tools, thinking, etc.), new messages may arrive. When this happens, you will receive a system notification like:\n\n`[System notification: You have N new message(s) waiting. Call {check_name} to read them when you're ready.]`\n\nHow to handle these:\n- Call {check_cmd} to check for new messages. You are encouraged to do this frequently — at natural breakpoints in your work, or whenever you see a notification.\n- If the new message is higher priority, you may pivot to it. If not, continue your current work.\n- {check_cmd} returns instantly with any pending messages (or \"no new messages\"). It is always safe to call.",
-                    check_name = t("check_messages"),
-                ));
-            }
-        }
-    }
+    prompt.push_str(&format!(
+        "\n\n## Message Notifications\n\nWhile you are working, new messages may arrive. The runtime delivers them automatically — you do not need to poll. When you see a system notification or want to check at a natural breakpoint, call {check_cmd}; it returns instantly with any pending messages (or \"no new messages\") and is always safe to call. If a new message changes priority or direction, adapt; otherwise continue your current work."
+    ));
 
     if let Some(ref persona) = spec.system_prompt {
         prompt.push_str(&format!("\n\n## Initial role\n{persona}"));
@@ -448,5 +442,87 @@ mod tests {
         let p = build_system_prompt(&sample_spec(), &opts);
         assert!(p.contains("`mcp__chat__dispatch_decision`"));
         assert!(!p.contains("`dispatch_decision`\n"));
+    }
+
+    #[test]
+    fn programmatic_override_replaces_entire_prompt() {
+        let opts = PromptOptions {
+            system_prompt_override: Some("# CUSTOM PROMPT\nshipping nothing else.".into()),
+            ..Default::default()
+        };
+        let p = build_system_prompt(&sample_spec(), &opts);
+        assert_eq!(p, "# CUSTOM PROMPT\nshipping nothing else.");
+        // None of the built-in sections should leak through.
+        assert!(!p.contains("CRITICAL RULES"));
+        assert!(!p.contains("Decision Inbox"));
+        assert!(!p.contains("MEMORY.md"));
+    }
+
+    #[test]
+    fn env_var_override_replaces_entire_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prompt.md");
+        let custom = "# ENV OVERRIDE\nthis is the whole prompt.\n";
+        std::fs::write(&path, custom).expect("write");
+        // Use a guard to scope the env var so other tests aren't affected.
+        let _guard = EnvVarGuard::set(SYSTEM_PROMPT_OVERRIDE_ENV, path.to_str().unwrap());
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert_eq!(p, custom);
+    }
+
+    #[test]
+    fn programmatic_override_wins_over_env_var() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prompt.md");
+        std::fs::write(&path, "# FROM FILE\n").expect("write");
+        let _guard = EnvVarGuard::set(SYSTEM_PROMPT_OVERRIDE_ENV, path.to_str().unwrap());
+        let opts = PromptOptions {
+            system_prompt_override: Some("# FROM CODE\n".into()),
+            ..Default::default()
+        };
+        let p = build_system_prompt(&sample_spec(), &opts);
+        assert_eq!(p, "# FROM CODE\n");
+    }
+
+    #[test]
+    fn no_more_message_notification_style_branching() {
+        // The Message Notifications section is now always emitted with a single
+        // universal body — no Direct/Poll variants. The LLM doesn't care how
+        // delivery happens, it just needs to know not to poll.
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert!(p.contains("## Message Notifications"));
+        assert!(p.contains("delivers them automatically"));
+        assert!(p.contains("`check_messages`"));
+    }
+
+    /// Process-wide env var guard. Tests that mutate env vars must not run in
+    /// parallel with each other or with tests that read the same var; cargo
+    /// runs lib tests in parallel by default. We serialize via a static mutex.
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let prev = std::env::var(key).ok();
+            // SAFETY: env mutation is serialized by the LOCK above; this guard
+            // restores the previous value on drop.
+            unsafe { std::env::set_var(key, value); }
+            Self { key, prev, _lock: lock }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: still inside the LOCK held by self._lock.
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 }
