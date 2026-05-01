@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.7.0] - 2026-05-01
+
+### Added
+- **Decision Inbox.** Agents can now hand a verdict request to the human via `dispatch_decision` (PR review, A-vs-B choices, config flags). Human picks an option in the sidebar inbox; the agent's session resumes with the picked option's body and acts on it.
+
+### Fixed
+- Claude `--resume` no longer errors silently when the session file is missing locally. The driver checks the file and falls back to a fresh session with a warning.
+
 ## [0.0.6.0] - 2026-04-30
 
 ### Fixed
