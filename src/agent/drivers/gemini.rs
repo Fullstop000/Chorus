@@ -199,6 +199,14 @@ static GEMINI_CFG: AcpDriverConfig = AcpDriverConfig {
     build_first_prompt_prefix: None,
     spawn_child: spawn_gemini,
     registry: &GEMINI_REGISTRY,
+    // Gemini stores session state under `~/.gemini/tmp/<key>/chats/<session_id>/`
+    // where `<key>` varies by how gemini was launched (working-dir name,
+    // agent identifier). We can't derive `<key>` from `session_id` alone,
+    // so a file-existence guard would require either walking the entire
+    // tmp tree (slow, false-positive prone) or threading the `<key>` from
+    // the spawn site through to the liveness check. Deferred until we
+    // actually observe stale-session on gemini in the field.
+    session_liveness_check: None,
 };
 
 // ---------------------------------------------------------------------------

@@ -19,6 +19,7 @@
 //! `AcpNativeCore::ensure_started` provides the same race-safety guarantee
 //! (one spawn, all secondaries wait) without a factory path distinction.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -26,7 +27,7 @@ use anyhow::{bail, Context};
 use async_trait::async_trait;
 
 use crate::agent::AgentRuntime;
-use crate::utils::cmd::{command_exists, run_command};
+use crate::utils::cmd::{command_exists, home_dir, run_command};
 
 use super::acp_native::{
     self, AcpDriverConfig, AcpNativeCore, InitPromptStrategy, SpawnFut, SpawnedChild,
@@ -143,6 +144,41 @@ fn spawn_opencode(spec: Arc<AgentSpec>, key: AgentKey) -> SpawnFut {
 }
 
 // ---------------------------------------------------------------------------
+// Session-file liveness guard
+// ---------------------------------------------------------------------------
+
+/// Find the opencode session-state file for `session_id`. Opencode writes a
+/// per-session JSON to
+/// `~/.local/share/opencode/storage/session_diff/<session_id>.json`; the
+/// presence of that file is our proxy for "the runtime can still
+/// `session/load` this id". Empty `Option` means the session is gone and
+/// the caller should fall back to `session/new`.
+///
+/// Mirrors the codex `codex_thread_file` and the claude `claude_session_file`
+/// patterns: file-existence as liveness signal, no SQL or runtime API calls.
+fn opencode_session_file(home: &Path, session_id: &str) -> Option<PathBuf> {
+    let path = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("storage")
+        .join("session_diff")
+        .join(format!("{session_id}.json"));
+    if path.is_file() {
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// Liveness adapter for [`AcpDriverConfig::session_liveness_check`]. The
+/// trait expects `fn(&str) -> bool` so we can't pass `home_dir()` through;
+/// look it up here on each call. Production cost is one stat() per resume.
+fn opencode_session_alive(session_id: &str) -> bool {
+    opencode_session_file(&home_dir(), session_id).is_some()
+}
+
+// ---------------------------------------------------------------------------
 // Per-driver static registry + config
 // ---------------------------------------------------------------------------
 
@@ -159,6 +195,7 @@ static OPENCODE_CFG: AcpDriverConfig = AcpDriverConfig {
     build_first_prompt_prefix: None,
     spawn_child: spawn_opencode,
     registry: &OPENCODE_REGISTRY,
+    session_liveness_check: Some(opencode_session_alive),
 };
 
 // ---------------------------------------------------------------------------
@@ -270,6 +307,50 @@ mod tests {
             working_directory: PathBuf::from("/fake"),
             bridge_endpoint: "http://127.0.0.1:1".to_string(),
         }
+    }
+
+    // ---- session-file liveness guard ----
+
+    #[test]
+    fn opencode_session_file_finds_session_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp
+            .path()
+            .join(".local")
+            .join("share")
+            .join("opencode")
+            .join("storage")
+            .join("session_diff");
+        std::fs::create_dir_all(&dir).unwrap();
+        let sid = "ses_21dcf5b9effe2QsROPRVyj2fKY";
+        let f = dir.join(format!("{sid}.json"));
+        std::fs::write(&f, b"{}").unwrap();
+
+        let found = opencode_session_file(tmp.path(), sid).expect("session file should be found");
+        assert_eq!(found, f);
+    }
+
+    #[test]
+    fn opencode_session_file_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Create the directory but no matching session file.
+        std::fs::create_dir_all(
+            tmp.path()
+                .join(".local")
+                .join("share")
+                .join("opencode")
+                .join("storage")
+                .join("session_diff"),
+        )
+        .unwrap();
+        assert!(opencode_session_file(tmp.path(), "ses_does_not_exist").is_none());
+    }
+
+    #[test]
+    fn opencode_session_file_returns_none_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        // No ~/.local/share/opencode/ at all.
+        assert!(opencode_session_file(tmp.path(), "ses_anything").is_none());
     }
 
     #[tokio::test]
