@@ -510,8 +510,14 @@ mod tests {
             let prev = std::env::var(key).ok();
             // SAFETY: env mutation is serialized by the LOCK above; this guard
             // restores the previous value on drop.
-            unsafe { std::env::set_var(key, value); }
-            Self { key, prev, _lock: lock }
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self {
+                key,
+                prev,
+                _lock: lock,
+            }
         }
     }
     impl Drop for EnvVarGuard {
