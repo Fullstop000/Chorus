@@ -12,6 +12,7 @@ use tracing::{debug, warn};
 
 use crate::agent::trace::TraceEvent;
 use crate::server::error::{app_err, ErrorResponse};
+use crate::server::event_bus::EventBus;
 use crate::server::handlers::AppState;
 use crate::store::{Store, StreamEvent};
 
@@ -38,12 +39,13 @@ pub async fn handle_events_ws(
         ));
     }
 
-    Ok(ws.on_upgrade(move |socket| realtime_session(socket, state.store.clone(), params.viewer)))
+    let event_bus = state.event_bus.clone();
+    Ok(ws.on_upgrade(move |socket| realtime_session(socket, event_bus, state.store.clone(), params.viewer)))
 }
 
-async fn realtime_session(mut socket: WebSocket, store: Arc<Store>, viewer: String) {
-    let mut stream_rx = store.subscribe();
-    let mut trace_rx = store.subscribe_traces();
+async fn realtime_session(mut socket: WebSocket, event_bus: Arc<EventBus>, store: Arc<crate::store::Store>, viewer: String) {
+    let mut stream_rx = event_bus.subscribe();
+    let mut trace_rx = event_bus.subscribe_traces();
 
     loop {
         tokio::select! {

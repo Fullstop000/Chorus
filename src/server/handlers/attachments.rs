@@ -30,7 +30,7 @@ async fn store_upload(state: AppState, mut multipart: Multipart) -> ApiResult<se
         .unwrap_or_default();
 
     let file_id = Uuid::new_v4().to_string();
-    let attachments_dir = state.store.attachments_dir();
+    let attachments_dir = state.attachments_dir();
     std::fs::create_dir_all(&attachments_dir).map_err(internal_err)?;
 
     let stored_path = attachments_dir.join(format!("{}{}", file_id, ext));

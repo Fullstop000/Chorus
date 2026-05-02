@@ -7,6 +7,7 @@ use std::io;
 use uuid::Uuid;
 
 use super::{parse_datetime, Store};
+use crate::store::stream::StreamEvent;
 use crate::utils::slug::slugify_base;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,7 +59,7 @@ pub struct WorkspaceCounts {
 }
 
 impl Store {
-    pub fn create_local_workspace(&self, name: &str, owner_human_id: &str) -> Result<Workspace> {
+    pub fn create_local_workspace(&self, name: &str, owner_human_id: &str) -> Result<(Workspace, StreamEvent)> {
         self.create_local_workspace_inner(name, owner_human_id, true)
     }
 
@@ -66,7 +67,7 @@ impl Store {
         &self,
         name: &str,
         owner_human_id: &str,
-    ) -> Result<Workspace> {
+    ) -> Result<(Workspace, StreamEvent)> {
         self.create_local_workspace_inner(name, owner_human_id, false)
     }
 
@@ -75,7 +76,7 @@ impl Store {
         name: &str,
         owner_human_id: &str,
         activate: bool,
-    ) -> Result<Workspace> {
+    ) -> Result<(Workspace, StreamEvent)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let id = Uuid::new_v4().to_string();
@@ -132,8 +133,7 @@ impl Store {
             owner_human_id.to_string(),
             "human".to_string(),
         );
-        let _ = self.stream_tx.send(event);
-        Ok(workspace)
+        Ok((workspace, event))
     }
 
     pub fn get_active_workspace(&self) -> Result<Option<Workspace>> {

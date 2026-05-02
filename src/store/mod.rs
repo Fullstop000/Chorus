@@ -12,14 +12,12 @@ pub mod teams;
 pub mod trace_writer;
 pub mod workspaces;
 
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::Result;
 use rusqlite::{params, Connection, OptionalExtension};
-use tokio::sync::broadcast;
 
-use crate::utils::{derive_data_dir, parse_datetime};
+use crate::utils::parse_datetime;
 
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentEnvVar};
@@ -38,23 +36,10 @@ pub use tasks::{ClaimResult, TaskInfo, TaskStatus};
 pub use teams::{Team, TeamMember, TeamMembership};
 pub use workspaces::{Workspace, WorkspaceCounts, WorkspaceMode};
 
-use crate::agent::trace::TraceEvent;
-
-/// SQLite-backed persistence and pub/sub for new messages.
+/// SQLite-backed persistence layer.
 pub struct Store {
     /// Serialized access to the rusqlite connection.
     conn: Mutex<Connection>,
-    /// Broadcast channel for stream events (message.created only).
-    stream_tx: broadcast::Sender<StreamEvent>,
-    /// Broadcast channel for agent trace events (tool calls, thinking, etc.).
-    trace_tx: broadcast::Sender<TraceEvent>,
-    /// Root data directory (db parent, attachments, teams).
-    data_dir: PathBuf,
-    /// Optional override for the per-agent workspace root. When set, takes
-    /// precedence over `data_dir.join("agents")` so the server can keep
-    /// agent workspaces at the chorus-root level while chorus.db sits in
-    /// `<root>/data/`.
-    agents_dir_override: Option<PathBuf>,
 }
 
 impl Store {
@@ -66,45 +51,9 @@ impl Store {
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Self::validate_supported_identity_schema(&conn)?;
         Self::init_schema(&conn)?;
-        let (stream_tx, _) = broadcast::channel(256);
-        let (trace_tx, _) = broadcast::channel(1024);
         Ok(Self {
             conn: Mutex::new(conn),
-            stream_tx,
-            trace_tx,
-            data_dir: derive_data_dir(path),
-            agents_dir_override: None,
         })
-    }
-
-    /// Builder: override the per-agent workspace directory. Intended for the
-    /// CLI `serve`/`run` path, which places agent workspaces at the chorus
-    /// root instead of inside `data/`.
-    pub fn with_agents_dir(mut self, dir: PathBuf) -> Self {
-        self.agents_dir_override = Some(dir);
-        self
-    }
-
-    /// Return the configured server data directory that owns the SQLite file.
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-
-    /// Return the directory used to persist uploaded attachments.
-    pub fn attachments_dir(&self) -> PathBuf {
-        self.data_dir.join("attachments")
-    }
-
-    /// Return the directory that contains per-agent workspaces.
-    pub fn agents_dir(&self) -> PathBuf {
-        self.agents_dir_override
-            .clone()
-            .unwrap_or_else(|| self.data_dir.join("agents"))
-    }
-
-    /// Return the directory used to persist per-team workspaces.
-    pub fn teams_dir(&self) -> PathBuf {
-        self.data_dir.join("teams")
     }
 
     /// Lock the database connection, handling mutex poison gracefully.
@@ -210,23 +159,6 @@ impl Store {
             .filter_map(Result::ok)
             .any(|name| name == column);
         Ok(exists)
-    }
-
-    pub fn subscribe(&self) -> broadcast::Receiver<StreamEvent> {
-        self.stream_tx.subscribe()
-    }
-
-    pub fn subscribe_traces(&self) -> broadcast::Receiver<TraceEvent> {
-        self.trace_tx.subscribe()
-    }
-
-    pub fn trace_sender(&self) -> broadcast::Sender<TraceEvent> {
-        self.trace_tx.clone()
-    }
-
-    /// Return the path to the SQLite database file (for trace_writer's separate connection).
-    pub fn db_path(&self) -> PathBuf {
-        self.data_dir.join("chorus.db")
     }
 
     /// Look up the channel_id for a given run_id (from the first message in that run).

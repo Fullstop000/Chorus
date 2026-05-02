@@ -132,7 +132,7 @@ fn test_open_old_identity_schema_fails_loudly() {
 fn test_create_local_workspace_sets_owner_and_active_context() {
     let (store, _dir) = make_store();
 
-    let workspace = store.create_local_workspace("Chorus Dev", "alice").unwrap();
+    let (workspace, _event) = store.create_local_workspace("Chorus Dev", "alice").unwrap();
 
     assert_eq!(workspace.name, "Chorus Dev");
     assert_eq!(workspace.slug, "chorus-dev");
@@ -152,7 +152,7 @@ fn test_create_local_workspace_sets_owner_and_active_context() {
 fn test_create_local_workspace_provisions_all_channel() {
     let (store, _dir) = make_store();
 
-    let workspace = store.create_local_workspace("Chorus Dev", "alice").unwrap();
+    let (workspace, _event) = store.create_local_workspace("Chorus Dev", "alice").unwrap();
 
     let channels = store
         .get_channels_by_params(&chorus::store::ChannelListParams {
@@ -211,8 +211,8 @@ fn test_scoped_resource_schema_requires_workspace_id() {
 #[test]
 fn test_workspace_scoped_names_allow_same_channel_name_in_different_workspaces() {
     let (store, _dir) = make_store();
-    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
-    let beta = store.create_local_workspace("Beta", "bob").unwrap();
+    let (alpha, _event) = store.create_local_workspace("Alpha", "alice").unwrap();
+    let (beta, _event) = store.create_local_workspace("Beta", "bob").unwrap();
 
     store
         .create_channel_in_workspace(
@@ -271,8 +271,8 @@ fn test_unknown_workspace_mode_surfaces_error() {
 #[test]
 fn test_workspace_selector_switch_rename_and_slug_collision() {
     let (store, _dir) = make_store();
-    let first = store.create_local_workspace("Acme", "alice").unwrap();
-    let second = store.create_local_workspace("Acme", "alice").unwrap();
+    let (first, _event) = store.create_local_workspace("Acme", "alice").unwrap();
+    let (second, _event) = store.create_local_workspace("Acme", "alice").unwrap();
 
     assert_eq!(first.slug, "acme");
     assert_eq!(second.slug, "acme-1");
@@ -292,8 +292,8 @@ fn test_workspace_selector_switch_rename_and_slug_collision() {
 #[test]
 fn test_workspace_scoped_core_resource_lists() {
     let (store, _dir) = make_store();
-    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
-    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+    let (alpha, _event) = store.create_local_workspace("Alpha", "alice").unwrap();
+    let (beta, _event) = store.create_local_workspace("Beta", "alice").unwrap();
 
     store
         .create_channel_in_workspace(
@@ -374,8 +374,8 @@ fn test_workspace_scoped_core_resource_lists() {
 #[test]
 fn test_workspace_scoped_team_channel_join_uses_workspace_id() {
     let (store, _dir) = make_store();
-    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
-    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+    let (alpha, _event) = store.create_local_workspace("Alpha", "alice").unwrap();
+    let (beta, _event) = store.create_local_workspace("Beta", "alice").unwrap();
 
     let alpha_channel_id = store
         .create_channel_in_workspace(&alpha.id, "ops", None, ChannelType::Team, None)
@@ -426,7 +426,7 @@ fn test_team_with_channel_create_rolls_back_when_channel_insert_fails() {
 #[test]
 fn test_compat_agent_and_team_helpers_write_active_workspace_rows() {
     let (store, _dir) = make_store();
-    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
+    let (alpha, _event) = store.create_local_workspace("Alpha", "alice").unwrap();
 
     store
         .create_agent_record(&AgentRecordUpsert {
@@ -478,8 +478,8 @@ fn test_compat_agent_and_team_helpers_write_active_workspace_rows() {
 #[test]
 fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
     let (store, dir) = make_store();
-    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
-    let beta = store.create_local_workspace("Beta", "bob").unwrap();
+    let (alpha, _event) = store.create_local_workspace("Alpha", "alice").unwrap();
+    let (beta, _event) = store.create_local_workspace("Beta", "bob").unwrap();
     let alpha_channel_id = store
         .create_channel_in_workspace(&alpha.id, "alpha-general", None, ChannelType::Channel, None)
         .unwrap();
@@ -795,7 +795,7 @@ fn test_send_and_receive_messages() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     assert!(!msg_id.is_empty());
 
     let bot1_id = store
@@ -827,7 +827,7 @@ fn test_send_and_receive_messages() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     let msgs = store.get_messages_for_agent_id(&bot1_id, false).unwrap();
     assert_eq!(msgs.len(), 2);
 }
@@ -861,7 +861,7 @@ fn test_agent_does_not_receive_its_own_sent_message() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let unread = store.get_messages_for_agent_id(&bot1_id, false).unwrap();
     assert!(
@@ -893,7 +893,7 @@ fn test_message_history_pagination() {
                 suppress_event: false,
                 run_id: None,
             })
-            .unwrap();
+            .map(|(id, _)| id).unwrap();
     }
 
     let (msgs, has_more) = store.get_history("general", 5, None, None).unwrap();
@@ -926,7 +926,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -937,7 +937,7 @@ fn test_history_snapshot_returns_messages_and_read_cursor() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let snapshot = store
         .get_history_snapshot("general", "alice", 10, None, None)
@@ -982,7 +982,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     let second_top_level = store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -993,7 +993,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let state_before = store
         .get_inbox_conversation_state("general", &bot1_id)
@@ -1091,7 +1091,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -1102,7 +1102,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let unread_before = store.get_unread_summary(&bot1_id).unwrap();
     assert_eq!(unread_before.get("general"), Some(&2));
@@ -1142,7 +1142,7 @@ fn test_history_read_cursor_rejects_seq_above_max() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -1153,7 +1153,7 @@ fn test_history_read_cursor_rejects_seq_above_max() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let err = store
         .set_history_read_cursor("general", "alice", SenderType::Human, 999)
@@ -1184,7 +1184,7 @@ fn test_history_read_cursor_rejects_negative_seq() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let err = store
         .set_history_read_cursor("general", "alice", SenderType::Human, -1)
@@ -1213,7 +1213,7 @@ fn test_history_read_cursor_heals_orphan_above_max_seq() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
     {
@@ -1253,7 +1253,7 @@ fn test_conversation_messages_view_projects_message_rows() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
 
     let conn = store.conn_for_test();
@@ -1390,7 +1390,7 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     store.mark_agent_messages_deleted("bot1").unwrap();
     let (history, _) = store.get_history("general", 10, None, None).unwrap();
@@ -1417,7 +1417,7 @@ fn test_create_message_persists_top_level() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     let (history, _) = store.get_history("general", 10, None, None).unwrap();
     assert_eq!(history.len(), 1);
     assert_eq!(history[0].id, message_id);
@@ -1457,7 +1457,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     store
         .create_message(CreateMessage {
             channel_name: "general",
@@ -1468,7 +1468,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let channel_id = store
         .get_channel_by_name("general")
@@ -1516,7 +1516,7 @@ fn test_tasks_crud() {
         })
         .unwrap();
 
-    let tasks = store
+    let (tasks, _events) = store
         .create_tasks(
             "eng",
             &bot1_id,
@@ -1564,14 +1564,14 @@ fn test_task_claim_and_status() {
         .unwrap();
     store
         .create_tasks("eng", &bot1_id, SenderType::Agent, &["Task A"])
-        .unwrap();
+        .map(|(tasks, _)| tasks).unwrap();
 
-    let results = store
+    let (results, _events) = store
         .update_tasks_claim("eng", &bot1_id, SenderType::Agent, &[1])
         .unwrap();
     assert!(results[0].success);
 
-    let results = store
+    let (results, _events) = store
         .update_tasks_claim("eng", &bot2_id, SenderType::Agent, &[1])
         .unwrap();
     assert!(!results[0].success);
@@ -1899,7 +1899,7 @@ fn test_new_agents_auto_join_all_when_it_exists() {
 #[test]
 fn test_ensure_builtin_channels_repairs_active_workspace_all() {
     let (store, _dir) = make_store();
-    let workspace = store
+    let (workspace, _event) = store
         .create_local_workspace("Chorus Local", "alice")
         .unwrap();
 
@@ -1981,10 +1981,10 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
             suppress_event: false,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     store
         .create_tasks("eng", &bot1_id, SenderType::Agent, &["ship it"])
-        .unwrap();
+        .map(|(tasks, _)| tasks).unwrap();
 
     store.delete_channel(&channel_id).unwrap();
 
@@ -2048,7 +2048,7 @@ fn test_create_system_message_writes_system_sender_type() {
     join_channel_silent(&store, "general", "alice", "human");
 
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
-    let msg_id = store
+    let (msg_id, _event) = store
         .create_system_message(&channel_id, "Team assembled: Alpha, Beta.")
         .unwrap();
     assert!(!msg_id.is_empty());
@@ -2090,7 +2090,7 @@ fn test_channel_unread_count_excludes_system_messages() {
             run_id: None,
             suppress_event: false,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let unread_before = store.get_unread_summary("alice").unwrap();
     assert_eq!(
@@ -2103,7 +2103,7 @@ fn test_channel_unread_count_excludes_system_messages() {
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
     store
         .create_system_message(&channel_id, "Team assembled.")
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let unread_after = store.get_unread_summary("alice").unwrap();
     assert_eq!(
@@ -2124,11 +2124,13 @@ fn test_create_system_message_emits_system_typed_stream_event() {
     store.ensure_human_with_id("alice", "alice").unwrap();
     join_channel_silent(&store, "general", "alice", "human");
 
-    let mut rx = store.subscribe();
+    let event_bus = chorus::server::event_bus::EventBus::new();
+    let mut rx = event_bus.subscribe();
     let channel_id = store.get_channel_by_name("general").unwrap().unwrap().id;
-    store
+    let (_msg_id, event) = store
         .create_system_message(&channel_id, "Team assembled.")
         .unwrap();
+    event_bus.publish_stream(event);
 
     let event = rx
         .try_recv()
@@ -2160,7 +2162,7 @@ fn test_join_channel_creates_notice_and_is_idempotent() {
     let channel = store.get_channel_by_name("general").unwrap().unwrap();
 
     // Human joins — creates system message.
-    let joined = store
+    let (joined, _events) = store
         .join_channel_by_id(&channel.id, "alice", SenderType::Human)
         .unwrap();
     assert!(joined, "first join should return true");
@@ -2185,7 +2187,7 @@ fn test_join_channel_creates_notice_and_is_idempotent() {
     assert_eq!(alice_payload["target"]["label"], "#general");
 
     // Idempotent re-join — no duplicate system message.
-    let joined_again = store
+    let (joined_again, _events) = store
         .join_channel_by_id(&channel.id, "alice", SenderType::Human)
         .unwrap();
     assert!(!joined_again, "re-join should return false");
@@ -2212,7 +2214,7 @@ fn test_join_channel_creates_notice_and_is_idempotent() {
             env_vars: &[],
         })
         .unwrap();
-    let bot_joined = store
+    let (bot_joined, _events) = store
         .join_channel_by_id(&channel.id, &bot_id, SenderType::Agent)
         .unwrap();
     assert!(bot_joined, "agent first join should return true");
@@ -2234,7 +2236,7 @@ fn test_join_channel_creates_notice_and_is_idempotent() {
     store
         .ensure_human_with_id("human_carol_123", "carol")
         .unwrap();
-    let carol_joined = store
+    let (carol_joined, _events) = store
         .join_channel_by_id(&channel.id, "human_carol_123", SenderType::Human)
         .unwrap();
     assert!(carol_joined, "UUID-id human first join should return true");
@@ -2284,7 +2286,7 @@ fn agent_read_paths_exclude_humans_only_payloads_but_ui_keeps_them() {
 
     // Human joins after the agent — this writes a `member_joined` payload
     // tagged `audience: "humans"` that the agent should NOT see when it polls.
-    let joined = store
+    let (joined, _events) = store
         .join_channel_by_id(&channel.id, "alice", SenderType::Human)
         .unwrap();
     assert!(joined);
@@ -2302,10 +2304,10 @@ fn agent_read_paths_exclude_humans_only_payloads_but_ui_keeps_them() {
             suppress_event: true,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
     store
         .create_tasks("crew", "alice", SenderType::Human, &["ship"])
-        .unwrap();
+        .map(|(tasks, _)| tasks).unwrap();
 
     // Agent receive — must skip the join chip but include alice's ping
     // and the task-event row.
@@ -2462,7 +2464,7 @@ fn create_tasks_emits_task_event_to_parent_channel() {
     store.ensure_human_with_id("bob", "bob").unwrap();
     join_channel_silent(&store, "eng", "bob", "human");
 
-    let result = store
+    let (result, _events) = store
         .create_tasks("eng", "bob", SenderType::Human, &["wire up the bridge"])
         .unwrap();
     assert_eq!(result.len(), 1);
@@ -2512,10 +2514,10 @@ fn claim_task_emits_claimed_event_to_parent_channel() {
 
     store
         .create_tasks("eng", "bob", SenderType::Human, &["t"])
-        .unwrap();
+        .map(|(tasks, _)| tasks).unwrap();
     store
         .update_tasks_claim("eng", "alice", SenderType::Human, &[1])
-        .unwrap();
+        .map(|(results, _)| results).unwrap();
 
     let events: Vec<serde_json::Value> = store
         .conn_for_test()
@@ -2551,10 +2553,10 @@ fn unclaim_task_emits_unclaimed_event() {
     join_channel_silent(&store, "eng", "alice", "human");
     store
         .create_tasks("eng", "alice", SenderType::Human, &["t"])
-        .unwrap();
+        .map(|(tasks, _)| tasks).unwrap();
     store
         .update_tasks_claim("eng", "alice", SenderType::Human, &[1])
-        .unwrap();
+        .map(|(results, _)| results).unwrap();
 
     store
         .update_task_unclaim("eng", "alice", SenderType::Human, 1)
@@ -2592,10 +2594,10 @@ fn update_task_status_emits_status_changed_event() {
     join_channel_silent(&store, "eng", "alice", "human");
     store
         .create_tasks("eng", "alice", SenderType::Human, &["t"])
-        .unwrap();
+        .map(|(tasks, _)| tasks).unwrap();
     store
         .update_tasks_claim("eng", "alice", SenderType::Human, &[1])
-        .unwrap();
+        .map(|(results, _)| results).unwrap();
 
     store
         .update_task_status("eng", 1, "alice", SenderType::Human, TaskStatus::InReview)
@@ -2633,10 +2635,10 @@ fn get_unread_summary_excludes_archived_task_sub_channels() {
     store.ensure_human_with_id("bob", "bob").unwrap();
     store
         .join_channel_by_id(&sub_id, "alice", SenderType::Human)
-        .unwrap();
+        .map(|(joined, _)| joined).unwrap();
     store
         .join_channel_by_id(&sub_id, "bob", SenderType::Human)
-        .unwrap();
+        .map(|(joined, _)| joined).unwrap();
     // Bob's non-system message is unread for alice (the view excludes system
     // messages, so only human/agent traffic can produce a leak).
     store
@@ -2649,7 +2651,7 @@ fn get_unread_summary_excludes_archived_task_sub_channels() {
             suppress_event: true,
             run_id: None,
         })
-        .unwrap();
+        .map(|(id, _)| id).unwrap();
 
     let before = store.get_unread_summary("alice").unwrap();
     assert_eq!(

@@ -80,7 +80,7 @@ pub async fn handle_agent_workspace(
     AxumPath(PublicResourceIdPath { id }): AxumPath<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let workspace_dir = state.store.agents_dir().join(&agent.name);
+    let workspace_dir = state.agents_dir.clone().join(&agent.name);
     if !workspace_dir.exists() {
         return Ok(Json(serde_json::json!({
             "path": workspace_dir.to_string_lossy(),
@@ -101,7 +101,7 @@ pub async fn handle_agent_workspace_file(
     Query(params): Query<WorkspaceFileParams>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let workspace_dir = state.store.agents_dir().join(&agent.name);
+    let workspace_dir = state.agents_dir.clone().join(&agent.name);
     let relative = sanitize_workspace_path(&params.path)?;
     let file_path = workspace_dir.join(&relative);
 

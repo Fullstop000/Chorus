@@ -486,7 +486,7 @@ fn ensure_setup_workspace(
     if let Some(workspace) = store.get_active_workspace()? {
         return Ok(workspace);
     }
-    store.create_local_workspace(workspace_name, owner_human_id)
+    store.create_local_workspace(workspace_name, owner_human_id).map(|(w, _)| w)
 }
 
 /// Resolve (or seed) the local human row and write `(id, name)` back to
@@ -922,7 +922,7 @@ mod tests {
         let store = Store::open(db_path.to_str().unwrap()).unwrap();
         let alice = store.create_local_human("alice").unwrap();
         let bob = store.create_local_human("bob").unwrap();
-        let existing = store
+        let (existing, _event) = store
             .create_local_workspace("Existing Workspace", &alice.id)
             .unwrap();
 

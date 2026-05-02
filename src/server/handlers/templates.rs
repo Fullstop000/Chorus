@@ -101,9 +101,14 @@ pub async fn handle_launch_trio(
     // Join the human user to the channel.
     if let Ok(humans) = state.store.get_humans() {
         if let Some(human) = humans.first() {
-            let _ = state
+            if let Ok((_, events)) = state
                 .store
-                .join_channel(&channel_name, &human.id, SenderType::Human);
+                .join_channel(&channel_name, &human.id, SenderType::Human)
+            {
+                for event in events {
+                    state.event_bus.publish_stream(event);
+                }
+            }
         }
     }
 
@@ -163,9 +168,14 @@ pub async fn handle_launch_trio(
         }
 
         // Also join the trio channel (auto-join channels handled above).
-        let _ = state
+        if let Ok((_, events)) = state
             .store
-            .join_channel(&channel_name, &result.id, SenderType::Agent);
+            .join_channel(&channel_name, &result.id, SenderType::Agent)
+        {
+            for event in events {
+                state.event_bus.publish_stream(event);
+            }
+        }
 
         agents.push(LaunchTrioAgent {
             id: result.id,
@@ -178,8 +188,9 @@ pub async fn handle_launch_trio(
     if !agents.is_empty() {
         let names: Vec<&str> = agents.iter().map(|a| a.display_name.as_str()).collect();
         let kickoff = format!("Team assembled: {}. Let's get to work.", names.join(", "));
-        if let Err(e) = state.store.create_system_message(&channel_id, &kickoff) {
-            warn!(error = %e, "failed to post trio kickoff message");
+        match state.store.create_system_message(&channel_id, &kickoff) {
+            Ok((_, event)) => state.event_bus.publish_stream(event),
+            Err(e) => warn!(error = %e, "failed to post trio kickoff message"),
         }
     }
 
