@@ -27,6 +27,7 @@
 //! started turn (see [`SharedReaderState::last_in_flight_thread`]).
 
 use std::collections::{HashMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -80,6 +81,88 @@ fn build_codex_mcp_args(bridge_endpoint: &str) -> Vec<String> {
     args.push("mcp_servers.chat.required=true".into());
 
     args
+}
+
+// ---------------------------------------------------------------------------
+// Session-file liveness guard
+// ---------------------------------------------------------------------------
+
+/// Maximum number of day-directories to walk under `~/.codex/sessions/`
+/// looking for a resume target's rollout file. A thread we'd reasonably
+/// resume was active in the last ~few minutes; bounding the walk at 7 days
+/// keeps the cost predictable on machines with months of session history.
+const CODEX_SESSION_LOOKBACK_DAYS: usize = 7;
+
+/// Env-var escape hatch. When set to `off`, the resume-liveness guard is
+/// skipped and the resume thread id is passed through unconditionally. Used
+/// by unit tests that pass synthetic thread ids without staging a matching
+/// rollout file. Production code paths leave it unset.
+const CODEX_RESUME_LIVENESS_ENV: &str = "CHORUS_CODEX_RESUME_LIVENESS";
+
+/// Find the codex session rollout file for a given `thread_id`. Codex stores
+/// sessions under `~/.codex/sessions/<year>/<month>/<day>/rollout-<datetime>-<thread_id>.jsonl`;
+/// this walks the most recent day-dirs (newest first) and returns the first
+/// matching path, or `None` if no rollout exists for the id.
+///
+/// Used as a liveness guard before issuing `thread/resume`. Mirrors
+/// [`super::claude::claude_session_file`]: when the file is missing, the
+/// caller drops the resume flag and starts a fresh thread instead of
+/// silently no-op'ing on a dead thread id.
+fn codex_thread_file(home: &Path, thread_id: &str) -> Option<PathBuf> {
+    let sessions_dir = home.join(".codex").join("sessions");
+    if !sessions_dir.is_dir() {
+        return None;
+    }
+
+    let needle = format!("-{thread_id}.jsonl");
+    let mut walked_days = 0usize;
+
+    for year_entry in newest_first_dirs(&sessions_dir).into_iter() {
+        for month_entry in newest_first_dirs(&year_entry).into_iter() {
+            for day_entry in newest_first_dirs(&month_entry).into_iter() {
+                walked_days += 1;
+                if let Ok(rd) = std::fs::read_dir(&day_entry) {
+                    for entry in rd.flatten() {
+                        let name = entry.file_name();
+                        let name_str = name.to_string_lossy();
+                        if name_str.starts_with("rollout-") && name_str.ends_with(&needle) {
+                            return Some(entry.path());
+                        }
+                    }
+                }
+                if walked_days >= CODEX_SESSION_LOOKBACK_DAYS {
+                    return None;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether the resume-liveness guard is enabled. Defaults to on; the
+/// `CHORUS_CODEX_RESUME_LIVENESS=off` env var disables it for tests that
+/// pass synthetic thread ids without staging real rollout files.
+fn liveness_check_enabled() -> bool {
+    !matches!(
+        std::env::var(CODEX_RESUME_LIVENESS_ENV).as_deref(),
+        Ok("off") | Ok("0") | Ok("false")
+    )
+}
+
+/// Read the immediate subdirectories of `dir`, sorted newest-first by name.
+/// Codex's sessions tree uses zero-padded numeric segments (`2026/05/02`),
+/// so lexical reverse-sort gives chronological newest-first.
+fn newest_first_dirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.path())
+        .collect();
+    paths.sort_by(|a, b| b.file_name().cmp(&a.file_name()));
+    paths
 }
 
 // ---------------------------------------------------------------------------
@@ -744,8 +827,27 @@ impl CodexHandle {
         self.ensure_process_started().await?;
 
         // Use the native resume_session_id field set by open_session(Resume)
-        // or the start compat shim.
+        // or the start compat shim. Before passing to the runtime, verify
+        // codex still has a rollout file for the thread id — otherwise
+        // `thread/resume` lands on a dead thread and produces a silent
+        // no-op turn. Mirrors the claude session-file guard from PR #131.
         let resume_id = self.resume_session_id.take();
+        let resume_id = match resume_id {
+            Some(tid) if liveness_check_enabled() => {
+                match codex_thread_file(&crate::utils::cmd::home_dir(), &tid) {
+                    Some(_) => Some(tid),
+                    None => {
+                        warn!(
+                            agent = %self.key.as_str(),
+                            thread_id = %tid,
+                            "codex thread rollout missing under ~/.codex/sessions/; starting fresh thread instead of thread/resume"
+                        );
+                        None
+                    }
+                }
+            }
+            other => other,
+        };
         let thread_id = self.start_or_resume_thread(resume_id).await?;
         self.session_id = Some(thread_id.clone());
 
@@ -1554,6 +1656,85 @@ mod tests {
         );
     }
 
+    // ---- session-file liveness guard ----
+
+    #[test]
+    fn codex_thread_file_finds_matching_rollout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let day = tmp
+            .path()
+            .join(".codex")
+            .join("sessions")
+            .join("2026")
+            .join("05")
+            .join("02");
+        std::fs::create_dir_all(&day).unwrap();
+        let tid = "019cf03b-5094-7340-948d-7d6f265d8c11";
+        let rollout = day.join(format!("rollout-2026-05-02T03-15-30-{tid}.jsonl"));
+        std::fs::write(&rollout, b"{}").unwrap();
+
+        let found = codex_thread_file(tmp.path(), tid).expect("rollout should be found");
+        assert_eq!(found, rollout);
+    }
+
+    #[test]
+    fn codex_thread_file_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        // empty sessions tree
+        std::fs::create_dir_all(tmp.path().join(".codex").join("sessions")).unwrap();
+        let result = codex_thread_file(tmp.path(), "thr_does_not_exist");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn codex_thread_file_walks_newest_day_first_and_caps_lookback() {
+        // Create a wide tree with many day directories. The target rollout
+        // lives in the newest day. The walk should find it without scanning
+        // every day in the tree.
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join(".codex").join("sessions");
+        let tid = "019cffff-5094-7340-948d-7d6f265d8c11";
+
+        // Old days with unrelated rollouts
+        for day_n in 1..=15 {
+            let d = sessions.join("2026").join("04").join(format!("{day_n:02}"));
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("rollout-2026-04-15T00-00-00-decoy.jsonl"), b"{}").unwrap();
+        }
+        // Newest day with the target
+        let newest = sessions.join("2026").join("05").join("02");
+        std::fs::create_dir_all(&newest).unwrap();
+        let target = newest.join(format!("rollout-2026-05-02T01-00-00-{tid}.jsonl"));
+        std::fs::write(&target, b"{}").unwrap();
+
+        let found = codex_thread_file(tmp.path(), tid).expect("rollout should be found");
+        assert_eq!(found, target);
+    }
+
+    #[test]
+    fn liveness_check_default_is_on() {
+        // Save and restore the env var to avoid bleeding into other tests.
+        let prev = std::env::var(CODEX_RESUME_LIVENESS_ENV).ok();
+        // SAFETY: serialized via the test thread's natural ordering; we
+        // restore prev below.
+        unsafe {
+            std::env::remove_var(CODEX_RESUME_LIVENESS_ENV);
+        }
+        assert!(liveness_check_enabled(), "default should enable the guard");
+
+        unsafe {
+            std::env::set_var(CODEX_RESUME_LIVENESS_ENV, "off");
+        }
+        assert!(!liveness_check_enabled(), "`off` should disable the guard");
+
+        unsafe {
+            match prev {
+                Some(v) => std::env::set_var(CODEX_RESUME_LIVENESS_ENV, v),
+                None => std::env::remove_var(CODEX_RESUME_LIVENESS_ENV),
+            }
+        }
+    }
+
     // ---- ensure_process: shared process invariant ----
 
     #[tokio::test]
@@ -1610,10 +1791,29 @@ mod multisession_tests {
 
     use super::*;
     use std::path::PathBuf;
+    use std::sync::Once;
     use std::time::Duration;
     use tokio::io::{duplex, AsyncWriteExt, DuplexStream};
     use tokio::sync::Mutex as TokioMutex;
     use tokio::time::timeout;
+
+    /// Tests in this module pass synthetic thread ids that don't have a
+    /// matching rollout under `~/.codex/sessions/`, so the resume-liveness
+    /// guard would otherwise drop them. Disable the guard process-wide
+    /// once for the test run; production paths leave the env var unset.
+    fn disable_resume_liveness_guard() {
+        static SETUP: Once = Once::new();
+        SETUP.call_once(|| {
+            // SAFETY: writing a process-wide env var. Cargo test runs tests
+            // in parallel within this binary, but we never read or unset
+            // this var elsewhere — production code reads it via
+            // `liveness_check_enabled()` which expects this default for
+            // tests. The Once guard ensures the write happens exactly once.
+            unsafe {
+                std::env::set_var(CODEX_RESUME_LIVENESS_ENV, "off");
+            }
+        });
+    }
 
     fn test_spec() -> AgentSpec {
         AgentSpec {
@@ -1868,6 +2068,7 @@ mod multisession_tests {
     /// `PromptInFlight` state carries the supplied id).
     #[tokio::test]
     async fn resume_session_preserves_thread_id_on_prompt() {
+        disable_resume_liveness_guard();
         let driver = CodexDriver;
         let key = "agent-resume-1".to_string();
 
@@ -2067,6 +2268,7 @@ mod multisession_tests {
     /// confirm a `thread/resume` was sent (not `thread/start`).
     #[tokio::test]
     async fn open_session_resume_session_id_before_and_after_run() {
+        disable_resume_liveness_guard();
         let driver = CodexDriver;
         let key = format!("codex-os-resume-{}", uuid::Uuid::new_v4());
         agent_instances().remove(&key);

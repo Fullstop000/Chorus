@@ -179,6 +179,11 @@ pub(super) fn spawn_event_forwarder(
         let mut last_tool_raw_name: HashMap<String, String> = HashMap::new();
         // Per-run tracking: did the agent invoke send_message at least once?
         let mut run_had_send_message: HashMap<uuid::Uuid, bool> = HashMap::new();
+        // Per-run tool-call counter. A run that ends `Natural` with `tool_calls=0`
+        // is silent — the agent processed nothing, possibly hit a stale-session
+        // or auth-expired bug. Logged on Completed so operators and benchmarks
+        // can distinguish real natural turn-ends from silent failures.
+        let mut run_tool_calls: HashMap<uuid::Uuid, u32> = HashMap::new();
         // Per-run snapshot of the channel that triggered this run.
         // `trace_store.run_channel_id` is agent-scoped and can drift after
         // another prompt arrives, so capture it as soon as the driver announces
@@ -313,6 +318,7 @@ pub(super) fn spawn_event_forwarder(
                             if acp_protocol::strip_mcp_prefix(name) == "send_message" {
                                 run_had_send_message.insert(run_id, true);
                             }
+                            *run_tool_calls.entry(run_id).or_insert(0) += 1;
                             info!(agent = %key, tool = %name, "tool call");
                             last_tool_raw_name.insert(session_id.clone(), name.clone());
                             let tool_input = summarize_input(input);
@@ -403,7 +409,23 @@ pub(super) fn spawn_event_forwarder(
                     // Drop this session's tool-name binding so it can't leak
                     // into a future run reusing the same session_id.
                     last_tool_raw_name.remove(session_id);
-                    info!(agent = %key, reason = ?result.finish_reason, "run completed");
+                    let tool_calls = run_tool_calls.remove(&run_id).unwrap_or(0);
+                    let silent = result.finish_reason == FinishReason::Natural && tool_calls == 0;
+                    if silent {
+                        warn!(
+                            agent = %key,
+                            reason = ?result.finish_reason,
+                            tool_calls = tool_calls,
+                            "run completed silently — agent invoked zero tools (likely stale session, auth expired, or a runtime no-op bug)"
+                        );
+                    } else {
+                        info!(
+                            agent = %key,
+                            reason = ?result.finish_reason,
+                            tool_calls = tool_calls,
+                            "run completed"
+                        );
+                    }
 
                     let has_pending_notification = {
                         let guard = agents.lock().await;
