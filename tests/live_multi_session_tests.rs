@@ -84,10 +84,10 @@ use chorus::agent::drivers::{
     AgentKey, AgentSpec, DriverEvent, EventStreamHandle, PromptReq, RuntimeDriver, SessionId,
     SessionIntent,
 };
-use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
+
 use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
-use chorus::server::build_router_with_services;
+
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::ReceivedMessage;
 use chorus::store::{AgentRecordUpsert, Store};
@@ -166,14 +166,7 @@ async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>)> {
     store.create_channel("general", Some("General"), ChannelType::Channel, None)?;
     join_channel_silent(&store, "general", "tester", "human");
 
-    let router = build_router_with_services(
-        store.clone(),
-        Arc::new(NoopLifecycle),
-        Arc::new(SystemRuntimeStatusProvider::new(
-            chorus::agent::manager::build_driver_registry(),
-        )) as SharedRuntimeStatusProvider,
-        vec![],
-    );
+    let router = harness::build_router_with_lifecycle(store.clone(), Arc::new(NoopLifecycle));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;

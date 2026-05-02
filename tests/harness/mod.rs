@@ -10,6 +10,7 @@ use chorus::agent::activity_log::ActivityLogResponse;
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
 use chorus::server::build_router_with_services;
+use chorus::server::event_bus::EventBus;
 use chorus::store::messages::ReceivedMessage;
 use chorus::store::Store;
 use rusqlite::params;
@@ -73,14 +74,51 @@ pub fn build_router_with_lifecycle(
     store: Arc<Store>,
     lifecycle: Arc<dyn AgentLifecycle>,
 ) -> Router {
+    let data_dir = std::env::temp_dir().join("chorus_test");
+    let agents_dir = data_dir.join("agents");
+    std::fs::create_dir_all(&agents_dir).ok();
+    build_router_with_lifecycle_and_dir(store, lifecycle, data_dir)
+}
+
+pub fn build_router_with_lifecycle_and_dir(
+    store: Arc<Store>,
+    lifecycle: Arc<dyn AgentLifecycle>,
+    data_dir: std::path::PathBuf,
+) -> Router {
+    let agents_dir = data_dir.join("agents");
+    std::fs::create_dir_all(&agents_dir).ok();
     build_router_with_services(
         store,
+        Arc::new(EventBus::new()),
+        data_dir,
+        agents_dir,
         lifecycle,
         Arc::new(SystemRuntimeStatusProvider::new(
             chorus::agent::manager::build_driver_registry(),
         )) as SharedRuntimeStatusProvider,
         vec![],
     )
+}
+
+pub fn build_router_with_event_bus(
+    store: Arc<Store>,
+) -> (Router, Arc<EventBus>) {
+    let data_dir = std::env::temp_dir().join("chorus_test");
+    let agents_dir = data_dir.join("agents");
+    std::fs::create_dir_all(&agents_dir).ok();
+    let event_bus = Arc::new(EventBus::new());
+    let router = build_router_with_services(
+        store,
+        event_bus.clone(),
+        data_dir,
+        agents_dir,
+        Arc::new(NoopLifecycle),
+        Arc::new(SystemRuntimeStatusProvider::new(
+            chorus::agent::manager::build_driver_registry(),
+        )) as SharedRuntimeStatusProvider,
+        vec![],
+    );
+    (router, event_bus)
 }
 
 /// Test helper: silently insert a channel membership row without emitting

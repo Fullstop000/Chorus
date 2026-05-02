@@ -178,8 +178,9 @@ pub async fn handle_launch_trio(
     if !agents.is_empty() {
         let names: Vec<&str> = agents.iter().map(|a| a.display_name.as_str()).collect();
         let kickoff = format!("Team assembled: {}. Let's get to work.", names.join(", "));
-        if let Err(e) = state.store.create_system_message(&channel_id, &kickoff) {
-            warn!(error = %e, "failed to post trio kickoff message");
+        match state.store.create_system_message(&channel_id, &kickoff) {
+            Ok((_, event)) => state.event_bus.publish_stream(event),
+            Err(e) => warn!(error = %e, "failed to post trio kickoff message"),
         }
     }
 

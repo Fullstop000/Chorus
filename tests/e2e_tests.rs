@@ -5,9 +5,9 @@ use std::sync::Arc;
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
-use harness::{build_router, join_channel_silent};
+use harness::join_channel_silent;
 
-async fn start_test_server() -> (String, Arc<Store>) {
+async fn start_test_server() -> (String, Arc<Store>, Arc<chorus::server::event_bus::EventBus>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     // Pre-create `#all` so the migration in `ensure_all_channel_inner`
     // (which renames `#general` -> `#all` when no `#all` exists)
@@ -25,13 +25,13 @@ async fn start_test_server() -> (String, Arc<Store>) {
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     join_channel_silent(&store, "general", "testuser", "human");
-    let router = build_router(store.clone());
+    let (router, event_bus) = harness::build_router_with_event_bus(store.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("http://{addr}");
     tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    (url, store)
+    (url, store, event_bus)
 }
 
 /// Insert an agent row with a chosen primary key. Used by e2e
@@ -62,7 +62,7 @@ fn seed_agent_with_id(
 /// Test 1: Human sends message, agent receives via HTTP
 #[tokio::test]
 async fn test_human_to_agent_message_flow() {
-    let (url, store) = start_test_server().await;
+    let (url, store, _event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
@@ -98,7 +98,7 @@ async fn test_human_to_agent_message_flow() {
 /// Test 2: Agent replies, appears in history
 #[tokio::test]
 async fn test_agent_reply_in_history() {
-    let (url, store) = start_test_server().await;
+    let (url, store, _event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
@@ -135,7 +135,7 @@ async fn test_agent_reply_in_history() {
 /// Test 3: Blocking receive wakes on message
 #[tokio::test]
 async fn test_blocking_receive_wakes_on_message() {
-    let (url, store) = start_test_server().await;
+    let (url, store, event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
@@ -159,7 +159,7 @@ async fn test_blocking_receive_wakes_on_message() {
 
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
-    store
+    let (_, event) = store
         .create_message(CreateMessage {
             channel_name: "general",
             sender_id: "testuser",
@@ -170,6 +170,9 @@ async fn test_blocking_receive_wakes_on_message() {
             run_id: None,
         })
         .unwrap();
+    if let Some(ev) = event {
+        event_bus.publish_stream(ev);
+    }
 
     let resp = tokio::time::timeout(std::time::Duration::from_secs(3), recv_handle)
         .await
@@ -184,7 +187,7 @@ async fn test_blocking_receive_wakes_on_message() {
 /// Test 4: Task board workflow (create, claim, update status, list)
 #[tokio::test]
 async fn test_task_board_e2e() {
-    let (url, store) = start_test_server().await;
+    let (url, store, _event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
@@ -252,14 +255,15 @@ async fn test_task_board_e2e() {
 /// Test 5: Workspace listing and file preview flow over HTTP
 #[tokio::test]
 async fn test_workspace_e2e_lists_and_reads_markdown_file() {
-    let (url, store) = start_test_server().await;
+    let (url, store, _event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "bot1", "Bot 1", "claude", "sonnet");
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
     join_channel_silent(&store, "general", "bot1", "agent");
 
-    let workspace_dir = store.agents_dir().join("bot1");
+    let agents_dir = std::env::temp_dir().join("chorus_test").join("agents");
+    let workspace_dir = agents_dir.join("bot1");
     let notes_dir = workspace_dir.join("notes");
     std::fs::create_dir_all(&notes_dir).unwrap();
     std::fs::write(
@@ -325,7 +329,7 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
 /// Test 6: Multi-agent communication
 #[tokio::test]
 async fn test_multi_agent_channel_communication() {
-    let (url, store) = start_test_server().await;
+    let (url, store, _event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     seed_agent_with_id(&store, "claude_bot", "Claude", "claude", "sonnet");
@@ -377,7 +381,7 @@ async fn test_multi_agent_channel_communication() {
 /// so the UI can deep-link from each row into its child channel.
 #[tokio::test]
 async fn list_tasks_returns_sub_channel_info() {
-    let (url, store) = start_test_server().await;
+    let (url, store, _event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     // Create tasks directly in the store so the creator name is stable across
@@ -409,7 +413,7 @@ async fn list_tasks_returns_sub_channel_info() {
 /// the full `TaskInfo` payload, including its sub-channel fields.
 #[tokio::test]
 async fn get_task_detail_returns_task_and_sub_channel() {
-    let (url, store) = start_test_server().await;
+    let (url, store, _event_bus) = start_test_server().await;
     let client = reqwest::Client::new();
 
     store.ensure_human_with_id("alice", "alice").unwrap();
@@ -447,7 +451,7 @@ async fn get_task_detail_returns_task_and_sub_channel() {
 async fn task_lifecycle_emits_four_events_in_parent_channel() {
     use chorus::store::tasks::TaskStatus;
 
-    let (_url, store) = start_test_server().await;
+    let (_url, store, _event_bus) = start_test_server().await;
     let parent_id = store
         .create_channel("eng", None, ChannelType::Channel, None)
         .unwrap();
@@ -495,7 +499,7 @@ async fn task_lifecycle_emits_four_events_in_parent_channel() {
 /// more than one entry and emits one `created` event per task.
 #[tokio::test]
 async fn batched_create_tasks_emits_one_event_per_task() {
-    let (_url, store) = start_test_server().await;
+    let (_url, store, _event_bus) = start_test_server().await;
     let parent_id = store
         .create_channel("eng2", None, ChannelType::Channel, None)
         .unwrap();
@@ -503,7 +507,7 @@ async fn batched_create_tasks_emits_one_event_per_task() {
     join_channel_silent(&store, "eng2", "bob", "human");
 
     // Three tasks in one call exercises the pending_events Vec with > 1 entry.
-    let created = store
+    let (created, _events) = store
         .create_tasks("eng2", "bob", SenderType::Human, &["a", "b", "c"])
         .unwrap();
     assert_eq!(created.len(), 3);

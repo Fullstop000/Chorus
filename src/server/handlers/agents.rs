@@ -374,7 +374,10 @@ pub(crate) async fn create_and_start_agent(
             .store
             .join_channel_by_id(&channel.id, &id, SenderType::Agent)
         {
-            Ok(_) => {
+            Ok((_, events)) => {
+                for event in events {
+                    state.event_bus.publish_stream(event);
+                }
                 if is_system {
                     joined_system_channel = true;
                 }
@@ -510,7 +513,7 @@ pub async fn handle_restart_agent(
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name.clone();
     let _transition = acquire_transition(&state, &name)?;
-    let agents_dir = state.store.agents_dir();
+    let agents_dir = state.agents_dir.clone();
     let workspace = AgentWorkspace::new(&agents_dir);
 
     state
@@ -579,7 +582,7 @@ pub async fn handle_delete_agent(
         .map_err(internal_err)?;
 
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
-        let agents_dir = state.store.agents_dir();
+        let agents_dir = state.agents_dir.clone();
         let workspace = AgentWorkspace::new(&agents_dir);
         if let Err(e) = workspace.delete_if_exists(&name) {
             return Ok(Json(serde_json::json!({

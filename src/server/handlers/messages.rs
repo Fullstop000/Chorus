@@ -416,7 +416,7 @@ async fn send_message_to_channel(
     let preview = content_preview(content);
     info!(agent = %actor_id, target = %format!("#{}", channel.name), content = %preview, "send_message");
 
-    let message_id = store
+    let (message_id, event) = store
         .create_message(CreateMessage {
             channel_name: &channel.name,
             sender_id: actor_id,
@@ -427,6 +427,9 @@ async fn send_message_to_channel(
             run_id: run_id.as_deref(),
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    if let Some(ev) = event {
+        state.event_bus.publish_stream(ev);
+    }
 
     info!(agent = %actor_id, msg = %message_id, content=%content, "send_message ok");
 
@@ -499,7 +502,7 @@ async fn forward_team_mentions(
 
         let sender_name = actor_label(state, sender_id, sender_type)
             .map_err(|(_, Json(error))| anyhow::anyhow!(error.error))?;
-        let forwarded_message_id = state.store.create_message_with_forwarded_from(
+        let (forwarded_message_id, event) = state.store.create_message_with_forwarded_from(
             &team_channel.id,
             sender_id,
             sender_type,
@@ -510,6 +513,7 @@ async fn forward_team_mentions(
                 sender_name,
             }),
         )?;
+        state.event_bus.publish_stream(event);
 
         deliver_message_to_agents(state, &team_channel.id, sender_id, &forwarded_message_id)
             .await?;
@@ -574,7 +578,7 @@ pub async fn handle_receive(
     }
 
     debug!(agent = %agent_id, timeout_ms, "receive_message: long-polling");
-    let mut rx = store.subscribe();
+    let mut rx = state.event_bus.subscribe();
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_millis(timeout_ms);
 
     loop {

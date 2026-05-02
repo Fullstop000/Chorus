@@ -9,7 +9,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::agent::AgentRuntime;
 use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
-use chorus::server::{build_router_with_services, AgentDetailResponse, HistoryResponse};
+use chorus::server::{AgentDetailResponse, HistoryResponse};
 use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
@@ -90,10 +90,15 @@ fn seed_agent_with_id(
 
 fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("chorus.db");
+    let db_path = dir.path().join("data").join("chorus.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
     seed_default_workspace(&store);
-    let router = build_router(store.clone());
+    let router = harness::build_router_with_lifecycle_and_dir(
+        store.clone(),
+        Arc::new(harness::NoopLifecycle),
+        dir.path().to_path_buf(),
+    );
     (store, router, dir)
 }
 
@@ -347,11 +352,17 @@ fn setup_with_runtime_statuses(
         statuses,
         models_by_runtime,
     });
-    let router = build_router_with_services(
+    let data_dir = std::env::temp_dir().join("chorus_test");
+    let agents_dir = data_dir.join("agents");
+    std::fs::create_dir_all(&agents_dir).ok();
+    let router = chorus::server::build_router_with_services(
         store.clone(),
+        Arc::new(chorus::server::event_bus::EventBus::new()),
+        data_dir,
+        agents_dir,
         lifecycle.clone(),
         runtime_status_provider,
-        Vec::new(),
+        vec![],
     );
     (store, router, lifecycle)
 }
@@ -363,11 +374,16 @@ fn setup_with_lifecycle_and_data_dir() -> (
     tempfile::TempDir,
 ) {
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("chorus.db");
+    let db_path = dir.path().join("data").join("chorus.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
     seed_default_workspace(&store);
     let lifecycle = Arc::new(MockLifecycle::default());
-    let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
+    let router = harness::build_router_with_lifecycle_and_dir(
+        store.clone(),
+        lifecycle.clone(),
+        dir.path().to_path_buf(),
+    );
     (store, router, lifecycle, dir)
 }
 
@@ -2132,7 +2148,7 @@ async fn test_upload_uses_configured_data_dir() {
     assert!(
         attachment
             .stored_path
-            .starts_with(dir.path().join("attachments").to_string_lossy().as_ref()),
+            .starts_with(dir.path().join("data").join("attachments").to_string_lossy().as_ref()),
         "attachment should be stored under the configured data dir"
     );
 }
@@ -2297,7 +2313,7 @@ async fn test_create_team_endpoint() {
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
 
-    let teams_root = dir.path().join("teams").join("eng-team");
+    let teams_root = dir.path().join("data").join("teams").join("eng-team");
     assert!(teams_root.join("TEAM.md").exists());
     assert!(teams_root.join("members").join("bot1").exists());
 
@@ -2747,7 +2763,18 @@ async fn test_get_templates_returns_grouped_categories() {
         statuses: vec![],
         models_by_runtime: vec![],
     });
-    let router = build_router_with_services(store, lifecycle, runtime_status_provider, templates);
+    let data_dir = std::env::temp_dir().join("chorus_test");
+    let agents_dir = data_dir.join("agents");
+    std::fs::create_dir_all(&agents_dir).ok();
+    let router = chorus::server::build_router_with_services(
+        store,
+        Arc::new(chorus::server::event_bus::EventBus::new()),
+        data_dir,
+        agents_dir,
+        lifecycle,
+        runtime_status_provider,
+        templates,
+    );
 
     let response = router
         .oneshot(
@@ -2851,8 +2878,8 @@ async fn test_create_agent_appends_random_suffix() {
 async fn test_active_workspace_filters_core_resource_lists() {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store.ensure_human_with_id("alice", "alice").unwrap();
-    let alpha = store.create_local_workspace("Alpha", "alice").unwrap();
-    let beta = store.create_local_workspace("Beta", "alice").unwrap();
+    let (alpha, _event) = store.create_local_workspace("Alpha", "alice").unwrap();
+    let (beta, _event) = store.create_local_workspace("Beta", "alice").unwrap();
     store.set_active_workspace(&alpha.id).unwrap();
     store
         .create_channel_in_workspace(
@@ -3040,7 +3067,7 @@ async fn test_active_workspace_filters_core_resource_lists() {
 async fn test_create_agent_in_active_workspace_joins_workspace_all() {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store.ensure_human_with_id("alice", "alice").unwrap();
-    let workspace = store.create_local_workspace("Alpha", "alice").unwrap();
+    let (workspace, _event) = store.create_local_workspace("Alpha", "alice").unwrap();
     store.set_active_workspace(&workspace.id).unwrap();
     let app = build_router(store.clone());
 

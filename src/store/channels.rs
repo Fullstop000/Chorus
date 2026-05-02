@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::messages::SenderType;
+use super::stream::StreamEvent;
 use super::Store;
 
 /// Normalize a channel name for storage/display: trim, strip a single leading
@@ -551,12 +552,15 @@ impl Store {
 
     /// Join a channel and post a server-authored system message announcing the
     /// join. Idempotent: returns `Ok(false)` when the member is already present.
+    ///
+    /// On success returns `(joined, events)` where `events` should be published
+    /// via [`EventBus`](crate::server::event_bus::EventBus) by the caller.
     pub fn join_channel_by_id(
         &self,
         channel_id: &str,
         member_id: &str,
         member_type: SenderType,
-    ) -> Result<bool> {
+    ) -> Result<(bool, Vec<StreamEvent>)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let mt = member_type.as_str();
@@ -565,6 +569,7 @@ impl Store {
             params![channel_id, member_id, mt],
         )?;
         let joined = rows > 0;
+        let mut events = Vec::new();
         if joined {
             let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
                 .ok_or_else(|| anyhow!("channel not found: {}", channel_id))?;
@@ -593,20 +598,28 @@ impl Store {
                 Self::create_system_message_tx_with_payload(&tx, &channel, &content, &payload)?;
             tx.commit()?;
             drop(conn);
-            let event = super::StreamEvent::member_joined(
+            events.push(super::StreamEvent::member_joined(
                 channel_id.to_string(),
                 member_id.to_string(),
                 mt.to_string(),
+            ));
+            let event_payload = inserted.to_event_payload_with_payload(
+                channel.id.as_str(),
+                channel.channel_type.as_api_str(),
+                "system",
+                "system",
+                &content,
+                Some(payload),
             );
-            let _ = self.stream_tx.send(event);
-            self.emit_system_stream_events_with_payloads(
-                &channel,
-                vec![(inserted, content, Some(payload))],
-            )?;
+            events.push(super::StreamEvent::new(
+                channel.id.clone(),
+                inserted.seq,
+                serde_json::to_value(event_payload)?,
+            ));
         } else {
             tx.commit()?;
         }
-        Ok(joined)
+        Ok((joined, events))
     }
 
     /// Convenience wrapper that resolves the channel by name before joining.
@@ -615,7 +628,7 @@ impl Store {
         channel_name: &str,
         member_id: &str,
         member_type: SenderType,
-    ) -> Result<bool> {
+    ) -> Result<(bool, Vec<StreamEvent>)> {
         let conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
             .ok_or_else(|| anyhow!("channel not found: {}", channel_name))?;

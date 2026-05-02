@@ -77,7 +77,7 @@ async fn sync_team_roles_and_agents(
     team: &Team,
     members: &[TeamMember],
 ) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
-    let agents_dir = state.store.agents_dir();
+    let agents_dir = state.agents_dir.clone();
     let agent_workspace = AgentWorkspace::new(&agents_dir);
 
     for member in members {
@@ -182,18 +182,21 @@ pub async fn handle_create_team(
     // username — the server stops trusting `whoami::username()` for request
     // identity entirely.
     if !creator_in_members {
-        state
+        let (_, events) = state
             .store
             .join_channel_by_id(&team_channel_id, &local_human_id, SenderType::Human)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+        for event in events {
+            state.event_bus.publish_stream(event);
+        }
         state
             .store
             .create_team_member(&team_id, &local_human_id, "human", "operator")
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     }
 
-    let teams_dir = state.store.teams_dir();
-    let agents_dir = state.store.agents_dir();
+    let teams_dir = state.teams_dir();
+    let agents_dir = state.agents_dir.clone();
     let team_workspace = TeamWorkspace::new(teams_dir);
     let agent_workspace = AgentWorkspace::new(&agents_dir);
 
@@ -218,10 +221,13 @@ pub async fn handle_create_team(
                 &member.role,
             )
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
-        state
+        let (_, events) = state
             .store
             .join_channel_by_id(&team_channel_id, &member.member_id, sender_type)
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+        for event in events {
+            state.event_bus.publish_stream(event);
+        }
 
         if sender_type == SenderType::Agent {
             agent_workspace
@@ -340,12 +346,12 @@ pub async fn handle_delete_team(
             .map_err(internal_err)?;
     }
 
-    let team_workspace = TeamWorkspace::new(state.store.teams_dir());
+    let team_workspace = TeamWorkspace::new(state.teams_dir());
     team_workspace
         .delete_team(&team.name)
         .map_err(internal_err)?;
 
-    let agents_dir = state.store.agents_dir();
+    let agents_dir = state.agents_dir.clone();
     let agent_workspace = AgentWorkspace::new(&agents_dir);
     for agent_name in &agent_members {
         // Agent may have been deleted already — skip cleanup for missing agents.
@@ -372,7 +378,7 @@ pub async fn handle_add_team_member(
         .store
         .create_team_member(&team.id, &req.member_id, &req.member_type, &req.role)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
-    state
+    let (_, events) = state
         .store
         .join_channel_by_id(
             team.channel_id
@@ -382,13 +388,16 @@ pub async fn handle_add_team_member(
             sender_type,
         )
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    for event in events {
+        state.event_bus.publish_stream(event);
+    }
 
     if sender_type == SenderType::Agent {
-        let team_workspace = TeamWorkspace::new(state.store.teams_dir());
+        let team_workspace = TeamWorkspace::new(state.teams_dir());
         team_workspace
             .init_member(&team.name, &req.member_name)
             .map_err(internal_err)?;
-        let agents_dir = state.store.agents_dir();
+        let agents_dir = state.agents_dir.clone();
         let agent_workspace = AgentWorkspace::new(&agents_dir);
         agent_workspace
             .init_team_memory(&req.member_name, &team.name, &req.role)
