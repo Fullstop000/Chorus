@@ -335,11 +335,14 @@ pub(crate) async fn create_and_start_agent(
         let create_result = match active_workspace_id.as_deref() {
             Some(workspace_id) => state
                 .store
-                .create_agent_record_in_workspace(workspace_id, &record),
-            None => state.store.create_agent_record(&record),
+                .create_agent_record_in_workspace_with_events(workspace_id, &record),
+            None => state.store.create_agent_record_with_events(&record),
         };
         match create_result {
-            Ok(id) => {
+            Ok((id, events)) => {
+                for event in events {
+                    state.event_bus.publish_stream(event);
+                }
                 slug_result = Some((candidate, id));
                 break;
             }

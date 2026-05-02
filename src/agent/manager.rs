@@ -20,6 +20,7 @@ use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
 use crate::store::messages::ReceivedMessage;
+use crate::store::stream::StreamEvent;
 use crate::store::Store;
 
 /// Managed agent backed by a [`RuntimeDriver`] + [`Session`].
@@ -102,6 +103,9 @@ pub struct AgentManager {
     /// Broadcast sender for agent trace events (tool calls, thinking, etc.).
     /// Decoupled from Store so the persistence layer can be swapped.
     trace_tx: tokio::sync::broadcast::Sender<crate::agent::trace::TraceEvent>,
+    /// Broadcast sender for stream events (messages, channel activity).
+    /// Passed to event forwarder so it can publish system messages.
+    stream_tx: tokio::sync::broadcast::Sender<StreamEvent>,
     /// Optional explicit bridge endpoint. When `None`, agent startup reads the
     /// shared discovery file from `~/.chorus/bridge.json`. Tests set this to a
     /// synthetic URL, and `chorus serve` points it at the co-hosted bridge so
@@ -124,6 +128,7 @@ impl AgentManager {
         store: Arc<Store>,
         data_dir: PathBuf,
         trace_tx: tokio::sync::broadcast::Sender<crate::agent::trace::TraceEvent>,
+        stream_tx: tokio::sync::broadcast::Sender<StreamEvent>,
     ) -> Self {
         Self {
             driver_registry: build_driver_registry(),
@@ -133,6 +138,7 @@ impl AgentManager {
             store,
             data_dir,
             trace_tx,
+            stream_tx,
             bridge_endpoint_override: None,
         }
     }
@@ -295,6 +301,7 @@ impl AgentManager {
             self.activity_logs.clone(),
             self.trace_store.clone(),
             self.trace_tx.clone(),
+            self.stream_tx.clone(),
             self.store.clone(),
             self.agents.clone(),
         );
@@ -561,7 +568,8 @@ impl AgentManager {
     /// construction via [`register_driver`] if the test needs to start agents.
     pub fn new_for_test(store: Arc<Store>, data_dir: std::path::PathBuf) -> Self {
         let (trace_tx, _) = tokio::sync::broadcast::channel(64);
-        let mut mgr = AgentManager::new(store, data_dir, trace_tx);
+        let (stream_tx, _) = tokio::sync::broadcast::channel(64);
+        let mut mgr = AgentManager::new(store, data_dir, trace_tx, stream_tx);
         mgr.bridge_endpoint_override = Some("http://127.0.0.1:1".to_string());
         mgr
     }
@@ -802,7 +810,8 @@ mod tests {
 
     fn make_test_manager(store: Arc<Store>, dir: &std::path::Path) -> AgentManager {
         let (trace_tx, _) = tokio::sync::broadcast::channel(64);
-        let mut manager = AgentManager::new(store, dir.join("agents"), trace_tx);
+        let (stream_tx, _) = tokio::sync::broadcast::channel(64);
+        let mut manager = AgentManager::new(store, dir.join("agents"), trace_tx, stream_tx);
         let fake = Arc::new(FakeDriver::new(AgentRuntime::Codex));
         manager.register_driver(AgentRuntime::Codex, fake);
         // Tests use a synthetic endpoint — the FakeDriver ignores it, but the
@@ -979,7 +988,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(":memory:").unwrap());
         let (trace_tx, _) = tokio::sync::broadcast::channel(64);
-        let mut manager = AgentManager::new(store, dir.path().join("agents"), trace_tx);
+        let (stream_tx, _) = tokio::sync::broadcast::channel(64);
+        let mut manager = AgentManager::new(store, dir.path().join("agents"), trace_tx, stream_tx);
         manager.set_bridge_endpoint_override("http://127.0.0.1:9999");
         let got = manager.resolve_bridge_endpoint().unwrap();
         assert_eq!(got, "http://127.0.0.1:9999");
@@ -1002,7 +1012,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(":memory:").unwrap());
         let (trace_tx, _) = tokio::sync::broadcast::channel(64);
-        let manager = AgentManager::new(store, dir.path().join("agents"), trace_tx);
+        let (stream_tx, _) = tokio::sync::broadcast::channel(64);
+        let manager = AgentManager::new(store, dir.path().join("agents"), trace_tx, stream_tx);
         let err = manager
             .resolve_bridge_endpoint()
             .expect_err("must fail when no override and no bridge");

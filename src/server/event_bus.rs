@@ -36,6 +36,10 @@ impl EventBus {
         self.trace_tx.clone()
     }
 
+    pub fn stream_sender(&self) -> broadcast::Sender<StreamEvent> {
+        self.stream_tx.clone()
+    }
+
     /// Publish a single stream event. Best-effort: errors are dropped
     /// because the DB rows are the source of truth.
     pub fn publish_stream(&self, event: StreamEvent) {

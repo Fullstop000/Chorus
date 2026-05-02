@@ -45,7 +45,7 @@ pub async fn run(
     // user running the server process.
 
     let server_url = format!("http://localhost:{port}");
-    let mut manager = AgentManager::new(store.clone(), agents_dir.clone(), event_bus.trace_sender());
+    let mut manager = AgentManager::new(store.clone(), agents_dir.clone(), event_bus.trace_sender(), event_bus.stream_sender());
 
     // Shared cancellation token — cancelled on Ctrl-C and used to shut down
     // both the main server and the bridge together.
