@@ -80,13 +80,10 @@ fn spawn_opencode(spec: Arc<AgentSpec>, key: AgentKey) -> SpawnFut {
         let standing_prompt = super::prompt::build_system_prompt(
             &spec,
             &super::prompt::PromptOptions {
-                tool_prefix: String::new(),
                 extra_critical_rules: vec![
                     "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
                 ],
-                post_startup_notes: Vec::new(),
-                include_stdin_notification_section: false,
-                message_notification_style: super::prompt::MessageNotificationStyle::Poll,
+                ..Default::default()
             },
         );
         let tmp_system_md = chorus_dir.join(format!(

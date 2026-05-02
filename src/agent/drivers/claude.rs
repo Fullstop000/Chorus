@@ -592,10 +592,7 @@ impl ClaudeHandle {
             &self.spec,
             &super::prompt::PromptOptions {
                 tool_prefix: "mcp__chat__".into(),
-                extra_critical_rules: Vec::new(),
-                post_startup_notes: Vec::new(),
-                include_stdin_notification_section: true,
-                message_notification_style: super::prompt::MessageNotificationStyle::Poll,
+                ..Default::default()
             },
         );
         args.push("--append-system-prompt".into());

@@ -10,38 +10,46 @@
 
 use crate::agent::drivers::AgentSpec;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MessageNotificationStyle {
-    Poll,
-    Direct,
-}
+/// Env-var override for the entire system prompt. When set to a readable file
+/// path, the file's contents become the system prompt verbatim — no template
+/// substitution, no merging with the built-in builder. Lets a benchmark or A/B
+/// harness swap the whole prompt without recompiling.
+const SYSTEM_PROMPT_OVERRIDE_ENV: &str = "CHORUS_SYSTEM_PROMPT_OVERRIDE_FILE";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PromptOptions {
+    /// Tool-name prefix. Empty by default (bare names: `send_message`).
+    /// Claude binds tools as `mcp__chat__send_message` and overrides this.
     pub tool_prefix: String,
     pub extra_critical_rules: Vec<String>,
     pub post_startup_notes: Vec<String>,
-    pub include_stdin_notification_section: bool,
-    pub message_notification_style: MessageNotificationStyle,
-}
-
-impl Default for PromptOptions {
-    fn default() -> Self {
-        Self {
-            // Default to bare tool names. Most runtimes (Codex, Kimi, Gemini,
-            // OpenCode) see the chat tools as bare `send_message` etc.;
-            // Claude binds them as `mcp__chat__send_message` and overrides
-            // this field at the call site.
-            tool_prefix: String::new(),
-            extra_critical_rules: Vec::new(),
-            post_startup_notes: Vec::new(),
-            include_stdin_notification_section: false,
-            message_notification_style: MessageNotificationStyle::Poll,
-        }
-    }
+    /// In-process whole-prompt override. Takes precedence over the env-var
+    /// override. Use for tests/benches that want to swap the prompt
+    /// programmatically without touching the filesystem.
+    pub system_prompt_override: Option<String>,
 }
 
 pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
+    // Whole-prompt overrides bypass the builder entirely. Programmatic override
+    // wins; env-var fallback is for ops/bench convenience.
+    if let Some(ref text) = opts.system_prompt_override {
+        return text.clone();
+    }
+    if let Ok(path) = std::env::var(SYSTEM_PROMPT_OVERRIDE_ENV) {
+        if !path.is_empty() {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => return text,
+                Err(e) => {
+                    tracing::warn!(
+                        path = %path,
+                        error = %e,
+                        "{SYSTEM_PROMPT_OVERRIDE_ENV} set but file unreadable; falling back to built-in prompt"
+                    );
+                }
+            }
+        }
+    }
+
     let t = |name: &str| format!("{}{}", opts.tool_prefix, name);
 
     let send_cmd = format!("`{}`", t("send_message"));
@@ -59,18 +67,16 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         spec.display_name.as_str()
     };
 
-    let message_delivery_text = if opts.include_stdin_notification_section {
-        "New messages may be delivered to you automatically while your process stays alive."
-    } else {
-        "The daemon will automatically restart you when new messages arrive."
-    };
+    // One universal line. The LLM doesn't need to know whether messages arrive
+    // via stdin, restart, or polling — it just needs to know not to poll itself.
+    let message_delivery_text = "New messages arrive automatically — do not poll for them.";
 
     let mut critical_rules: Vec<String> = vec![
         format!(
             "- For conversation (status updates, replies, info, follow-ups), use {send_cmd}. This is your conversational output channel."
         ),
         format!(
-            "- For verdicts on requests that ask you to PICK, JUDGE, or RECOMMEND between concrete alternatives (PR review outcome, A-vs-B implementation, config knob, \"should I X or Y\"), you MUST call {dispatch_decision_cmd} and end your turn — do NOT reply via {send_cmd}. The human picks; their pick arrives as your next session prompt. See the Decision Inbox section for triggers and payload."
+            "- For verdicts — when your reply would PICK, JUDGE, or RECOMMEND one of N mutually-exclusive paths the asker is blocked on (PR review, time-box call, vendor pick, hiring choice, compliance go/no-go) — you MUST call {dispatch_decision_cmd} and end your turn. Do NOT reply via {send_cmd}. The human picks; their pick arrives as your next session prompt. See the Decision Inbox section for the structural test and payload."
         ),
     ];
     critical_rules.extend(opts.extra_critical_rules.iter().cloned());
@@ -227,17 +233,20 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
 
     prompt.push_str(&format!(
         "\n\n## Decision Inbox\n\n\
-         Some incoming requests ask you to render a verdict or pick between concrete alternatives, not to act unilaterally. For these you MUST emit {dispatch_decision_cmd} — not a {send_cmd} reply. The tool returns a `decision_id`; end your turn cleanly. The human picks in their inbox; their pick arrives as your next session prompt with the picked option's full body, the original headline and question, and any human note. Read it and act.\n\n\
-         **Triggers — when the incoming message does ANY of these, emit {dispatch_decision_cmd}:**\n\
-         - Asks you to review a PR, diff, or commit and recommend an outcome (merge / approve+comment / request-changes / hold).\n\
-         - Presents two or more concrete alternatives and asks you to pick.\n\
-         - Asks you to resolve a config flag, knob, version pin, or policy choice with no obvious right answer.\n\
-         - Uses phrasing like \"should I X or Y?\", \"merge or hold?\", \"approve, request changes, or comment?\", \"which option?\", \"what's your verdict?\".\n\n\
+         Some incoming requests aren't conversational — they're verdicts where the asker is blocked on your pick. For these you MUST emit {dispatch_decision_cmd} — not a {send_cmd} reply. The tool returns a `decision_id`; end your turn cleanly. The human picks in their inbox; their pick arrives as your next session prompt with the picked option's full body, the original headline and question, and any human note. Read it and act.\n\n\
+         **Trigger — apply this structural test before replying.** A request is a decision when ALL FOUR of these hold:\n\n\
+         1. **Mutually exclusive options** — picking one closes the others (merge / hold; vendor A / B / C; ship now / extend; offer to candidate X / Y).\n\
+         2. **Blocking** — the asker can't move forward until the pick lands.\n\
+         3. **Material consequence** — the pick commits resources, releases code, gates a launch, or forecloses paths. Not just \"what should I think about this\".\n\
+         4. **Delegated** — the asker is asking YOU to pick (or to recommend with strong enough signal that they'll act on it). Otherwise they'd pick themselves.\n\n\
+         If all four hold, your reply IS a verdict — frame it as a decision payload with options and `recommended_key`. Do NOT post your verdict as a {send_cmd} reply.\n\n\
+         **Canonical example:** a PR, diff, or commit review where you'd otherwise answer \"merge\" / \"request-changes\" / \"comment\". The human is blocked on the merge button, the options are exclusive, the pick gates landing, and they delegated to you. Decision.\n\n\
+         **The trigger is the shape of YOUR reply, not the asker's phrasing.** Asks like \"what do you think about PR #X\", \"walk me through whether we need a DPIA\", \"status on the auth bug\", or \"tell me which 3 bugs to fix first\" can all be decisions even though they don't say \"merge or hold\" or \"X or Y\". Run the four-property test on your intended reply, not on the asker's words.\n\n\
          **Not triggers — use {send_cmd} as normal:**\n\
-         - Information requests (\"explain X\", \"how does Y work?\").\n\
-         - Status updates, acknowledgments, progress reports.\n\
-         - Open-ended brainstorming with no committed alternatives.\n\
-         - Follow-up replies AFTER a decision has been resolved (the resume prompt is your input; reply via {send_cmd}).\n\n\
+         - Information requests (\"explain X\", \"how does Y work?\") — fails properties 1 and 3.\n\
+         - Status updates, acknowledgments, progress reports — fails property 1.\n\
+         - Open-ended brainstorm or suggestion list with no committed alternatives — fails property 1.\n\
+         - Follow-up replies AFTER a decision has resolved — your input is the resume prompt; you ARE the picker now, so reply via {send_cmd}.\n\n\
          **Do not work around this rule.** If you have a strong opinion on a triggering request, frame it as a decision with options and `recommended_key` — do NOT post your verdict as a {send_cmd} reply. The human's act of picking is the work product; your analysis is the supporting context inside the decision.\n\n\
          **Payload (all required):**\n\
          - `headline` ≤80 chars — one-line summary carrying category and subject (e.g. \"PR review #121: archived-channel del/join fix\").\n\
@@ -253,21 +262,9 @@ pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
         "\n\n## Capabilities\n\nYou can work with any files or tools on this computer — you are not confined to any directory.\nYou may develop a specialized role over time through your interactions. Embrace it."
     );
 
-    if opts.include_stdin_notification_section {
-        match opts.message_notification_style {
-            MessageNotificationStyle::Direct => {
-                prompt.push_str(&format!(
-                    "\n\n## Message Notifications\n\nWhile you are working, new messages may be delivered directly into your current session.\n\nHow to handle these:\n- Treat direct follow-up messages as new user input for the same live session.\n- Adapt if the new message changes priority or direction.\n- You do NOT need to poll just because direct follow-up delivery is available.\n- Use {check_cmd} only when you need to inspect other pending channels or recover broader context."
-                ));
-            }
-            MessageNotificationStyle::Poll => {
-                prompt.push_str(&format!(
-                    "\n\n## Message Notifications\n\nWhile you are busy (executing tools, thinking, etc.), new messages may arrive. When this happens, you will receive a system notification like:\n\n`[System notification: You have N new message(s) waiting. Call {check_name} to read them when you're ready.]`\n\nHow to handle these:\n- Call {check_cmd} to check for new messages. You are encouraged to do this frequently — at natural breakpoints in your work, or whenever you see a notification.\n- If the new message is higher priority, you may pivot to it. If not, continue your current work.\n- {check_cmd} returns instantly with any pending messages (or \"no new messages\"). It is always safe to call.",
-                    check_name = t("check_messages"),
-                ));
-            }
-        }
-    }
+    prompt.push_str(&format!(
+        "\n\n## Message Notifications\n\nWhile you are working, new messages may arrive. The runtime delivers them automatically — you do not need to poll. When you see a system notification or want to check at a natural breakpoint, call {check_cmd}; it returns instantly with any pending messages (or \"no new messages\") and is always safe to call. If a new message changes priority or direction, adapt; otherwise continue your current work."
+    ));
 
     if let Some(ref persona) = spec.system_prompt {
         prompt.push_str(&format!("\n\n## Initial role\n{persona}"));
@@ -387,7 +384,10 @@ mod tests {
         assert!(p.contains("`dispatch_decision`"));
         // Trigger-based mandatory framing, not "when you need" permission framing.
         assert!(p.contains("you MUST emit"));
-        assert!(p.contains("Triggers"));
+        // Structural framing: the rule teaches a four-property test, not an
+        // input-pattern enumeration. "Triggers" still appears in "Not triggers".
+        assert!(p.contains("Trigger"));
+        // PR/diff/commit lives only as the canonical example now.
         assert!(p.contains("PR, diff, or commit"));
         // Anti-loophole: no "things you can act on unilaterally" exclusion.
         assert!(!p.contains("act on unilaterally"));
@@ -396,6 +396,22 @@ mod tests {
         // channel; dispatch_decision is the verdict channel.
         assert!(!p.contains("only output channel"));
         assert!(p.contains("conversational output channel"));
+    }
+
+    #[test]
+    fn decision_inbox_teaches_structural_four_property_test() {
+        // Replacement for input-pattern enumeration: the prompt must teach
+        // the four structural properties so agents generalize beyond the
+        // canonical PR-review example to triage, hiring, time-boxing,
+        // compliance, and any future verdict-shape workflow.
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert!(p.contains("Mutually exclusive"));
+        assert!(p.contains("Blocking"));
+        assert!(p.contains("Material consequence"));
+        assert!(p.contains("Delegated"));
+        // The shift: agent runs the test on its own intended reply, not on
+        // the asker's input phrasing. This is what scales to new workflows.
+        assert!(p.contains("shape of YOUR reply"));
     }
 
     #[test]
@@ -411,6 +427,10 @@ mod tests {
         let crit = &p[crit_start..crit_end];
         assert!(crit.contains("you MUST call `dispatch_decision`"));
         assert!(crit.contains("PICK, JUDGE, or RECOMMEND"));
+        // Structural framing: the rule names what the reply does (commits the
+        // asker to one of N mutually-exclusive paths), not what the asker says.
+        assert!(crit.contains("mutually-exclusive"));
+        assert!(crit.contains("blocked on"));
     }
 
     #[test]
@@ -422,5 +442,93 @@ mod tests {
         let p = build_system_prompt(&sample_spec(), &opts);
         assert!(p.contains("`mcp__chat__dispatch_decision`"));
         assert!(!p.contains("`dispatch_decision`\n"));
+    }
+
+    #[test]
+    fn programmatic_override_replaces_entire_prompt() {
+        let opts = PromptOptions {
+            system_prompt_override: Some("# CUSTOM PROMPT\nshipping nothing else.".into()),
+            ..Default::default()
+        };
+        let p = build_system_prompt(&sample_spec(), &opts);
+        assert_eq!(p, "# CUSTOM PROMPT\nshipping nothing else.");
+        // None of the built-in sections should leak through.
+        assert!(!p.contains("CRITICAL RULES"));
+        assert!(!p.contains("Decision Inbox"));
+        assert!(!p.contains("MEMORY.md"));
+    }
+
+    #[test]
+    fn env_var_override_replaces_entire_prompt() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prompt.md");
+        let custom = "# ENV OVERRIDE\nthis is the whole prompt.\n";
+        std::fs::write(&path, custom).expect("write");
+        // Use a guard to scope the env var so other tests aren't affected.
+        let _guard = EnvVarGuard::set(SYSTEM_PROMPT_OVERRIDE_ENV, path.to_str().unwrap());
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert_eq!(p, custom);
+    }
+
+    #[test]
+    fn programmatic_override_wins_over_env_var() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("prompt.md");
+        std::fs::write(&path, "# FROM FILE\n").expect("write");
+        let _guard = EnvVarGuard::set(SYSTEM_PROMPT_OVERRIDE_ENV, path.to_str().unwrap());
+        let opts = PromptOptions {
+            system_prompt_override: Some("# FROM CODE\n".into()),
+            ..Default::default()
+        };
+        let p = build_system_prompt(&sample_spec(), &opts);
+        assert_eq!(p, "# FROM CODE\n");
+    }
+
+    #[test]
+    fn no_more_message_notification_style_branching() {
+        // The Message Notifications section is now always emitted with a single
+        // universal body — no Direct/Poll variants. The LLM doesn't care how
+        // delivery happens, it just needs to know not to poll.
+        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        assert!(p.contains("## Message Notifications"));
+        assert!(p.contains("delivers them automatically"));
+        assert!(p.contains("`check_messages`"));
+    }
+
+    /// Process-wide env var guard. Tests that mutate env vars must not run in
+    /// parallel with each other or with tests that read the same var; cargo
+    /// runs lib tests in parallel by default. We serialize via a static mutex.
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<String>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+            let lock = LOCK.lock().unwrap_or_else(|p| p.into_inner());
+            let prev = std::env::var(key).ok();
+            // SAFETY: env mutation is serialized by the LOCK above; this guard
+            // restores the previous value on drop.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self {
+                key,
+                prev,
+                _lock: lock,
+            }
+        }
+    }
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: still inside the LOCK held by self._lock.
+            unsafe {
+                match self.prev.take() {
+                    Some(v) => std::env::set_var(self.key, v),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
     }
 }

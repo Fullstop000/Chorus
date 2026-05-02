@@ -74,3 +74,4 @@ node_modules
 .mcp.json
 .opencode.json
 .windsurfrules
+/bench/decision-trigger/results/

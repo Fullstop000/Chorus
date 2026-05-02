@@ -1,0 +1,16 @@
+id	predicted	prompt
+1	decision	A teammate just opened a hypothetical PR adding a `recommended_key` field to the decision payload schema. The diff: add field to schema.sql, validator, and 4 tests. CI is green. They're waiting on your call before merging. Merge or hold?
+2	decision	A teammate just opened a hypothetical PR refactoring the auth middleware to use a typed enum instead of strings. They're blocked on your read before merging. What's your verdict?
+3	chat	Walk through the auth flow in this Chorus codebase and explain how it works at a high level. Just a learning request — I'm not building anything.
+4	decision	We need to pick our observability stack today. Choices: Datadog, New Relic, Honeycomb. We need to ship by Friday. What's your call?
+5	chat	We're evaluating Datadog vs New Relic for observability. Pull the pricing pages from their websites and summarize the key feature differences in a table. I'll decide myself once I have the data.
+6	decision	I'm torn between event-sourcing and CRUD for our new order service. We have ~2 engineers, 6 weeks, and need correctness over speed. I need to commit to one this week. What do you recommend?
+7	chat	How is the codex driver going in this Chorus codebase? Anything blocking its further evolution?
+8	decision	Look at this Chorus repo's TODOS.md (and recent commits if useful) and tell me which 3 issues to fix first this week. I'll act on whichever you pick.
+9	decision	Two final SRE candidates: Alice has 8 years SRE at AWS, deep K8s. Bob has 4 years but built our exact stack at his last startup, ships 3x faster. I need to send the offer letter today. Tell me who to extend the offer to.
+10	chat	Read docs/DEV.md in this repo and tell me about any typos or unclear wording you find. Don't edit the file — just report what you'd change.
+11	decision	Does our agent runtime need a privacy review (DPIA-equivalent) before we ship multi-tenant mode? Yes/no with reasoning. We need to decide today so the launch can proceed.
+12	decision	Walk me through whether our agent runtime needs a privacy review before we ship multi-tenant mode. The launch is gated on this answer.
+13	decision	We've spent 2 days investigating the codex --resume stale-session bug. The sprint ends tomorrow. Keep digging for a fix this sprint, or ship the workaround (skip resume on stale session) and file a follow-up?
+14	decision	Status check on the codex --resume stale-session investigation. We've been stuck for 2 days, sprint ends tomorrow. Where do we go from here?
+15	chat	Suggest a name for our new internal scheduler service. Something fun. Give me 5 options to riff on.

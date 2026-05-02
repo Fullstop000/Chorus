@@ -1,0 +1,16 @@
+id	predicted	prompt
+1	decision	Acme just filed a P0. Their CEO is calling our CEO at 4pm. Eng-lead Bob is on vacation. Sarah (sr eng) rolled off another P0 yesterday and is fried. New eng Mike has time but doesn't know the codebase. We need a responder lined up before the call.
+2	decision	Sprint capacity is one fix slot left this week. Bug A: five customers hit a login latency spike. Bug B: one customer can't export a CSV larger than 100MB. Bug C: a feature 3% of users hit crashes on a specific edge case. Sprint ends Friday.
+3	decision	Eng wants Postgres for transactional consistency. Infra wants DynamoDB for ops simplicity. Finance wants whichever is cheaper. New service, architecture review tomorrow morning.
+4	decision	The SOC2 auditor wants finding F-7 remediated by Friday. We don't have a fix yet. Three paths I can see: deploy a compensating control we'd remove later; request a 2-week extension; accept the finding and document it.
+5	decision	Two finalists for the senior platform role. Alice: 8 years at AWS, deep K8s, communication is curt. Bob: 4 years but built our exact stack at his last startup, ships fast, but bus-factor risk if he leaves. Offer letter goes out tomorrow.
+6	decision	My VP is briefing the CEO at 5pm on whether we ship the mobile launch. I need to give my VP an answer by 4pm. The launch has two known crashers in iOS 18 hitting 3% of users. Android is clean.
+7	decision	We need an observability stack. Datadog: $120K/yr with features we won't use. New Relic: $60K/yr with an OK UI. Honeycomb: $40K/yr with the best ergonomics for our debug-heavy workflow. Procurement closes Q2 budget on Friday.
+8	decision	Two days into investigating the codex --resume stale-session bug. Sprint ends tomorrow. The fix path is murky — could be a TTL issue in rmcp, could be our session-id encoding, could be the codex CLI itself. We have a workaround that just skips resume on stale session.
+9	chat	Why are we even using event-sourcing for this service? Feels like overkill for the actual usage pattern.
+10	chat	I shipped the auth fix yesterday. In hindsight, given what we now know about the migration timing, was that the right call?
+11	chat	I'm thinking about proposing we deprecate the v1 API at the next architecture sync. What are the tradeoffs I should weigh before bringing it up?
+12	chat	Quick update: auth refactor is at 60%, the team wants to pause and reassess after seeing how the MCP migration went. No blockers, just a heads up.
+13	chat	What's the latency budget our SLO commits to? I'm setting the timeout in the new client SDK and want to make sure I match it.
+14	chat	Something crashed around 3:42am. Can you look at logs/server.log and tell me what went wrong?
+15	chat	Eng wants Postgres for transactional consistency, Infra wants DynamoDB for ops simplicity. I'm facilitating the architecture review tomorrow. Walk me through the tradeoff matrix so I can run a clean discussion — I'm not the decision-maker, I'm just running the meeting.
