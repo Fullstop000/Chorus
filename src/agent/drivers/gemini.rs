@@ -199,6 +199,9 @@ static GEMINI_CFG: AcpDriverConfig = AcpDriverConfig {
     build_first_prompt_prefix: None,
     spawn_child: spawn_gemini,
     registry: &GEMINI_REGISTRY,
+    // Gemini's session storage isn't tracked by Chorus today; no liveness
+    // signal to consult here. Wire one up if we hit stale-session on gemini.
+    session_liveness_check: None,
 };
 
 // ---------------------------------------------------------------------------

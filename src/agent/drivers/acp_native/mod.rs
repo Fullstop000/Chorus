@@ -136,6 +136,14 @@ pub(crate) struct AcpDriverConfig {
     /// `AgentRegistry::new` is `const fn`, so the driver can hoist its
     /// registry to a module-level `static` and reference it here directly.
     pub registry: &'static AgentRegistry<AcpNativeCore>,
+
+    /// Optional liveness check for a preassigned session id. Returns true
+    /// when the runtime still has on-disk state for the session and a
+    /// `session/load` will succeed; false when the session is gone and the
+    /// handle should fall back to `session/new` instead. None means the
+    /// driver has no liveness signal and `session/load` is sent
+    /// unconditionally — same behavior as before this hook existed.
+    pub session_liveness_check: Option<fn(session_id: &str) -> bool>,
 }
 
 // ---------------------------------------------------------------------------

@@ -170,8 +170,31 @@ impl AcpNativeHandle {
         // wait for the race-winner and then proceed to session minting.
         self.core.ensure_started().await?;
 
-        let session_id = if let Some(ref preassigned) = self.preassigned_session_id.clone() {
-            self.send_session_load(preassigned).await?
+        // Resume-liveness guard. When the driver provides a check and it
+        // reports the preassigned session is gone, drop the resume id and
+        // fall back to session/new. Without this, opencode (and any other
+        // ACP-native runtime that prunes session storage) silently accepts
+        // session/load on a dead id and the agent no-ops the turn. Mirrors
+        // the codex thread-file guard and the claude session-file guard.
+        let preassigned = self.preassigned_session_id.clone();
+        let preassigned = match preassigned {
+            Some(ref id) => match cfg.session_liveness_check {
+                Some(check) if !check(id) => {
+                    tracing::warn!(
+                        agent = %self.core.key.as_str(),
+                        runtime = %cfg.name,
+                        session_id = %id,
+                        "preassigned session storage missing; starting fresh session instead of session/load"
+                    );
+                    self.preassigned_session_id = None;
+                    None
+                }
+                _ => preassigned,
+            },
+            None => None,
+        };
+        let session_id = if let Some(ref id) = preassigned {
+            self.send_session_load(id).await?
         } else {
             self.send_session_new().await?
         };

@@ -58,6 +58,7 @@ pub(super) static TEST_CFG: AcpDriverConfig = AcpDriverConfig {
     build_first_prompt_prefix: None,
     spawn_child: test_spawn_always_fails,
     registry: &TEST_REGISTRY,
+    session_liveness_check: None,
 };
 
 pub(super) fn fresh_shared() -> Arc<Mutex<SharedReaderState>> {

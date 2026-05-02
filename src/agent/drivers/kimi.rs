@@ -156,6 +156,10 @@ static KIMI_CFG: AcpDriverConfig = AcpDriverConfig {
     build_first_prompt_prefix: Some(build_kimi_standing_prompt),
     spawn_child: spawn_kimi,
     registry: &KIMI_REGISTRY,
+    // Kimi's session storage location isn't tracked by Chorus today; no
+    // liveness signal to consult here. Wire one up when we hit the same
+    // stale-session issue on kimi (TODOS.md).
+    session_liveness_check: None,
 };
 
 // ---------------------------------------------------------------------------
