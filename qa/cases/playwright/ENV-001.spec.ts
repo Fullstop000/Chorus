@@ -47,8 +47,8 @@ test.describe('ENV-001', () => {
     })
 
     await test.step('Step 5: whoami matches visible user', async () => {
-      const { username } = await getWhoami(request)
-      await expect(page.locator('.sidebar-footer')).toContainText(username)
+      const { name } = await getWhoami(request)
+      await expect(page.locator('.sidebar-footer')).toContainText(name)
     })
 
     expect(errors, `console errors: ${errors.join('; ')}`).toEqual([])

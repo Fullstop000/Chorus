@@ -64,7 +64,7 @@ test.describe("TSK-001", () => {
       await page.getByRole("button", { name: "Start", exact: true }).click();
       // Status pill should flip once the refetch lands.
       await expect(
-        page.locator(".task-detail__status").filter({ hasText: "in_progress" }),
+        page.locator(".task-detail__status").filter({ hasText: "in progress" }),
       ).toBeVisible({ timeout: 15_000 });
     });
 
