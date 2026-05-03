@@ -123,22 +123,17 @@ pub fn build_router_with_event_bus_and_dir(
 }
 
 /// Per-call unique tempdir so parallel cargo tests don't collide on
-/// `attachments/`, `agents/`, `teams/` under a shared path. The dir is
-/// leaked (no automatic cleanup) because callers don't carry a TempDir
-/// guard; `$TMPDIR` is reclaimed by the OS. Tests that need explicit
-/// cleanup should use the `_and_dir` variants with their own
-/// `tempfile::TempDir`.
+/// `attachments/`, `agents/`, `teams/` under a shared path. The returned
+/// path lives past the call: `keep()` consumes the `TempDir` wrapper
+/// and disables its Drop cleanup, returning the underlying `PathBuf`.
+/// `$TMPDIR` is reclaimed by the OS. Tests that need explicit cleanup
+/// should use the `_and_dir` variants with their own `tempfile::TempDir`.
 pub fn unique_test_data_dir() -> std::path::PathBuf {
-    let dir = tempfile::Builder::new()
+    tempfile::Builder::new()
         .prefix("chorus-test-")
         .tempdir()
-        .expect("create test data dir");
-    let path = dir.path().to_path_buf();
-    // Suppress Drop so the tempdir survives past this function. The OS
-    // reclaims `$TMPDIR` entries; tests run for seconds, fixtures don't
-    // accumulate meaningfully.
-    std::mem::forget(dir);
-    path
+        .expect("create test data dir")
+        .keep()
 }
 
 /// Test helper: silently insert a channel membership row without emitting
