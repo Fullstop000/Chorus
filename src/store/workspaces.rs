@@ -59,7 +59,11 @@ pub struct WorkspaceCounts {
 }
 
 impl Store {
-    pub fn create_local_workspace(&self, name: &str, owner_human_id: &str) -> Result<(Workspace, StreamEvent)> {
+    pub fn create_local_workspace(
+        &self,
+        name: &str,
+        owner_human_id: &str,
+    ) -> Result<(Workspace, StreamEvent)> {
         self.create_local_workspace_inner(name, owner_human_id, true)
     }
 

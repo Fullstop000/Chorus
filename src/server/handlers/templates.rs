@@ -101,9 +101,10 @@ pub async fn handle_launch_trio(
     // Join the human user to the channel.
     if let Ok(humans) = state.store.get_humans() {
         if let Some(human) = humans.first() {
-            if let Ok((_, events)) = state
-                .store
-                .join_channel(&channel_name, &human.id, SenderType::Human)
+            if let Ok((_, events)) =
+                state
+                    .store
+                    .join_channel(&channel_name, &human.id, SenderType::Human)
             {
                 for event in events {
                     state.event_bus.publish_stream(event);
@@ -168,9 +169,10 @@ pub async fn handle_launch_trio(
         }
 
         // Also join the trio channel (auto-join channels handled above).
-        if let Ok((_, events)) = state
-            .store
-            .join_channel(&channel_name, &result.id, SenderType::Agent)
+        if let Ok((_, events)) =
+            state
+                .store
+                .join_channel(&channel_name, &result.id, SenderType::Agent)
         {
             for event in events {
                 state.event_bus.publish_stream(event);

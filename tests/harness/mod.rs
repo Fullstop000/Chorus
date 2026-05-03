@@ -74,10 +74,7 @@ pub fn build_router_with_lifecycle(
     store: Arc<Store>,
     lifecycle: Arc<dyn AgentLifecycle>,
 ) -> Router {
-    let data_dir = std::env::temp_dir().join("chorus_test");
-    let agents_dir = data_dir.join("agents");
-    std::fs::create_dir_all(&agents_dir).ok();
-    build_router_with_lifecycle_and_dir(store, lifecycle, data_dir)
+    build_router_with_lifecycle_and_dir(store, lifecycle, unique_test_data_dir())
 }
 
 pub fn build_router_with_lifecycle_and_dir(
@@ -100,10 +97,14 @@ pub fn build_router_with_lifecycle_and_dir(
     )
 }
 
-pub fn build_router_with_event_bus(
+pub fn build_router_with_event_bus(store: Arc<Store>) -> (Router, Arc<EventBus>) {
+    build_router_with_event_bus_and_dir(store, unique_test_data_dir())
+}
+
+pub fn build_router_with_event_bus_and_dir(
     store: Arc<Store>,
+    data_dir: std::path::PathBuf,
 ) -> (Router, Arc<EventBus>) {
-    let data_dir = std::env::temp_dir().join("chorus_test");
     let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&agents_dir).ok();
     let event_bus = Arc::new(EventBus::new());
@@ -119,6 +120,20 @@ pub fn build_router_with_event_bus(
         vec![],
     );
     (router, event_bus)
+}
+
+/// Per-call unique tempdir so parallel cargo tests don't collide on
+/// `attachments/`, `agents/`, `teams/` under a shared path. The returned
+/// path lives past the call: `keep()` consumes the `TempDir` wrapper
+/// and disables its Drop cleanup, returning the underlying `PathBuf`.
+/// `$TMPDIR` is reclaimed by the OS. Tests that need explicit cleanup
+/// should use the `_and_dir` variants with their own `tempfile::TempDir`.
+pub fn unique_test_data_dir() -> std::path::PathBuf {
+    tempfile::Builder::new()
+        .prefix("chorus-test-")
+        .tempdir()
+        .expect("create test data dir")
+        .keep()
 }
 
 /// Test helper: silently insert a channel membership row without emitting

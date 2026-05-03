@@ -73,7 +73,8 @@ impl Store {
     }
 
     pub fn create_agent_record_with_events(
-        &self, record: &AgentRecordUpsert<'_>,
+        &self,
+        record: &AgentRecordUpsert<'_>,
     ) -> Result<(String, Vec<crate::store::stream::StreamEvent>)> {
         let (workspace_id, id) = {
             let conn = self.conn.lock().unwrap();
@@ -85,7 +86,9 @@ impl Store {
         if let Ok(Some(all_channel)) =
             self.get_channel_by_workspace_and_name(&workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
         {
-            if let Ok((_, evs)) = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent) {
+            if let Ok((_, evs)) =
+                self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent)
+            {
                 events.extend(evs);
             }
         }
@@ -97,7 +100,8 @@ impl Store {
         workspace_id: &str,
         record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
-        let (id, _events) = self.create_agent_record_in_workspace_with_events(workspace_id, record)?;
+        let (id, _events) =
+            self.create_agent_record_in_workspace_with_events(workspace_id, record)?;
         Ok(id)
     }
 
@@ -114,7 +118,9 @@ impl Store {
         if let Ok(Some(all_channel)) =
             self.get_channel_by_workspace_and_name(workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
         {
-            if let Ok((_, evs)) = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent) {
+            if let Ok((_, evs)) =
+                self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent)
+            {
                 events.extend(evs);
             }
         }

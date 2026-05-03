@@ -40,10 +40,17 @@ pub async fn handle_events_ws(
     }
 
     let event_bus = state.event_bus.clone();
-    Ok(ws.on_upgrade(move |socket| realtime_session(socket, event_bus, state.store.clone(), params.viewer)))
+    Ok(ws.on_upgrade(move |socket| {
+        realtime_session(socket, event_bus, state.store.clone(), params.viewer)
+    }))
 }
 
-async fn realtime_session(mut socket: WebSocket, event_bus: Arc<EventBus>, store: Arc<crate::store::Store>, viewer: String) {
+async fn realtime_session(
+    mut socket: WebSocket,
+    event_bus: Arc<EventBus>,
+    store: Arc<crate::store::Store>,
+    viewer: String,
+) {
     let mut stream_rx = event_bus.subscribe();
     let mut trace_rx = event_bus.subscribe_traces();
 

@@ -555,12 +555,8 @@ impl Store {
             Self::create_system_message_tx_with_payload(&tx, &channel, &content, &payload_json)?;
         tx.commit()?;
         drop(conn);
-        let event = posting::system_message_stream_event(
-            &channel,
-            &inserted,
-            &content,
-            Some(payload_json),
-        );
+        let event =
+            posting::system_message_stream_event(&channel, &inserted, &content, Some(payload_json));
         Ok(vec![event])
     }
 
@@ -666,12 +662,8 @@ impl Store {
 
         tx.commit()?;
         drop(conn);
-        let event = posting::system_message_stream_event(
-            &channel,
-            &inserted,
-            &content,
-            Some(payload_json),
-        );
+        let event =
+            posting::system_message_stream_event(&channel, &inserted, &content, Some(payload_json));
         Ok(vec![event])
     }
 }
@@ -967,11 +959,13 @@ mod sub_channel_tests {
             .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::InReview)
-            .map(|_| ()).unwrap();
+            .map(|_| ())
+            .unwrap();
 
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::Done)
-            .map(|_| ()).unwrap();
+            .map(|_| ())
+            .unwrap();
 
         let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
         let sub_id = sub_id.expect("task has sub_channel_id");
@@ -1031,10 +1025,12 @@ mod sub_channel_tests {
         // Advance task 1 through InReview → Done. Task 2 stays in progress.
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::InReview)
-            .map(|_| ()).unwrap();
+            .map(|_| ())
+            .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::Done)
-            .map(|_| ()).unwrap();
+            .map(|_| ())
+            .unwrap();
 
         let after: Vec<String> = store
             .get_inbox_conversation_notifications(&bob_id)
@@ -1077,10 +1073,12 @@ mod sub_channel_tests {
             .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::InReview)
-            .map(|_| ()).unwrap();
+            .map(|_| ())
+            .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::Done)
-            .map(|_| ()).unwrap();
+            .map(|_| ())
+            .unwrap();
 
         let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
         let sub_id = sub_id.expect("task has sub_channel_id");

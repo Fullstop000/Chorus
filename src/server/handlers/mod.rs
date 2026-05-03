@@ -177,9 +177,7 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
 pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto::SystemInfo> {
     let data_dir = state.data_dir.to_string_lossy().into_owned();
     let data_dir_path = state.data_dir.clone();
-    let db_size_bytes = std::fs::metadata(state.db_path())
-        .map(|m| m.len())
-        .ok();
+    let db_size_bytes = std::fs::metadata(state.db_path()).map(|m| m.len()).ok();
 
     let config = ChorusConfig::load(&data_dir_path)
         .ok()

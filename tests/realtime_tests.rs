@@ -17,7 +17,12 @@ struct TestIdentities {
     zoe_id: String,
 }
 
-async fn start_test_server() -> (String, Arc<Store>, TestIdentities, Arc<chorus::server::event_bus::EventBus>) {
+async fn start_test_server() -> (
+    String,
+    Arc<Store>,
+    TestIdentities,
+    Arc<chorus::server::event_bus::EventBus>,
+) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     let alice = store.create_local_human("alice").unwrap();
     let zoe = store.create_local_human("zoe").unwrap();

@@ -76,7 +76,8 @@ pub fn build_router_with_services(
         .ok()
         .flatten()
         .map(|workspace| workspace.id);
-    let (local_human_id, local_human_name) = resolve_local_human_identity(store.as_ref(), &data_dir);
+    let (local_human_id, local_human_name) =
+        resolve_local_human_identity(store.as_ref(), &data_dir);
 
     // Built-in channels (`#all`) and the local human's membership are seeded
     // here, after identity resolution: the legacy CLI bootstrap used the OS

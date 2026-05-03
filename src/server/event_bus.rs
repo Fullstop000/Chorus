@@ -45,8 +45,6 @@ impl EventBus {
     pub fn publish_stream(&self, event: StreamEvent) {
         let _ = self.stream_tx.send(event);
     }
-
-
 }
 
 impl Default for EventBus {
