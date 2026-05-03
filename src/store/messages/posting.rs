@@ -186,7 +186,11 @@ impl Store {
     }
 
     /// Post a server-authored message into a channel.
-    pub fn create_system_message(&self, channel_id: &str, content: &str) -> Result<(String, StreamEvent)> {
+    pub fn create_system_message(
+        &self,
+        channel_id: &str,
+        content: &str,
+    ) -> Result<(String, StreamEvent)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
@@ -211,7 +215,10 @@ impl Store {
         Ok((message_id, stream_event))
     }
 
-    pub fn create_message(&self, message: CreateMessage<'_>) -> Result<(String, Option<StreamEvent>)> {
+    pub fn create_message(
+        &self,
+        message: CreateMessage<'_>,
+    ) -> Result<(String, Option<StreamEvent>)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let channel = Self::get_channel_by_name_inner(&tx, message.channel_name)?
@@ -249,7 +256,11 @@ impl Store {
             inserted.seq,
             serde_json::to_value(payload)?,
         );
-        let event = if message.suppress_event { None } else { Some(stream_event) };
+        let event = if message.suppress_event {
+            None
+        } else {
+            Some(stream_event)
+        };
         Ok((inserted.id, event))
     }
 

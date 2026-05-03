@@ -31,8 +31,8 @@ use crate::agent::drivers::acp_protocol;
 use crate::agent::drivers::{AgentEventItem, DriverEvent, FinishReason, ProcessState};
 use crate::agent::manager::ManagedAgent;
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
-use crate::store::StreamEvent;
 use crate::store::Store;
+use crate::store::StreamEvent;
 
 /// Extract a short human-readable summary from an ACP tool-call `input`
 /// object. Probes the common argument keys drivers use (`file_path`,

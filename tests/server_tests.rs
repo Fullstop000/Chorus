@@ -352,7 +352,7 @@ fn setup_with_runtime_statuses(
         statuses,
         models_by_runtime,
     });
-    let data_dir = std::env::temp_dir().join("chorus_test");
+    let data_dir = harness::unique_test_data_dir();
     let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&agents_dir).ok();
     let router = chorus::server::build_router_with_services(
@@ -2146,9 +2146,13 @@ async fn test_upload_uses_configured_data_dir() {
         .expect("attachment record");
 
     assert!(
-        attachment
-            .stored_path
-            .starts_with(dir.path().join("data").join("attachments").to_string_lossy().as_ref()),
+        attachment.stored_path.starts_with(
+            dir.path()
+                .join("data")
+                .join("attachments")
+                .to_string_lossy()
+                .as_ref()
+        ),
         "attachment should be stored under the configured data dir"
     );
 }
@@ -2756,14 +2760,17 @@ async fn test_get_templates_returns_grouped_categories() {
     ];
 
     let dir = tempdir().unwrap();
-    let db_path = dir.path().join("chorus.db");
+    let db_path = dir.path().join("data").join("chorus.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
     let lifecycle = Arc::new(MockLifecycle::default());
     let runtime_status_provider = Arc::new(MockRuntimeStatusProvider {
         statuses: vec![],
         models_by_runtime: vec![],
     });
-    let data_dir = std::env::temp_dir().join("chorus_test");
+    // Reuse the per-test tempdir for the data root so the templates test
+    // doesn't share filesystem state with parallel cargo runs.
+    let data_dir = dir.path().to_path_buf();
     let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&agents_dir).ok();
     let router = chorus::server::build_router_with_services(

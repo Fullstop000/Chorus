@@ -486,7 +486,13 @@ fn ensure_setup_workspace(
     if let Some(workspace) = store.get_active_workspace()? {
         return Ok(workspace);
     }
-    store.create_local_workspace(workspace_name, owner_human_id).map(|(w, _)| w)
+    // The dropped StreamEvent here is intentional: `chorus setup` runs as
+    // a one-shot CLI before any server starts, so no EventBus subscriber
+    // exists to receive it. The runtime path through `handle_create_workspace`
+    // does publish; this is the setup-only branch.
+    store
+        .create_local_workspace(workspace_name, owner_human_id)
+        .map(|(w, _)| w)
 }
 
 /// Resolve (or seed) the local human row and write `(id, name)` back to
