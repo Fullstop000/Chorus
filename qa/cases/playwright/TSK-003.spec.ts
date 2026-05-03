@@ -86,18 +86,21 @@ test.describe('TSK-003', () => {
     })
 
     await test.step('Step 6: Advance Start → Submit for review → Mark done', async () => {
+      // The UI renders human-readable labels ("in progress", "in review"),
+      // not the underlying enum strings (`in_progress`, `in_review`).
+      // See `STATUS_LABEL` in `ui/src/components/tasks/TaskDetail.tsx`.
       await page.getByRole('button', { name: 'Start', exact: true }).click()
       await expect(
         page
           .locator('.task-detail__status')
-          .filter({ hasText: 'in_progress' }),
+          .filter({ hasText: 'in progress' }),
       ).toBeVisible({ timeout: 15_000 })
 
       await page
         .getByRole('button', { name: 'Submit for review', exact: true })
         .click()
       await expect(
-        page.locator('.task-detail__status').filter({ hasText: 'in_review' }),
+        page.locator('.task-detail__status').filter({ hasText: 'in review' }),
       ).toBeVisible({ timeout: 15_000 })
 
       await page

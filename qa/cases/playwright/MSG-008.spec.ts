@@ -30,12 +30,14 @@ test.describe('MSG-008', () => {
     const { username } = await getWhoami(request)
     let agentName = (await listAgents(request))[0]?.name
     if (!agentName) {
-      agentName = `msg008-bot-${Date.now()}`
-      await createAgentApi(request, {
-        name: agentName,
+      // The server appends a random slug suffix to the requested base name,
+      // so use the actual returned name for the invite-by-name lookup below.
+      const created = await createAgentApi(request, {
+        name: `msg008-bot-${Date.now()}`,
         runtime: 'claude',
         model: 'sonnet',
       })
+      agentName = created.name
     }
 
     const channelName = `msg008-${Date.now()}`
