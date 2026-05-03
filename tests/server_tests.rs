@@ -3383,7 +3383,25 @@ async fn create_channel_rejects_invalid_names() {
     let (store, app) = setup();
     store.ensure_human_with_id("alice", "alice").unwrap();
 
-    for bad_name in ["", "space channel", "channel/name", "channel?", "emoji🎉"] {
+    // Empty / whitespace-only names get a clearer "name is required" message;
+    // names with invalid characters get the format-validation message.
+    let cases: &[(&str, &str)] = &[
+        ("", "channel name is required"),
+        (
+            "space channel",
+            chorus::store::channels::INVALID_CHANNEL_NAME_MSG,
+        ),
+        (
+            "channel/name",
+            chorus::store::channels::INVALID_CHANNEL_NAME_MSG,
+        ),
+        (
+            "channel?",
+            chorus::store::channels::INVALID_CHANNEL_NAME_MSG,
+        ),
+        ("emoji🎉", chorus::store::channels::INVALID_CHANNEL_NAME_MSG),
+    ];
+    for (bad_name, expected_error) in cases {
         let req = serde_json::json!({ "name": bad_name, "description": "" });
         let resp = app
             .clone()
@@ -3405,7 +3423,7 @@ async fn create_channel_rejects_invalid_names() {
         let body = body_json(resp).await;
         assert_eq!(
             body["error"].as_str(),
-            Some(chorus::store::channels::INVALID_CHANNEL_NAME_MSG),
+            Some(*expected_error),
             "expected specific error message for: {bad_name}"
         );
     }
