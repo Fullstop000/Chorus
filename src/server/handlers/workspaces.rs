@@ -126,10 +126,11 @@ pub async fn handle_create_workspace(
             "workspace name is required"
         ));
     }
-    let workspace = state
+    let (workspace, event) = state
         .store
         .create_local_workspace_without_activation(name, &state.local_human_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    state.event_bus.publish_stream(event);
     let active_workspace_id = state.active_workspace_id().await;
     Ok(Json(workspace_response(
         &state,

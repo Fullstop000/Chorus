@@ -68,18 +68,31 @@ pub struct AgentRecordUpsert<'a> {
 
 impl Store {
     pub fn create_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<String> {
+        let (id, _events) = self.create_agent_record_with_events(record)?;
+        Ok(id)
+    }
+
+    pub fn create_agent_record_with_events(
+        &self,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<(String, Vec<crate::store::stream::StreamEvent>)> {
         let (workspace_id, id) = {
             let conn = self.conn.lock().unwrap();
             let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
             let id = Self::create_agent_record_inner(&conn, &workspace_id, record)?;
             (workspace_id, id)
         };
+        let mut events = Vec::new();
         if let Ok(Some(all_channel)) =
             self.get_channel_by_workspace_and_name(&workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
         {
-            let _ = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent);
+            if let Ok((_, evs)) =
+                self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent)
+            {
+                events.extend(evs);
+            }
         }
-        Ok(id)
+        Ok((id, events))
     }
 
     pub fn create_agent_record_in_workspace(
@@ -87,16 +100,31 @@ impl Store {
         workspace_id: &str,
         record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
+        let (id, _events) =
+            self.create_agent_record_in_workspace_with_events(workspace_id, record)?;
+        Ok(id)
+    }
+
+    pub fn create_agent_record_in_workspace_with_events(
+        &self,
+        workspace_id: &str,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<(String, Vec<crate::store::stream::StreamEvent>)> {
         let id = {
             let conn = self.conn.lock().unwrap();
             Self::create_agent_record_inner(&conn, workspace_id, record)?
         };
+        let mut events = Vec::new();
         if let Ok(Some(all_channel)) =
             self.get_channel_by_workspace_and_name(workspace_id, Self::DEFAULT_SYSTEM_CHANNEL)
         {
-            let _ = self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent);
+            if let Ok((_, evs)) =
+                self.join_channel_by_id(&all_channel.id, &id, super::SenderType::Agent)
+            {
+                events.extend(evs);
+            }
         }
-        Ok(id)
+        Ok((id, events))
     }
 
     fn create_agent_record_inner(

@@ -13,6 +13,7 @@
 use std::sync::Arc;
 
 use chorus::agent::manager::AgentManager;
+use chorus::server::event_bus::EventBus;
 use chorus::store::Store;
 use tokio_util::sync::CancellationToken;
 
@@ -32,8 +33,8 @@ pub async fn run(
     std::fs::create_dir_all(&logs_dir)?;
     std::fs::create_dir_all(&agents_dir)?;
     let db_path = data_subdir.join("chorus.db");
-    let store =
-        Arc::new(Store::open(db_path.to_str().unwrap())?.with_agents_dir(agents_dir.clone()));
+    let store = Arc::new(Store::open(db_path.to_str().unwrap())?);
+    let event_bus = Arc::new(EventBus::new());
 
     // The local human (id + name) is resolved during `build_router_with_services`
     // from `ChorusConfig::local_human` or, on first run, by inserting a row keyed
@@ -44,7 +45,12 @@ pub async fn run(
     // user running the server process.
 
     let server_url = format!("http://localhost:{port}");
-    let mut manager = AgentManager::new(store.clone(), agents_dir);
+    let mut manager = AgentManager::new(
+        store.clone(),
+        agents_dir.clone(),
+        event_bus.trace_sender(),
+        event_bus.stream_sender(),
+    );
 
     // Shared cancellation token — cancelled on Ctrl-C and used to shut down
     // both the main server and the bridge together.
@@ -155,6 +161,9 @@ pub async fn run(
 
     let router = chorus::server::build_router_with_services(
         store.clone(),
+        event_bus.clone(),
+        data_dir.clone(),
+        agents_dir.clone(),
         manager.clone(),
         Arc::new(
             chorus::agent::runtime_status::SystemRuntimeStatusProvider::new(
@@ -167,7 +176,7 @@ pub async fn run(
     // Spawn background trace writer for Telescope persistence.
     chorus::store::trace_writer::spawn_trace_writer(
         db_path.to_str().unwrap().to_string(),
-        store.subscribe_traces(),
+        event_bus.subscribe_traces(),
     );
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;

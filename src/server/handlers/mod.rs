@@ -24,6 +24,7 @@ pub use templates::*;
 pub use workspaces::*;
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use axum::extract::{Path, State};
@@ -39,6 +40,7 @@ use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
 use crate::config::ChorusConfig;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
+use crate::server::event_bus::EventBus;
 use crate::store::Store;
 use dto::ServerInfo;
 
@@ -46,6 +48,9 @@ use dto::ServerInfo;
 #[derive(Clone)]
 pub struct AppState {
     pub store: Arc<Store>,
+    pub event_bus: Arc<EventBus>,
+    pub data_dir: PathBuf,
+    pub agents_dir: PathBuf,
     pub active_workspace_id: Arc<RwLock<Option<String>>>,
     pub local_human_id: String,
     pub local_human_name: String,
@@ -71,6 +76,18 @@ impl AppState {
     pub async fn set_active_workspace_id(&self, workspace_id: Option<String>) {
         let mut guard = self.active_workspace_id.write().await;
         *guard = workspace_id;
+    }
+
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.data_dir.join("data").join("attachments")
+    }
+
+    pub fn db_path(&self) -> PathBuf {
+        self.data_dir.join("data").join("chorus.db")
+    }
+
+    pub fn teams_dir(&self) -> PathBuf {
+        self.data_dir.join("data").join("teams")
     }
 }
 
@@ -158,22 +175,9 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
 }
 
 pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto::SystemInfo> {
-    let data_dir = state
-        .store
-        .data_dir()
-        .parent()
-        .unwrap_or_else(|| state.store.data_dir())
-        .to_string_lossy()
-        .into_owned();
-    let data_dir_path = state
-        .store
-        .data_dir()
-        .parent()
-        .unwrap_or_else(|| state.store.data_dir())
-        .to_path_buf();
-    let db_size_bytes = std::fs::metadata(state.store.db_path())
-        .map(|m| m.len())
-        .ok();
+    let data_dir = state.data_dir.to_string_lossy().into_owned();
+    let data_dir_path = state.data_dir.clone();
+    let db_size_bytes = std::fs::metadata(state.db_path()).map(|m| m.len()).ok();
 
     let config = ChorusConfig::load(&data_dir_path)
         .ok()
@@ -235,12 +239,7 @@ pub async fn handle_logs(
     axum::extract::Query(params): axum::extract::Query<LogsParams>,
 ) -> ApiResult<serde_json::Value> {
     let tail = params.tail.unwrap_or(200).min(2000);
-    let logs_dir = state
-        .store
-        .data_dir()
-        .parent()
-        .unwrap_or_else(|| state.store.data_dir())
-        .join("logs");
+    let logs_dir = state.data_dir.join("logs");
     let log_path = logs_dir.join("chorus.log");
     let lines = match tokio::fs::read_to_string(&log_path).await {
         Ok(content) => {

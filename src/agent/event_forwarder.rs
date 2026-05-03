@@ -32,6 +32,7 @@ use crate::agent::drivers::{AgentEventItem, DriverEvent, FinishReason, ProcessSt
 use crate::agent::manager::ManagedAgent;
 use crate::agent::trace::{self, AgentTraceStore, TraceEvent, TraceEventKind};
 use crate::store::Store;
+use crate::store::StreamEvent;
 
 /// Extract a short human-readable summary from an ACP tool-call `input`
 /// object. Probes the common argument keys drivers use (`file_path`,
@@ -154,6 +155,7 @@ pub(super) fn spawn_event_forwarder(
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
     trace_tx: broadcast::Sender<TraceEvent>,
+    stream_tx: broadcast::Sender<StreamEvent>,
     store: Arc<Store>,
     agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
 ) -> tokio::task::JoinHandle<()> {
@@ -456,15 +458,18 @@ pub(super) fn spawn_event_forwarder(
                                         "⚠️ @{} completed a run without replying. Common causes: not authenticated, authentication expired, or a runtime error. Check agent logs for details.",
                                         key
                                     );
-                                    if let Err(e) =
-                                        store.create_system_message(&channel_id, &warning)
-                                    {
-                                        warn!(
-                                            agent = %key,
-                                            channel_id = %channel_id,
-                                            error = %e,
-                                            "failed to post empty-run warning"
-                                        );
+                                    match store.create_system_message(&channel_id, &warning) {
+                                        Ok((_, event)) => {
+                                            let _ = stream_tx.send(event);
+                                        }
+                                        Err(e) => {
+                                            warn!(
+                                                agent = %key,
+                                                channel_id = %channel_id,
+                                                error = %e,
+                                                "failed to post empty-run warning"
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -612,6 +617,7 @@ mod tests {
         let activity_logs = Arc::new(ActivityLogMap::default());
         let trace_store = Arc::new(AgentTraceStore::new());
         let (trace_tx, trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let (stream_tx, _stream_rx) = broadcast::channel::<StreamEvent>(64);
         let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -621,6 +627,7 @@ mod tests {
             activity_logs,
             trace_store,
             trace_tx.clone(),
+            stream_tx,
             store,
             agents,
         );
@@ -731,6 +738,7 @@ mod tests {
         let activity_logs = Arc::new(ActivityLogMap::default());
         let trace_store = Arc::new(AgentTraceStore::new());
         let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let (stream_tx, _stream_rx) = broadcast::channel::<StreamEvent>(64);
         let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -740,6 +748,7 @@ mod tests {
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
+            stream_tx,
             store.clone(),
             agents,
         );
@@ -809,6 +818,7 @@ mod tests {
         let activity_logs = Arc::new(ActivityLogMap::default());
         let trace_store = Arc::new(AgentTraceStore::new());
         let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let (stream_tx, _stream_rx) = broadcast::channel::<StreamEvent>(64);
         let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -818,6 +828,7 @@ mod tests {
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
+            stream_tx,
             store.clone(),
             agents,
         );
@@ -908,6 +919,7 @@ mod tests {
         let activity_logs = Arc::new(ActivityLogMap::default());
         let trace_store = Arc::new(AgentTraceStore::new());
         let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let (stream_tx, _stream_rx) = broadcast::channel::<StreamEvent>(64);
         let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -932,6 +944,7 @@ mod tests {
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
+            stream_tx,
             store.clone(),
             agents.clone(),
         );
@@ -1010,6 +1023,7 @@ mod tests {
         let activity_logs = Arc::new(ActivityLogMap::default());
         let trace_store = Arc::new(AgentTraceStore::new());
         let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let (stream_tx, _stream_rx) = broadcast::channel::<StreamEvent>(64);
         let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -1019,6 +1033,7 @@ mod tests {
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
+            stream_tx,
             store.clone(),
             agents,
         );
@@ -1087,6 +1102,7 @@ mod tests {
         let activity_logs = Arc::new(ActivityLogMap::default());
         let trace_store = Arc::new(AgentTraceStore::new());
         let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let (stream_tx, _stream_rx) = broadcast::channel::<StreamEvent>(64);
         let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -1096,6 +1112,7 @@ mod tests {
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
+            stream_tx,
             store.clone(),
             agents,
         );
@@ -1163,6 +1180,7 @@ mod tests {
         let activity_logs = Arc::new(ActivityLogMap::default());
         let trace_store = Arc::new(AgentTraceStore::new());
         let (trace_tx, _trace_rx) = broadcast::channel::<TraceEvent>(64);
+        let (stream_tx, _stream_rx) = broadcast::channel::<StreamEvent>(64);
         let agents: Arc<Mutex<HashMap<String, ManagedAgent>>> =
             Arc::new(Mutex::new(HashMap::new()));
 
@@ -1172,6 +1190,7 @@ mod tests {
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
+            stream_tx,
             store.clone(),
             agents,
         );

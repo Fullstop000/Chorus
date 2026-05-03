@@ -7,7 +7,7 @@ use chorus::store::channels::ChannelType;
 use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::Store;
 use futures_util::StreamExt;
-use harness::{build_router, join_channel_silent};
+use harness::join_channel_silent;
 use serde_json::Value;
 use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -17,7 +17,12 @@ struct TestIdentities {
     zoe_id: String,
 }
 
-async fn start_test_server() -> (String, Arc<Store>, TestIdentities) {
+async fn start_test_server() -> (
+    String,
+    Arc<Store>,
+    TestIdentities,
+    Arc<chorus::server::event_bus::EventBus>,
+) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     let alice = store.create_local_human("alice").unwrap();
     let zoe = store.create_local_human("zoe").unwrap();
@@ -35,7 +40,7 @@ async fn start_test_server() -> (String, Arc<Store>, TestIdentities) {
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
     join_channel_silent(&store, "general", &alice.id, "human");
-    let router = build_router(store.clone());
+    let (router, event_bus) = harness::build_router_with_event_bus(store.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let url = format!("ws://{addr}");
@@ -48,6 +53,7 @@ async fn start_test_server() -> (String, Arc<Store>, TestIdentities) {
             alice_id: alice.id,
             zoe_id: zoe.id,
         },
+        event_bus,
     )
 }
 
@@ -71,7 +77,7 @@ async fn read_json_frame(
 
 #[tokio::test]
 async fn test_realtime_delivers_message_created_for_joined_channel() {
-    let (base_url, store, ids) = start_test_server().await;
+    let (base_url, store, ids, event_bus) = start_test_server().await;
     let general_id = store.get_channel_by_name("general").unwrap().unwrap().id;
 
     let (mut socket, _) =
@@ -79,7 +85,7 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
             .await
             .unwrap();
 
-    store
+    let (_, event) = store
         .create_message(CreateMessage {
             channel_name: "general",
             sender_id: &ids.alice_id,
@@ -90,6 +96,9 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
             run_id: None,
         })
         .unwrap();
+    if let Some(ev) = event {
+        event_bus.publish_stream(ev);
+    }
 
     let frame = read_json_frame(&mut socket).await;
     assert_eq!(frame["type"], "event");
@@ -102,7 +111,7 @@ async fn test_realtime_delivers_message_created_for_joined_channel() {
 
 #[tokio::test]
 async fn test_realtime_skips_non_member_channel() {
-    let (base_url, store, ids) = start_test_server().await;
+    let (base_url, store, ids, event_bus) = start_test_server().await;
     store
         .create_channel("private", Some("Private"), ChannelType::Channel, None)
         .unwrap();
@@ -113,7 +122,7 @@ async fn test_realtime_skips_non_member_channel() {
             .await
             .unwrap();
 
-    store
+    let (_, event) = store
         .create_message(CreateMessage {
             channel_name: "private",
             sender_id: &ids.zoe_id,
@@ -124,6 +133,9 @@ async fn test_realtime_skips_non_member_channel() {
             run_id: None,
         })
         .unwrap();
+    if let Some(ev) = event {
+        event_bus.publish_stream(ev);
+    }
 
     let next = timeout(Duration::from_millis(250), socket.next()).await;
     assert!(
@@ -134,14 +146,14 @@ async fn test_realtime_skips_non_member_channel() {
 
 #[tokio::test]
 async fn test_realtime_member_receives_live_messages_without_subscribe_frame() {
-    let (base_url, store, ids) = start_test_server().await;
+    let (base_url, store, ids, event_bus) = start_test_server().await;
 
     let (mut socket, _) =
         connect_async(format!("{base_url}/api/events/ws?viewer={}", ids.alice_id))
             .await
             .unwrap();
 
-    store
+    let (_, event) = store
         .create_message(CreateMessage {
             channel_name: "general",
             sender_id: &ids.alice_id,
@@ -152,6 +164,9 @@ async fn test_realtime_member_receives_live_messages_without_subscribe_frame() {
             run_id: None,
         })
         .unwrap();
+    if let Some(ev) = event {
+        event_bus.publish_stream(ev);
+    }
 
     let frame = read_json_frame(&mut socket).await;
     assert_eq!(frame["type"], "event");

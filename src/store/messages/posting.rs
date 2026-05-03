@@ -99,7 +99,7 @@ impl Store {
         content: &str,
         attachment_ids: &[String],
         forwarded_from: Option<ForwardedFrom>,
-    ) -> Result<String> {
+    ) -> Result<(String, StreamEvent)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
@@ -129,8 +129,7 @@ impl Store {
             inserted.seq,
             serde_json::to_value(payload)?,
         );
-        let _ = self.stream_tx.send(stream_event);
-        Ok(inserted.id)
+        Ok((inserted.id, stream_event))
     }
 
     /// Insert a `sender_type = 'system'` message inside an existing transaction.
@@ -186,52 +185,12 @@ impl Store {
         )
     }
 
-    /// Emit `message.created` stream events for system messages that were
-    /// inserted via `create_system_message_tx` and committed by the caller.
-    /// Each `(inserted, content)` tuple produced inside the transaction maps
-    /// to one WebSocket event. Best-effort: send errors are dropped because
-    /// the DB rows are the source of truth.
-    pub(crate) fn emit_system_stream_events(
-        &self,
-        channel: &Channel,
-        pending: Vec<(InsertedMessage, String)>,
-    ) -> Result<()> {
-        let with_payloads = pending
-            .into_iter()
-            .map(|(inserted, content)| (inserted, content, None))
-            .collect();
-        self.emit_system_stream_events_with_payloads(channel, with_payloads)
-    }
-
-    /// Same as [`emit_system_stream_events`] but each tuple may carry a
-    /// structured JSON payload that ships in the `message.created` event
-    /// alongside the human-readable `content` fallback.
-    pub(crate) fn emit_system_stream_events_with_payloads(
-        &self,
-        channel: &Channel,
-        pending: Vec<(InsertedMessage, String, Option<Value>)>,
-    ) -> Result<()> {
-        for (inserted, content, payload) in pending {
-            let event_payload = inserted.to_event_payload_with_payload(
-                channel.id.as_str(),
-                channel.channel_type.as_api_str(),
-                "system",
-                SenderType::System.as_str(),
-                &content,
-                payload,
-            );
-            let stream_event = StreamEvent::new(
-                channel.id.clone(),
-                inserted.seq,
-                serde_json::to_value(event_payload)?,
-            );
-            let _ = self.stream_tx.send(stream_event);
-        }
-        Ok(())
-    }
-
     /// Post a server-authored message into a channel.
-    pub fn create_system_message(&self, channel_id: &str, content: &str) -> Result<String> {
+    pub fn create_system_message(
+        &self,
+        channel_id: &str,
+        content: &str,
+    ) -> Result<(String, StreamEvent)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let channel = Self::get_channel_by_id_inner(&tx, channel_id)?
@@ -241,11 +200,25 @@ impl Store {
         tx.commit()?;
         drop(conn); // release the guard before fanout to avoid holding the mutex
 
-        self.emit_system_stream_events(&channel, vec![(inserted, content.to_string())])?;
-        Ok(message_id)
+        let payload = inserted.to_event_payload(
+            channel.id.as_str(),
+            channel.channel_type.as_api_str(),
+            "system",
+            SenderType::System.as_str(),
+            content,
+        );
+        let stream_event = StreamEvent::new(
+            channel.id.clone(),
+            inserted.seq,
+            serde_json::to_value(payload)?,
+        );
+        Ok((message_id, stream_event))
     }
 
-    pub fn create_message(&self, message: CreateMessage<'_>) -> Result<String> {
+    pub fn create_message(
+        &self,
+        message: CreateMessage<'_>,
+    ) -> Result<(String, Option<StreamEvent>)> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
         let channel = Self::get_channel_by_name_inner(&tx, message.channel_name)?
@@ -283,10 +256,12 @@ impl Store {
             inserted.seq,
             serde_json::to_value(payload)?,
         );
-        if !message.suppress_event {
-            let _ = self.stream_tx.send(stream_event);
-        }
-        Ok(inserted.id)
+        let event = if message.suppress_event {
+            None
+        } else {
+            Some(stream_event)
+        };
+        Ok((inserted.id, event))
     }
 
     pub(crate) fn sender_name_for_id_tx(
@@ -312,6 +287,28 @@ impl Store {
             SenderType::System => Ok(sender_id.to_string()),
         }
     }
+}
+
+/// Build a `StreamEvent` from a system message insert result.
+pub(crate) fn system_message_stream_event(
+    channel: &Channel,
+    inserted: &InsertedMessage,
+    content: &str,
+    payload: Option<Value>,
+) -> StreamEvent {
+    let event_payload = inserted.to_event_payload_with_payload(
+        channel.id.as_str(),
+        channel.channel_type.as_api_str(),
+        "system",
+        "system",
+        content,
+        payload,
+    );
+    StreamEvent::new(
+        channel.id.clone(),
+        inserted.seq,
+        serde_json::to_value(event_payload).unwrap_or_default(),
+    )
 }
 
 #[cfg(test)]

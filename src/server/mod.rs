@@ -1,4 +1,5 @@
 pub use crate::utils::error;
+pub mod event_bus;
 mod handlers;
 pub mod transport;
 
@@ -43,6 +44,7 @@ use crate::agent::runtime_status::SharedRuntimeStatusProvider;
 use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
 use crate::config::ChorusConfig;
+use crate::server::event_bus::EventBus;
 use crate::store::Store;
 
 pub use handlers::dto;
@@ -54,6 +56,9 @@ pub use handlers::{AgentDetailResponse, AppState, HistoryResponse};
 
 pub fn build_router_with_services(
     store: Arc<Store>,
+    event_bus: Arc<EventBus>,
+    data_dir: std::path::PathBuf,
+    agents_dir: std::path::PathBuf,
     lifecycle: Arc<dyn AgentLifecycle>,
     runtime_status_provider: SharedRuntimeStatusProvider,
     templates: Vec<AgentTemplate>,
@@ -71,7 +76,8 @@ pub fn build_router_with_services(
         .ok()
         .flatten()
         .map(|workspace| workspace.id);
-    let (local_human_id, local_human_name) = resolve_local_human_identity(store.as_ref());
+    let (local_human_id, local_human_name) =
+        resolve_local_human_identity(store.as_ref(), &data_dir);
 
     // Built-in channels (`#all`) and the local human's membership are seeded
     // here, after identity resolution: the legacy CLI bootstrap used the OS
@@ -85,6 +91,9 @@ pub fn build_router_with_services(
 
     let state = AppState {
         store,
+        event_bus,
+        data_dir,
+        agents_dir,
         active_workspace_id: Arc::new(RwLock::new(active_workspace_id)),
         local_human_id,
         local_human_name,
@@ -246,11 +255,8 @@ pub fn build_router_with_services(
         .with_state(state)
 }
 
-fn resolve_local_human_identity(store: &Store) -> (String, String) {
-    let config_root = store
-        .data_dir()
-        .parent()
-        .unwrap_or_else(|| store.data_dir());
+fn resolve_local_human_identity(store: &Store, data_dir: &std::path::Path) -> (String, String) {
+    let config_root = data_dir;
     let configured = ChorusConfig::load(config_root)
         .ok()
         .flatten()

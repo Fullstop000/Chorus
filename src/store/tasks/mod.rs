@@ -7,7 +7,8 @@ use uuid::Uuid;
 
 use self::events::{TaskEventAction, TaskEventPayload};
 use super::channels::ChannelType;
-use super::messages::SenderType;
+use super::messages::{posting, SenderType};
+use super::stream::StreamEvent;
 use super::Store;
 
 // ── Types owned by this module ──
@@ -185,7 +186,7 @@ impl Store {
         creator_id: &str,
         creator_type: SenderType,
         titles: &[&str],
-    ) -> Result<Vec<TaskInfo>> {
+    ) -> Result<(Vec<TaskInfo>, Vec<StreamEvent>)> {
         // `transaction()` needs `&mut Connection`, so bind the guard as `mut`.
         let mut conn = self.conn.lock().unwrap();
         let channel = Self::get_channel_by_name_inner(&conn, channel_name)?
@@ -288,8 +289,13 @@ impl Store {
         tx.commit()?;
         drop(conn); // release the mutex guard before the stream fanout
 
-        self.emit_system_stream_events_with_payloads(&channel, pending_events)?;
-        Ok(result)
+        let events: Vec<StreamEvent> = pending_events
+            .into_iter()
+            .map(|(inserted, content, payload)| {
+                posting::system_message_stream_event(&channel, &inserted, &content, payload)
+            })
+            .collect();
+        Ok((result, events))
     }
 
     /// Fetch a single task by `(channel_name, task_number)`. Returns `Ok(None)`
@@ -347,7 +353,7 @@ impl Store {
         claimer_id: &str,
         claimer_type: SenderType,
         task_numbers: &[i64],
-    ) -> Result<Vec<ClaimResult>> {
+    ) -> Result<(Vec<ClaimResult>, Vec<StreamEvent>)> {
         // `transaction()` needs `&mut Connection`. Every successful claim in
         // this batch must atomically UPDATE the task row AND add the claimer
         // to the task's sub-channel — otherwise a crash between the two
@@ -452,8 +458,13 @@ impl Store {
         }
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events_with_payloads(&channel, pending_events)?;
-        Ok(results)
+        let events: Vec<StreamEvent> = pending_events
+            .into_iter()
+            .map(|(inserted, content, payload)| {
+                posting::system_message_stream_event(&channel, &inserted, &content, payload)
+            })
+            .collect();
+        Ok((results, events))
     }
 
     pub fn update_task_unclaim(
@@ -462,7 +473,7 @@ impl Store {
         claimer_id: &str,
         claimer_type: SenderType,
         task_number: i64,
-    ) -> Result<()> {
+    ) -> Result<Vec<StreamEvent>> {
         // Atomic: UPDATE the task row and DELETE the claimer's sub-channel
         // membership in one transaction. The creator is never touched — only
         // the caller's own membership row is removed.
@@ -544,11 +555,9 @@ impl Store {
             Self::create_system_message_tx_with_payload(&tx, &channel, &content, &payload_json)?;
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events_with_payloads(
-            &channel,
-            vec![(inserted, content, Some(payload_json))],
-        )?;
-        Ok(())
+        let event =
+            posting::system_message_stream_event(&channel, &inserted, &content, Some(payload_json));
+        Ok(vec![event])
     }
 
     pub fn update_task_status(
@@ -558,7 +567,7 @@ impl Store {
         requester_id: &str,
         requester_type: SenderType,
         new_status: TaskStatus,
-    ) -> Result<()> {
+    ) -> Result<Vec<StreamEvent>> {
         // `transaction()` needs `&mut Connection`. The status UPDATE and the
         // sub-channel archive (when `new_status == Done`) must commit together
         // so an observer never sees a task marked Done whose sub-channel is
@@ -653,11 +662,9 @@ impl Store {
 
         tx.commit()?;
         drop(conn);
-        self.emit_system_stream_events_with_payloads(
-            &channel,
-            vec![(inserted, content, Some(payload_json))],
-        )?;
-        Ok(())
+        let event =
+            posting::system_message_stream_event(&channel, &inserted, &content, Some(payload_json));
+        Ok(vec![event])
     }
 }
 
@@ -713,7 +720,7 @@ mod sub_channel_tests {
             .unwrap();
         let alice = seed_human(&store, "alice");
 
-        let result = store
+        let (result, _events) = store
             .create_tasks("eng", &alice.id, SenderType::Human, &["Ship the feature"])
             .unwrap();
         assert_eq!(result.len(), 1);
@@ -848,7 +855,7 @@ mod sub_channel_tests {
             .create_tasks("eng", &alice.id, SenderType::Human, &["Ship it"])
             .unwrap();
 
-        let results = store
+        let (results, _events) = store
             .update_tasks_claim("eng", &bob_id, SenderType::Agent, &[1])
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -915,7 +922,7 @@ mod sub_channel_tests {
         store
             .create_tasks("eng", &alice.id, SenderType::Human, &["Ship it"])
             .unwrap();
-        let claim = store
+        let (claim, _events) = store
             .update_tasks_claim("eng", &bob_id, SenderType::Agent, &[1])
             .unwrap();
         assert!(claim[0].success);
@@ -952,10 +959,12 @@ mod sub_channel_tests {
             .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::InReview)
+            .map(|_| ())
             .unwrap();
 
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::Done)
+            .map(|_| ())
             .unwrap();
 
         let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);
@@ -1016,9 +1025,11 @@ mod sub_channel_tests {
         // Advance task 1 through InReview → Done. Task 2 stays in progress.
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::InReview)
+            .map(|_| ())
             .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::Done)
+            .map(|_| ())
             .unwrap();
 
         let after: Vec<String> = store
@@ -1062,9 +1073,11 @@ mod sub_channel_tests {
             .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::InReview)
+            .map(|_| ())
             .unwrap();
         store
             .update_task_status("eng", 1, &bob_id, SenderType::Agent, TaskStatus::Done)
+            .map(|_| ())
             .unwrap();
 
         let (_parent_id, sub_id) = read_task_channel_ids(&store, "eng", 1);

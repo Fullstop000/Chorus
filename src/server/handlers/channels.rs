@@ -162,9 +162,13 @@ pub async fn handle_create_channel(
             app_err!(StatusCode::BAD_REQUEST, msg)
         }
     })?;
-    let _ = state
+    let (_, events) = state
         .store
-        .join_channel_by_id(&channel_id, &state.local_human_id, SenderType::Human);
+        .join_channel_by_id(&channel_id, &state.local_human_id, SenderType::Human)
+        .unwrap_or_default();
+    for event in events {
+        state.event_bus.publish_stream(event);
+    }
     Ok(Json(serde_json::json!({ "id": channel_id, "name": name })))
 }
 
@@ -217,10 +221,13 @@ pub async fn handle_invite_channel_member(
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?
         .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "member not found: {member_name}"))?;
 
-    state
+    let (_, events) = state
         .store
         .join_channel_by_id(&channel.id, &member_id, member_type)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
+    for event in events {
+        state.event_bus.publish_stream(event);
+    }
 
     let members = state
         .store
