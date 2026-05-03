@@ -48,7 +48,12 @@ Living list of follow-ups that are out of scope for the current branch but worth
 
 ## Decision Inbox follow-ups
 
-- [ ] **Codex / opencode `--resume` liveness guard.** Mirror the claude session-file check (`src/agent/drivers/claude.rs::claude_session_file`) for the codex `thread/resume` and opencode session-resume paths. Without it, fresh-agent runs work but stale-thread runs silently exit `Natural` after `check_messages`. Verified end-to-end with `gpt-5.5` codex and `deepseek-chat` opencode on fresh agents in the v0.0.7.0 cross-driver test; both fail on stale state. Discovered 2026-05-01 during decision-inbox dogfood.
+- [x] **Resume-liveness guards across all ACP-native runtimes.** Landed on the `driver-resilience` branch (PR #134, 2026-05-02..03). All four ACP-native drivers now have a file-existence guard that drops the resume id and falls back to a fresh session when the runtime's session storage is gone:
+  - Codex: `codex_thread_file` walks `~/.codex/sessions/<year>/<month>/<day>/rollout-*-<thread_id>.jsonl` newest-first (capped 7 days).
+  - Opencode: `opencode_session_file` checks `~/.local/share/opencode/storage/session_diff/<session_id>.json`.
+  - Kimi: `kimi_session_file` walks `~/.kimi/sessions/<workspace_hash>/<session_id>/state.json`.
+  - Gemini: `gemini_session_file` walks `~/.gemini/tmp/<project_key>/chats/session-*-<short_id>.jsonl`, where `<short_id>` is the first 8 hex chars of the UUID. Accepts both `.jsonl` and legacy `.json`.
+  All mirror the claude `claude_session_file` pattern from PR #131 and plug into the new `AcpDriverConfig::session_liveness_check` hook. Verified end-to-end on codex/kimi/gemini by deleting the rollout and confirming the agent recovers with a fresh session instead of silently no-op'ing.
 
 - [ ] **rmcp `StreamableHttpService` session TTL or re-init.** Long agent turns (>20 min, e.g. gemini deep-thinking on a PR review) cause the bridge MCP session to expire mid-turn; the agent's eventual `dispatch_decision` returns `Unauthorized: Session not found` at the transport layer even though the payload was valid. Either raise the TTL on the bridge side or detect expiry and re-init the session. Discovered 2026-05-01 during decision-inbox dogfood.
 

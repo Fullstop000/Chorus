@@ -18,6 +18,7 @@
 //!   requires it).
 //! - probe + list_models.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -177,6 +178,101 @@ fn spawn_gemini(spec: Arc<AgentSpec>, _key: AgentKey) -> SpawnFut {
 }
 
 // ---------------------------------------------------------------------------
+// Session-file liveness guard
+// ---------------------------------------------------------------------------
+
+/// Find a gemini session-state file for `session_id`. Gemini stores per-
+/// session state under
+/// `~/.gemini/tmp/<project_key>/chats/session-<datetime>-<short_id>.jsonl`,
+/// where `<project_key>` is derived from the working dir and `<short_id>`
+/// is the first 8 hex chars of the full UUID. Walks every project-key dir
+/// under `~/.gemini/tmp/`, filters candidates by filename suffix, then
+/// confirms by reading the file's `sessionId` field — the 8-char filename
+/// prefix has a non-zero collision probability (~n²/2³³, ≈1/800K with 100
+/// sessions on disk) and a false positive would steer `session/load` at a
+/// pruned id, reproducing the silent no-op bug the guard exists to prevent.
+///
+/// Mirrors the codex/opencode/kimi/claude file-existence pattern with the
+/// extra full-UUID confirmation step. Cost on a hit is one extra read of
+/// the candidate file's first ~200 bytes; on a miss, no file is opened.
+fn gemini_session_file(home: &Path, session_id: &str) -> Option<PathBuf> {
+    let tmp_dir = home.join(".gemini").join("tmp");
+    if !tmp_dir.is_dir() {
+        return None;
+    }
+    if session_id.is_empty() {
+        return None;
+    }
+    // Gemini truncates the UUID to its first 8 hex chars in the filename.
+    let needle: String = session_id
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_lowercase();
+    let suffix = format!("-{needle}.jsonl");
+    let suffix_old = format!("-{needle}.json");
+    let full_id_lower = session_id.to_lowercase();
+
+    let Ok(rd) = std::fs::read_dir(&tmp_dir) else {
+        return None;
+    };
+    for project_entry in rd.flatten() {
+        if !project_entry
+            .file_type()
+            .map(|t| t.is_dir())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        let chats_dir = project_entry.path().join("chats");
+        let Ok(chats_rd) = std::fs::read_dir(&chats_dir) else {
+            continue;
+        };
+        for chat_entry in chats_rd.flatten() {
+            let name = chat_entry.file_name();
+            let name_str = name.to_string_lossy().to_lowercase();
+            if !(name_str.starts_with("session-")
+                && (name_str.ends_with(&suffix) || name_str.ends_with(&suffix_old)))
+            {
+                continue;
+            }
+            let path = chat_entry.path();
+            if file_has_session_id(&path, &full_id_lower) {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
+/// Confirm a gemini session JSON's `sessionId` field matches `session_id_lower`.
+/// Reads up to 4KB from the file head — the field appears at the start of the
+/// JSON object, so this is enough without loading the full conversation. Used
+/// after a filename-prefix match to defend against 8-char UUID collisions.
+fn file_has_session_id(path: &Path, session_id_lower: &str) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = [0u8; 4096];
+    let n = f.read(&mut buf).unwrap_or(0);
+    let head = &buf[..n];
+    let Ok(text) = std::str::from_utf8(head) else {
+        return false;
+    };
+    let lowered = text.to_lowercase();
+    // Match against the JSON field exactly: `"sessionid":"<id>"`.
+    let needle = format!("\"sessionid\":\"{session_id_lower}\"");
+    lowered.contains(&needle)
+}
+
+/// Liveness adapter for [`AcpDriverConfig::session_liveness_check`]. Looks
+/// up the gemini session file via [`home_dir`] each call.
+fn gemini_session_alive(session_id: &str) -> bool {
+    gemini_session_file(&home_dir(), session_id).is_some()
+}
+
+// ---------------------------------------------------------------------------
 // Per-driver static registry + config
 // ---------------------------------------------------------------------------
 
@@ -199,6 +295,7 @@ static GEMINI_CFG: AcpDriverConfig = AcpDriverConfig {
     build_first_prompt_prefix: None,
     spawn_child: spawn_gemini,
     registry: &GEMINI_REGISTRY,
+    session_liveness_check: Some(gemini_session_alive),
 };
 
 // ---------------------------------------------------------------------------
@@ -315,6 +412,177 @@ mod tests {
     fn gemini_runtime_variant_parses() {
         assert_eq!(AgentRuntime::parse("gemini"), Some(AgentRuntime::Gemini));
         assert_eq!(AgentRuntime::Gemini.as_str(), "gemini");
+    }
+
+    // ---- session-file liveness guard ----
+
+    #[test]
+    fn gemini_session_file_finds_jsonl_by_short_id() {
+        let tmp = tempfile::tempdir().unwrap();
+        let chats = tmp
+            .path()
+            .join(".gemini")
+            .join("tmp")
+            .join("agent-1")
+            .join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        // Real gemini-style filename: session-<datetime>-<8-hex>.jsonl
+        let f = chats.join("session-2026-05-02T05-01-7dd1c95e.jsonl");
+        std::fs::write(
+            &f,
+            br#"{"sessionId":"7dd1c95e-314c-4905-992a-afccf2516ae9"}"#,
+        )
+        .unwrap();
+
+        let full_id = "7dd1c95e-314c-4905-992a-afccf2516ae9";
+        let found = gemini_session_file(tmp.path(), full_id).expect("session file should be found");
+        assert_eq!(found, f);
+    }
+
+    #[test]
+    fn gemini_session_file_walks_multiple_project_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_dir = tmp.path().join(".gemini").join("tmp");
+        // Decoy projects with unrelated sessions
+        for proj in ["chorus", "design-reviews", "experiments"] {
+            let chats = tmp_dir.join(proj).join("chats");
+            std::fs::create_dir_all(&chats).unwrap();
+            std::fs::write(
+                chats.join("session-2026-04-01T00-00-decoyabc.jsonl"),
+                br#"{"sessionId":"decoyabc-0000-0000-0000-000000000000"}"#,
+            )
+            .unwrap();
+        }
+        // Real session in a fourth project
+        let target_chats = tmp_dir.join("real-agent").join("chats");
+        std::fs::create_dir_all(&target_chats).unwrap();
+        let target = target_chats.join("session-2026-05-02T05-01-7dd1c95e.jsonl");
+        std::fs::write(
+            &target,
+            br#"{"sessionId":"7dd1c95e-314c-4905-992a-afccf2516ae9"}"#,
+        )
+        .unwrap();
+
+        let found = gemini_session_file(tmp.path(), "7dd1c95e-314c-4905-992a-afccf2516ae9")
+            .expect("should walk to real-agent and find target");
+        assert_eq!(found, target);
+    }
+
+    #[test]
+    fn gemini_session_file_accepts_old_json_extension() {
+        // Older gemini sessions used .json (no `l`); we accept both.
+        let tmp = tempfile::tempdir().unwrap();
+        let chats = tmp
+            .path()
+            .join(".gemini")
+            .join("tmp")
+            .join("legacy")
+            .join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        let f = chats.join("session-2026-04-23T08-29-167fc060.json");
+        std::fs::write(
+            &f,
+            br#"{"sessionId":"167fc060-dae8-4632-a718-cf92fc90bd2f"}"#,
+        )
+        .unwrap();
+        let found = gemini_session_file(tmp.path(), "167fc060-dae8-4632-a718-cf92fc90bd2f")
+            .expect("legacy .json filenames must still be detected");
+        assert_eq!(found, f);
+    }
+
+    #[test]
+    fn gemini_session_file_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(
+            tmp.path()
+                .join(".gemini")
+                .join("tmp")
+                .join("agent")
+                .join("chats"),
+        )
+        .unwrap();
+        assert!(gemini_session_file(tmp.path(), "deadbeef-1111-2222-3333-444444444444").is_none());
+    }
+
+    #[test]
+    fn gemini_session_file_returns_none_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(gemini_session_file(tmp.path(), "anything").is_none());
+    }
+
+    #[test]
+    fn gemini_session_file_returns_none_when_session_id_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".gemini").join("tmp")).unwrap();
+        assert!(gemini_session_file(tmp.path(), "").is_none());
+    }
+
+    #[test]
+    fn gemini_session_file_rejects_8char_prefix_collision() {
+        // Two sessions share the same 8-char prefix `7dd1c95e` but differ
+        // in the rest of the UUID. Without the full-UUID confirmation,
+        // gemini_session_file would return the wrong file. With the check,
+        // it rejects the colliding file and finds the right one.
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_dir = tmp.path().join(".gemini").join("tmp");
+        let alpha_chats = tmp_dir.join("alpha").join("chats");
+        let beta_chats = tmp_dir.join("beta").join("chats");
+        std::fs::create_dir_all(&alpha_chats).unwrap();
+        std::fs::create_dir_all(&beta_chats).unwrap();
+
+        // Collider in alpha — same 8-char prefix, different full id
+        let colliding = alpha_chats.join("session-2026-05-01T10-00-7dd1c95e.jsonl");
+        std::fs::write(
+            &colliding,
+            br#"{"sessionId":"7dd1c95e-aaaa-aaaa-aaaa-aaaaaaaaaaaa"}"#,
+        )
+        .unwrap();
+
+        // Real target in beta — same prefix, the full id we want
+        let target = beta_chats.join("session-2026-05-02T05-01-7dd1c95e.jsonl");
+        std::fs::write(
+            &target,
+            br#"{"sessionId":"7dd1c95e-314c-4905-992a-afccf2516ae9"}"#,
+        )
+        .unwrap();
+
+        let found = gemini_session_file(tmp.path(), "7dd1c95e-314c-4905-992a-afccf2516ae9")
+            .expect("should reject collider, find real target");
+        assert_eq!(found, target);
+
+        // Sanity check the other direction.
+        let found = gemini_session_file(tmp.path(), "7dd1c95e-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+            .expect("should still find the alpha session by its full id");
+        assert_eq!(found, colliding);
+
+        // And a 3rd id that shares the prefix but exists nowhere should fail.
+        assert!(
+            gemini_session_file(tmp.path(), "7dd1c95e-bbbb-bbbb-bbbb-bbbbbbbbbbbb").is_none(),
+            "no file matches the full uuid; the prefix-only match must be rejected"
+        );
+    }
+
+    #[test]
+    fn gemini_session_file_handles_short_truncated_input() {
+        // If a caller passes <8 chars, take what we have but still confirm
+        // by full-string match. With <8 chars there's no full UUID to
+        // confirm against, so the file lookup fails safely.
+        let tmp = tempfile::tempdir().unwrap();
+        let chats = tmp
+            .path()
+            .join(".gemini")
+            .join("tmp")
+            .join("p")
+            .join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        let f = chats.join("session-2026-05-02T05-01-abcd1234.jsonl");
+        std::fs::write(
+            &f,
+            br#"{"sessionId":"abcd1234-0000-0000-0000-000000000000"}"#,
+        )
+        .unwrap();
+        // 4-char input doesn't match `"sessionId":"abcd"` literally, so reject.
+        assert!(gemini_session_file(tmp.path(), "abcd").is_none());
     }
 
     #[test]

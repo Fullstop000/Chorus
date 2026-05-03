@@ -16,6 +16,7 @@
 //!   the only place to anchor system rules is the leading user-role text on
 //!   turn 1.
 
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 
@@ -140,6 +141,44 @@ fn spawn_kimi(spec: Arc<AgentSpec>, key: AgentKey) -> SpawnFut {
 }
 
 // ---------------------------------------------------------------------------
+// Session-file liveness guard
+// ---------------------------------------------------------------------------
+
+/// Find the kimi session-state file for `session_id`. Kimi stores per-session
+/// state under `~/.kimi/sessions/<workspace_hash>/<session_id>/state.json`,
+/// where `workspace_hash` is a 32-char hex of the working directory. We
+/// don't know the hash here, so glob across all workspace dirs and return
+/// the first match. None means the session is gone and `session/load`
+/// should be replaced with `session/new`.
+///
+/// Mirrors the codex/opencode/claude file-existence pattern. Cost is one
+/// `read_dir` of `~/.kimi/sessions/` (typically <few hundred entries) plus
+/// one `is_file` per workspace until we find a match or exhaust.
+fn kimi_session_file(home: &Path, session_id: &str) -> Option<PathBuf> {
+    let sessions_dir = home.join(".kimi").join("sessions");
+    if !sessions_dir.is_dir() {
+        return None;
+    }
+    let rd = std::fs::read_dir(&sessions_dir).ok()?;
+    for entry in rd.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let candidate = entry.path().join(session_id).join("state.json");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Liveness adapter for [`AcpDriverConfig::session_liveness_check`]. Looks
+/// up the kimi state file via [`home_dir`] each call.
+fn kimi_session_alive(session_id: &str) -> bool {
+    kimi_session_file(&home_dir(), session_id).is_some()
+}
+
+// ---------------------------------------------------------------------------
 // Per-driver static registry + config
 // ---------------------------------------------------------------------------
 
@@ -156,6 +195,7 @@ static KIMI_CFG: AcpDriverConfig = AcpDriverConfig {
     build_first_prompt_prefix: Some(build_kimi_standing_prompt),
     spawn_child: spawn_kimi,
     registry: &KIMI_REGISTRY,
+    session_liveness_check: Some(kimi_session_alive),
 };
 
 // ---------------------------------------------------------------------------
@@ -250,6 +290,59 @@ mod tests {
             working_directory: PathBuf::from("/fake"),
             bridge_endpoint: "http://127.0.0.1:1".to_string(),
         }
+    }
+
+    // ---- session-file liveness guard ----
+
+    #[test]
+    fn kimi_session_file_finds_state_under_workspace_hash() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_hash = "0749a6673832efdcb848ee54b8d3a625";
+        let sid = "d6c7d632-ecdd-486a-96b1-df0091c6550d";
+        let session_dir = tmp
+            .path()
+            .join(".kimi")
+            .join("sessions")
+            .join(workspace_hash)
+            .join(sid);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        let state = session_dir.join("state.json");
+        std::fs::write(&state, b"{}").unwrap();
+
+        let found = kimi_session_file(tmp.path(), sid).expect("state.json should be found");
+        assert_eq!(found, state);
+    }
+
+    #[test]
+    fn kimi_session_file_walks_multiple_workspace_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sessions = tmp.path().join(".kimi").join("sessions");
+        // Five decoy workspace dirs without our session, then the real one.
+        for hex in ["a1b2", "c3d4", "e5f6", "0011", "2233"] {
+            std::fs::create_dir_all(sessions.join(hex)).unwrap();
+        }
+        let real_workspace = sessions.join("ffff");
+        std::fs::create_dir_all(&real_workspace).unwrap();
+        let sid = "real-session-uuid";
+        let state = real_workspace.join(sid).join("state.json");
+        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
+        std::fs::write(&state, b"{}").unwrap();
+
+        let found = kimi_session_file(tmp.path(), sid).expect("state.json should be found");
+        assert_eq!(found, state);
+    }
+
+    #[test]
+    fn kimi_session_file_returns_none_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".kimi").join("sessions")).unwrap();
+        assert!(kimi_session_file(tmp.path(), "no-such-session").is_none());
+    }
+
+    #[test]
+    fn kimi_session_file_returns_none_when_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(kimi_session_file(tmp.path(), "anything").is_none());
     }
 
     #[tokio::test]

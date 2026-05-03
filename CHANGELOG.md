@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.8.0] - 2026-05-03
+
+### Fixed
+- Codex, opencode, kimi, and gemini agents no longer silently no-op when their resume target is gone. Each driver now checks the runtime's session storage before issuing `thread/resume` or `session/load`, and falls back to a fresh session with a warning if the file is missing — same pattern claude got in v0.0.7.0.
+
+### Added
+- Run-completion logs include `tool_calls=N`. A run that finishes `Natural` with `tool_calls=0` is now logged at `warn!` with a likely-cause hint instead of looking identical to a normal turn end.
+
 ## [0.0.7.0] - 2026-05-01
 
 ### Added
