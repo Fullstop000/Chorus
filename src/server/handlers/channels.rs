@@ -130,6 +130,12 @@ pub async fn handle_create_channel(
     Json(req): Json<CreateChannelRequest>,
 ) -> ApiResult<serde_json::Value> {
     let name = normalize_channel_name(&req.name);
+    if name.is_empty() {
+        return Err(app_err!(
+            StatusCode::BAD_REQUEST,
+            "channel name is required"
+        ));
+    }
     if !is_valid_channel_name(&name) {
         return Err(app_err!(StatusCode::BAD_REQUEST, INVALID_CHANNEL_NAME_MSG));
     }

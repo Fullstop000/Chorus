@@ -169,39 +169,51 @@ async fn check_codex_auth() -> ProbeAuth {
 }
 
 async fn check_kimi_auth() -> ProbeAuth {
-    let has_access = TokioCommand::new("kimi")
-        .args(["config", "get", "auth.access_token"])
-        .output()
-        .await
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
-    let has_refresh = TokioCommand::new("kimi")
-        .args(["config", "get", "auth.refresh_token"])
-        .output()
-        .await
-        .ok()
-        .filter(|o| o.status.success())
-        .is_some_and(|o| !String::from_utf8_lossy(&o.stdout).trim().is_empty());
-    if has_access || has_refresh {
-        ProbeAuth::Authed
-    } else {
-        ProbeAuth::Unauthed
+    // The kimi CLI has no `auth status` or `config` subcommand to query.
+    // After `kimi /login` succeeds, credentials are written to
+    // `~/.kimi/credentials/<model>.json`. Treat the presence of any
+    // non-empty `*.json` credential file as authed.
+    let Some(home) = dirs::home_dir() else {
+        return ProbeAuth::Unauthed;
+    };
+    let dir = home.join(".kimi").join("credentials");
+    let mut entries = match tokio::fs::read_dir(&dir).await {
+        Ok(rd) => rd,
+        Err(_) => return ProbeAuth::Unauthed,
+    };
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        if let Ok(meta) = entry.metadata().await {
+            if meta.len() > 0 {
+                return ProbeAuth::Authed;
+            }
+        }
     }
+    ProbeAuth::Unauthed
 }
 
 async fn check_opencode_auth() -> ProbeAuth {
-    let Ok(output) = TokioCommand::new("opencode")
-        .args(["auth", "status"])
-        .output()
-        .await
-    else {
+    // `opencode auth status` doesn't exist — the `auth` group exposes
+    // only `list`/`login`/`logout`, and `list` exits 0 even with zero
+    // credentials. Read the credentials file directly: if it contains
+    // at least one provider entry, the user is authed.
+    let Some(home) = dirs::home_dir() else {
         return ProbeAuth::Unauthed;
     };
-    if output.status.success() {
-        ProbeAuth::Authed
-    } else {
-        ProbeAuth::Unauthed
+    let path = home
+        .join(".local")
+        .join("share")
+        .join("opencode")
+        .join("auth.json");
+    let Ok(contents) = tokio::fs::read_to_string(&path).await else {
+        return ProbeAuth::Unauthed;
+    };
+    match serde_json::from_str::<serde_json::Value>(&contents) {
+        Ok(serde_json::Value::Object(map)) if !map.is_empty() => ProbeAuth::Authed,
+        _ => ProbeAuth::Unauthed,
     }
 }
 
