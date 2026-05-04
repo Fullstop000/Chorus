@@ -133,6 +133,15 @@ export function MessageList({
   useEffect(() => {
     pendingReadSeqRef.current = null;
     lastReadSeqRef.current = lastReadSeq;
+    // Cancel any pending flush left over from the previous target. Its
+    // callback closes over the old `targetKey`/`conversationId` and would
+    // bail at the `activeTargetRef.current !== targetKey` guard, leaving
+    // `readCursorTimerRef` non-null and blocking the new target's flush
+    // from ever being scheduled.
+    if (readCursorTimerRef.current != null) {
+      window.clearTimeout(readCursorTimerRef.current);
+      readCursorTimerRef.current = null;
+    }
   }, [targetKey]);
 
   // ── Debounced server flush ──
