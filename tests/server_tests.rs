@@ -431,6 +431,7 @@ async fn test_internal_agent_name_send_uses_canonical_agent_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -886,6 +887,7 @@ async fn test_public_dm_route_accepts_agent_id_and_stores_canonical_member_id() 
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1067,6 +1069,7 @@ async fn test_channel_members_api_lists_members_and_supports_invite() {
             runtime: "codex",
             model: "gpt-5.4",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1175,6 +1178,7 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
             runtime: "codex",
             model: "gpt-5.4",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1219,6 +1223,7 @@ async fn test_history_rejects_non_member_agent() {
             runtime: "codex",
             model: "gpt-5.4",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1682,6 +1687,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: Some("high"),
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1866,6 +1872,7 @@ async fn test_send_starts_inactive_agent_recipients() {
             runtime: "codex",
             model: "gpt-5.4",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -2398,6 +2405,7 @@ async fn test_list_and_update_team_endpoints() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -2663,6 +2671,7 @@ async fn test_at_mention_forwards_to_team_channel() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -2917,6 +2926,7 @@ async fn test_active_workspace_filters_core_resource_lists() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             },
         )
@@ -2932,6 +2942,7 @@ async fn test_active_workspace_filters_core_resource_lists() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             },
         )
@@ -3335,6 +3346,7 @@ async fn test_non_member_history_returns_message_not_a_member() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();

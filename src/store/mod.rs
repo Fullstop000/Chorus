@@ -81,6 +81,12 @@ impl Store {
     fn init_schema(conn: &Connection) -> Result<()> {
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
+        // Phase 3 slice 6 idempotent migration: SQLite has no
+        // "ALTER TABLE ... ADD COLUMN IF NOT EXISTS", so we attempt the
+        // ALTER and silently ignore the "duplicate column name" error.
+        // For brand-new DBs the column is already present from
+        // schema.sql; for existing DBs this is the migration path.
+        let _ = conn.execute("ALTER TABLE agents ADD COLUMN machine_id TEXT", []);
         Ok(())
     }
 

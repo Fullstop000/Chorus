@@ -39,6 +39,11 @@ pub struct BridgeRegistry {
     /// against the pid carried by every other transition. Cleared
     /// per-machine on bridge disconnect.
     instance_pids: Mutex<HashMap<String, HashMap<String, u32>>>,
+    /// `(machine_id, agent_id) → last_acked_seq`. Advanced by every
+    /// `chat.ack` frame the bridge sends after buffering a delivery.
+    /// In slice 5 this is in-memory only; later slices will persist to
+    /// `agents.last_acked_seq` so reconnect-replay can avoid duplicates.
+    chat_acks: Mutex<HashMap<String, HashMap<String, i64>>>,
     /// Telemetry: count of `agent.state` frames dropped because their
     /// `runtime_pid` doesn't match the current tracker. Test-visible
     /// hook for verifying the filter actually fires.
@@ -90,6 +95,34 @@ impl BridgeRegistry {
         delivered
     }
 
+    /// Push a JSON-encoded frame only to bridges connected for the
+    /// given `machine_id`. Returns the number of recipients delivered
+    /// to (0 if no bridge is connected for that machine_id, or all
+    /// queues for that machine were full).
+    pub fn send_to(&self, machine_id: &str, frame_text: &str) -> usize {
+        let snapshot: Vec<mpsc::Sender<String>> = {
+            let conns = self.connections.lock().unwrap();
+            conns
+                .get(machine_id)
+                .map(|v| v.iter().cloned().collect())
+                .unwrap_or_default()
+        };
+        let mut delivered = 0;
+        for tx in snapshot {
+            if tx.try_send(frame_text.to_string()).is_ok() {
+                delivered += 1;
+            }
+        }
+        delivered
+    }
+
+    /// Snapshot of currently-connected `machine_id`s. Each `machine_id`
+    /// may have multiple sender entries during a transient supersede
+    /// window; this helper de-dupes.
+    pub fn connected_machine_ids(&self) -> Vec<String> {
+        self.connections.lock().unwrap().keys().cloned().collect()
+    }
+
     fn deregister(&self, machine_id: &str, sender: &mpsc::Sender<String>) {
         let was_last_for_machine = {
             let mut conns = self.connections.lock().unwrap();
@@ -105,13 +138,39 @@ impl BridgeRegistry {
                 false
             }
         };
-        // Clear the pid tracker only when the last connection for this
-        // machine_id goes away. If a transient second connection just
-        // closed (4002 supersede in a future slice), the surviving one
-        // still owns those pids.
+        // Clear per-machine in-memory state only when the last
+        // connection for this machine_id goes away. If a transient
+        // second connection just closed (4002 supersede in a future
+        // slice), the surviving one still owns the pids and ack cursors.
         if was_last_for_machine {
             self.instance_pids.lock().unwrap().remove(machine_id);
+            self.chat_acks.lock().unwrap().remove(machine_id);
         }
+    }
+
+    /// Record the bridge's `chat.ack {agent_id, last_seq}`. The cursor
+    /// is monotonic per `(machine_id, agent_id)` — out-of-order acks
+    /// are ignored.
+    pub fn record_chat_ack(&self, machine_id: &str, agent_id: &str, last_seq: i64) {
+        let mut acks = self.chat_acks.lock().unwrap();
+        let bucket = acks.entry(machine_id.to_string()).or_default();
+        let entry = bucket.entry(agent_id.to_string()).or_insert(i64::MIN);
+        if last_seq > *entry {
+            *entry = last_seq;
+        }
+    }
+
+    /// Read the last-acked seq for an agent on a given bridge. `None`
+    /// when no ack has been recorded yet (the bridge hasn't drained
+    /// any deliveries for this agent — replay should re-emit
+    /// everything from the agent's `last_delivered_seq`).
+    pub fn last_acked_seq(&self, machine_id: &str, agent_id: &str) -> Option<i64> {
+        self.chat_acks
+            .lock()
+            .unwrap()
+            .get(machine_id)
+            .and_then(|m| m.get(agent_id))
+            .copied()
     }
 
     /// Record the runtime pid the bridge just started for an agent.
@@ -248,6 +307,40 @@ mod tests {
         let reg = BridgeRegistry::new();
         assert!(reg.is_current_pid("m-1", "ghost-agent", 999));
         assert_eq!(reg.stale_state_drops(), 0);
+    }
+
+    // ── slice 5: chat.ack cursor ──
+
+    #[tokio::test]
+    async fn chat_ack_records_and_returns_last_seq() {
+        let reg = BridgeRegistry::new();
+        reg.record_chat_ack("m-1", "agent-a", 42);
+        assert_eq!(reg.last_acked_seq("m-1", "agent-a"), Some(42));
+        // Different agent on same machine → no entry yet.
+        assert_eq!(reg.last_acked_seq("m-1", "agent-b"), None);
+        // Different machine → no entry.
+        assert_eq!(reg.last_acked_seq("m-2", "agent-a"), None);
+    }
+
+    #[tokio::test]
+    async fn chat_ack_is_monotonic() {
+        let reg = BridgeRegistry::new();
+        reg.record_chat_ack("m-1", "agent-a", 100);
+        reg.record_chat_ack("m-1", "agent-a", 200);
+        assert_eq!(reg.last_acked_seq("m-1", "agent-a"), Some(200));
+        // Out-of-order: lower seq must NOT roll the cursor back.
+        reg.record_chat_ack("m-1", "agent-a", 150);
+        assert_eq!(reg.last_acked_seq("m-1", "agent-a"), Some(200));
+    }
+
+    #[tokio::test]
+    async fn chat_acks_cleared_on_last_disconnect() {
+        let reg = BridgeRegistry::new();
+        let (_rx, guard) = reg.register("m-1");
+        reg.record_chat_ack("m-1", "agent-a", 7);
+        assert_eq!(reg.last_acked_seq("m-1", "agent-a"), Some(7));
+        drop(guard);
+        assert_eq!(reg.last_acked_seq("m-1", "agent-a"), None);
     }
 
     #[tokio::test]

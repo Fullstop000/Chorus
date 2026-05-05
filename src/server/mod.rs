@@ -135,6 +135,39 @@ pub fn build_router_with_services_and_auth(
         bridge_auth,
     };
 
+    // Spawn a single forwarder task that subscribes once to the event
+    // bus and pushes `chat.message.received` frames over the WS to every
+    // connected bridge whenever a `message.created` stream event lands.
+    // This avoids editing every `publish_stream` call site in the
+    // handler tree (~20 of them) and keeps the wire-emit logic in one
+    // place. The task runs for the lifetime of the process.
+    {
+        let bridge_registry = state.bridge_registry.clone();
+        let store = state.store.clone();
+        let mut rx = state.event_bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        transport::bridge_ws::forward_chat_event_to_bridges(
+                            store.as_ref(),
+                            bridge_registry.as_ref(),
+                            &event,
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Forwarder fell behind; drop the gap and keep
+                        // streaming. Bridge will see the next message
+                        // on the next event; reconcile-on-reconnect
+                        // catches up the rest.
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
+
     // Agent runtimes and CLI flows still depend on an agent-scoped internal API.
     // In particular, `/internal/agent/{agent_id}/server` is the historical
     // workspace-discovery route for bridge clients. These routes intentionally
@@ -160,7 +193,11 @@ pub fn build_router_with_services_and_auth(
             post(handle_update_task_status),
         )
         .route("/agent/{agent_id}/upload", post(handle_upload))
-        .route("/agent/{agent_id}/decisions", post(handle_create_decision));
+        .route("/agent/{agent_id}/decisions", post(handle_create_decision))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            bridge_auth::require_bridge_auth,
+        ));
 
     let api_router = Router::new()
         .route("/attachments/{attachment_id}", get(handle_get_attachment))

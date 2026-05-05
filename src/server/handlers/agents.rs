@@ -71,6 +71,11 @@ pub struct CreateAgentRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
+    /// Phase 3 bridge ownership (slice 6). Optional; when omitted, the
+    /// agent has no bound `machine_id` and is visible to every
+    /// connected bridge (back-compat with pre-slice-6 behavior).
+    #[serde(default, rename = "machineId")]
+    pub machine_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -88,6 +93,8 @@ pub struct UpdateAgentRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
+    #[serde(default, rename = "machineId")]
+    pub machine_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -261,6 +268,11 @@ pub async fn handle_create_agent(
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
 
     // Create the agent record, join auto-join channels, and start it.
+    let machine_id_trimmed = req
+        .machine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let result = create_and_start_agent(
         &state,
         &CreateAgentParams {
@@ -271,6 +283,7 @@ pub async fn handle_create_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
+            machine_id: machine_id_trimmed,
             env_vars: &env_vars,
         },
     )
@@ -302,6 +315,7 @@ pub(crate) struct CreateAgentParams<'a> {
     pub runtime: &'a str,
     pub model: &'a str,
     pub reasoning_effort: Option<&'a str>,
+    pub machine_id: Option<&'a str>,
     pub env_vars: &'a [AgentEnvVar],
 }
 
@@ -332,6 +346,7 @@ pub(crate) async fn create_and_start_agent(
             runtime: params.runtime,
             model: params.model,
             reasoning_effort: params.reasoning_effort,
+            machine_id: params.machine_id,
             env_vars: params.env_vars,
         };
         let create_result = match active_workspace_id.as_deref() {
@@ -473,6 +488,11 @@ pub async fn handle_update_agent(
         || existing.reasoning_effort != reasoning_effort
         || existing.env_vars != env_vars;
 
+    let machine_id_trimmed = req
+        .machine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     state
         .store
         .update_agent_record(&AgentRecordUpsert {
@@ -483,6 +503,7 @@ pub async fn handle_update_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
+            machine_id: machine_id_trimmed,
             env_vars: &env_vars,
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;

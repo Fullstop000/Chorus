@@ -84,6 +84,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -96,6 +97,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "codex",
             model: "gpt-5",
             reasoning_effort: Some("medium"),
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -572,4 +574,341 @@ async fn bridge_ws_drops_session_on_machine_id_spoof() {
         }
         other => panic!("unexpected post-spoof outcome: {other:?}"),
     }
+}
+
+// ── Slice 5: chat.message.received push + chat.ack ─────────────────────
+
+async fn start_test_server_with_event_bus_handle() -> (
+    String,
+    Arc<Store>,
+    Arc<chorus::server::event_bus::EventBus>,
+    String,
+) {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    let alice = store.create_local_human("alice").unwrap();
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
+        .unwrap();
+    harness::join_channel_silent(&store, "general", &alice.id, "human");
+    let (router, event_bus) = harness::build_router_with_event_bus(store.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ws_url = format!("ws://{addr}");
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    (ws_url, store, event_bus, alice.id)
+}
+
+#[tokio::test]
+async fn bridge_ws_pushes_chat_message_received_when_agent_member_gets_message() {
+    let (ws_url, store, event_bus, alice_id) = start_test_server_with_event_bus_handle().await;
+
+    // Seed an agent and join it to #general.
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "chat-listener",
+            display_name: "Chat Listener",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    harness::join_channel_silent(&store, "general", &agent_id, "agent");
+
+    // Connect a bridge and drain the initial target frame.
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade should succeed");
+    send_hello(&mut socket, "chat-machine").await;
+    let _ = read_json_frame(&mut socket).await;
+
+    // Create a chat message and publish through the same EventBus the
+    // server's forwarder is subscribed to.
+    let (_msg_id, ev) = store
+        .create_message(chorus::store::messages::CreateMessage {
+            channel_name: "general",
+            sender_id: &alice_id,
+            sender_type: chorus::store::messages::SenderType::Human,
+            content: "hello agents",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap();
+    if let Some(event) = ev {
+        event_bus.publish_stream(event);
+    }
+
+    // Drain frames until we see chat.message.received for our agent.
+    let mut got_chat = false;
+    for _ in 0..6 {
+        let frame = match timeout(Duration::from_millis(800), read_json_frame(&mut socket)).await {
+            Ok(f) => f,
+            Err(_) => break,
+        };
+        if frame["type"] == "chat.message.received" {
+            assert_eq!(frame["data"]["agent_id"], agent_id, "matches seeded agent");
+            assert!(
+                frame["data"]["seq"].is_number(),
+                "seq present in chat frame"
+            );
+            got_chat = true;
+            break;
+        }
+    }
+    assert!(
+        got_chat,
+        "expected at least one chat.message.received frame for the agent"
+    );
+}
+
+#[tokio::test]
+async fn bridge_ws_chat_ack_advances_per_agent_cursor() {
+    // This test exercises the wire shape: bridge → chat.ack frame →
+    // session loop accepts and stays alive. The actual cursor
+    // observability (BridgeRegistry::last_acked_seq) is covered by the
+    // unit tests below; here we just confirm the WS path doesn't break
+    // on the new frame type.
+    let (ws_url, http_url, _store) = start_test_server().await;
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade should succeed");
+    send_hello(&mut socket, "ack-machine").await;
+    let _ = read_json_frame(&mut socket).await; // initial target
+
+    let ack = json!({
+        "v": 1, "type": "chat.ack",
+        "data": { "agent_id": "agt-x", "last_seq": 42 }
+    });
+    socket
+        .send(Message::Text(ack.to_string().into()))
+        .await
+        .unwrap();
+
+    // Trigger a push and verify session is alive.
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{http_url}/api/agents"))
+        .json(&json!({
+            "name": "ack-bot",
+            "display_name": "Ack Bot",
+            "runtime": "claude",
+            "model": "sonnet"
+        }))
+        .send()
+        .await
+        .unwrap()
+        .error_for_status()
+        .unwrap();
+    let pushed = read_json_frame(&mut socket).await;
+    assert_eq!(pushed["type"], "bridge.target");
+}
+
+// ── Slice 6: machine_id scoping on agents ──────────────────────────────
+
+#[tokio::test]
+async fn bridge_ws_target_scoped_by_agent_machine_id() {
+    let (ws_url, _http_url, store) = start_test_server().await;
+
+    // Owner-less agent (machine_id NULL) — visible to every bridge.
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "shared-bot",
+            display_name: "Shared Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    // Owned by machine-a only.
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "alpha-only",
+            display_name: "Alpha Only",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-a"),
+            env_vars: &[],
+        })
+        .unwrap();
+    // Owned by machine-b only.
+    store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "beta-only",
+            display_name: "Beta Only",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-b"),
+            env_vars: &[],
+        })
+        .unwrap();
+
+    // Bridge A connects → should see shared-bot + alpha-only.
+    let (mut sock_a, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade A");
+    send_hello(&mut sock_a, "machine-a").await;
+    let target_a = read_json_frame(&mut sock_a).await;
+    assert_eq!(target_a["type"], "bridge.target");
+    let names_a: Vec<&str> = target_a["data"]["target_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| {
+            // get_agents() ordering is by name; sniff display_name slot for the bot.
+            o["agent_id"].as_str().unwrap()
+        })
+        .collect();
+    let runtimes_a: Vec<&str> = target_a["data"]["target_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["runtime"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        names_a.len(),
+        2,
+        "machine-a sees shared-bot + alpha-only (not beta-only); got runtimes {runtimes_a:?}"
+    );
+
+    // Bridge B connects → should see shared-bot + beta-only.
+    let (mut sock_b, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade B");
+    send_hello(&mut sock_b, "machine-b").await;
+    let target_b = read_json_frame(&mut sock_b).await;
+    assert_eq!(
+        target_b["data"]["target_agents"].as_array().unwrap().len(),
+        2,
+        "machine-b sees shared-bot + beta-only (not alpha-only)"
+    );
+
+    // Bridge with unknown machine_id → only sees the owner-less agent.
+    let (mut sock_z, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade Z");
+    send_hello(&mut sock_z, "machine-zeta").await;
+    let target_z = read_json_frame(&mut sock_z).await;
+    assert_eq!(
+        target_z["data"]["target_agents"].as_array().unwrap().len(),
+        1,
+        "unknown machine sees only NULL-owner agent"
+    );
+}
+
+// ── Slice 7: bearer auth on /internal/agent/* ──────────────────────────
+
+#[tokio::test]
+async fn internal_agent_endpoints_pass_through_when_auth_disabled() {
+    let (_ws_url, http_url, store) = start_test_server().await;
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "internal-bot",
+            display_name: "Internal Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    // No bridge auth configured → /internal/agent/* with no header is OK.
+    let client = reqwest::Client::new();
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .send()
+        .await
+        .expect("send");
+    assert_eq!(resp.status(), 200, "auth disabled, /internal should pass");
+}
+
+#[tokio::test]
+async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "auth-bot",
+            display_name: "Auth Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    let auth = BridgeAuth::from_pairs([("internal-tok", "machine-x")]);
+    let router = harness::build_router_with_bridge_auth(store.clone(), auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let http_url = format!("http://{addr}");
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+
+    // No header → 401.
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "missing header should 401");
+
+    // Wrong token → 401.
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .header("Authorization", "Bearer wrong")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 401, "wrong token should 401");
+
+    // Correct token → 200 (or whatever the handler normally returns;
+    // the point is the middleware lets it through).
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .header("Authorization", "Bearer internal-tok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "correct token should be authorized to reach the handler"
+    );
 }

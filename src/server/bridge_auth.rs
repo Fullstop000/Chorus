@@ -40,8 +40,13 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::http::HeaderMap;
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use tracing::warn;
+
+use super::handlers::AppState;
 
 /// Outcome of validating an incoming `Authorization` header.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +139,13 @@ impl BridgeAuth {
         !self.tokens.is_empty()
     }
 
+    /// Look up a token's bound `machine_id` directly. Returns `None`
+    /// when auth is disabled or the token is unknown.
+    #[cfg(test)]
+    pub fn machine_id_for_token(&self, token: &str) -> Option<&str> {
+        self.tokens.get(token).map(|s| s.as_str())
+    }
+
     /// Inspect the request's `Authorization` header against the
     /// configured token map.
     pub fn check(&self, headers: &HeaderMap) -> AuthOutcome {
@@ -159,6 +171,30 @@ impl BridgeAuth {
                 expected_machine_id: machine_id.clone(),
             },
             None => AuthOutcome::Rejected,
+        }
+    }
+}
+
+/// Axum middleware that protects `/internal/agent/*` (and any other
+/// route it's applied to) the same way as `handle_bridge_ws`: when
+/// tokens are configured, require a valid `Authorization: Bearer <t>`
+/// header and reject with 401 otherwise. When tokens are unset (the
+/// loopback default and existing test harness mode), the request
+/// passes through unchanged.
+pub async fn require_bridge_auth(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    req: Request,
+    next: Next,
+) -> Response {
+    match state.bridge_auth.check(&headers) {
+        AuthOutcome::Disabled | AuthOutcome::Allowed { .. } => next.run(req).await,
+        AuthOutcome::Rejected => {
+            warn!(
+                path = %req.uri().path(),
+                "bridge_auth: rejecting /internal request — invalid or missing bearer token"
+            );
+            (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
         }
     }
 }

@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS agents (
     runtime TEXT NOT NULL, -- The runtime driver used (e.g., 'claude', 'codex')
     model TEXT NOT NULL, -- The specific LLM model used
     reasoning_effort TEXT, -- The reasoning effort configuration
+    machine_id TEXT, -- Phase 3 bridge ownership: which machine should run this agent. NULL = any bridge.
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the agent was created
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name

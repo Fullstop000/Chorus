@@ -29,6 +29,10 @@ pub struct Agent {
     pub model: String,
     /// Optional Codex reasoning effort override.
     pub reasoning_effort: Option<String>,
+    /// Phase 3 bridge ownership: which `machine_id` should run this
+    /// agent. `None` means "any bridge may run it" (back-compat for
+    /// agents created before slice 6 / explicit owner-less agents).
+    pub machine_id: Option<String>,
     /// Injected environment variables (ordered by `position`).
     pub env_vars: Vec<AgentEnvVar>,
     /// Row creation time.
@@ -62,6 +66,9 @@ pub struct AgentRecordUpsert<'a> {
     pub model: &'a str,
     /// Optional reasoning effort (Codex).
     pub reasoning_effort: Option<&'a str>,
+    /// Phase 3 ownership: which bridge `machine_id` should run this
+    /// agent. `None` = any bridge.
+    pub machine_id: Option<&'a str>,
     /// Full env var list to replace existing rows.
     pub env_vars: &'a [AgentEnvVar],
 }
@@ -134,8 +141,8 @@ impl Store {
     ) -> Result<String> {
         let id = Uuid::new_v4().to_string();
         conn.execute(
-            "INSERT INTO agents (id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort],
+            "INSERT INTO agents (id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort, record.machine_id],
         )?;
         Self::replace_agent_env_vars_inner(conn, record.name, record.env_vars)?;
         Ok(id)
@@ -182,7 +189,7 @@ impl Store {
                 None => return Ok(Vec::new()),
             },
         };
-        let sql = "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at
+        let sql = "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, created_at
                    FROM agents WHERE workspace_id = ?1 ORDER BY name";
         let rows = conn
             .prepare(sql)?
@@ -195,7 +202,7 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE name = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -208,7 +215,7 @@ impl Store {
     pub fn get_agent_by_id(&self, id: &str, hydrate_env: bool) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, created_at FROM agents WHERE id = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, created_at FROM agents WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -223,7 +230,7 @@ impl Store {
     pub fn update_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "UPDATE agents SET display_name = ?1, description = ?2, system_prompt = ?3, runtime = ?4, model = ?5, reasoning_effort = ?6 WHERE name = ?7",
+            "UPDATE agents SET display_name = ?1, description = ?2, system_prompt = ?3, runtime = ?4, model = ?5, reasoning_effort = ?6, machine_id = ?7 WHERE name = ?8",
             params![
                 record.display_name,
                 record.description,
@@ -231,6 +238,7 @@ impl Store {
                 record.runtime,
                 record.model,
                 record.reasoning_effort,
+                record.machine_id,
                 record.name
             ],
         )?;
@@ -269,7 +277,7 @@ impl Store {
     }
 
     fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Agent> {
-        let created_at = row.get::<_, String>(9)?;
+        let created_at = row.get::<_, String>(10)?;
         Ok(Agent {
             id: row.get(0)?,
             workspace_id: row.get(1)?,
@@ -280,6 +288,7 @@ impl Store {
             runtime: row.get(6)?,
             model: row.get(7)?,
             reasoning_effort: row.get(8)?,
+            machine_id: row.get(9)?,
             env_vars: Vec::new(),
             created_at: parse_datetime(&created_at),
         })

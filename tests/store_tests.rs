@@ -324,6 +324,7 @@ fn test_workspace_scoped_core_resource_lists() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             },
         )
@@ -339,6 +340,7 @@ fn test_workspace_scoped_core_resource_lists() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             },
         )
@@ -437,6 +439,7 @@ fn test_compat_agent_and_team_helpers_write_active_workspace_rows() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -451,6 +454,7 @@ fn test_compat_agent_and_team_helpers_write_active_workspace_rows() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             },
         )
@@ -497,6 +501,7 @@ fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[AgentEnvVar {
                     key: "TOKEN".to_string(),
                     value: "secret".to_string(),
@@ -700,6 +705,7 @@ fn test_shell_style_workspace_mutations_persist() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -738,6 +744,7 @@ fn test_shell_style_workspace_mutations_persist() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -808,6 +815,7 @@ fn test_send_and_receive_messages() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -846,6 +854,7 @@ fn test_agent_does_not_receive_its_own_sent_message() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -973,6 +982,7 @@ fn test_inbox_conversation_state_view_projects_last_read_and_unread_count() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1084,6 +1094,7 @@ fn test_history_snapshot_and_unread_summary_use_inbox_projection() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1333,6 +1344,7 @@ fn test_agent_env_vars_persist_in_agent_record() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &env_vars,
         })
         .unwrap();
@@ -1353,6 +1365,7 @@ fn test_agent_reasoning_effort_persists_in_agent_record() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: Some("low"),
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1369,6 +1382,7 @@ fn test_agent_reasoning_effort_persists_in_agent_record() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: Some("high"),
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1392,6 +1406,7 @@ fn test_mark_agent_messages_deleted_marks_history_rows() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1459,6 +1474,7 @@ fn test_unread_excludes_own_messages_for_sender() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1531,6 +1547,7 @@ fn test_tasks_crud() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1566,6 +1583,7 @@ fn test_task_claim_and_status() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1578,6 +1596,7 @@ fn test_task_claim_and_status() {
             runtime: "codex",
             model: "o3",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1619,6 +1638,7 @@ fn test_resolve_target() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1648,6 +1668,7 @@ fn test_list_channels_excludes_dm() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1676,6 +1697,7 @@ fn test_dm_channels() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1822,6 +1844,7 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1834,6 +1857,7 @@ fn test_ensure_builtin_channels_backfills_all_existing_humans_and_agents() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1865,6 +1889,7 @@ fn test_ensure_builtin_channels_only_exposes_all_system_channel() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1908,6 +1933,7 @@ fn test_new_agents_auto_join_all_when_it_exists() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -1951,6 +1977,7 @@ fn test_ensure_builtin_channels_repairs_active_workspace_all() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             },
         )
@@ -1986,6 +2013,7 @@ fn test_delete_channel_removes_messages_tasks_and_memberships() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -2235,6 +2263,7 @@ fn test_join_channel_creates_notice_and_is_idempotent() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -2303,6 +2332,7 @@ fn agent_read_paths_exclude_humans_only_payloads_but_ui_keeps_them() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();

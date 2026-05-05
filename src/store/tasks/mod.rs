@@ -685,6 +685,7 @@ mod sub_channel_tests {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             })
             .unwrap()

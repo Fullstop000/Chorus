@@ -96,6 +96,21 @@ struct AgentStatePayload {
     runtime_pid: u32,
 }
 
+/// `chat.ack` payload, sent by the bridge after it has buffered a
+/// `chat.message.received` batch into an agent's local mailbox. Slice 5
+/// uses it to advance an in-memory cursor in `BridgeRegistry`; future
+/// slices will persist `last_acked_seq` to the DB so reconnect-replay
+/// only re-emits messages the bridge hasn't seen.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct ChatAckPayload {
+    agent_id: String,
+    last_seq: i64,
+    #[serde(default)]
+    #[allow(dead_code)]
+    ts: Option<String>,
+}
+
 /// `bridge.target` payload, sent by the platform in reply to
 /// `bridge.hello` and on every change to desired state.
 #[derive(Debug, Serialize)]
@@ -211,7 +226,7 @@ async fn bridge_session(
     let machine_id = hello.machine_id.clone();
     let (mut outbound_rx, _registration) = registry.register(&machine_id);
 
-    if let Err(err) = send_initial_target(&mut socket, store.as_ref()).await {
+    if let Err(err) = send_initial_target(&mut socket, store.as_ref(), &machine_id).await {
         warn!(machine_id = %machine_id, error = %err, "bridge_ws: failed to send initial bridge.target");
         return;
     }
@@ -290,8 +305,12 @@ async fn recv_hello(socket: &mut WebSocket) -> anyhow::Result<BridgeHello> {
     Ok(hello)
 }
 
-async fn send_initial_target(socket: &mut WebSocket, store: &Store) -> anyhow::Result<()> {
-    let text = build_target_frame_text(store)?;
+async fn send_initial_target(
+    socket: &mut WebSocket,
+    store: &Store,
+    machine_id: &str,
+) -> anyhow::Result<()> {
+    let text = build_target_frame_text_for_machine(store, machine_id)?;
     socket.send(Message::Text(text.into())).await?;
     Ok(())
 }
@@ -341,11 +360,15 @@ async fn handle_inbound_frame(
             }
             Ok(())
         }
-        // Frames defined in §3.2 but not yet handled in this slice.
         "chat.ack" => {
+            let payload: ChatAckPayload = serde_json::from_value(envelope.data)
+                .map_err(|e| anyhow::anyhow!("failed to parse chat.ack payload: {e}"))?;
+            registry.record_chat_ack(machine_id, &payload.agent_id, payload.last_seq);
             debug!(
                 machine_id = %machine_id,
-                "bridge_ws: chat.ack received (deferred to slice 4)"
+                agent_id = %payload.agent_id,
+                last_seq = payload.last_seq,
+                "bridge_ws: chat.ack cursor advanced"
             );
             Ok(())
         }
@@ -363,10 +386,22 @@ async fn handle_inbound_frame(
 }
 
 /// Build a serialized `bridge.target` frame from the current set of
-/// agents in the store. Public so agent CRUD handlers can re-use the
-/// exact same encoding when triggering a push.
-pub fn build_target_frame_text(store: &Store) -> anyhow::Result<String> {
-    let agents = store.get_agents()?;
+/// agents in the store, scoped to a specific bridge `machine_id`. An
+/// agent is included if its `machine_id` matches the connecting
+/// bridge's, or if the agent has no `machine_id` set (NULL ownership =
+/// any bridge can run it; back-compat with pre-slice-6 agents).
+pub fn build_target_frame_text_for_machine(
+    store: &Store,
+    machine_id: &str,
+) -> anyhow::Result<String> {
+    let agents: Vec<Agent> = store
+        .get_agents()?
+        .into_iter()
+        .filter(|a| match a.machine_id.as_deref() {
+            None => true,
+            Some(m) => m == machine_id,
+        })
+        .collect();
     let target = BridgeTarget {
         target_agents: agents.into_iter().map(AgentTarget::from).collect(),
     };
@@ -378,19 +413,110 @@ pub fn build_target_frame_text(store: &Store) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&envelope)?)
 }
 
-/// Push a fresh `bridge.target` to every connected bridge. Called from
-/// agent CRUD handlers after they mutate state. Failure to build the
-/// frame is logged but doesn't surface to the HTTP caller — the agent
-/// CRUD itself succeeded; bridges will reconcile on next re-hello at
-/// worst.
+/// Push a fresh `bridge.target` to every connected bridge, scoped to
+/// each bridge's `machine_id`. Called from agent CRUD handlers after
+/// they mutate state. Failures to build a frame for one bridge are
+/// logged but don't block the others.
 pub fn broadcast_target_update(store: &Store, registry: &BridgeRegistry) {
-    let text = match build_target_frame_text(store) {
-        Ok(t) => t,
+    for machine_id in registry.connected_machine_ids() {
+        match build_target_frame_text_for_machine(store, &machine_id) {
+            Ok(text) => {
+                let delivered = registry.send_to(&machine_id, &text);
+                debug!(
+                    delivered,
+                    machine_id = %machine_id,
+                    "bridge_ws: pushed scoped bridge.target on change"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    machine_id = %machine_id,
+                    error = %err,
+                    "bridge_ws: failed to build scoped target frame"
+                );
+            }
+        }
+    }
+}
+
+/// Forward a chat-message stream event to every connected bridge as a
+/// `chat.message.received` frame. Called wherever a `message.created`
+/// `StreamEvent` is published. Slice 5 broadcasts to every bridge for
+/// every agent member of the channel; slice 6 narrows by `machine_id`
+/// so each bridge only sees chat for the agents it owns.
+///
+/// The bridge is responsible for matching the inner `agent_id` to its
+/// own running runtime and updating that mailbox.
+pub fn forward_chat_event_to_bridges(
+    store: &Store,
+    registry: &BridgeRegistry,
+    event: &crate::store::stream::StreamEvent,
+) {
+    if event.event_type != "message.created" {
+        return;
+    }
+    let members = match store.get_channel_members(&event.channel_id) {
+        Ok(m) => m,
         Err(err) => {
-            warn!(error = %err, "bridge_ws: failed to build target frame for broadcast");
+            warn!(
+                channel_id = %event.channel_id,
+                error = %err,
+                "bridge_ws: failed to read channel members for chat forward"
+            );
             return;
         }
     };
-    let delivered = registry.broadcast(&text);
-    debug!(delivered, "bridge_ws: broadcast bridge.target on change");
+    let agent_recipients: Vec<&str> = members
+        .iter()
+        .filter(|m| matches!(m.member_type, crate::store::messages::SenderType::Agent))
+        .map(|m| m.member_id.as_str())
+        .collect();
+    if agent_recipients.is_empty() {
+        return;
+    }
+    for agent_id in agent_recipients {
+        let frame = match build_chat_message_frame_text(agent_id, event) {
+            Ok(t) => t,
+            Err(err) => {
+                warn!(error = %err, "bridge_ws: failed to build chat frame");
+                continue;
+            }
+        };
+        // Scope by the agent's owning machine_id when set. Owner-less
+        // agents (machine_id NULL) fan to every bridge — back-compat
+        // with pre-slice-6 behavior + the explicit "any bridge can run
+        // this agent" affordance.
+        let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
+        let owner_machine_id = agent_record.and_then(|a| a.machine_id);
+        let delivered = match owner_machine_id.as_deref() {
+            Some(m) => registry.send_to(m, &frame),
+            None => registry.broadcast(&frame),
+        };
+        debug!(
+            delivered,
+            agent_id = %agent_id,
+            seq = event.latest_seq,
+            owner = owner_machine_id.as_deref().unwrap_or("<any>"),
+            "bridge_ws: pushed chat.message.received"
+        );
+    }
+}
+
+fn build_chat_message_frame_text(
+    agent_id: &str,
+    event: &crate::store::stream::StreamEvent,
+) -> anyhow::Result<String> {
+    let payload = serde_json::json!({
+        "agent_id": agent_id,
+        "channel_id": event.channel_id,
+        "seq": event.latest_seq,
+        "schema_version": event.schema_version,
+        "messages": [event.event_payload.clone()],
+    });
+    let envelope = WireFrame {
+        v: 1,
+        frame_type: "chat.message.received".to_string(),
+        data: payload,
+    };
+    Ok(serde_json::to_string(&envelope)?)
 }
