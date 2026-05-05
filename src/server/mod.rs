@@ -1,4 +1,5 @@
 pub use crate::utils::error;
+pub mod bridge_auth;
 pub mod bridge_registry;
 pub mod event_bus;
 mod handlers;
@@ -64,6 +65,33 @@ pub fn build_router_with_services(
     runtime_status_provider: SharedRuntimeStatusProvider,
     templates: Vec<AgentTemplate>,
 ) -> Router {
+    build_router_with_services_and_auth(
+        store,
+        event_bus,
+        data_dir,
+        agents_dir,
+        lifecycle,
+        runtime_status_provider,
+        templates,
+        bridge_auth::BridgeAuth::empty(),
+    )
+}
+
+/// Same as `build_router_with_services`, but accepts a pre-built
+/// `BridgeAuth`. The CLI binary calls this with `BridgeAuth::from_env()`
+/// so the deployed `chorus serve` enforces tokens; tests inject explicit
+/// `BridgeAuth::from_pairs(...)` to exercise the auth path without
+/// touching process env vars.
+pub fn build_router_with_services_and_auth(
+    store: Arc<Store>,
+    event_bus: Arc<EventBus>,
+    data_dir: std::path::PathBuf,
+    agents_dir: std::path::PathBuf,
+    lifecycle: Arc<dyn AgentLifecycle>,
+    runtime_status_provider: SharedRuntimeStatusProvider,
+    templates: Vec<AgentTemplate>,
+    bridge_auth: Arc<bridge_auth::BridgeAuth>,
+) -> Router {
     use handlers::*;
     use transport::bridge_ws::handle_bridge_ws;
     use transport::realtime::handle_events_ws;
@@ -104,6 +132,7 @@ pub fn build_router_with_services(
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
         templates: Arc::new(templates),
         bridge_registry: bridge_registry::BridgeRegistry::new(),
+        bridge_auth,
     };
 
     // Agent runtimes and CLI flows still depend on an agent-scoped internal API.

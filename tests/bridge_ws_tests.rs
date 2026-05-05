@@ -14,13 +14,17 @@ mod harness;
 use std::sync::Arc;
 
 use anyhow::Context;
+use chorus::server::bridge_auth::BridgeAuth;
 use chorus::store::channels::ChannelType;
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::time::{timeout, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
+use tokio_tungstenite::{
+    connect_async,
+    tungstenite::{client::IntoClientRequest, Message},
+};
 
 async fn start_test_server() -> (String, String, Arc<Store>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
@@ -461,4 +465,111 @@ async fn bridge_ws_pushes_to_multiple_connected_bridges() {
         pushed_b["data"]["target_agents"].as_array().unwrap().len(),
         1
     );
+}
+
+// ── Slice 4: bearer auth ───────────────────────────────────────────────
+
+async fn start_test_server_with_auth(auth: Arc<BridgeAuth>) -> (String, String) {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
+    store
+        .create_channel("general", Some("General"), ChannelType::Channel, None)
+        .unwrap();
+    let router = harness::build_router_with_bridge_auth(store.clone(), auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let ws_url = format!("ws://{addr}");
+    let http_url = format!("http://{addr}");
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    (ws_url, http_url)
+}
+
+#[tokio::test]
+async fn bridge_ws_rejects_upgrade_when_token_missing() {
+    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
+    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+
+    // No Authorization header at all → 401, no upgrade.
+    let result = connect_async(format!("{ws_url}/api/bridge/ws")).await;
+    match result {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(resp.status(), 401, "expected 401 Unauthorized");
+        }
+        Err(other) => panic!("expected HTTP 401, got error: {other}"),
+        Ok(_) => panic!("expected upgrade to fail, but it succeeded"),
+    }
+}
+
+#[tokio::test]
+async fn bridge_ws_rejects_upgrade_when_token_unknown() {
+    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
+    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+
+    let mut req = format!("{ws_url}/api/bridge/ws")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Authorization", "Bearer wrong-token".parse().unwrap());
+    let result = connect_async(req).await;
+    match result {
+        Err(tokio_tungstenite::tungstenite::Error::Http(resp)) => {
+            assert_eq!(resp.status(), 401);
+        }
+        Err(other) => panic!("expected HTTP 401, got error: {other}"),
+        Ok(_) => panic!("expected upgrade to fail, but it succeeded"),
+    }
+}
+
+#[tokio::test]
+async fn bridge_ws_accepts_valid_token_and_matches_machine_id() {
+    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
+    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+
+    let mut req = format!("{ws_url}/api/bridge/ws")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Authorization", "Bearer good-token".parse().unwrap());
+    let (mut socket, _) = connect_async(req).await.expect("WS upgrade should succeed");
+
+    // hello declares the machine_id the token is bound to → accepted.
+    send_hello(&mut socket, "machine-alpha").await;
+    let frame = read_json_frame(&mut socket).await;
+    assert_eq!(frame["type"], "bridge.target");
+}
+
+#[tokio::test]
+async fn bridge_ws_drops_session_on_machine_id_spoof() {
+    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
+    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+
+    let mut req = format!("{ws_url}/api/bridge/ws")
+        .into_client_request()
+        .unwrap();
+    req.headers_mut()
+        .insert("Authorization", "Bearer good-token".parse().unwrap());
+    let (mut socket, _) = connect_async(req).await.expect("WS upgrade should succeed");
+
+    // Token is bound to machine-alpha but bridge claims machine-beta.
+    // The session must close without sending any target frame.
+    send_hello(&mut socket, "machine-beta").await;
+
+    let next = timeout(Duration::from_millis(500), socket.next()).await;
+    match next {
+        Ok(None) => {} // clean close
+        Ok(Some(Ok(Message::Close(_)))) => {}
+        Ok(Some(Err(_))) => {} // unclean close, also fine
+        Ok(Some(Ok(Message::Text(text)))) => {
+            panic!("server should have dropped the spoofed session, but sent: {text}");
+        }
+        other => panic!("unexpected post-spoof outcome: {other:?}"),
+    }
 }

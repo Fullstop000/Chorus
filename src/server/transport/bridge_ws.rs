@@ -1,4 +1,4 @@
-//! Bridge ↔ Platform WebSocket handler (Phase 3, slices 1-3).
+//! Bridge ↔ Platform WebSocket handler (Phase 3, slices 1-4).
 //!
 //! `GET /api/bridge/ws`. The bridge dials in, sends `bridge.hello` as
 //! its first frame; the platform replies with `bridge.target` listing
@@ -14,18 +14,27 @@
 //! `crashed` from the previous instance would otherwise silently mark
 //! the live new instance dead.
 //!
-//! Auth, `chat.message.received` push, and `chat.ack` come in later
-//! slices.
+//! Slice 4 adds bearer-token auth on the WS upgrade. If the platform
+//! has tokens configured (via `CHORUS_BRIDGE_TOKENS` env var or
+//! explicit `BridgeAuth`), the request must include
+//! `Authorization: Bearer <token>` and the `bridge.hello.machine_id`
+//! must match the token's bound `machine_id`. With no tokens
+//! configured, auth is disabled and any client may connect (loopback
+//! default).
+//!
+//! `chat.message.received` push and `chat.ack` come in later slices.
 
 use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use crate::server::bridge_auth::AuthOutcome;
 use crate::server::bridge_registry::BridgeRegistry;
 use crate::server::handlers::AppState;
 use crate::store::agents::Agent;
@@ -140,13 +149,35 @@ impl From<Agent> for AgentTarget {
 pub async fn handle_bridge_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
-) -> impl IntoResponse {
+    headers: HeaderMap,
+) -> axum::response::Response {
+    let expected_machine_id = match state.bridge_auth.check(&headers) {
+        AuthOutcome::Disabled => None,
+        AuthOutcome::Allowed {
+            expected_machine_id,
+        } => Some(expected_machine_id),
+        AuthOutcome::Rejected => {
+            warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
+            return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response();
+        }
+    };
     ws.on_upgrade(move |socket| {
-        bridge_session(socket, state.store.clone(), state.bridge_registry.clone())
+        bridge_session(
+            socket,
+            state.store.clone(),
+            state.bridge_registry.clone(),
+            expected_machine_id,
+        )
     })
+    .into_response()
 }
 
-async fn bridge_session(mut socket: WebSocket, store: Arc<Store>, registry: Arc<BridgeRegistry>) {
+async fn bridge_session(
+    mut socket: WebSocket,
+    store: Arc<Store>,
+    registry: Arc<BridgeRegistry>,
+    expected_machine_id: Option<String>,
+) {
     let hello = match recv_hello(&mut socket).await {
         Ok(h) => h,
         Err(err) => {
@@ -154,10 +185,26 @@ async fn bridge_session(mut socket: WebSocket, store: Arc<Store>, registry: Arc<
             return;
         }
     };
+
+    // Auth pin: when the upgrade carried a known token, the bridge must
+    // declare the `machine_id` that token is bound to. Anything else is
+    // a spoof attempt — close without sending a target.
+    if let Some(ref expected) = expected_machine_id {
+        if hello.machine_id != *expected {
+            warn!(
+                token_bound_machine_id = %expected,
+                claimed_machine_id = %hello.machine_id,
+                "bridge_ws: dropping connection — bridge.hello.machine_id does not match token binding"
+            );
+            return;
+        }
+    }
+
     info!(
         machine_id = %hello.machine_id,
         bridge_version = %hello.bridge_version,
         agents_alive = hello.agents_alive.len(),
+        auth = expected_machine_id.is_some(),
         "bridge_ws: bridge connected"
     );
 
