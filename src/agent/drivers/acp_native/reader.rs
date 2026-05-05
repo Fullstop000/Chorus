@@ -195,18 +195,29 @@ pub(super) async fn handle_response(
         Some(id) => id,
         None => return,
     };
-    let error_msg: Option<String> = msg
-        .get("error")
-        .and_then(|e| e.get("message"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .or_else(|| {
-            if msg.get("error").is_some() {
-                Some("unknown ACP error".to_string())
-            } else {
-                None
+    let error_msg: Option<String> = msg.get("error").map(|err| {
+        let message = err
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown ACP error");
+        // Include `data` when present — pydantic-style validators (kimi,
+        // others) ship the actual rejection reason here, and surfacing
+        // only `message` ("Invalid params") drops the diagnostic that
+        // tells us *which* field was wrong. Cap the rendered length so a
+        // huge stack trace can't crowd out other log lines.
+        match err.get("data") {
+            Some(data) => {
+                let rendered = data.to_string();
+                let snippet = if rendered.len() > 1024 {
+                    format!("{}…", &rendered[..1024])
+                } else {
+                    rendered
+                };
+                format!("{message} ({snippet})")
             }
-        });
+            None => message.to_string(),
+        }
+    });
 
     let pending = shared.lock().unwrap().pending.remove(&id);
     let Some(pending) = pending else {
