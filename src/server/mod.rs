@@ -64,6 +64,7 @@ pub fn build_router_with_services(
     templates: Vec<AgentTemplate>,
 ) -> Router {
     use handlers::*;
+    use transport::bridge_ws::handle_bridge_ws;
     use transport::realtime::handle_events_ws;
 
     let cors = CorsLayer::new()
@@ -240,6 +241,7 @@ pub fn build_router_with_services(
         .route("/system-info", get(handle_system_info))
         .route("/logs", get(handle_logs))
         .route("/events/ws", get(handle_events_ws))
+        .route("/bridge/ws", get(handle_bridge_ws))
         .route("/traces/{run_id}", get(handle_trace_events))
         .route("/agents/{id}/runs", get(handle_agent_runs));
 
