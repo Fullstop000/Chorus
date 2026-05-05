@@ -12,6 +12,7 @@
 //! supersedes the older connection per the §4 cardinality rule.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -24,9 +25,24 @@ const PER_BRIDGE_BUFFER: usize = 256;
 /// Maps `machine_id` to a list of outbound senders (one per active WS
 /// session for that machine). Each sender carries pre-encoded JSON
 /// strings ready to write to a `Message::Text` frame.
+///
+/// Also tracks the current `runtime_pid` per `(machine_id, agent_id)` so
+/// `agent.state` payloads from a previous instance (the classic
+/// stop→start race) can be filtered out — without this, a delayed
+/// `crashed` report from the dead pid silently marks the live new
+/// instance dead.
 #[derive(Default)]
 pub struct BridgeRegistry {
     connections: Mutex<HashMap<String, Vec<mpsc::Sender<String>>>>,
+    /// `(machine_id, agent_id) → current_runtime_pid`. Set by every
+    /// `agent.state{state=started}` event the bridge sends; checked
+    /// against the pid carried by every other transition. Cleared
+    /// per-machine on bridge disconnect.
+    instance_pids: Mutex<HashMap<String, HashMap<String, u32>>>,
+    /// Telemetry: count of `agent.state` frames dropped because their
+    /// `runtime_pid` doesn't match the current tracker. Test-visible
+    /// hook for verifying the filter actually fires.
+    stale_state_drops: AtomicUsize,
 }
 
 impl BridgeRegistry {
@@ -75,13 +91,62 @@ impl BridgeRegistry {
     }
 
     fn deregister(&self, machine_id: &str, sender: &mpsc::Sender<String>) {
-        let mut conns = self.connections.lock().unwrap();
-        if let Some(list) = conns.get_mut(machine_id) {
-            list.retain(|tx| !tx.same_channel(sender));
-            if list.is_empty() {
-                conns.remove(machine_id);
+        let was_last_for_machine = {
+            let mut conns = self.connections.lock().unwrap();
+            if let Some(list) = conns.get_mut(machine_id) {
+                list.retain(|tx| !tx.same_channel(sender));
+                if list.is_empty() {
+                    conns.remove(machine_id);
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
             }
+        };
+        // Clear the pid tracker only when the last connection for this
+        // machine_id goes away. If a transient second connection just
+        // closed (4002 supersede in a future slice), the surviving one
+        // still owns those pids.
+        if was_last_for_machine {
+            self.instance_pids.lock().unwrap().remove(machine_id);
         }
+    }
+
+    /// Record the runtime pid the bridge just started for an agent.
+    /// Called on every `agent.state{state=started}` event.
+    pub fn record_started(&self, machine_id: &str, agent_id: &str, runtime_pid: u32) {
+        let mut pids = self.instance_pids.lock().unwrap();
+        pids.entry(machine_id.to_string())
+            .or_default()
+            .insert(agent_id.to_string(), runtime_pid);
+    }
+
+    /// Check whether an `agent.state` payload's `runtime_pid` matches the
+    /// current instance pid for this `(machine_id, agent_id)`. Returns
+    /// `true` if the payload is current and should be acted on, `false`
+    /// if it's a stale frame from a previous instance and should be
+    /// dropped. If we have no record for this agent (most commonly:
+    /// first transition we've ever seen, or after a deregister), the
+    /// frame is accepted by default — we'd rather act on a state we
+    /// haven't tracked yet than drop a real transition.
+    pub fn is_current_pid(&self, machine_id: &str, agent_id: &str, runtime_pid: u32) -> bool {
+        let pids = self.instance_pids.lock().unwrap();
+        match pids.get(machine_id).and_then(|m| m.get(agent_id)) {
+            Some(&current) if current != runtime_pid => {
+                self.stale_state_drops.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+            _ => true,
+        }
+    }
+
+    /// Telemetry: how many `agent.state` frames the registry's filter
+    /// has dropped because their `runtime_pid` was stale. Useful for
+    /// tests; intended to be exposed on a future `/metrics` endpoint.
+    pub fn stale_state_drops(&self) -> usize {
+        self.stale_state_drops.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
@@ -145,5 +210,58 @@ mod tests {
         assert_eq!(reg.broadcast(r#"{"frame":"x"}"#), 2);
         assert_eq!(rx_a.recv().await.unwrap(), r#"{"frame":"x"}"#);
         assert_eq!(rx_b.recv().await.unwrap(), r#"{"frame":"x"}"#);
+    }
+
+    // ── slice 3: runtime_pid filtering ──
+
+    #[tokio::test]
+    async fn record_started_then_is_current_pid_matches() {
+        let reg = BridgeRegistry::new();
+        reg.record_started("m-1", "agent-a", 100);
+
+        assert!(reg.is_current_pid("m-1", "agent-a", 100));
+        assert_eq!(reg.stale_state_drops(), 0);
+    }
+
+    #[tokio::test]
+    async fn stale_pid_is_dropped_and_counted() {
+        let reg = BridgeRegistry::new();
+        reg.record_started("m-1", "agent-a", 100);
+        // Now imagine: bridge restarts the runtime → new pid 200.
+        reg.record_started("m-1", "agent-a", 200);
+
+        // A delayed `crashed` from the old pid arrives — must be dropped.
+        assert!(!reg.is_current_pid("m-1", "agent-a", 100));
+        assert_eq!(reg.stale_state_drops(), 1);
+
+        // The new pid still passes.
+        assert!(reg.is_current_pid("m-1", "agent-a", 200));
+        assert_eq!(reg.stale_state_drops(), 1);
+    }
+
+    #[tokio::test]
+    async fn unknown_pid_is_accepted_by_default() {
+        // An agent we've never seen a `started` for — we accept the
+        // first state we hear about. This avoids dropping legitimate
+        // events when the platform restarts mid-session and rebuilds
+        // its tracker from scratch.
+        let reg = BridgeRegistry::new();
+        assert!(reg.is_current_pid("m-1", "ghost-agent", 999));
+        assert_eq!(reg.stale_state_drops(), 0);
+    }
+
+    #[tokio::test]
+    async fn pids_cleared_on_last_disconnect() {
+        let reg = BridgeRegistry::new();
+        let (_rx, guard) = reg.register("m-1");
+        reg.record_started("m-1", "agent-a", 100);
+        assert!(reg.is_current_pid("m-1", "agent-a", 100));
+
+        drop(guard); // last connection for m-1 closes
+
+        // After cleanup, the tracker has no entry for m-1, so any pid
+        // is accepted by default (see `unknown_pid_is_accepted_by_default`).
+        assert!(reg.is_current_pid("m-1", "agent-a", 999));
+        assert_eq!(reg.stale_state_drops(), 0);
     }
 }

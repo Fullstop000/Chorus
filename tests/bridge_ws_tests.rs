@@ -333,6 +333,91 @@ async fn bridge_ws_accepts_agent_state_frame_without_disconnecting() {
 }
 
 #[tokio::test]
+async fn bridge_ws_handles_stop_start_race_without_breaking_session() {
+    // Slice 3: agent.state frames carry runtime_pid as the instance
+    // discriminator. A delayed `crashed` from a previous instance must
+    // be dropped without breaking the live session.
+    let (ws_url, http_url, _store) = start_test_server().await;
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade should succeed");
+    send_hello(&mut socket, "race-machine").await;
+    let _initial = read_json_frame(&mut socket).await; // drain initial empty target
+
+    // Bridge starts agent X with pid 100.
+    let started_old = json!({
+        "v": 1, "type": "agent.state",
+        "data": { "agent_id": "agt-race", "state": "started", "runtime_pid": 100 }
+    });
+    socket
+        .send(Message::Text(started_old.to_string().into()))
+        .await
+        .unwrap();
+
+    // Bridge restarts agent X — new pid 200.
+    let started_new = json!({
+        "v": 1, "type": "agent.state",
+        "data": { "agent_id": "agt-race", "state": "started", "runtime_pid": 200 }
+    });
+    socket
+        .send(Message::Text(started_new.to_string().into()))
+        .await
+        .unwrap();
+
+    // Delayed `crashed` from the OLD pid arrives — slice 3's filter
+    // must drop it without disturbing the session.
+    let stale_crash = json!({
+        "v": 1, "type": "agent.state",
+        "data": { "agent_id": "agt-race", "state": "crashed",
+                  "runtime_pid": 100, "reason": "delayed report from prior instance" }
+    });
+    socket
+        .send(Message::Text(stale_crash.to_string().into()))
+        .await
+        .unwrap();
+
+    // A `crashed` for the CURRENT pid is accepted (and currently
+    // logged; no DB persistence yet).
+    let current_crash = json!({
+        "v": 1, "type": "agent.state",
+        "data": { "agent_id": "agt-race", "state": "crashed",
+                  "runtime_pid": 200, "reason": "real crash" }
+    });
+    socket
+        .send(Message::Text(current_crash.to_string().into()))
+        .await
+        .unwrap();
+
+    // Verify the session is still alive end-to-end by triggering a
+    // push-on-change via HTTP and asserting the resulting bridge.target
+    // arrives. If any of the four agent.state frames had broken the
+    // session loop, this read would time out.
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{http_url}/api/agents"))
+        .json(&json!({
+            "name": "post-race-bot",
+            "display_name": "Post Race Bot",
+            "runtime": "claude",
+            "model": "sonnet"
+        }))
+        .send()
+        .await
+        .expect("POST /api/agents")
+        .error_for_status()
+        .unwrap();
+
+    let pushed = read_json_frame(&mut socket).await;
+    assert_eq!(pushed["type"], "bridge.target");
+    assert_eq!(
+        pushed["data"]["target_agents"].as_array().unwrap().len(),
+        1,
+        "session survived stale + current agent.state frames"
+    );
+}
+
+#[tokio::test]
 async fn bridge_ws_pushes_to_multiple_connected_bridges() {
     let (ws_url, http_url, _store) = start_test_server().await;
 

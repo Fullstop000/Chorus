@@ -1,4 +1,4 @@
-//! Bridge ↔ Platform WebSocket handler (Phase 3, slices 1-2).
+//! Bridge ↔ Platform WebSocket handler (Phase 3, slices 1-3).
 //!
 //! `GET /api/bridge/ws`. The bridge dials in, sends `bridge.hello` as
 //! its first frame; the platform replies with `bridge.target` listing
@@ -7,10 +7,15 @@
 //! to desired state (see `broadcast_target_update`). The bridge sends
 //! `agent.state` frames upstream when its runtimes transition.
 //!
-//! Slice 2 stops at: target push-on-change driven by agent CRUD,
-//! `agent.state` parsed and logged (no in-memory tracking yet, no
-//! stale-pid filtering — slice 3). Auth, `chat.message.received` push,
-//! and `chat.ack` come in later slices.
+//! Slice 3 adds the `runtime_pid` instance discriminator on
+//! `agent.state`: `started` events record the current pid in
+//! `BridgeRegistry`, and non-started transitions are dropped if their
+//! pid doesn't match. This blocks the stop→start race where a delayed
+//! `crashed` from the previous instance would otherwise silently mark
+//! the live new instance dead.
+//!
+//! Auth, `chat.message.received` push, and `chat.ack` come in later
+//! slices.
 
 use std::sync::Arc;
 
@@ -185,7 +190,9 @@ async fn bridge_session(mut socket: WebSocket, store: Arc<Store>, registry: Arc<
             incoming = socket.recv() => {
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
-                        if let Err(err) = handle_inbound_frame(&machine_id, text.as_str()).await {
+                        if let Err(err) =
+                            handle_inbound_frame(&machine_id, text.as_str(), registry.as_ref()).await
+                        {
                             warn!(machine_id = %machine_id, error = %err, "bridge_ws: dropping malformed inbound frame");
                             // Don't disconnect on a single bad frame —
                             // log and keep the session alive. A series
@@ -242,31 +249,56 @@ async fn send_initial_target(socket: &mut WebSocket, store: &Store) -> anyhow::R
     Ok(())
 }
 
-async fn handle_inbound_frame(machine_id: &str, text: &str) -> anyhow::Result<()> {
+async fn handle_inbound_frame(
+    machine_id: &str,
+    text: &str,
+    registry: &BridgeRegistry,
+) -> anyhow::Result<()> {
     let envelope: WireFrame = serde_json::from_str(text)
         .map_err(|e| anyhow::anyhow!("failed to parse inbound envelope: {e}"))?;
     match envelope.frame_type.as_str() {
         "agent.state" => {
             let payload: AgentStatePayload = serde_json::from_value(envelope.data)
                 .map_err(|e| anyhow::anyhow!("failed to parse agent.state payload: {e}"))?;
-            // Slice 2: log only. Slice 3 will track current_runtime_pid
-            // per agent for stale-frame filtering and persist transitions.
-            info!(
-                machine_id = %machine_id,
-                agent_id = %payload.agent_id,
-                state = %payload.state,
-                runtime_pid = payload.runtime_pid,
-                reason = payload.reason.as_deref().unwrap_or(""),
-                ts = payload.ts.as_deref().unwrap_or(""),
-                "bridge_ws: agent.state received"
-            );
+            // `started` transitions establish the current pid for this
+            // agent on this machine. Other transitions are checked
+            // against the tracker to filter stale frames from a
+            // previous instance (the stop→start race).
+            if payload.state == "started" {
+                registry.record_started(machine_id, &payload.agent_id, payload.runtime_pid);
+                info!(
+                    machine_id = %machine_id,
+                    agent_id = %payload.agent_id,
+                    runtime_pid = payload.runtime_pid,
+                    "bridge_ws: agent.state started — pid recorded"
+                );
+            } else if !registry.is_current_pid(machine_id, &payload.agent_id, payload.runtime_pid) {
+                warn!(
+                    machine_id = %machine_id,
+                    agent_id = %payload.agent_id,
+                    state = %payload.state,
+                    runtime_pid = payload.runtime_pid,
+                    "bridge_ws: dropping agent.state with stale runtime_pid"
+                );
+                return Ok(());
+            } else {
+                info!(
+                    machine_id = %machine_id,
+                    agent_id = %payload.agent_id,
+                    state = %payload.state,
+                    runtime_pid = payload.runtime_pid,
+                    reason = payload.reason.as_deref().unwrap_or(""),
+                    ts = payload.ts.as_deref().unwrap_or(""),
+                    "bridge_ws: agent.state received"
+                );
+            }
             Ok(())
         }
         // Frames defined in §3.2 but not yet handled in this slice.
         "chat.ack" => {
             debug!(
                 machine_id = %machine_id,
-                "bridge_ws: chat.ack received (deferred to slice 3)"
+                "bridge_ws: chat.ack received (deferred to slice 4)"
             );
             Ok(())
         }
