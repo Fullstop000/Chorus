@@ -1,4 +1,5 @@
 pub use crate::utils::error;
+pub mod bridge_registry;
 pub mod event_bus;
 mod handlers;
 pub mod transport;
@@ -102,6 +103,7 @@ pub fn build_router_with_services(
         runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
         templates: Arc::new(templates),
+        bridge_registry: bridge_registry::BridgeRegistry::new(),
     };
 
     // Agent runtimes and CLI flows still depend on an agent-scoped internal API.

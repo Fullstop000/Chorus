@@ -13,6 +13,7 @@ use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
+use crate::server::transport::bridge_ws::broadcast_target_update;
 use crate::store::agents::AgentEnvVar;
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
@@ -284,6 +285,7 @@ pub async fn handle_create_agent(
     }
     let ps = state.lifecycle.process_state(&result.name).await;
     let status = crate::agent::process_status::derive_status(ps.as_ref());
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
         "id": result.id,
         "name": result.name,
@@ -502,6 +504,7 @@ pub async fn handle_update_agent(
             ));
         }
     }
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
         "ok": true,
         "restarted": was_running && requires_restart
@@ -583,6 +586,7 @@ pub async fn handle_delete_agent(
         .store
         .delete_agent_record(&name)
         .map_err(internal_err)?;
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
 
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
         let agents_dir = state.agents_dir.clone();

@@ -39,6 +39,7 @@ use crate::agent::templates::AgentTemplate;
 use crate::agent::AgentLifecycle;
 use crate::agent::AgentRuntime;
 use crate::config::ChorusConfig;
+use crate::server::bridge_registry::BridgeRegistry;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::server::event_bus::EventBus;
 use crate::store::Store;
@@ -58,6 +59,7 @@ pub struct AppState {
     pub runtime_status_provider: SharedRuntimeStatusProvider,
     pub transitioning_agents: Arc<Mutex<HashSet<String>>>,
     pub templates: Arc<Vec<AgentTemplate>>,
+    pub bridge_registry: Arc<BridgeRegistry>,
 }
 
 impl AppState {

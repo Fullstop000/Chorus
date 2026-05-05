@@ -1,12 +1,16 @@
-//! Bridge ↔ Platform WebSocket handler (Phase 3, slice 1).
+//! Bridge ↔ Platform WebSocket handler (Phase 3, slices 1-2).
 //!
-//! Handles `GET /api/bridge/ws`. The bridge dials in, sends `bridge.hello`
-//! as its first frame; the platform responds with `bridge.target` listing
+//! `GET /api/bridge/ws`. The bridge dials in, sends `bridge.hello` as
+//! its first frame; the platform replies with `bridge.target` listing
 //! the desired runtime config for every agent that should run on this
-//! `machine_id`. Slice 1 stub: ignores `machine_id`, returns every agent
-//! in the active workspace. Subsequent slices add auth, scoping, and the
-//! rest of the frame catalog (`agent.state`, `chat.ack`,
-//! `chat.message.received`).
+//! bridge. The platform pushes a fresh `bridge.target` on every change
+//! to desired state (see `broadcast_target_update`). The bridge sends
+//! `agent.state` frames upstream when its runtimes transition.
+//!
+//! Slice 2 stops at: target push-on-change driven by agent CRUD,
+//! `agent.state` parsed and logged (no in-memory tracking yet, no
+//! stale-pid filtering — slice 3). Auth, `chat.message.received` push,
+//! and `chat.ack` come in later slices.
 
 use std::sync::Arc;
 
@@ -15,8 +19,9 @@ use axum::extract::State;
 use axum::response::IntoResponse;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
+use crate::server::bridge_registry::BridgeRegistry;
 use crate::server::handlers::AppState;
 use crate::store::agents::Agent;
 use crate::store::Store;
@@ -32,11 +37,11 @@ struct WireFrame {
 
 /// `bridge.hello` payload, sent by the bridge as its first frame.
 ///
-/// Slice 1 only reads `machine_id` / `bridge_version` for logging.
-/// `supported_frames` and `agents_alive` are part of the wire contract for
-/// later slices (target-vs-alive reconciliation, frame compat) — kept here
-/// so the deserializer rejects malformed payloads loudly instead of
-/// silently dropping fields.
+/// Slice 1-2 reads `machine_id` (registry key) + `bridge_version` for
+/// logging. `supported_frames` and `agents_alive` are part of the wire
+/// contract for later slices (frame compat negotiation, target-vs-alive
+/// reconciliation). Kept on the deserializer with `#[allow(dead_code)]`
+/// so malformed payloads still fail loudly.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,9 +66,24 @@ struct AgentAliveEntry {
     last_acked_seq: Option<u64>,
 }
 
-/// `bridge.target` payload, sent by the platform in reply to `bridge.hello`
-/// (and on every subsequent change to desired state — slice 1 only sends it
-/// once per connect).
+/// `agent.state` payload, sent by the bridge when one of its runtimes
+/// transitions. `runtime_pid` is the instance discriminator: the
+/// platform tracks the pid set by the most recent `started` transition
+/// and drops state updates whose pid doesn't match (slice 3).
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct AgentStatePayload {
+    agent_id: String,
+    state: String,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    ts: Option<String>,
+    runtime_pid: u32,
+}
+
+/// `bridge.target` payload, sent by the platform in reply to
+/// `bridge.hello` and on every change to desired state.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct BridgeTarget {
@@ -116,10 +136,12 @@ pub async fn handle_bridge_ws(
     ws: WebSocketUpgrade,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| bridge_session(socket, state.store.clone()))
+    ws.on_upgrade(move |socket| {
+        bridge_session(socket, state.store.clone(), state.bridge_registry.clone())
+    })
 }
 
-async fn bridge_session(mut socket: WebSocket, store: Arc<Store>) {
+async fn bridge_session(mut socket: WebSocket, store: Arc<Store>, registry: Arc<BridgeRegistry>) {
     let hello = match recv_hello(&mut socket).await {
         Ok(h) => h,
         Err(err) => {
@@ -127,34 +149,65 @@ async fn bridge_session(mut socket: WebSocket, store: Arc<Store>) {
             return;
         }
     };
-    debug!(
+    info!(
         machine_id = %hello.machine_id,
         bridge_version = %hello.bridge_version,
         agents_alive = hello.agents_alive.len(),
-        "bridge_ws: hello received"
+        "bridge_ws: bridge connected"
     );
 
-    if let Err(err) = send_target(&mut socket, store.as_ref()).await {
-        warn!(error = %err, "bridge_ws: failed to send bridge.target");
+    let machine_id = hello.machine_id.clone();
+    let (mut outbound_rx, _registration) = registry.register(&machine_id);
+
+    if let Err(err) = send_initial_target(&mut socket, store.as_ref()).await {
+        warn!(machine_id = %machine_id, error = %err, "bridge_ws: failed to send initial bridge.target");
         return;
     }
 
-    // Slice 1 keeps the connection open after the initial reconcile so the
-    // test (and a real bridge) can verify the frame and either close cleanly
-    // or — in later slices — receive subsequent push frames. We respond to
-    // pings, ignore other client frames, and exit on close/error.
-    while let Some(msg) = socket.recv().await {
-        match msg {
-            Ok(Message::Ping(payload)) => {
-                if socket.send(Message::Pong(payload)).await.is_err() {
-                    break;
+    // Session loop: forward outbound frames pushed by the platform
+    // (push-on-change `bridge.target` etc.) and process inbound frames
+    // from the bridge (`agent.state`, future `chat.ack`).
+    loop {
+        tokio::select! {
+            outbound = outbound_rx.recv() => {
+                match outbound {
+                    Some(text) => {
+                        if let Err(err) = socket.send(Message::Text(text.into())).await {
+                            debug!(machine_id = %machine_id, error = %err, "bridge_ws: outbound send failed; closing");
+                            break;
+                        }
+                    }
+                    // Sender dropped — shouldn't happen while registration
+                    // is alive; treat as terminal.
+                    None => break,
                 }
             }
-            Ok(Message::Close(_)) => break,
-            Ok(_) => {}
-            Err(err) => {
-                debug!(error = %err, "bridge_ws: socket recv error");
-                break;
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Text(text))) => {
+                        if let Err(err) = handle_inbound_frame(&machine_id, text.as_str()).await {
+                            warn!(machine_id = %machine_id, error = %err, "bridge_ws: dropping malformed inbound frame");
+                            // Don't disconnect on a single bad frame —
+                            // log and keep the session alive. A series
+                            // of bad frames will eventually trigger
+                            // overrun close in a later slice.
+                        }
+                    }
+                    Some(Ok(Message::Ping(payload))) => {
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => {
+                        info!(machine_id = %machine_id, "bridge_ws: bridge disconnected");
+                        break;
+                    }
+                    Some(Ok(_)) => {}
+                    Some(Err(err)) => {
+                        debug!(machine_id = %machine_id, error = %err, "bridge_ws: socket recv error; closing");
+                        break;
+                    }
+                }
             }
         }
     }
@@ -183,7 +236,57 @@ async fn recv_hello(socket: &mut WebSocket) -> anyhow::Result<BridgeHello> {
     Ok(hello)
 }
 
-async fn send_target(socket: &mut WebSocket, store: &Store) -> anyhow::Result<()> {
+async fn send_initial_target(socket: &mut WebSocket, store: &Store) -> anyhow::Result<()> {
+    let text = build_target_frame_text(store)?;
+    socket.send(Message::Text(text.into())).await?;
+    Ok(())
+}
+
+async fn handle_inbound_frame(machine_id: &str, text: &str) -> anyhow::Result<()> {
+    let envelope: WireFrame = serde_json::from_str(text)
+        .map_err(|e| anyhow::anyhow!("failed to parse inbound envelope: {e}"))?;
+    match envelope.frame_type.as_str() {
+        "agent.state" => {
+            let payload: AgentStatePayload = serde_json::from_value(envelope.data)
+                .map_err(|e| anyhow::anyhow!("failed to parse agent.state payload: {e}"))?;
+            // Slice 2: log only. Slice 3 will track current_runtime_pid
+            // per agent for stale-frame filtering and persist transitions.
+            info!(
+                machine_id = %machine_id,
+                agent_id = %payload.agent_id,
+                state = %payload.state,
+                runtime_pid = payload.runtime_pid,
+                reason = payload.reason.as_deref().unwrap_or(""),
+                ts = payload.ts.as_deref().unwrap_or(""),
+                "bridge_ws: agent.state received"
+            );
+            Ok(())
+        }
+        // Frames defined in §3.2 but not yet handled in this slice.
+        "chat.ack" => {
+            debug!(
+                machine_id = %machine_id,
+                "bridge_ws: chat.ack received (deferred to slice 3)"
+            );
+            Ok(())
+        }
+        // Bridge re-sending hello (allowed per §6 belt-and-suspenders
+        // self-correction). Treat as a no-op for now; later slices will
+        // trigger a fresh target push in response.
+        "bridge.hello" => {
+            debug!(machine_id = %machine_id, "bridge_ws: re-hello received (slice 2 ignores)");
+            Ok(())
+        }
+        other => {
+            anyhow::bail!("unknown inbound frame type: {other}");
+        }
+    }
+}
+
+/// Build a serialized `bridge.target` frame from the current set of
+/// agents in the store. Public so agent CRUD handlers can re-use the
+/// exact same encoding when triggering a push.
+pub fn build_target_frame_text(store: &Store) -> anyhow::Result<String> {
     let agents = store.get_agents()?;
     let target = BridgeTarget {
         target_agents: agents.into_iter().map(AgentTarget::from).collect(),
@@ -193,7 +296,22 @@ async fn send_target(socket: &mut WebSocket, store: &Store) -> anyhow::Result<()
         frame_type: "bridge.target".to_string(),
         data: serde_json::to_value(&target)?,
     };
-    let text = serde_json::to_string(&envelope)?;
-    socket.send(Message::Text(text.into())).await?;
-    Ok(())
+    Ok(serde_json::to_string(&envelope)?)
+}
+
+/// Push a fresh `bridge.target` to every connected bridge. Called from
+/// agent CRUD handlers after they mutate state. Failure to build the
+/// frame is logged but doesn't surface to the HTTP caller — the agent
+/// CRUD itself succeeded; bridges will reconcile on next re-hello at
+/// worst.
+pub fn broadcast_target_update(store: &Store, registry: &BridgeRegistry) {
+    let text = match build_target_frame_text(store) {
+        Ok(t) => t,
+        Err(err) => {
+            warn!(error = %err, "bridge_ws: failed to build target frame for broadcast");
+            return;
+        }
+    };
+    let delivered = registry.broadcast(&text);
+    debug!(delivered, "bridge_ws: broadcast bridge.target on change");
 }
