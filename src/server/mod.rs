@@ -82,6 +82,13 @@ pub fn build_router_with_services(
 /// so the deployed `chorus serve` enforces tokens; tests inject explicit
 /// `BridgeAuth::from_pairs(...)` to exercise the auth path without
 /// touching process env vars.
+///
+/// `clippy::too_many_arguments` is silenced here because this signature
+/// is purely additive over `build_router_with_services` (which already
+/// hits the 7-arg limit). Folding the existing args into a config
+/// struct is the right long-term answer but would touch every test
+/// harness + CLI caller in one go — out of scope for this PR.
+#[allow(clippy::too_many_arguments)]
 pub fn build_router_with_services_and_auth(
     store: Arc<Store>,
     event_bus: Arc<EventBus>,

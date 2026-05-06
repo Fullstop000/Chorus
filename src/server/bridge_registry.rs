@@ -102,10 +102,7 @@ impl BridgeRegistry {
     pub fn send_to(&self, machine_id: &str, frame_text: &str) -> usize {
         let snapshot: Vec<mpsc::Sender<String>> = {
             let conns = self.connections.lock().unwrap();
-            conns
-                .get(machine_id)
-                .map(|v| v.iter().cloned().collect())
-                .unwrap_or_default()
+            conns.get(machine_id).map(|v| v.to_vec()).unwrap_or_default()
         };
         let mut delivered = 0;
         for tx in snapshot {
