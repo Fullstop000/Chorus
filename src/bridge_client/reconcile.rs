@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use crate::agent::manager::AgentManager;
 use crate::store::Store;
 
-use super::local_store::{self, AgentIdMap};
+use super::local_store::{upsert_from_target, AgentIdMap};
 use super::ws::AgentTargetIn;
 
 /// Result of one reconcile pass. `started`/`stopped` carry agent names that
@@ -34,7 +34,7 @@ pub async fn apply(
 
     for target in &targets {
         desired.insert(target.name.clone());
-        local_store::upsert_from_target(store, target)?;
+        upsert_from_target(store, target)?;
         id_map.record(target.name.clone(), target.agent_id.clone());
     }
 
@@ -68,7 +68,7 @@ pub async fn apply(
             tracing::warn!(agent = %name, err = %e, "stop_agent failed during reconcile");
         }
         stopped.push(name.clone());
-        local_store::delete_record(store, name)?;
+        store.delete_agent_record(name)?;
         id_map.forget(name);
     }
 

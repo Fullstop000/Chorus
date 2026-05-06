@@ -15,8 +15,8 @@ use super::ws::AgentTargetIn;
 /// the local name we drive `AgentManager` with.
 #[derive(Default)]
 pub struct AgentIdMap {
-    pub name_by_platform_id: HashMap<String, String>,
-    pub platform_id_by_name: HashMap<String, String>,
+    name_by_platform_id: HashMap<String, String>,
+    platform_id_by_name: HashMap<String, String>,
 }
 
 impl AgentIdMap {
@@ -44,8 +44,8 @@ impl AgentIdMap {
 }
 
 /// Insert or update the local agent record so `AgentManager::start_agent`
-/// can read it back. Returns true if the record was newly created.
-pub fn upsert_from_target(store: &Store, target: &AgentTargetIn) -> anyhow::Result<bool> {
+/// can read it back.
+pub fn upsert_from_target(store: &Store, target: &AgentTargetIn) -> anyhow::Result<()> {
     let env_vars: Vec<AgentEnvVar> = target
         .env_vars
         .iter()
@@ -71,14 +71,8 @@ pub fn upsert_from_target(store: &Store, target: &AgentTargetIn) -> anyhow::Resu
 
     if store.get_agent(&target.name)?.is_some() {
         store.update_agent_record(&record)?;
-        Ok(false)
     } else {
         store.create_agent_record(&record)?;
-        Ok(true)
     }
-}
-
-pub fn delete_record(store: &Store, name: &str) -> anyhow::Result<()> {
-    store.delete_agent_record(name)?;
     Ok(())
 }

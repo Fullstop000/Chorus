@@ -12,8 +12,6 @@ use std::sync::Arc;
 
 use crate::store::Store;
 
-pub use ws::{ChatMessageReceived, ServerFrame};
-
 #[derive(Clone)]
 pub struct BridgeClientConfig {
     pub platform_ws: String,
