@@ -71,9 +71,8 @@ pub struct CreateAgentRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
-    /// Phase 3 bridge ownership (slice 6). Optional; when omitted, the
-    /// agent has no bound `machine_id` and is visible to every
-    /// connected bridge (back-compat with pre-slice-6 behavior).
+    /// Bridge ownership. When set, only the matching `machine_id` runs
+    /// the agent; when omitted, the agent is platform-local.
     #[serde(default, rename = "machineId")]
     pub machine_id: Option<String>,
 }
@@ -421,10 +420,10 @@ pub(crate) async fn create_and_start_agent(
             ch = crate::store::Store::DEFAULT_SYSTEM_CHANNEL,
         )
     });
-    // Phase 3: agents bound to a remote bridge (`machine_id` is set) are
-    // started by that bridge after the platform pushes a `bridge.target`
-    // update. The platform must NOT spawn them locally — doing so causes
-    // dual-runtime contention on the same agent session.
+    // Bridge-hosted agents (`machine_id` set) are started by the remote
+    // bridge after the platform pushes a `bridge.target` update. The
+    // platform must NOT spawn them locally — doing so causes dual-runtime
+    // contention on the same agent session.
     let start_error = if params.machine_id.is_some() {
         info!(
             agent = %name,
@@ -523,9 +522,9 @@ pub async fn handle_update_agent(
     let was_running = crate::agent::process_status::derive_status(ps.as_ref())
         != crate::agent::process_status::Status::Asleep;
 
-    // Phase 3: bridge-hosted agents are restarted by the remote bridge
-    // when it receives the broadcast target update below. The platform
-    // does not own the runtime process and must not call start/stop.
+    // Bridge-hosted agents are restarted by the remote bridge when it
+    // receives the broadcast target update below. The platform does not
+    // own the runtime process and must not call start/stop.
     let bridge_hosted = machine_id_trimmed.is_some();
     if was_running && requires_restart && !bridge_hosted {
         state

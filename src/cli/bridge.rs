@@ -1,10 +1,10 @@
 //! `chorus bridge` — remote runtime that connects to a platform over WebSocket.
 //!
-//! Phase 3 client side. Two-process Chorus: one process runs `chorus serve`
-//! as the platform (HTTP/WS API + DB), this process runs the agent runtime
-//! and tunnels lifecycle + chat over `/api/bridge/ws`. Local agents talk to
-//! an embedded MCP bridge on a loopback port; that bridge proxies tool-calls
-//! back to the platform's HTTP API.
+//! Two-process Chorus: one process runs `chorus serve` as the platform
+//! (HTTP/WS API + DB), this process runs the agent runtime and tunnels
+//! lifecycle + chat over `/api/bridge/ws`. Local agents talk to an embedded
+//! MCP bridge on a loopback port; that bridge proxies tool-calls back to
+//! the platform's HTTP API.
 //!
 //! High level loop:
 //!   1. Open `data_dir/bridge.db` (local SQLite for synced agent records).

@@ -1,13 +1,10 @@
-//! E2E tests for the Phase 3 bridge ↔ platform WebSocket (slices 1-2).
+//! E2E tests for the bridge ↔ platform WebSocket protocol.
 //!
-//! Slice 1: a real Axum server is bound to a local TCP port, a
-//! `tokio-tungstenite` client connects to `/api/bridge/ws`, sends a
-//! `bridge.hello` frame, and asserts the `bridge.target` reply lists
-//! the agent records currently in the DB.
-//!
-//! Slice 2: after the initial target, a fresh `bridge.target` is pushed
-//! whenever an agent is mutated through the HTTP API. The bridge can
-//! send `agent.state` frames upstream and the session keeps running.
+//! A real Axum server is bound to a local TCP port; a `tokio-tungstenite`
+//! client connects to `/api/bridge/ws`, sends `bridge.hello`, and asserts
+//! the `bridge.target` reply lists the DB's agent records. Mutations
+//! through the HTTP API push fresh targets; the bridge can emit
+//! `agent.state` frames upstream while the session stays alive.
 
 mod harness;
 
@@ -193,11 +190,11 @@ async fn bridge_ws_rejects_non_hello_first_frame() {
         .await
         .unwrap();
 
-    // Expect the stream to close (no target frame ever arrives). Slice 1
-    // drops the socket without a clean handshake on protocol violation, so
-    // we accept clean Close, transport-level error, and unclean reset as
-    // equivalent outcomes — what we're really checking is "no
-    // bridge.target was sent."
+    // Expect the stream to close (no target frame ever arrives). The
+    // server drops the socket without a clean handshake on protocol
+    // violation, so we accept clean Close, transport-level error, and
+    // unclean reset as equivalent outcomes — what we're really checking
+    // is "no bridge.target was sent."
     let next = timeout(Duration::from_millis(500), socket.next()).await;
     match next {
         Ok(None) => {}
@@ -210,7 +207,7 @@ async fn bridge_ws_rejects_non_hello_first_frame() {
     }
 }
 
-// ── Slice 2 ────────────────────────────────────────────────────────────
+// ── target push & agent.state ──────────────────────────────────────────
 
 async fn send_hello(
     socket: &mut tokio_tungstenite::WebSocketStream<
@@ -298,8 +295,8 @@ async fn bridge_ws_accepts_agent_state_frame_without_disconnecting() {
     send_hello(&mut socket, "agent-state-machine").await;
     let _initial = read_json_frame(&mut socket).await; // drain initial empty target
 
-    // Bridge sends a well-formed agent.state upstream. Slice 2 logs and
-    // returns OK; later slices will track and persist the transition.
+    // Bridge sends a well-formed agent.state upstream. The platform logs
+    // and returns OK; persistence is a follow-up.
     let frame = json!({
         "v": 1,
         "type": "agent.state",
@@ -340,9 +337,9 @@ async fn bridge_ws_accepts_agent_state_frame_without_disconnecting() {
 
 #[tokio::test]
 async fn bridge_ws_handles_stop_start_race_without_breaking_session() {
-    // Slice 3: agent.state frames carry runtime_pid as the instance
-    // discriminator. A delayed `crashed` from a previous instance must
-    // be dropped without breaking the live session.
+    // agent.state frames carry runtime_pid as the instance discriminator.
+    // A delayed `crashed` from a previous instance must be dropped
+    // without breaking the live session.
     let (ws_url, http_url, _store) = start_test_server().await;
 
     let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
@@ -371,8 +368,8 @@ async fn bridge_ws_handles_stop_start_race_without_breaking_session() {
         .await
         .unwrap();
 
-    // Delayed `crashed` from the OLD pid arrives — slice 3's filter
-    // must drop it without disturbing the session.
+    // Delayed `crashed` from the OLD pid arrives — the registry's
+    // pid filter must drop it without disturbing the session.
     let stale_crash = json!({
         "v": 1, "type": "agent.state",
         "data": { "agent_id": "agt-race", "state": "crashed",
@@ -469,7 +466,7 @@ async fn bridge_ws_pushes_to_multiple_connected_bridges() {
     );
 }
 
-// ── Slice 4: bearer auth ───────────────────────────────────────────────
+// ── bearer auth on WS upgrade ──────────────────────────────────────────
 
 async fn start_test_server_with_auth(auth: Arc<BridgeAuth>) -> (String, String) {
     let store = Arc::new(Store::open(":memory:").unwrap());
@@ -576,7 +573,7 @@ async fn bridge_ws_drops_session_on_machine_id_spoof() {
     }
 }
 
-// ── Slice 5: chat.message.received push + chat.ack ─────────────────────
+// ── chat.message.received push + chat.ack ──────────────────────────────
 
 async fn start_test_server_with_event_bus_handle() -> (
     String,
@@ -717,7 +714,7 @@ async fn bridge_ws_chat_ack_advances_per_agent_cursor() {
     assert_eq!(pushed["type"], "bridge.target");
 }
 
-// ── Slice 6: machine_id scoping on agents ──────────────────────────────
+// ── machine_id scoping on agents ───────────────────────────────────────
 
 #[tokio::test]
 async fn bridge_ws_target_scoped_by_agent_machine_id() {
@@ -819,7 +816,7 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
     );
 }
 
-// ── Slice 7: bearer auth on /internal/agent/* ──────────────────────────
+// ── bearer auth on /internal/agent/* ───────────────────────────────────
 
 #[tokio::test]
 async fn internal_agent_endpoints_pass_through_when_auth_disabled() {

@@ -81,7 +81,7 @@ impl Store {
     fn init_schema(conn: &Connection) -> Result<()> {
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
-        // Phase 3 slice 6 idempotent migration: SQLite has no
+        // Idempotent `machine_id` migration: SQLite has no
         // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Attempt the ALTER
         // and ignore *only* the "duplicate column name" error; surface
         // anything else (locked DB, syntax errors, real schema drift)

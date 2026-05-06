@@ -163,8 +163,8 @@ impl AgentManager {
         // so the recovery path can spin a fresh process. The eviction set
         // matches the "not really running" mapping in derive_status:
         //   - Closed/Idle map to Status::Asleep.
-        //   - Failed maps to Status::Failed but Phase 3 routes Failed
-        //     through start_agent for one retry per inbound message.
+        //   - Failed maps to Status::Failed but routes Failed through
+        //     start_agent for one retry per inbound message.
         // Active/Starting/PromptInFlight are genuinely live; short-circuit.
         //
         // Eviction must call close() on the evicted handle — several

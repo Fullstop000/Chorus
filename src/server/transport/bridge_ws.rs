@@ -1,28 +1,24 @@
-//! Bridge ↔ Platform WebSocket handler (Phase 3, slices 1-4).
+//! Bridge ↔ Platform WebSocket handler.
 //!
 //! `GET /api/bridge/ws`. The bridge dials in, sends `bridge.hello` as
 //! its first frame; the platform replies with `bridge.target` listing
 //! the desired runtime config for every agent that should run on this
 //! bridge. The platform pushes a fresh `bridge.target` on every change
 //! to desired state (see `broadcast_target_update`). The bridge sends
-//! `agent.state` frames upstream when its runtimes transition.
+//! `agent.state` frames upstream when its runtimes transition, and
+//! `chat.ack` after delivering a `chat.message.received` to the runtime.
 //!
-//! Slice 3 adds the `runtime_pid` instance discriminator on
-//! `agent.state`: `started` events record the current pid in
-//! `BridgeRegistry`, and non-started transitions are dropped if their
-//! pid doesn't match. This blocks the stop→start race where a delayed
-//! `crashed` from the previous instance would otherwise silently mark
-//! the live new instance dead.
+//! Frames carry a `runtime_pid` instance discriminator: `started` events
+//! record the current pid in `BridgeRegistry`, and non-started transitions
+//! are dropped if their pid doesn't match. This blocks the stop→start
+//! race where a delayed `crashed` from the previous instance would
+//! otherwise silently mark the live new instance dead.
 //!
-//! Slice 4 adds bearer-token auth on the WS upgrade. If the platform
-//! has tokens configured (via `CHORUS_BRIDGE_TOKENS` env var or
-//! explicit `BridgeAuth`), the request must include
-//! `Authorization: Bearer <token>` and the `bridge.hello.machine_id`
-//! must match the token's bound `machine_id`. With no tokens
-//! configured, auth is disabled and any client may connect (loopback
-//! default).
-//!
-//! `chat.message.received` push and `chat.ack` come in later slices.
+//! Auth: when the platform has tokens configured (via
+//! `CHORUS_BRIDGE_TOKENS` env var or explicit `BridgeAuth`), the request
+//! must include `Authorization: Bearer <token>` and the
+//! `bridge.hello.machine_id` must match the token's bound `machine_id`.
+//! With no tokens configured, auth is disabled (loopback default).
 
 use std::sync::Arc;
 
@@ -51,11 +47,10 @@ struct WireFrame {
 
 /// `bridge.hello` payload, sent by the bridge as its first frame.
 ///
-/// Slice 1-2 reads `machine_id` (registry key) + `bridge_version` for
-/// logging. `supported_frames` and `agents_alive` are part of the wire
-/// contract for later slices (frame compat negotiation, target-vs-alive
-/// reconciliation). Kept on the deserializer with `#[allow(dead_code)]`
-/// so malformed payloads still fail loudly.
+/// `machine_id` keys the registry; `bridge_version` is logged.
+/// `supported_frames` and `agents_alive` are accepted by the deserializer
+/// (so malformed payloads still fail loudly) but not yet consumed —
+/// reserved for frame-compat negotiation and target-vs-alive reconciliation.
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,7 +78,7 @@ struct AgentAliveEntry {
 /// `agent.state` payload, sent by the bridge when one of its runtimes
 /// transitions. `runtime_pid` is the instance discriminator: the
 /// platform tracks the pid set by the most recent `started` transition
-/// and drops state updates whose pid doesn't match (slice 3).
+/// and drops state updates whose pid doesn't match.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct AgentStatePayload {
@@ -97,10 +92,10 @@ struct AgentStatePayload {
 }
 
 /// `chat.ack` payload, sent by the bridge after it has buffered a
-/// `chat.message.received` batch into an agent's local mailbox. Slice 5
-/// uses it to advance an in-memory cursor in `BridgeRegistry`; future
-/// slices will persist `last_acked_seq` to the DB so reconnect-replay
-/// only re-emits messages the bridge hasn't seen.
+/// `chat.message.received` batch into an agent's local mailbox. Advances
+/// an in-memory cursor in `BridgeRegistry`; persisting `last_acked_seq`
+/// to the DB (so reconnect-replay only re-emits unseen messages) is a
+/// follow-up.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct ChatAckPayload {
@@ -385,11 +380,11 @@ async fn handle_inbound_frame(
             );
             Ok(())
         }
-        // Bridge re-sending hello (allowed per §6 belt-and-suspenders
-        // self-correction). Treat as a no-op for now; later slices will
-        // trigger a fresh target push in response.
+        // Bridge re-sending hello is allowed for self-correction. Treat
+        // as a no-op today; a future change can trigger a fresh target
+        // push in response.
         "bridge.hello" => {
-            debug!(machine_id = %machine_id, "bridge_ws: re-hello received (slice 2 ignores)");
+            debug!(machine_id = %machine_id, "bridge_ws: re-hello received, ignoring");
             Ok(())
         }
         other => {
@@ -454,9 +449,8 @@ pub fn broadcast_target_update(store: &Store, registry: &BridgeRegistry) {
 
 /// Forward a chat-message stream event to every connected bridge as a
 /// `chat.message.received` frame. Called wherever a `message.created`
-/// `StreamEvent` is published. Slice 5 broadcasts to every bridge for
-/// every agent member of the channel; slice 6 narrows by `machine_id`
-/// so each bridge only sees chat for the agents it owns.
+/// `StreamEvent` is published. Narrows by `machine_id` so each bridge
+/// only sees chat for the agents it owns.
 ///
 /// The bridge is responsible for matching the inner `agent_id` to its
 /// own running runtime and updating that mailbox.

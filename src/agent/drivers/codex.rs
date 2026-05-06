@@ -754,12 +754,7 @@ impl CodexHandle {
     /// assigned (or confirmed, for resume).
     async fn start_or_resume_thread(&self, resume_id: Option<String>) -> anyhow::Result<String> {
         let req_id = self.process.alloc_request_id();
-        let mut prompt_opts = super::prompt::PromptOptions {
-            post_startup_notes: vec![
-                "**IMPORTANT**: Your process stays alive across turns. New messages may be delivered directly into the current session while you are working.".into(),
-            ],
-            ..Default::default()
-        };
+        let mut prompt_opts = super::prompt::PromptOptions::default();
         super::prompt::apply_env_override(&mut prompt_opts);
         let standing_prompt = super::prompt::build_system_prompt(&self.spec, &prompt_opts);
         let (method, req_line) = match &resume_id {

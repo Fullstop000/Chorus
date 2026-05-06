@@ -140,13 +140,14 @@ pub async fn run_bridge_server(listen_addr: &str, server_url: &str) -> anyhow::R
     if resolved.is_empty() {
         anyhow::bail!("listen address {} resolved to no sockets", listen_addr);
     }
-    // Phase 2 has no authentication beyond the loopback bind — refuse to expose
-    // the bridge beyond localhost until Phase 3 bearer-token auth is real.
+    // The MCP bridge has no authentication beyond the loopback bind — refuse to
+    // expose it beyond localhost. Cross-machine MCP must go through `chorus
+    // bridge`, which proxies tool-calls over the authenticated WS upgrade.
     for addr in &resolved {
         if !addr.ip().is_loopback() {
             anyhow::bail!(
-                "Bridge refuses to bind to non-loopback address {}. Phase 2 bridge has no authentication; \
-                 only localhost binds are supported. If you need non-loopback binding, wait for Phase 3 bearer tokens.",
+                "Bridge refuses to bind to non-loopback address {}. The MCP bridge has no authentication; \
+                 only localhost binds are supported. For cross-machine, use `chorus bridge` instead.",
                 addr
             );
         }

@@ -1,6 +1,6 @@
-//! Phase 3 bridge client. Lives on the runtime side of the bridge↔platform
-//! split. The platform exposes `GET /api/bridge/ws` and the chat HTTP API
-//! at `platform_http`; this module dials both, runs an [`AgentManager`]
+//! Bridge client: the runtime side of the bridge↔platform split. The
+//! platform exposes `GET /api/bridge/ws` and the chat HTTP API at
+//! `platform_http`; this module dials both, runs an [`AgentManager`]
 //! locally, and reconciles desired state from `bridge.target` frames.
 
 mod local_store;

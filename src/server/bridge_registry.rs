@@ -8,8 +8,8 @@
 //!
 //! Cardinality: a single `machine_id` may have multiple senders
 //! transiently when a new connection arrives before the old one's
-//! cleanup runs. Slice 2 broadcasts to all of them; slice 3 (or later)
-//! supersedes the older connection per the §4 cardinality rule.
+//! cleanup runs. The platform broadcasts to all of them; the older
+//! connection naturally drains as its WS session task exits.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -41,8 +41,7 @@ pub struct BridgeRegistry {
     instance_pids: Mutex<HashMap<String, HashMap<String, u32>>>,
     /// `(machine_id, agent_id) → last_acked_seq`. Advanced by every
     /// `chat.ack` frame the bridge sends after buffering a delivery.
-    /// In slice 5 this is in-memory only; later slices will persist to
-    /// `agents.last_acked_seq` so reconnect-replay can avoid duplicates.
+    /// In-memory only; reconnect drops the cursor today.
     chat_acks: Mutex<HashMap<String, HashMap<String, i64>>>,
     /// Telemetry: count of `agent.state` frames dropped because their
     /// `runtime_pid` doesn't match the current tracker. Test-visible
@@ -288,7 +287,7 @@ mod tests {
         assert_eq!(rx_b.recv().await.unwrap(), r#"{"frame":"x"}"#);
     }
 
-    // ── slice 3: runtime_pid filtering ──
+    // ── runtime_pid filtering ──
 
     #[tokio::test]
     async fn record_started_then_is_current_pid_matches() {
@@ -326,7 +325,7 @@ mod tests {
         assert_eq!(reg.stale_state_drops(), 0);
     }
 
-    // ── slice 5: chat.ack cursor ──
+    // ── chat.ack cursor ──
 
     #[tokio::test]
     async fn chat_ack_records_and_returns_last_seq() {

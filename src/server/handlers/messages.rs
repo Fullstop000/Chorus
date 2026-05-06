@@ -843,11 +843,9 @@ pub(crate) async fn deliver_message_to_agents(
         let Some(agent) = state.store.get_agent(&recipient_name)? else {
             continue;
         };
-        // Phase 3 split: if the agent is owned by a remote bridge
-        // (machine_id is set), the platform does NOT spawn it locally —
-        // the bridge already received `chat.message.received` via
-        // `forward_chat_event_to_bridges` and is responsible for waking
-        // the runtime on its side.
+        // Bridge-hosted agents are woken by the remote bridge after it
+        // receives `chat.message.received` via `forward_chat_event_to_bridges`;
+        // the platform must not spawn them locally.
         if agent.machine_id.is_some() {
             continue;
         }

@@ -118,9 +118,9 @@ Before writing much code, answer these questions from the real runtime:
 
 Use a tiny one-off probe before integrating fully:
 
-1. Start `chorus bridge-serve` pointed at a local chorus server, then pair an agent
-   with `chorus bridge-pair --agent <test-agent>` and point the runtime's MCP config
-   at `http://127.0.0.1:4321/token/<token>/mcp`.
+1. Start `chorus bridge-serve` pointed at a local chorus server, then point
+   the runtime's MCP config at `http://127.0.0.1:4321/<test-agent>/mcp`
+   (the bridge keys sessions by the URL path segment).
 2. Run the runtime directly in its print/JSON mode
 3. Send one minimal prompt that asks it to call `send_message`
 4. Capture raw stdout and stderr

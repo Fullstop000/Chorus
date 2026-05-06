@@ -1,7 +1,6 @@
 //! Bridge bearer-token authentication.
 //!
-//! Phase 3 slice 4: minimum auth shape that closes the two real gaps
-//! before this protocol is safe past loopback —
+//! Two guarantees needed before the bridge protocol is safe past loopback:
 //!
 //! 1. **Bearer token required on WS upgrade.** Anyone reaching
 //!    `/api/bridge/ws` with no `Authorization` header gets `401`.
@@ -9,7 +8,7 @@
 //!    token to find its bound `machine_id`; the bridge can no longer
 //!    claim an arbitrary `machine_id` in `bridge.hello`. If the hello
 //!    payload's `machine_id` doesn't match the token's binding, the
-//!    connection is closed (Open Decision D-A from the design doc).
+//!    connection is closed.
 //!
 //! Tokens are configured via the `CHORUS_BRIDGE_TOKENS` env var:
 //!
@@ -28,14 +27,12 @@
 //! matches the loopback default and keeps existing tests working
 //! without env-var fiddling.
 //!
-//! What this slice deliberately does NOT do:
+//! Deliberately out of scope:
 //!   - Token rotation/revocation. Tokens are static for the process
 //!     lifetime; restart `chorus serve` to roll them.
 //!   - Anomaly detection (IP flapping, rate-limiting).
-//!   - Auth on `/internal/agent/*`. Those handlers are still
-//!     loopback-only in Phase 2; Phase 3-remote needs a separate auth
-//!     story for them (likely the same tokens, but the call sites need
-//!     to be updated to send the header — out of scope here).
+//!   - Auth on `/internal/agent/*`. Those handlers remain loopback-only;
+//!     extending them to remote callers would need its own auth story.
 
 use std::collections::HashMap;
 use std::sync::Arc;

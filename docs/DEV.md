@@ -143,7 +143,6 @@ chorus start --port 3001        # start server + open browser
 chorus serve --port 3001        # start server, no browser
 chorus bridge ...               # remote runtime, connects to a platform via WS
 chorus bridge-serve ...         # standalone MCP bridge (in-process by default)
-chorus bridge-pair --agent ...  # mint pairing token
 ```
 
 ---
