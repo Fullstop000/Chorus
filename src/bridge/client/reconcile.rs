@@ -66,26 +66,33 @@ pub async fn apply(
     }
 
     // Stop any locally-running agent that is no longer in the desired set.
-    // Capture platform_id BEFORE deleting the row so the caller can still
-    // emit the upstream `agent.state{state=stopped}` frame.
+    // The manager-side stop runs unconditionally — leaving a runtime alive
+    // because the local DB row vanished early would orphan an OS process.
+    // The upstream `agent.state{stopped}` frame is conditional: skip it
+    // (with a debug log) when we can't resolve the platform_id, since
+    // there's nothing the platform can do with a nameless transition.
     for name in running.iter() {
         if desired.contains(name) {
             continue;
         }
-        let platform_id = match store.get_agent(name)? {
-            Some(agent) => agent.id,
-            None => {
-                // Already gone from the local store — skip the stop event.
-                continue;
-            }
-        };
+        let platform_id = store.get_agent(name)?.map(|a| a.id);
         if let Err(e) = manager.stop_agent(name).await {
             tracing::warn!(agent = %name, err = %e, "stop_agent failed during reconcile");
         }
-        stopped.push(AgentTransition {
-            name: name.clone(),
-            platform_id,
-        });
+        match platform_id {
+            Some(platform_id) => {
+                stopped.push(AgentTransition {
+                    name: name.clone(),
+                    platform_id,
+                });
+            }
+            None => {
+                tracing::debug!(
+                    agent = %name,
+                    "reconcile: stopped runtime had no local row; skipping upstream stop event"
+                );
+            }
+        }
         store.delete_agent_record(name)?;
     }
 

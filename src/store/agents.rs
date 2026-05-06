@@ -165,11 +165,12 @@ impl Store {
         Ok(id.to_string())
     }
 
-    /// Bridge entry point: insert (or replace) an agent row using the
-    /// platform-supplied id. If a row with the same name already exists
-    /// but a different id, it is deleted first — the bridge's local DB
-    /// is a cache of the platform's view, so reusing the platform id keeps
-    /// `agents(id)` semantically equal across processes.
+    /// Bridge entry point: insert an agent row using the platform-supplied
+    /// id. The bridge DB is a cache of the platform's view, so this is
+    /// always a "create fresh" operation — both potential conflicts (a
+    /// row with this name under a different id, or a row with this id
+    /// under a different name from a rename) are dropped first, making
+    /// the call atomic and idempotent under the connection mutex.
     pub fn create_agent_record_with_id(
         &self,
         id: &str,
@@ -177,21 +178,13 @@ impl Store {
     ) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
-        let existing_id: Option<String> = conn
-            .query_row(
-                "SELECT id FROM agents WHERE name = ?1",
-                params![record.name],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if let Some(existing) = existing_id {
-            if existing == id {
-                // Same id, no-op insert — caller should be using update_agent_record.
-                return Ok(());
-            }
-            // Stale local row from a previous reconcile. Drop it.
-            conn.execute("DELETE FROM agents WHERE id = ?1", params![existing])?;
-        }
+        // Clear both potential conflicts: (1) a stale row with this name
+        // under a different id (cache leftover); (2) a stale row with this
+        // id under a different name (platform-side rename of the same
+        // agent_id). Either or both may match; an idempotent re-call where
+        // both match is fine — the row just gets recreated identically.
+        conn.execute("DELETE FROM agents WHERE name = ?1", params![record.name])?;
+        conn.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
         Self::create_agent_record_inner_with_id(&conn, &workspace_id, id, record)?;
         Ok(())
     }
