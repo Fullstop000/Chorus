@@ -263,10 +263,16 @@ mod tests {
         assert_eq!(auth.check(&h), AuthOutcome::Rejected);
     }
 
+    // `CHORUS_BRIDGE_TOKENS` is process-wide. Serialize on `bridge_env` so this
+    // test doesn't race a future parallel test that sets the same var.
     #[test]
+    #[serial_test::serial(bridge_env)]
     fn from_env_handles_empty_var() {
-        // Use a unique key to avoid clashing with parallel tests.
-        std::env::remove_var("CHORUS_BRIDGE_TOKENS");
+        // SAFETY: env mutation is serialized by the `#[serial(bridge_env)]`
+        // attribute above; no other test in this group runs concurrently.
+        unsafe {
+            std::env::remove_var("CHORUS_BRIDGE_TOKENS");
+        }
         let auth = BridgeAuth::from_env();
         assert!(!auth.is_enabled());
     }

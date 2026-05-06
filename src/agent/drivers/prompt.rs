@@ -29,25 +29,43 @@ pub struct PromptOptions {
     pub system_prompt_override: Option<String>,
 }
 
+/// Apply the env-var whole-prompt override (`CHORUS_SYSTEM_PROMPT_OVERRIDE_FILE`)
+/// onto `opts` if the env var is set and the file is readable. No-op when the
+/// programmatic override is already present or the env var is unset.
+///
+/// Splitting this out of [`build_system_prompt`] keeps that function pure with
+/// respect to process-wide state — tests can drive it without serializing
+/// against env-var-mutating siblings, and production callers wire the env
+/// override in once at agent-spawn time.
+pub fn apply_env_override(opts: &mut PromptOptions) {
+    if opts.system_prompt_override.is_some() {
+        return;
+    }
+    let Ok(path) = std::env::var(SYSTEM_PROMPT_OVERRIDE_ENV) else {
+        return;
+    };
+    if path.is_empty() {
+        return;
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(text) => opts.system_prompt_override = Some(text),
+        Err(e) => {
+            tracing::warn!(
+                path = %path,
+                error = %e,
+                "{SYSTEM_PROMPT_OVERRIDE_ENV} set but file unreadable; falling back to built-in prompt"
+            );
+        }
+    }
+}
+
 pub fn build_system_prompt(spec: &AgentSpec, opts: &PromptOptions) -> String {
-    // Whole-prompt overrides bypass the builder entirely. Programmatic override
-    // wins; env-var fallback is for ops/bench convenience.
+    // Whole-prompt override bypasses the builder entirely. Production code
+    // funnels the env-var override into `opts` via `apply_env_override`
+    // first; this function only consults the in-process field so unit tests
+    // can run in parallel without serializing on global env state.
     if let Some(ref text) = opts.system_prompt_override {
         return text.clone();
-    }
-    if let Ok(path) = std::env::var(SYSTEM_PROMPT_OVERRIDE_ENV) {
-        if !path.is_empty() {
-            match std::fs::read_to_string(&path) {
-                Ok(text) => return text,
-                Err(e) => {
-                    tracing::warn!(
-                        path = %path,
-                        error = %e,
-                        "{SYSTEM_PROMPT_OVERRIDE_ENV} set but file unreadable; falling back to built-in prompt"
-                    );
-                }
-            }
-        }
     }
 
     let t = |name: &str| format!("{}{}", opts.tool_prefix, name);
@@ -458,28 +476,45 @@ mod tests {
         assert!(!p.contains("MEMORY.md"));
     }
 
+    // The two tests below mutate the process-wide `CHORUS_SYSTEM_PROMPT_OVERRIDE_FILE`
+    // env var. They serialize on `prompt_env` so they don't race each other,
+    // and they exercise `apply_env_override` directly — not `build_system_prompt`,
+    // which is now pure with respect to env state. That keeps every other test
+    // in this module parallel-safe.
     #[test]
+    #[serial_test::serial(prompt_env)]
     fn env_var_override_replaces_entire_prompt() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("prompt.md");
         let custom = "# ENV OVERRIDE\nthis is the whole prompt.\n";
         std::fs::write(&path, custom).expect("write");
-        // Use a guard to scope the env var so other tests aren't affected.
         let _guard = EnvVarGuard::set(SYSTEM_PROMPT_OVERRIDE_ENV, path.to_str().unwrap());
-        let p = build_system_prompt(&sample_spec(), &PromptOptions::default());
+        let mut opts = PromptOptions::default();
+        apply_env_override(&mut opts);
+        assert_eq!(opts.system_prompt_override.as_deref(), Some(custom));
+        // And `build_system_prompt` returns the override verbatim once it's
+        // been threaded into opts — the production wiring path.
+        let p = build_system_prompt(&sample_spec(), &opts);
         assert_eq!(p, custom);
     }
 
     #[test]
+    #[serial_test::serial(prompt_env)]
     fn programmatic_override_wins_over_env_var() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("prompt.md");
         std::fs::write(&path, "# FROM FILE\n").expect("write");
         let _guard = EnvVarGuard::set(SYSTEM_PROMPT_OVERRIDE_ENV, path.to_str().unwrap());
-        let opts = PromptOptions {
+        let mut opts = PromptOptions {
             system_prompt_override: Some("# FROM CODE\n".into()),
             ..Default::default()
         };
+        apply_env_override(&mut opts);
+        // Programmatic override wins: env value never read in.
+        assert_eq!(
+            opts.system_prompt_override.as_deref(),
+            Some("# FROM CODE\n")
+        );
         let p = build_system_prompt(&sample_spec(), &opts);
         assert_eq!(p, "# FROM CODE\n");
     }

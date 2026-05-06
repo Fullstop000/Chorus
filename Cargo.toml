@@ -47,3 +47,7 @@ tokio-tungstenite = { version = "0.28", features = ["rustls-tls-webpki-roots"] }
 [dev-dependencies]
 tempfile = "3"
 tower = "0.5"
+# Serializes tests that touch process-wide env vars so parallel cargo
+# test runs don't race each other through `std::env::set_var` /
+# `remove_var`. Tag affected tests with `#[serial(<group-key>)]`.
+serial_test = "3"
