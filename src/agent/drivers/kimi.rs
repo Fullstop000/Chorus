@@ -144,16 +144,27 @@ fn spawn_kimi(spec: Arc<AgentSpec>, key: AgentKey) -> SpawnFut {
 // Session-file liveness guard
 // ---------------------------------------------------------------------------
 
-/// Find the kimi session-state file for `session_id`. Kimi stores per-session
-/// state under `~/.kimi/sessions/<workspace_hash>/<session_id>/state.json`,
-/// where `workspace_hash` is a 32-char hex of the working directory. We
-/// don't know the hash here, so glob across all workspace dirs and return
-/// the first match. None means the session is gone and `session/load`
-/// should be replaced with `session/new`.
+/// Find the kimi session file that proves this session can actually be
+/// resumed via `session/load`. Kimi stores per-session state under
+/// `~/.kimi/sessions/<workspace_hash>/<session_id>/`, where
+/// `workspace_hash` is a 32-char hex of the working directory.
 ///
-/// Mirrors the codex/opencode/claude file-existence pattern. Cost is one
-/// `read_dir` of `~/.kimi/sessions/` (typically <few hundred entries) plus
-/// one `is_file` per workspace until we find a match or exhaust.
+/// We must check for **`context.jsonl`** specifically, not `state.json`.
+/// Kimi's `Session.find` (`kimi_cli/session.py`) returns `None` —
+/// surfaced to the client as `{"session_id": "Session not found"}`
+/// inside an `Invalid params` error — when `context.jsonl` is missing,
+/// regardless of any other files in the session directory. `state.json`
+/// is written earlier in the session lifecycle, so checking it
+/// incorrectly says "alive" for sessions that were started but never
+/// completed their first turn (e.g., the trio agent that gets created
+/// and immediately stopped before its first prompt lands). A subsequent
+/// `session/load` then fails with "Invalid params", and the agent
+/// looks broken when the real fix is just to fall back to
+/// `session/new` instead.
+///
+/// Cost is one `read_dir` of `~/.kimi/sessions/` (typically <few
+/// hundred entries) plus one `is_file` per workspace until we find a
+/// match or exhaust.
 fn kimi_session_file(home: &Path, session_id: &str) -> Option<PathBuf> {
     let sessions_dir = home.join(".kimi").join("sessions");
     if !sessions_dir.is_dir() {
@@ -164,7 +175,7 @@ fn kimi_session_file(home: &Path, session_id: &str) -> Option<PathBuf> {
         if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
             continue;
         }
-        let candidate = entry.path().join(session_id).join("state.json");
+        let candidate = entry.path().join(session_id).join("context.jsonl");
         if candidate.is_file() {
             return Some(candidate);
         }
@@ -295,7 +306,7 @@ mod tests {
     // ---- session-file liveness guard ----
 
     #[test]
-    fn kimi_session_file_finds_state_under_workspace_hash() {
+    fn kimi_session_file_finds_context_under_workspace_hash() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace_hash = "0749a6673832efdcb848ee54b8d3a625";
         let sid = "d6c7d632-ecdd-486a-96b1-df0091c6550d";
@@ -306,11 +317,11 @@ mod tests {
             .join(workspace_hash)
             .join(sid);
         std::fs::create_dir_all(&session_dir).unwrap();
-        let state = session_dir.join("state.json");
-        std::fs::write(&state, b"{}").unwrap();
+        let context = session_dir.join("context.jsonl");
+        std::fs::write(&context, b"").unwrap();
 
-        let found = kimi_session_file(tmp.path(), sid).expect("state.json should be found");
-        assert_eq!(found, state);
+        let found = kimi_session_file(tmp.path(), sid).expect("context.jsonl should be found");
+        assert_eq!(found, context);
     }
 
     #[test]
@@ -324,12 +335,34 @@ mod tests {
         let real_workspace = sessions.join("ffff");
         std::fs::create_dir_all(&real_workspace).unwrap();
         let sid = "real-session-uuid";
-        let state = real_workspace.join(sid).join("state.json");
-        std::fs::create_dir_all(state.parent().unwrap()).unwrap();
-        std::fs::write(&state, b"{}").unwrap();
+        let context = real_workspace.join(sid).join("context.jsonl");
+        std::fs::create_dir_all(context.parent().unwrap()).unwrap();
+        std::fs::write(&context, b"").unwrap();
 
-        let found = kimi_session_file(tmp.path(), sid).expect("state.json should be found");
-        assert_eq!(found, state);
+        let found = kimi_session_file(tmp.path(), sid).expect("context.jsonl should be found");
+        assert_eq!(found, context);
+    }
+
+    #[test]
+    fn kimi_session_file_returns_none_when_only_state_json_exists() {
+        // Regression for the bug fixed by this change: kimi 1.41 rejects
+        // `session/load` for sessions whose `context.jsonl` is missing,
+        // even when other files (like `state.json`) are present. The
+        // liveness probe must mirror kimi's `Session.find` criterion.
+        let tmp = tempfile::tempdir().unwrap();
+        let session_dir = tmp
+            .path()
+            .join(".kimi")
+            .join("sessions")
+            .join("aabbcc")
+            .join("sid-only-state");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("state.json"), b"{}").unwrap();
+
+        assert!(
+            kimi_session_file(tmp.path(), "sid-only-state").is_none(),
+            "sessions with only state.json (no context.jsonl) must NOT be considered resumable"
+        );
     }
 
     #[test]
