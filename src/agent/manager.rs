@@ -94,7 +94,10 @@ impl ManagedAgent {
 pub struct AgentManager {
     /// Driver registry — maps runtime to its driver.
     driver_registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
-    /// Active agents keyed by agent name.
+    /// Active agents keyed by agent name. The `agents` table also has a
+    /// UUID `id`, but it is not used for runtime keying — see #142.
+    /// Bare-name keying is a latent collision risk under workspace-scoped
+    /// names, which today only enforce uniqueness via `(workspace_id, name)`.
     agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,

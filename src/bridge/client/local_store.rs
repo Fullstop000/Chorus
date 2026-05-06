@@ -10,9 +10,14 @@ use crate::store::Store;
 
 use super::ws::AgentTargetIn;
 
-/// Mapping from local agent name → platform's agent UUID, kept in memory.
-/// Used to translate `chat.message.received{agent_id: <platform_uuid>}` into
-/// the local name we drive `AgentManager` with.
+/// Bidirectional cache mapping local agent name ↔ platform agent UUID.
+/// Used to translate `chat.message.received{agent_id: <platform_uuid>}`
+/// into the local name we drive `AgentManager` with, and back again for
+/// outbound `agent.state` frames.
+///
+/// This cache exists only because `AgentManager` keys by name while the
+/// wire protocol keys by UUID. Once the manager keys by UUID, this type
+/// becomes dead code. See #142.
 #[derive(Default)]
 pub struct AgentIdMap {
     name_by_platform_id: HashMap<String, String>,
