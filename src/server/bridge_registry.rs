@@ -58,14 +58,31 @@ impl BridgeRegistry {
     /// Register a freshly-connected bridge. Returns the receiver the
     /// session task should drain into its WS socket, plus a guard that
     /// removes the registration when dropped.
+    ///
+    /// If a sender for this `machine_id` already exists (bridge process
+    /// died and a new instance reconnected before the old TCP dropped),
+    /// `instance_pids` for that machine_id are cleared. The new bridge
+    /// owns its own pid space and will (re-)emit `started` events for
+    /// every running agent on its first reconcile; relying on the old
+    /// connection's deregister to clean up loses the race because
+    /// `was_last_for_machine` is `false` while both senders coexist.
+    /// `chat_acks` are intentionally preserved — those cursors advance
+    /// monotonically and can survive a brief reconnect.
     pub fn register(self: &Arc<Self>, machine_id: &str) -> (mpsc::Receiver<String>, Registration) {
         let (tx, rx) = mpsc::channel::<String>(PER_BRIDGE_BUFFER);
-        {
+        let had_existing = {
             let mut conns = self.connections.lock().unwrap();
-            conns
-                .entry(machine_id.to_string())
-                .or_default()
-                .push(tx.clone());
+            let entry = conns.entry(machine_id.to_string()).or_default();
+            let existed = !entry.is_empty();
+            entry.push(tx.clone());
+            existed
+        };
+        if had_existing {
+            self.instance_pids.lock().unwrap().remove(machine_id);
+            debug!(
+                machine_id = %machine_id,
+                "instance_pids cleared on supersede — new bridge owns the pid space"
+            );
         }
         let guard = Registration {
             registry: Arc::clone(self),
@@ -341,6 +358,29 @@ mod tests {
         assert_eq!(reg.last_acked_seq("m-1", "agent-a"), Some(7));
         drop(guard);
         assert_eq!(reg.last_acked_seq("m-1", "agent-a"), None);
+    }
+
+    #[tokio::test]
+    async fn pids_cleared_on_overlapping_reconnect() {
+        // Bridge A connects, records pid=5, then a *new* bridge B connects
+        // for the same machine_id before A's TCP has dropped. B's emitted
+        // pid=1 must be accepted: register clears the old pid map.
+        let reg = BridgeRegistry::new();
+        let (_rx_a, guard_a) = reg.register("m-1");
+        reg.record_started("m-1", "agent-a", 5);
+
+        // B arrives while A still holds its registration.
+        let (_rx_b, _guard_b) = reg.register("m-1");
+
+        // B's fresh pid=1 must be considered current; A's pid=5 must be
+        // gone. Without the supersede clear, B's pid=1 would be rejected
+        // as stale because pid=5 was still recorded.
+        assert!(reg.is_current_pid("m-1", "agent-a", 1));
+        assert_eq!(reg.stale_state_drops(), 0);
+
+        // A finally drops — B keeps the floor.
+        drop(guard_a);
+        assert!(reg.is_current_pid("m-1", "agent-a", 1));
     }
 
     #[tokio::test]

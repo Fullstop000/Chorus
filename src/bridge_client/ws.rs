@@ -7,7 +7,7 @@
 //!   - `chat.message.received` (P→B, when a message lands for an agent on this machine)
 //!   - `chat.ack` (B→P, after the bridge has handed the message to the agent)
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -97,7 +97,7 @@ pub struct EnvVarIn {
     pub value: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct ChatMessageReceived {
     pub agent_id: String,
@@ -107,6 +107,20 @@ pub struct ChatMessageReceived {
     #[serde(default)]
     pub messages: Value,
 }
+
+/// Cap on chats buffered per (still-unknown) platform agent_id. The
+/// bridge sees `chat.message.received` for a platform agent before
+/// `bridge.target` populates the id_map when the platform fires
+/// channel-join stream events ahead of the broadcast_target_update on
+/// agent create. Buffered frames replay on the next `bridge.target`
+/// once the agent is known. The cap stops a misrouted-chat storm from
+/// pinning unbounded memory.
+const PENDING_CHATS_PER_AGENT: usize = 32;
+
+/// Per-platform-agent_id buffer of `chat.message.received` frames that
+/// arrived before the bridge knew about the agent. Drained on every
+/// `handle_target` reconcile that newly populates the id_map.
+type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
 
 /// Public re-export so callers can pattern-match on frame kinds.
 pub enum ServerFrame {
@@ -122,6 +136,7 @@ pub async fn run_ws_client_loop(
 ) -> anyhow::Result<()> {
     let id_map = Arc::new(Mutex::new(AgentIdMap::default()));
     let counter = Arc::new(InstanceCounter::default());
+    let pending_chats: PendingChats = Arc::new(Mutex::new(HashMap::new()));
 
     let mut backoff_ms: u64 = 500;
     loop {
@@ -129,11 +144,17 @@ pub async fn run_ws_client_loop(
             return Ok(());
         }
 
+        // Clear stale pending chats on each reconnect: the platform will
+        // re-emit anything we still need on its next push, and chats from
+        // before the disconnect are already on the platform side.
+        pending_chats.lock().await.clear();
+
         match run_one_session(
             &cfg,
             manager.clone(),
             id_map.clone(),
             counter.clone(),
+            pending_chats.clone(),
             shutdown.clone(),
         )
         .await
@@ -159,6 +180,7 @@ async fn run_one_session(
     manager: Arc<AgentManager>,
     id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
+    pending_chats: PendingChats,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     let mut request = cfg.platform_ws.clone().into_client_request()?;
@@ -210,7 +232,17 @@ async fn run_one_session(
     });
 
     // 3. Drive the read+write select loop.
+    //
+    // Frame handlers (`handle_target`, `handle_chat`) are dispatched to
+    // independent tasks so the select arm returns immediately. If we
+    // awaited them inline they could call `state_tx.send().await` on the
+    // bounded channel — when the channel is full (state_pusher tail +
+    // burst of inbound frames), that .await blocks the select loop, which
+    // means `state_rx.recv()` never runs to drain the channel: a deadlock.
+    let mut handler_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     loop {
+        // Drop finished handler tasks so the vec doesn't grow unboundedly.
+        handler_tasks.retain(|h| !h.is_finished());
         tokio::select! {
             _ = shutdown.cancelled() => {
                 tracing::info!("bridge: shutdown signaled");
@@ -244,15 +276,15 @@ async fn run_one_session(
                                         continue;
                                     }
                                 };
-                                handle_target(
-                                    &cfg.store,
-                                    &manager,
-                                    id_map.clone(),
-                                    counter.clone(),
-                                    target,
-                                    &state_tx,
-                                )
-                                .await;
+                                let store = cfg.store.clone();
+                                let mgr = manager.clone();
+                                let imap = id_map.clone();
+                                let cnt = counter.clone();
+                                let pcs = pending_chats.clone();
+                                let stx = state_tx.clone();
+                                handler_tasks.push(tokio::spawn(async move {
+                                    handle_target(&store, &mgr, imap, cnt, pcs, target, &stx).await;
+                                }));
                             }
                             "chat.message.received" => {
                                 let payload: ChatMessageReceived = match serde_json::from_value(frame.data) {
@@ -262,14 +294,14 @@ async fn run_one_session(
                                         continue;
                                     }
                                 };
-                                handle_chat(
-                                    &manager,
-                                    id_map.clone(),
-                                    counter.clone(),
-                                    payload,
-                                    &state_tx,
-                                )
-                                .await;
+                                let mgr = manager.clone();
+                                let imap = id_map.clone();
+                                let cnt = counter.clone();
+                                let pcs = pending_chats.clone();
+                                let stx = state_tx.clone();
+                                handler_tasks.push(tokio::spawn(async move {
+                                    handle_chat(&mgr, imap, cnt, pcs, payload, &stx).await;
+                                }));
                             }
                             other => {
                                 tracing::debug!(kind = %other, "bridge: ignoring unknown frame");
@@ -290,6 +322,9 @@ async fn run_one_session(
     }
 
     pusher.abort();
+    for h in handler_tasks {
+        h.abort();
+    }
     Ok(())
 }
 
@@ -320,19 +355,48 @@ async fn handle_target(
     manager: &Arc<AgentManager>,
     id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
+    pending_chats: PendingChats,
     target: BridgeTargetIn,
     state_tx: &tokio::sync::mpsc::Sender<String>,
 ) {
+    let target_agents = target.target_agents;
+    let known_platform_ids: Vec<String> =
+        target_agents.iter().map(|a| a.agent_id.clone()).collect();
     let mut id_map_guard = id_map.lock().await;
-    let outcome =
-        match reconcile::apply(store, manager, &mut id_map_guard, target.target_agents).await {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::error!(err = %e, "bridge: reconcile failed");
-                return;
-            }
-        };
+    let outcome = match reconcile::apply(store, manager, &mut id_map_guard, target_agents).await {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(err = %e, "bridge: reconcile failed");
+            return;
+        }
+    };
     drop(id_map_guard);
+
+    // Replay any chats that arrived before this reconcile populated the
+    // id_map. We only drain entries for platform_ids that are now in the
+    // target — others remain buffered (or stay until they age out via
+    // reconnect). Replays are dispatched as detached tasks so this
+    // handler can return to the select loop quickly.
+    let replays: Vec<ChatMessageReceived> = {
+        let mut buf = pending_chats.lock().await;
+        let mut out = Vec::new();
+        for pid in &known_platform_ids {
+            if let Some(queue) = buf.remove(pid) {
+                out.extend(queue);
+            }
+        }
+        out
+    };
+    for chat in replays {
+        let mgr = manager.clone();
+        let imap = id_map.clone();
+        let cnt = counter.clone();
+        let pcs = pending_chats.clone();
+        let stx = state_tx.clone();
+        tokio::spawn(async move {
+            handle_chat(&mgr, imap, cnt, pcs, chat, &stx).await;
+        });
+    }
 
     for name in outcome.started {
         let platform_id = match id_map.lock().await.platform_id_for(&name) {
@@ -381,6 +445,7 @@ async fn handle_chat(
     manager: &Arc<AgentManager>,
     id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
+    pending_chats: PendingChats,
     payload: ChatMessageReceived,
     state_tx: &tokio::sync::mpsc::Sender<String>,
 ) {
@@ -389,7 +454,20 @@ async fn handle_chat(
         map.name_for(&payload.agent_id).map(str::to_owned)
     };
     let Some(name) = name else {
-        tracing::warn!(agent_id = %payload.agent_id, "bridge: chat for unknown agent");
+        // Stash for replay on the next handle_target that knows this
+        // platform_id. Cap per-agent so a misrouted-chat storm can't
+        // pin unbounded memory.
+        let mut buf = pending_chats.lock().await;
+        let queue = buf.entry(payload.agent_id.clone()).or_default();
+        if queue.len() >= PENDING_CHATS_PER_AGENT {
+            queue.pop_front();
+        }
+        queue.push_back(payload.clone());
+        tracing::debug!(
+            agent_id = %payload.agent_id,
+            buffered = queue.len(),
+            "bridge: chat arrived before target — buffered for replay"
+        );
         return;
     };
 

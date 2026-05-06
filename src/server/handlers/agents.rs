@@ -616,11 +616,17 @@ pub async fn handle_delete_agent(
     let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
 
-    state
-        .lifecycle
-        .stop_agent(&name)
-        .await
-        .map_err(internal_err)?;
+    // Skip local stop for bridge-hosted agents: the bridge stops them when
+    // the next `bridge.target` (broadcast below after the row delete) drops
+    // the agent from the desired set. Calling stop_agent here is a no-op
+    // locally but adds noise to the activity log.
+    if agent.machine_id.is_none() {
+        state
+            .lifecycle
+            .stop_agent(&name)
+            .await
+            .map_err(internal_err)?;
+    }
 
     state
         .store
@@ -677,6 +683,18 @@ pub async fn handle_agent_stop(
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
+    if agent.machine_id.is_some() {
+        // Bridge-hosted: platform doesn't own the runtime. There's no
+        // explicit "stop a single bridge-hosted agent" frame yet, so this
+        // becomes a no-op until we add an `agent.stop` directive in the
+        // protocol. For now, surface a clear status rather than silently
+        // succeed with the wrong meaning.
+        info!(agent = %name, "agent is bridge-hosted; stop is a no-op (deletion via DELETE removes it)");
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "note": "agent is bridge-hosted; the platform does not own the runtime"
+        })));
+    }
     info!(agent = %name, "stopping agent");
     state
         .lifecycle
