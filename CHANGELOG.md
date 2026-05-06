@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.9.0] - 2026-05-07
+
+### Added
+- **Cross-process Chorus.** `chorus bridge --platform-ws ws://host:3001/api/bridge/ws --platform-http http://host:3001 --machine-id <id>` runs agent runtimes on a different machine from the platform. The bridge dials in over a WebSocket, reconciles desired agents from `bridge.target`, hosts an embedded MCP bridge for local agent tool-calls, and tunnels chat + lifecycle back to the platform.
+- **Bearer-token auth on the bridge WS.** Configure `CHORUS_BRIDGE_TOKENS="token-1:machine-alpha,token-2:machine-beta"`. With tokens set, `/api/bridge/ws` requires `Authorization: Bearer <token>` and pins each token to one `machine_id`. With no tokens, auth is disabled (loopback default unchanged).
+- **Bridge ownership on agents.** `POST /api/agents` accepts `machineId`; matching bridges get the agent in their next `bridge.target`. Bridge-hosted agents are no longer started by the platform — the bridge owns the runtime.
+
+### Changed
+- Standing system prompt is shorter — removed the codex-only "your process stays alive across turns" note; the universal prompt already covers it.
+
 ## [0.0.8.0] - 2026-05-03
 
 ### Fixed
