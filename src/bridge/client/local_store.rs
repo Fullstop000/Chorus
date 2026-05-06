@@ -2,54 +2,18 @@
 //! does NOT store messages — chat lives on the platform; agents pull via
 //! MCP. The bridge stores only what `AgentManager::start_agent` needs to
 //! read (`store.get_agent(name)`).
-
-use std::collections::HashMap;
+//!
+//! `agents.id` on the bridge side is the platform's `agent_id`. Reusing the
+//! platform UUID locally lets the bridge translate name↔platform_id via
+//! the store directly, with no separate cache.
 
 use crate::store::agents::{AgentEnvVar, AgentRecordUpsert};
 use crate::store::Store;
 
 use super::ws::AgentTargetIn;
 
-/// Bidirectional cache mapping local agent name ↔ platform agent UUID.
-/// Used to translate `chat.message.received{agent_id: <platform_uuid>}`
-/// into the local name we drive `AgentManager` with, and back again for
-/// outbound `agent.state` frames.
-///
-/// This cache exists only because `AgentManager` keys by name while the
-/// wire protocol keys by UUID. Once the manager keys by UUID, this type
-/// becomes dead code. See #142.
-#[derive(Default)]
-pub struct AgentIdMap {
-    name_by_platform_id: HashMap<String, String>,
-    platform_id_by_name: HashMap<String, String>,
-}
-
-impl AgentIdMap {
-    pub fn record(&mut self, name: String, platform_id: String) {
-        self.name_by_platform_id
-            .insert(platform_id.clone(), name.clone());
-        self.platform_id_by_name.insert(name, platform_id);
-    }
-
-    pub fn forget(&mut self, name: &str) {
-        if let Some(platform_id) = self.platform_id_by_name.remove(name) {
-            self.name_by_platform_id.remove(&platform_id);
-        }
-    }
-
-    pub fn name_for(&self, platform_id: &str) -> Option<&str> {
-        self.name_by_platform_id
-            .get(platform_id)
-            .map(String::as_str)
-    }
-
-    pub fn platform_id_for(&self, name: &str) -> Option<&str> {
-        self.platform_id_by_name.get(name).map(String::as_str)
-    }
-}
-
 /// Insert or update the local agent record so `AgentManager::start_agent`
-/// can read it back.
+/// can read it back. Uses `target.agent_id` as the row's `id`.
 pub fn upsert_from_target(store: &Store, target: &AgentTargetIn) -> anyhow::Result<()> {
     let env_vars: Vec<AgentEnvVar> = target
         .env_vars
@@ -74,10 +38,16 @@ pub fn upsert_from_target(store: &Store, target: &AgentTargetIn) -> anyhow::Resu
         env_vars: &env_vars,
     };
 
-    if store.get_agent(&target.name)?.is_some() {
-        store.update_agent_record(&record)?;
-    } else {
-        store.create_agent_record(&record)?;
+    match store.get_agent(&target.name)? {
+        Some(existing) if existing.id == target.agent_id => {
+            store.update_agent_record(&record)?;
+        }
+        _ => {
+            // Either no local row yet, or a stale row from a prior reconcile
+            // whose id no longer matches the platform's. `create_agent_record_with_id`
+            // handles the stale case by deleting and re-inserting.
+            store.create_agent_record_with_id(&target.agent_id, &record)?;
+        }
     }
     Ok(())
 }

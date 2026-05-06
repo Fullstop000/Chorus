@@ -1,30 +1,34 @@
 //! Reconcile a `bridge.target` frame against the locally-running agent set.
 //!
 //! On every target update: insert/update local records, start any newly
-//! desired agents, stop any that vanished from the target. Returns the set
-//! of `(name, platform_id, transition)` events the WS sender should push
-//! upstream as `agent.state` frames.
+//! desired agents, stop any that vanished from the target. Returns the
+//! `(name, platform_id)` pairs the caller should report upstream as
+//! `agent.state` frames.
 
 use std::collections::HashSet;
 
 use crate::agent::manager::AgentManager;
 use crate::store::Store;
 
-use super::local_store::{upsert_from_target, AgentIdMap};
+use super::local_store::upsert_from_target;
 use super::ws::AgentTargetIn;
 
-/// Result of one reconcile pass. `started`/`stopped` carry agent names that
-/// the caller should report upstream as `agent.state` frames; `pids` is the
-/// pid we should attach to a `started` event when the runtime exposes one.
+/// Per-pass transition record: `(local_name, platform_agent_id)`. The
+/// platform_id is captured at reconcile time so callers don't need to
+/// look it up after a stop has already deleted the local row.
+pub struct AgentTransition {
+    pub name: String,
+    pub platform_id: String,
+}
+
 pub struct ReconcileOutcome {
-    pub started: Vec<String>,
-    pub stopped: Vec<String>,
+    pub started: Vec<AgentTransition>,
+    pub stopped: Vec<AgentTransition>,
 }
 
 pub async fn apply(
     store: &Store,
     manager: &AgentManager,
-    id_map: &mut AgentIdMap,
     targets: Vec<AgentTargetIn>,
 ) -> anyhow::Result<ReconcileOutcome> {
     let mut desired: HashSet<String> = HashSet::new();
@@ -35,7 +39,6 @@ pub async fn apply(
     for target in &targets {
         desired.insert(target.name.clone());
         upsert_from_target(store, target)?;
-        id_map.record(target.name.clone(), target.agent_id.clone());
     }
 
     let running = manager.get_running_agent_names().await;
@@ -51,7 +54,10 @@ pub async fn apply(
             .await
         {
             Ok(()) => {
-                started.push(target.name.clone());
+                started.push(AgentTransition {
+                    name: target.name.clone(),
+                    platform_id: target.agent_id.clone(),
+                });
             }
             Err(e) => {
                 tracing::error!(agent = %target.name, err = %e, "start_agent failed during reconcile");
@@ -60,16 +66,27 @@ pub async fn apply(
     }
 
     // Stop any locally-running agent that is no longer in the desired set.
+    // Capture platform_id BEFORE deleting the row so the caller can still
+    // emit the upstream `agent.state{state=stopped}` frame.
     for name in running.iter() {
         if desired.contains(name) {
             continue;
         }
+        let platform_id = match store.get_agent(name)? {
+            Some(agent) => agent.id,
+            None => {
+                // Already gone from the local store — skip the stop event.
+                continue;
+            }
+        };
         if let Err(e) = manager.stop_agent(name).await {
             tracing::warn!(agent = %name, err = %e, "stop_agent failed during reconcile");
         }
-        stopped.push(name.clone());
+        stopped.push(AgentTransition {
+            name: name.clone(),
+            platform_id,
+        });
         store.delete_agent_record(name)?;
-        id_map.forget(name);
     }
 
     Ok(ReconcileOutcome { started, stopped })

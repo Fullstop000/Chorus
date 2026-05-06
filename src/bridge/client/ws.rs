@@ -23,7 +23,6 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::drivers::ProcessState;
 use crate::agent::manager::AgentManager;
 
-use super::local_store::AgentIdMap;
 use super::reconcile;
 use super::BridgeClientConfig;
 
@@ -132,7 +131,7 @@ struct ChatMessageReceived {
 
 /// Cap on chats buffered per (still-unknown) platform agent_id. The
 /// bridge sees `chat.message.received` for a platform agent before
-/// `bridge.target` populates the id_map when the platform fires
+/// `bridge.target` creates the local agent row when the platform fires
 /// channel-join stream events ahead of the broadcast_target_update on
 /// agent create. Buffered frames replay on the next `bridge.target`
 /// once the agent is known. The cap stops a misrouted-chat storm from
@@ -141,7 +140,7 @@ const PENDING_CHATS_PER_AGENT: usize = 32;
 
 /// Per-platform-agent_id buffer of `chat.message.received` frames that
 /// arrived before the bridge knew about the agent. Drained on every
-/// `handle_target` reconcile that newly populates the id_map.
+/// `handle_target` that adds a new local agent row.
 type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
 
 /// Shared session-scoped state passed to every frame handler. All fields
@@ -153,7 +152,6 @@ type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
 struct SessionCtx {
     store: Arc<crate::store::Store>,
     manager: Arc<AgentManager>,
-    id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
     pending_chats: PendingChats,
     state_tx: tokio::sync::mpsc::Sender<String>,
@@ -244,7 +242,6 @@ pub async fn run_ws_client_loop(
     manager: Arc<AgentManager>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let id_map = Arc::new(Mutex::new(AgentIdMap::default()));
     let counter = Arc::new(InstanceCounter::default());
     let pending_chats: PendingChats = Arc::new(Mutex::new(HashMap::new()));
 
@@ -262,7 +259,6 @@ pub async fn run_ws_client_loop(
         match run_one_session(
             &cfg,
             manager.clone(),
-            id_map.clone(),
             counter.clone(),
             pending_chats.clone(),
             shutdown.clone(),
@@ -288,12 +284,11 @@ pub async fn run_ws_client_loop(
 async fn run_one_session(
     cfg: &BridgeClientConfig,
     manager: Arc<AgentManager>,
-    id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
     pending_chats: PendingChats,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    // The session-level state (id_map, counter, pending_chats) is owned by
+    // The session-level state (counter, pending_chats) is owned by
     // run_ws_client_loop and reused across reconnects so a brief drop
     // doesn't lose pid bookkeeping. The state_tx channel is per-session —
     // we re-create it here and bundle into a SessionCtx after the
@@ -311,10 +306,8 @@ async fn run_one_session(
     let (ws_stream, _) = tokio_tungstenite::connect_async(request).await?;
     let (mut write, mut read) = ws_stream.split();
 
-    // 1. Send bridge.hello with currently-known agents (borrows the
-    // session state by reference; we move the state into SessionCtx
-    // below).
-    let agents_alive = build_agents_alive(&manager, &id_map, &counter).await;
+    // 1. Send bridge.hello with currently-known agents.
+    let agents_alive = build_agents_alive(&cfg.store, &manager, &counter).await;
     let hello = WireFrame {
         v: 1,
         frame_type: "bridge.hello".into(),
@@ -337,7 +330,6 @@ async fn run_one_session(
     let ctx = SessionCtx {
         store: cfg.store.clone(),
         manager,
-        id_map,
         counter,
         pending_chats,
         state_tx,
@@ -439,16 +431,16 @@ async fn run_one_session(
 }
 
 async fn build_agents_alive(
+    store: &Arc<crate::store::Store>,
     manager: &Arc<AgentManager>,
-    id_map: &Arc<Mutex<AgentIdMap>>,
     counter: &Arc<InstanceCounter>,
 ) -> Vec<Value> {
     let names = manager.get_running_agent_names().await;
-    let id_map = id_map.lock().await;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        let Some(platform_id) = id_map.platform_id_for(&name).map(str::to_owned) else {
-            continue;
+        let platform_id = match store.get_agent(&name) {
+            Ok(Some(agent)) => agent.id,
+            _ => continue,
         };
         let pid = counter.current(&name).await;
         out.push(json!({
@@ -464,20 +456,17 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
     let target_agents = target.target_agents;
     let known_platform_ids: Vec<String> =
         target_agents.iter().map(|a| a.agent_id.clone()).collect();
-    let mut id_map_guard = ctx.id_map.lock().await;
-    let outcome =
-        match reconcile::apply(&ctx.store, &ctx.manager, &mut id_map_guard, target_agents).await {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::error!(err = %e, "bridge: reconcile failed");
-                return;
-            }
-        };
-    drop(id_map_guard);
+    let outcome = match reconcile::apply(&ctx.store, &ctx.manager, target_agents).await {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(err = %e, "bridge: reconcile failed");
+            return;
+        }
+    };
 
-    // Replay any chats that arrived before this reconcile populated the
-    // id_map. We only drain entries for platform_ids that are now in the
-    // target — others remain buffered (or stay until they age out via
+    // Replay any chats that arrived before this reconcile created the
+    // local row. We only drain entries for platform_ids that are now in
+    // the target — others remain buffered (or stay until they age out via
     // reconnect). Replays are dispatched as detached tasks so this
     // handler can return to the select loop quickly.
     let replays: Vec<ChatMessageReceived> = {
@@ -497,29 +486,25 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
         });
     }
 
-    for name in outcome.started {
-        let platform_id = match ctx.id_map.lock().await.platform_id_for(&name) {
-            Some(id) => id.to_string(),
-            None => continue,
-        };
-        let pid = ctx.counter.allocate(&name).await;
-        send_agent_state(&ctx.state_tx, &platform_id, "started", pid).await;
+    for transition in outcome.started {
+        let pid = ctx.counter.allocate(&transition.name).await;
+        send_agent_state(&ctx.state_tx, &transition.platform_id, "started", pid).await;
     }
-    for name in outcome.stopped {
-        let platform_id = match ctx.id_map.lock().await.platform_id_for(&name) {
-            Some(id) => id.to_string(),
-            None => continue,
-        };
-        let pid = ctx.counter.current(&name).await;
-        ctx.counter.forget(&name).await;
-        send_agent_state(&ctx.state_tx, &platform_id, "stopped", pid).await;
+    for transition in outcome.stopped {
+        let pid = ctx.counter.current(&transition.name).await;
+        ctx.counter.forget(&transition.name).await;
+        send_agent_state(&ctx.state_tx, &transition.platform_id, "stopped", pid).await;
     }
 }
 
 async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
-    let name = {
-        let map = ctx.id_map.lock().await;
-        map.name_for(&payload.agent_id).map(str::to_owned)
+    let name = match ctx.store.get_agent_by_id(&payload.agent_id, false) {
+        Ok(Some(agent)) => Some(agent.name),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(err = %e, agent_id = %payload.agent_id, "bridge: store lookup failed for chat");
+            return;
+        }
     };
     let Some(name) = name else {
         // Stash for replay on the next handle_target that knows this
@@ -581,12 +566,9 @@ async fn agent_state_pusher(ctx: SessionCtx, shutdown: CancellationToken) {
             if last.get(name).map(String::as_str) == Some(label) {
                 continue;
             }
-            let platform_id = {
-                let map = ctx.id_map.lock().await;
-                map.platform_id_for(name).map(str::to_owned)
-            };
-            let Some(platform_id) = platform_id else {
-                continue;
+            let platform_id = match ctx.store.get_agent(name) {
+                Ok(Some(agent)) => agent.id,
+                _ => continue,
             };
             let pid = ctx.counter.current(name).await;
             send_agent_state(&ctx.state_tx, &platform_id, label, pid).await;

@@ -138,13 +138,62 @@ impl Store {
         workspace_id: &str,
         record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
+        Self::create_agent_record_inner_with_id(
+            conn,
+            workspace_id,
+            &Uuid::new_v4().to_string(),
+            record,
+        )
+    }
+
+    /// Insert an agent row with a caller-supplied id. Used by the bridge
+    /// client so the local row's id matches the platform's `agent_id`,
+    /// removing the need for a separate name↔platform_id translation cache.
+    /// Production agent creation goes through [`create_agent_record_inner`]
+    /// which mints a fresh UUID.
+    fn create_agent_record_inner_with_id(
+        conn: &rusqlite::Connection,
+        workspace_id: &str,
+        id: &str,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<String> {
         conn.execute(
             "INSERT INTO agents (id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort, record.machine_id],
         )?;
         Self::replace_agent_env_vars_inner(conn, record.name, record.env_vars)?;
-        Ok(id)
+        Ok(id.to_string())
+    }
+
+    /// Bridge entry point: insert (or replace) an agent row using the
+    /// platform-supplied id. If a row with the same name already exists
+    /// but a different id, it is deleted first — the bridge's local DB
+    /// is a cache of the platform's view, so reusing the platform id keeps
+    /// `agents(id)` semantically equal across processes.
+    pub fn create_agent_record_with_id(
+        &self,
+        id: &str,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
+        let existing_id: Option<String> = conn
+            .query_row(
+                "SELECT id FROM agents WHERE name = ?1",
+                params![record.name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(existing) = existing_id {
+            if existing == id {
+                // Same id, no-op insert — caller should be using update_agent_record.
+                return Ok(());
+            }
+            // Stale local row from a previous reconcile. Drop it.
+            conn.execute("DELETE FROM agents WHERE id = ?1", params![existing])?;
+        }
+        Self::create_agent_record_inner_with_id(&conn, &workspace_id, id, record)?;
+        Ok(())
     }
 
     pub fn delete_agent_record(&self, name: &str) -> Result<()> {
