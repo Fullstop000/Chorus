@@ -26,7 +26,7 @@ pub async fn run(
     data_dir_str: String,
     bridge_listen: String,
 ) -> anyhow::Result<()> {
-    use chorus::bridge_client;
+    use chorus::bridge::client;
 
     let data_dir = std::path::PathBuf::from(&data_dir_str);
     let data_subdir = data_dir.join("data");
@@ -37,7 +37,7 @@ pub async fn run(
     let db_path = data_subdir.join("chorus-bridge.db");
     let store = Arc::new(chorus::store::Store::open(db_path.to_str().unwrap())?);
 
-    let cfg = bridge_client::BridgeClientConfig {
+    let cfg = client::BridgeClientConfig {
         platform_ws,
         platform_http,
         token,
@@ -47,5 +47,5 @@ pub async fn run(
         store,
     };
 
-    bridge_client::run_bridge_client(cfg).await
+    client::run_bridge_client(cfg).await
 }

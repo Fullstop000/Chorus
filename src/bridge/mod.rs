@@ -5,6 +5,7 @@ use rmcp::model::{ServerCapabilities, ServerInfo};
 use rmcp::{tool, tool_handler, tool_router, ServerHandler};
 
 pub mod backend;
+pub mod client;
 pub mod discovery;
 pub mod error;
 pub mod format;

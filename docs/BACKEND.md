@@ -351,7 +351,7 @@ deployment it splits into two:
 
 All frames share the envelope `{v: 1, type: "<frame-type>", data: {...}}`.
 The platform speaks the contract from `src/server/transport/bridge_ws.rs`;
-the bridge speaks it from `src/bridge_client/ws.rs`.
+the bridge speaks it from `src/bridge/client/ws.rs`.
 
 ### Module map (Phase 3)
 
@@ -363,7 +363,7 @@ src/server/
   handlers/agents.rs        skip-local-lifecycle gates on bridge-hosted agents
   handlers/messages.rs      same skip in deliver_message_to_agents
 
-src/bridge_client/          (the bridge half of the protocol)
+src/bridge/client/          (the bridge half of the protocol)
   mod.rs                    config + run_bridge_client orchestration
   ws.rs                     WS client, hello, frame loop, agent.state pusher,
                             chat.message.received → notify, chat.ack sender
