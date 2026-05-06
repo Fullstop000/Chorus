@@ -93,10 +93,28 @@ async fn sync_team_roles_and_agents(
 }
 
 /// Restart an agent so its system prompt is rebuilt from the latest team state.
+///
+/// For bridge-hosted agents (`agents.machine_id` set), the platform does not
+/// own the runtime; it broadcasts a fresh `bridge.target` instead so the
+/// remote bridge can stop/start the local process. Calling `start_agent`
+/// here would cause dual-runtime contention.
 async fn restart_agent_member(
     state: &AppState,
     agent_name: &str,
 ) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
+    let bridge_hosted = state
+        .store
+        .get_agent(agent_name)
+        .map_err(internal_err)?
+        .and_then(|a| a.machine_id)
+        .is_some();
+    if bridge_hosted {
+        crate::server::transport::bridge_ws::broadcast_target_update(
+            state.store.as_ref(),
+            state.bridge_registry.as_ref(),
+        );
+        return Ok(());
+    }
     state
         .lifecycle
         .stop_agent(agent_name)

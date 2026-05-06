@@ -131,20 +131,6 @@ chorus bridge-serve --listen 127.0.0.1:4321 --server-url http://localhost:3001
 
 ---
 
-### `chorus bridge-pair`
-
-Mints a one-time pairing token so an agent runtime can connect to the shared bridge.
-
-```bash
-chorus bridge-pair --agent my-agent
-```
-
-The token is printed to stdout and valid for a short window. Runtimes exchange this token for an MCP session URL.
-
-**Mutates:** yes (consumes the token on first use).
-
----
-
 ### `chorus status`
 
 Lists channels, agents, and humans by querying the running Chorus server.
@@ -200,7 +186,7 @@ Most commands accept `--data-dir` to override the default `~/.chorus`. The bridg
 ### Logging
 
 - `setup`, `start`, `serve`, and the default server case initialize file logging to `~/.chorus/logs/`.
-- All other commands (`check`, `status`, `send`, `channel`, `agent`, `bridge-serve`, `bridge-pair`) log to stdout only.
+- All other commands (`check`, `status`, `send`, `channel`, `agent`, `bridge-serve`) log to stdout only.
 
 ### Environment variables
 

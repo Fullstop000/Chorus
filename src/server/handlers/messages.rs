@@ -840,7 +840,13 @@ pub(crate) async fn deliver_message_to_agents(
         .store
         .get_agent_message_recipients(channel_id, sender_name)?;
     for recipient_name in recipients {
-        if state.store.get_agent(&recipient_name)?.is_none() {
+        let Some(agent) = state.store.get_agent(&recipient_name)? else {
+            continue;
+        };
+        // Bridge-hosted agents are woken by the remote bridge after it
+        // receives `chat.message.received` via `forward_chat_event_to_bridges`;
+        // the platform must not spawn them locally.
+        if agent.machine_id.is_some() {
             continue;
         }
         // Associate the channel with the agent's trace run before notifying/starting.

@@ -175,7 +175,8 @@ pub(super) fn spawn_event_forwarder(
         // treats a duplicate `end_run` as a no-op (see `AgentRunState::end_run`)
         // so the two possible end-of-turn paths (`Output { TurnEnd }` and
         // `Completed`) firing back-to-back under multi-session is harmless.
-        // Promoting trace/activity storage to per-session is a Phase 3 item.
+        // Per-session trace/activity storage is deferred until multi-session
+        // event interleaving becomes common in production.
         let mut pending_thinking: HashMap<String, String> = HashMap::new();
         let mut pending_text: HashMap<String, String> = HashMap::new();
         let mut last_tool_raw_name: HashMap<String, String> = HashMap::new();

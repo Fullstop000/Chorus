@@ -143,10 +143,14 @@ fn codex_thread_file(home: &Path, thread_id: &str) -> Option<PathBuf> {
 /// `CHORUS_CODEX_RESUME_LIVENESS=off` env var disables it for tests that
 /// pass synthetic thread ids without staging real rollout files.
 fn liveness_check_enabled() -> bool {
-    !matches!(
-        std::env::var(CODEX_RESUME_LIVENESS_ENV).as_deref(),
-        Ok("off") | Ok("0") | Ok("false")
-    )
+    liveness_check_enabled_from(std::env::var(CODEX_RESUME_LIVENESS_ENV).as_deref().ok())
+}
+
+/// Pure decoder of the env-var contents. Lifted out of
+/// [`liveness_check_enabled`] so unit tests can exercise the policy without
+/// mutating process-wide env state and racing with other tests.
+fn liveness_check_enabled_from(env: Option<&str>) -> bool {
+    !matches!(env, Some("off") | Some("0") | Some("false"))
 }
 
 /// Read the immediate subdirectories of `dir`, sorted newest-first by name.
@@ -750,15 +754,9 @@ impl CodexHandle {
     /// assigned (or confirmed, for resume).
     async fn start_or_resume_thread(&self, resume_id: Option<String>) -> anyhow::Result<String> {
         let req_id = self.process.alloc_request_id();
-        let standing_prompt = super::prompt::build_system_prompt(
-            &self.spec,
-            &super::prompt::PromptOptions {
-                post_startup_notes: vec![
-                    "**IMPORTANT**: Your process stays alive across turns. New messages may be delivered directly into the current session while you are working.".into(),
-                ],
-                ..Default::default()
-            },
-        );
+        let mut prompt_opts = super::prompt::PromptOptions::default();
+        super::prompt::apply_env_override(&mut prompt_opts);
+        let standing_prompt = super::prompt::build_system_prompt(&self.spec, &prompt_opts);
         let (method, req_line) = match &resume_id {
             Some(tid) => (
                 "thread/resume".to_string(),
@@ -1712,27 +1710,22 @@ mod tests {
     }
 
     #[test]
-    fn liveness_check_default_is_on() {
-        // Save and restore the env var to avoid bleeding into other tests.
-        let prev = std::env::var(CODEX_RESUME_LIVENESS_ENV).ok();
-        // SAFETY: serialized via the test thread's natural ordering; we
-        // restore prev below.
-        unsafe {
-            std::env::remove_var(CODEX_RESUME_LIVENESS_ENV);
-        }
-        assert!(liveness_check_enabled(), "default should enable the guard");
-
-        unsafe {
-            std::env::set_var(CODEX_RESUME_LIVENESS_ENV, "off");
-        }
-        assert!(!liveness_check_enabled(), "`off` should disable the guard");
-
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var(CODEX_RESUME_LIVENESS_ENV, v),
-                None => std::env::remove_var(CODEX_RESUME_LIVENESS_ENV),
-            }
-        }
+    fn liveness_check_policy() {
+        // Drive the policy decoder directly so the test never touches the
+        // process-wide env. The `Once`-set in multisession_tests below
+        // would otherwise race this assertion in a parallel test run.
+        assert!(liveness_check_enabled_from(None), "unset → default on");
+        assert!(
+            liveness_check_enabled_from(Some("on")),
+            "any other value → on"
+        );
+        assert!(
+            liveness_check_enabled_from(Some("yes")),
+            "any other value → on"
+        );
+        assert!(!liveness_check_enabled_from(Some("off")));
+        assert!(!liveness_check_enabled_from(Some("0")));
+        assert!(!liveness_check_enabled_from(Some("false")));
     }
 
     // ---- ensure_process: shared process invariant ----

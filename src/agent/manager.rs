@@ -94,7 +94,10 @@ impl ManagedAgent {
 pub struct AgentManager {
     /// Driver registry — maps runtime to its driver.
     driver_registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
-    /// Active agents keyed by agent name.
+    /// Active agents keyed by agent name. The `agents` table also has a
+    /// UUID `id`, but it is not used for runtime keying — see #142.
+    /// Bare-name keying is a latent collision risk under workspace-scoped
+    /// names, which today only enforce uniqueness via `(workspace_id, name)`.
     agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
@@ -163,8 +166,8 @@ impl AgentManager {
         // so the recovery path can spin a fresh process. The eviction set
         // matches the "not really running" mapping in derive_status:
         //   - Closed/Idle map to Status::Asleep.
-        //   - Failed maps to Status::Failed but Phase 3 routes Failed
-        //     through start_agent for one retry per inbound message.
+        //   - Failed maps to Status::Failed but routes Failed through
+        //     start_agent for one retry per inbound message.
         // Active/Starting/PromptInFlight are genuinely live; short-circuit.
         //
         // Eviction must call close() on the evicted handle — several
@@ -830,6 +833,7 @@ mod tests {
                 runtime: "codex",
                 model: "gpt-5.4-mini",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             })
             .unwrap();
@@ -1071,6 +1075,7 @@ mod tests {
                 runtime: "codex",
                 model: "gpt-fake",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             })
             .unwrap();
@@ -1143,6 +1148,7 @@ mod tests {
                 runtime: "codex",
                 model: "gpt-fake",
                 reasoning_effort: None,
+                machine_id: None,
                 env_vars: &[],
             })
             .unwrap();

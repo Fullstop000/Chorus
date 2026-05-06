@@ -9,8 +9,9 @@ use axum::Router;
 use chorus::agent::activity_log::ActivityLogResponse;
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
-use chorus::server::build_router_with_services;
+use chorus::server::bridge_auth::BridgeAuth;
 use chorus::server::event_bus::EventBus;
+use chorus::server::{build_router_with_services, build_router_with_services_and_auth};
 use chorus::store::messages::ReceivedMessage;
 use chorus::store::Store;
 use rusqlite::params;
@@ -120,6 +121,28 @@ pub fn build_router_with_event_bus_and_dir(
         vec![],
     );
     (router, event_bus)
+}
+
+/// Build a router with an explicit `BridgeAuth` for tests that exercise
+/// the auth path. Unlike the env-driven default in `chorus serve`, this
+/// keeps token state out of process-global env vars so parallel tests
+/// don't interfere with one another.
+pub fn build_router_with_bridge_auth(store: Arc<Store>, bridge_auth: Arc<BridgeAuth>) -> Router {
+    let data_dir = unique_test_data_dir();
+    let agents_dir = data_dir.join("agents");
+    std::fs::create_dir_all(&agents_dir).ok();
+    build_router_with_services_and_auth(
+        store,
+        Arc::new(EventBus::new()),
+        data_dir,
+        agents_dir,
+        Arc::new(NoopLifecycle),
+        Arc::new(SystemRuntimeStatusProvider::new(
+            chorus::agent::manager::build_driver_registry(),
+        )) as SharedRuntimeStatusProvider,
+        vec![],
+        bridge_auth,
+    )
 }
 
 /// Per-call unique tempdir so parallel cargo tests don't collide on

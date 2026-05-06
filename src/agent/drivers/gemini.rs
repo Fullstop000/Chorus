@@ -114,15 +114,14 @@ async fn ensure_gemini_system_md(spec: &AgentSpec) -> anyhow::Result<std::path::
     let baseline = tokio::fs::read_to_string(&baseline_path)
         .await
         .context("failed to read gemini baseline")?;
-    let standing = super::prompt::build_system_prompt(
-        spec,
-        &super::prompt::PromptOptions {
-            extra_critical_rules: vec![
-                "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
-            ],
-            ..Default::default()
-        },
-    );
+    let mut prompt_opts = super::prompt::PromptOptions {
+        extra_critical_rules: vec![
+            "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
+        ],
+        ..Default::default()
+    };
+    super::prompt::apply_env_override(&mut prompt_opts);
+    let standing = super::prompt::build_system_prompt(spec, &prompt_opts);
     let tmp_system = chorus_dir.join(format!(
         "{}.{}.{}.tmp",
         GEMINI_SYSTEM_FILE,

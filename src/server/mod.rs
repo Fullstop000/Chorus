@@ -1,4 +1,6 @@
 pub use crate::utils::error;
+pub mod bridge_auth;
+pub mod bridge_registry;
 pub mod event_bus;
 mod handlers;
 pub mod transport;
@@ -63,7 +65,42 @@ pub fn build_router_with_services(
     runtime_status_provider: SharedRuntimeStatusProvider,
     templates: Vec<AgentTemplate>,
 ) -> Router {
+    build_router_with_services_and_auth(
+        store,
+        event_bus,
+        data_dir,
+        agents_dir,
+        lifecycle,
+        runtime_status_provider,
+        templates,
+        bridge_auth::BridgeAuth::empty(),
+    )
+}
+
+/// Same as `build_router_with_services`, but accepts a pre-built
+/// `BridgeAuth`. The CLI binary calls this with `BridgeAuth::from_env()`
+/// so the deployed `chorus serve` enforces tokens; tests inject explicit
+/// `BridgeAuth::from_pairs(...)` to exercise the auth path without
+/// touching process env vars.
+///
+/// `clippy::too_many_arguments` is silenced here because this signature
+/// is purely additive over `build_router_with_services` (which already
+/// hits the 7-arg limit). Folding the existing args into a config
+/// struct is the right long-term answer but would touch every test
+/// harness + CLI caller in one go — out of scope for this PR.
+#[allow(clippy::too_many_arguments)]
+pub fn build_router_with_services_and_auth(
+    store: Arc<Store>,
+    event_bus: Arc<EventBus>,
+    data_dir: std::path::PathBuf,
+    agents_dir: std::path::PathBuf,
+    lifecycle: Arc<dyn AgentLifecycle>,
+    runtime_status_provider: SharedRuntimeStatusProvider,
+    templates: Vec<AgentTemplate>,
+    bridge_auth: Arc<bridge_auth::BridgeAuth>,
+) -> Router {
     use handlers::*;
+    use transport::bridge_ws::handle_bridge_ws;
     use transport::realtime::handle_events_ws;
 
     let cors = CorsLayer::new()
@@ -101,7 +138,42 @@ pub fn build_router_with_services(
         runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
         templates: Arc::new(templates),
+        bridge_registry: bridge_registry::BridgeRegistry::new(),
+        bridge_auth,
     };
+
+    // Spawn a single forwarder task that subscribes once to the event
+    // bus and pushes `chat.message.received` frames over the WS to every
+    // connected bridge whenever a `message.created` stream event lands.
+    // This avoids editing every `publish_stream` call site in the
+    // handler tree (~20 of them) and keeps the wire-emit logic in one
+    // place. The task runs for the lifetime of the process.
+    {
+        let bridge_registry = state.bridge_registry.clone();
+        let store = state.store.clone();
+        let mut rx = state.event_bus.subscribe();
+        tokio::spawn(async move {
+            loop {
+                match rx.recv().await {
+                    Ok(event) => {
+                        transport::bridge_ws::forward_chat_event_to_bridges(
+                            store.as_ref(),
+                            bridge_registry.as_ref(),
+                            &event,
+                        );
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        // Forwarder fell behind; drop the gap and keep
+                        // streaming. Bridge will see the next message
+                        // on the next event; reconcile-on-reconnect
+                        // catches up the rest.
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+    }
 
     // Agent runtimes and CLI flows still depend on an agent-scoped internal API.
     // In particular, `/internal/agent/{agent_id}/server` is the historical
@@ -128,7 +200,11 @@ pub fn build_router_with_services(
             post(handle_update_task_status),
         )
         .route("/agent/{agent_id}/upload", post(handle_upload))
-        .route("/agent/{agent_id}/decisions", post(handle_create_decision));
+        .route("/agent/{agent_id}/decisions", post(handle_create_decision))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            bridge_auth::require_bridge_auth,
+        ));
 
     let api_router = Router::new()
         .route("/attachments/{attachment_id}", get(handle_get_attachment))
@@ -240,6 +316,7 @@ pub fn build_router_with_services(
         .route("/system-info", get(handle_system_info))
         .route("/logs", get(handle_logs))
         .route("/events/ws", get(handle_events_ws))
+        .route("/bridge/ws", get(handle_bridge_ws))
         .route("/traces/{run_id}", get(handle_trace_events))
         .route("/agents/{id}/runs", get(handle_agent_runs));
 

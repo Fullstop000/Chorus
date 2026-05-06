@@ -78,15 +78,14 @@ fn spawn_opencode(spec: Arc<AgentSpec>, key: AgentKey) -> SpawnFut {
             .context("failed to create .chorus dir")?;
         let system_md_rel = ".chorus/opencode-system.md";
         let system_md_path = wd.join(system_md_rel);
-        let standing_prompt = super::prompt::build_system_prompt(
-            &spec,
-            &super::prompt::PromptOptions {
-                extra_critical_rules: vec![
-                    "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
-                ],
-                ..Default::default()
-            },
-        );
+        let mut prompt_opts = super::prompt::PromptOptions {
+            extra_critical_rules: vec![
+                "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
+            ],
+            ..Default::default()
+        };
+        super::prompt::apply_env_override(&mut prompt_opts);
+        let standing_prompt = super::prompt::build_system_prompt(&spec, &prompt_opts);
         let tmp_system_md = chorus_dir.join(format!(
             "opencode-system.md.{}.{}.tmp",
             std::process::id(),

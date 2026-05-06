@@ -588,13 +588,12 @@ impl ClaudeHandle {
             args.push("--model".into());
             args.push(self.spec.model.clone());
         }
-        let standing_prompt = super::prompt::build_system_prompt(
-            &self.spec,
-            &super::prompt::PromptOptions {
-                tool_prefix: "mcp__chat__".into(),
-                ..Default::default()
-            },
-        );
+        let mut prompt_opts = super::prompt::PromptOptions {
+            tool_prefix: "mcp__chat__".into(),
+            ..Default::default()
+        };
+        super::prompt::apply_env_override(&mut prompt_opts);
+        let standing_prompt = super::prompt::build_system_prompt(&self.spec, &prompt_opts);
         args.push("--append-system-prompt".into());
         args.push(standing_prompt);
         if let Some(ref sid) = resume_id {

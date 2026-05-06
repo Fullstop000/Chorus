@@ -77,6 +77,61 @@ chorus bridge-smoke-test
 See `docs/BRIDGE_MIGRATION.md` for the full architecture and driver implementation
 guide.
 
+### Two-process mode (Phase 3 bridge ↔ platform split)
+
+For cross-machine deployment, Chorus runs as two separate processes:
+
+- **Platform** (`chorus serve`) — HTTP API, WebSocket realtime, SQLite, no
+  agent runtimes spawned locally.
+- **Bridge** (`chorus bridge`) — connects to a remote platform via
+  `GET /api/bridge/ws`, hosts the agent runtime processes, proxies their
+  MCP tool-calls back to the platform's HTTP API.
+
+Run them in two terminals (or two machines):
+
+```bash
+# Platform — terminal 1
+chorus serve --port 4101 --data-dir /tmp/chorus-platform
+
+# Bridge — terminal 2 (uses your real $HOME so runtime drivers find creds)
+chorus bridge \
+  --platform-ws ws://127.0.0.1:4101/api/bridge/ws \
+  --platform-http http://127.0.0.1:4101 \
+  --machine-id m-1 \
+  --data-dir /tmp/chorus-bridge \
+  --bridge-listen 127.0.0.1:5455
+```
+
+Create an agent and bind it to the bridge by setting `machineId`:
+
+```bash
+curl -X POST http://127.0.0.1:4101/api/agents \
+  -H "Content-Type: application/json" \
+  -d '{"name":"alice","display_name":"Alice","runtime":"claude","model":"sonnet","machineId":"m-1"}'
+```
+
+The platform pushes a `bridge.target` frame to the bridge; the bridge spawns
+the runtime locally and starts streaming `agent.state` upstream. Sending a
+chat to `@alice` reaches the bridge over WS, the bridge wakes the runtime,
+and the agent's `mcp__chat__send_message` reply lands back on the platform.
+
+For production deployments, secure the WS upgrade with bearer tokens:
+
+```bash
+# On the platform process:
+export CHORUS_BRIDGE_TOKENS="secret-for-m1:m-1,secret-for-m2:m-2"
+chorus serve --port 4101
+
+# On each bridge:
+export CHORUS_BRIDGE_TOKEN=secret-for-m1
+chorus bridge --platform-ws wss://platform.example/api/bridge/ws ...
+```
+
+`tokio-tungstenite` is built with the `rustls-tls-webpki-roots` feature
+so `wss://` works out of the box. See `docs/plan/bridge-platform-protocol.md`
+for the full wire contract and `docs/BACKEND.md` § Phase 3 architecture for
+the platform/bridge ownership split.
+
 ### CLI commands
 
 See [`docs/CLI.md`](CLI.md) for the full command reference. Quick cheatsheet:
@@ -86,8 +141,8 @@ chorus setup                    # first-run initializer
 chorus check                    # read-only environment diagnostic
 chorus start --port 3001        # start server + open browser
 chorus serve --port 3001        # start server, no browser
-chorus bridge-serve ...         # standalone MCP bridge
-chorus bridge-pair --agent ...  # mint pairing token
+chorus bridge ...               # remote runtime, connects to a platform via WS
+chorus bridge-serve ...         # standalone MCP bridge (in-process by default)
 ```
 
 ---

@@ -54,7 +54,7 @@
 //!
 //! | Layer | Test location | What it proves |
 //! |-------|--------------|----------------|
-//! | Bridge HTTP layer | `tests/bridge_serve_tests.rs` | In-process bridge starts, health, sessions, token pairing, `send_message` → store |
+//! | Bridge HTTP layer | `tests/bridge_serve_tests.rs` | In-process bridge starts, health, sessions, `send_message` → store |
 //! | Discovery file I/O | `src/bridge/discovery.rs` (unit tests) | `write_bridge_info_to` / `read_bridge_info_from` roundtrip, stale PID, corrupt file, live-PID stomp guard |
 //! | `resolve_bridge_endpoint` | `src/agent/manager.rs` (`resolve_bridge_endpoint_returns_override_when_set`, `resolve_bridge_endpoint_fails_loudly_without_bridge`) | Override path Ok, no-bridge path Err with user-visible message |
 //! | Driver + bridge round-trip | This file (4 `#[ignore]` live tests) | Real runtime binary wired to `bridge_endpoint: String` → message lands in store |
@@ -474,6 +474,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "opencode",
         model: &model,
         reasoning_effort: None,
+        machine_id: None,
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -611,6 +612,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "claude",
         model: &model,
         reasoning_effort: None,
+        machine_id: None,
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -747,6 +749,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "codex",
         model: &model,
         reasoning_effort: None,
+        machine_id: None,
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -884,6 +887,7 @@ async fn gemini_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "gemini",
         model: &model,
         reasoning_effort: None,
+        machine_id: None,
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -1007,6 +1011,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "kimi",
         model: &model,
         reasoning_effort: None,
+        machine_id: None,
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");

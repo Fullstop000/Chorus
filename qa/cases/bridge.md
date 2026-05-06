@@ -1,6 +1,6 @@
 # Bridge Cases
 
-Cases covering the shared MCP bridge, pairing-token flow, and live agent-runtime round-trips.
+Cases covering the shared MCP bridge and live agent-runtime round-trips.
 
 ## Smoke
 
@@ -36,25 +36,7 @@ Cases covering the shared MCP bridge, pairing-token flow, and live agent-runtime
 
 ---
 
-### BRG-003 Pairing Token Lifecycle
-
-- Suite: smoke
-- Goal: Tokens are issued, consumed once, rejected on reuse, and rejected after TTL expiry.
-- Script: [`tests/bridge_serve_tests.rs`](../../tests/bridge_serve_tests.rs) :: `bridge_pair_issues_token`, `token_connects_to_agent_mcp`, `invalid_token_returns_unauthorized`, `expired_token_rejected`
-- Steps:
-  1. POST `/admin/pair` with `{"agent_key": "bot-1"}`; capture the returned token.
-  2. POST MCP `initialize` to `/token/<token>/mcp`; verify 200 + session established.
-  3. Reuse the same token; expect 401.
-  4. Issue a fresh token with 100ms TTL; wait 200ms; expect 401 on use.
-  5. Use a never-issued token; expect 401.
-- Expected: Fresh token succeeds once; reused, expired, and unknown tokens return 401.
-- Failure evidence:
-  - request + response body on each unexpected status code
-  - the token string that failed validation
-
----
-
-### BRG-004 E2E send_message Through Bridge
+### BRG-003 E2E send_message Through Bridge
 
 - Suite: smoke
 - Goal: Full data path from MCP client through bridge to Chorus server SQLite store.

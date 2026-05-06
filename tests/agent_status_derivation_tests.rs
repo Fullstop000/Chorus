@@ -126,6 +126,7 @@ async fn list_agents_returns_asleep_for_unmanaged_agent() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -171,6 +172,7 @@ async fn list_agents_returns_ready_for_running_agent() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();
@@ -223,6 +225,7 @@ async fn get_agent_returns_asleep_for_unmanaged_agent() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
+            machine_id: None,
             env_vars: &[],
         })
         .unwrap();

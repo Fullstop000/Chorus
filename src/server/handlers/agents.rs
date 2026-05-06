@@ -13,6 +13,7 @@ use super::{acquire_transition, app_err, ApiResult, AppState};
 use crate::agent::activity_log::ActivityLogResponse;
 use crate::agent::workspace::AgentWorkspace;
 use crate::agent::AgentRuntime;
+use crate::server::transport::bridge_ws::broadcast_target_update;
 use crate::store::agents::AgentEnvVar;
 use crate::store::messages::SenderType;
 use crate::store::AgentRecordUpsert;
@@ -70,6 +71,10 @@ pub struct CreateAgentRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
+    /// Bridge ownership. When set, only the matching `machine_id` runs
+    /// the agent; when omitted, the agent is platform-local.
+    #[serde(default, rename = "machineId")]
+    pub machine_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -87,6 +92,8 @@ pub struct UpdateAgentRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
+    #[serde(default, rename = "machineId")]
+    pub machine_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -260,6 +267,11 @@ pub async fn handle_create_agent(
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
 
     // Create the agent record, join auto-join channels, and start it.
+    let machine_id_trimmed = req
+        .machine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let result = create_and_start_agent(
         &state,
         &CreateAgentParams {
@@ -270,6 +282,7 @@ pub async fn handle_create_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
+            machine_id: machine_id_trimmed,
             env_vars: &env_vars,
         },
     )
@@ -284,6 +297,7 @@ pub async fn handle_create_agent(
     }
     let ps = state.lifecycle.process_state(&result.name).await;
     let status = crate::agent::process_status::derive_status(ps.as_ref());
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
         "id": result.id,
         "name": result.name,
@@ -300,6 +314,7 @@ pub(crate) struct CreateAgentParams<'a> {
     pub runtime: &'a str,
     pub model: &'a str,
     pub reasoning_effort: Option<&'a str>,
+    pub machine_id: Option<&'a str>,
     pub env_vars: &'a [AgentEnvVar],
 }
 
@@ -330,6 +345,7 @@ pub(crate) async fn create_and_start_agent(
             runtime: params.runtime,
             model: params.model,
             reasoning_effort: params.reasoning_effort,
+            machine_id: params.machine_id,
             env_vars: params.env_vars,
         };
         let create_result = match active_workspace_id.as_deref() {
@@ -404,7 +420,18 @@ pub(crate) async fn create_and_start_agent(
             ch = crate::store::Store::DEFAULT_SYSTEM_CHANNEL,
         )
     });
-    let start_error = if let Err(err) = state
+    // Bridge-hosted agents (`machine_id` set) are started by the remote
+    // bridge after the platform pushes a `bridge.target` update. The
+    // platform must NOT spawn them locally — doing so causes dual-runtime
+    // contention on the same agent session.
+    let start_error = if params.machine_id.is_some() {
+        info!(
+            agent = %name,
+            machine_id = %params.machine_id.unwrap_or(""),
+            "create_and_start_agent: bridge-hosted, skipping platform-side start"
+        );
+        None
+    } else if let Err(err) = state
         .lifecycle
         .start_agent(&name, None, intro_directive)
         .await
@@ -471,6 +498,11 @@ pub async fn handle_update_agent(
         || existing.reasoning_effort != reasoning_effort
         || existing.env_vars != env_vars;
 
+    let machine_id_trimmed = req
+        .machine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     state
         .store
         .update_agent_record(&AgentRecordUpsert {
@@ -481,6 +513,7 @@ pub async fn handle_update_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
+            machine_id: machine_id_trimmed,
             env_vars: &env_vars,
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -489,7 +522,11 @@ pub async fn handle_update_agent(
     let was_running = crate::agent::process_status::derive_status(ps.as_ref())
         != crate::agent::process_status::Status::Asleep;
 
-    if was_running && requires_restart {
+    // Bridge-hosted agents are restarted by the remote bridge when it
+    // receives the broadcast target update below. The platform does not
+    // own the runtime process and must not call start/stop.
+    let bridge_hosted = machine_id_trimmed.is_some();
+    if was_running && requires_restart && !bridge_hosted {
         state
             .lifecycle
             .stop_agent(&name)
@@ -502,6 +539,7 @@ pub async fn handle_update_agent(
             ));
         }
     }
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
         "ok": true,
         "restarted": was_running && requires_restart
@@ -519,11 +557,14 @@ pub async fn handle_restart_agent(
     let agents_dir = state.agents_dir.clone();
     let workspace = AgentWorkspace::new(&agents_dir);
 
-    state
-        .lifecycle
-        .stop_agent(&name)
-        .await
-        .map_err(internal_err)?;
+    let bridge_hosted = agent.machine_id.is_some();
+    if !bridge_hosted {
+        state
+            .lifecycle
+            .stop_agent(&name)
+            .await
+            .map_err(internal_err)?;
+    }
 
     match req.mode {
         RestartMode::Restart => {}
@@ -547,11 +588,16 @@ pub async fn handle_restart_agent(
         }
     }
 
-    if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
-        return Err(app_err!(
-            AppErrorCode::AgentRestartFailed,
-            "restart failed: {err}"
-        ));
+    if !bridge_hosted {
+        if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
+            return Err(app_err!(
+                AppErrorCode::AgentRestartFailed,
+                "restart failed: {err}"
+            ));
+        }
+    } else {
+        // Push fresh target so the bridge stops/starts the runtime locally.
+        broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     }
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -569,11 +615,17 @@ pub async fn handle_delete_agent(
     let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
 
-    state
-        .lifecycle
-        .stop_agent(&name)
-        .await
-        .map_err(internal_err)?;
+    // Skip local stop for bridge-hosted agents: the bridge stops them when
+    // the next `bridge.target` (broadcast below after the row delete) drops
+    // the agent from the desired set. Calling stop_agent here is a no-op
+    // locally but adds noise to the activity log.
+    if agent.machine_id.is_none() {
+        state
+            .lifecycle
+            .stop_agent(&name)
+            .await
+            .map_err(internal_err)?;
+    }
 
     state
         .store
@@ -583,6 +635,7 @@ pub async fn handle_delete_agent(
         .store
         .delete_agent_record(&name)
         .map_err(internal_err)?;
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
 
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
         let agents_dir = state.agents_dir.clone();
@@ -605,6 +658,13 @@ pub async fn handle_agent_start(
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
+    if agent.machine_id.is_some() {
+        // Bridge-hosted: the bridge already keeps the runtime alive per
+        // target. Re-broadcast so any reconnected bridge picks it up.
+        info!(agent = %name, "agent is bridge-hosted; refreshing target");
+        broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
     info!(agent = %name, "starting agent");
     state
         .lifecycle
@@ -622,6 +682,18 @@ pub async fn handle_agent_stop(
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
+    if agent.machine_id.is_some() {
+        // Bridge-hosted: platform doesn't own the runtime. There's no
+        // explicit "stop a single bridge-hosted agent" frame yet, so this
+        // becomes a no-op until we add an `agent.stop` directive in the
+        // protocol. For now, surface a clear status rather than silently
+        // succeed with the wrong meaning.
+        info!(agent = %name, "agent is bridge-hosted; stop is a no-op (deletion via DELETE removes it)");
+        return Ok(Json(serde_json::json!({
+            "ok": true,
+            "note": "agent is bridge-hosted; the platform does not own the runtime"
+        })));
+    }
     info!(agent = %name, "stopping agent");
     state
         .lifecycle

@@ -86,15 +86,14 @@ fn build_acp_mcp_servers(bridge_endpoint: &str, agent_key: &str) -> serde_json::
 /// multiplexing). The least-bad place to teach Kimi the chat protocol is
 /// the leading user-role text on turn 1.
 fn build_kimi_standing_prompt(spec: &AgentSpec) -> String {
-    super::prompt::build_system_prompt(
-        spec,
-        &super::prompt::PromptOptions {
-            extra_critical_rules: vec![
-                "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
-            ],
-            ..Default::default()
-        },
-    )
+    let mut opts = super::prompt::PromptOptions {
+        extra_critical_rules: vec![
+            "- Do NOT use shell commands to send or receive messages. The MCP tools handle everything.".into(),
+        ],
+        ..Default::default()
+    };
+    super::prompt::apply_env_override(&mut opts);
+    super::prompt::build_system_prompt(spec, &opts)
 }
 
 // ---------------------------------------------------------------------------

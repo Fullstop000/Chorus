@@ -254,6 +254,7 @@ fn seed_agent(
         runtime,
         model,
         reasoning_effort: None,
+        machine_id: None,
         env_vars: &[],
     })?;
     join_channel_silent(store, "general", agent_key, "agent");

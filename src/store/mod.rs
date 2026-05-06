@@ -81,7 +81,20 @@ impl Store {
     fn init_schema(conn: &Connection) -> Result<()> {
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
-        Ok(())
+        // Idempotent `machine_id` migration: SQLite has no
+        // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Attempt the ALTER
+        // and ignore *only* the "duplicate column name" error; surface
+        // anything else (locked DB, syntax errors, real schema drift)
+        // so first-run failures aren't silent.
+        match conn.execute("ALTER TABLE agents ADD COLUMN machine_id TEXT", []) {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") =>
+            {
+                Ok(())
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     fn validate_supported_identity_schema(conn: &Connection) -> Result<()> {
