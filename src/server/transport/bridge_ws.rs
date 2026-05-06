@@ -123,10 +123,19 @@ struct BridgeTarget {
 #[serde(rename_all = "snake_case")]
 struct AgentTarget {
     agent_id: String,
+    /// Bridge-side handle (matches `agents.name` on the platform). The
+    /// bridge uses this to drive `AgentManager::start_agent`, which keys
+    /// on name; the platform's `agent_id` is opaque to the bridge.
+    name: String,
+    display_name: String,
     runtime: String,
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     system_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
     env_vars: Vec<EnvVarOut>,
     #[serde(skip_serializing_if = "Option::is_none")]
     init_directive: Option<String>,
@@ -144,9 +153,13 @@ impl From<Agent> for AgentTarget {
     fn from(a: Agent) -> Self {
         AgentTarget {
             agent_id: a.id,
+            name: a.name,
+            display_name: a.display_name,
             runtime: a.runtime,
             model: a.model,
+            description: a.description,
             system_prompt: a.system_prompt,
+            reasoning_effort: a.reasoning_effort,
             env_vars: a
                 .env_vars
                 .into_iter()

@@ -421,7 +421,18 @@ pub(crate) async fn create_and_start_agent(
             ch = crate::store::Store::DEFAULT_SYSTEM_CHANNEL,
         )
     });
-    let start_error = if let Err(err) = state
+    // Phase 3: agents bound to a remote bridge (`machine_id` is set) are
+    // started by that bridge after the platform pushes a `bridge.target`
+    // update. The platform must NOT spawn them locally — doing so causes
+    // dual-runtime contention on the same agent session.
+    let start_error = if params.machine_id.is_some() {
+        info!(
+            agent = %name,
+            machine_id = %params.machine_id.unwrap_or(""),
+            "create_and_start_agent: bridge-hosted, skipping platform-side start"
+        );
+        None
+    } else if let Err(err) = state
         .lifecycle
         .start_agent(&name, None, intro_directive)
         .await
@@ -512,7 +523,11 @@ pub async fn handle_update_agent(
     let was_running = crate::agent::process_status::derive_status(ps.as_ref())
         != crate::agent::process_status::Status::Asleep;
 
-    if was_running && requires_restart {
+    // Phase 3: bridge-hosted agents are restarted by the remote bridge
+    // when it receives the broadcast target update below. The platform
+    // does not own the runtime process and must not call start/stop.
+    let bridge_hosted = machine_id_trimmed.is_some();
+    if was_running && requires_restart && !bridge_hosted {
         state
             .lifecycle
             .stop_agent(&name)
@@ -543,11 +558,14 @@ pub async fn handle_restart_agent(
     let agents_dir = state.agents_dir.clone();
     let workspace = AgentWorkspace::new(&agents_dir);
 
-    state
-        .lifecycle
-        .stop_agent(&name)
-        .await
-        .map_err(internal_err)?;
+    let bridge_hosted = agent.machine_id.is_some();
+    if !bridge_hosted {
+        state
+            .lifecycle
+            .stop_agent(&name)
+            .await
+            .map_err(internal_err)?;
+    }
 
     match req.mode {
         RestartMode::Restart => {}
@@ -571,11 +589,16 @@ pub async fn handle_restart_agent(
         }
     }
 
-    if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
-        return Err(app_err!(
-            AppErrorCode::AgentRestartFailed,
-            "restart failed: {err}"
-        ));
+    if !bridge_hosted {
+        if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
+            return Err(app_err!(
+                AppErrorCode::AgentRestartFailed,
+                "restart failed: {err}"
+            ));
+        }
+    } else {
+        // Push fresh target so the bridge stops/starts the runtime locally.
+        broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     }
     Ok(Json(serde_json::json!({
         "ok": true,
@@ -630,6 +653,13 @@ pub async fn handle_agent_start(
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name;
     let _transition = acquire_transition(&state, &name)?;
+    if agent.machine_id.is_some() {
+        // Bridge-hosted: the bridge already keeps the runtime alive per
+        // target. Re-broadcast so any reconnected bridge picks it up.
+        info!(agent = %name, "agent is bridge-hosted; refreshing target");
+        broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
+        return Ok(Json(serde_json::json!({ "ok": true })));
+    }
     info!(agent = %name, "starting agent");
     state
         .lifecycle

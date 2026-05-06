@@ -6,6 +6,7 @@
 //! to its own module.
 
 mod agent;
+mod bridge;
 mod channel;
 mod check;
 mod send;
@@ -119,6 +120,28 @@ enum Commands {
         /// Chorus backend server URL
         #[arg(long, default_value = "http://localhost:3001")]
         server_url: String,
+    },
+    /// Run a remote bridge: connect to a platform via WebSocket, host
+    /// local agent runtimes, and proxy MCP tool-calls back to the platform.
+    Bridge {
+        /// Platform WebSocket URL (e.g. ws://platform.host:3001/api/bridge/ws).
+        #[arg(long)]
+        platform_ws: String,
+        /// Platform HTTP base URL (e.g. http://platform.host:3001) for MCP proxy.
+        #[arg(long)]
+        platform_http: String,
+        /// Bearer token for the WS upgrade (matches platform's CHORUS_BRIDGE_TOKENS).
+        #[arg(long, env = "CHORUS_BRIDGE_TOKEN")]
+        token: Option<String>,
+        /// Stable identifier for this bridge instance.
+        #[arg(long)]
+        machine_id: String,
+        /// Local data directory for the bridge (separate from any platform data).
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Loopback bind for the embedded MCP bridge that local agents talk to.
+        #[arg(long, default_value = "127.0.0.1:0")]
+        bridge_listen: String,
     },
     /// Read-only environment diagnostic
     Check {
@@ -343,6 +366,10 @@ pub async fn run() -> anyhow::Result<()> {
         | Some(Commands::Serve { data_dir, .. }) => {
             Some(data_dir.clone().unwrap_or_else(default_data_dir))
         }
+        Some(Commands::Bridge { data_dir, .. }) => Some(data_dir.clone().unwrap_or_else(|| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+            format!("{home}/.chorus-bridge")
+        })),
         None => Some(default_data_dir()),
         _ => None,
     };
@@ -371,6 +398,29 @@ pub async fn run() -> anyhow::Result<()> {
 
         Some(Commands::BridgeServe { listen, server_url }) => {
             chorus::bridge::serve::run_bridge_server(&listen, &server_url).await
+        }
+
+        Some(Commands::Bridge {
+            platform_ws,
+            platform_http,
+            token,
+            machine_id,
+            data_dir,
+            bridge_listen,
+        }) => {
+            let data_dir_str = data_dir.unwrap_or_else(|| {
+                let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+                format!("{home}/.chorus-bridge")
+            });
+            bridge::run(
+                platform_ws,
+                platform_http,
+                token,
+                machine_id,
+                data_dir_str,
+                bridge_listen,
+            )
+            .await
         }
 
         Some(Commands::Send {
