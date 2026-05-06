@@ -6,7 +6,6 @@
 //! upstream as `agent.state` frames.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use crate::agent::manager::AgentManager;
 use crate::store::Store;
@@ -23,8 +22,8 @@ pub struct ReconcileOutcome {
 }
 
 pub async fn apply(
-    store: &Arc<Store>,
-    manager: &Arc<AgentManager>,
+    store: &Store,
+    manager: &AgentManager,
     id_map: &mut AgentIdMap,
     targets: Vec<AgentTargetIn>,
 ) -> anyhow::Result<ReconcileOutcome> {

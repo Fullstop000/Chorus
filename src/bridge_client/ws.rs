@@ -55,6 +55,17 @@ impl InstanceCounter {
 const SUPPORTED_FRAMES: &[&str] = &["bridge.target", "chat.message.received"];
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Initial reconnect delay after a WS session ends. Doubles up to
+/// [`MAX_BACKOFF_MS`] after each failure; resets to this on a clean exit.
+const INITIAL_BACKOFF_MS: u64 = 500;
+/// Cap on reconnect delay — 30 s strikes a balance between not hammering
+/// a degraded platform and not waiting forever after the platform recovers.
+const MAX_BACKOFF_MS: u64 = 30_000;
+/// Cadence the bridge polls each agent's `process_state` and emits
+/// transitions upstream. Bridge runtimes don't expose a transition stream
+/// today, so this is the polling tax.
+const STATE_PUSHER_INTERVAL: Duration = Duration::from_millis(500);
+
 #[derive(Debug, Serialize, Deserialize)]
 struct WireFrame {
     v: u32,
@@ -129,6 +140,86 @@ pub enum ServerFrame {
     Other(String, Value),
 }
 
+// ── Outbound frame helpers ────────────────────────────────────────────────
+//
+// Each B→P frame goes through `queue_frame`: serialise once, push via
+// `try_send`, log on overflow. Using `try_send` (rather than `.send().await`)
+// here matters because all callers of these helpers run on tasks spawned
+// from the WS select-loop; a blocking await would create the same kind of
+// hold-the-loop deadlock the spawn-handlers refactor was designed to avoid.
+
+/// Send an `agent.state` frame upstream. Drops the frame with a warning
+/// when the outbound channel is full (the platform will eventually re-sync
+/// via the next reconcile round-trip).
+async fn send_agent_state(
+    state_tx: &tokio::sync::mpsc::Sender<String>,
+    platform_id: &str,
+    state: &str,
+    runtime_pid: u32,
+) {
+    queue_frame(
+        state_tx,
+        "agent.state",
+        json!({
+            "agent_id": platform_id,
+            "state": state,
+            "runtime_pid": runtime_pid,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+    .await;
+}
+
+/// Send a `chat.ack` frame upstream after a chat batch was queued for
+/// the local agent. See `send_agent_state` for overflow semantics.
+async fn send_chat_ack(
+    state_tx: &tokio::sync::mpsc::Sender<String>,
+    platform_id: &str,
+    last_seq: i64,
+) {
+    queue_frame(
+        state_tx,
+        "chat.ack",
+        json!({
+            "agent_id": platform_id,
+            "last_seq": last_seq,
+            "ts": chrono::Utc::now().to_rfc3339(),
+        }),
+    )
+    .await;
+}
+
+async fn queue_frame(
+    state_tx: &tokio::sync::mpsc::Sender<String>,
+    frame_type: &'static str,
+    data: Value,
+) {
+    let frame = WireFrame {
+        v: 1,
+        frame_type: frame_type.to_string(),
+        data,
+    };
+    let text = match serde_json::to_string(&frame) {
+        Ok(t) => t,
+        Err(e) => {
+            tracing::warn!(err = %e, frame_type, "bridge: failed to encode outbound frame");
+            return;
+        }
+    };
+    match state_tx.try_send(text) {
+        Ok(()) => {}
+        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+            // Outbound channel is bounded (cap 64). On overflow we drop
+            // and surface the loss — the alternative (blocking await) is
+            // the deadlock pattern the per-frame spawn refactor avoided.
+            tracing::warn!(frame_type, "bridge: outbound channel full; frame dropped");
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            // Session is shutting down; nothing actionable.
+        }
+    }
+}
+
 pub async fn run_ws_client_loop(
     cfg: BridgeClientConfig,
     manager: Arc<AgentManager>,
@@ -138,7 +229,7 @@ pub async fn run_ws_client_loop(
     let counter = Arc::new(InstanceCounter::default());
     let pending_chats: PendingChats = Arc::new(Mutex::new(HashMap::new()));
 
-    let mut backoff_ms: u64 = 500;
+    let mut backoff_ms: u64 = INITIAL_BACKOFF_MS;
     loop {
         if shutdown.is_cancelled() {
             return Ok(());
@@ -161,7 +252,7 @@ pub async fn run_ws_client_loop(
         {
             Ok(()) => {
                 tracing::info!("bridge: WS session ended cleanly; reconnecting");
-                backoff_ms = 500;
+                backoff_ms = INITIAL_BACKOFF_MS;
             }
             Err(e) => {
                 tracing::warn!(err = %e, backoff_ms, "bridge: WS session failed; reconnecting");
@@ -169,7 +260,7 @@ pub async fn run_ws_client_loop(
                     _ = tokio::time::sleep(Duration::from_millis(backoff_ms)) => {}
                     _ = shutdown.cancelled() => return Ok(()),
                 }
-                backoff_ms = (backoff_ms * 2).min(30_000);
+                backoff_ms = (backoff_ms * 2).min(MAX_BACKOFF_MS);
             }
         }
     }
@@ -404,19 +495,7 @@ async fn handle_target(
             None => continue,
         };
         let pid = counter.allocate(&name).await;
-        let frame = WireFrame {
-            v: 1,
-            frame_type: "agent.state".into(),
-            data: json!({
-                "agent_id": platform_id,
-                "state": "started",
-                "runtime_pid": pid,
-                "ts": chrono::Utc::now().to_rfc3339(),
-            }),
-        };
-        if let Ok(text) = serde_json::to_string(&frame) {
-            let _ = state_tx.send(text).await;
-        }
+        send_agent_state(state_tx, &platform_id, "started", pid).await;
     }
     for name in outcome.stopped {
         let platform_id = match id_map.lock().await.platform_id_for(&name) {
@@ -425,24 +504,12 @@ async fn handle_target(
         };
         let pid = counter.current(&name).await;
         counter.forget(&name).await;
-        let frame = WireFrame {
-            v: 1,
-            frame_type: "agent.state".into(),
-            data: json!({
-                "agent_id": platform_id,
-                "state": "stopped",
-                "runtime_pid": pid,
-                "ts": chrono::Utc::now().to_rfc3339(),
-            }),
-        };
-        if let Ok(text) = serde_json::to_string(&frame) {
-            let _ = state_tx.send(text).await;
-        }
+        send_agent_state(state_tx, &platform_id, "stopped", pid).await;
     }
 }
 
 async fn handle_chat(
-    manager: &Arc<AgentManager>,
+    manager: &AgentManager,
     id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
     pending_chats: PendingChats,
@@ -480,19 +547,7 @@ async fn handle_chat(
             let r = manager.start_agent(&name, None, None).await;
             if r.is_ok() {
                 let pid = counter.allocate(&name).await;
-                let started = WireFrame {
-                    v: 1,
-                    frame_type: "agent.state".into(),
-                    data: json!({
-                        "agent_id": payload.agent_id,
-                        "state": "started",
-                        "runtime_pid": pid,
-                        "ts": chrono::Utc::now().to_rfc3339(),
-                    }),
-                };
-                if let Ok(text) = serde_json::to_string(&started) {
-                    let _ = state_tx.send(text).await;
-                }
+                send_agent_state(state_tx, &payload.agent_id, "started", pid).await;
             }
             r
         }
@@ -502,18 +557,7 @@ async fn handle_chat(
         return;
     }
 
-    let ack = WireFrame {
-        v: 1,
-        frame_type: "chat.ack".into(),
-        data: json!({
-            "agent_id": payload.agent_id,
-            "last_seq": payload.seq,
-            "ts": chrono::Utc::now().to_rfc3339(),
-        }),
-    };
-    if let Ok(text) = serde_json::to_string(&ack) {
-        let _ = state_tx.send(text).await;
-    }
+    send_chat_ack(state_tx, &payload.agent_id, payload.seq).await;
 }
 
 /// Background loop that polls each managed agent's process state and emits
@@ -530,7 +574,7 @@ async fn agent_state_pusher(
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => return,
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            _ = tokio::time::sleep(STATE_PUSHER_INTERVAL) => {}
         }
 
         let names = manager.get_running_agent_names().await;
@@ -550,19 +594,7 @@ async fn agent_state_pusher(
                 continue;
             };
             let pid = counter.current(name).await;
-            let frame = WireFrame {
-                v: 1,
-                frame_type: "agent.state".into(),
-                data: json!({
-                    "agent_id": platform_id,
-                    "state": label,
-                    "runtime_pid": pid,
-                    "ts": chrono::Utc::now().to_rfc3339(),
-                }),
-            };
-            if let Ok(text) = serde_json::to_string(&frame) {
-                let _ = state_tx.send(text).await;
-            }
+            send_agent_state(&state_tx, &platform_id, label, pid).await;
             last.insert(name.clone(), label.to_string());
         }
 

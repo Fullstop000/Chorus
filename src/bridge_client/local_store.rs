@@ -4,7 +4,6 @@
 //! read (`store.get_agent(name)`).
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use crate::store::agents::{AgentEnvVar, AgentRecordUpsert};
 use crate::store::Store;
@@ -46,7 +45,7 @@ impl AgentIdMap {
 
 /// Insert or update the local agent record so `AgentManager::start_agent`
 /// can read it back. Returns true if the record was newly created.
-pub fn upsert_from_target(store: &Arc<Store>, target: &AgentTargetIn) -> anyhow::Result<bool> {
+pub fn upsert_from_target(store: &Store, target: &AgentTargetIn) -> anyhow::Result<bool> {
     let env_vars: Vec<AgentEnvVar> = target
         .env_vars
         .iter()
@@ -79,7 +78,7 @@ pub fn upsert_from_target(store: &Arc<Store>, target: &AgentTargetIn) -> anyhow:
     }
 }
 
-pub fn delete_record(store: &Arc<Store>, name: &str) -> anyhow::Result<()> {
+pub fn delete_record(store: &Store, name: &str) -> anyhow::Result<()> {
     store.delete_agent_record(name)?;
     Ok(())
 }
