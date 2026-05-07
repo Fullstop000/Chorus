@@ -447,30 +447,39 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
 }
 
 async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
-    let name = match ctx.store.get_agent_by_id(&payload.agent_id, false) {
-        Ok(Some(agent)) => Some(agent.name),
-        Ok(None) => None,
-        Err(e) => {
-            tracing::warn!(err = %e, agent_id = %payload.agent_id, "bridge: store lookup failed for chat");
-            return;
-        }
-    };
-    let Some(name) = name else {
-        // Stash for replay on the next handle_target that knows this
-        // platform_id. Cap per-agent so a misrouted-chat storm can't
-        // pin unbounded memory.
+    // Hold the pending_chats lock across the store check so handle_target's
+    // drain can never miss a chat that's about to be buffered. Without
+    // this, the sequence (chat: get_agent_by_id → None) → (target: upsert
+    // + drain empty) → (chat: lock + push) leaves the chat sitting in the
+    // buffer until the next reconcile.
+    //
+    // Lock ordering: pending_chats (tokio async) then store (std sync,
+    // briefly during the query). handle_target acquires them in the
+    // opposite order (store during reconcile, then pending_chats), but
+    // the store lock is never held across `.await`, so the windows can't
+    // interlock — they serialize on whichever lock is contended first.
+    let name = {
         let mut buf = ctx.pending_chats.lock().await;
-        let queue = buf.entry(payload.agent_id.clone()).or_default();
-        if queue.len() >= PENDING_CHATS_PER_AGENT {
-            queue.pop_front();
+        match ctx.store.get_agent_by_id(&payload.agent_id, false) {
+            Ok(Some(agent)) => agent.name,
+            Ok(None) => {
+                let queue = buf.entry(payload.agent_id.clone()).or_default();
+                if queue.len() >= PENDING_CHATS_PER_AGENT {
+                    queue.pop_front();
+                }
+                queue.push_back(payload.clone());
+                tracing::debug!(
+                    agent_id = %payload.agent_id,
+                    buffered = queue.len(),
+                    "bridge: chat arrived before target — buffered for replay"
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(err = %e, agent_id = %payload.agent_id, "bridge: store lookup failed for chat");
+                return;
+            }
         }
-        queue.push_back(payload.clone());
-        tracing::debug!(
-            agent_id = %payload.agent_id,
-            buffered = queue.len(),
-            "bridge: chat arrived before target — buffered for replay"
-        );
-        return;
     };
 
     let process_state = ctx.manager.process_state(&name).await;

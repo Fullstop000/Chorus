@@ -1060,7 +1060,7 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: Some("machine-x"),
             env_vars: &[],
         })
         .unwrap();
@@ -1091,8 +1091,7 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
         .unwrap();
     assert_eq!(resp.status(), 401, "wrong token should 401");
 
-    // Correct token → 200 (or whatever the handler normally returns;
-    // the point is the middleware lets it through).
+    // Correct token AND token's machine_id owns the agent → 200.
     let resp = client
         .get(format!("{http_url}/internal/agent/{agent_id}/server"))
         .header("Authorization", "Bearer internal-tok")
@@ -1102,6 +1101,101 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
     assert_eq!(
         resp.status(),
         200,
-        "correct token should be authorized to reach the handler"
+        "correct token bound to the agent's owner should pass"
+    );
+}
+
+/// A valid token alone is not enough — its bound `machine_id` must also
+/// own the agent_id in the URL. Without this check, a leaked token from
+/// machine-a could act on machine-b's agents (cross-bridge escape).
+#[tokio::test]
+async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
+    // Agent owned by machine-y.
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "y-only-bot",
+            display_name: "Y-only Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-y"),
+            env_vars: &[],
+        })
+        .unwrap();
+    // Tokens: one bound to machine-x, one to machine-y.
+    let auth = BridgeAuth::from_pairs([("x-tok", "machine-x"), ("y-tok", "machine-y")]);
+    let router = harness::build_router_with_bridge_auth(store.clone(), auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let http_url = format!("http://{addr}");
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+
+    // x-tok is valid but its bound machine_id (machine-x) does not own
+    // y-only-bot (which is machine-y). Must be 403.
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .header("Authorization", "Bearer x-tok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "valid token from a different machine must not act on this agent"
+    );
+
+    // y-tok is bound to machine-y, which owns y-only-bot. Must be 200.
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .header("Authorization", "Bearer y-tok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "token bound to the agent's owner is authorized"
+    );
+
+    // Platform-local agent (machine_id NULL) — even a valid bridge token
+    // must NOT be allowed to act on it. Bridge tokens are only authorized
+    // for their own bridge's agents.
+    let local_agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "platform-local",
+            display_name: "Platform Local",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{local_agent_id}/server"))
+        .header("Authorization", "Bearer x-tok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "bridge token must not be allowed to act on platform-local agents"
     );
 }
