@@ -725,6 +725,150 @@ async fn bridge_ws_pushes_chat_message_received_when_agent_member_gets_message()
     );
 }
 
+/// Two bridges connected concurrently, each owning one agent in the
+/// same channel. A single human chat must reach BOTH agents — but each
+/// agent's chat frame must arrive ONLY on its owning bridge. This is the
+/// invariant the NULL-machine_id fanout used to violate.
+#[tokio::test]
+async fn bridge_ws_two_machines_chat_isolation() {
+    let (ws_url, store, event_bus, alice_id) = start_test_server_with_event_bus_handle().await;
+
+    // Seed two agents — one per machine — both joined to #general.
+    let agent_a_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "agent-on-a",
+            display_name: "Agent on A",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-a"),
+            env_vars: &[],
+        })
+        .unwrap();
+    let agent_b_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "agent-on-b",
+            display_name: "Agent on B",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-b"),
+            env_vars: &[],
+        })
+        .unwrap();
+    harness::join_channel_silent(&store, "general", &agent_a_id, "agent");
+    harness::join_channel_silent(&store, "general", &agent_b_id, "agent");
+
+    // Connect both bridges and drain initial targets. machine-a's
+    // initial target lists only agent-on-a; machine-b's only agent-on-b.
+    let (mut sock_a, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade A");
+    send_hello(&mut sock_a, "machine-a").await;
+    let initial_a = read_json_frame(&mut sock_a).await;
+    assert_eq!(initial_a["type"], "bridge.target");
+    let init_a_ids: Vec<&str> = initial_a["data"]["target_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["agent_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(init_a_ids, vec![agent_a_id.as_str()], "machine-a target");
+
+    let (mut sock_b, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade B");
+    send_hello(&mut sock_b, "machine-b").await;
+    let initial_b = read_json_frame(&mut sock_b).await;
+    let init_b_ids: Vec<&str> = initial_b["data"]["target_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["agent_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(init_b_ids, vec![agent_b_id.as_str()], "machine-b target");
+
+    // Human posts to #general. The platform forwarder should route ONE
+    // chat frame to each bridge — each carrying ONLY that bridge's agent
+    // as the recipient.
+    let (_msg_id, ev) = store
+        .create_message(chorus::store::messages::CreateMessage {
+            channel_name: "general",
+            sender_id: &alice_id,
+            sender_type: chorus::store::messages::SenderType::Human,
+            content: "hello agents",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap();
+    if let Some(event) = ev {
+        event_bus.publish_stream(event);
+    }
+
+    /// Read frames on `socket` until we see a chat.message.received,
+    /// returning its inner agent_id. Times out after 6 polls.
+    async fn next_chat_agent_id(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Option<String> {
+        for _ in 0..6 {
+            let frame = match timeout(Duration::from_millis(800), read_json_frame(socket)).await {
+                Ok(f) => f,
+                Err(_) => return None,
+            };
+            if frame["type"] == "chat.message.received" {
+                return frame["data"]["agent_id"].as_str().map(str::to_owned);
+            }
+        }
+        None
+    }
+
+    let chat_a_recipient = next_chat_agent_id(&mut sock_a).await;
+    let chat_b_recipient = next_chat_agent_id(&mut sock_b).await;
+
+    assert_eq!(
+        chat_a_recipient.as_deref(),
+        Some(agent_a_id.as_str()),
+        "machine-a's bridge receives chat for agent-on-a only"
+    );
+    assert_eq!(
+        chat_b_recipient.as_deref(),
+        Some(agent_b_id.as_str()),
+        "machine-b's bridge receives chat for agent-on-b only"
+    );
+
+    // Cross-check: machine-a must NEVER have seen a chat for agent-on-b
+    // (and vice versa). The recipient assertions above already enforce
+    // this for the first frame seen, but drain a second time with a
+    // tight timeout to catch any cross-routed leakage.
+    let leak_a = match timeout(Duration::from_millis(500), read_json_frame(&mut sock_a)).await {
+        Ok(f) if f["type"] == "chat.message.received" => {
+            f["data"]["agent_id"].as_str().map(str::to_owned)
+        }
+        _ => None,
+    };
+    let leak_b = match timeout(Duration::from_millis(500), read_json_frame(&mut sock_b)).await {
+        Ok(f) if f["type"] == "chat.message.received" => {
+            f["data"]["agent_id"].as_str().map(str::to_owned)
+        }
+        _ => None,
+    };
+    assert!(
+        leak_a.is_none(),
+        "machine-a leaked an extra chat frame: {leak_a:?}"
+    );
+    assert!(
+        leak_b.is_none(),
+        "machine-b leaked an extra chat frame: {leak_b:?}"
+    );
+}
+
 #[tokio::test]
 async fn bridge_ws_chat_ack_advances_per_agent_cursor() {
     // This test exercises the wire shape: bridge → chat.ack frame →
