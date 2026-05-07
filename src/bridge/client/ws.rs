@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -22,6 +21,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::drivers::ProcessState;
 use crate::agent::manager::AgentManager;
+use crate::bridge::protocol::{
+    WireFrame, FRAME_AGENT_STATE, FRAME_BRIDGE_HELLO, FRAME_BRIDGE_TARGET, FRAME_CHAT_ACK,
+    FRAME_CHAT_MESSAGE_RECEIVED,
+};
 
 use super::reconcile;
 use super::BridgeClientConfig;
@@ -55,7 +58,7 @@ impl InstanceCounter {
     }
 }
 
-const SUPPORTED_FRAMES: &[&str] = &["bridge.target", "chat.message.received"];
+const SUPPORTED_FRAMES: &[&str] = &[FRAME_BRIDGE_TARGET, FRAME_CHAT_MESSAGE_RECEIVED];
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Initial reconnect delay after a WS session ends. Doubles up to
@@ -69,65 +72,11 @@ const MAX_BACKOFF_MS: u64 = 30_000;
 /// today, so this is the polling tax.
 const STATE_PUSHER_INTERVAL: Duration = Duration::from_millis(500);
 
-#[derive(Debug, Serialize, Deserialize)]
-struct WireFrame {
-    v: u32,
-    #[serde(rename = "type")]
-    frame_type: String,
-    data: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) struct BridgeTargetIn {
-    pub target_agents: Vec<AgentTargetIn>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-pub(super) struct AgentTargetIn {
-    pub agent_id: String,
-    pub name: String,
-    pub display_name: String,
-    pub runtime: String,
-    pub model: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-    #[serde(default)]
-    pub reasoning_effort: Option<String>,
-    #[serde(default)]
-    pub env_vars: Vec<EnvVarIn>,
-    #[serde(default)]
-    pub init_directive: Option<String>,
-    /// Reserved for a future slice that funnels a queued user prompt
-    /// through `bridge.target` so the bridge can deliver it on first turn.
-    /// Currently unused; kept on the deserializer so platforms emitting
-    /// the field don't fail-load on this bridge.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub pending_prompt: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub(super) struct EnvVarIn {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-struct ChatMessageReceived {
-    agent_id: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    channel_id: Option<String>,
-    seq: i64,
-    #[serde(default)]
-    #[allow(dead_code)]
-    messages: Value,
-}
+// All wire payload types live in `crate::bridge::protocol` and are
+// re-exported here for the rest of the bridge client to consume.
+pub(super) use crate::bridge::protocol::{
+    AgentTarget as AgentTargetIn, BridgeTarget as BridgeTargetIn, ChatMessageReceived,
+};
 
 /// Cap on chats buffered per (still-unknown) platform agent_id. The
 /// bridge sees `chat.message.received` for a platform agent before
@@ -176,7 +125,7 @@ async fn send_agent_state(
 ) {
     queue_frame(
         state_tx,
-        "agent.state",
+        FRAME_AGENT_STATE,
         json!({
             "agent_id": platform_id,
             "state": state,
@@ -196,7 +145,7 @@ async fn send_chat_ack(
 ) {
     queue_frame(
         state_tx,
-        "chat.ack",
+        FRAME_CHAT_ACK,
         json!({
             "agent_id": platform_id,
             "last_seq": last_seq,
@@ -310,7 +259,7 @@ async fn run_one_session(
     let agents_alive = build_agents_alive(&cfg.store, &manager, &counter).await;
     let hello = WireFrame {
         v: 1,
-        frame_type: "bridge.hello".into(),
+        frame_type: FRAME_BRIDGE_HELLO.into(),
         data: json!({
             "machine_id": cfg.machine_id,
             "bridge_version": BRIDGE_VERSION,
@@ -379,7 +328,7 @@ async fn run_one_session(
                             }
                         };
                         match frame.frame_type.as_str() {
-                            "bridge.target" => {
+                            FRAME_BRIDGE_TARGET => {
                                 let target: BridgeTargetIn = match serde_json::from_value(frame.data) {
                                     Ok(t) => t,
                                     Err(e) => {
@@ -392,7 +341,7 @@ async fn run_one_session(
                                     handle_target(&ctx, target).await;
                                 }));
                             }
-                            "chat.message.received" => {
+                            FRAME_CHAT_MESSAGE_RECEIVED => {
                                 let payload: ChatMessageReceived = match serde_json::from_value(frame.data) {
                                     Ok(p) => p,
                                     Err(e) => {
