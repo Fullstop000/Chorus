@@ -29,8 +29,10 @@ pub struct Agent {
     pub model: String,
     /// Optional Codex reasoning effort override.
     pub reasoning_effort: Option<String>,
-    /// Bridge ownership: which `machine_id` should run this agent.
-    /// `None` means "any bridge may run it" (or platform-local).
+    /// Owner of this agent's runtime. `Some(machine_id)` binds the
+    /// agent to one named bridge; `None` means platform-local — it runs
+    /// in `chorus serve`'s own `AgentManager` and is never sent to any
+    /// bridge. Every agent has exactly one owner.
     pub machine_id: Option<String>,
     /// Injected environment variables (ordered by `position`).
     pub env_vars: Vec<AgentEnvVar>,
@@ -65,8 +67,8 @@ pub struct AgentRecordUpsert<'a> {
     pub model: &'a str,
     /// Optional reasoning effort (Codex).
     pub reasoning_effort: Option<&'a str>,
-    /// Bridge ownership: which `machine_id` should run this agent.
-    /// `None` = any bridge or platform-local.
+    /// Owner of this agent's runtime. `Some(machine_id)` binds it to
+    /// one named bridge; `None` = platform-local.
     pub machine_id: Option<&'a str>,
     /// Full env var list to replace existing rows.
     pub env_vars: &'a [AgentEnvVar],

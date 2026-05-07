@@ -291,10 +291,13 @@ async fn handle_inbound_frame(
 }
 
 /// Build a serialized `bridge.target` frame from the current set of
-/// agents in the store, scoped to a specific bridge `machine_id`. An
-/// agent is included if its `machine_id` matches the connecting
-/// bridge's, or if the agent has no `machine_id` set (NULL ownership =
-/// any bridge can run it; back-compat with pre-slice-6 agents).
+/// agents in the store, scoped to a specific bridge `machine_id`. Only
+/// agents explicitly bound to this bridge are included; agents with
+/// NULL `machine_id` are platform-local and never sent to any bridge.
+///
+/// Every agent has exactly one owner (the platform itself, or one named
+/// bridge). Fanning NULL agents to all bridges would cause dual-runtime
+/// contention as soon as a second bridge connects.
 pub fn build_target_frame_text_for_machine(
     store: &Store,
     machine_id: &str,
@@ -302,10 +305,7 @@ pub fn build_target_frame_text_for_machine(
     let agents: Vec<Agent> = store
         .get_agents()?
         .into_iter()
-        .filter(|a| match a.machine_id.as_deref() {
-            None => true,
-            Some(m) => m == machine_id,
-        })
+        .filter(|a| a.machine_id.as_deref() == Some(machine_id))
         .collect();
     let target = BridgeTarget {
         target_agents: agents.into_iter().map(agent_to_target).collect(),
@@ -344,10 +344,11 @@ pub fn broadcast_target_update(store: &Store, registry: &BridgeRegistry) {
     }
 }
 
-/// Forward a chat-message stream event to every connected bridge as a
-/// `chat.message.received` frame. Called wherever a `message.created`
-/// `StreamEvent` is published. Narrows by `machine_id` so each bridge
-/// only sees chat for the agents it owns.
+/// Forward a chat-message stream event to the bridge that owns each
+/// recipient agent. Called wherever a `message.created` `StreamEvent`
+/// is published. Routes by the agent's `machine_id`; platform-local
+/// agents (NULL `machine_id`) are skipped — they're delivered by the
+/// platform's own `AgentManager` in `deliver_message_to_agents`.
 ///
 /// The bridge is responsible for matching the inner `agent_id` to its
 /// own running runtime and updating that mailbox.
@@ -379,6 +380,14 @@ pub fn forward_chat_event_to_bridges(
         return;
     }
     for agent_id in agent_recipients {
+        // Route only to the bridge that owns this agent. Platform-local
+        // agents (machine_id NULL) are delivered by the platform's own
+        // AgentManager via deliver_message_to_agents — they have no
+        // bridge to push to.
+        let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
+        let Some(owner_machine_id) = agent_record.and_then(|a| a.machine_id) else {
+            continue;
+        };
         let frame = match build_chat_message_frame_text(agent_id, event) {
             Ok(t) => t,
             Err(err) => {
@@ -386,21 +395,12 @@ pub fn forward_chat_event_to_bridges(
                 continue;
             }
         };
-        // Scope by the agent's owning machine_id when set. Owner-less
-        // agents (machine_id NULL) fan to every bridge — back-compat
-        // with pre-slice-6 behavior + the explicit "any bridge can run
-        // this agent" affordance.
-        let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
-        let owner_machine_id = agent_record.and_then(|a| a.machine_id);
-        let delivered = match owner_machine_id.as_deref() {
-            Some(m) => registry.send_to(m, &frame),
-            None => registry.broadcast(&frame),
-        };
+        let delivered = registry.send_to(&owner_machine_id, &frame);
         debug!(
             delivered,
             agent_id = %agent_id,
             seq = event.latest_seq,
-            owner = owner_machine_id.as_deref().unwrap_or("<any>"),
+            owner = %owner_machine_id,
             "bridge_ws: pushed chat.message.received"
         );
     }
