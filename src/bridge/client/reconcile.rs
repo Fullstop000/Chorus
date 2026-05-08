@@ -74,7 +74,20 @@ pub async fn apply(
     let mut started = Vec::new();
     let mut stopped = Vec::new();
 
-    // 1. Refresh the in-memory cache. Spec lookups read from here; the
+    // 1. Bulk-prune session rows whose agent_id isn't in this target.
+    //    The per-stop cleanup below would miss any agent that got
+    //    removed from desired while the bridge was offline (running set
+    //    is empty after restart, so the stop loop never fires for it).
+    //    Running this once at the top of every reconcile catches that
+    //    case AND legitimate online removals that the stop loop also
+    //    handles — both paths converge here, the per-stop call is a
+    //    redundant safety net we keep for symmetry with stop events.
+    let desired_ids: Vec<String> = targets.iter().map(|t| t.agent_id.clone()).collect();
+    if let Err(e) = store.delete_sessions_for_agents_not_in(&desired_ids) {
+        tracing::warn!(err = %e, "reconcile: bulk session cleanup failed; per-stop will pick up online removals");
+    }
+
+    // 3. Refresh the in-memory cache. Spec lookups read from here; the
     //    bridge's `agents` table stays empty.
     {
         let mut cache = targets_cache.lock().await;
@@ -87,7 +100,7 @@ pub async fn apply(
     let running = manager.get_running_agent_names().await;
     let running_set: HashSet<String> = running.iter().cloned().collect();
 
-    // 2. Start every desired agent that isn't already running. The spec
+    // 4. Start every desired agent that isn't already running. The spec
     //    is materialised from the wire target, not re-read from the store.
     for target in &targets {
         if running_set.contains(&target.name) {
@@ -110,7 +123,7 @@ pub async fn apply(
         }
     }
 
-    // 3. Stop any locally-running agent that is no longer desired. The
+    // 5. Stop any locally-running agent that is no longer desired. The
     //    manager-side stop runs unconditionally — leaving a runtime alive
     //    because the cache entry vanished would orphan an OS process. The
     //    upstream `agent.state{stopped}` frame is conditional on resolving

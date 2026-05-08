@@ -81,6 +81,32 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// Bulk cleanup: drop every `agent_sessions` row whose `agent_id` is
+    /// NOT in the provided keep-list. Called once per `bridge.target`
+    /// reconcile — handles three cases that the per-stop-event path
+    /// alone misses:
+    ///   1. Bridge restarts; an agent was removed from desired while
+    ///      offline. The stop loop never fires for it.
+    ///   2. Two reconciles arrive in quick succession with different
+    ///      sets — anything dropped between them is reaped here.
+    ///   3. First-ever connect with stale rows from a prior incarnation.
+    ///
+    /// An empty `keep` slice wipes the entire table (no agent is
+    /// desired right now).
+    pub fn delete_sessions_for_agents_not_in(&self, keep: &[String]) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        if keep.is_empty() {
+            conn.execute("DELETE FROM agent_sessions", [])?;
+            return Ok(());
+        }
+        let placeholders = std::iter::repeat_n("?", keep.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!("DELETE FROM agent_sessions WHERE agent_id NOT IN ({placeholders})");
+        conn.execute(&sql, rusqlite::params_from_iter(keep.iter()))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -151,6 +177,39 @@ mod tests {
             store.get_active_session("a1").unwrap().unwrap().session_id,
             "sess-3"
         );
+    }
+
+    #[test]
+    fn delete_sessions_for_agents_not_in_drops_unkept() {
+        // Bridge use: bulk cleanup at reconcile start. Two agents have
+        // sessions; the keep-list mentions only one — the other's rows
+        // are wiped, the kept one survives.
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bridge.db");
+        let store = Store::open_for_bridge(db_path.to_str().unwrap()).unwrap();
+        store
+            .record_session("keep-id", "sess-keep", "fake")
+            .unwrap();
+        store
+            .record_session("drop-id", "sess-drop", "fake")
+            .unwrap();
+        store
+            .delete_sessions_for_agents_not_in(&["keep-id".to_string()])
+            .unwrap();
+        assert!(store.get_active_session("keep-id").unwrap().is_some());
+        assert!(store.get_active_session("drop-id").unwrap().is_none());
+    }
+
+    #[test]
+    fn delete_sessions_for_agents_not_in_with_empty_keep_wipes_all() {
+        let dir = TempDir::new().unwrap();
+        let db_path = dir.path().join("bridge.db");
+        let store = Store::open_for_bridge(db_path.to_str().unwrap()).unwrap();
+        store.record_session("a", "sess-a", "fake").unwrap();
+        store.record_session("b", "sess-b", "fake").unwrap();
+        store.delete_sessions_for_agents_not_in(&[]).unwrap();
+        assert!(store.get_active_session("a").unwrap().is_none());
+        assert!(store.get_active_session("b").unwrap().is_none());
     }
 
     /// The bridge opens its store with `foreign_keys=OFF` so it can
