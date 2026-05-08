@@ -326,6 +326,8 @@ impl AgentManager {
 
         let forwarder = super::event_forwarder::spawn_event_forwarder(
             event_rx,
+            agent.id.clone(),
+            agent.runtime.clone(),
             self.activity_logs.clone(),
             self.trace_store.clone(),
             self.trace_tx.clone(),

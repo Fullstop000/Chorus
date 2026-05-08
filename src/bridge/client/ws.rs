@@ -93,14 +93,10 @@ const PENDING_CHATS_PER_AGENT: usize = 32;
 type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
 
 /// In-memory snapshot of the most recent `bridge.target` payload, indexed
-/// for O(1) lookups in either direction. Replaces the store's `agents`
-/// table as the spec/identity cache on the bridge side: `start_agent` no
-/// longer reads SQLite for the agent record, and chat/state handlers no
-/// longer read SQLite for name↔platform_id translation.
-///
-/// The store still receives FK-keepalive writes via `upsert_from_target`
-/// because `agent_sessions` and `decisions` foreign-key to `agents(id)`.
-/// See #145 for the session-storage refactor that drops those writes too.
+/// for O(1) lookups in either direction. The authoritative spec/identity
+/// view on the bridge side: `start_agent` reads the spec from here, not
+/// SQLite, and chat/state handlers translate name↔platform_id through
+/// it. The bridge's `agents` table is empty — see #145 for the design.
 #[derive(Default)]
 pub(super) struct TargetCache {
     by_agent_id: HashMap<String, AgentTargetIn>,

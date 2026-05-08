@@ -56,6 +56,21 @@ impl Store {
         })
     }
 
+    /// Open the store for the bridge runtime: `foreign_keys=OFF` so the
+    /// bridge can write `agent_sessions` rows without a corresponding
+    /// `agents` row. The bridge's local DB is a runtime-state cache, not
+    /// a normalized model — agent records live in-memory in the
+    /// reconcile loop's `TargetCache`. See #145 for the design.
+    pub fn open_for_bridge(path: &str) -> Result<Self> {
+        let conn = Connection::open(path)?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=OFF;")?;
+        Self::validate_supported_identity_schema(&conn)?;
+        Self::init_schema(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
     /// Lock the database connection, handling mutex poison gracefully.
     /// If the mutex is poisoned (from a previous panic), the lock is recovered
     /// and the operation proceeds. This avoids crashing the server on panics
