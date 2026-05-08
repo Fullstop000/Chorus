@@ -161,6 +161,36 @@ impl AgentManager {
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> anyhow::Result<()> {
+        let agent = self
+            .store
+            .get_agent(agent_name)?
+            .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
+        self.start_agent_inner(agent, wake_message, init_directive)
+            .await
+    }
+
+    /// Start an agent from a fully-materialized [`crate::store::agents::Agent`]
+    /// record without re-reading the store. Used by the bridge client so the
+    /// `bridge.target` payload can drive `start_agent` directly without first
+    /// going through SQLite as a cache. The resume path still reads
+    /// `agent_sessions` (keyed by `agent.id`); that table FKs to `agents(id)`
+    /// today, so the caller is responsible for ensuring the corresponding
+    /// row exists in the store. See #145 for the path to dropping that.
+    pub async fn start_agent_from_record(
+        &self,
+        agent: crate::store::agents::Agent,
+        init_directive: Option<String>,
+    ) -> anyhow::Result<()> {
+        self.start_agent_inner(agent, None, init_directive).await
+    }
+
+    async fn start_agent_inner(
+        &self,
+        agent: crate::store::agents::Agent,
+        wake_message: Option<ReceivedMessage>,
+        init_directive: Option<String>,
+    ) -> anyhow::Result<()> {
+        let agent_name = agent.name.as_str();
         // Already running? Inspect the existing handle's state — only
         // bail if it's truly live. Closed/Failed/Idle handles get evicted
         // so the recovery path can spin a fresh process. The eviction set
@@ -208,11 +238,6 @@ impl AgentManager {
                 task.abort();
             }
         }
-
-        let agent = self
-            .store
-            .get_agent(agent_name)?
-            .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
 
         let rt = AgentRuntime::parse(&agent.runtime)
             .ok_or_else(|| anyhow::anyhow!("Unknown runtime: {}", agent.runtime))?;

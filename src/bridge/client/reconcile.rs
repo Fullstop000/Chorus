@@ -1,17 +1,23 @@
 //! Reconcile a `bridge.target` frame against the locally-running agent set.
 //!
-//! On every target update: insert/update local records, start any newly
-//! desired agents, stop any that vanished from the target. Returns the
-//! `(name, platform_id)` pairs the caller should report upstream as
-//! `agent.state` frames.
+//! Each pass populates the in-memory [`super::ws::TargetCache`] (the
+//! authoritative spec/identity cache on the bridge), starts any newly
+//! desired agents, stops any that vanished. The store is still touched
+//! for FK keepalive (agents row writes/deletes) so `agent_sessions` and
+//! `decisions` writes don't violate FK constraints — see the session
+//! storage refactor issue for the path to dropping that too.
 
 use std::collections::HashSet;
+use std::sync::Arc;
+
+use tokio::sync::Mutex;
 
 use crate::agent::manager::AgentManager;
+use crate::store::agents::{Agent, AgentEnvVar};
 use crate::store::Store;
 
 use super::local_store::upsert_from_target;
-use super::ws::AgentTargetIn;
+use super::ws::{AgentTargetIn, TargetCache};
 
 /// Per-pass transition record: `(local_name, platform_agent_id)`. The
 /// platform_id is captured at reconcile time so callers don't need to
@@ -26,9 +32,41 @@ pub struct ReconcileOutcome {
     pub stopped: Vec<AgentTransition>,
 }
 
+/// Materialise an `AgentTargetIn` (wire payload) into an `Agent` (store
+/// row shape) without touching SQLite. The non-wire fields (`workspace_id`,
+/// `created_at`, `machine_id`) are filled with placeholders since the
+/// bridge does not consume them — `start_agent_from_record` reads only
+/// the fields the runtime spec needs.
+pub(super) fn target_to_agent(target: &AgentTargetIn) -> Agent {
+    Agent {
+        id: target.agent_id.clone(),
+        workspace_id: String::new(),
+        name: target.name.clone(),
+        display_name: target.display_name.clone(),
+        description: target.description.clone(),
+        system_prompt: target.system_prompt.clone(),
+        runtime: target.runtime.clone(),
+        model: target.model.clone(),
+        reasoning_effort: target.reasoning_effort.clone(),
+        machine_id: None,
+        env_vars: target
+            .env_vars
+            .iter()
+            .enumerate()
+            .map(|(i, e)| AgentEnvVar {
+                key: e.key.clone(),
+                value: e.value.clone(),
+                position: i as i64,
+            })
+            .collect(),
+        created_at: chrono::Utc::now(),
+    }
+}
+
 pub async fn apply(
     store: &Store,
     manager: &AgentManager,
+    targets_cache: &Arc<Mutex<TargetCache>>,
     targets: Vec<AgentTargetIn>,
 ) -> anyhow::Result<ReconcileOutcome> {
     let mut desired: HashSet<String> = HashSet::new();
@@ -36,21 +74,30 @@ pub async fn apply(
     let mut started = Vec::new();
     let mut stopped = Vec::new();
 
-    for target in &targets {
-        desired.insert(target.name.clone());
-        upsert_from_target(store, target)?;
+    // 1. Refresh the in-memory cache and the FK-keepalive rows for every
+    //    target. The cache is the source of truth for spec lookups; the
+    //    store rows exist only so `agent_sessions` / `decisions` FKs hold.
+    {
+        let mut cache = targets_cache.lock().await;
+        for target in &targets {
+            desired.insert(target.name.clone());
+            upsert_from_target(store, target)?;
+            cache.upsert(target.clone());
+        }
     }
 
     let running = manager.get_running_agent_names().await;
     let running_set: HashSet<String> = running.iter().cloned().collect();
 
-    // Start every desired agent that isn't already running.
+    // 2. Start every desired agent that isn't already running. The spec
+    //    is materialised from the wire target, not re-read from the store.
     for target in &targets {
         if running_set.contains(&target.name) {
             continue;
         }
+        let agent = target_to_agent(target);
         match manager
-            .start_agent(&target.name, None, target.init_directive.clone())
+            .start_agent_from_record(agent, target.init_directive.clone())
             .await
         {
             Ok(()) => {
@@ -65,17 +112,19 @@ pub async fn apply(
         }
     }
 
-    // Stop any locally-running agent that is no longer in the desired set.
-    // The manager-side stop runs unconditionally — leaving a runtime alive
-    // because the local DB row vanished early would orphan an OS process.
-    // The upstream `agent.state{stopped}` frame is conditional: skip it
-    // (with a debug log) when we can't resolve the platform_id, since
-    // there's nothing the platform can do with a nameless transition.
+    // 3. Stop any locally-running agent that is no longer desired. The
+    //    manager-side stop runs unconditionally — leaving a runtime alive
+    //    because the local row vanished early would orphan an OS process.
+    //    The upstream `agent.state{stopped}` frame is conditional on
+    //    resolving platform_id from the cache.
     for name in running.iter() {
         if desired.contains(name) {
             continue;
         }
-        let platform_id = store.get_agent(name)?.map(|a| a.id);
+        let platform_id = {
+            let mut cache = targets_cache.lock().await;
+            cache.forget_by_name(name).map(|t| t.agent_id)
+        };
         if let Err(e) = manager.stop_agent(name).await {
             tracing::warn!(agent = %name, err = %e, "stop_agent failed during reconcile");
         }
@@ -89,7 +138,7 @@ pub async fn apply(
             None => {
                 tracing::debug!(
                     agent = %name,
-                    "reconcile: stopped runtime had no local row; skipping upstream stop event"
+                    "reconcile: stopped runtime had no cache entry; skipping upstream stop event"
                 );
             }
         }
