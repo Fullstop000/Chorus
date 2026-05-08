@@ -13,7 +13,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::Mutex;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -22,8 +21,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::drivers::ProcessState;
 use crate::agent::manager::AgentManager;
+use crate::bridge::protocol::{
+    WireFrame, FRAME_AGENT_STATE, FRAME_BRIDGE_HELLO, FRAME_BRIDGE_TARGET, FRAME_CHAT_ACK,
+    FRAME_CHAT_MESSAGE_RECEIVED,
+};
 
-use super::local_store::AgentIdMap;
 use super::reconcile;
 use super::BridgeClientConfig;
 
@@ -56,7 +58,7 @@ impl InstanceCounter {
     }
 }
 
-const SUPPORTED_FRAMES: &[&str] = &["bridge.target", "chat.message.received"];
+const SUPPORTED_FRAMES: &[&str] = &[FRAME_BRIDGE_TARGET, FRAME_CHAT_MESSAGE_RECEIVED];
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Initial reconnect delay after a WS session ends. Doubles up to
@@ -70,69 +72,15 @@ const MAX_BACKOFF_MS: u64 = 30_000;
 /// today, so this is the polling tax.
 const STATE_PUSHER_INTERVAL: Duration = Duration::from_millis(500);
 
-#[derive(Debug, Serialize, Deserialize)]
-struct WireFrame {
-    v: u32,
-    #[serde(rename = "type")]
-    frame_type: String,
-    data: Value,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub(super) struct BridgeTargetIn {
-    pub target_agents: Vec<AgentTargetIn>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-pub(super) struct AgentTargetIn {
-    pub agent_id: String,
-    pub name: String,
-    pub display_name: String,
-    pub runtime: String,
-    pub model: String,
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub system_prompt: Option<String>,
-    #[serde(default)]
-    pub reasoning_effort: Option<String>,
-    #[serde(default)]
-    pub env_vars: Vec<EnvVarIn>,
-    #[serde(default)]
-    pub init_directive: Option<String>,
-    /// Reserved for a future slice that funnels a queued user prompt
-    /// through `bridge.target` so the bridge can deliver it on first turn.
-    /// Currently unused; kept on the deserializer so platforms emitting
-    /// the field don't fail-load on this bridge.
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub pending_prompt: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub(super) struct EnvVarIn {
-    pub key: String,
-    pub value: String,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-struct ChatMessageReceived {
-    agent_id: String,
-    #[serde(default)]
-    #[allow(dead_code)]
-    channel_id: Option<String>,
-    seq: i64,
-    #[serde(default)]
-    #[allow(dead_code)]
-    messages: Value,
-}
+// All wire payload types live in `crate::bridge::protocol` and are
+// re-exported here for the rest of the bridge client to consume.
+pub(super) use crate::bridge::protocol::{
+    AgentTarget as AgentTargetIn, BridgeTarget as BridgeTargetIn, ChatMessageReceived,
+};
 
 /// Cap on chats buffered per (still-unknown) platform agent_id. The
 /// bridge sees `chat.message.received` for a platform agent before
-/// `bridge.target` populates the id_map when the platform fires
+/// `bridge.target` creates the local agent row when the platform fires
 /// channel-join stream events ahead of the broadcast_target_update on
 /// agent create. Buffered frames replay on the next `bridge.target`
 /// once the agent is known. The cap stops a misrouted-chat storm from
@@ -141,8 +89,55 @@ const PENDING_CHATS_PER_AGENT: usize = 32;
 
 /// Per-platform-agent_id buffer of `chat.message.received` frames that
 /// arrived before the bridge knew about the agent. Drained on every
-/// `handle_target` reconcile that newly populates the id_map.
+/// `handle_target` that adds a new local agent row.
 type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
+
+/// In-memory snapshot of the most recent `bridge.target` payload, indexed
+/// for O(1) lookups in either direction. Replaces the store's `agents`
+/// table as the spec/identity cache on the bridge side: `start_agent` no
+/// longer reads SQLite for the agent record, and chat/state handlers no
+/// longer read SQLite for name↔platform_id translation.
+///
+/// The store still receives FK-keepalive writes via `upsert_from_target`
+/// because `agent_sessions` and `decisions` foreign-key to `agents(id)`.
+/// See #145 for the session-storage refactor that drops those writes too.
+#[derive(Default)]
+pub(super) struct TargetCache {
+    by_agent_id: HashMap<String, AgentTargetIn>,
+    name_to_id: HashMap<String, String>,
+}
+
+impl TargetCache {
+    pub(super) fn upsert(&mut self, target: AgentTargetIn) {
+        if let Some(prev) = self.by_agent_id.get(&target.agent_id) {
+            // If this agent_id was renamed, drop the stale name index.
+            if prev.name != target.name {
+                self.name_to_id.remove(&prev.name);
+            }
+        }
+        self.name_to_id
+            .insert(target.name.clone(), target.agent_id.clone());
+        self.by_agent_id.insert(target.agent_id.clone(), target);
+    }
+
+    pub(super) fn forget_by_name(&mut self, name: &str) -> Option<AgentTargetIn> {
+        let id = self.name_to_id.remove(name)?;
+        self.by_agent_id.remove(&id)
+    }
+
+    pub(super) fn name_for_agent_id(&self, agent_id: &str) -> Option<&str> {
+        self.by_agent_id.get(agent_id).map(|t| t.name.as_str())
+    }
+
+    pub(super) fn agent_id_for_name(&self, name: &str) -> Option<&str> {
+        self.name_to_id.get(name).map(String::as_str)
+    }
+
+    pub(super) fn get_by_name(&self, name: &str) -> Option<&AgentTargetIn> {
+        let id = self.name_to_id.get(name)?;
+        self.by_agent_id.get(id)
+    }
+}
 
 /// Shared session-scoped state passed to every frame handler. All fields
 /// are `Arc`-backed (or `Sender`-cloneable), so `Clone` is cheap and lets
@@ -153,9 +148,9 @@ type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
 struct SessionCtx {
     store: Arc<crate::store::Store>,
     manager: Arc<AgentManager>,
-    id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
     pending_chats: PendingChats,
+    targets: Arc<Mutex<TargetCache>>,
     state_tx: tokio::sync::mpsc::Sender<String>,
 }
 
@@ -178,7 +173,7 @@ async fn send_agent_state(
 ) {
     queue_frame(
         state_tx,
-        "agent.state",
+        FRAME_AGENT_STATE,
         json!({
             "agent_id": platform_id,
             "state": state,
@@ -198,7 +193,7 @@ async fn send_chat_ack(
 ) {
     queue_frame(
         state_tx,
-        "chat.ack",
+        FRAME_CHAT_ACK,
         json!({
             "agent_id": platform_id,
             "last_seq": last_seq,
@@ -244,9 +239,9 @@ pub async fn run_ws_client_loop(
     manager: Arc<AgentManager>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    let id_map = Arc::new(Mutex::new(AgentIdMap::default()));
     let counter = Arc::new(InstanceCounter::default());
     let pending_chats: PendingChats = Arc::new(Mutex::new(HashMap::new()));
+    let targets = Arc::new(Mutex::new(TargetCache::default()));
 
     let mut backoff_ms: u64 = INITIAL_BACKOFF_MS;
     loop {
@@ -256,15 +251,18 @@ pub async fn run_ws_client_loop(
 
         // Clear stale pending chats on each reconnect: the platform will
         // re-emit anything we still need on its next push, and chats from
-        // before the disconnect are already on the platform side.
+        // before the disconnect are already on the platform side. The
+        // targets cache is preserved — if the platform's view hasn't
+        // changed, we want the bridge to keep serving the same set; the
+        // first `bridge.target` after reconnect refreshes any drift.
         pending_chats.lock().await.clear();
 
         match run_one_session(
             &cfg,
             manager.clone(),
-            id_map.clone(),
             counter.clone(),
             pending_chats.clone(),
+            targets.clone(),
             shutdown.clone(),
         )
         .await
@@ -288,16 +286,16 @@ pub async fn run_ws_client_loop(
 async fn run_one_session(
     cfg: &BridgeClientConfig,
     manager: Arc<AgentManager>,
-    id_map: Arc<Mutex<AgentIdMap>>,
     counter: Arc<InstanceCounter>,
     pending_chats: PendingChats,
+    targets: Arc<Mutex<TargetCache>>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
-    // The session-level state (id_map, counter, pending_chats) is owned by
+    // The session-level state (counter, pending_chats, targets) is owned by
     // run_ws_client_loop and reused across reconnects so a brief drop
-    // doesn't lose pid bookkeeping. The state_tx channel is per-session —
-    // we re-create it here and bundle into a SessionCtx after the
-    // handshake.
+    // doesn't lose pid bookkeeping or the desired-state snapshot. The
+    // state_tx channel is per-session — we re-create it here and bundle
+    // into a SessionCtx after the handshake.
     let mut request = cfg.platform_ws.clone().into_client_request()?;
     if let Some(token) = cfg.token.as_deref() {
         let header_value = format!("Bearer {token}");
@@ -311,13 +309,11 @@ async fn run_one_session(
     let (ws_stream, _) = tokio_tungstenite::connect_async(request).await?;
     let (mut write, mut read) = ws_stream.split();
 
-    // 1. Send bridge.hello with currently-known agents (borrows the
-    // session state by reference; we move the state into SessionCtx
-    // below).
-    let agents_alive = build_agents_alive(&manager, &id_map, &counter).await;
+    // 1. Send bridge.hello with currently-known agents.
+    let agents_alive = build_agents_alive(&manager, &targets, &counter).await;
     let hello = WireFrame {
         v: 1,
-        frame_type: "bridge.hello".into(),
+        frame_type: FRAME_BRIDGE_HELLO.into(),
         data: json!({
             "machine_id": cfg.machine_id,
             "bridge_version": BRIDGE_VERSION,
@@ -337,9 +333,9 @@ async fn run_one_session(
     let ctx = SessionCtx {
         store: cfg.store.clone(),
         manager,
-        id_map,
         counter,
         pending_chats,
+        targets,
         state_tx,
     };
 
@@ -387,7 +383,7 @@ async fn run_one_session(
                             }
                         };
                         match frame.frame_type.as_str() {
-                            "bridge.target" => {
+                            FRAME_BRIDGE_TARGET => {
                                 let target: BridgeTargetIn = match serde_json::from_value(frame.data) {
                                     Ok(t) => t,
                                     Err(e) => {
@@ -400,7 +396,7 @@ async fn run_one_session(
                                     handle_target(&ctx, target).await;
                                 }));
                             }
-                            "chat.message.received" => {
+                            FRAME_CHAT_MESSAGE_RECEIVED => {
                                 let payload: ChatMessageReceived = match serde_json::from_value(frame.data) {
                                     Ok(p) => p,
                                     Err(e) => {
@@ -440,14 +436,17 @@ async fn run_one_session(
 
 async fn build_agents_alive(
     manager: &Arc<AgentManager>,
-    id_map: &Arc<Mutex<AgentIdMap>>,
+    targets: &Arc<Mutex<TargetCache>>,
     counter: &Arc<InstanceCounter>,
 ) -> Vec<Value> {
     let names = manager.get_running_agent_names().await;
-    let id_map = id_map.lock().await;
+    let cache = targets.lock().await;
     let mut out = Vec::with_capacity(names.len());
     for name in names {
-        let Some(platform_id) = id_map.platform_id_for(&name).map(str::to_owned) else {
+        let Some(platform_id) = cache.agent_id_for_name(&name).map(str::to_owned) else {
+            // Agent is running locally but no longer in the desired-state
+            // snapshot — happens transiently on first reconcile after
+            // reconnect. Skip; the next bridge.target restores it.
             continue;
         };
         let pid = counter.current(&name).await;
@@ -464,21 +463,19 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
     let target_agents = target.target_agents;
     let known_platform_ids: Vec<String> =
         target_agents.iter().map(|a| a.agent_id.clone()).collect();
-    let mut id_map_guard = ctx.id_map.lock().await;
     let outcome =
-        match reconcile::apply(&ctx.store, &ctx.manager, &mut id_map_guard, target_agents).await {
+        match reconcile::apply(&ctx.store, &ctx.manager, &ctx.targets, target_agents).await {
             Ok(o) => o,
             Err(e) => {
                 tracing::error!(err = %e, "bridge: reconcile failed");
                 return;
             }
         };
-    drop(id_map_guard);
 
     // Replay any chats that arrived before this reconcile populated the
-    // id_map. We only drain entries for platform_ids that are now in the
-    // target — others remain buffered (or stay until they age out via
-    // reconnect). Replays are dispatched as detached tasks so this
+    // targets cache. We only drain entries for platform_ids that are now
+    // in the target — others remain buffered (or stay until they age out
+    // via reconnect). Replays are dispatched as detached tasks so this
     // handler can return to the select loop quickly.
     let replays: Vec<ChatMessageReceived> = {
         let mut buf = ctx.pending_chats.lock().await;
@@ -497,46 +494,53 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
         });
     }
 
-    for name in outcome.started {
-        let platform_id = match ctx.id_map.lock().await.platform_id_for(&name) {
-            Some(id) => id.to_string(),
-            None => continue,
-        };
-        let pid = ctx.counter.allocate(&name).await;
-        send_agent_state(&ctx.state_tx, &platform_id, "started", pid).await;
+    for transition in outcome.started {
+        let pid = ctx.counter.allocate(&transition.name).await;
+        send_agent_state(&ctx.state_tx, &transition.platform_id, "started", pid).await;
     }
-    for name in outcome.stopped {
-        let platform_id = match ctx.id_map.lock().await.platform_id_for(&name) {
-            Some(id) => id.to_string(),
-            None => continue,
-        };
-        let pid = ctx.counter.current(&name).await;
-        ctx.counter.forget(&name).await;
-        send_agent_state(&ctx.state_tx, &platform_id, "stopped", pid).await;
+    for transition in outcome.stopped {
+        let pid = ctx.counter.current(&transition.name).await;
+        ctx.counter.forget(&transition.name).await;
+        send_agent_state(&ctx.state_tx, &transition.platform_id, "stopped", pid).await;
     }
 }
 
 async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
+    // Hold the pending_chats lock across the targets-cache check so
+    // handle_target's drain can never miss a chat that's about to be
+    // buffered. Without this, the sequence (chat: cache miss) → (target:
+    // populate cache + drain empty) → (chat: lock + push) leaves the
+    // chat sitting in the buffer until the next reconcile.
+    //
+    // Lock ordering: pending_chats (tokio async) then targets (tokio
+    // async, brief). handle_target acquires them in the opposite order
+    // (targets via reconcile::apply, then pending_chats); both locks are
+    // brief, so there's no interlock — they serialize on whichever is
+    // contended first.
     let name = {
-        let map = ctx.id_map.lock().await;
-        map.name_for(&payload.agent_id).map(str::to_owned)
-    };
-    let Some(name) = name else {
-        // Stash for replay on the next handle_target that knows this
-        // platform_id. Cap per-agent so a misrouted-chat storm can't
-        // pin unbounded memory.
         let mut buf = ctx.pending_chats.lock().await;
-        let queue = buf.entry(payload.agent_id.clone()).or_default();
-        if queue.len() >= PENDING_CHATS_PER_AGENT {
-            queue.pop_front();
+        match ctx
+            .targets
+            .lock()
+            .await
+            .name_for_agent_id(&payload.agent_id)
+            .map(str::to_owned)
+        {
+            Some(name) => name,
+            None => {
+                let queue = buf.entry(payload.agent_id.clone()).or_default();
+                if queue.len() >= PENDING_CHATS_PER_AGENT {
+                    queue.pop_front();
+                }
+                queue.push_back(payload.clone());
+                tracing::debug!(
+                    agent_id = %payload.agent_id,
+                    buffered = queue.len(),
+                    "bridge: chat arrived before target — buffered for replay"
+                );
+                return;
+            }
         }
-        queue.push_back(payload.clone());
-        tracing::debug!(
-            agent_id = %payload.agent_id,
-            buffered = queue.len(),
-            "bridge: chat arrived before target — buffered for replay"
-        );
-        return;
     };
 
     let process_state = ctx.manager.process_state(&name).await;
@@ -545,7 +549,19 @@ async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
             ctx.manager.notify_agent(&name).await
         }
         _ => {
-            let r = ctx.manager.start_agent(&name, None, None).await;
+            // Wake the agent. Pull the spec from the in-memory targets
+            // cache so the manager doesn't need to re-read the store.
+            let target_clone = ctx.targets.lock().await.get_by_name(&name).cloned();
+            let Some(target) = target_clone else {
+                tracing::warn!(
+                    agent = %name,
+                    agent_id = %payload.agent_id,
+                    "bridge: targets cache missing; cannot start agent"
+                );
+                return;
+            };
+            let agent = super::reconcile::target_to_agent(&target);
+            let r = ctx.manager.start_agent_from_record(agent, None).await;
             if r.is_ok() {
                 let pid = ctx.counter.allocate(&name).await;
                 send_agent_state(&ctx.state_tx, &payload.agent_id, "started", pid).await;
@@ -581,11 +597,13 @@ async fn agent_state_pusher(ctx: SessionCtx, shutdown: CancellationToken) {
             if last.get(name).map(String::as_str) == Some(label) {
                 continue;
             }
-            let platform_id = {
-                let map = ctx.id_map.lock().await;
-                map.platform_id_for(name).map(str::to_owned)
-            };
-            let Some(platform_id) = platform_id else {
+            let Some(platform_id) = ctx
+                .targets
+                .lock()
+                .await
+                .agent_id_for_name(name)
+                .map(str::to_owned)
+            else {
                 continue;
             };
             let pid = ctx.counter.current(name).await;

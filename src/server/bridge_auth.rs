@@ -1,6 +1,6 @@
 //! Bridge bearer-token authentication.
 //!
-//! Two guarantees needed before the bridge protocol is safe past loopback:
+//! Three guarantees needed before the bridge protocol is safe past loopback:
 //!
 //! 1. **Bearer token required on WS upgrade.** Anyone reaching
 //!    `/api/bridge/ws` with no `Authorization` header gets `401`.
@@ -9,6 +9,10 @@
 //!    claim an arbitrary `machine_id` in `bridge.hello`. If the hello
 //!    payload's `machine_id` doesn't match the token's binding, the
 //!    connection is closed.
+//! 3. **`/internal/agent/<id>/*` is scoped to the token's `machine_id`.**
+//!    A valid token alone is not enough — the agent named in the URL
+//!    must be owned by the same `machine_id` the token is bound to.
+//!    Prevents one bridge's token from acting on another bridge's agents.
 //!
 //! Tokens are configured via the `CHORUS_BRIDGE_TOKENS` env var:
 //!
@@ -31,8 +35,6 @@
 //!   - Token rotation/revocation. Tokens are static for the process
 //!     lifetime; restart `chorus serve` to roll them.
 //!   - Anomaly detection (IP flapping, rate-limiting).
-//!   - Auth on `/internal/agent/*`. Those handlers remain loopback-only;
-//!     extending them to remote callers would need its own auth story.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -175,9 +177,11 @@ impl BridgeAuth {
 /// Axum middleware that protects `/internal/agent/*` (and any other
 /// route it's applied to) the same way as `handle_bridge_ws`: when
 /// tokens are configured, require a valid `Authorization: Bearer <t>`
-/// header and reject with 401 otherwise. When tokens are unset (the
-/// loopback default and existing test harness mode), the request
-/// passes through unchanged.
+/// header. With a valid token, the middleware additionally verifies
+/// that the `agent_id` in the URL is owned by the token's bound
+/// `machine_id` — preventing one bridge's token from acting on another
+/// bridge's agents. When tokens are unset (loopback default), the
+/// request passes through unchanged.
 pub async fn require_bridge_auth(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -185,7 +189,58 @@ pub async fn require_bridge_auth(
     next: Next,
 ) -> Response {
     match state.bridge_auth.check(&headers) {
-        AuthOutcome::Disabled | AuthOutcome::Allowed { .. } => next.run(req).await,
+        AuthOutcome::Disabled => next.run(req).await,
+        AuthOutcome::Allowed {
+            expected_machine_id,
+        } => {
+            let path = req.uri().path().to_string();
+            match agent_id_from_internal_path(&path) {
+                Some(agent_id) => {
+                    let owner = match state.store.get_agent_by_id(agent_id, false) {
+                        Ok(Some(agent)) => agent.machine_id,
+                        Ok(None) => {
+                            warn!(
+                                path = %path,
+                                token_machine_id = %expected_machine_id,
+                                "bridge_auth: rejecting /internal request — agent_id not in store"
+                            );
+                            return (StatusCode::FORBIDDEN, "agent not found").into_response();
+                        }
+                        Err(err) => {
+                            warn!(
+                                path = %path,
+                                error = %err,
+                                "bridge_auth: rejecting /internal request — store lookup failed"
+                            );
+                            return (StatusCode::INTERNAL_SERVER_ERROR, "store error")
+                                .into_response();
+                        }
+                    };
+                    if owner.as_deref() != Some(expected_machine_id.as_str()) {
+                        warn!(
+                            path = %path,
+                            token_machine_id = %expected_machine_id,
+                            agent_owner = ?owner,
+                            "bridge_auth: rejecting /internal request — token's machine_id does not own this agent"
+                        );
+                        return (StatusCode::FORBIDDEN, "token not authorized for this agent")
+                            .into_response();
+                    }
+                    next.run(req).await
+                }
+                None => {
+                    // Path doesn't match the expected `/internal/agent/<id>/...`
+                    // shape. The route_layer should only attach this middleware
+                    // to agent-scoped routes, so reaching here means a routing
+                    // wiring change. Fail closed.
+                    warn!(
+                        path = %path,
+                        "bridge_auth: rejecting /internal request — no agent_id in path"
+                    );
+                    (StatusCode::FORBIDDEN, "no agent scope in path").into_response()
+                }
+            }
+        }
         AuthOutcome::Rejected => {
             warn!(
                 path = %req.uri().path(),
@@ -193,6 +248,20 @@ pub async fn require_bridge_auth(
             );
             (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response()
         }
+    }
+}
+
+/// Extract the `<agent_id>` segment from an `/internal/agent/<id>/...`
+/// path (the middleware is wired to that route shape). Returns `None`
+/// if the path doesn't match. The returned reference borrows from the
+/// input.
+fn agent_id_from_internal_path(path: &str) -> Option<&str> {
+    let after = path.split_once("/agent/")?.1;
+    let segment = after.split('/').next()?;
+    if segment.is_empty() {
+        None
+    } else {
+        Some(segment)
     }
 }
 

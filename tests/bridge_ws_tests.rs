@@ -70,8 +70,9 @@ async fn read_json_frame(
 async fn bridge_ws_hello_returns_target_with_agent_records() {
     let (base_url, _http_url, store) = start_test_server().await;
 
-    // Seed two agents so we can verify `target_agents` is populated and
-    // ordered consistently.
+    // Seed two agents bound to this bridge's machine_id so they appear
+    // in its target. Platform-local (NULL machine_id) agents are not
+    // sent to any bridge — every agent has exactly one owner.
     store
         .create_agent_record(&AgentRecordUpsert {
             name: "alpha-bot",
@@ -81,7 +82,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: Some("test-machine-001"),
             env_vars: &[],
         })
         .unwrap();
@@ -94,7 +95,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "codex",
             model: "gpt-5",
             reasoning_effort: Some("medium"),
-            machine_id: None,
+            machine_id: Some("test-machine-001"),
             env_vars: &[],
         })
         .unwrap();
@@ -249,8 +250,8 @@ async fn bridge_ws_pushes_target_when_agent_created_via_http() {
         0
     );
 
-    // Create an agent over HTTP — this should trigger a pushed
-    // bridge.target onto the open WS.
+    // Create an agent over HTTP bound to this bridge — this should trigger
+    // a pushed bridge.target onto the open WS.
     let client = reqwest::Client::new();
     let resp = client
         .post(format!("{http_url}/api/agents"))
@@ -259,7 +260,8 @@ async fn bridge_ws_pushes_target_when_agent_created_via_http() {
             "display_name": "Push Bot",
             "systemPrompt": "pushed",
             "runtime": "claude",
-            "model": "sonnet"
+            "model": "sonnet",
+            "machineId": "slice2-machine"
         }))
         .send()
         .await
@@ -321,7 +323,8 @@ async fn bridge_ws_accepts_agent_state_frame_without_disconnecting() {
             "name": "after-state-bot",
             "display_name": "After State Bot",
             "runtime": "claude",
-            "model": "sonnet"
+            "model": "sonnet",
+            "machineId": "agent-state-machine"
         }))
         .send()
         .await
@@ -403,7 +406,8 @@ async fn bridge_ws_handles_stop_start_race_without_breaking_session() {
             "name": "post-race-bot",
             "display_name": "Post Race Bot",
             "runtime": "claude",
-            "model": "sonnet"
+            "model": "sonnet",
+            "machineId": "race-machine"
         }))
         .send()
         .await
@@ -422,6 +426,10 @@ async fn bridge_ws_handles_stop_start_race_without_breaking_session() {
 
 #[tokio::test]
 async fn bridge_ws_pushes_to_multiple_connected_bridges() {
+    // Each connected bridge gets its own target, scoped to the agents
+    // it owns. This verifies the per-bridge frame-build mechanism: a
+    // single CRUD walks every connection and each receives its
+    // ownership-filtered view.
     let (ws_url, http_url, _store) = start_test_server().await;
 
     let (mut socket_a, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
@@ -436,33 +444,79 @@ async fn bridge_ws_pushes_to_multiple_connected_bridges() {
     send_hello(&mut socket_b, "machine-b").await;
     let _ = read_json_frame(&mut socket_b).await; // drain initial
 
-    // Trigger one CRUD; both bridges should see the same pushed target.
+    // Create two agents — one bound to each bridge. Each CRUD pushes to
+    // both connections; each connection sees only its own owner-bound
+    // agents in the resulting target.
     let client = reqwest::Client::new();
-    client
-        .post(format!("{http_url}/api/agents"))
-        .json(&json!({
-            "name": "shared-bot",
-            "display_name": "Shared Bot",
-            "runtime": "claude",
-            "model": "sonnet"
-        }))
-        .send()
-        .await
-        .expect("POST /api/agents")
-        .error_for_status()
-        .unwrap();
+    for (name, machine_id) in [("alpha-bot", "machine-a"), ("beta-bot", "machine-b")] {
+        client
+            .post(format!("{http_url}/api/agents"))
+            .json(&json!({
+                "name": name,
+                "display_name": name,
+                "runtime": "claude",
+                "model": "sonnet",
+                "machineId": machine_id
+            }))
+            .send()
+            .await
+            .expect("POST /api/agents")
+            .error_for_status()
+            .unwrap();
+    }
 
-    let pushed_a = read_json_frame(&mut socket_a).await;
-    let pushed_b = read_json_frame(&mut socket_b).await;
-    assert_eq!(pushed_a["type"], "bridge.target");
-    assert_eq!(pushed_b["type"], "bridge.target");
-    assert_eq!(
-        pushed_a["data"]["target_agents"].as_array().unwrap().len(),
-        1
+    // Each CRUD broadcasts a per-bridge scoped target frame; agent
+    // creation also emits a `member_joined` chat frame for #all that
+    // arrives interleaved on the owning bridge's socket. Read until we
+    // observe two `bridge.target` frames per socket, then assert the
+    // last-seen target reflects ownership partitioning.
+    async fn drain_until_two_targets(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Value {
+        let mut last_target: Option<Value> = None;
+        let mut targets_seen = 0;
+        for _ in 0..8 {
+            let frame = read_json_frame(socket).await;
+            if frame["type"] == "bridge.target" {
+                targets_seen += 1;
+                last_target = Some(frame);
+                if targets_seen >= 2 {
+                    break;
+                }
+            }
+        }
+        last_target.expect("expected at least one bridge.target frame after both creates")
+    }
+    let last_a = drain_until_two_targets(&mut socket_a).await;
+    let last_b = drain_until_two_targets(&mut socket_b).await;
+
+    // Platform suffixes agent names with a `-hex4` slug (see
+    // create_and_start_agent), so assert on prefix.
+    let names_a: Vec<String> = last_a["data"]["target_agents"]
+        .as_array()
+        .unwrap_or_else(|| panic!("socket_a final frame missing target_agents: {last_a}"))
+        .iter()
+        .map(|o| o["name"].as_str().unwrap().to_string())
+        .collect();
+    let names_b: Vec<String> = last_b["data"]["target_agents"]
+        .as_array()
+        .unwrap_or_else(|| panic!("socket_b final frame missing target_agents: {last_b}"))
+        .iter()
+        .map(|o| o["name"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(names_a.len(), 1, "machine-a sees exactly one agent");
+    assert!(
+        names_a[0].starts_with("alpha-bot"),
+        "machine-a sees alpha-bot, got {}",
+        names_a[0]
     );
-    assert_eq!(
-        pushed_b["data"]["target_agents"].as_array().unwrap().len(),
-        1
+    assert_eq!(names_b.len(), 1, "machine-b sees exactly one agent");
+    assert!(
+        names_b[0].starts_with("beta-bot"),
+        "machine-b sees beta-bot, got {}",
+        names_b[0]
     );
 }
 
@@ -608,7 +662,7 @@ async fn start_test_server_with_event_bus_handle() -> (
 async fn bridge_ws_pushes_chat_message_received_when_agent_member_gets_message() {
     let (ws_url, store, event_bus, alice_id) = start_test_server_with_event_bus_handle().await;
 
-    // Seed an agent and join it to #general.
+    // Seed an agent bound to this bridge's machine_id, joined to #general.
     let agent_id = store
         .create_agent_record(&AgentRecordUpsert {
             name: "chat-listener",
@@ -618,7 +672,7 @@ async fn bridge_ws_pushes_chat_message_received_when_agent_member_gets_message()
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: Some("chat-machine"),
             env_vars: &[],
         })
         .unwrap();
@@ -671,6 +725,150 @@ async fn bridge_ws_pushes_chat_message_received_when_agent_member_gets_message()
     );
 }
 
+/// Two bridges connected concurrently, each owning one agent in the
+/// same channel. A single human chat must reach BOTH agents — but each
+/// agent's chat frame must arrive ONLY on its owning bridge. This is the
+/// invariant the NULL-machine_id fanout used to violate.
+#[tokio::test]
+async fn bridge_ws_two_machines_chat_isolation() {
+    let (ws_url, store, event_bus, alice_id) = start_test_server_with_event_bus_handle().await;
+
+    // Seed two agents — one per machine — both joined to #general.
+    let agent_a_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "agent-on-a",
+            display_name: "Agent on A",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-a"),
+            env_vars: &[],
+        })
+        .unwrap();
+    let agent_b_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "agent-on-b",
+            display_name: "Agent on B",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-b"),
+            env_vars: &[],
+        })
+        .unwrap();
+    harness::join_channel_silent(&store, "general", &agent_a_id, "agent");
+    harness::join_channel_silent(&store, "general", &agent_b_id, "agent");
+
+    // Connect both bridges and drain initial targets. machine-a's
+    // initial target lists only agent-on-a; machine-b's only agent-on-b.
+    let (mut sock_a, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade A");
+    send_hello(&mut sock_a, "machine-a").await;
+    let initial_a = read_json_frame(&mut sock_a).await;
+    assert_eq!(initial_a["type"], "bridge.target");
+    let init_a_ids: Vec<&str> = initial_a["data"]["target_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["agent_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(init_a_ids, vec![agent_a_id.as_str()], "machine-a target");
+
+    let (mut sock_b, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .expect("WS upgrade B");
+    send_hello(&mut sock_b, "machine-b").await;
+    let initial_b = read_json_frame(&mut sock_b).await;
+    let init_b_ids: Vec<&str> = initial_b["data"]["target_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["agent_id"].as_str().unwrap())
+        .collect();
+    assert_eq!(init_b_ids, vec![agent_b_id.as_str()], "machine-b target");
+
+    // Human posts to #general. The platform forwarder should route ONE
+    // chat frame to each bridge — each carrying ONLY that bridge's agent
+    // as the recipient.
+    let (_msg_id, ev) = store
+        .create_message(chorus::store::messages::CreateMessage {
+            channel_name: "general",
+            sender_id: &alice_id,
+            sender_type: chorus::store::messages::SenderType::Human,
+            content: "hello agents",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap();
+    if let Some(event) = ev {
+        event_bus.publish_stream(event);
+    }
+
+    /// Read frames on `socket` until we see a chat.message.received,
+    /// returning its inner agent_id. Times out after 6 polls.
+    async fn next_chat_agent_id(
+        socket: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Option<String> {
+        for _ in 0..6 {
+            let frame = match timeout(Duration::from_millis(800), read_json_frame(socket)).await {
+                Ok(f) => f,
+                Err(_) => return None,
+            };
+            if frame["type"] == "chat.message.received" {
+                return frame["data"]["agent_id"].as_str().map(str::to_owned);
+            }
+        }
+        None
+    }
+
+    let chat_a_recipient = next_chat_agent_id(&mut sock_a).await;
+    let chat_b_recipient = next_chat_agent_id(&mut sock_b).await;
+
+    assert_eq!(
+        chat_a_recipient.as_deref(),
+        Some(agent_a_id.as_str()),
+        "machine-a's bridge receives chat for agent-on-a only"
+    );
+    assert_eq!(
+        chat_b_recipient.as_deref(),
+        Some(agent_b_id.as_str()),
+        "machine-b's bridge receives chat for agent-on-b only"
+    );
+
+    // Cross-check: machine-a must NEVER have seen a chat for agent-on-b
+    // (and vice versa). The recipient assertions above already enforce
+    // this for the first frame seen, but drain a second time with a
+    // tight timeout to catch any cross-routed leakage.
+    let leak_a = match timeout(Duration::from_millis(500), read_json_frame(&mut sock_a)).await {
+        Ok(f) if f["type"] == "chat.message.received" => {
+            f["data"]["agent_id"].as_str().map(str::to_owned)
+        }
+        _ => None,
+    };
+    let leak_b = match timeout(Duration::from_millis(500), read_json_frame(&mut sock_b)).await {
+        Ok(f) if f["type"] == "chat.message.received" => {
+            f["data"]["agent_id"].as_str().map(str::to_owned)
+        }
+        _ => None,
+    };
+    assert!(
+        leak_a.is_none(),
+        "machine-a leaked an extra chat frame: {leak_a:?}"
+    );
+    assert!(
+        leak_b.is_none(),
+        "machine-b leaked an extra chat frame: {leak_b:?}"
+    );
+}
+
 #[tokio::test]
 async fn bridge_ws_chat_ack_advances_per_agent_cursor() {
     // This test exercises the wire shape: bridge → chat.ack frame →
@@ -720,11 +918,12 @@ async fn bridge_ws_chat_ack_advances_per_agent_cursor() {
 async fn bridge_ws_target_scoped_by_agent_machine_id() {
     let (ws_url, _http_url, store) = start_test_server().await;
 
-    // Owner-less agent (machine_id NULL) — visible to every bridge.
+    // Platform-local agent (machine_id NULL) — invisible to every
+    // bridge; runs in chorus serve's own AgentManager.
     store
         .create_agent_record(&AgentRecordUpsert {
-            name: "shared-bot",
-            display_name: "Shared Bot",
+            name: "local-bot",
+            display_name: "Local Bot",
             description: None,
             system_prompt: None,
             runtime: "claude",
@@ -763,47 +962,44 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
         })
         .unwrap();
 
-    // Bridge A connects → should see shared-bot + alpha-only.
+    // Bridge A connects → only alpha-only. local-bot is platform-local.
     let (mut sock_a, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
         .await
         .expect("WS upgrade A");
     send_hello(&mut sock_a, "machine-a").await;
     let target_a = read_json_frame(&mut sock_a).await;
     assert_eq!(target_a["type"], "bridge.target");
-    let names_a: Vec<&str> = target_a["data"]["target_agents"]
+    let names_a: Vec<String> = target_a["data"]["target_agents"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|o| {
-            // get_agents() ordering is by name; sniff display_name slot for the bot.
-            o["agent_id"].as_str().unwrap()
-        })
-        .collect();
-    let runtimes_a: Vec<&str> = target_a["data"]["target_agents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|o| o["runtime"].as_str().unwrap())
+        .map(|o| o["name"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(
-        names_a.len(),
-        2,
-        "machine-a sees shared-bot + alpha-only (not beta-only); got runtimes {runtimes_a:?}"
+        names_a,
+        vec!["alpha-only".to_string()],
+        "machine-a sees alpha-only only"
     );
 
-    // Bridge B connects → should see shared-bot + beta-only.
+    // Bridge B connects → only beta-only.
     let (mut sock_b, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
         .await
         .expect("WS upgrade B");
     send_hello(&mut sock_b, "machine-b").await;
     let target_b = read_json_frame(&mut sock_b).await;
+    let names_b: Vec<String> = target_b["data"]["target_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["name"].as_str().unwrap().to_string())
+        .collect();
     assert_eq!(
-        target_b["data"]["target_agents"].as_array().unwrap().len(),
-        2,
-        "machine-b sees shared-bot + beta-only (not alpha-only)"
+        names_b,
+        vec!["beta-only".to_string()],
+        "machine-b sees beta-only only"
     );
 
-    // Bridge with unknown machine_id → only sees the owner-less agent.
+    // Bridge with no matching agents → empty target.
     let (mut sock_z, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
         .await
         .expect("WS upgrade Z");
@@ -811,8 +1007,8 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
     let target_z = read_json_frame(&mut sock_z).await;
     assert_eq!(
         target_z["data"]["target_agents"].as_array().unwrap().len(),
-        1,
-        "unknown machine sees only NULL-owner agent"
+        0,
+        "machine with no bound agents sees an empty target"
     );
 }
 
@@ -864,7 +1060,7 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: Some("machine-x"),
             env_vars: &[],
         })
         .unwrap();
@@ -895,8 +1091,7 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
         .unwrap();
     assert_eq!(resp.status(), 401, "wrong token should 401");
 
-    // Correct token → 200 (or whatever the handler normally returns;
-    // the point is the middleware lets it through).
+    // Correct token AND token's machine_id owns the agent → 200.
     let resp = client
         .get(format!("{http_url}/internal/agent/{agent_id}/server"))
         .header("Authorization", "Bearer internal-tok")
@@ -906,6 +1101,101 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
     assert_eq!(
         resp.status(),
         200,
-        "correct token should be authorized to reach the handler"
+        "correct token bound to the agent's owner should pass"
+    );
+}
+
+/// A valid token alone is not enough — its bound `machine_id` must also
+/// own the agent_id in the URL. Without this check, a leaked token from
+/// machine-a could act on machine-b's agents (cross-bridge escape).
+#[tokio::test]
+async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
+    let store = Arc::new(Store::open(":memory:").unwrap());
+    store
+        .create_channel(
+            Store::DEFAULT_SYSTEM_CHANNEL,
+            None,
+            ChannelType::System,
+            None,
+        )
+        .unwrap();
+    // Agent owned by machine-y.
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "y-only-bot",
+            display_name: "Y-only Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: Some("machine-y"),
+            env_vars: &[],
+        })
+        .unwrap();
+    // Tokens: one bound to machine-x, one to machine-y.
+    let auth = BridgeAuth::from_pairs([("x-tok", "machine-x"), ("y-tok", "machine-y")]);
+    let router = harness::build_router_with_bridge_auth(store.clone(), auth);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let http_url = format!("http://{addr}");
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let client = reqwest::Client::new();
+
+    // x-tok is valid but its bound machine_id (machine-x) does not own
+    // y-only-bot (which is machine-y). Must be 403.
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .header("Authorization", "Bearer x-tok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "valid token from a different machine must not act on this agent"
+    );
+
+    // y-tok is bound to machine-y, which owns y-only-bot. Must be 200.
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{agent_id}/server"))
+        .header("Authorization", "Bearer y-tok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        200,
+        "token bound to the agent's owner is authorized"
+    );
+
+    // Platform-local agent (machine_id NULL) — even a valid bridge token
+    // must NOT be allowed to act on it. Bridge tokens are only authorized
+    // for their own bridge's agents.
+    let local_agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "platform-local",
+            display_name: "Platform Local",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: None,
+            env_vars: &[],
+        })
+        .unwrap();
+    let resp = client
+        .get(format!("{http_url}/internal/agent/{local_agent_id}/server"))
+        .header("Authorization", "Bearer x-tok")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "bridge token must not be allowed to act on platform-local agents"
     );
 }

@@ -9,6 +9,7 @@ pub mod client;
 pub mod discovery;
 pub mod error;
 pub mod format;
+pub mod protocol;
 pub mod serve;
 mod types;
 

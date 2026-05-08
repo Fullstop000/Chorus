@@ -29,8 +29,10 @@ pub struct Agent {
     pub model: String,
     /// Optional Codex reasoning effort override.
     pub reasoning_effort: Option<String>,
-    /// Bridge ownership: which `machine_id` should run this agent.
-    /// `None` means "any bridge may run it" (or platform-local).
+    /// Owner of this agent's runtime. `Some(machine_id)` binds the
+    /// agent to one named bridge; `None` means platform-local — it runs
+    /// in `chorus serve`'s own `AgentManager` and is never sent to any
+    /// bridge. Every agent has exactly one owner.
     pub machine_id: Option<String>,
     /// Injected environment variables (ordered by `position`).
     pub env_vars: Vec<AgentEnvVar>,
@@ -65,8 +67,8 @@ pub struct AgentRecordUpsert<'a> {
     pub model: &'a str,
     /// Optional reasoning effort (Codex).
     pub reasoning_effort: Option<&'a str>,
-    /// Bridge ownership: which `machine_id` should run this agent.
-    /// `None` = any bridge or platform-local.
+    /// Owner of this agent's runtime. `Some(machine_id)` binds it to
+    /// one named bridge; `None` = platform-local.
     pub machine_id: Option<&'a str>,
     /// Full env var list to replace existing rows.
     pub env_vars: &'a [AgentEnvVar],
@@ -138,13 +140,55 @@ impl Store {
         workspace_id: &str,
         record: &AgentRecordUpsert<'_>,
     ) -> Result<String> {
-        let id = Uuid::new_v4().to_string();
+        Self::create_agent_record_inner_with_id(
+            conn,
+            workspace_id,
+            &Uuid::new_v4().to_string(),
+            record,
+        )
+    }
+
+    /// Insert an agent row with a caller-supplied id. Used by the bridge
+    /// client so the local row's id matches the platform's `agent_id`,
+    /// removing the need for a separate name↔platform_id translation cache.
+    /// Production agent creation goes through [`create_agent_record_inner`]
+    /// which mints a fresh UUID.
+    fn create_agent_record_inner_with_id(
+        conn: &rusqlite::Connection,
+        workspace_id: &str,
+        id: &str,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<String> {
         conn.execute(
             "INSERT INTO agents (id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort, record.machine_id],
         )?;
         Self::replace_agent_env_vars_inner(conn, record.name, record.env_vars)?;
-        Ok(id)
+        Ok(id.to_string())
+    }
+
+    /// Bridge entry point: insert an agent row using the platform-supplied
+    /// id. The bridge DB is a cache of the platform's view, so this is
+    /// always a "create fresh" operation — both potential conflicts (a
+    /// row with this name under a different id, or a row with this id
+    /// under a different name from a rename) are dropped first, making
+    /// the call atomic and idempotent under the connection mutex.
+    pub fn create_agent_record_with_id(
+        &self,
+        id: &str,
+        record: &AgentRecordUpsert<'_>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let workspace_id = Self::workspace_id_for_write_inner(&conn)?;
+        // Clear both potential conflicts: (1) a stale row with this name
+        // under a different id (cache leftover); (2) a stale row with this
+        // id under a different name (platform-side rename of the same
+        // agent_id). Either or both may match; an idempotent re-call where
+        // both match is fine — the row just gets recreated identically.
+        conn.execute("DELETE FROM agents WHERE name = ?1", params![record.name])?;
+        conn.execute("DELETE FROM agents WHERE id = ?1", params![id])?;
+        Self::create_agent_record_inner_with_id(&conn, &workspace_id, id, record)?;
+        Ok(())
     }
 
     pub fn delete_agent_record(&self, name: &str) -> Result<()> {

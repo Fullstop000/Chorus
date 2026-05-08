@@ -65,8 +65,13 @@ impl BridgeRegistry {
     /// every running agent on its first reconcile; relying on the old
     /// connection's deregister to clean up loses the race because
     /// `was_last_for_machine` is `false` while both senders coexist.
-    /// `chat_acks` are intentionally preserved — those cursors advance
-    /// monotonically and can survive a brief reconnect.
+    ///
+    /// `chat_acks` are preserved across an *overlapping* reconnect (same
+    /// reasoning: both senders coexist, deregister won't fire its
+    /// last-for-machine cleanup). They are NOT preserved across a clean
+    /// disconnect-then-reconnect — `deregister` clears them when the
+    /// last sender drops, since the in-memory map can't survive a
+    /// platform restart anyway.
     pub fn register(self: &Arc<Self>, machine_id: &str) -> (mpsc::Receiver<String>, Registration) {
         let (tx, rx) = mpsc::channel::<String>(PER_BRIDGE_BUFFER);
         let had_existing = {

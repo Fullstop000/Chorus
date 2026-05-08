@@ -26,146 +26,43 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tracing::{debug, info, warn};
 
+use crate::bridge::protocol::{
+    AgentState as AgentStatePayload, AgentTarget, BridgeTarget, ChatAck as ChatAckPayload, EnvVar,
+    Hello as BridgeHello, WireFrame, FRAME_AGENT_STATE, FRAME_BRIDGE_HELLO, FRAME_BRIDGE_TARGET,
+    FRAME_CHAT_ACK, FRAME_CHAT_MESSAGE_RECEIVED,
+};
 use crate::server::bridge_auth::AuthOutcome;
 use crate::server::bridge_registry::BridgeRegistry;
 use crate::server::handlers::AppState;
 use crate::store::agents::Agent;
 use crate::store::Store;
 
-/// Wire envelope for every WS frame in the bridge protocol.
-#[derive(Debug, Serialize, Deserialize)]
-struct WireFrame {
-    v: u32,
-    #[serde(rename = "type")]
-    frame_type: String,
-    data: Value,
-}
-
-/// `bridge.hello` payload, sent by the bridge as its first frame.
-///
-/// `machine_id` keys the registry; `bridge_version` is logged.
-/// `supported_frames` and `agents_alive` are accepted by the deserializer
-/// (so malformed payloads still fail loudly) but not yet consumed —
-/// reserved for frame-compat negotiation and target-vs-alive reconciliation.
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-struct BridgeHello {
-    machine_id: String,
-    bridge_version: String,
-    #[serde(default)]
-    supported_frames: Vec<String>,
-    #[serde(default)]
-    agents_alive: Vec<AgentAliveEntry>,
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-struct AgentAliveEntry {
-    agent_id: String,
-    state: String,
-    #[serde(default)]
-    runtime_pid: Option<u32>,
-    #[serde(default)]
-    last_acked_seq: Option<u64>,
-}
-
-/// `agent.state` payload, sent by the bridge when one of its runtimes
-/// transitions. `runtime_pid` is the instance discriminator: the
-/// platform tracks the pid set by the most recent `started` transition
-/// and drops state updates whose pid doesn't match.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-struct AgentStatePayload {
-    agent_id: String,
-    state: String,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    ts: Option<String>,
-    runtime_pid: u32,
-}
-
-/// `chat.ack` payload, sent by the bridge after it has buffered a
-/// `chat.message.received` batch into an agent's local mailbox. Advances
-/// an in-memory cursor in `BridgeRegistry`; persisting `last_acked_seq`
-/// to the DB (so reconnect-replay only re-emits unseen messages) is a
-/// follow-up.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-struct ChatAckPayload {
-    agent_id: String,
-    last_seq: i64,
-    #[serde(default)]
-    #[allow(dead_code)]
-    ts: Option<String>,
-}
-
-/// `bridge.target` payload, sent by the platform in reply to
-/// `bridge.hello` and on every change to desired state.
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-struct BridgeTarget {
-    target_agents: Vec<AgentTarget>,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "snake_case")]
-struct AgentTarget {
-    agent_id: String,
-    /// Bridge-side handle (matches `agents.name` on the platform). The
-    /// bridge uses this to drive `AgentManager::start_agent`, which keys
-    /// on name; the platform's `agent_id` is opaque to the bridge.
-    name: String,
-    display_name: String,
-    runtime: String,
-    model: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    description: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    system_prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<String>,
-    env_vars: Vec<EnvVarOut>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    init_directive: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pending_prompt: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct EnvVarOut {
-    key: String,
-    value: String,
-}
-
-impl From<Agent> for AgentTarget {
-    fn from(a: Agent) -> Self {
-        AgentTarget {
-            agent_id: a.id,
-            name: a.name,
-            display_name: a.display_name,
-            runtime: a.runtime,
-            model: a.model,
-            description: a.description,
-            system_prompt: a.system_prompt,
-            reasoning_effort: a.reasoning_effort,
-            env_vars: a
-                .env_vars
-                .into_iter()
-                .map(|e| EnvVarOut {
-                    key: e.key,
-                    value: e.value,
-                })
-                .collect(),
-            init_directive: None,
-            pending_prompt: None,
-        }
+/// Convert a platform `Agent` row into an outbound `AgentTarget` payload.
+/// Lives here (not in `protocol.rs`) so the protocol module stays free of
+/// store types — the wire shape is shared, but the source-of-truth
+/// hydration is platform-side.
+fn agent_to_target(a: Agent) -> AgentTarget {
+    AgentTarget {
+        agent_id: a.id,
+        name: a.name,
+        display_name: a.display_name,
+        runtime: a.runtime,
+        model: a.model,
+        description: a.description,
+        system_prompt: a.system_prompt,
+        reasoning_effort: a.reasoning_effort,
+        env_vars: a
+            .env_vars
+            .into_iter()
+            .map(|e| EnvVar {
+                key: e.key,
+                value: e.value,
+            })
+            .collect(),
+        init_directive: None,
+        pending_prompt: None,
     }
 }
 
@@ -302,7 +199,7 @@ async fn recv_hello(socket: &mut WebSocket) -> anyhow::Result<BridgeHello> {
     };
     let envelope: WireFrame = serde_json::from_str(text.as_str())
         .map_err(|e| anyhow::anyhow!("failed to parse hello envelope: {e}"))?;
-    if envelope.frame_type != "bridge.hello" {
+    if envelope.frame_type != FRAME_BRIDGE_HELLO {
         anyhow::bail!(
             "first frame must be bridge.hello, got {}",
             envelope.frame_type
@@ -331,7 +228,7 @@ async fn handle_inbound_frame(
     let envelope: WireFrame = serde_json::from_str(text)
         .map_err(|e| anyhow::anyhow!("failed to parse inbound envelope: {e}"))?;
     match envelope.frame_type.as_str() {
-        "agent.state" => {
+        FRAME_AGENT_STATE => {
             let payload: AgentStatePayload = serde_json::from_value(envelope.data)
                 .map_err(|e| anyhow::anyhow!("failed to parse agent.state payload: {e}"))?;
             // `started` transitions establish the current pid for this
@@ -368,7 +265,7 @@ async fn handle_inbound_frame(
             }
             Ok(())
         }
-        "chat.ack" => {
+        FRAME_CHAT_ACK => {
             let payload: ChatAckPayload = serde_json::from_value(envelope.data)
                 .map_err(|e| anyhow::anyhow!("failed to parse chat.ack payload: {e}"))?;
             registry.record_chat_ack(machine_id, &payload.agent_id, payload.last_seq);
@@ -383,7 +280,7 @@ async fn handle_inbound_frame(
         // Bridge re-sending hello is allowed for self-correction. Treat
         // as a no-op today; a future change can trigger a fresh target
         // push in response.
-        "bridge.hello" => {
+        FRAME_BRIDGE_HELLO => {
             debug!(machine_id = %machine_id, "bridge_ws: re-hello received, ignoring");
             Ok(())
         }
@@ -394,10 +291,13 @@ async fn handle_inbound_frame(
 }
 
 /// Build a serialized `bridge.target` frame from the current set of
-/// agents in the store, scoped to a specific bridge `machine_id`. An
-/// agent is included if its `machine_id` matches the connecting
-/// bridge's, or if the agent has no `machine_id` set (NULL ownership =
-/// any bridge can run it; back-compat with pre-slice-6 agents).
+/// agents in the store, scoped to a specific bridge `machine_id`. Only
+/// agents explicitly bound to this bridge are included; agents with
+/// NULL `machine_id` are platform-local and never sent to any bridge.
+///
+/// Every agent has exactly one owner (the platform itself, or one named
+/// bridge). Fanning NULL agents to all bridges would cause dual-runtime
+/// contention as soon as a second bridge connects.
 pub fn build_target_frame_text_for_machine(
     store: &Store,
     machine_id: &str,
@@ -405,17 +305,14 @@ pub fn build_target_frame_text_for_machine(
     let agents: Vec<Agent> = store
         .get_agents()?
         .into_iter()
-        .filter(|a| match a.machine_id.as_deref() {
-            None => true,
-            Some(m) => m == machine_id,
-        })
+        .filter(|a| a.machine_id.as_deref() == Some(machine_id))
         .collect();
     let target = BridgeTarget {
-        target_agents: agents.into_iter().map(AgentTarget::from).collect(),
+        target_agents: agents.into_iter().map(agent_to_target).collect(),
     };
     let envelope = WireFrame {
         v: 1,
-        frame_type: "bridge.target".to_string(),
+        frame_type: FRAME_BRIDGE_TARGET.to_string(),
         data: serde_json::to_value(&target)?,
     };
     Ok(serde_json::to_string(&envelope)?)
@@ -447,10 +344,11 @@ pub fn broadcast_target_update(store: &Store, registry: &BridgeRegistry) {
     }
 }
 
-/// Forward a chat-message stream event to every connected bridge as a
-/// `chat.message.received` frame. Called wherever a `message.created`
-/// `StreamEvent` is published. Narrows by `machine_id` so each bridge
-/// only sees chat for the agents it owns.
+/// Forward a chat-message stream event to the bridge that owns each
+/// recipient agent. Called wherever a `message.created` `StreamEvent`
+/// is published. Routes by the agent's `machine_id`; platform-local
+/// agents (NULL `machine_id`) are skipped — they're delivered by the
+/// platform's own `AgentManager` in `deliver_message_to_agents`.
 ///
 /// The bridge is responsible for matching the inner `agent_id` to its
 /// own running runtime and updating that mailbox.
@@ -482,6 +380,14 @@ pub fn forward_chat_event_to_bridges(
         return;
     }
     for agent_id in agent_recipients {
+        // Route only to the bridge that owns this agent. Platform-local
+        // agents (machine_id NULL) are delivered by the platform's own
+        // AgentManager via deliver_message_to_agents — they have no
+        // bridge to push to.
+        let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
+        let Some(owner_machine_id) = agent_record.and_then(|a| a.machine_id) else {
+            continue;
+        };
         let frame = match build_chat_message_frame_text(agent_id, event) {
             Ok(t) => t,
             Err(err) => {
@@ -489,21 +395,12 @@ pub fn forward_chat_event_to_bridges(
                 continue;
             }
         };
-        // Scope by the agent's owning machine_id when set. Owner-less
-        // agents (machine_id NULL) fan to every bridge — back-compat
-        // with pre-slice-6 behavior + the explicit "any bridge can run
-        // this agent" affordance.
-        let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
-        let owner_machine_id = agent_record.and_then(|a| a.machine_id);
-        let delivered = match owner_machine_id.as_deref() {
-            Some(m) => registry.send_to(m, &frame),
-            None => registry.broadcast(&frame),
-        };
+        let delivered = registry.send_to(&owner_machine_id, &frame);
         debug!(
             delivered,
             agent_id = %agent_id,
             seq = event.latest_seq,
-            owner = owner_machine_id.as_deref().unwrap_or("<any>"),
+            owner = %owner_machine_id,
             "bridge_ws: pushed chat.message.received"
         );
     }
@@ -522,7 +419,7 @@ fn build_chat_message_frame_text(
     });
     let envelope = WireFrame {
         v: 1,
-        frame_type: "chat.message.received".to_string(),
+        frame_type: FRAME_CHAT_MESSAGE_RECEIVED.to_string(),
         data: payload,
     };
     Ok(serde_json::to_string(&envelope)?)

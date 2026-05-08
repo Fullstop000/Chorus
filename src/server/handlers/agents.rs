@@ -71,8 +71,9 @@ pub struct CreateAgentRequest {
     pub reasoning_effort: Option<String>,
     #[serde(default, rename = "envVars")]
     pub env_vars: Vec<AgentEnvVarPayload>,
-    /// Bridge ownership. When set, only the matching `machine_id` runs
-    /// the agent; when omitted, the agent is platform-local.
+    /// Runtime owner. `Some(machine_id)` binds the agent to one named
+    /// bridge; omitted (or null) = platform-local (runs in `chorus
+    /// serve`'s own AgentManager). Every agent has exactly one owner.
     #[serde(default, rename = "machineId")]
     pub machine_id: Option<String>,
 }

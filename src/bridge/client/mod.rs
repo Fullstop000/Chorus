@@ -39,6 +39,12 @@ pub async fn run_bridge_client(cfg: BridgeClientConfig) -> anyhow::Result<()> {
     let bridge_endpoint = format!("http://{bridge_local_addr}");
 
     let shutdown_token = CancellationToken::new();
+    // Cancel the shutdown token regardless of how this function returns
+    // (Ok, Err, or unwind) so all spawned helpers terminate cleanly.
+    // Without this, an early Err from ws_loop would leak the embedded
+    // MCP bridge task and the ctrl-c handler.
+    let _shutdown_guard = shutdown_token.clone().drop_guard();
+
     let bridge_shutdown = shutdown_token.clone();
     let bridge_cascade = shutdown_token.clone();
     let bridge_ct_for_cascade = bridge_ct.clone();
@@ -69,12 +75,18 @@ pub async fn run_bridge_client(cfg: BridgeClientConfig) -> anyhow::Result<()> {
     // 3. Run the WS client loop. Reconnect on drop, capped backoff.
     let ws_loop = ws::run_ws_client_loop(cfg.clone(), manager.clone(), shutdown_token.clone());
 
-    // 4. Graceful shutdown on Ctrl-C.
-    let shutdown_token_ctrlc = shutdown_token.clone();
+    // 4. Graceful shutdown on Ctrl-C, OR exit cleanly if the function
+    // returned and the shutdown_guard already cancelled — otherwise this
+    // task would block on ctrl_c forever after run_bridge_client returns.
+    let ctrlc_token = shutdown_token.clone();
     tokio::spawn(async move {
-        tokio::signal::ctrl_c().await.ok();
-        tracing::info!("bridge: shutting down...");
-        shutdown_token_ctrlc.cancel();
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("bridge: shutting down...");
+                ctrlc_token.cancel();
+            }
+            _ = ctrlc_token.cancelled() => {}
+        }
     });
 
     ws_loop.await?;
