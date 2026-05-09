@@ -35,7 +35,9 @@ pub async fn run(
     std::fs::create_dir_all(&agents_dir)?;
 
     let db_path = data_subdir.join("chorus-bridge.db");
-    let store = Arc::new(chorus::store::Store::open(db_path.to_str().unwrap())?);
+    let store = Arc::new(chorus::store::Store::open_for_bridge(
+        db_path.to_str().unwrap(),
+    )?);
 
     let cfg = client::BridgeClientConfig {
         platform_ws,

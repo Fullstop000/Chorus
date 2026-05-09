@@ -2,10 +2,10 @@
 //!
 //! Each pass populates the in-memory [`super::ws::TargetCache`] (the
 //! authoritative spec/identity cache on the bridge), starts any newly
-//! desired agents, stops any that vanished. The store is still touched
-//! for FK keepalive (agents row writes/deletes) so `agent_sessions` and
-//! `decisions` writes don't violate FK constraints — see the session
-//! storage refactor issue for the path to dropping that too.
+//! desired agents, stops any that vanished. The bridge's local store
+//! holds only `agent_sessions` rows; agent records live in the cache.
+//! `forget_sessions_for_agent` is called on stop to drop resume cursors
+//! since FK cascade no longer fires (the bridge runs with FK off, #145).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ use crate::agent::manager::AgentManager;
 use crate::store::agents::{Agent, AgentEnvVar};
 use crate::store::Store;
 
-use super::local_store::upsert_from_target;
+use super::local_store::forget_sessions_for_agent;
 use super::ws::{AgentTargetIn, TargetCache};
 
 /// Per-pass transition record: `(local_name, platform_agent_id)`. The
@@ -74,14 +74,25 @@ pub async fn apply(
     let mut started = Vec::new();
     let mut stopped = Vec::new();
 
-    // 1. Refresh the in-memory cache and the FK-keepalive rows for every
-    //    target. The cache is the source of truth for spec lookups; the
-    //    store rows exist only so `agent_sessions` / `decisions` FKs hold.
+    // 1. Bulk-prune session rows whose agent_id isn't in this target.
+    //    The per-stop cleanup below would miss any agent that got
+    //    removed from desired while the bridge was offline (running set
+    //    is empty after restart, so the stop loop never fires for it).
+    //    Running this once at the top of every reconcile catches that
+    //    case AND legitimate online removals that the stop loop also
+    //    handles — both paths converge here, the per-stop call is a
+    //    redundant safety net we keep for symmetry with stop events.
+    let desired_ids: Vec<String> = targets.iter().map(|t| t.agent_id.clone()).collect();
+    if let Err(e) = store.delete_sessions_for_agents_not_in(&desired_ids) {
+        tracing::warn!(err = %e, "reconcile: bulk session cleanup failed; per-stop will pick up online removals");
+    }
+
+    // 3. Refresh the in-memory cache. Spec lookups read from here; the
+    //    bridge's `agents` table stays empty.
     {
         let mut cache = targets_cache.lock().await;
         for target in &targets {
             desired.insert(target.name.clone());
-            upsert_from_target(store, target)?;
             cache.upsert(target.clone());
         }
     }
@@ -89,7 +100,7 @@ pub async fn apply(
     let running = manager.get_running_agent_names().await;
     let running_set: HashSet<String> = running.iter().cloned().collect();
 
-    // 2. Start every desired agent that isn't already running. The spec
+    // 4. Start every desired agent that isn't already running. The spec
     //    is materialised from the wire target, not re-read from the store.
     for target in &targets {
         if running_set.contains(&target.name) {
@@ -112,11 +123,11 @@ pub async fn apply(
         }
     }
 
-    // 3. Stop any locally-running agent that is no longer desired. The
+    // 5. Stop any locally-running agent that is no longer desired. The
     //    manager-side stop runs unconditionally — leaving a runtime alive
-    //    because the local row vanished early would orphan an OS process.
-    //    The upstream `agent.state{stopped}` frame is conditional on
-    //    resolving platform_id from the cache.
+    //    because the cache entry vanished would orphan an OS process. The
+    //    upstream `agent.state{stopped}` frame is conditional on resolving
+    //    platform_id from the cache.
     for name in running.iter() {
         if desired.contains(name) {
             continue;
@@ -130,6 +141,14 @@ pub async fn apply(
         }
         match platform_id {
             Some(platform_id) => {
+                if let Err(e) = forget_sessions_for_agent(store, &platform_id) {
+                    tracing::warn!(
+                        agent = %name,
+                        platform_id = %platform_id,
+                        err = %e,
+                        "reconcile: failed to drop sessions for stopped agent"
+                    );
+                }
                 stopped.push(AgentTransition {
                     name: name.clone(),
                     platform_id,
@@ -142,7 +161,6 @@ pub async fn apply(
                 );
             }
         }
-        store.delete_agent_record(name)?;
     }
 
     Ok(ReconcileOutcome { started, stopped })

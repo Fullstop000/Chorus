@@ -114,44 +114,42 @@ fn flush_text(
 /// Resume continuity depends on this row; if it silently disappears the
 /// next start_agent issues `SessionIntent::New` and the user loses history.
 /// `site` is a short tag ("attach" / "completed") distinguishing the caller.
-fn persist_session(store: &Store, agent_name: &str, session_id: &str, site: &str) {
-    match store.get_agent(agent_name) {
-        Ok(Some(agent)) => {
-            if let Err(err) = store.record_session(&agent.id, session_id, &agent.runtime) {
-                warn!(
-                    agent = %agent_name,
-                    session = %session_id,
-                    site,
-                    err = %err,
-                    "failed to persist session"
-                );
-            }
-        }
-        Ok(None) => {
-            warn!(
-                agent = %agent_name,
-                session = %session_id,
-                site,
-                "agent row missing while persisting session"
-            );
-        }
-        Err(err) => {
-            warn!(
-                agent = %agent_name,
-                session = %session_id,
-                site,
-                err = %err,
-                "failed to load agent while persisting session"
-            );
-        }
+///
+/// `agent_id` and `runtime` are passed by the caller rather than re-read
+/// from the store: on the bridge the `agents` table is empty (#145), so
+/// a name-based lookup would always fail. The forwarder captures both
+/// at spawn time from the agent record that drove `start_agent_inner`.
+fn persist_session(
+    store: &Store,
+    agent_name: &str,
+    agent_id: &str,
+    runtime: &str,
+    session_id: &str,
+    site: &str,
+) {
+    if let Err(err) = store.record_session(agent_id, session_id, runtime) {
+        warn!(
+            agent = %agent_name,
+            session = %session_id,
+            site,
+            err = %err,
+            "failed to persist session"
+        );
     }
 }
 
 /// Spawn the per-agent event-forwarder task. Returns the `JoinHandle` of
 /// the spawned task — store it on the agent's `ManagedAgent` so it's
 /// dropped (and the task aborted) when the agent is removed.
+///
+/// `agent_id` and `runtime` are captured here so `persist_session` can
+/// write `agent_sessions` rows directly without re-reading the store
+/// (which is empty on the bridge, #145).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_event_forwarder(
     mut event_rx: tokio::sync::mpsc::Receiver<DriverEvent>,
+    agent_id: String,
+    runtime: String,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
     trace_tx: broadcast::Sender<TraceEvent>,
@@ -200,7 +198,7 @@ pub(super) fn spawn_event_forwarder(
                     ref session_id,
                 } => {
                     info!(agent = %key, session = %session_id, "session attached");
-                    persist_session(&store, key, session_id, "attach");
+                    persist_session(&store, key, &agent_id, &runtime, session_id, "attach");
                     activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ONLINE, "Ready");
                 }
 
@@ -478,7 +476,7 @@ pub(super) fn spawn_event_forwarder(
                     }
 
                     if !session_id.is_empty() {
-                        persist_session(&store, key, session_id, "completed");
+                        persist_session(&store, key, &agent_id, &runtime, session_id, "completed");
                     }
                     trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
                     trace_store.end_run(key);
@@ -625,6 +623,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
         let forwarder = spawn_event_forwarder(
             event_rx,
+            "test-agent-id".to_string(),
+            "claude".to_string(),
             activity_logs,
             trace_store,
             trace_tx.clone(),
@@ -746,6 +746,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
         let forwarder = spawn_event_forwarder(
             event_rx,
+            "test-agent-id".to_string(),
+            "claude".to_string(),
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
@@ -826,6 +828,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
         let forwarder = spawn_event_forwarder(
             event_rx,
+            "test-agent-id".to_string(),
+            "claude".to_string(),
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
@@ -942,6 +946,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
         let forwarder = spawn_event_forwarder(
             event_rx,
+            "test-agent-id".to_string(),
+            "claude".to_string(),
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
@@ -1031,6 +1037,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
         let forwarder = spawn_event_forwarder(
             event_rx,
+            "test-agent-id".to_string(),
+            "claude".to_string(),
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
@@ -1110,6 +1118,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
         let forwarder = spawn_event_forwarder(
             event_rx,
+            "test-agent-id".to_string(),
+            "claude".to_string(),
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
@@ -1188,6 +1198,8 @@ mod tests {
         let (event_tx, event_rx) = mpsc::channel::<DriverEvent>(64);
         let forwarder = spawn_event_forwarder(
             event_rx,
+            "test-agent-id".to_string(),
+            "claude".to_string(),
             activity_logs,
             trace_store.clone(),
             trace_tx.clone(),
