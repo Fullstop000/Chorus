@@ -7,7 +7,8 @@ use crate::agent::activity_log::ActivityLogResponse;
 use crate::store::messages::ReceivedMessage;
 
 pub trait AgentLifecycle: Send + Sync {
-    /// Start (or wake) an agent process.
+    /// Start (or wake) an agent process by name. Resolves the agent
+    /// record from the store and dispatches to the id-keyed runtime.
     ///
     /// `wake_message` carries the unread message that triggered this start, if
     /// any. `init_directive`, when `Some`, is delivered as the first prompt
@@ -22,25 +23,30 @@ pub trait AgentLifecycle: Send + Sync {
         init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+    /// Deliver a wakeup notification keyed by `agent_id`.
     fn notify_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+    /// Stop a managed agent process keyed by `agent_id`.
     fn stop_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    /// Returns the runtime `ProcessState` for `agent_name` if a managed
+    /// Returns the runtime `ProcessState` for `agent_id` if a managed
     /// process exists, else `None`. Single source of truth for runtime
     /// liveness; replaces every read of the persisted `agents.status`
     /// column from this phase onward.
     fn process_state<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Option<crate::agent::drivers::ProcessState>> + Send + 'a>>;
 
+    /// Activity log + trace observability getters remain name-keyed. The
+    /// underlying stores still key by name; that flip is tracked as
+    /// follow-up work after #142.
     fn get_activity_log_data(
         &self,
         agent_name: &str,
@@ -79,7 +85,7 @@ pub trait AgentLifecycle: Send + Sync {
     /// continues its work without needing to re-read history.
     fn resume_with_prompt<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent_id: &'a str,
         _envelope: String,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async {

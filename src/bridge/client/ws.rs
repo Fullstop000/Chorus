@@ -39,22 +39,22 @@ use super::BridgeClientConfig;
 #[derive(Default)]
 struct InstanceCounter {
     next: AtomicU32,
-    by_name: Mutex<HashMap<String, u32>>,
+    by_agent_id: Mutex<HashMap<String, u32>>,
 }
 
 impl InstanceCounter {
-    async fn allocate(&self, name: &str) -> u32 {
+    async fn allocate(&self, agent_id: &str) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        self.by_name.lock().await.insert(name.to_string(), id);
+        self.by_agent_id.lock().await.insert(agent_id.to_string(), id);
         id
     }
 
-    async fn current(&self, name: &str) -> u32 {
-        self.by_name.lock().await.get(name).copied().unwrap_or(0)
+    async fn current(&self, agent_id: &str) -> u32 {
+        self.by_agent_id.lock().await.get(agent_id).copied().unwrap_or(0)
     }
 
-    async fn forget(&self, name: &str) {
-        self.by_name.lock().await.remove(name);
+    async fn forget(&self, agent_id: &str) {
+        self.by_agent_id.lock().await.remove(agent_id);
     }
 }
 
@@ -92,46 +92,27 @@ const PENDING_CHATS_PER_AGENT: usize = 32;
 /// `handle_target` that adds a new local agent row.
 type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
 
-/// In-memory snapshot of the most recent `bridge.target` payload, indexed
-/// for O(1) lookups in either direction. The authoritative spec/identity
-/// view on the bridge side: `start_agent` reads the spec from here, not
-/// SQLite, and chat/state handlers translate name↔platform_id through
-/// it. The bridge's `agents` table is empty — see #145 for the design.
+/// In-memory snapshot of the most recent `bridge.target` payload, keyed
+/// by `agent_id`. The authoritative spec/identity view on the bridge side:
+/// `start_agent` reads the spec from here, not SQLite. Renames update the
+/// cached `name` field in place; the id key is stable. The bridge's
+/// `agents` table is empty — see #145 for the design.
 #[derive(Default)]
 pub(super) struct TargetCache {
     by_agent_id: HashMap<String, AgentTargetIn>,
-    name_to_id: HashMap<String, String>,
 }
 
 impl TargetCache {
     pub(super) fn upsert(&mut self, target: AgentTargetIn) {
-        if let Some(prev) = self.by_agent_id.get(&target.agent_id) {
-            // If this agent_id was renamed, drop the stale name index.
-            if prev.name != target.name {
-                self.name_to_id.remove(&prev.name);
-            }
-        }
-        self.name_to_id
-            .insert(target.name.clone(), target.agent_id.clone());
         self.by_agent_id.insert(target.agent_id.clone(), target);
     }
 
-    pub(super) fn forget_by_name(&mut self, name: &str) -> Option<AgentTargetIn> {
-        let id = self.name_to_id.remove(name)?;
-        self.by_agent_id.remove(&id)
+    pub(super) fn forget(&mut self, agent_id: &str) -> Option<AgentTargetIn> {
+        self.by_agent_id.remove(agent_id)
     }
 
-    pub(super) fn name_for_agent_id(&self, agent_id: &str) -> Option<&str> {
-        self.by_agent_id.get(agent_id).map(|t| t.name.as_str())
-    }
-
-    pub(super) fn agent_id_for_name(&self, name: &str) -> Option<&str> {
-        self.name_to_id.get(name).map(String::as_str)
-    }
-
-    pub(super) fn get_by_name(&self, name: &str) -> Option<&AgentTargetIn> {
-        let id = self.name_to_id.get(name)?;
-        self.by_agent_id.get(id)
+    pub(super) fn get(&self, agent_id: &str) -> Option<&AgentTargetIn> {
+        self.by_agent_id.get(agent_id)
     }
 }
 
@@ -435,19 +416,19 @@ async fn build_agents_alive(
     targets: &Arc<Mutex<TargetCache>>,
     counter: &Arc<InstanceCounter>,
 ) -> Vec<Value> {
-    let names = manager.get_running_agent_names().await;
+    let ids = manager.get_running_agent_ids().await;
     let cache = targets.lock().await;
-    let mut out = Vec::with_capacity(names.len());
-    for name in names {
-        let Some(platform_id) = cache.agent_id_for_name(&name).map(str::to_owned) else {
+    let mut out = Vec::with_capacity(ids.len());
+    for agent_id in ids {
+        if cache.get(&agent_id).is_none() {
             // Agent is running locally but no longer in the desired-state
             // snapshot — happens transiently on first reconcile after
             // reconnect. Skip; the next bridge.target restores it.
             continue;
-        };
-        let pid = counter.current(&name).await;
+        }
+        let pid = counter.current(&agent_id).await;
         out.push(json!({
-            "agent_id": platform_id,
+            "agent_id": agent_id,
             "state": "started",
             "runtime_pid": pid,
         }));
@@ -491,13 +472,13 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
     }
 
     for transition in outcome.started {
-        let pid = ctx.counter.allocate(&transition.name).await;
-        send_agent_state(&ctx.state_tx, &transition.platform_id, "started", pid).await;
+        let pid = ctx.counter.allocate(&transition.agent_id).await;
+        send_agent_state(&ctx.state_tx, &transition.agent_id, "started", pid).await;
     }
     for transition in outcome.stopped {
-        let pid = ctx.counter.current(&transition.name).await;
-        ctx.counter.forget(&transition.name).await;
-        send_agent_state(&ctx.state_tx, &transition.platform_id, "stopped", pid).await;
+        let pid = ctx.counter.current(&transition.agent_id).await;
+        ctx.counter.forget(&transition.agent_id).await;
+        send_agent_state(&ctx.state_tx, &transition.agent_id, "stopped", pid).await;
     }
 }
 
@@ -513,16 +494,10 @@ async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
     // (targets via reconcile::apply, then pending_chats); both locks are
     // brief, so there's no interlock — they serialize on whichever is
     // contended first.
-    let name = {
+    let target_clone = {
         let mut buf = ctx.pending_chats.lock().await;
-        match ctx
-            .targets
-            .lock()
-            .await
-            .name_for_agent_id(&payload.agent_id)
-            .map(str::to_owned)
-        {
-            Some(name) => name,
+        match ctx.targets.lock().await.get(&payload.agent_id).cloned() {
+            Some(target) => target,
             None => {
                 let queue = buf.entry(payload.agent_id.clone()).or_default();
                 if queue.len() >= PENDING_CHATS_PER_AGENT {
@@ -538,39 +513,32 @@ async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
             }
         }
     };
+    let agent_id = payload.agent_id.as_str();
+    let name = target_clone.name.as_str();
 
-    let process_state = ctx.manager.process_state(&name).await;
+    let process_state = ctx.manager.process_state(agent_id).await;
     let result = match process_state {
         Some(ProcessState::Active { .. }) | Some(ProcessState::PromptInFlight { .. }) => {
-            ctx.manager.notify_agent(&name).await
+            ctx.manager.notify_agent(agent_id).await
         }
         _ => {
-            // Wake the agent. Pull the spec from the in-memory targets
-            // cache so the manager doesn't need to re-read the store.
-            let target_clone = ctx.targets.lock().await.get_by_name(&name).cloned();
-            let Some(target) = target_clone else {
-                tracing::warn!(
-                    agent = %name,
-                    agent_id = %payload.agent_id,
-                    "bridge: targets cache missing; cannot start agent"
-                );
-                return;
-            };
-            let agent = super::reconcile::target_to_agent(&target);
+            // Wake the agent. The cached target was captured above so the
+            // manager doesn't need to re-read the store.
+            let agent = super::reconcile::target_to_agent(&target_clone);
             let r = ctx.manager.start_agent_from_record(agent, None).await;
             if r.is_ok() {
-                let pid = ctx.counter.allocate(&name).await;
-                send_agent_state(&ctx.state_tx, &payload.agent_id, "started", pid).await;
+                let pid = ctx.counter.allocate(agent_id).await;
+                send_agent_state(&ctx.state_tx, agent_id, "started", pid).await;
             }
             r
         }
     };
     if let Err(e) = result {
-        tracing::warn!(agent = %name, err = %e, "bridge: failed to deliver chat");
+        tracing::warn!(agent = %name, agent_id = %agent_id, err = %e, "bridge: failed to deliver chat");
         return;
     }
 
-    send_chat_ack(&ctx.state_tx, &payload.agent_id, payload.seq).await;
+    send_chat_ack(&ctx.state_tx, agent_id, payload.seq).await;
 }
 
 /// Background loop that polls each managed agent's process state and emits
@@ -584,30 +552,26 @@ async fn agent_state_pusher(ctx: SessionCtx, shutdown: CancellationToken) {
             _ = tokio::time::sleep(STATE_PUSHER_INTERVAL) => {}
         }
 
-        let names = ctx.manager.get_running_agent_names().await;
-        for name in &names {
-            let Some(state) = ctx.manager.process_state(name).await else {
+        let ids = ctx.manager.get_running_agent_ids().await;
+        for agent_id in &ids {
+            let Some(state) = ctx.manager.process_state(agent_id).await else {
                 continue;
             };
             let label = process_state_label(&state);
-            if last.get(name).map(String::as_str) == Some(label) {
+            if last.get(agent_id).map(String::as_str) == Some(label) {
                 continue;
             }
-            let Some(platform_id) = ctx
-                .targets
-                .lock()
-                .await
-                .agent_id_for_name(name)
-                .map(str::to_owned)
-            else {
+            // Filter agents with no cache entry — same reconcile-window guard
+            // as build_agents_alive. Skip until the next bridge.target replays.
+            if ctx.targets.lock().await.get(agent_id).is_none() {
                 continue;
-            };
-            let pid = ctx.counter.current(name).await;
-            send_agent_state(&ctx.state_tx, &platform_id, label, pid).await;
-            last.insert(name.clone(), label.to_string());
+            }
+            let pid = ctx.counter.current(agent_id).await;
+            send_agent_state(&ctx.state_tx, agent_id, label, pid).await;
+            last.insert(agent_id.clone(), label.to_string());
         }
 
-        last.retain(|n, _| names.iter().any(|m| m == n));
+        last.retain(|id, _| ids.iter().any(|other| other == id));
     }
 }
 

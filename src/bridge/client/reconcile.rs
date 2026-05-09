@@ -19,12 +19,11 @@ use crate::store::Store;
 use super::local_store::forget_sessions_for_agent;
 use super::ws::{AgentTargetIn, TargetCache};
 
-/// Per-pass transition record: `(local_name, platform_agent_id)`. The
-/// platform_id is captured at reconcile time so callers don't need to
-/// look it up after a stop has already deleted the local row.
+/// Per-pass transition record. After #142 the bridge keys runtimes by
+/// `agent_id` directly (the platform's UUID), so a transition is just
+/// the id.
 pub struct AgentTransition {
-    pub name: String,
-    pub platform_id: String,
+    pub agent_id: String,
 }
 
 pub struct ReconcileOutcome {
@@ -87,23 +86,23 @@ pub async fn apply(
         tracing::warn!(err = %e, "reconcile: bulk session cleanup failed; per-stop will pick up online removals");
     }
 
-    // 3. Refresh the in-memory cache. Spec lookups read from here; the
+    // 2. Refresh the in-memory cache. Spec lookups read from here; the
     //    bridge's `agents` table stays empty.
     {
         let mut cache = targets_cache.lock().await;
         for target in &targets {
-            desired.insert(target.name.clone());
+            desired.insert(target.agent_id.clone());
             cache.upsert(target.clone());
         }
     }
 
-    let running = manager.get_running_agent_names().await;
+    let running = manager.get_running_agent_ids().await;
     let running_set: HashSet<String> = running.iter().cloned().collect();
 
-    // 4. Start every desired agent that isn't already running. The spec
+    // 3. Start every desired agent that isn't already running. The spec
     //    is materialised from the wire target, not re-read from the store.
     for target in &targets {
-        if running_set.contains(&target.name) {
+        if running_set.contains(&target.agent_id) {
             continue;
         }
         let agent = target_to_agent(target);
@@ -113,54 +112,41 @@ pub async fn apply(
         {
             Ok(()) => {
                 started.push(AgentTransition {
-                    name: target.name.clone(),
-                    platform_id: target.agent_id.clone(),
+                    agent_id: target.agent_id.clone(),
                 });
             }
             Err(e) => {
-                tracing::error!(agent = %target.name, err = %e, "start_agent failed during reconcile");
+                tracing::error!(agent = %target.name, agent_id = %target.agent_id, err = %e, "start_agent failed during reconcile");
             }
         }
     }
 
-    // 5. Stop any locally-running agent that is no longer desired. The
+    // 4. Stop any locally-running agent that is no longer desired. The
     //    manager-side stop runs unconditionally — leaving a runtime alive
     //    because the cache entry vanished would orphan an OS process. The
-    //    upstream `agent.state{stopped}` frame is conditional on resolving
-    //    platform_id from the cache.
-    for name in running.iter() {
-        if desired.contains(name) {
+    //    upstream `agent.state{stopped}` frame still goes out even if the
+    //    cache entry is missing, since we have the id directly.
+    for agent_id in running.iter() {
+        if desired.contains(agent_id) {
             continue;
         }
-        let platform_id = {
+        {
             let mut cache = targets_cache.lock().await;
-            cache.forget_by_name(name).map(|t| t.agent_id)
-        };
-        if let Err(e) = manager.stop_agent(name).await {
-            tracing::warn!(agent = %name, err = %e, "stop_agent failed during reconcile");
+            cache.forget(agent_id);
         }
-        match platform_id {
-            Some(platform_id) => {
-                if let Err(e) = forget_sessions_for_agent(store, &platform_id) {
-                    tracing::warn!(
-                        agent = %name,
-                        platform_id = %platform_id,
-                        err = %e,
-                        "reconcile: failed to drop sessions for stopped agent"
-                    );
-                }
-                stopped.push(AgentTransition {
-                    name: name.clone(),
-                    platform_id,
-                });
-            }
-            None => {
-                tracing::debug!(
-                    agent = %name,
-                    "reconcile: stopped runtime had no cache entry; skipping upstream stop event"
-                );
-            }
+        if let Err(e) = manager.stop_agent(agent_id).await {
+            tracing::warn!(agent_id = %agent_id, err = %e, "stop_agent failed during reconcile");
         }
+        if let Err(e) = forget_sessions_for_agent(store, agent_id) {
+            tracing::warn!(
+                agent_id = %agent_id,
+                err = %e,
+                "reconcile: failed to drop sessions for stopped agent"
+            );
+        }
+        stopped.push(AgentTransition {
+            agent_id: agent_id.clone(),
+        });
     }
 
     Ok(ReconcileOutcome { started, stopped })

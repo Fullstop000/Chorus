@@ -933,6 +933,7 @@ mod tests {
         agents.lock().await.insert(
             key.clone(),
             ManagedAgent {
+                name: key.clone(),
                 handle: Arc::new(tokio::sync::Mutex::new(Box::new(TestSession {
                     key: key.clone(),
                     session_id: sid.clone(),

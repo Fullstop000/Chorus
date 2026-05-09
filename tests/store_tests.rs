@@ -641,7 +641,7 @@ fn test_delete_workspace_wipes_scoped_data_and_keeps_other_workspaces() {
         ),
         ("attachments", "id = 'alpha-attachment'".to_string()),
         ("agents", "name = 'alpha-bot'".to_string()),
-        ("agent_env_vars", "agent_name = 'alpha-bot'".to_string()),
+        ("agent_env_vars", format!("agent_id = '{}'", alpha_agent_id)),
         ("agent_sessions", format!("agent_id = '{}'", alpha_agent_id)),
         ("teams", "name = 'alpha-team'".to_string()),
         ("team_members", format!("team_id = '{}'", alpha_team_id)),
