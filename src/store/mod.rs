@@ -94,6 +94,8 @@ impl Store {
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
+        // The schema below uses `CREATE TABLE IF NOT EXISTS` so this is a
+        // no-op on existing DBs; column-shape migrations run after.
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
         // Idempotent `machine_id` migration: SQLite has no
@@ -102,14 +104,48 @@ impl Store {
         // anything else (locked DB, syntax errors, real schema drift)
         // so first-run failures aren't silent.
         match conn.execute("ALTER TABLE agents ADD COLUMN machine_id TEXT", []) {
-            Ok(_) => Ok(()),
+            Ok(_) => {}
             Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") =>
-            {
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(e.into()),
         }
+        // Migrate `agent_env_vars` from name-keyed to id-keyed (#142). The
+        // table was created earlier with `CREATE TABLE IF NOT EXISTS`, so
+        // pre-existing rows still have an `agent_name` column even after
+        // the new schema text ran. Detect that shape and rewrite in place.
+        if Self::schema_column_exists(conn, "agent_env_vars", "agent_name")? {
+            Self::migrate_agent_env_vars_to_id(conn)?;
+        }
+        Ok(())
+    }
+
+    /// One-shot migration: rewrite `agent_env_vars` from `(agent_name, key, ...)`
+    /// keyed-by-name to `(agent_id, key, ...)` keyed-by-id. SQLite cannot
+    /// rename a column on a table with foreign keys without recreating it.
+    /// Rows whose `agent_name` no longer matches an `agents.name` (orphans
+    /// left over from manual deletes when FKs were OFF) are dropped — the
+    /// previous FK declared `ON DELETE CASCADE` so they should not exist;
+    /// if they do, the agent they refer to is already gone.
+    fn migrate_agent_env_vars_to_id(conn: &Connection) -> Result<()> {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE agent_env_vars_new (
+                 agent_id TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 position INTEGER NOT NULL,
+                 PRIMARY KEY (agent_id, key),
+                 FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+             );
+             INSERT INTO agent_env_vars_new (agent_id, key, value, position)
+                 SELECT a.id, e.key, e.value, e.position
+                 FROM agent_env_vars e
+                 JOIN agents a ON a.name = e.agent_name;
+             DROP TABLE agent_env_vars;
+             ALTER TABLE agent_env_vars_new RENAME TO agent_env_vars;
+             COMMIT;",
+        )?;
+        Ok(())
     }
 
     fn validate_supported_identity_schema(conn: &Connection) -> Result<()> {
@@ -321,5 +357,103 @@ impl Store {
             return Ok(Some(SenderType::Human));
         }
         Ok(None)
+    }
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    /// Build a connection holding the *old* `agent_env_vars` shape (keyed by
+    /// `agent_name`) plus a parent agents row so we can verify the migration
+    /// preserves data when re-running `init_schema` against a legacy DB.
+    fn legacy_env_vars_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE workspaces (
+                 id TEXT PRIMARY KEY,
+                 name TEXT NOT NULL,
+                 slug TEXT NOT NULL UNIQUE,
+                 mode TEXT NOT NULL DEFAULT 'local_only',
+                 created_by_human_id TEXT,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE agents (
+                 id TEXT PRIMARY KEY,
+                 workspace_id TEXT NOT NULL,
+                 name TEXT UNIQUE NOT NULL,
+                 display_name TEXT NOT NULL,
+                 description TEXT,
+                 system_prompt TEXT,
+                 runtime TEXT NOT NULL,
+                 model TEXT NOT NULL,
+                 reasoning_effort TEXT,
+                 created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE TABLE agent_env_vars (
+                 agent_name TEXT NOT NULL,
+                 key TEXT NOT NULL,
+                 value TEXT NOT NULL,
+                 position INTEGER NOT NULL,
+                 PRIMARY KEY (agent_name, key),
+                 FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
+             );
+             INSERT INTO workspaces (id, name, slug) VALUES ('w1', 'ws', 'ws');
+             INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
+                 VALUES ('a-uuid-1', 'w1', 'alice', 'Alice', 'codex', 'gpt-x');
+             INSERT INTO agent_env_vars (agent_name, key, value, position)
+                 VALUES ('alice', 'API_KEY', 'sk-test', 0),
+                        ('alice', 'TIMEOUT_MS', '5000', 1);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn migrate_agent_env_vars_to_id_rewrites_in_place_and_preserves_rows() {
+        let conn = legacy_env_vars_db();
+        // Sanity: legacy shape detected.
+        assert!(Store::schema_column_exists(&conn, "agent_env_vars", "agent_name").unwrap());
+        // Run the schema bootstrap (re-creates anything missing, then runs the migration).
+        Store::init_schema(&conn).unwrap();
+        // After migration: column flipped, rows preserved with id-keyed FK.
+        assert!(
+            !Store::schema_column_exists(&conn, "agent_env_vars", "agent_name").unwrap(),
+            "agent_name column should be gone post-migration"
+        );
+        assert!(
+            Store::schema_column_exists(&conn, "agent_env_vars", "agent_id").unwrap(),
+            "agent_id column should exist post-migration"
+        );
+        let mut stmt = conn
+            .prepare("SELECT agent_id, key, value, position FROM agent_env_vars ORDER BY position")
+            .unwrap();
+        let rows: Vec<(String, String, String, i64)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("a-uuid-1".to_string(), "API_KEY".to_string(), "sk-test".to_string(), 0),
+                ("a-uuid-1".to_string(), "TIMEOUT_MS".to_string(), "5000".to_string(), 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn migrate_agent_env_vars_to_id_is_idempotent_on_already_new_shape() {
+        let conn = Connection::open_in_memory().unwrap();
+        // First boot creates the new shape directly via init_schema.
+        Store::init_schema(&conn).unwrap();
+        // Second boot must not blow up; the migration block only fires when
+        // the legacy column is detected, so re-running init_schema is safe.
+        Store::init_schema(&conn).unwrap();
+        assert!(
+            Store::schema_column_exists(&conn, "agent_env_vars", "agent_id").unwrap(),
+            "id-keyed column must remain after re-running init_schema"
+        );
     }
 }

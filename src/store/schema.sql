@@ -98,7 +98,7 @@ CREATE INDEX IF NOT EXISTS idx_trace_events_run_seq ON trace_events(run_id, seq)
 CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY, -- Unique UUID for the agent
     workspace_id TEXT NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    name TEXT UNIQUE NOT NULL, -- Unique machine name; workspace scoping requires agent_env_vars migration first.
+    name TEXT UNIQUE NOT NULL, -- Unique handle within a workspace. Globally unique today; workspace scoping is enforced by idx_agents_workspace_name and may relax this in the future.
     display_name TEXT NOT NULL, -- Human-readable display name
     description TEXT, -- Description of the agent's role/capabilities
     system_prompt TEXT, -- Full system prompt for the LLM (templates inject rich prompts here)
@@ -111,16 +111,15 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name
     ON agents(workspace_id, name);
 
--- Environment variables for agents. FK targets `agents(name)` instead of
--- `agents(id)` — this makes agent rename non-trivial. See #142 for the
--- planned migration to FK on `agents(id)`.
+-- Environment variables for agents. Keyed by `agent_id` so a rename (which
+-- changes `agents.name`) does not require touching this table.
 CREATE TABLE IF NOT EXISTS agent_env_vars (
-    agent_name TEXT NOT NULL, -- Foreign key to agents.name
+    agent_id TEXT NOT NULL, -- Foreign key to agents.id
     key TEXT NOT NULL, -- Environment variable key
     value TEXT NOT NULL, -- Environment variable value
     position INTEGER NOT NULL, -- Ordering position
-    PRIMARY KEY (agent_name, key),
-    FOREIGN KEY (agent_name) REFERENCES agents(name) ON DELETE CASCADE
+    PRIMARY KEY (agent_id, key),
+    FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
 );
 
 -- Human users.
