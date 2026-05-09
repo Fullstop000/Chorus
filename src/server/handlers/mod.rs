@@ -160,7 +160,7 @@ pub async fn handle_server_info(
     )
     .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     for agent_info in &mut info.agents {
-        let ps = state.lifecycle.process_state(&agent_info.name).await;
+        let ps = state.lifecycle.process_state(&agent_info.id).await;
         agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
     }
     Ok(Json(info))

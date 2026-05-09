@@ -214,7 +214,7 @@ pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<
         .collect();
 
     for info in &mut agents {
-        let ps = state.lifecycle.process_state(&info.name).await;
+        let ps = state.lifecycle.process_state(&info.id).await;
         info.status = crate::agent::process_status::derive_status(ps.as_ref());
     }
 
@@ -296,7 +296,7 @@ pub async fn handle_create_agent(
             result.name
         ));
     }
-    let ps = state.lifecycle.process_state(&result.name).await;
+    let ps = state.lifecycle.process_state(&result.id).await;
     let status = crate::agent::process_status::derive_status(ps.as_ref());
     broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
@@ -456,7 +456,7 @@ pub async fn handle_get_agent(
 ) -> ApiResult<AgentDetailResponse> {
     let agent = resolve_public_agent_with_env(&state, &id)?;
     let mut agent_info = AgentInfo::from(&agent);
-    let ps = state.lifecycle.process_state(&agent_info.name).await;
+    let ps = state.lifecycle.process_state(&agent_info.id).await;
     agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
     Ok(Json(AgentDetailResponse {
         agent: agent_info,
@@ -478,6 +478,7 @@ pub async fn handle_update_agent(
 ) -> ApiResult<serde_json::Value> {
     let existing = resolve_public_agent(&state, &id)?;
     let name = existing.name.clone();
+    let agent_id = existing.id.clone();
     let _transition = acquire_transition(&state, &name)?;
 
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
@@ -519,7 +520,7 @@ pub async fn handle_update_agent(
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let ps = state.lifecycle.process_state(&name).await;
+    let ps = state.lifecycle.process_state(&agent_id).await;
     let was_running = crate::agent::process_status::derive_status(ps.as_ref())
         != crate::agent::process_status::Status::Asleep;
 
@@ -530,7 +531,7 @@ pub async fn handle_update_agent(
     if was_running && requires_restart && !bridge_hosted {
         state
             .lifecycle
-            .stop_agent(&name)
+            .stop_agent(&agent_id)
             .await
             .map_err(internal_err)?;
         if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
@@ -562,7 +563,7 @@ pub async fn handle_restart_agent(
     if !bridge_hosted {
         state
             .lifecycle
-            .stop_agent(&name)
+            .stop_agent(&agent.id)
             .await
             .map_err(internal_err)?;
     }
@@ -613,7 +614,7 @@ pub async fn handle_delete_agent(
     Json(req): Json<DeleteAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let name = agent.name;
+    let name = agent.name.clone();
     let _transition = acquire_transition(&state, &name)?;
 
     // Skip local stop for bridge-hosted agents: the bridge stops them when
@@ -623,7 +624,7 @@ pub async fn handle_delete_agent(
     if agent.machine_id.is_none() {
         state
             .lifecycle
-            .stop_agent(&name)
+            .stop_agent(&agent.id)
             .await
             .map_err(internal_err)?;
     }
@@ -681,7 +682,7 @@ pub async fn handle_agent_stop(
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let name = agent.name;
+    let name = agent.name.clone();
     let _transition = acquire_transition(&state, &name)?;
     if agent.machine_id.is_some() {
         // Bridge-hosted: platform doesn't own the runtime. There's no
@@ -695,13 +696,13 @@ pub async fn handle_agent_stop(
             "note": "agent is bridge-hosted; the platform does not own the runtime"
         })));
     }
-    info!(agent = %name, "stopping agent");
+    info!(agent = %name, id = %agent.id, "stopping agent");
     state
         .lifecycle
-        .stop_agent(&name)
+        .stop_agent(&agent.id)
         .await
         .map_err(internal_err)?;
-    info!(agent = %name, "agent stopped");
+    info!(agent = %name, id = %agent.id, "agent stopped");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

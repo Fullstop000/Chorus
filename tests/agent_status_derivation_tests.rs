@@ -176,14 +176,13 @@ async fn list_agents_returns_ready_for_running_agent() {
             env_vars: &[],
         })
         .unwrap();
+    let agent_id = store.get_agent("bot-running").unwrap().unwrap().id;
 
     // Manually insert into the running set (simulates start_agent having been
-    // called, and the process reaching the Active/idle state).
-    lifecycle
-        .running
-        .lock()
-        .unwrap()
-        .insert("bot-running".to_string());
+    // called, and the process reaching the Active/idle state). The handler
+    // looks up `process_state` by `agent.id`, so the mock's running set must
+    // be keyed by id to mirror production semantics post-#142.
+    lifecycle.running.lock().unwrap().insert(agent_id);
 
     let resp = app
         .oneshot(

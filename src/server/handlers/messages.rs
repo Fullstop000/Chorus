@@ -854,12 +854,12 @@ pub(crate) async fn deliver_message_to_agents(
         // Route on runtime liveness (manager HashMap), not on the persisted
         // `agents.status` column — the two can drift, and the manager is the
         // single source of truth for whether a process is alive right now.
-        let process_state = state.lifecycle.process_state(&recipient_name).await;
+        let process_state = state.lifecycle.process_state(&agent.id).await;
         let status = crate::agent::process_status::derive_status(process_state.as_ref());
         match status {
             crate::agent::process_status::Status::Working
             | crate::agent::process_status::Status::Ready => {
-                state.lifecycle.notify_agent(&recipient_name).await?
+                state.lifecycle.notify_agent(&agent.id).await?
             }
             crate::agent::process_status::Status::Asleep
             | crate::agent::process_status::Status::Failed => {

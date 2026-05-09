@@ -113,7 +113,10 @@ struct MockLifecycle {
     notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
     /// Tracks which agents are currently "running" so that process_state,
-    /// start_agent, and stop_agent share one source of truth.
+    /// start_agent, and stop_agent share one source of truth. Keyed by
+    /// agent name internally so existing tests can use `mark_running(name)`
+    /// without knowing the agent's id; trait calls that arrive by id are
+    /// translated through `store` below before lookup.
     running: Mutex<HashSet<String>>,
     /// Records every (agent_name, envelope) pair delivered via
     /// `resume_with_prompt`. Decision-inbox round-trip tests assert the
@@ -123,6 +126,12 @@ struct MockLifecycle {
     /// this to simulate the trace_store's "current channel for current
     /// run" record without spinning a real AgentManager.
     run_channels: Mutex<std::collections::HashMap<String, String>>,
+    /// Optional store reference used to translate `agent_id` (the new
+    /// keying after #142) back into `agent_name` so internal recording
+    /// stays name-keyed for assertion compatibility. Wire this via
+    /// `set_store` in setup helpers; trait methods fall through to
+    /// raw-string semantics when absent.
+    store: Mutex<Option<Arc<Store>>>,
 }
 
 struct MockRuntimeStatusProvider {
@@ -150,6 +159,26 @@ impl RuntimeStatusProvider for MockRuntimeStatusProvider {
 }
 
 impl MockLifecycle {
+    /// Wire a store so trait methods receiving `agent_id` (post-#142) can
+    /// resolve to `agent_name` for internal recording. Tests that don't
+    /// call this still work for paths that pass names (e.g. `start_agent`).
+    fn set_store(&self, store: Arc<Store>) {
+        *self.store.lock().unwrap() = Some(store);
+    }
+
+    /// Resolve an incoming `agent_id` parameter to the agent's name via the
+    /// wired store. Returns the input unchanged if no store is set or the
+    /// lookup fails — matches what tests expect for inputs that are already
+    /// names (e.g. `start_agent`'s `agent_name` parameter).
+    fn resolve_to_name(&self, key: &str) -> String {
+        if let Some(store) = self.store.lock().unwrap().as_ref() {
+            if let Ok(Some(agent)) = store.get_agent_by_id(key, false) {
+                return agent.name;
+            }
+        }
+        key.to_string()
+    }
+
     fn started_names(&self) -> Vec<String> {
         self.started
             .lock()
@@ -213,31 +242,34 @@ impl AgentLifecycle for MockLifecycle {
 
     fn notify_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        let name = self.resolve_to_name(agent_id);
         Box::pin(async move {
-            self.notified.lock().unwrap().push(agent_name.to_string());
+            self.notified.lock().unwrap().push(name);
             Ok(())
         })
     }
 
     fn stop_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        let name = self.resolve_to_name(agent_id);
         Box::pin(async move {
-            self.stopped.lock().unwrap().push(agent_name.to_string());
-            self.running.lock().unwrap().remove(agent_name);
+            self.stopped.lock().unwrap().push(name.clone());
+            self.running.lock().unwrap().remove(&name);
             Ok(())
         })
     }
 
     fn process_state<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>>
     {
-        let is_running = self.running.lock().unwrap().contains(agent_name);
+        let name = self.resolve_to_name(agent_id);
+        let is_running = self.running.lock().unwrap().contains(&name);
         Box::pin(async move {
             if is_running {
                 Some(chorus::agent::drivers::ProcessState::Active {
@@ -271,14 +303,12 @@ impl AgentLifecycle for MockLifecycle {
 
     fn resume_with_prompt<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
         envelope: String,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        let name = self.resolve_to_name(agent_id);
         Box::pin(async move {
-            self.resumed_with
-                .lock()
-                .unwrap()
-                .push((agent_name.to_string(), envelope));
+            self.resumed_with.lock().unwrap().push((name, envelope));
             Ok(())
         })
     }
@@ -337,6 +367,7 @@ fn setup_with_lifecycle() -> (Arc<Store>, axum::Router, Arc<MockLifecycle>) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     seed_default_workspace(&store);
     let lifecycle = Arc::new(MockLifecycle::default());
+    lifecycle.set_store(store.clone());
     let router = build_router_with_lifecycle(store.clone(), lifecycle.clone());
     (store, router, lifecycle)
 }
@@ -348,6 +379,7 @@ fn setup_with_runtime_statuses(
     let store = Arc::new(Store::open(":memory:").unwrap());
     seed_default_workspace(&store);
     let lifecycle = Arc::new(MockLifecycle::default());
+    lifecycle.set_store(store.clone());
     let runtime_status_provider = Arc::new(MockRuntimeStatusProvider {
         statuses,
         models_by_runtime,
@@ -379,6 +411,7 @@ fn setup_with_lifecycle_and_data_dir() -> (
     let store = Arc::new(Store::open(db_path.to_str().unwrap()).unwrap());
     seed_default_workspace(&store);
     let lifecycle = Arc::new(MockLifecycle::default());
+    lifecycle.set_store(store.clone());
     let router = harness::build_router_with_lifecycle_and_dir(
         store.clone(),
         lifecycle.clone(),
