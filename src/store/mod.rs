@@ -437,8 +437,18 @@ mod migration_tests {
         assert_eq!(
             rows,
             vec![
-                ("a-uuid-1".to_string(), "API_KEY".to_string(), "sk-test".to_string(), 0),
-                ("a-uuid-1".to_string(), "TIMEOUT_MS".to_string(), "5000".to_string(), 1),
+                (
+                    "a-uuid-1".to_string(),
+                    "API_KEY".to_string(),
+                    "sk-test".to_string(),
+                    0
+                ),
+                (
+                    "a-uuid-1".to_string(),
+                    "TIMEOUT_MS".to_string(),
+                    "5000".to_string(),
+                    1
+                ),
             ]
         );
     }

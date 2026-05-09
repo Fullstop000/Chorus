@@ -45,12 +45,20 @@ struct InstanceCounter {
 impl InstanceCounter {
     async fn allocate(&self, agent_id: &str) -> u32 {
         let id = self.next.fetch_add(1, Ordering::Relaxed) + 1;
-        self.by_agent_id.lock().await.insert(agent_id.to_string(), id);
+        self.by_agent_id
+            .lock()
+            .await
+            .insert(agent_id.to_string(), id);
         id
     }
 
     async fn current(&self, agent_id: &str) -> u32 {
-        self.by_agent_id.lock().await.get(agent_id).copied().unwrap_or(0)
+        self.by_agent_id
+            .lock()
+            .await
+            .get(agent_id)
+            .copied()
+            .unwrap_or(0)
     }
 
     async fn forget(&self, agent_id: &str) {

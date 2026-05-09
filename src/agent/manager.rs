@@ -479,11 +479,7 @@ impl AgentManager {
     /// The handler reverts the decision to `open` if this returns an error,
     /// so the human's pick isn't silently lost on a transient delivery
     /// failure.
-    pub async fn resume_with_prompt(
-        &self,
-        agent_id: &str,
-        envelope: String,
-    ) -> anyhow::Result<()> {
+    pub async fn resume_with_prompt(&self, agent_id: &str, envelope: String) -> anyhow::Result<()> {
         // Snapshot liveness without holding the agents lock across the
         // prompt() call — handle.lock().await may block on the driver, and
         // start_agent (the fallback) needs to take agents.lock() itself.
