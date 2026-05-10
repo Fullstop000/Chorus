@@ -48,6 +48,7 @@ pub(super) fn target_to_agent(target: &AgentTargetIn) -> Agent {
         model: target.model.clone(),
         reasoning_effort: target.reasoning_effort.clone(),
         machine_id: None,
+        paused: target.paused,
         env_vars: target
             .env_vars
             .iter()
@@ -99,10 +100,25 @@ pub async fn apply(
     let running = manager.get_running_agent_ids().await;
     let running_set: HashSet<String> = running.iter().cloned().collect();
 
-    // 3. Start every desired agent that isn't already running. The spec
-    //    is materialised from the wire target, not re-read from the store.
+    // 3. Walk the desired set: paused targets must be stopped if running,
+    //    everything else must be started if not running. Without this
+    //    paused-aware branch, a `chorus agent stop` (which leaves the
+    //    row in the desired set with `paused=true`) would auto-restart
+    //    on the next reconcile.
     for target in &targets {
-        if running_set.contains(&target.agent_id) {
+        let already_running = running_set.contains(&target.agent_id);
+        if target.paused {
+            if already_running {
+                if let Err(e) = manager.stop_agent(&target.agent_id).await {
+                    tracing::warn!(agent_id = %target.agent_id, err = %e, "stop_agent failed during paused reconcile");
+                }
+                stopped.push(AgentTransition {
+                    agent_id: target.agent_id.clone(),
+                });
+            }
+            continue;
+        }
+        if already_running {
             continue;
         }
         let agent = target_to_agent(target);
@@ -121,11 +137,12 @@ pub async fn apply(
         }
     }
 
-    // 4. Stop any locally-running agent that is no longer desired. The
-    //    manager-side stop runs unconditionally — leaving a runtime alive
-    //    because the cache entry vanished would orphan an OS process. The
-    //    upstream `agent.state{stopped}` frame still goes out even if the
-    //    cache entry is missing, since we have the id directly.
+    // 4. Stop any locally-running agent that is no longer in the desired
+    //    set at all (row deleted on the platform). The manager-side stop
+    //    runs unconditionally — leaving a runtime alive because the cache
+    //    entry vanished would orphan an OS process. The upstream
+    //    `agent.state{stopped}` frame still goes out even if the cache
+    //    entry is missing, since we have the id directly.
     for agent_id in running.iter() {
         if desired.contains(agent_id) {
             continue;

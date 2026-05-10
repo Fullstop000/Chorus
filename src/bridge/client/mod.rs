@@ -10,6 +10,9 @@ mod ws;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tokio_util::sync::CancellationToken;
+
+use crate::agent::manager::AgentManager;
 use crate::store::Store;
 
 #[derive(Clone)]
@@ -23,10 +26,42 @@ pub struct BridgeClientConfig {
     pub store: Arc<Store>,
 }
 
+/// In-process bridge client used by `chorus serve`. Dials the platform's
+/// own `/api/bridge/ws` over loopback so every agent on the local
+/// installation flows through the same bridge protocol a remote
+/// `chorus bridge` uses. Reuses the platform's pre-built [`AgentManager`]
+/// and MCP bridge endpoint (set on the manager via
+/// `set_bridge_endpoint_override` before this is called) so we don't
+/// stand up a second runtime owner or a duplicate MCP listener.
+///
+/// The supplied `shutdown` token is the platform's shared cancellation
+/// token; cancellation here cascades from the platform's own Ctrl-C
+/// handler. Returns when the WS loop exits.
+pub async fn run_in_process_bridge_client(
+    platform_ws: String,
+    machine_id: String,
+    manager: Arc<AgentManager>,
+    store: Arc<Store>,
+    shutdown: CancellationToken,
+) -> anyhow::Result<()> {
+    let cfg = BridgeClientConfig {
+        platform_ws,
+        // platform_http / bridge_listen / agents_dir are unused by the WS
+        // loop itself — they're consumed by `run_bridge_client` when it
+        // stands up its own MCP bridge and AgentManager. The in-process
+        // path skips both, so these are placeholders.
+        platform_http: String::new(),
+        token: None,
+        machine_id,
+        bridge_listen: String::new(),
+        agents_dir: PathBuf::new(),
+        store,
+    };
+    ws::run_ws_client_loop(cfg, manager, shutdown).await
+}
+
 pub async fn run_bridge_client(cfg: BridgeClientConfig) -> anyhow::Result<()> {
-    use crate::agent::manager::AgentManager;
     use crate::server::event_bus::EventBus;
-    use tokio_util::sync::CancellationToken;
 
     let event_bus = Arc::new(EventBus::new());
 

@@ -184,6 +184,34 @@ pub async fn run(
         event_bus.subscribe_traces(),
     );
 
+    // In-process bridge client: every agent owned by `chorus serve`
+    // flows through the same bridge protocol a remote `chorus bridge`
+    // uses. The client dials our own `/api/bridge/ws` over loopback and
+    // shares the AgentManager and MCP bridge endpoint we already
+    // constructed above — there is no second runtime owner. Spawned
+    // before the listener accepts external traffic so the first agent
+    // CRUD broadcasts to a live receiver. The dial loop's own backoff
+    // covers the brief gap between this spawn and `axum::serve`
+    // accepting on the listener.
+    let in_proc_machine_id = chorus::server::resolve_local_machine_id_for_serve(&data_dir);
+    let in_proc_ws_url = format!("ws://127.0.0.1:{port}/api/bridge/ws");
+    let in_proc_shutdown = shutdown_token.clone();
+    let in_proc_manager = manager.clone();
+    let in_proc_store = store.clone();
+    tokio::spawn(async move {
+        if let Err(err) = chorus::bridge::client::run_in_process_bridge_client(
+            in_proc_ws_url,
+            in_proc_machine_id,
+            in_proc_manager,
+            in_proc_store,
+            in_proc_shutdown,
+        )
+        .await
+        {
+            tracing::error!(err = %err, "in-process bridge client exited with error");
+        }
+    });
+
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!("Chorus running at {server_url}");
     tracing::info!("Use `chorus send '#all' 'hello'` to send messages");

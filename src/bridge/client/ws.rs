@@ -122,6 +122,10 @@ impl TargetCache {
     pub(super) fn get(&self, agent_id: &str) -> Option<&AgentTargetIn> {
         self.by_agent_id.get(agent_id)
     }
+
+    pub(super) fn by_agent_id_mut(&mut self, agent_id: &str) -> Option<&mut AgentTargetIn> {
+        self.by_agent_id.get_mut(agent_id)
+    }
 }
 
 /// Shared session-scoped state passed to every frame handler. All fields
@@ -524,6 +528,23 @@ async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
     let agent_id = payload.agent_id.as_str();
     let name = target_clone.name.as_str();
 
+    // Incoming chat clears the paused flag if it was set: a manual stop
+    // (`handle_agent_stop`) is "stop the current process" semantics, not
+    // a persistent disable — the agent must wake on the next message.
+    // The bridge owns the runtime, so the bridge clears paused locally
+    // (in the cache) and dispatches start_agent below. The platform's
+    // store is updated by send-side: `forward_chat_event_to_bridges`
+    // doesn't rewrite the row, but the next CRUD or reconcile aligns it.
+    if target_clone.paused {
+        if let Err(err) = ctx.store.set_agent_paused(agent_id, false) {
+            tracing::warn!(agent_id = %agent_id, err = %err, "bridge: failed to clear paused flag on incoming chat");
+        }
+        let mut cache = ctx.targets.lock().await;
+        if let Some(t) = cache.by_agent_id_mut(agent_id) {
+            t.paused = false;
+        }
+    }
+
     let process_state = ctx.manager.process_state(agent_id).await;
     let result = match process_state {
         Some(ProcessState::Active { .. }) | Some(ProcessState::PromptInFlight { .. }) => {
@@ -532,8 +553,20 @@ async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
         _ => {
             // Wake the agent. The cached target was captured above so the
             // manager doesn't need to re-read the store.
+            //
+            // Pull the unread message that triggered this wake so the
+            // agent's first prompt has the message context — same shape
+            // the platform-driven path used pre-#149. Without this, the
+            // agent boots, runs `check_messages` as a tool call, then
+            // replies — costing an extra LLM round-trip on every cold
+            // start. With it, the message is the init prompt directly.
+            let wake_message = ctx
+                .store
+                .get_messages_for_agent_id(agent_id, false)
+                .ok()
+                .and_then(|msgs| msgs.into_iter().next());
             let agent = super::reconcile::target_to_agent(&target_clone);
-            let r = ctx.manager.start_agent(&agent, None, None).await;
+            let r = ctx.manager.start_agent(&agent, wake_message, None).await;
             if r.is_ok() {
                 let pid = ctx.counter.allocate(agent_id).await;
                 send_agent_state(&ctx.state_tx, agent_id, "started", pid).await;

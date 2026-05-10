@@ -134,6 +134,14 @@ pub struct AgentTarget {
     /// turn. Currently unused.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_prompt: Option<String>,
+    /// Soft-stop. When `true`, the bridge keeps this agent stopped
+    /// even though it's still in the desired set. Set by the platform's
+    /// stop handler so the bridge protocol can express "stopped but
+    /// retained" without removing the row from the target. Defaults to
+    /// `false` for backwards compatibility with older platforms that
+    /// never emit this field.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

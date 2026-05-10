@@ -63,6 +63,7 @@ fn agent_to_target(a: Agent) -> AgentTarget {
             .collect(),
         init_directive: None,
         pending_prompt: None,
+        paused: a.paused,
     }
 }
 
@@ -345,13 +346,13 @@ pub fn broadcast_target_update(store: &Store, registry: &BridgeRegistry) {
 }
 
 /// Forward a chat-message stream event to the bridge that owns each
-/// recipient agent. Called wherever a `message.created` `StreamEvent`
-/// is published. Routes by the agent's `machine_id`; platform-local
-/// agents (NULL `machine_id`) are skipped — they're delivered by the
-/// platform's own `AgentManager` in `deliver_message_to_agents`.
-///
-/// The bridge is responsible for matching the inner `agent_id` to its
-/// own running runtime and updating that mailbox.
+/// recipient agent. Called from the event-bus subscriber spawned in
+/// `build_router_with_services_and_auth`, fired on every `message.created`
+/// event. Routes by the agent's `machine_id`; for `chorus serve` that
+/// includes the in-process bridge client (registered under
+/// `local_machine_id`). After the dual-runtime path collapsed (#149),
+/// this is the *only* agent-delivery path — there is no platform-local
+/// fallback.
 pub fn forward_chat_event_to_bridges(
     store: &Store,
     registry: &BridgeRegistry,
@@ -380,10 +381,11 @@ pub fn forward_chat_event_to_bridges(
         return;
     }
     for agent_id in agent_recipients {
-        // Route only to the bridge that owns this agent. Platform-local
-        // agents (machine_id NULL) are delivered by the platform's own
-        // AgentManager via deliver_message_to_agents — they have no
-        // bridge to push to.
+        // Route to the bridge that owns this agent. Every agent has a
+        // non-NULL `machine_id` after Phase 1 of the dual-path collapse
+        // (#149); the bridge that registered with the matching id —
+        // possibly the in-process one inside `chorus serve` — receives
+        // the frame.
         let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
         let Some(owner_machine_id) = agent_record.and_then(|a| a.machine_id) else {
             continue;

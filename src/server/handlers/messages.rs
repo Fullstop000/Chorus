@@ -5,7 +5,7 @@ use axum::http::StatusCode;
 use axum::Json;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 use super::dto::ChannelInfo;
 use super::path_params::{resolve_public_agent, PublicResourceIdPath};
@@ -15,7 +15,7 @@ use crate::store::inbox::InboxConversationNotificationView;
 use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
 use crate::store::Store;
 use crate::utils::error::internal_err;
-use crate::utils::error::{format_anyhow_error, AppErrorCode};
+use crate::utils::error::AppErrorCode;
 
 // ── Inline query structs ──
 
@@ -404,6 +404,14 @@ async fn send_message_to_channel(
     let preview = content_preview(content);
     info!(agent = %actor_id, target = %format!("#{}", channel.name), content = %preview, "send_message");
 
+    // `suppress_event` was added pre-#149 so the UI's optimistic append
+    // wouldn't get a realtime echo for its own message. After the
+    // dual-runtime collapse, the same event is the *only* signal that
+    // wakes the recipient agent — suppressing it on UI sends meant the
+    // agent never received the message. The UI's history hook already
+    // dedups by sequence (newer-seq wins), so always publishing here is
+    // safe — the request flag is now an inert hint.
+    let _ = suppress_event;
     let (message_id, event) = store
         .create_message(CreateMessage {
             channel_name: &channel.name,
@@ -411,7 +419,7 @@ async fn send_message_to_channel(
             sender_type,
             content,
             attachment_ids,
-            suppress_event,
+            suppress_event: false,
             run_id: run_id.as_deref(),
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -427,19 +435,13 @@ async fn send_message_to_channel(
             .map_err(internal_err)?;
     }
 
-    if !suppress_agent_delivery {
-        if let Err(err) = deliver_message_to_agents(state, &channel.id, actor_id, &message_id).await
-        {
-            let error_detail = format_anyhow_error(&err);
-            warn!(
-                channel = %channel.name,
-                actor = %actor_id,
-                message_id = %message_id,
-                error = %error_detail,
-                "message persisted but agent delivery failed"
-            );
-        }
-    }
+    let _ = suppress_agent_delivery;
+    // Agent delivery: every agent is now bridge-owned, so the platform
+    // doesn't poke runtimes here. The published `message.created` event
+    // is forwarded to the agent's owning bridge by the event-bus
+    // subscriber in `build_router_with_services_and_auth`, which calls
+    // `forward_chat_event_to_bridges`. The bridge picks it up and either
+    // notifies a live agent or starts an asleep one.
 
     let message_view = store
         .get_conversation_message_view(&message_id)
@@ -503,8 +505,11 @@ async fn forward_team_mentions(
         )?;
         state.event_bus.publish_stream(event);
 
-        deliver_message_to_agents(state, &team_channel.id, sender_id, &forwarded_message_id)
-            .await?;
+        // Forwarded message: the published `message.created` event will
+        // route to the team channel's agent members via
+        // `forward_chat_event_to_bridges`, same as the originating
+        // channel above. No platform-side wake needed.
+        let _ = forwarded_message_id;
     }
 
     Ok(())
@@ -817,59 +822,14 @@ pub async fn handle_public_update_read_cursor(
     )
 }
 
-/// Fan-out a newly posted message to all relevant agent recipients.
-pub(crate) async fn deliver_message_to_agents(
-    state: &AppState,
-    channel_id: &str,
-    sender_name: &str,
-    message_id: &str,
-) -> anyhow::Result<()> {
-    let recipients = state
-        .store
-        .get_agent_message_recipients(channel_id, sender_name)?;
-    for recipient_name in recipients {
-        let Some(agent) = state.store.get_agent(&recipient_name)? else {
-            continue;
-        };
-        // Bridge-hosted agents are woken by the remote bridge after it
-        // receives `chat.message.received` via `forward_chat_event_to_bridges`;
-        // the platform must not spawn them locally. "Bridge-hosted" =
-        // owned by some other machine_id; the local installation's own
-        // agents (machine_id == local_machine_id) still go through the
-        // platform's in-process AgentManager until Phase 2 swaps the path.
-        if agent
-            .machine_id
-            .as_deref()
-            .is_some_and(|m| m != state.local_machine_id.as_str())
-        {
-            continue;
-        }
-        // Associate the channel with the agent's trace run before notifying/starting.
-        state.lifecycle.set_run_channel(&agent.id, channel_id);
-        // Route on runtime liveness (manager HashMap), not on the persisted
-        // `agents.status` column — the two can drift, and the manager is the
-        // single source of truth for whether a process is alive right now.
-        let process_state = state.lifecycle.process_state(&agent.id).await;
-        let status = crate::agent::process_status::derive_status(process_state.as_ref());
-        match status {
-            crate::agent::process_status::Status::Working
-            | crate::agent::process_status::Status::Ready => {
-                state.lifecycle.notify_agent(&agent.id).await?
-            }
-            crate::agent::process_status::Status::Asleep
-            | crate::agent::process_status::Status::Failed => {
-                let wake_message = state
-                    .store
-                    .get_received_message_for_agent_id(&agent.id, message_id)?;
-                state
-                    .lifecycle
-                    .start_agent(&agent, wake_message, None)
-                    .await?
-            }
-        }
-    }
-    Ok(())
-}
+// `deliver_message_to_agents` was the platform-local fan-out. Every
+// agent is now bridge-owned, so message routing flows through
+// `forward_chat_event_to_bridges` (subscribed to the event bus in
+// `build_router_with_services_and_auth`). The bridge that owns the
+// recipient agent — either the in-process bridge client running inside
+// `chorus serve` or a remote `chorus bridge` — sees
+// `chat.message.received` and decides whether to notify a live runtime
+// or start an asleep one. There is no platform-side wake path anymore.
 
 // ── Trace history ──
 

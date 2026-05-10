@@ -557,63 +557,21 @@ async fn test_receive_timeout_is_interpreted_in_milliseconds() {
     );
 }
 
-#[tokio::test]
-async fn test_send_starts_sleeping_agent_with_wake_message() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "wake up from sleep" });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let started = lifecycle.started_calls();
-    assert_eq!(started.len(), 1);
-    assert_eq!(started[0].0, "bot1");
-    let wake_message = started[0]
-        .1
-        .as_ref()
-        .expect("sleeping agent restart should include wake message");
-    assert_eq!(wake_message.content, "wake up from sleep");
-    assert_eq!(wake_message.sender_name, "alice");
-    assert_eq!(wake_message.channel_name, "general");
-    assert_eq!(wake_message.channel_type, "channel");
-    assert!(lifecycle.notified_names().is_empty());
-}
-
-#[tokio::test]
-async fn test_send_notifies_active_agent_without_restart() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    lifecycle.mark_running("bot1");
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "stay online" });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(lifecycle.started_names().is_empty());
-    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()]);
-}
+// `test_send_starts_sleeping_agent_with_wake_message`,
+// `test_send_notifies_active_agent_without_restart`, the DM equivalents,
+// the cross-channel send variants, and `delivery_starts_agent_when_no_process_managed_*`
+// were unit tests that observed `MockLifecycle.started_names()` /
+// `notified_names()` to verify the platform-driven wake path. After the
+// dual-runtime collapse (#149) the platform no longer calls
+// `lifecycle.start_agent` / `lifecycle.notify_agent`; the bridge client
+// receiving `chat.message.received` does. Coverage moves to:
+//   - the Playwright LLM-gated MSG suite (MSG-001 / MSG-002 / MSG-004 /
+//     MSG-006), which exercises real round-trips via the in-process
+//     bridge client; and
+//   - bridge-layer tests that verify `forward_chat_event_to_bridges`
+//     emits the right frames (existing in `bridge_ws` integration coverage).
+// The deleted tests were tightly coupled to internal behavior that no
+// longer lives at this layer.
 
 #[tokio::test]
 async fn test_server_info() {
@@ -1530,73 +1488,15 @@ async fn test_list_runtime_models() {
     assert_eq!(payload, serde_json::json!(["openai/gpt-5.4"]));
 }
 
-#[tokio::test]
-async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
-    seed_default_workspace(&store);
-    let app = build_router_with_lifecycle(store.clone(), Arc::new(FailStartLifecycle));
-
-    let req = serde_json::json!({
-        "name": "stuck-bot",
-        "runtime": "claude",
-        "model": "sonnet"
-    });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/agents")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    // Start failure is now an explicit error, not a 200 with a warning.
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-    let payload = body_json(resp).await;
-    assert_eq!(payload["code"].as_str(), Some("AGENT_START_FAILED"));
-
-    // The agent record must still be persisted (inactive) so operators can inspect it.
-    let agents = store.get_agents().unwrap();
-    let agent = agents
-        .iter()
-        .find(|a| a.name.starts_with("stuck-bot-"))
-        .expect("agent should remain in the store after failed start");
-    assert!(store.is_member("all", &agent.id).unwrap());
-
-    // After a failed start the manager has no live process, so the derived
-    // status surfaced through the API must be `asleep`. Regression guard:
-    // before status was derived from ProcessState the persisted column
-    // carried this claim; that column is gone, so verify through the API.
-    let list_resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/agents")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(list_resp.status(), StatusCode::OK);
-    let listed: Vec<serde_json::Value> = serde_json::from_slice(
-        &axum::body::to_bytes(list_resp.into_body(), 1_000_000)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let entry = listed
-        .iter()
-        .find(|a| a["name"] == agent.name.as_str())
-        .expect("failed-start agent must still appear in /api/agents");
-    assert_eq!(
-        entry["status"], "asleep",
-        "failed-start agent must derive to `asleep`, got `{}`",
-        entry["status"]
-    );
-}
+// `test_create_agent_via_api_keeps_inactive_record_when_start_fails`
+// was deleted with the dual-runtime collapse (#149). Its premise — that
+// `POST /api/agents` returns a synchronous `AGENT_START_FAILED` when
+// the platform-side `start_agent` fails — no longer applies. The
+// platform doesn't start the agent at create time anymore; the bridge
+// client does, and start failures surface asynchronously via the
+// realtime stream's `agent.state` events. The "row is persisted even
+// if start fails" guarantee is now trivial: the row is persisted
+// regardless because no synchronous start happens.
 
 #[tokio::test]
 async fn test_create_kimi_agent_via_api() {
@@ -1637,11 +1537,18 @@ async fn test_create_kimi_agent_via_api() {
     );
     let agent = store.get_agent(&name).unwrap().expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
-    assert_eq!(payload["status"], "ready");
+    // After the dual-runtime collapse the platform doesn't start the
+    // agent on create — the bridge client does, asynchronously. So a
+    // freshly-created agent surfaces as `asleep` until the bridge's
+    // `agent.state{started}` frame arrives via the realtime stream.
+    assert_eq!(payload["status"], "asleep");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
-    assert_eq!(lifecycle.started_names(), vec![name]);
+    assert!(
+        lifecycle.started_names().is_empty(),
+        "platform must not call lifecycle.start_agent at create time anymore"
+    );
 }
 
 #[tokio::test]
@@ -1893,42 +1800,10 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
     assert_eq!(json["messages"][0]["senderDeleted"], true);
 }
 
-#[tokio::test]
-async fn test_send_starts_inactive_agent_recipients() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    let bot2_id = store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "gpt-5.4",
-            reasoning_effort: None,
-            machine_id: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    join_channel_silent(&store, "general", &bot2_id, "agent");
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "wake bot2" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let mut started = lifecycle.started_names();
-    started.sort();
-    assert_eq!(started, vec!["bot1".to_string(), "bot2".to_string()]);
-    assert!(lifecycle.notified_names().is_empty());
-}
+// `test_send_starts_inactive_agent_recipients` was deleted alongside the
+// other handler-driven wake assertions; the bridge protocol is the new
+// owner of that path. See the deletion note above
+// `test_send_starts_sleeping_agent_with_wake_message`.
 
 #[tokio::test]
 async fn test_send_persists_message_even_if_agent_delivery_fails() {
@@ -1960,115 +1835,16 @@ async fn test_send_persists_message_even_if_agent_delivery_fails() {
         .any(|message| message.content == "persist despite delivery failure"));
 }
 
-#[tokio::test]
-async fn test_dm_send_starts_inactive_agent() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
+// `test_dm_send_starts_inactive_agent` deleted with the other
+// handler-driven wake assertions; see the note above
+// `test_send_starts_sleeping_agent_with_wake_message`.
 
-    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey bot1 via dm" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        lifecycle.started_names(),
-        vec!["bot1".to_string()],
-        "DM to inactive agent must trigger start_agent"
-    );
-    assert!(lifecycle.notified_names().is_empty());
-}
-
-#[tokio::test]
-async fn test_dm_send_notifies_active_agent() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    // Runtime liveness is the manager HashMap, not the DB column:
-    // mark the agent as having a live managed process.
-    lifecycle.mark_running("bot1");
-
-    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey active bot1 via dm" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(lifecycle.started_names().is_empty());
-    assert_eq!(
-        lifecycle.notified_names(),
-        vec!["bot1".to_string()],
-        "DM to active agent must trigger notify_agent"
-    );
-}
-
-/// Regression: persisted `AgentStatus::Active` does not mean the
-/// runtime has a managed process. Delivery must route on the
-/// manager HashMap (`process_state`), not the DB column, so an
-/// agent whose row says Active but whose process is absent still
-/// gets woken via `start_agent`.
-#[tokio::test]
-async fn delivery_starts_agent_when_no_process_managed_even_if_db_says_active() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    // Deliberately DO NOT call lifecycle.mark_running("bot1").
-
-    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "wake up despite drift" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        lifecycle.started_names(),
-        vec!["bot1".to_string()],
-        "delivery must route on process_state, not the persisted AgentStatus column",
-    );
-    assert!(
-        lifecycle.notified_names().is_empty(),
-        "no live process means notify_agent must not be called",
-    );
-}
-
-#[tokio::test]
-async fn test_send_notifies_active_agents() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    lifecycle.mark_running("bot1");
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "ping active bot" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(lifecycle.started_names().is_empty());
-    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()]);
-}
+// `test_dm_send_notifies_active_agent`,
+// `delivery_starts_agent_when_no_process_managed_even_if_db_says_active`,
+// and `test_send_notifies_active_agents` were also deleted as part of
+// the dual-runtime collapse — they verified handler-driven wake
+// behavior that no longer exists at this layer. The Playwright
+// LLM-gated MSG suite covers the new bridge-driven path end-to-end.
 
 #[tokio::test]
 async fn test_history() {
@@ -2753,21 +2529,12 @@ async fn test_at_mention_forwards_to_team_channel() {
     assert_eq!(provenance.channel_name, "general");
     assert_eq!(provenance.sender_name, "alice");
 
-    let notified = lifecycle.notified_names();
-    assert_eq!(
-        notified
-            .iter()
-            .filter(|name| name.as_str() == "bot1")
-            .count(),
-        2
-    );
-    assert_eq!(
-        notified
-            .iter()
-            .filter(|name| name.as_str() == "bot2")
-            .count(),
-        1
-    );
+    // Notification fan-out moved to the bridge layer with the
+    // dual-runtime collapse (#149); the platform no longer calls
+    // `lifecycle.notify_agent` directly. The team-mention forwarding
+    // (which is what this test is really pinning) still lives on the
+    // platform — verified above by the channel + provenance assertions.
+    let _ = lifecycle;
 }
 
 // ── Template API tests ──
@@ -3581,47 +3348,15 @@ async fn public_send_allows_empty_content_with_attachments() {
 // other start paths (manual restart, message wake) do not.
 // ─────────────────────────────────────────────────────────────────────
 
-#[tokio::test]
-async fn test_create_agent_passes_intro_directive_referencing_system_channel() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store.ensure_builtin_channels("alice").unwrap();
-
-    let req = serde_json::json!({ "name": "newbot", "runtime": "claude", "model": "sonnet" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/agents")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let started = lifecycle.started_calls();
-    assert_eq!(started.len(), 1, "create-agent should fire one start");
-    let directive = started[0]
-        .2
-        .as_ref()
-        .expect("create-agent must pass an init directive");
-    let expected_channel = Store::DEFAULT_SYSTEM_CHANNEL;
-    assert!(
-        directive.contains(expected_channel),
-        "directive should reference #{expected_channel}: {directive:?}"
-    );
-    assert!(
-        directive.contains("introduc"),
-        "directive should mention introducing: {directive:?}"
-    );
-    // Tool name is intentionally NOT asserted: runtimes can prefix tools
-    // (e.g. mcp__chat__send_message), and the agent's standing system
-    // prompt already names the tool. Hardcoding it here would be brittle.
-    // wake_message stays None for a fresh creation — the directive is
-    // the only first-prompt source.
-    assert!(started[0].1.is_none());
-}
+// `test_create_agent_passes_intro_directive_referencing_system_channel`
+// was deleted with the dual-runtime collapse (#149). The intro-directive
+// path depended on `create_and_start_agent` calling
+// `lifecycle.start_agent(_, _, Some(directive))` directly. After the
+// collapse, the platform doesn't start the agent at create time at all.
+// Restoring auto-intro requires a one-shot directive frame in the bridge
+// protocol (Phase 4 follow-up). When that lands, the test moves over to
+// asserting that the bridge.target / `agent.directive` frame carries
+// the intro string for fresh creations.
 
 #[tokio::test]
 async fn test_manual_restart_does_not_fire_intro_directive() {
