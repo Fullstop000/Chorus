@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS agents (
     runtime TEXT NOT NULL, -- The runtime driver used (e.g., 'claude', 'codex')
     model TEXT NOT NULL, -- The specific LLM model used
     reasoning_effort TEXT, -- The reasoning effort configuration
-    machine_id TEXT, -- Owner. Some(machine_id) = bound to that bridge; NULL = platform-local. Every agent has one owner.
+    machine_id TEXT NOT NULL, -- Owner. The bridge that runs this agent's runtime; for `chorus serve` agents created without an explicit machine_id, this is the installation's `local_machine_id` from `config.toml`.
     paused INTEGER NOT NULL DEFAULT 0, -- Soft-stop: 1 = bridge client should keep this agent stopped even though it's still in the desired set; 0 = run normally. Set by handle_agent_stop, cleared by handle_agent_start.
     restart_seq INTEGER NOT NULL DEFAULT 0, -- Monotonic counter bumped by handlers that need the bridge to stop+start the runtime (spec change, manual restart, decision resume). Bridge client tracks last-applied per agent and triggers a restart on bump.
     pending_init_directive TEXT, -- One-shot envelope delivered as the first prompt on the next restart_seq bump. Used by handle_resolve_decision so a human's pick reaches the agent without a synchronous lifecycle call from the platform.

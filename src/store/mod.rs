@@ -49,7 +49,6 @@ impl Store {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        Self::validate_supported_identity_schema(&conn)?;
         Self::init_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -64,7 +63,6 @@ impl Store {
     pub fn open_for_bridge(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=OFF;")?;
-        Self::validate_supported_identity_schema(&conn)?;
         Self::init_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -94,154 +92,9 @@ impl Store {
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
-        // The schema below uses `CREATE TABLE IF NOT EXISTS` so this is a
-        // no-op on existing DBs; column-shape migrations run after.
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
-        // Idempotent `machine_id` migration: SQLite has no
-        // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Attempt the ALTER
-        // and ignore *only* the "duplicate column name" error; surface
-        // anything else (locked DB, syntax errors, real schema drift)
-        // so first-run failures aren't silent.
-        match conn.execute("ALTER TABLE agents ADD COLUMN machine_id TEXT", []) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") => {}
-            Err(e) => return Err(e.into()),
-        }
-        // Same idempotent ALTER for the `paused` flag introduced when the
-        // platform stopped owning runtime state. NOT NULL DEFAULT 0 so
-        // existing rows backfill to "running" automatically.
-        match conn.execute(
-            "ALTER TABLE agents ADD COLUMN paused INTEGER NOT NULL DEFAULT 0",
-            [],
-        ) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") => {}
-            Err(e) => return Err(e.into()),
-        }
-        // `restart_seq` and `pending_init_directive` arrived with the
-        // bridge-driven restart/resume protocol (#149 phase 4). Same
-        // idempotent ALTER pattern.
-        match conn.execute(
-            "ALTER TABLE agents ADD COLUMN restart_seq INTEGER NOT NULL DEFAULT 0",
-            [],
-        ) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") => {}
-            Err(e) => return Err(e.into()),
-        }
-        match conn.execute(
-            "ALTER TABLE agents ADD COLUMN pending_init_directive TEXT",
-            [],
-        ) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") => {}
-            Err(e) => return Err(e.into()),
-        }
-        // Migrate agent_env_vars from agent_name FK to agent_id FK.
-        // SQLite has no ALTER TABLE DROP COLUMN, so we recreate the table.
-        if Self::schema_column_exists(conn, "agent_env_vars", "agent_name")? {
-            conn.execute_batch(
-                "BEGIN;
-                 CREATE TABLE agent_env_vars_new (
-                     agent_id TEXT NOT NULL,
-                     key TEXT NOT NULL,
-                     value TEXT NOT NULL,
-                     position INTEGER NOT NULL,
-                     PRIMARY KEY (agent_id, key),
-                     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
-                 );
-                 INSERT INTO agent_env_vars_new (agent_id, key, value, position)
-                     SELECT a.id, e.key, e.value, e.position
-                     FROM agent_env_vars e
-                     JOIN agents a ON a.name = e.agent_name;
-                 DROP TABLE agent_env_vars;
-                 ALTER TABLE agent_env_vars_new RENAME TO agent_env_vars;
-                 COMMIT;",
-            )?;
-        }
         Ok(())
-    }
-
-    fn validate_supported_identity_schema(conn: &Connection) -> Result<()> {
-        for (table, column) in [
-            ("humans", "display_name"),
-            ("workspaces", "created_by_human"),
-            ("workspace_members", "human_name"),
-            ("channel_members", "member_name"),
-            ("inbox_read_state", "member_name"),
-            ("messages", "sender_name"),
-            ("tasks", "created_by"),
-            ("tasks", "claimed_by"),
-            ("team_members", "member_name"),
-        ] {
-            if Self::schema_column_exists(conn, table, column)? {
-                anyhow::bail!(Self::old_identity_schema_message(table, column));
-            }
-        }
-
-        for (table, columns) in [
-            ("humans", &["id", "name"][..]),
-            ("workspaces", &["created_by_human_id"][..]),
-            ("workspace_members", &["human_id"][..]),
-            ("channel_members", &["member_id", "member_type"][..]),
-            ("inbox_read_state", &["member_id", "member_type"][..]),
-            ("messages", &["sender_id", "sender_type"][..]),
-            (
-                "tasks",
-                &[
-                    "created_by_id",
-                    "created_by_type",
-                    "claimed_by_id",
-                    "claimed_by_type",
-                ][..],
-            ),
-            ("team_members", &["member_id", "member_type"][..]),
-        ] {
-            if !Self::schema_table_exists(conn, table)? {
-                continue;
-            }
-            for column in columns {
-                if !Self::schema_column_exists(conn, table, column)? {
-                    anyhow::bail!(Self::old_identity_schema_message(table, column));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
-    fn old_identity_schema_message(table: &str, column: &str) -> String {
-        format!(
-            "local database uses an old identity schema ({table}.{column}); run with a fresh data directory or reset local data"
-        )
-    }
-
-    fn schema_table_exists(conn: &Connection, table: &str) -> Result<bool> {
-        Ok(conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![table],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
-    }
-
-    fn schema_column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
-        if !Self::schema_table_exists(conn, table)? {
-            return Ok(false);
-        }
-        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-        let exists = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .filter_map(Result::ok)
-            .any(|name| name == column);
-        Ok(exists)
     }
 
     /// Look up the channel_id for a given run_id (from the first message in that run).

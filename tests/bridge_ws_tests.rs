@@ -82,7 +82,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("test-machine-001"),
+            machine_id: "test-machine-001",
             env_vars: &[],
         })
         .unwrap();
@@ -95,7 +95,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "codex",
             model: "gpt-5",
             reasoning_effort: Some("medium"),
-            machine_id: Some("test-machine-001"),
+            machine_id: "test-machine-001",
             env_vars: &[],
         })
         .unwrap();
@@ -672,7 +672,7 @@ async fn bridge_ws_pushes_chat_message_received_when_agent_member_gets_message()
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("chat-machine"),
+            machine_id: "chat-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -743,7 +743,7 @@ async fn bridge_ws_two_machines_chat_isolation() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-a"),
+            machine_id: "machine-a",
             env_vars: &[],
         })
         .unwrap();
@@ -756,7 +756,7 @@ async fn bridge_ws_two_machines_chat_isolation() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-b"),
+            machine_id: "machine-b",
             env_vars: &[],
         })
         .unwrap();
@@ -929,7 +929,7 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -943,7 +943,7 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-a"),
+            machine_id: "machine-a",
             env_vars: &[],
         })
         .unwrap();
@@ -957,7 +957,7 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-b"),
+            machine_id: "machine-b",
             env_vars: &[],
         })
         .unwrap();
@@ -1026,7 +1026,7 @@ async fn internal_agent_endpoints_pass_through_when_auth_disabled() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1060,7 +1060,7 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-x"),
+            machine_id: "machine-x",
             env_vars: &[],
         })
         .unwrap();
@@ -1129,7 +1129,7 @@ async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-y"),
+            machine_id: "machine-y",
             env_vars: &[],
         })
         .unwrap();
@@ -1183,7 +1183,7 @@ async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();

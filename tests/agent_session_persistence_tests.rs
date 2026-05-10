@@ -30,7 +30,7 @@ fn seed_agent_with_session(store: &Store, name: &str, session_id: &str) -> Strin
             runtime: "codex",
             model: "gpt-fake",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();

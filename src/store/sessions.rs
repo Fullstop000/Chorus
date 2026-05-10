@@ -125,8 +125,8 @@ mod tests {
             .lock()
             .unwrap()
             .execute(
-                "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
-             VALUES ('a1', ?1, 'a', 'A', 'fake', 'fake')",
+                "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, machine_id)
+             VALUES ('a1', ?1, 'a', 'A', 'fake', 'fake', 'test-machine')",
                 params![workspace.id],
             )
             .unwrap();

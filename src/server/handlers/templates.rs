@@ -150,7 +150,7 @@ pub async fn handle_launch_trio(
                 runtime: &template.suggested_runtime,
                 model: &model,
                 reasoning_effort: None,
-                machine_id: None,
+                machine_id: &state.local_machine_id,
                 env_vars: &[],
             },
         )

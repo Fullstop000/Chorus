@@ -29,11 +29,12 @@ pub struct Agent {
     pub model: String,
     /// Optional Codex reasoning effort override.
     pub reasoning_effort: Option<String>,
-    /// Owner of this agent's runtime. `Some(machine_id)` binds the
-    /// agent to one named bridge; `None` means platform-local — it runs
-    /// in `chorus serve`'s own `AgentManager` and is never sent to any
-    /// bridge. Every agent has exactly one owner.
-    pub machine_id: Option<String>,
+    /// Owner of this agent's runtime. The bridge with this `machine_id`
+    /// runs the agent's process. For `chorus serve` agents created
+    /// without an explicit owner, this is the installation's
+    /// `local_machine_id`; the in-process bridge client picks them up
+    /// because it registers under the same id.
+    pub machine_id: String,
     /// Soft stop. When `true`, the bridge client treats this agent as
     /// "in the desired set but should not be running". Set by the
     /// stop handler; cleared by the start handler. Survives platform
@@ -92,9 +93,10 @@ pub struct AgentRecordUpsert<'a> {
     pub model: &'a str,
     /// Optional reasoning effort (Codex).
     pub reasoning_effort: Option<&'a str>,
-    /// Owner of this agent's runtime. `Some(machine_id)` binds it to
-    /// one named bridge; `None` = platform-local.
-    pub machine_id: Option<&'a str>,
+    /// Owner of this agent's runtime. Required — every agent row has
+    /// exactly one owner. For platform-local agents, callers pass
+    /// `state.local_machine_id`.
+    pub machine_id: &'a str,
     /// Full env var list to replace existing rows.
     pub env_vars: &'a [AgentEnvVar],
 }
@@ -264,20 +266,6 @@ impl Store {
         Ok(updated)
     }
 
-    /// Set every NULL `machine_id` to `local_machine_id`. Called once at
-    /// startup so rows that pre-date the always-set-machine_id invariant
-    /// get owned by the local installation. Idempotent: rows already
-    /// pinned to a remote bridge keep their value; only NULLs are touched.
-    /// Returns the number of rows updated.
-    pub fn backfill_null_machine_ids(&self, local_machine_id: &str) -> Result<usize> {
-        let conn = self.conn.lock().unwrap();
-        let updated = conn.execute(
-            "UPDATE agents SET machine_id = ?1 WHERE machine_id IS NULL",
-            params![local_machine_id],
-        )?;
-        Ok(updated)
-    }
-
     pub fn delete_agent_record(&self, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let agent_id: Option<String> = conn
@@ -425,7 +413,7 @@ impl Store {
             runtime: row.get(6)?,
             model: row.get(7)?,
             reasoning_effort: row.get(8)?,
-            machine_id: row.get(9)?,
+            machine_id: row.get::<_, String>(9)?,
             paused: paused != 0,
             restart_seq: row.get(11)?,
             pending_init_directive: row.get(12)?,

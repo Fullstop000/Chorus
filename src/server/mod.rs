@@ -117,14 +117,6 @@ pub fn build_router_with_services_and_auth(
         resolve_local_human_identity(store.as_ref(), &data_dir);
     let local_machine_id = resolve_local_machine_id(&data_dir);
 
-    // Backfill rows that pre-date the always-set-machine_id invariant.
-    // After this UPDATE every agent owned by `chorus serve` has a non-NULL
-    // `machine_id` equal to `local_machine_id`. Rows already pinned to a
-    // remote bridge keep their value; only NULLs are touched.
-    if let Err(err) = store.backfill_null_machine_ids(&local_machine_id) {
-        tracing::warn!(err = %err, "backfill_null_machine_ids failed; agent rows may have NULL machine_id");
-    }
-
     // Built-in channels (`#all`) and the local human's membership are seeded
     // here, after identity resolution: the legacy CLI bootstrap used the OS
     // username as both the human row PK and the `#all` member key, which is

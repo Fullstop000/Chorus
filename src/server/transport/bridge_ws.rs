@@ -297,12 +297,10 @@ async fn handle_inbound_frame(
 
 /// Build a serialized `bridge.target` frame from the current set of
 /// agents in the store, scoped to a specific bridge `machine_id`. Only
-/// agents explicitly bound to this bridge are included; agents with
-/// NULL `machine_id` are platform-local and never sent to any bridge.
+/// agents whose `machine_id` matches are included.
 ///
-/// Every agent has exactly one owner (the platform itself, or one named
-/// bridge). Fanning NULL agents to all bridges would cause dual-runtime
-/// contention as soon as a second bridge connects.
+/// Every agent has exactly one owner; fanning agents to bridges that
+/// don't own them would cause dual-runtime contention.
 pub fn build_target_frame_text_for_machine(
     store: &Store,
     machine_id: &str,
@@ -310,7 +308,7 @@ pub fn build_target_frame_text_for_machine(
     let agents: Vec<Agent> = store
         .get_agents()?
         .into_iter()
-        .filter(|a| a.machine_id.as_deref() == Some(machine_id))
+        .filter(|a| a.machine_id == machine_id)
         .collect();
     let target = BridgeTarget {
         target_agents: agents.into_iter().map(agent_to_target).collect(),
@@ -385,15 +383,15 @@ pub fn forward_chat_event_to_bridges(
         return;
     }
     for agent_id in agent_recipients {
-        // Route to the bridge that owns this agent. Every agent has a
-        // non-NULL `machine_id` after Phase 1 of the dual-path collapse
-        // (#149); the bridge that registered with the matching id —
-        // possibly the in-process one inside `chorus serve` — receives
-        // the frame.
-        let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
-        let Some(owner_machine_id) = agent_record.and_then(|a| a.machine_id) else {
+        // Route to the bridge that owns this agent. The bridge that
+        // registered with the matching `machine_id` — possibly the
+        // in-process one inside `chorus serve` — receives the frame.
+        // A missing record (deleted between channel-member lookup and
+        // here) silently skips this recipient.
+        let Some(agent) = store.get_agent_by_id(agent_id, false).ok().flatten() else {
             continue;
         };
+        let owner_machine_id = agent.machine_id;
         let frame = match build_chat_message_frame_text(agent_id, event) {
             Ok(t) => t,
             Err(err) => {

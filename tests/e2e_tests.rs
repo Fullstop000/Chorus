@@ -62,8 +62,8 @@ fn seed_agent_with_id(
         .id;
     let conn = store.conn_for_test();
     conn.execute(
-        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
-         VALUES (?1, ?2, ?1, ?3, ?4, ?5)",
+        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, machine_id)
+         VALUES (?1, ?2, ?1, ?3, ?4, ?5, 'test-machine')",
         rusqlite::params![id, workspace_id, display_name, runtime, model],
     )
     .unwrap();

@@ -211,8 +211,8 @@ mod tests {
         .unwrap();
         let agent_id = "agent-1".to_string();
         conn.execute(
-            "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
-             VALUES (?1, ?2, 'bot', 'Bot', 'claude', 'sonnet')",
+            "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, machine_id)
+             VALUES (?1, ?2, 'bot', 'Bot', 'claude', 'sonnet', 'test-machine')",
             params![agent_id, workspace_id],
         )
         .unwrap();

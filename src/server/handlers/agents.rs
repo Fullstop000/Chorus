@@ -287,7 +287,7 @@ pub async fn handle_create_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
-            machine_id: Some(&machine_id_resolved),
+            machine_id: &machine_id_resolved,
             env_vars: &env_vars,
         },
     )
@@ -319,7 +319,7 @@ pub(crate) struct CreateAgentParams<'a> {
     pub runtime: &'a str,
     pub model: &'a str,
     pub reasoning_effort: Option<&'a str>,
-    pub machine_id: Option<&'a str>,
+    pub machine_id: &'a str,
     pub env_vars: &'a [AgentEnvVar],
 }
 
@@ -483,17 +483,16 @@ pub async fn handle_update_agent(
         || existing.env_vars != env_vars;
 
     // Preserve the existing owner when the request omits `machineId`.
-    // Without this, every PATCH would clobber `machine_id` to NULL — a
-    // bridge-hosted agent renamed via the UI (which doesn't echo
-    // `machineId` back) would silently lose its owner.
+    // The UI's "Edit agent" form doesn't always echo `machineId`, and
+    // every row has one already; we never want PATCH to silently move
+    // an agent across machines.
     let machine_id_resolved: String = req
         .machine_id
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .or_else(|| existing.machine_id.clone())
-        .unwrap_or_else(|| state.local_machine_id.clone());
+        .unwrap_or_else(|| existing.machine_id.clone());
     state
         .store
         .update_agent_record(&AgentRecordUpsert {
@@ -504,7 +503,7 @@ pub async fn handle_update_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
-            machine_id: Some(&machine_id_resolved),
+            machine_id: &machine_id_resolved,
             env_vars: &env_vars,
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;

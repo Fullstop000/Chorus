@@ -821,7 +821,7 @@ mod tests {
                 runtime: "codex",
                 model: "gpt-5.4-mini",
                 reasoning_effort: None,
-                machine_id: None,
+                machine_id: "test-machine",
                 env_vars: &[],
             })
             .unwrap();
@@ -1076,7 +1076,7 @@ mod tests {
                 runtime: "codex",
                 model: "gpt-fake",
                 reasoning_effort: None,
-                machine_id: None,
+                machine_id: "test-machine",
                 env_vars: &[],
             })
             .unwrap();
@@ -1151,7 +1151,7 @@ mod tests {
                 runtime: "codex",
                 model: "gpt-fake",
                 reasoning_effort: None,
-                machine_id: None,
+                machine_id: "test-machine",
                 env_vars: &[],
             })
             .unwrap();

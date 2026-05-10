@@ -47,7 +47,11 @@ pub(super) fn target_to_agent(target: &AgentTargetIn) -> Agent {
         runtime: target.runtime.clone(),
         model: target.model.clone(),
         reasoning_effort: target.reasoning_effort.clone(),
-        machine_id: None,
+        // Bridge-side stub: the manager doesn't read `machine_id` (the
+        // bridge IS the machine), so an empty string is fine. Filling
+        // it with the bridge's own id would also be correct but adds a
+        // dependency on cfg threading.
+        machine_id: String::new(),
         paused: target.paused,
         restart_seq: target.restart_seq,
         pending_init_directive: target.init_directive.clone(),

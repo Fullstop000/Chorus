@@ -216,11 +216,11 @@ pub async fn require_bridge_auth(
                                 .into_response();
                         }
                     };
-                    if owner.as_deref() != Some(expected_machine_id.as_str()) {
+                    if owner != *expected_machine_id {
                         warn!(
                             path = %path,
                             token_machine_id = %expected_machine_id,
-                            agent_owner = ?owner,
+                            agent_owner = %owner,
                             "bridge_auth: rejecting /internal request — token's machine_id does not own this agent"
                         );
                         return (StatusCode::FORBIDDEN, "token not authorized for this agent")
