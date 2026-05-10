@@ -833,8 +833,15 @@ pub(crate) async fn deliver_message_to_agents(
         };
         // Bridge-hosted agents are woken by the remote bridge after it
         // receives `chat.message.received` via `forward_chat_event_to_bridges`;
-        // the platform must not spawn them locally.
-        if agent.machine_id.is_some() {
+        // the platform must not spawn them locally. "Bridge-hosted" =
+        // owned by some other machine_id; the local installation's own
+        // agents (machine_id == local_machine_id) still go through the
+        // platform's in-process AgentManager until Phase 2 swaps the path.
+        if agent
+            .machine_id
+            .as_deref()
+            .is_some_and(|m| m != state.local_machine_id.as_str())
+        {
             continue;
         }
         // Associate the channel with the agent's trace run before notifying/starting.
