@@ -4,11 +4,15 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::agent::activity_log::ActivityLogResponse;
+use crate::store::agents::Agent;
 use crate::store::messages::ReceivedMessage;
 
 pub trait AgentLifecycle: Send + Sync {
-    /// Start (or wake) an agent process by name. Resolves the agent
-    /// record from the store and dispatches to the id-keyed runtime.
+    /// Start (or wake) an agent process. Takes `&Agent` so the caller is
+    /// forced to hold the full record — this prevents "pass name where id
+    /// was expected" bugs at compile time, and consolidates the previous
+    /// dual entry points (`start_agent(name)` and `start_agent_from_record`)
+    /// into one signature.
     ///
     /// `wake_message` carries the unread message that triggered this start, if
     /// any. `init_directive`, when `Some`, is delivered as the first prompt
@@ -18,7 +22,7 @@ pub trait AgentLifecycle: Send + Sync {
     /// paths so existing behavior is unchanged.
     fn start_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent: &'a Agent,
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;

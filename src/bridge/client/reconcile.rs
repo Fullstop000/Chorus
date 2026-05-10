@@ -34,8 +34,8 @@ pub struct ReconcileOutcome {
 /// Materialise an `AgentTargetIn` (wire payload) into an `Agent` (store
 /// row shape) without touching SQLite. The non-wire fields (`workspace_id`,
 /// `created_at`, `machine_id`) are filled with placeholders since the
-/// bridge does not consume them — `start_agent_from_record` reads only
-/// the fields the runtime spec needs.
+/// bridge does not consume them — `start_agent` reads only the fields
+/// the runtime spec needs.
 pub(super) fn target_to_agent(target: &AgentTargetIn) -> Agent {
     Agent {
         id: target.agent_id.clone(),
@@ -107,7 +107,7 @@ pub async fn apply(
         }
         let agent = target_to_agent(target);
         match manager
-            .start_agent_from_record(agent, target.init_directive.clone())
+            .start_agent(&agent, None, target.init_directive.clone())
             .await
         {
             Ok(()) => {

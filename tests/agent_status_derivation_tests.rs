@@ -33,39 +33,40 @@ struct MockLifecycle {
 impl AgentLifecycle for MockLifecycle {
     fn start_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent: &'a chorus::store::agents::Agent,
         _wake_message: Option<ReceivedMessage>,
         _init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        let id = agent.id.clone();
         Box::pin(async move {
-            self.running.lock().unwrap().insert(agent_name.to_string());
+            self.running.lock().unwrap().insert(id);
             Ok(())
         })
     }
 
     fn notify_agent<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 
     fn stop_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            self.running.lock().unwrap().remove(agent_name);
+            self.running.lock().unwrap().remove(agent_id);
             Ok(())
         })
     }
 
     fn process_state<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>>
     {
-        let is_running = self.running.lock().unwrap().contains(agent_name);
+        let is_running = self.running.lock().unwrap().contains(agent_id);
         Box::pin(async move {
             if is_running {
                 Some(chorus::agent::drivers::ProcessState::Active {

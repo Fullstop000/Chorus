@@ -156,48 +156,23 @@ impl AgentManager {
     /// Start an agent process. Creates the workspace, writes `MEMORY.md`, and
     /// optionally threads through the message that caused the wake-up.
     ///
-    /// The core lifecycle (open_session + run) is now spawned as a background
+    /// Takes `&Agent` directly. The platform's HTTP path and the bridge's
+    /// reconcile path both arrive here with the full record in scope:
+    /// the platform loaded it via `store.get_agent(name)` to validate the
+    /// request, and the bridge constructs it from the wire `bridge.target`
+    /// payload. Forcing `&Agent` at the trait boundary collapses the two
+    /// previous entry points (`start_agent(name)` + `start_agent_from_record`)
+    /// and makes "pass name where id was expected" a compile error.
+    ///
+    /// The core lifecycle (open_session + run) is spawned as a background
     /// task so the caller (HTTP handler, message-delivery wake) returns
     /// immediately. `pre_starting` guards the window between insertion and
     /// the background task reaching `Starting`. Background mutations verify
-    /// handle identity via `Arc::ptr_eq` to avoid touching a newer agent that
-    /// reused the same name.
-    ///
-    /// Resolves `agent_name` against the store and dispatches the rest by id.
-    /// Most call sites already hold an agent record and should call
-    /// [`start_agent_from_record`] directly.
+    /// handle identity via `Arc::ptr_eq` to avoid touching a newer agent
+    /// that reused the same id.
     pub async fn start_agent(
         &self,
-        agent_name: &str,
-        wake_message: Option<ReceivedMessage>,
-        init_directive: Option<String>,
-    ) -> anyhow::Result<()> {
-        let agent = self
-            .store
-            .get_agent(agent_name)?
-            .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
-        self.start_agent_inner(agent, wake_message, init_directive)
-            .await
-    }
-
-    /// Start an agent from a fully-materialized [`crate::store::agents::Agent`]
-    /// record without re-reading the store. Used by the bridge client so the
-    /// `bridge.target` payload can drive `start_agent` directly without first
-    /// going through SQLite as a cache. The resume path still reads
-    /// `agent_sessions` (keyed by `agent.id`); that table FKs to `agents(id)`
-    /// today, so the caller is responsible for ensuring the corresponding
-    /// row exists in the store. See #145 for the path to dropping that.
-    pub async fn start_agent_from_record(
-        &self,
-        agent: crate::store::agents::Agent,
-        init_directive: Option<String>,
-    ) -> anyhow::Result<()> {
-        self.start_agent_inner(agent, None, init_directive).await
-    }
-
-    async fn start_agent_inner(
-        &self,
-        agent: crate::store::agents::Agent,
+        agent: &crate::store::agents::Agent,
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> anyhow::Result<()> {
@@ -512,13 +487,13 @@ impl AgentManager {
 
         // Asleep / not-yet-running / mid-startup: deliver the envelope as
         // the init directive so it lands on the agent's first prompt turn.
-        // Look up the full record by id and dispatch via start_agent_inner —
-        // the bridge / platform both have the row keyed by id at this point.
+        // Look up the full record by id and dispatch via start_agent — the
+        // bridge / platform both have the row keyed by id at this point.
         let agent = self
             .store
             .get_agent_by_id(agent_id, true)?
             .ok_or_else(|| anyhow::anyhow!("Agent not found by id: {agent_id}"))?;
-        self.start_agent_inner(agent, None, Some(envelope)).await
+        self.start_agent(&agent, None, Some(envelope)).await
     }
 
     /// Deliver a wakeup notification to agent stdin.
@@ -754,13 +729,13 @@ fn build_start_prompt(
 impl AgentLifecycle for AgentManager {
     fn start_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent: &'a crate::store::agents::Agent,
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(AgentManager::start_agent(
             self,
-            agent_name,
+            agent,
             wake_message,
             init_directive,
         ))
@@ -930,11 +905,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
-        let agent_id = store.get_agent("v2bot").unwrap().unwrap().id;
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        let result = manager.start_agent("v2bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
 
         assert!(result.is_ok(), "start_agent should succeed: {result:?}");
 
@@ -958,11 +934,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
-        let agent_id = store.get_agent("v2bot").unwrap().unwrap().id;
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
         // First stop should succeed.
         let r1 = manager.stop_agent(&agent_id).await;
@@ -984,11 +961,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
-        let agent_id = store.get_agent("v2bot").unwrap().unwrap().id;
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store.clone(), dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
         manager.sleep_agent(&agent_id).await.unwrap();
 
@@ -1010,14 +988,15 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
-        let agent_id = store.get_agent("v2bot").unwrap().unwrap().id;
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
         // Second start should be a no-op (returns Ok).
-        let r2 = manager.start_agent("v2bot", None, None).await;
+        let r2 = manager.start_agent(&agent, None, None).await;
 
         assert!(r2.is_ok(), "duplicate start should be no-op: {r2:?}");
 
@@ -1029,11 +1008,12 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
-        let agent_id = store.get_agent("v2bot").unwrap().unwrap().id;
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
         let result = manager.notify_agent(&agent_id).await;
         assert!(result.is_ok(), "notify should succeed: {result:?}");
@@ -1135,7 +1115,8 @@ mod tests {
                 env_vars: &[],
             })
             .unwrap();
-        let agent_id = store.get_agent("recovery-bot").unwrap().unwrap().id;
+        let agent = store.get_agent("recovery-bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
@@ -1158,7 +1139,7 @@ mod tests {
 
         // Before the fix this returned Ok(()) immediately (contains_key hit).
         // After the fix it must evict and restart.
-        let result = manager.start_agent("recovery-bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
         assert!(
             result.is_ok(),
             "start_agent should succeed after evicting a Failed handle: {result:?}",
@@ -1209,7 +1190,8 @@ mod tests {
                 env_vars: &[],
             })
             .unwrap();
-        let agent_id = store.get_agent("live-bot").unwrap().unwrap().id;
+        let agent = store.get_agent("live-bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
@@ -1224,7 +1206,7 @@ mod tests {
             .inject_session_for_test(agent_id.clone(), "live-bot", Box::new(active_handle))
             .await;
 
-        let result = manager.start_agent("live-bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
         assert!(
             result.is_ok(),
             "start_agent on an Active agent should be Ok: {result:?}",
@@ -1254,7 +1236,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
-        let agent_id = store.get_agent("v2bot").unwrap().unwrap().id;
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
         let manager = make_test_manager(store, dir.path());
 
         let (events, event_tx) = EventFanOut::new();
@@ -1274,7 +1257,7 @@ mod tests {
             );
         }
 
-        let result = manager.start_agent("v2bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
         assert!(
             result.is_ok(),
             "start_agent should skip eviction when pre_starting is set: {result:?}"

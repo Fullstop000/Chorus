@@ -225,17 +225,17 @@ impl MockLifecycle {
 impl AgentLifecycle for MockLifecycle {
     fn start_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent: &'a chorus::store::agents::Agent,
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        let name = agent.name.clone();
         Box::pin(async move {
-            self.started.lock().unwrap().push((
-                agent_name.to_string(),
-                wake_message,
-                init_directive,
-            ));
-            self.running.lock().unwrap().insert(agent_name.to_string());
+            self.started
+                .lock()
+                .unwrap()
+                .push((name.clone(), wake_message, init_directive));
+            self.running.lock().unwrap().insert(name);
             Ok(())
         })
     }
@@ -317,7 +317,7 @@ impl AgentLifecycle for MockLifecycle {
 impl AgentLifecycle for FailStartLifecycle {
     fn start_agent<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent: &'a chorus::store::agents::Agent,
         _wake_message: Option<ReceivedMessage>,
         _init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {

@@ -12,6 +12,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::server::bridge_auth::BridgeAuth;
 use chorus::server::event_bus::EventBus;
 use chorus::server::{build_router_with_services, build_router_with_services_and_auth};
+use chorus::store::agents::Agent;
 use chorus::store::messages::ReceivedMessage;
 use chorus::store::Store;
 use rusqlite::params;
@@ -21,7 +22,7 @@ pub struct NoopLifecycle;
 impl AgentLifecycle for NoopLifecycle {
     fn start_agent<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent: &'a Agent,
         _wake_message: Option<ReceivedMessage>,
         _init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {

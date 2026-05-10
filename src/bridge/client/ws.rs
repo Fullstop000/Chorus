@@ -533,7 +533,7 @@ async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
             // Wake the agent. The cached target was captured above so the
             // manager doesn't need to re-read the store.
             let agent = super::reconcile::target_to_agent(&target_clone);
-            let r = ctx.manager.start_agent_from_record(agent, None).await;
+            let r = ctx.manager.start_agent(&agent, None, None).await;
             if r.is_ok() {
                 let pid = ctx.counter.allocate(agent_id).await;
                 send_agent_state(&ctx.state_tx, agent_id, "started", pid).await;
