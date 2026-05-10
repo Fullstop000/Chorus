@@ -156,7 +156,7 @@ impl Store {
 
         let sql = format!(
             "SELECT message_id, conversation_id, conversation_name, conversation_type,
-                    sender_name, sender_type, sender_deleted, content, created_at, seq,
+                    sender_id, sender_name, sender_type, sender_deleted, content, created_at, seq,
                     forwarded_from, run_id, trace_summary, payload
              FROM conversation_messages_view
              WHERE conversation_id = ?1 {cursor_clause} {audience_clause}
@@ -209,7 +209,7 @@ impl Store {
         let message = conn
             .query_row(
                 "SELECT message_id, conversation_id, conversation_name, conversation_type,
-                        sender_name, sender_type, sender_deleted, content, created_at, seq,
+                        sender_id, sender_name, sender_type, sender_deleted, content, created_at, seq,
                         forwarded_from, run_id, trace_summary, payload
                  FROM conversation_messages_view
                  WHERE message_id = ?1",

@@ -32,9 +32,8 @@ use crate::store::Store;
 /// prefer `deliver_pending_notification` for the shared delivery path.
 pub(super) struct ManagedAgent {
     /// Cached agent name. The map key is the agent's `id`; this field
-    /// carries the name forward for log lines and for forwarding into
-    /// the activity_log / trace_store stores, which are still keyed by
-    /// name (a follow-up flip — see #142). Updated on rename via the
+    /// carries the display name forward for log lines and for any path
+    /// that needs the human-readable handle. Updated on rename via the
     /// dedicated rename path; never written by background tasks.
     pub(super) name: String,
     pub(super) handle: Arc<tokio::sync::Mutex<Box<dyn Session>>>,
@@ -70,14 +69,14 @@ impl ManagedAgent {
         &mut self,
         trace_store: &AgentTraceStore,
         trace_tx: &broadcast::Sender<TraceEvent>,
-        agent_name: &str,
+        agent_id: &str,
     ) -> anyhow::Result<u32> {
         let count = self.pending_notification_count;
         if count == 0 {
             return Ok(0);
         }
         self.pending_notification_count = 0;
-        trace::emit_event(trace_store, trace_tx, agent_name, TraceEventKind::Reading);
+        trace::emit_event(trace_store, trace_tx, agent_id, TraceEventKind::Reading);
         let plural = if count > 1 { "s" } else { "" };
         let them = if count > 1 { "them" } else { "it" };
         let text = format!(
@@ -102,9 +101,9 @@ pub struct AgentManager {
     driver_registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
     /// Active agents keyed by `agents.id` (the immutable UUID). Renames
     /// stay invisible to the runtime; the cached display name lives on
-    /// `ManagedAgent.name`. Activity/trace stores are still name-keyed
-    /// (separate flip; tracked in #142), so manager methods that talk to
-    /// those stores translate id → name via `ManagedAgent.name`.
+    /// `ManagedAgent.name`. Activity log + trace store + driver
+    /// `AgentKey` are all id-keyed end-to-end (#142): no id ↔ name
+    /// translation step anywhere in the runtime path.
     agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
@@ -278,8 +277,12 @@ impl AgentManager {
             Some(s) => SessionIntent::Resume(s.session_id),
             None => SessionIntent::New,
         };
+        // Drivers receive `agent.id` as their `AgentKey` so per-event
+        // `key` fields downstream are id-typed end-to-end. activity_log
+        // and trace_store are id-keyed; the cached display name is only
+        // used for human-readable log fields.
         let attach_result = driver
-            .open_session(agent_name.to_string(), spec, intent)
+            .open_session(agent_id.to_string(), spec, intent)
             .await?;
         let handle = attach_result.session;
         let events = attach_result.events;
@@ -294,17 +297,15 @@ impl AgentManager {
             init_directive.as_deref(),
         );
 
-        // Activity log + trace store remain name-keyed today; the manager
-        // forwards the cached `agent.name` into them. See #142 follow-up.
         activity_log::set_activity_state(
             &self.activity_logs,
-            agent_name,
+            agent_id,
             ACTIVITY_WORKING,
             "Starting\u{2026}",
         );
         activity_log::push_activity(
             &self.activity_logs,
-            agent_name,
+            agent_id,
             ActivityEntry::Start { is_resume },
         );
 
@@ -408,15 +409,15 @@ impl AgentManager {
             trace::emit_active_event(
                 &self.trace_store,
                 &self.trace_tx.clone(),
-                name,
+                agent_id,
                 TraceEventKind::Error {
                     message: "Agent stopped".to_string(),
                 },
             );
-            self.trace_store.end_run(name);
+            self.trace_store.end_run(agent_id);
             activity_log::set_activity_state(
                 &self.activity_logs,
-                name,
+                agent_id,
                 ACTIVITY_OFFLINE,
                 "Process stopped",
             );
@@ -435,7 +436,7 @@ impl AgentManager {
             }
             activity_log::set_activity_state(
                 &self.activity_logs,
-                name,
+                agent_id,
                 ACTIVITY_OFFLINE,
                 "Sleeping",
             );
@@ -541,7 +542,7 @@ impl AgentManager {
                     return;
                 }
                 match agent
-                    .deliver_pending_notification(&trace_store, &trace_tx, &name)
+                    .deliver_pending_notification(&trace_store, &trace_tx, &id)
                     .await
                 {
                     Ok(delivered) if delivered > 0 => {
@@ -768,32 +769,28 @@ impl AgentLifecycle for AgentManager {
         Box::pin(AgentManager::process_state(self, agent_id))
     }
 
-    fn get_activity_log_data(
-        &self,
-        agent_name: &str,
-        after_seq: Option<u64>,
-    ) -> ActivityLogResponse {
-        activity_log::get_activity_log(&self.activity_logs, agent_name, after_seq)
+    fn get_activity_log_data(&self, agent_id: &str, after_seq: Option<u64>) -> ActivityLogResponse {
+        activity_log::get_activity_log(&self.activity_logs, agent_id, after_seq)
     }
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         activity_log::all_activity_states(&self.activity_logs)
     }
 
-    fn active_run_id(&self, agent_name: &str) -> Option<String> {
-        self.trace_store.active_run_id(agent_name)
+    fn active_run_id(&self, agent_id: &str) -> Option<String> {
+        self.trace_store.active_run_id(agent_id)
     }
 
-    fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
-        self.trace_store.set_run_channel(agent_name, channel_id);
+    fn set_run_channel(&self, agent_id: &str, channel_id: &str) {
+        self.trace_store.set_run_channel(agent_id, channel_id);
     }
 
     fn run_channel_id<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        let id = self.trace_store.run_channel_id(agent_name);
-        Box::pin(async move { id })
+        let channel = self.trace_store.run_channel_id(agent_id);
+        Box::pin(async move { channel })
     }
 
     fn resume_with_prompt<'a>(

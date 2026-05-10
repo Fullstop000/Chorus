@@ -220,9 +220,8 @@ pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<
 
     let activity_states = state.lifecycle.get_all_agent_activity_states();
     for agent in &mut agents {
-        if let Some((_, activity, detail)) = activity_states
-            .iter()
-            .find(|(name, _, _)| name == &agent.name)
+        if let Some((_, activity, detail)) =
+            activity_states.iter().find(|(id, _, _)| id == &agent.id)
         {
             agent.activity = Some(activity.clone());
             agent.activity_detail = Some(detail.clone());
@@ -744,6 +743,6 @@ pub async fn handle_agent_activity_log(
     let agent = resolve_public_agent(&state, &id)?;
     let resp = state
         .lifecycle
-        .get_activity_log_data(&agent.name, params.after);
+        .get_activity_log_data(&agent.id, params.after);
     Ok(Json(resp))
 }

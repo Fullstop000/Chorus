@@ -58,7 +58,7 @@ fn summarize_input(input: &serde_json::Value) -> String {
 /// or a ToolCall) or when the turn completes.
 fn flush_thinking(
     text: &str,
-    agent_name: &str,
+    agent_id: &str,
     trace_store: &AgentTraceStore,
     trace_tx: &broadcast::Sender<TraceEvent>,
     activity_logs: &ActivityLogMap,
@@ -72,10 +72,10 @@ fn flush_thinking(
     } else {
         preview
     };
-    trace!(agent = %agent_name, thought = %preview, "thinking block complete");
+    trace!(agent = %agent_id, thought = %preview, "thinking block complete");
     activity_log::push_activity(
         activity_logs,
-        agent_name,
+        agent_id,
         ActivityEntry::Thinking {
             text: text.to_string(),
         },
@@ -83,7 +83,7 @@ fn flush_thinking(
     trace::emit_event(
         trace_store,
         trace_tx,
-        agent_name,
+        agent_id,
         TraceEventKind::Thinking {
             text: text.to_string(),
         },
@@ -96,14 +96,14 @@ fn flush_thinking(
 /// telescope trace side.
 fn flush_text(
     text: &str,
-    agent_name: &str,
+    agent_id: &str,
     trace_store: &AgentTraceStore,
     trace_tx: &broadcast::Sender<TraceEvent>,
 ) {
     trace::emit_event(
         trace_store,
         trace_tx,
-        agent_name,
+        agent_id,
         TraceEventKind::Text {
             text: text.to_string(),
         },
@@ -119,17 +119,10 @@ fn flush_text(
 /// from the store: on the bridge the `agents` table is empty (#145), so
 /// a name-based lookup would always fail. The forwarder captures both
 /// at spawn time from the agent record that drove `start_agent_inner`.
-fn persist_session(
-    store: &Store,
-    agent_name: &str,
-    agent_id: &str,
-    runtime: &str,
-    session_id: &str,
-    site: &str,
-) {
+fn persist_session(store: &Store, agent_id: &str, runtime: &str, session_id: &str, site: &str) {
     if let Err(err) = store.record_session(agent_id, session_id, runtime) {
         warn!(
-            agent = %agent_name,
+            agent_id = %agent_id,
             session = %session_id,
             site,
             err = %err,
@@ -198,7 +191,7 @@ pub(super) fn spawn_event_forwarder(
                     ref session_id,
                 } => {
                     info!(agent = %key, session = %session_id, "session attached");
-                    persist_session(&store, key, &agent_id, &runtime, session_id, "attach");
+                    persist_session(&store, &agent_id, &runtime, session_id, "attach");
                     activity_log::set_activity_state(&activity_logs, key, ACTIVITY_ONLINE, "Ready");
                 }
 
@@ -476,7 +469,7 @@ pub(super) fn spawn_event_forwarder(
                     }
 
                     if !session_id.is_empty() {
-                        persist_session(&store, key, &agent_id, &runtime, session_id, "completed");
+                        persist_session(&store, &agent_id, &runtime, session_id, "completed");
                     }
                     trace::emit_active_event(&trace_store, &trace_tx, key, TraceEventKind::TurnEnd);
                     trace_store.end_run(key);

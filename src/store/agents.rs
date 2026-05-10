@@ -362,18 +362,8 @@ impl Store {
     }
 
     /// Get all channel IDs where an agent is a member (includes DM channels).
-    pub fn agent_channel_ids(&self, agent_name: &str) -> Result<Vec<String>> {
+    pub fn agent_channel_ids(&self, agent_id: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let agent_id: Option<String> = conn
-            .query_row(
-                "SELECT id FROM agents WHERE name = ?1",
-                params![agent_name],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(agent_id) = agent_id else {
-            return Ok(Vec::new());
-        };
         let mut stmt =
             conn.prepare("SELECT DISTINCT channel_id FROM channel_members WHERE member_id = ?1")?;
         let ids = stmt

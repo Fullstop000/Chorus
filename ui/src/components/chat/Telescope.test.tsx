@@ -9,7 +9,7 @@ function traceFrame(
   return {
     eventType: "agent.trace",
     runId: "run-1",
-    agentName: "Scout",
+    agentId: "scout-id",
     seq: 1,
     timestampMs: 1,
     data: {},

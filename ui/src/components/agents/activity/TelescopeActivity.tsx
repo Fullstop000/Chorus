@@ -515,7 +515,7 @@ function RunItem({
 // ── Main component ──
 
 export function TelescopeActivity({ agentId, agentName }: Props) {
-  const trace = useTraceStore((s) => s.traces[agentName]);
+  const trace = useTraceStore((s) => s.traces[agentId]);
   const listRef = useRef<HTMLDivElement>(null);
 
   // Runs list

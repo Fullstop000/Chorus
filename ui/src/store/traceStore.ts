@@ -47,13 +47,13 @@ function playCompletionChime() {
 }
 
 interface TraceState {
-  /** Per-agent trace state, keyed by agent name. */
+  /** Per-agent trace state, keyed by agent id. */
   traces: Record<string, AgentTrace>
   /** Push a trace event from the WebSocket. */
   pushEvent: (frame: TraceFrame) => void
   /** Toggle expanded/collapsed for an agent's Telescope. */
   expandedAgents: Record<string, boolean>
-  toggleExpanded: (agentName: string) => void
+  toggleExpanded: (agentId: string) => void
   /** Agents whose Telescope header should flash green on completion. */
   completionFlash: Record<string, boolean>
 }
@@ -65,7 +65,7 @@ export const useTraceStore = create<TraceState>((set) => ({
 
   pushEvent: (frame) =>
     set((state) => {
-      const prev = state.traces[frame.agentName]
+      const prev = state.traces[frame.agentId]
       const isNewRun = !prev || prev.runId !== frame.runId
 
       // Merge consecutive text events into a single entry (typewriter-style accumulation).
@@ -106,10 +106,10 @@ export const useTraceStore = create<TraceState>((set) => ({
         const endMs = frame.timestampMs
         if (endMs - startMs >= SOUND_THRESHOLD_MS) {
           if (isSoundEnabled()) playCompletionChime()
-          flash = { ...flash, [frame.agentName]: true }
+          flash = { ...flash, [frame.agentId]: true }
           setTimeout(() => {
             useTraceStore.setState((s) => ({
-              completionFlash: { ...s.completionFlash, [frame.agentName]: false },
+              completionFlash: { ...s.completionFlash, [frame.agentId]: false },
             }))
           }, 1200)
         }
@@ -118,7 +118,7 @@ export const useTraceStore = create<TraceState>((set) => ({
       return {
         traces: {
           ...state.traces,
-          [frame.agentName]: {
+          [frame.agentId]: {
             runId: frame.runId,
             channelId: frame.channelId,
             events,
@@ -130,11 +130,11 @@ export const useTraceStore = create<TraceState>((set) => ({
       }
     }),
 
-  toggleExpanded: (agentName) =>
+  toggleExpanded: (agentId) =>
     set((state) => ({
       expandedAgents: {
         ...state.expandedAgents,
-        [agentName]: !(state.expandedAgents[agentName] ?? true),
+        [agentId]: !(state.expandedAgents[agentId] ?? true),
       },
     })),
 }))

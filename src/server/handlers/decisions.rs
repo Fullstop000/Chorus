@@ -72,7 +72,7 @@ pub async fn handle_create_decision(
     // than silently picking #all.
     let channel_id = state
         .lifecycle
-        .run_channel_id(&agent_name)
+        .run_channel_id(&agent.id)
         .await
         .ok_or_else(|| {
             app_err!(
