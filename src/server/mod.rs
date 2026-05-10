@@ -115,6 +115,15 @@ pub fn build_router_with_services_and_auth(
         .map(|workspace| workspace.id);
     let (local_human_id, local_human_name) =
         resolve_local_human_identity(store.as_ref(), &data_dir);
+    let local_machine_id = resolve_local_machine_id(&data_dir);
+
+    // Backfill rows that pre-date the always-set-machine_id invariant.
+    // After this UPDATE every agent owned by `chorus serve` has a non-NULL
+    // `machine_id` equal to `local_machine_id`. Rows already pinned to a
+    // remote bridge keep their value; only NULLs are touched.
+    if let Err(err) = store.backfill_null_machine_ids(&local_machine_id) {
+        tracing::warn!(err = %err, "backfill_null_machine_ids failed; agent rows may have NULL machine_id");
+    }
 
     // Built-in channels (`#all`) and the local human's membership are seeded
     // here, after identity resolution: the legacy CLI bootstrap used the OS
@@ -134,6 +143,7 @@ pub fn build_router_with_services_and_auth(
         active_workspace_id: Arc::new(RwLock::new(active_workspace_id)),
         local_human_id,
         local_human_name,
+        local_machine_id,
         lifecycle,
         runtime_status_provider,
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
@@ -360,4 +370,25 @@ fn resolve_local_human_identity(store: &Store, data_dir: &std::path::Path) -> (S
             panic!("unable to resolve persisted local human identity: {err}");
         }
     }
+}
+
+/// Resolve the local installation's `machine_id`, generating and persisting
+/// one to `config.toml` on first call. Every agent created on this server
+/// inherits this id when the request omits `machine_id`, so the bridge
+/// client knows to pick it up. Persistence makes the id stable across
+/// restarts; without persistence, every restart would re-orphan every
+/// local agent's `machine_id`.
+fn resolve_local_machine_id(data_dir: &std::path::Path) -> String {
+    let mut cfg = ChorusConfig::load(data_dir)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    if let Some(id) = cfg.machine_id.clone() {
+        return id;
+    }
+    let id = cfg.ensure_machine_id().to_string();
+    if let Err(err) = cfg.save(data_dir) {
+        tracing::warn!(err = %err, "failed to persist generated machine_id; will regenerate on next restart");
+    }
+    id
 }

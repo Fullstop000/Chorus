@@ -267,11 +267,16 @@ pub async fn handle_create_agent(
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
 
     // Create the agent record, join auto-join channels, and start it.
-    let machine_id_trimmed = req
+    // Default an omitted/blank machine_id to the local installation's id
+    // so every row has a non-NULL owner. Phase 2's in-process bridge
+    // client picks these up by matching on `local_machine_id`.
+    let machine_id_resolved: String = req
         .machine_id
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| state.local_machine_id.clone());
     let result = create_and_start_agent(
         &state,
         &CreateAgentParams {
@@ -282,7 +287,7 @@ pub async fn handle_create_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
-            machine_id: machine_id_trimmed,
+            machine_id: Some(&machine_id_resolved),
             env_vars: &env_vars,
         },
     )
@@ -420,11 +425,12 @@ pub(crate) async fn create_and_start_agent(
             ch = crate::store::Store::DEFAULT_SYSTEM_CHANNEL,
         )
     });
-    // Bridge-hosted agents (`machine_id` set) are started by the remote
-    // bridge after the platform pushes a `bridge.target` update. The
-    // platform must NOT spawn them locally — doing so causes dual-runtime
-    // contention on the same agent session.
-    let start_error = if params.machine_id.is_some() {
+    // Bridge-hosted = `machine_id` differs from the local installation's id.
+    // Those agents are started by a remote bridge after the platform pushes
+    // a `bridge.target` update; the platform must NOT spawn them locally,
+    // or both runtimes contend on the same ACP session.
+    let bridge_hosted = params.machine_id != Some(state.local_machine_id.as_str());
+    let start_error = if bridge_hosted {
         info!(
             agent = %name,
             machine_id = %params.machine_id.unwrap_or(""),
@@ -507,11 +513,18 @@ pub async fn handle_update_agent(
         || existing.reasoning_effort != reasoning_effort
         || existing.env_vars != env_vars;
 
-    let machine_id_trimmed = req
+    // Preserve the existing owner when the request omits `machineId`.
+    // Without this, every PATCH would clobber `machine_id` to NULL — a
+    // bridge-hosted agent renamed via the UI (which doesn't echo
+    // `machineId` back) would silently lose its owner.
+    let machine_id_resolved: String = req
         .machine_id
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| existing.machine_id.clone())
+        .unwrap_or_else(|| state.local_machine_id.clone());
     state
         .store
         .update_agent_record(&AgentRecordUpsert {
@@ -522,7 +535,7 @@ pub async fn handle_update_agent(
             runtime: &req.runtime,
             model: &req.model,
             reasoning_effort: reasoning_effort.as_deref(),
-            machine_id: machine_id_trimmed,
+            machine_id: Some(&machine_id_resolved),
             env_vars: &env_vars,
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -533,8 +546,12 @@ pub async fn handle_update_agent(
 
     // Bridge-hosted agents are restarted by the remote bridge when it
     // receives the broadcast target update below. The platform does not
-    // own the runtime process and must not call start/stop.
-    let bridge_hosted = machine_id_trimmed.is_some();
+    // own the runtime process and must not call start/stop. "Bridge-hosted"
+    // here means "owned by a non-local machine_id"; agents with
+    // machine_id == local_machine_id still go through the platform's
+    // in-process AgentManager until Phase 2 swaps it for the in-process
+    // bridge client.
+    let bridge_hosted = machine_id_resolved != state.local_machine_id;
     if was_running && requires_restart && !bridge_hosted {
         state
             .lifecycle
@@ -569,7 +586,10 @@ pub async fn handle_restart_agent(
     let agents_dir = state.agents_dir.clone();
     let workspace = AgentWorkspace::new(&agents_dir);
 
-    let bridge_hosted = agent.machine_id.is_some();
+    let bridge_hosted = agent
+        .machine_id
+        .as_deref()
+        .is_some_and(|m| m != state.local_machine_id.as_str());
     if !bridge_hosted {
         state
             .lifecycle
@@ -634,7 +654,11 @@ pub async fn handle_delete_agent(
     // the next `bridge.target` (broadcast below after the row delete) drops
     // the agent from the desired set. Calling stop_agent here is a no-op
     // locally but adds noise to the activity log.
-    if agent.machine_id.is_none() {
+    let bridge_hosted = agent
+        .machine_id
+        .as_deref()
+        .is_some_and(|m| m != state.local_machine_id.as_str());
+    if !bridge_hosted {
         state
             .lifecycle
             .stop_agent(&agent.id)
@@ -675,7 +699,11 @@ pub async fn handle_agent_start(
     // the manager.
     let agent = resolve_public_agent_with_env(&state, &id)?;
     let _transition = acquire_transition(&state, &agent.id)?;
-    if agent.machine_id.is_some() {
+    let bridge_hosted = agent
+        .machine_id
+        .as_deref()
+        .is_some_and(|m| m != state.local_machine_id.as_str());
+    if bridge_hosted {
         // Bridge-hosted: the bridge already keeps the runtime alive per
         // target. Re-broadcast so any reconnected bridge picks it up.
         info!(agent = %agent.name, "agent is bridge-hosted; refreshing target");
@@ -699,7 +727,11 @@ pub async fn handle_agent_stop(
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name.clone();
     let _transition = acquire_transition(&state, &agent.id)?;
-    if agent.machine_id.is_some() {
+    let bridge_hosted = agent
+        .machine_id
+        .as_deref()
+        .is_some_and(|m| m != state.local_machine_id.as_str());
+    if bridge_hosted {
         // Bridge-hosted: platform doesn't own the runtime. There's no
         // explicit "stop a single bridge-hosted agent" frame yet, so this
         // becomes a no-op until we add an `agent.stop` directive in the

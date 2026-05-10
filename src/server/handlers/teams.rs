@@ -106,7 +106,11 @@ async fn restart_agent_member(
         Some(a) => a,
         None => return Ok(()),
     };
-    if agent.machine_id.is_some() {
+    let bridge_hosted = agent
+        .machine_id
+        .as_deref()
+        .is_some_and(|m| m != state.local_machine_id.as_str());
+    if bridge_hosted {
         crate::server::transport::bridge_ws::broadcast_target_update(
             state.store.as_ref(),
             state.bridge_registry.as_ref(),

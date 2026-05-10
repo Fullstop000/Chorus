@@ -191,6 +191,20 @@ impl Store {
         Ok(())
     }
 
+    /// Set every NULL `machine_id` to `local_machine_id`. Called once at
+    /// startup so rows that pre-date the always-set-machine_id invariant
+    /// get owned by the local installation. Idempotent: rows already
+    /// pinned to a remote bridge keep their value; only NULLs are touched.
+    /// Returns the number of rows updated.
+    pub fn backfill_null_machine_ids(&self, local_machine_id: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE agents SET machine_id = ?1 WHERE machine_id IS NULL",
+            params![local_machine_id],
+        )?;
+        Ok(updated)
+    }
+
     pub fn delete_agent_record(&self, name: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let agent_id: Option<String> = conn
