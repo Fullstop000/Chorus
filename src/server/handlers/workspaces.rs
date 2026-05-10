@@ -228,6 +228,19 @@ pub async fn handle_delete_workspace(
         .delete_workspace(&deleted_id)
         .map_err(internal_err)?;
 
+    // Remove workspace-scoped runtime directories. Because paths are now
+    // scoped by workspace id, a single directory sweep per workspace is
+    // sufficient and safe — same-named agents or teams in other workspaces
+    // live under different parent directories.
+    let agents_workspace_dir = state.agents_dir.join(&deleted_id);
+    let teams_workspace_dir = state.teams_dir().join(&deleted_id);
+    if agents_workspace_dir.exists() {
+        let _ = tokio::fs::remove_dir_all(&agents_workspace_dir).await;
+    }
+    if teams_workspace_dir.exists() {
+        let _ = tokio::fs::remove_dir_all(&teams_workspace_dir).await;
+    }
+
     let active_workspace = if was_active {
         state.set_active_workspace_id(None).await;
         None

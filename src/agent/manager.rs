@@ -228,7 +228,11 @@ impl AgentManager {
         let rt = AgentRuntime::parse(&agent.runtime)
             .ok_or_else(|| anyhow::anyhow!("Unknown runtime: {}", agent.runtime))?;
 
-        let agent_data_dir = self.data_dir.join(agent_name);
+        let agent_data_dir = self
+            .data_dir
+            .join(&agent.workspace_id)
+            .join(format!("{}-{}", agent.name, agent.id));
+
         tokio::fs::create_dir_all(&agent_data_dir).await?;
 
         let memory_md_path = agent_data_dir.join("MEMORY.md");

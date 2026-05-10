@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use super::path_params::{resolve_public_agent, PublicResourceIdPath};
 use super::{app_err, internal_err, ApiResult, AppState};
+use crate::agent::workspace::AgentWorkspace;
 
 // ── Inline query structs ──
 
@@ -80,7 +81,8 @@ pub async fn handle_agent_workspace(
     AxumPath(PublicResourceIdPath { id }): AxumPath<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let workspace_dir = state.agents_dir.clone().join(&agent.name);
+    let agent_workspace = AgentWorkspace::new(&state.agents_dir);
+    let workspace_dir = agent_workspace.path_for(&agent.workspace_id, &agent.name, &agent.id);
     if !workspace_dir.exists() {
         return Ok(Json(serde_json::json!({
             "path": workspace_dir.to_string_lossy(),
@@ -101,7 +103,8 @@ pub async fn handle_agent_workspace_file(
     Query(params): Query<WorkspaceFileParams>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let workspace_dir = state.agents_dir.clone().join(&agent.name);
+    let agent_workspace = AgentWorkspace::new(&state.agents_dir);
+    let workspace_dir = agent_workspace.path_for(&agent.workspace_id, &agent.name, &agent.id);
     let relative = sanitize_workspace_path(&params.path)?;
     let file_path = workspace_dir.join(&relative);
 

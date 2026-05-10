@@ -83,7 +83,14 @@ async fn sync_team_roles_and_agents(
     for member in members {
         if member.member_type == "agent" {
             agent_workspace
-                .set_team_role(&member.member_name, &team.name, &member.role)
+                .set_team_role(
+                    &team.workspace_id,
+                    &member.member_name,
+                    &member.member_id,
+                    &team.name,
+                    &team.id,
+                    &member.role,
+                )
                 .map_err(internal_err)?;
             restart_agent_member(state, &member.member_name).await?;
         }
@@ -215,19 +222,31 @@ pub async fn handle_create_team(
             .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     }
 
+    let team = state
+        .store
+        .get_team_by_id(&team_id)
+        .map_err(internal_err)?
+        .ok_or_else(|| {
+            app_err!(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "team not found after create: {name}"
+            )
+        })?;
+    let workspace_id = team.workspace_id.clone();
+
     let teams_dir = state.teams_dir();
     let agents_dir = state.agents_dir.clone();
     let team_workspace = TeamWorkspace::new(teams_dir);
     let agent_workspace = AgentWorkspace::new(&agents_dir);
 
-    let agent_member_names = req
+    let agent_members: Vec<(&str, &str)> = req
         .members
         .iter()
         .filter(|member| member.member_type == "agent")
-        .map(|member| member.member_name.as_str())
-        .collect::<Vec<_>>();
+        .map(|member| (member.member_name.as_str(), member.member_id.as_str()))
+        .collect();
     team_workspace
-        .init_team(&name, &agent_member_names)
+        .init_team(&workspace_id, &name, &team_id, &agent_members)
         .map_err(internal_err)?;
 
     for member in &req.members {
@@ -251,22 +270,18 @@ pub async fn handle_create_team(
 
         if sender_type == SenderType::Agent {
             agent_workspace
-                .init_team_memory(&member.member_name, &name, &member.role)
+                .init_team_memory(
+                    &workspace_id,
+                    &member.member_name,
+                    &member.member_id,
+                    &name,
+                    &team_id,
+                    &member.role,
+                )
                 .map_err(internal_err)?;
             restart_agent_member(&state, &member.member_name).await?;
         }
     }
-
-    let team = state
-        .store
-        .get_team_by_id(&team_id)
-        .map_err(internal_err)?
-        .ok_or_else(|| {
-            app_err!(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "team not found after create: {name}"
-            )
-        })?;
     let members = state
         .store
         .get_team_members(&team_id)
@@ -347,11 +362,11 @@ pub async fn handle_delete_team(
         .store
         .get_team_members(&team.id)
         .map_err(internal_err)?;
-    let agent_members = members
+    let agent_members: Vec<(String, String)> = members
         .iter()
         .filter(|member| member.member_type == "agent")
-        .map(|member| member.member_name.clone())
-        .collect::<Vec<_>>();
+        .map(|member| (member.member_name.clone(), member.member_id.clone()))
+        .collect();
 
     state.store.delete_team(&team.id).map_err(internal_err)?;
 
@@ -368,18 +383,20 @@ pub async fn handle_delete_team(
 
     let team_workspace = TeamWorkspace::new(state.teams_dir());
     team_workspace
-        .delete_team(&team.name)
+        .delete_team(&team.workspace_id, &team.name, &team.id)
         .map_err(internal_err)?;
 
     let agents_dir = state.agents_dir.clone();
     let agent_workspace = AgentWorkspace::new(&agents_dir);
-    for agent_name in &agent_members {
-        // Agent may have been deleted already — skip cleanup for missing agents.
-        if state.store.get_agent(agent_name).ok().flatten().is_none() {
-            continue;
-        }
+    for (agent_name, agent_id) in &agent_members {
         agent_workspace
-            .delete_team_memory(agent_name, &team.name)
+            .delete_team_memory(
+                &team.workspace_id,
+                agent_name,
+                agent_id,
+                &team.name,
+                &team.id,
+            )
             .map_err(internal_err)?;
         restart_agent_member(&state, agent_name).await?;
     }
@@ -415,12 +432,25 @@ pub async fn handle_add_team_member(
     if sender_type == SenderType::Agent {
         let team_workspace = TeamWorkspace::new(state.teams_dir());
         team_workspace
-            .init_member(&team.name, &req.member_name)
+            .init_member(
+                &team.workspace_id,
+                &team.name,
+                &team.id,
+                &req.member_name,
+                &req.member_id,
+            )
             .map_err(internal_err)?;
         let agents_dir = state.agents_dir.clone();
         let agent_workspace = AgentWorkspace::new(&agents_dir);
         agent_workspace
-            .init_team_memory(&req.member_name, &team.name, &req.role)
+            .init_team_memory(
+                &team.workspace_id,
+                &req.member_name,
+                &req.member_id,
+                &team.name,
+                &team.id,
+                &req.role,
+            )
             .map_err(internal_err)?;
     }
 
