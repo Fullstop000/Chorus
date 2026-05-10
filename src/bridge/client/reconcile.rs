@@ -7,7 +7,7 @@
 //! `forget_sessions_for_agent` is called on stop to drop resume cursors
 //! since FK cascade no longer fires (the bridge runs with FK off, #145).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use tokio::sync::Mutex;
@@ -49,6 +49,8 @@ pub(super) fn target_to_agent(target: &AgentTargetIn) -> Agent {
         reasoning_effort: target.reasoning_effort.clone(),
         machine_id: None,
         paused: target.paused,
+        restart_seq: target.restart_seq,
+        pending_init_directive: target.init_directive.clone(),
         env_vars: target
             .env_vars
             .iter()
@@ -67,6 +69,7 @@ pub async fn apply(
     store: &Store,
     manager: &AgentManager,
     targets_cache: &Arc<Mutex<TargetCache>>,
+    restart_seen: &Arc<Mutex<HashMap<String, i64>>>,
     targets: Vec<AgentTargetIn>,
 ) -> anyhow::Result<ReconcileOutcome> {
     let mut desired: HashSet<String> = HashSet::new();
@@ -100,11 +103,15 @@ pub async fn apply(
     let running = manager.get_running_agent_ids().await;
     let running_set: HashSet<String> = running.iter().cloned().collect();
 
-    // 3. Walk the desired set: paused targets must be stopped if running,
-    //    everything else must be started if not running. Without this
-    //    paused-aware branch, a `chorus agent stop` (which leaves the
-    //    row in the desired set with `paused=true`) would auto-restart
-    //    on the next reconcile.
+    // 3. Walk the desired set:
+    //    - paused targets must be stopped if running.
+    //    - non-paused targets whose `restart_seq` climbed above the
+    //      last-applied value must be stopped+started (delivering the
+    //      `init_directive` if the platform queued one).
+    //    - non-paused targets that aren't running must be started.
+    //    Without the restart-seq branch, the platform couldn't ask the
+    //    bridge to re-launch a runtime after a spec change or decision
+    //    resume — those lived on the now-gone direct lifecycle calls.
     for target in &targets {
         let already_running = running_set.contains(&target.agent_id);
         if target.paused {
@@ -118,7 +125,17 @@ pub async fn apply(
             }
             continue;
         }
-        if already_running {
+        let last_applied = {
+            let seen = restart_seen.lock().await;
+            seen.get(&target.agent_id).copied().unwrap_or(0)
+        };
+        let needs_restart = target.restart_seq > last_applied && already_running;
+        if needs_restart {
+            if let Err(e) = manager.stop_agent(&target.agent_id).await {
+                tracing::warn!(agent_id = %target.agent_id, err = %e, "stop_agent failed during restart-seq reconcile");
+            }
+        }
+        if !needs_restart && already_running {
             continue;
         }
         let agent = target_to_agent(target);
@@ -130,6 +147,8 @@ pub async fn apply(
                 started.push(AgentTransition {
                     agent_id: target.agent_id.clone(),
                 });
+                let mut seen = restart_seen.lock().await;
+                seen.insert(target.agent_id.clone(), target.restart_seq);
             }
             Err(e) => {
                 tracing::error!(agent = %target.name, agent_id = %target.agent_id, err = %e, "start_agent failed during reconcile");

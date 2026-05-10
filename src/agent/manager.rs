@@ -732,34 +732,6 @@ fn build_start_prompt(
 }
 
 impl AgentLifecycle for AgentManager {
-    fn start_agent<'a>(
-        &'a self,
-        agent: &'a crate::store::agents::Agent,
-        wake_message: Option<ReceivedMessage>,
-        init_directive: Option<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::start_agent(
-            self,
-            agent,
-            wake_message,
-            init_directive,
-        ))
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::notify_agent(self, agent_id))
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::stop_agent(self, agent_id))
-    }
-
     fn process_state<'a>(
         &'a self,
         agent_id: &'a str,
@@ -795,14 +767,6 @@ impl AgentLifecycle for AgentManager {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
         let channel = self.trace_store.run_channel_id(agent_id);
         Box::pin(async move { channel })
-    }
-
-    fn resume_with_prompt<'a>(
-        &'a self,
-        agent_id: &'a str,
-        envelope: String,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::resume_with_prompt(self, agent_id, envelope))
     }
 }
 

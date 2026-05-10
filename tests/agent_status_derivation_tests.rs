@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::AgentLifecycle;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::messages::SenderType;
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use harness::build_router_with_lifecycle;
@@ -31,36 +31,6 @@ struct MockLifecycle {
 }
 
 impl AgentLifecycle for MockLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        agent: &'a chorus::store::agents::Agent,
-        _wake_message: Option<ReceivedMessage>,
-        _init_directive: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        let id = agent.id.clone();
-        Box::pin(async move {
-            self.running.lock().unwrap().insert(id);
-            Ok(())
-        })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            self.running.lock().unwrap().remove(agent_id);
-            Ok(())
-        })
-    }
-
     fn process_state<'a>(
         &'a self,
         agent_id: &'a str,

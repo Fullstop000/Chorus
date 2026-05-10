@@ -107,6 +107,8 @@ CREATE TABLE IF NOT EXISTS agents (
     reasoning_effort TEXT, -- The reasoning effort configuration
     machine_id TEXT, -- Owner. Some(machine_id) = bound to that bridge; NULL = platform-local. Every agent has one owner.
     paused INTEGER NOT NULL DEFAULT 0, -- Soft-stop: 1 = bridge client should keep this agent stopped even though it's still in the desired set; 0 = run normally. Set by handle_agent_stop, cleared by handle_agent_start.
+    restart_seq INTEGER NOT NULL DEFAULT 0, -- Monotonic counter bumped by handlers that need the bridge to stop+start the runtime (spec change, manual restart, decision resume). Bridge client tracks last-applied per agent and triggers a restart on bump.
+    pending_init_directive TEXT, -- One-shot envelope delivered as the first prompt on the next restart_seq bump. Used by handle_resolve_decision so a human's pick reaches the agent without a synchronous lifecycle call from the platform.
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the agent was created
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name

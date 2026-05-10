@@ -41,6 +41,24 @@ pub struct Agent {
     /// reconcile.
     #[serde(default)]
     pub paused: bool,
+    /// Monotonic counter the platform bumps when the bridge needs to
+    /// stop+start the runtime (spec change, manual restart, decision
+    /// resume). The bridge client tracks the last-applied value per
+    /// agent in memory and re-launches the runtime when the value
+    /// climbs. Replaces the platform's old `lifecycle.start_agent` /
+    /// `stop_agent` direct calls.
+    #[serde(default)]
+    pub restart_seq: i64,
+    /// One-shot envelope delivered as the first prompt on the next
+    /// restart-driven start. Used by `handle_resolve_decision` so the
+    /// human's pick reaches the agent without a synchronous
+    /// `resume_with_prompt` call from the platform. The bridge client
+    /// consumes it on apply and (eventually) acks back so the platform
+    /// can clear the column; today we leave it set, since each new
+    /// directive overwrites the previous and `restart_seq` is what
+    /// drives delivery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_init_directive: Option<String>,
     /// Injected environment variables (ordered by `position`).
     pub env_vars: Vec<AgentEnvVar>,
     /// Row creation time.
@@ -198,6 +216,40 @@ impl Store {
         Ok(())
     }
 
+    /// Bump `agents.restart_seq` for one agent. The bridge client
+    /// tracks the last-applied value per agent in memory and re-launches
+    /// the runtime when it climbs. Used by `handle_update_agent` (on
+    /// spec change), `handle_restart_agent`, and team membership
+    /// changes — every place that used to call `lifecycle.stop_agent`
+    /// + `lifecycle.start_agent` directly.
+    pub fn bump_restart_seq(&self, agent_id: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE agents SET restart_seq = restart_seq + 1 WHERE id = ?1",
+            params![agent_id],
+        )?;
+        Ok(updated)
+    }
+
+    /// Persist a one-shot envelope as `pending_init_directive`. The
+    /// bridge consumes it on the next `restart_seq`-driven re-launch.
+    /// Used by `handle_resolve_decision` so a human's pick is delivered
+    /// to the agent without a synchronous `resume_with_prompt` call
+    /// from the platform. Pair with `bump_restart_seq` to actually
+    /// trigger consumption.
+    pub fn set_pending_init_directive(
+        &self,
+        agent_id: &str,
+        directive: Option<&str>,
+    ) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE agents SET pending_init_directive = ?1 WHERE id = ?2",
+            params![directive, agent_id],
+        )?;
+        Ok(updated)
+    }
+
     /// Toggle the `paused` flag for one agent (keyed by id). Called by
     /// the start/stop handlers so the bridge client's reconcile can
     /// honor the soft-stop without removing the row from the desired
@@ -267,7 +319,7 @@ impl Store {
                 None => return Ok(Vec::new()),
             },
         };
-        let sql = "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, created_at
+        let sql = "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, restart_seq, pending_init_directive, created_at
                    FROM agents WHERE workspace_id = ?1 ORDER BY name";
         let rows = conn
             .prepare(sql)?
@@ -280,7 +332,7 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, created_at FROM agents WHERE name = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, restart_seq, pending_init_directive, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -293,7 +345,7 @@ impl Store {
     pub fn get_agent_by_id(&self, id: &str, hydrate_env: bool) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, created_at FROM agents WHERE id = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, restart_seq, pending_init_directive, created_at FROM agents WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -361,7 +413,7 @@ impl Store {
     }
 
     fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Agent> {
-        let created_at = row.get::<_, String>(11)?;
+        let created_at = row.get::<_, String>(13)?;
         let paused: i64 = row.get(10)?;
         Ok(Agent {
             id: row.get(0)?,
@@ -375,6 +427,8 @@ impl Store {
             reasoning_effort: row.get(8)?,
             machine_id: row.get(9)?,
             paused: paused != 0,
+            restart_seq: row.get(11)?,
+            pending_init_directive: row.get(12)?,
             env_vars: Vec::new(),
             created_at: parse_datetime(&created_at),
         })

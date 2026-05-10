@@ -512,30 +512,19 @@ pub async fn handle_update_agent(
     let ps = state.lifecycle.process_state(&agent_id).await;
     let was_running = crate::agent::process_status::derive_status(ps.as_ref())
         != crate::agent::process_status::Status::Asleep;
+    let _ = machine_id_resolved;
 
-    // Bridge-hosted agents are restarted by the remote bridge when it
-    // receives the broadcast target update below. The platform does not
-    // own the runtime process and must not call start/stop. "Bridge-hosted"
-    // here means "owned by a non-local machine_id"; agents with
-    // machine_id == local_machine_id still go through the platform's
-    // in-process AgentManager until Phase 2 swaps it for the in-process
-    // bridge client.
-    let bridge_hosted = machine_id_resolved != state.local_machine_id;
-    if was_running && requires_restart && !bridge_hosted {
+    // Spec-affecting updates need the runtime to relaunch with the new
+    // values. Bumping `restart_seq` signals the owning bridge — in-proc
+    // for `chorus serve`, remote for `chorus bridge` — to stop+start
+    // the runtime via reconcile. Same effect the old direct
+    // `lifecycle.stop_agent` + `start_agent` had, routed through the
+    // single bridge protocol.
+    if requires_restart {
         state
-            .lifecycle
-            .stop_agent(&agent_id)
-            .await
+            .store
+            .bump_restart_seq(&agent_id)
             .map_err(internal_err)?;
-        // Reload after the update so spec changes (env_vars, model, runtime)
-        // take effect on the restart.
-        let refreshed = resolve_public_agent_with_env(&state, &existing.id)?;
-        if let Err(err) = state.lifecycle.start_agent(&refreshed, None, None).await {
-            return Err(app_err!(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "agent updated but restart failed: {err}"
-            ));
-        }
     }
     broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
@@ -554,18 +543,6 @@ pub async fn handle_restart_agent(
     let _transition = acquire_transition(&state, &agent.id)?;
     let agents_dir = state.agents_dir.clone();
     let workspace = AgentWorkspace::new(&agents_dir);
-
-    let bridge_hosted = agent
-        .machine_id
-        .as_deref()
-        .is_some_and(|m| m != state.local_machine_id.as_str());
-    if !bridge_hosted {
-        state
-            .lifecycle
-            .stop_agent(&agent.id)
-            .await
-            .map_err(internal_err)?;
-    }
 
     match req.mode {
         RestartMode::Restart => {}
@@ -591,20 +568,14 @@ pub async fn handle_restart_agent(
         }
     }
 
-    if !bridge_hosted {
-        // Reload after RestartMode::ResetSession / FullReset so the start
-        // sees post-clear state for env_vars/spec lookups.
-        let refreshed = resolve_public_agent_with_env(&state, &agent.id)?;
-        if let Err(err) = state.lifecycle.start_agent(&refreshed, None, None).await {
-            return Err(app_err!(
-                AppErrorCode::AgentRestartFailed,
-                "restart failed: {err}"
-            ));
-        }
-    } else {
-        // Push fresh target so the bridge stops/starts the runtime locally.
-        broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
-    }
+    // Bump `restart_seq` and broadcast — the bridge sees the new value
+    // on its next target frame and stops+starts the runtime through
+    // reconcile. Replaces the platform's old direct lifecycle calls.
+    state
+        .store
+        .bump_restart_seq(&agent.id)
+        .map_err(internal_err)?;
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
         "ok": true,
         "mode": req.mode,

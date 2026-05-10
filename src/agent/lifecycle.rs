@@ -1,48 +1,21 @@
-//! Runtime lifecycle operations the HTTP server can trigger for agents.
+//! Runtime observability the HTTP server reads for activity feeds and
+//! status badges. After the dual-runtime collapse (#149), the bridge
+//! client owns runtime lifecycle entirely; the platform's only role is
+//! to *observe* — `process_state` for status, `get_activity_log_data` /
+//! `get_all_agent_activity_states` for the activity feed,
+//! `active_run_id` / `set_run_channel` / `run_channel_id` for trace
+//! routing. Start/stop/notify/resume moved to the bridge client and
+//! left this trait for good.
 
 use std::future::Future;
 use std::pin::Pin;
 
 use crate::agent::activity_log::ActivityLogResponse;
-use crate::store::agents::Agent;
-use crate::store::messages::ReceivedMessage;
 
 pub trait AgentLifecycle: Send + Sync {
-    /// Start (or wake) an agent process. Takes `&Agent` so the caller is
-    /// forced to hold the full record — this prevents "pass name where id
-    /// was expected" bugs at compile time, and consolidates the previous
-    /// dual entry points (`start_agent(name)` and `start_agent_from_record`)
-    /// into one signature.
-    ///
-    /// `wake_message` carries the unread message that triggered this start, if
-    /// any. `init_directive`, when `Some`, is delivered as the first prompt
-    /// verbatim, overriding the auto-generated greeting/wake/resume prompt.
-    /// Used by the agent-creation path to ask a brand-new agent to introduce
-    /// itself; left `None` for restart, manual-start, and message-driven wake
-    /// paths so existing behavior is unchanged.
-    fn start_agent<'a>(
-        &'a self,
-        agent: &'a Agent,
-        wake_message: Option<ReceivedMessage>,
-        init_directive: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
-    /// Deliver a wakeup notification keyed by `agent_id`.
-    fn notify_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
-    /// Stop a managed agent process keyed by `agent_id`.
-    fn stop_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
-
     /// Returns the runtime `ProcessState` for `agent_id` if a managed
     /// process exists, else `None`. Single source of truth for runtime
-    /// liveness; replaces every read of the persisted `agents.status`
-    /// column from this phase onward.
+    /// liveness; the persisted `agents.status` column is gone.
     fn process_state<'a>(
         &'a self,
         agent_id: &'a str,
@@ -77,26 +50,5 @@ pub trait AgentLifecycle: Send + Sync {
         _agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>> {
         Box::pin(async { None })
-    }
-
-    /// Deliver a self-contained envelope to the agent so it can act on a
-    /// human's pick. Routes to the live session's prompt channel when the
-    /// agent is `Active`; otherwise starts the agent with the envelope as
-    /// the `init_directive` so the same payload arrives on first turn.
-    ///
-    /// The envelope is built by the decision handler and contains the
-    /// original headline + question, the picked option's full label and
-    /// body, and any human note. The agent treats it as a new prompt and
-    /// continues its work without needing to re-read history.
-    fn resume_with_prompt<'a>(
-        &'a self,
-        _agent_id: &'a str,
-        _envelope: String,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async {
-            Err(anyhow::anyhow!(
-                "resume_with_prompt not implemented on this AgentLifecycle"
-            ))
-        })
     }
 }

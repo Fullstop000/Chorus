@@ -142,6 +142,13 @@ pub struct AgentTarget {
     /// never emit this field.
     #[serde(default)]
     pub paused: bool,
+    /// Monotonic counter the platform bumps when the runtime needs to
+    /// stop+start (spec change, manual restart, decision resume). The
+    /// bridge tracks the last-applied value per agent in memory and
+    /// re-launches when this climbs. Defaults to `0` so older platforms
+    /// (which never emit it) implicitly request "no restart needed".
+    #[serde(default)]
+    pub restart_seq: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

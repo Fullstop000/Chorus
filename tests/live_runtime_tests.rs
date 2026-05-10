@@ -82,7 +82,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
 
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
+use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::{AgentRecordUpsert, Store};
 
 // ---------------------------------------------------------------------------
@@ -95,29 +95,6 @@ use chorus::store::{AgentRecordUpsert, Store};
 struct NoopLifecycle;
 
 impl AgentLifecycle for NoopLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        _agent: &'a chorus::store::agents::Agent,
-        _wake_message: Option<ReceivedMessage>,
-        _init_directive: Option<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
     fn get_activity_log_data(
         &self,
         _agent_name: &str,

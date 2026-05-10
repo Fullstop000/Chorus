@@ -121,6 +121,27 @@ impl Store {
                 if msg.contains("duplicate column name") => {}
             Err(e) => return Err(e.into()),
         }
+        // `restart_seq` and `pending_init_directive` arrived with the
+        // bridge-driven restart/resume protocol (#149 phase 4). Same
+        // idempotent ALTER pattern.
+        match conn.execute(
+            "ALTER TABLE agents ADD COLUMN restart_seq INTEGER NOT NULL DEFAULT 0",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(e.into()),
+        }
+        match conn.execute(
+            "ALTER TABLE agents ADD COLUMN pending_init_directive TEXT",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(e.into()),
+        }
         // Migrate agent_env_vars from agent_name FK to agent_id FK.
         // SQLite has no ALTER TABLE DROP COLUMN, so we recreate the table.
         if Self::schema_column_exists(conn, "agent_env_vars", "agent_name")? {
