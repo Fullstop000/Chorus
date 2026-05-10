@@ -144,10 +144,10 @@ impl AgentActivityLog {
 pub type ActivityLogMap = std::sync::Mutex<std::collections::HashMap<String, AgentActivityLog>>;
 
 /// Push a new entry for an agent (creates the log if absent).
-pub fn push_activity(logs: &ActivityLogMap, agent_name: &str, entry: ActivityEntry) {
+pub fn push_activity(logs: &ActivityLogMap, agent_id: &str, entry: ActivityEntry) {
     logs.lock()
         .unwrap()
-        .entry(agent_name.to_string())
+        .entry(agent_id.to_string())
         .or_default()
         .push(entry);
 }
@@ -156,32 +156,32 @@ pub fn push_activity(logs: &ActivityLogMap, agent_name: &str, entry: ActivityEnt
 /// matches the same tool_name, otherwise push a new entry.
 pub fn upsert_tool_result_activity(
     logs: &ActivityLogMap,
-    agent_name: &str,
+    agent_id: &str,
     tool_name: String,
     content: String,
 ) {
     logs.lock()
         .unwrap()
-        .entry(agent_name.to_string())
+        .entry(agent_id.to_string())
         .or_default()
         .upsert_tool_result(tool_name, content);
 }
 
 /// Update the most recent ToolCall's input for an agent.
 /// Used when ACP runtimes deliver args in a deferred `tool_call_update`.
-pub fn update_tool_call_input(logs: &ActivityLogMap, agent_name: &str, new_input: String) {
+pub fn update_tool_call_input(logs: &ActivityLogMap, agent_id: &str, new_input: String) {
     logs.lock()
         .unwrap()
-        .entry(agent_name.to_string())
+        .entry(agent_id.to_string())
         .or_default()
         .update_last_tool_call_input(new_input);
 }
 
 /// Update the activity state for an agent (also appends a Status entry).
-pub fn set_activity_state(logs: &ActivityLogMap, agent_name: &str, activity: &str, detail: &str) {
+pub fn set_activity_state(logs: &ActivityLogMap, agent_id: &str, activity: &str, detail: &str) {
     logs.lock()
         .unwrap()
-        .entry(agent_name.to_string())
+        .entry(agent_id.to_string())
         .or_default()
         .set_state(activity, detail);
 }
@@ -189,11 +189,11 @@ pub fn set_activity_state(logs: &ActivityLogMap, agent_name: &str, activity: &st
 /// Read the activity log for a single agent.
 pub fn get_activity_log(
     logs: &ActivityLogMap,
-    agent_name: &str,
+    agent_id: &str,
     after_seq: Option<u64>,
 ) -> ActivityLogResponse {
     let map = logs.lock().unwrap();
-    match map.get(agent_name) {
+    match map.get(agent_id) {
         Some(log) => {
             let entries = match after_seq {
                 Some(seq) => log.entries_since(seq),

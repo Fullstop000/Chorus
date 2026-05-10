@@ -77,16 +77,13 @@ impl Store {
         Ok(out)
     }
 
-    /// Same shaping as the normal receive path, for wake-up prompts keyed by lifecycle agent name.
-    pub fn get_received_message_for_agent_name(
+    /// Same shaping as the normal receive path, for wake-up prompts.
+    pub fn get_received_message_for_agent_id(
         &self,
-        agent_name: &str,
+        agent_id: &str,
         message_id: &str,
     ) -> Result<Option<ReceivedMessage>> {
-        let agent = self
-            .get_agent(agent_name)?
-            .ok_or_else(|| anyhow!("agent not found: {agent_name}"))?;
-        let unread = self.get_messages_for_agent_id(&agent.id, false)?;
+        let unread = self.get_messages_for_agent_id(agent_id, false)?;
         Ok(unread
             .into_iter()
             .find(|message| message.message_id == message_id))

@@ -323,20 +323,35 @@ export function MessageList({
     [conversationAgentNames, messages, targetKey],
   );
 
+  // Translate trace.agent_id → display name for the scopedAgentNames
+  // fallback path inside traceBelongsToConversation. Built from agent
+  // messages in this conversation; agents that haven't spoken here yet
+  // resolve to an empty string and fail the scope check (correct: no
+  // signal that they belong to this conversation).
+  const agentNameById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const msg of messages) {
+      if (msg.senderType === "agent") {
+        map.set(msg.senderId, msg.senderName);
+      }
+    }
+    return map;
+  }, [messages]);
+
   const traceInCurrentConversation = useCallback(
-    (agentName: string, trace: (typeof traces)[string]) => {
+    (agentId: string, trace: (typeof traces)[string]) => {
       return traceBelongsToConversation(
         conversationId,
-        agentName,
+        agentNameById.get(agentId) ?? "",
         trace,
         scopedAgentNames,
       );
     },
-    [conversationId, scopedAgentNames],
+    [conversationId, scopedAgentNames, agentNameById],
   );
 
-  // Map: agentName:runId → message id with that runId (for exact binding)
-  // Map: agentName → last message id (fallback for inactive traces with no runId match)
+  // Map: agentId:runId → message id with that runId (for exact binding)
+  // Map: agentId → last message id (fallback for inactive traces with no runId match)
   // Map: runId → first message id (only first message per run shows static telescope)
   const { agentRunIdMsgId, agentLastMsgId, firstMsgIdPerRun } = useMemo(() => {
     const agentRunIdMsgId = new Map<string, string>();
@@ -344,9 +359,9 @@ export function MessageList({
     const firstMsgIdPerRun = new Map<string, string>();
     for (const msg of messages) {
       if (msg.senderType === "agent") {
-        agentLastMsgId.set(msg.senderName, msg.id);
+        agentLastMsgId.set(msg.senderId, msg.id);
         if (msg.runId) {
-          agentRunIdMsgId.set(`${msg.senderName}:${msg.runId}`, msg.id);
+          agentRunIdMsgId.set(`${msg.senderId}:${msg.runId}`, msg.id);
           if (!firstMsgIdPerRun.has(msg.runId)) {
             firstMsgIdPerRun.set(msg.runId, msg.id);
           }
@@ -358,11 +373,11 @@ export function MessageList({
 
   // Collect active run IDs from live traces
   const activeRunIds = new Set<string>();
-  for (const [agentName, trace] of Object.entries(traces)) {
+  for (const [agentId, trace] of Object.entries(traces)) {
     if (
       trace.isActive &&
       trace.runId &&
-      traceInCurrentConversation(agentName, trace)
+      traceInCurrentConversation(agentId, trace)
     ) {
       activeRunIds.add(trace.runId);
     }
@@ -371,12 +386,12 @@ export function MessageList({
   // Compute orphaned traces: active traces whose runId has no matching message.
   // These are rendered at the bottom as "agent working" indicators.
   const orphanedTraces: Array<[string, (typeof traces)[string]]> = [];
-  for (const [agentName, trace] of Object.entries(traces)) {
+  for (const [agentId, trace] of Object.entries(traces)) {
     if (!trace.isActive) continue;
-    if (!traceInCurrentConversation(agentName, trace)) continue;
-    const matchKey = `${agentName}:${trace.runId}`;
+    if (!traceInCurrentConversation(agentId, trace)) continue;
+    const matchKey = `${agentId}:${trace.runId}`;
     if (!agentRunIdMsgId.has(matchKey)) {
-      orphanedTraces.push([agentName, trace]);
+      orphanedTraces.push([agentId, trace]);
     }
   }
 
@@ -449,9 +464,9 @@ export function MessageList({
         // 3. Active trace with no match → shown as orphaned at bottom, not here
         let agentTrace: (typeof traces)[string] | undefined;
         if (msg.senderType === "agent") {
-          const trace = traces[msg.senderName];
-          if (trace && traceInCurrentConversation(msg.senderName, trace)) {
-            const matchKey = `${msg.senderName}:${trace.runId}`;
+          const trace = traces[msg.senderId];
+          if (trace && traceInCurrentConversation(msg.senderId, trace)) {
+            const matchKey = `${msg.senderId}:${trace.runId}`;
             if (
               msg.runId &&
               msg.runId === trace.runId &&
@@ -461,7 +476,7 @@ export function MessageList({
             } else if (
               !trace.isActive &&
               !agentRunIdMsgId.has(matchKey) &&
-              agentLastMsgId.get(msg.senderName) === msg.id
+              agentLastMsgId.get(msg.senderId) === msg.id
             ) {
               agentTrace = trace;
             }
@@ -490,23 +505,23 @@ export function MessageList({
               isRunActive={
                 !!msg.runId && activeRunIds.has(msg.runId)
               }
-              isTraceExpanded={expandedAgents[msg.senderName] ?? true}
-              onToggleTrace={() => toggleExpanded(msg.senderName)}
+              isTraceExpanded={expandedAgents[msg.senderId] ?? true}
+              onToggleTrace={() => toggleExpanded(msg.senderId)}
             />
           </div>
         );
       })}
-      {orphanedTraces.map(([agentName, trace]) => (
-        <div key={`pending-${agentName}`} className="pending-trace-wrapper">
-          <span className="pending-trace-agent">{agentName}</span>
+      {orphanedTraces.map(([agentId, trace]) => (
+        <div key={`pending-${agentId}`} className="pending-trace-wrapper">
+          <span className="pending-trace-agent">{agentNameById.get(agentId) ?? agentId}</span>
           <Telescope
-            agentName={agentName}
+            agentName={agentNameById.get(agentId) ?? agentId}
             runId={trace.runId}
             events={trace.events as never[]}
             isActive={trace.isActive}
             isError={trace.isError}
-            isExpanded={expandedAgents[agentName] ?? true}
-            onToggleExpand={() => toggleExpanded(agentName)}
+            isExpanded={expandedAgents[agentId] ?? true}
+            onToggleExpand={() => toggleExpanded(agentId)}
           />
         </div>
       ))}

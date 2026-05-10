@@ -31,6 +31,11 @@ use crate::store::Store;
 /// pending-count field. No other module should reach into these fields;
 /// prefer `deliver_pending_notification` for the shared delivery path.
 pub(super) struct ManagedAgent {
+    /// Cached agent name. The map key is the agent's `id`; this field
+    /// carries the display name forward for log lines and for any path
+    /// that needs the human-readable handle. Updated on rename via the
+    /// dedicated rename path; never written by background tasks.
+    pub(super) name: String,
     pub(super) handle: Arc<tokio::sync::Mutex<Box<dyn Session>>>,
     pub(super) _event_tasks: Vec<tokio::task::JoinHandle<()>>,
     /// Debounce counter for stdin-style notification batching.
@@ -64,14 +69,14 @@ impl ManagedAgent {
         &mut self,
         trace_store: &AgentTraceStore,
         trace_tx: &broadcast::Sender<TraceEvent>,
-        agent_name: &str,
+        agent_id: &str,
     ) -> anyhow::Result<u32> {
         let count = self.pending_notification_count;
         if count == 0 {
             return Ok(0);
         }
         self.pending_notification_count = 0;
-        trace::emit_event(trace_store, trace_tx, agent_name, TraceEventKind::Reading);
+        trace::emit_event(trace_store, trace_tx, agent_id, TraceEventKind::Reading);
         let plural = if count > 1 { "s" } else { "" };
         let them = if count > 1 { "them" } else { "it" };
         let text = format!(
@@ -94,10 +99,11 @@ impl ManagedAgent {
 pub struct AgentManager {
     /// Driver registry — maps runtime to its driver.
     driver_registry: HashMap<AgentRuntime, Arc<dyn RuntimeDriver>>,
-    /// Active agents keyed by agent name. The `agents` table also has a
-    /// UUID `id`, but it is not used for runtime keying — see #142.
-    /// Bare-name keying is a latent collision risk under workspace-scoped
-    /// names, which today only enforce uniqueness via `(workspace_id, name)`.
+    /// Active agents keyed by `agents.id` (the immutable UUID). Renames
+    /// stay invisible to the runtime; the cached display name lives on
+    /// `ManagedAgent.name`. Activity log + trace store + driver
+    /// `AgentKey` are all id-keyed end-to-end (#142): no id ↔ name
+    /// translation step anywhere in the runtime path.
     agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
     activity_logs: Arc<ActivityLogMap>,
     trace_store: Arc<AgentTraceStore>,
@@ -149,47 +155,27 @@ impl AgentManager {
     /// Start an agent process. Creates the workspace, writes `MEMORY.md`, and
     /// optionally threads through the message that caused the wake-up.
     ///
-    /// The core lifecycle (open_session + run) is now spawned as a background
+    /// Takes `&Agent` directly. The platform's HTTP path and the bridge's
+    /// reconcile path both arrive here with the full record in scope:
+    /// the platform loaded it via `store.get_agent(name)` to validate the
+    /// request, and the bridge constructs it from the wire `bridge.target`
+    /// payload. Forcing `&Agent` at the trait boundary collapses the two
+    /// previous entry points (`start_agent(name)` + `start_agent_from_record`)
+    /// and makes "pass name where id was expected" a compile error.
+    ///
+    /// The core lifecycle (open_session + run) is spawned as a background
     /// task so the caller (HTTP handler, message-delivery wake) returns
     /// immediately. `pre_starting` guards the window between insertion and
     /// the background task reaching `Starting`. Background mutations verify
-    /// handle identity via `Arc::ptr_eq` to avoid touching a newer agent that
-    /// reused the same name.
+    /// handle identity via `Arc::ptr_eq` to avoid touching a newer agent
+    /// that reused the same id.
     pub async fn start_agent(
         &self,
-        agent_name: &str,
+        agent: &crate::store::agents::Agent,
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> anyhow::Result<()> {
-        let agent = self
-            .store
-            .get_agent(agent_name)?
-            .ok_or_else(|| anyhow::anyhow!("Agent not found: {agent_name}"))?;
-        self.start_agent_inner(agent, wake_message, init_directive)
-            .await
-    }
-
-    /// Start an agent from a fully-materialized [`crate::store::agents::Agent`]
-    /// record without re-reading the store. Used by the bridge client so the
-    /// `bridge.target` payload can drive `start_agent` directly without first
-    /// going through SQLite as a cache. The resume path still reads
-    /// `agent_sessions` (keyed by `agent.id`); that table FKs to `agents(id)`
-    /// today, so the caller is responsible for ensuring the corresponding
-    /// row exists in the store. See #145 for the path to dropping that.
-    pub async fn start_agent_from_record(
-        &self,
-        agent: crate::store::agents::Agent,
-        init_directive: Option<String>,
-    ) -> anyhow::Result<()> {
-        self.start_agent_inner(agent, None, init_directive).await
-    }
-
-    async fn start_agent_inner(
-        &self,
-        agent: crate::store::agents::Agent,
-        wake_message: Option<ReceivedMessage>,
-        init_directive: Option<String>,
-    ) -> anyhow::Result<()> {
+        let agent_id = agent.id.as_str();
         let agent_name = agent.name.as_str();
         // Already running? Inspect the existing handle's state — only
         // bail if it's truly live. Closed/Failed/Idle handles get evicted
@@ -208,9 +194,9 @@ impl AgentManager {
         // operations aren't blocked on teardown I/O.
         let evicted = {
             let mut agents = self.agents.lock().await;
-            match agents.get(agent_name) {
+            match agents.get(agent_id) {
                 Some(entry) if entry.pre_starting => {
-                    debug!(agent = %agent_name, "skipping start: pre_starting flag set");
+                    debug!(agent = %agent_name, id = %agent_id, "skipping start: pre_starting flag set");
                     return Ok(());
                 }
                 Some(entry) => {
@@ -222,8 +208,8 @@ impl AgentManager {
                         crate::agent::drivers::ProcessState::Idle
                         | crate::agent::drivers::ProcessState::Closed
                         | crate::agent::drivers::ProcessState::Failed(_) => {
-                            debug!(agent = %agent_name, "evicting dead handle before fresh start");
-                            agents.remove(agent_name)
+                            debug!(agent = %agent_name, id = %agent_id, "evicting dead handle before fresh start");
+                            agents.remove(agent_id)
                         }
                     }
                 }
@@ -232,7 +218,7 @@ impl AgentManager {
         };
         if let Some(mut dead) = evicted {
             if let Err(err) = dead.handle.lock().await.close().await {
-                warn!(agent = %agent_name, err = %err, "error closing evicted handle");
+                warn!(agent = %agent_name, id = %agent_id, err = %err, "error closing evicted handle");
             }
             for task in dead._event_tasks.drain(..) {
                 task.abort();
@@ -272,7 +258,7 @@ impl AgentManager {
         // rather than silently falling back to a (now-deleted) stdio path.
         let bridge_endpoint = self.resolve_bridge_endpoint()?;
 
-        info!(agent = %agent_name, endpoint = %bridge_endpoint, "starting agent via shared bridge");
+        info!(agent = %agent_name, id = %agent_id, endpoint = %bridge_endpoint, "starting agent via shared bridge");
 
         let spec = AgentSpec {
             display_name: agent.display_name.clone(),
@@ -285,19 +271,23 @@ impl AgentManager {
             bridge_endpoint,
         };
 
-        let active = self.store.get_active_session(&agent.id)?;
+        let active = self.store.get_active_session(agent_id)?;
         let is_resume = active.is_some();
         let intent = match active {
             Some(s) => SessionIntent::Resume(s.session_id),
             None => SessionIntent::New,
         };
+        // Drivers receive `agent.id` as their `AgentKey` so per-event
+        // `key` fields downstream are id-typed end-to-end. activity_log
+        // and trace_store are id-keyed; the cached display name is only
+        // used for human-readable log fields.
         let attach_result = driver
-            .open_session(agent_name.to_string(), spec, intent)
+            .open_session(agent_id.to_string(), spec, intent)
             .await?;
         let handle = attach_result.session;
         let events = attach_result.events;
         let event_rx = events.subscribe(); // subscribe BEFORE run
-        let unread_summary = self.store.get_unread_summary(agent_name)?;
+        let unread_summary = self.store.get_unread_summary(agent_id)?;
         let has_wake_message = wake_message.is_some();
         let init_prompt_text = build_start_prompt(
             &agent.display_name,
@@ -309,13 +299,13 @@ impl AgentManager {
 
         activity_log::set_activity_state(
             &self.activity_logs,
-            agent_name,
+            agent_id,
             ACTIVITY_WORKING,
             "Starting\u{2026}",
         );
         activity_log::push_activity(
             &self.activity_logs,
-            agent_name,
+            agent_id,
             ActivityEntry::Start { is_resume },
         );
 
@@ -341,8 +331,9 @@ impl AgentManager {
         {
             let mut agents = self.agents.lock().await;
             agents.insert(
-                agent_name.to_string(),
+                agent_id.to_string(),
                 ManagedAgent {
+                    name: agent_name.to_string(),
                     handle: handle.clone(),
                     _event_tasks: vec![forwarder],
                     // Wake previews can be ignored by some runtimes during
@@ -358,8 +349,9 @@ impl AgentManager {
         // driver handshake round-trips. On failure, close the handle and
         // abort event tasks; on success, clear the pre_starting flag.
         // Identity is verified via Arc::ptr_eq before touching the map
-        // entry so an old task cannot mutate a newer agent that reused the
-        // same name.
+        // entry so an old task cannot mutate a newer agent that reused
+        // the same id.
+        let agent_id_owned = agent_id.to_string();
         let agent_name_owned = agent_name.to_string();
         let agents_ref = self.agents.clone();
         tokio::spawn(async move {
@@ -369,28 +361,28 @@ impl AgentManager {
             };
             match run_result {
                 Ok(()) => {
-                    debug!(agent = %agent_name_owned, "agent run completed");
+                    debug!(agent = %agent_name_owned, id = %agent_id_owned, "agent run completed");
                     let mut agents = agents_ref.lock().await;
-                    if let Some(agent) = agents.get_mut(&agent_name_owned) {
+                    if let Some(agent) = agents.get_mut(&agent_id_owned) {
                         if Arc::ptr_eq(&agent.handle, &handle) {
                             agent.pre_starting = false;
                         }
                     }
                 }
                 Err(err) => {
-                    warn!(agent = %agent_name_owned, error = %err, "agent run failed");
+                    warn!(agent = %agent_name_owned, id = %agent_id_owned, error = %err, "agent run failed");
                     let dead = {
                         let mut agents = agents_ref.lock().await;
-                        match agents.get(&agent_name_owned) {
+                        match agents.get(&agent_id_owned) {
                             Some(entry) if Arc::ptr_eq(&entry.handle, &handle) => {
-                                agents.remove(&agent_name_owned)
+                                agents.remove(&agent_id_owned)
                             }
                             _ => None,
                         }
                     };
                     if let Some(mut dead) = dead {
                         if let Err(e) = dead.handle.lock().await.close().await {
-                            warn!(agent = %agent_name_owned, err = %e, "error closing failed handle");
+                            warn!(agent = %agent_name_owned, id = %agent_id_owned, err = %e, "error closing failed handle");
                         }
                         for task in dead._event_tasks.drain(..) {
                             task.abort();
@@ -400,31 +392,32 @@ impl AgentManager {
             }
         });
 
-        info!(agent = %agent_name, runtime = %rt.as_str(), "agent started");
+        info!(agent = %agent_name, id = %agent_id, runtime = %rt.as_str(), "agent started");
         Ok(())
     }
 
     /// Stop an agent process and mark it inactive.
-    pub async fn stop_agent(&self, agent_name: &str) -> anyhow::Result<()> {
+    pub async fn stop_agent(&self, agent_id: &str) -> anyhow::Result<()> {
         let mut agents = self.agents.lock().await;
-        if let Some(agent) = agents.remove(agent_name) {
-            info!(agent = %agent_name, "stopping agent");
+        if let Some(agent) = agents.remove(agent_id) {
+            let name = agent.name.as_str();
+            info!(agent = %name, id = %agent_id, "stopping agent");
             if let Err(e) = agent.handle.lock().await.close().await {
-                warn!(agent = %agent_name, err = %e, "error closing handle");
+                warn!(agent = %name, id = %agent_id, err = %e, "error closing handle");
             }
             // End any active trace run.
             trace::emit_active_event(
                 &self.trace_store,
                 &self.trace_tx.clone(),
-                agent_name,
+                agent_id,
                 TraceEventKind::Error {
                     message: "Agent stopped".to_string(),
                 },
             );
-            self.trace_store.end_run(agent_name);
+            self.trace_store.end_run(agent_id);
             activity_log::set_activity_state(
                 &self.activity_logs,
-                agent_name,
+                agent_id,
                 ACTIVITY_OFFLINE,
                 "Process stopped",
             );
@@ -433,16 +426,17 @@ impl AgentManager {
     }
 
     /// Kill process but keep status as sleeping (will auto-restart on next message).
-    pub async fn sleep_agent(&self, agent_name: &str) -> anyhow::Result<()> {
+    pub async fn sleep_agent(&self, agent_id: &str) -> anyhow::Result<()> {
         let mut agents = self.agents.lock().await;
-        if let Some(agent) = agents.remove(agent_name) {
-            info!(agent = %agent_name, "sleeping agent");
+        if let Some(agent) = agents.remove(agent_id) {
+            let name = agent.name.as_str();
+            info!(agent = %name, id = %agent_id, "sleeping agent");
             if let Err(e) = agent.handle.lock().await.close().await {
-                warn!(agent = %agent_name, err = %e, "error closing handle for sleep");
+                warn!(agent = %name, id = %agent_id, err = %e, "error closing handle for sleep");
             }
             activity_log::set_activity_state(
                 &self.activity_logs,
-                agent_name,
+                agent_id,
                 ACTIVITY_OFFLINE,
                 "Sleeping",
             );
@@ -461,17 +455,13 @@ impl AgentManager {
     /// The handler reverts the decision to `open` if this returns an error,
     /// so the human's pick isn't silently lost on a transient delivery
     /// failure.
-    pub async fn resume_with_prompt(
-        &self,
-        agent_name: &str,
-        envelope: String,
-    ) -> anyhow::Result<()> {
+    pub async fn resume_with_prompt(&self, agent_id: &str, envelope: String) -> anyhow::Result<()> {
         // Snapshot liveness without holding the agents lock across the
         // prompt() call — handle.lock().await may block on the driver, and
         // start_agent (the fallback) needs to take agents.lock() itself.
         let live_handle = {
             let agents = self.agents.lock().await;
-            match agents.get(agent_name) {
+            match agents.get(agent_id) {
                 Some(agent) => {
                     let h = agent.handle.clone();
                     let state = h.lock().await.process_state();
@@ -498,17 +488,22 @@ impl AgentManager {
 
         // Asleep / not-yet-running / mid-startup: deliver the envelope as
         // the init directive so it lands on the agent's first prompt turn.
-        // wake_message=None and init_directive=Some(...) takes precedence in
-        // build_start_prompt.
-        self.start_agent(agent_name, None, Some(envelope)).await
+        // Look up the full record by id and dispatch via start_agent — the
+        // bridge / platform both have the row keyed by id at this point.
+        let agent = self
+            .store
+            .get_agent_by_id(agent_id, true)?
+            .ok_or_else(|| anyhow::anyhow!("Agent not found by id: {agent_id}"))?;
+        self.start_agent(&agent, None, Some(envelope)).await
     }
 
     /// Deliver a wakeup notification to agent stdin.
-    pub async fn notify_agent(&self, agent_name: &str) -> anyhow::Result<()> {
+    pub async fn notify_agent(&self, agent_id: &str) -> anyhow::Result<()> {
         let mut agents = self.agents.lock().await;
-        if let Some(agent) = agents.get_mut(agent_name) {
+        if let Some(agent) = agents.get_mut(agent_id) {
             agent.pending_notification_count += 1;
             let count = agent.pending_notification_count;
+            let name = agent.name.clone();
 
             let is_active = matches!(
                 agent.handle.lock().await.process_state(),
@@ -518,19 +513,19 @@ impl AgentManager {
                 // Agent is mid-run (e.g. init turn or processing another message).
                 // The event forwarder will deliver the notification immediately
                 // when the current turn's Completed event fires — no polling needed.
-                debug!(agent = %agent_name, "agent not Active, notification queued for post-turn delivery");
+                debug!(agent = %name, id = %agent_id, "agent not Active, notification queued for post-turn delivery");
                 return Ok(());
             }
 
             let agents_ref = self.agents.clone();
             let trace_store = self.trace_store.clone();
             let trace_tx = self.trace_tx.clone();
-            let name = agent_name.to_string();
+            let id = agent_id.to_string();
 
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_secs(3)).await;
                 let mut agents = agents_ref.lock().await;
-                let Some(agent) = agents.get_mut(&name) else {
+                let Some(agent) = agents.get_mut(&id) else {
                     return;
                 };
                 if agent.pending_notification_count != count {
@@ -542,20 +537,20 @@ impl AgentManager {
                     agent.handle.lock().await.process_state(),
                     ProcessState::Active { .. }
                 ) {
-                    debug!(agent = %name, "agent no longer Active after debounce, skipping");
+                    debug!(agent = %name, id = %id, "agent no longer Active after debounce, skipping");
                     agent.pending_notification_count = 0;
                     return;
                 }
                 match agent
-                    .deliver_pending_notification(&trace_store, &trace_tx, &name)
+                    .deliver_pending_notification(&trace_store, &trace_tx, &id)
                     .await
                 {
                     Ok(delivered) if delivered > 0 => {
-                        info!(agent = %name, count = delivered, "sent prompt notification");
+                        info!(agent = %name, id = %id, count = delivered, "sent prompt notification");
                     }
                     Ok(_) => {} // nothing pending
                     Err(e) => {
-                        warn!(agent = %name, error = %e, "failed to deliver notification prompt");
+                        warn!(agent = %name, id = %id, error = %e, "failed to deliver notification prompt");
                     }
                 }
             });
@@ -565,27 +560,27 @@ impl AgentManager {
     }
 
     pub async fn stop_all(&self) -> anyhow::Result<()> {
-        let names: Vec<String> = self.agents.lock().await.keys().cloned().collect();
-        for name in names {
-            self.stop_agent(&name).await?;
+        let ids: Vec<String> = self.agents.lock().await.keys().cloned().collect();
+        for id in ids {
+            self.stop_agent(&id).await?;
         }
         Ok(())
     }
 
-    pub async fn get_running_agent_names(&self) -> Vec<String> {
+    pub async fn get_running_agent_ids(&self) -> Vec<String> {
         self.agents.lock().await.keys().cloned().collect()
     }
 
-    /// Returns the runtime [`ProcessState`] for `agent_name` if a process is
+    /// Returns the runtime [`ProcessState`] for `agent_id` if a process is
     /// currently managed, else `None`. Single source of truth for runtime
     /// liveness; replaces reads of any persisted column in subsequent tasks.
     pub async fn process_state(
         &self,
-        agent_name: &str,
+        agent_id: &str,
     ) -> Option<crate::agent::drivers::ProcessState> {
         let handle = {
             let agents = self.agents.lock().await;
-            agents.get(agent_name).map(|m| m.handle.clone())
+            agents.get(agent_id).map(|m| m.handle.clone())
         };
         let h = handle?;
         let state = h.lock().await.process_state();
@@ -641,13 +636,15 @@ impl AgentManager {
     #[doc(hidden)]
     pub async fn inject_session_for_test(
         &self,
+        agent_id: impl Into<String>,
         agent_name: impl Into<String>,
         handle: Box<dyn crate::agent::drivers::Session>,
     ) {
         let mut agents = self.agents.lock().await;
         agents.insert(
-            agent_name.into(),
+            agent_id.into(),
             ManagedAgent {
+                name: agent_name.into(),
                 handle: Arc::new(tokio::sync::Mutex::new(handle)),
                 _event_tasks: vec![],
                 pending_notification_count: 0,
@@ -733,13 +730,13 @@ fn build_start_prompt(
 impl AgentLifecycle for AgentManager {
     fn start_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent: &'a crate::store::agents::Agent,
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(AgentManager::start_agent(
             self,
-            agent_name,
+            agent,
             wake_message,
             init_directive,
         ))
@@ -747,21 +744,21 @@ impl AgentLifecycle for AgentManager {
 
     fn notify_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::notify_agent(self, agent_name))
+        Box::pin(AgentManager::notify_agent(self, agent_id))
     }
 
     fn stop_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::stop_agent(self, agent_name))
+        Box::pin(AgentManager::stop_agent(self, agent_id))
     }
 
     fn process_state<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> std::pin::Pin<
         Box<
             dyn std::future::Future<Output = Option<crate::agent::drivers::ProcessState>>
@@ -769,43 +766,39 @@ impl AgentLifecycle for AgentManager {
                 + 'a,
         >,
     > {
-        Box::pin(AgentManager::process_state(self, agent_name))
+        Box::pin(AgentManager::process_state(self, agent_id))
     }
 
-    fn get_activity_log_data(
-        &self,
-        agent_name: &str,
-        after_seq: Option<u64>,
-    ) -> ActivityLogResponse {
-        activity_log::get_activity_log(&self.activity_logs, agent_name, after_seq)
+    fn get_activity_log_data(&self, agent_id: &str, after_seq: Option<u64>) -> ActivityLogResponse {
+        activity_log::get_activity_log(&self.activity_logs, agent_id, after_seq)
     }
 
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)> {
         activity_log::all_activity_states(&self.activity_logs)
     }
 
-    fn active_run_id(&self, agent_name: &str) -> Option<String> {
-        self.trace_store.active_run_id(agent_name)
+    fn active_run_id(&self, agent_id: &str) -> Option<String> {
+        self.trace_store.active_run_id(agent_id)
     }
 
-    fn set_run_channel(&self, agent_name: &str, channel_id: &str) {
-        self.trace_store.set_run_channel(agent_name, channel_id);
+    fn set_run_channel(&self, agent_id: &str, channel_id: &str) {
+        self.trace_store.set_run_channel(agent_id, channel_id);
     }
 
     fn run_channel_id<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Option<String>> + Send + 'a>> {
-        let id = self.trace_store.run_channel_id(agent_name);
-        Box::pin(async move { id })
+        let channel = self.trace_store.run_channel_id(agent_id);
+        Box::pin(async move { channel })
     }
 
     fn resume_with_prompt<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
         envelope: String,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(AgentManager::resume_with_prompt(self, agent_name, envelope))
+        Box::pin(AgentManager::resume_with_prompt(self, agent_id, envelope))
     }
 }
 
@@ -909,23 +902,28 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        let result = manager.start_agent("v2bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
 
         assert!(result.is_ok(), "start_agent should succeed: {result:?}");
 
         let agents = manager.agents.lock().await;
-        assert!(agents.contains_key("v2bot"), "v2bot should be in agents");
+        assert!(
+            agents.contains_key(&agent_id),
+            "v2bot should be in agents (keyed by id)"
+        );
 
-        // Should also show up in running agent names.
+        // Should also show up in running agent ids.
         drop(agents);
-        let names = manager.get_running_agent_names().await;
-        assert!(names.contains(&"v2bot".to_string()));
+        let ids = manager.get_running_agent_ids().await;
+        assert!(ids.contains(&agent_id));
 
         // Cleanup
-        let _ = manager.stop_agent("v2bot").await;
+        let _ = manager.stop_agent(&agent_id).await;
     }
 
     #[tokio::test]
@@ -933,22 +931,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
         // First stop should succeed.
-        let r1 = manager.stop_agent("v2bot").await;
+        let r1 = manager.stop_agent(&agent_id).await;
         assert!(r1.is_ok(), "first stop should succeed: {r1:?}");
 
         // Second stop should also be Ok (idempotent).
-        let r2 = manager.stop_agent("v2bot").await;
+        let r2 = manager.stop_agent(&agent_id).await;
         assert!(r2.is_ok(), "second stop should be idempotent: {r2:?}");
 
         let agents = manager.agents.lock().await;
         assert!(
-            !agents.contains_key("v2bot"),
+            !agents.contains_key(&agent_id),
             "v2bot should be removed after stop"
         );
     }
@@ -958,22 +958,24 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store.clone(), dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
-        manager.sleep_agent("v2bot").await.unwrap();
+        manager.sleep_agent(&agent_id).await.unwrap();
 
         let agents = manager.agents.lock().await;
         assert!(
-            !agents.contains_key("v2bot"),
+            !agents.contains_key(&agent_id),
             "v2bot should be removed after sleep"
         );
         drop(agents);
 
         assert!(
-            manager.process_state("v2bot").await.is_none(),
+            manager.process_state(&agent_id).await.is_none(),
             "sleep_agent should remove the managed process"
         );
     }
@@ -983,17 +985,19 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
         // Second start should be a no-op (returns Ok).
-        let r2 = manager.start_agent("v2bot", None, None).await;
+        let r2 = manager.start_agent(&agent, None, None).await;
 
         assert!(r2.is_ok(), "duplicate start should be no-op: {r2:?}");
 
-        let _ = manager.stop_agent("v2bot").await;
+        let _ = manager.stop_agent(&agent_id).await;
     }
 
     #[tokio::test]
@@ -1001,15 +1005,17 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
-        manager.start_agent("v2bot", None, None).await.unwrap();
+        manager.start_agent(&agent, None, None).await.unwrap();
 
-        let result = manager.notify_agent("v2bot").await;
+        let result = manager.notify_agent(&agent_id).await;
         assert!(result.is_ok(), "notify should succeed: {result:?}");
 
-        let _ = manager.stop_agent("v2bot").await;
+        let _ = manager.stop_agent(&agent_id).await;
     }
 
     // ── resolve_bridge_endpoint ──
@@ -1106,6 +1112,8 @@ mod tests {
                 env_vars: &[],
             })
             .unwrap();
+        let agent = store.get_agent("recovery-bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
@@ -1116,11 +1124,11 @@ mod tests {
                 "simulated transport failure".to_string(),
             )));
         manager
-            .inject_session_for_test("recovery-bot", Box::new(failed_handle))
+            .inject_session_for_test(agent_id.clone(), "recovery-bot", Box::new(failed_handle))
             .await;
 
         // Precondition: Failed handle is present.
-        let pre_state = manager.process_state("recovery-bot").await;
+        let pre_state = manager.process_state(&agent_id).await;
         assert!(
             matches!(pre_state, Some(ProcessState::Failed(_))),
             "precondition: handle should be Failed before start_agent, got {pre_state:?}",
@@ -1128,7 +1136,7 @@ mod tests {
 
         // Before the fix this returned Ok(()) immediately (contains_key hit).
         // After the fix it must evict and restart.
-        let result = manager.start_agent("recovery-bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
         assert!(
             result.is_ok(),
             "start_agent should succeed after evicting a Failed handle: {result:?}",
@@ -1138,7 +1146,7 @@ mod tests {
         // asynchronously since run() is spawned as a background task).
         let post_state = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let ps = manager.process_state("recovery-bot").await;
+                let ps = manager.process_state(&agent_id).await;
                 if matches!(ps, Some(ProcessState::Active { .. })) {
                     break ps;
                 }
@@ -1152,7 +1160,7 @@ mod tests {
             "after start_agent the handle should be Active, got {post_state:?}",
         );
 
-        let _ = manager.stop_agent("recovery-bot").await;
+        let _ = manager.stop_agent(&agent_id).await;
     }
 
     /// Verify that start_agent short-circuits without eviction when the handle
@@ -1179,6 +1187,8 @@ mod tests {
                 env_vars: &[],
             })
             .unwrap();
+        let agent = store.get_agent("live-bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
 
         let manager = make_test_manager(store, dir.path());
 
@@ -1190,17 +1200,17 @@ mod tests {
             },
         );
         manager
-            .inject_session_for_test("live-bot", Box::new(active_handle))
+            .inject_session_for_test(agent_id.clone(), "live-bot", Box::new(active_handle))
             .await;
 
-        let result = manager.start_agent("live-bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
         assert!(
             result.is_ok(),
             "start_agent on an Active agent should be Ok: {result:?}",
         );
 
         // Session id must still be the one we injected — not replaced.
-        let post_state = manager.process_state("live-bot").await;
+        let post_state = manager.process_state(&agent_id).await;
         match post_state {
             Some(ProcessState::Active { ref session_id }) => {
                 assert_eq!(
@@ -1223,6 +1233,8 @@ mod tests {
         let dir = tempdir().unwrap();
         let store = Arc::new(Store::open(dir.path().join("chorus.db").to_str().unwrap()).unwrap());
         insert_codex_agent(&store);
+        let agent = store.get_agent("v2bot").unwrap().unwrap();
+        let agent_id = agent.id.clone();
         let manager = make_test_manager(store, dir.path());
 
         let (events, event_tx) = EventFanOut::new();
@@ -1231,8 +1243,9 @@ mod tests {
         {
             let mut agents = manager.agents.lock().await;
             agents.insert(
-                "v2bot".to_string(),
+                agent_id.clone(),
                 ManagedAgent {
+                    name: "v2bot".to_string(),
                     handle: Arc::new(tokio::sync::Mutex::new(Box::new(idle_handle))),
                     _event_tasks: vec![],
                     pending_notification_count: 0,
@@ -1241,13 +1254,13 @@ mod tests {
             );
         }
 
-        let result = manager.start_agent("v2bot", None, None).await;
+        let result = manager.start_agent(&agent, None, None).await;
         assert!(
             result.is_ok(),
             "start_agent should skip eviction when pre_starting is set: {result:?}"
         );
 
-        let state = manager.process_state("v2bot").await;
+        let state = manager.process_state(&agent_id).await;
         assert!(
             matches!(state, Some(ProcessState::Idle)),
             "pre_starting flag should prevent eviction, got {state:?}",

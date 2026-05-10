@@ -102,13 +102,11 @@ async fn restart_agent_member(
     state: &AppState,
     agent_name: &str,
 ) -> Result<(), (axum::http::StatusCode, Json<super::ErrorResponse>)> {
-    let bridge_hosted = state
-        .store
-        .get_agent(agent_name)
-        .map_err(internal_err)?
-        .and_then(|a| a.machine_id)
-        .is_some();
-    if bridge_hosted {
+    let agent = match state.store.get_agent(agent_name).map_err(internal_err)? {
+        Some(a) => a,
+        None => return Ok(()),
+    };
+    if agent.machine_id.is_some() {
         crate::server::transport::bridge_ws::broadcast_target_update(
             state.store.as_ref(),
             state.bridge_registry.as_ref(),
@@ -117,12 +115,12 @@ async fn restart_agent_member(
     }
     state
         .lifecycle
-        .stop_agent(agent_name)
+        .stop_agent(&agent.id)
         .await
         .map_err(internal_err)?;
     state
         .lifecycle
-        .start_agent(agent_name, None, None)
+        .start_agent(&agent, None, None)
         .await
         .map_err(internal_err)?;
     Ok(())

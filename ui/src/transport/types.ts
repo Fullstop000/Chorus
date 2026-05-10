@@ -15,11 +15,13 @@ export type EventType = (typeof EventType)[keyof typeof EventType]
 /** Server event — re-exported from data layer for transport consumers. */
 export type ServerEvent = StreamEvent
 
-/** A single agent trace event delivered over the WebSocket. */
+/** A single agent trace event delivered over the WebSocket.
+ *  Keyed by `agentId` end-to-end. Display names come from the agent
+ *  record loaded separately. */
 export interface TraceFrame {
   eventType: 'agent.trace'
   runId: string
-  agentName: string
+  agentId: string
   channelId?: string | null
   seq: number
   timestampMs: number

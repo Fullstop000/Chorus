@@ -245,18 +245,6 @@ fn canonical_message_target_for_store(
     Ok(format!("dm:@{peer_id}"))
 }
 
-fn lifecycle_agent_name_for_id(
-    state: &AppState,
-    actor_id: &str,
-) -> Result<String, (axum::http::StatusCode, Json<super::ErrorResponse>)> {
-    state
-        .store
-        .get_agent_by_id(actor_id, false)
-        .map_err(internal_err)?
-        .map(|agent| agent.name)
-        .ok_or_else(|| app_err!(StatusCode::BAD_REQUEST, "agent not found: {actor_id}"))
-}
-
 fn sender_type_for_actor(
     store: &Store,
     actor_id: &str,
@@ -405,10 +393,10 @@ async fn send_message_to_channel(
     let store = &state.store;
     let sender_type = sender_type_for_actor(store, actor_id)?;
 
-    // Look up active trace run_id for agent senders.
+    // Look up active trace run_id for agent senders. Trace store is
+    // id-keyed, so we pass `actor_id` directly.
     let run_id = if sender_type == SenderType::Agent {
-        let agent_name = lifecycle_agent_name_for_id(state, actor_id)?;
-        state.lifecycle.active_run_id(&agent_name)
+        state.lifecycle.active_run_id(actor_id)
     } else {
         None
     };
@@ -850,25 +838,25 @@ pub(crate) async fn deliver_message_to_agents(
             continue;
         }
         // Associate the channel with the agent's trace run before notifying/starting.
-        state.lifecycle.set_run_channel(&recipient_name, channel_id);
+        state.lifecycle.set_run_channel(&agent.id, channel_id);
         // Route on runtime liveness (manager HashMap), not on the persisted
         // `agents.status` column — the two can drift, and the manager is the
         // single source of truth for whether a process is alive right now.
-        let process_state = state.lifecycle.process_state(&recipient_name).await;
+        let process_state = state.lifecycle.process_state(&agent.id).await;
         let status = crate::agent::process_status::derive_status(process_state.as_ref());
         match status {
             crate::agent::process_status::Status::Working
             | crate::agent::process_status::Status::Ready => {
-                state.lifecycle.notify_agent(&recipient_name).await?
+                state.lifecycle.notify_agent(&agent.id).await?
             }
             crate::agent::process_status::Status::Asleep
             | crate::agent::process_status::Status::Failed => {
                 let wake_message = state
                     .store
-                    .get_received_message_for_agent_name(&recipient_name, message_id)?;
+                    .get_received_message_for_agent_id(&agent.id, message_id)?;
                 state
                     .lifecycle
-                    .start_agent(&recipient_name, wake_message, None)
+                    .start_agent(&agent, wake_message, None)
                     .await?
             }
         }

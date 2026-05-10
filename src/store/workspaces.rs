@@ -437,7 +437,7 @@ impl Store {
         )?;
         tx.execute(
             "DELETE FROM agent_env_vars
-             WHERE agent_name IN (SELECT name FROM agents WHERE workspace_id = ?1)",
+             WHERE agent_id IN (SELECT id FROM agents WHERE workspace_id = ?1)",
             params![workspace_id],
         )?;
         tx.execute(

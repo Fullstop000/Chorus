@@ -163,7 +163,7 @@ impl Store {
             "INSERT INTO agents (id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![id, workspace_id, record.name, record.display_name, record.description, record.system_prompt, record.runtime, record.model, record.reasoning_effort, record.machine_id],
         )?;
-        Self::replace_agent_env_vars_inner(conn, record.name, record.env_vars)?;
+        Self::replace_agent_env_vars_inner(conn, id, record.env_vars)?;
         Ok(id.to_string())
     }
 
@@ -272,6 +272,12 @@ impl Store {
 
     pub fn update_agent_record(&self, record: &AgentRecordUpsert<'_>) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        // Resolve id once so env_vars writes don't need a second lookup.
+        let agent_id: String = conn.query_row(
+            "SELECT id FROM agents WHERE name = ?1",
+            params![record.name],
+            |row| row.get(0),
+        )?;
         conn.execute(
             "UPDATE agents SET display_name = ?1, description = ?2, system_prompt = ?3, runtime = ?4, model = ?5, reasoning_effort = ?6, machine_id = ?7 WHERE name = ?8",
             params![
@@ -285,24 +291,24 @@ impl Store {
                 record.name
             ],
         )?;
-        Self::replace_agent_env_vars_inner(&conn, record.name, record.env_vars)?;
+        Self::replace_agent_env_vars_inner(&conn, &agent_id, record.env_vars)?;
         Ok(())
     }
 
-    pub fn get_agent_env_vars(&self, name: &str) -> Result<Vec<AgentEnvVar>> {
+    pub fn get_agent_env_vars(&self, agent_id: &str) -> Result<Vec<AgentEnvVar>> {
         let conn = self.conn.lock().unwrap();
-        Self::list_agent_env_vars_inner(&conn, name)
+        Self::list_agent_env_vars_inner(&conn, agent_id)
     }
 
     fn list_agent_env_vars_inner(
         conn: &rusqlite::Connection,
-        name: &str,
+        agent_id: &str,
     ) -> Result<Vec<AgentEnvVar>> {
         let rows = conn
             .prepare(
-                "SELECT key, value, position FROM agent_env_vars WHERE agent_name = ?1 ORDER BY position ASC, key ASC",
+                "SELECT key, value, position FROM agent_env_vars WHERE agent_id = ?1 ORDER BY position ASC, key ASC",
             )?
-            .query_map(params![name], |row| {
+            .query_map(params![agent_id], |row| {
                 Ok(AgentEnvVar {
                     key: row.get(0)?,
                     value: row.get(1)?,
@@ -315,7 +321,7 @@ impl Store {
     }
 
     fn hydrate_agent_env_vars_inner(conn: &rusqlite::Connection, agent: &mut Agent) -> Result<()> {
-        agent.env_vars = Self::list_agent_env_vars_inner(conn, &agent.name)?;
+        agent.env_vars = Self::list_agent_env_vars_inner(conn, &agent.id)?;
         Ok(())
     }
 
@@ -339,35 +345,25 @@ impl Store {
 
     fn replace_agent_env_vars_inner(
         conn: &rusqlite::Connection,
-        name: &str,
+        agent_id: &str,
         env_vars: &[AgentEnvVar],
     ) -> Result<()> {
         conn.execute(
-            "DELETE FROM agent_env_vars WHERE agent_name = ?1",
-            params![name],
+            "DELETE FROM agent_env_vars WHERE agent_id = ?1",
+            params![agent_id],
         )?;
         for env_var in env_vars {
             conn.execute(
-                "INSERT INTO agent_env_vars (agent_name, key, value, position) VALUES (?1, ?2, ?3, ?4)",
-                params![name, env_var.key, env_var.value, env_var.position],
+                "INSERT INTO agent_env_vars (agent_id, key, value, position) VALUES (?1, ?2, ?3, ?4)",
+                params![agent_id, env_var.key, env_var.value, env_var.position],
             )?;
         }
         Ok(())
     }
 
     /// Get all channel IDs where an agent is a member (includes DM channels).
-    pub fn agent_channel_ids(&self, agent_name: &str) -> Result<Vec<String>> {
+    pub fn agent_channel_ids(&self, agent_id: &str) -> Result<Vec<String>> {
         let conn = self.conn.lock().unwrap();
-        let agent_id: Option<String> = conn
-            .query_row(
-                "SELECT id FROM agents WHERE name = ?1",
-                params![agent_name],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(agent_id) = agent_id else {
-            return Ok(Vec::new());
-        };
         let mut stmt =
             conn.prepare("SELECT DISTINCT channel_id FROM channel_members WHERE member_id = ?1")?;
         let ids = stmt

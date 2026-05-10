@@ -115,6 +115,10 @@ pub struct HistoryMessage {
     pub seq: i64,
     /// Body text.
     pub content: String,
+    /// Stable sender id (humans.id or agents.id). The UI matches trace
+    /// events to messages by this id; senderName is for display only.
+    #[serde(rename = "senderId")]
+    pub sender_id: String,
     /// Author handle.
     #[serde(rename = "senderName")]
     pub sender_name: String,
@@ -158,6 +162,8 @@ pub struct ConversationMessageView {
     pub conversation_name: String,
     /// `channel`, `dm`, `team`, or `system`.
     pub conversation_type: String,
+    /// Stable sender id (humans.id or agents.id).
+    pub sender_id: String,
     /// Author handle.
     pub sender_name: String,
     /// `human` or `agent`.
@@ -191,6 +197,7 @@ impl ConversationMessageView {
             conversation_id: row.get("conversation_id")?,
             conversation_name: row.get("conversation_name")?,
             conversation_type: row.get("conversation_type")?,
+            sender_id: row.get("sender_id")?,
             sender_name: row.get("sender_name")?,
             sender_type: row.get("sender_type")?,
             sender_deleted: row.get::<_, i64>("sender_deleted")? > 0,
@@ -210,6 +217,7 @@ impl ConversationMessageView {
             id: self.message_id.clone(),
             seq: self.seq,
             content: self.content.clone(),
+            sender_id: self.sender_id.clone(),
             sender_name: self.sender_name.clone(),
             sender_type: self.sender_type.clone(),
             created_at: self.created_at.clone(),
@@ -234,6 +242,7 @@ impl ConversationMessageView {
             "conversationId": self.conversation_id,
             "conversationType": self.conversation_type,
             "sender": {
+                "id": self.sender_id,
                 "name": self.sender_name,
                 "type": self.sender_type,
             },

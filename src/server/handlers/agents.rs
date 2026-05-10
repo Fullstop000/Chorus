@@ -214,15 +214,14 @@ pub async fn handle_list_agents(State(state): State<AppState>) -> ApiResult<Vec<
         .collect();
 
     for info in &mut agents {
-        let ps = state.lifecycle.process_state(&info.name).await;
+        let ps = state.lifecycle.process_state(&info.id).await;
         info.status = crate::agent::process_status::derive_status(ps.as_ref());
     }
 
     let activity_states = state.lifecycle.get_all_agent_activity_states();
     for agent in &mut agents {
-        if let Some((_, activity, detail)) = activity_states
-            .iter()
-            .find(|(name, _, _)| name == &agent.name)
+        if let Some((_, activity, detail)) =
+            activity_states.iter().find(|(id, _, _)| id == &agent.id)
         {
             agent.activity = Some(activity.clone());
             agent.activity_detail = Some(detail.clone());
@@ -296,7 +295,7 @@ pub async fn handle_create_agent(
             result.name
         ));
     }
-    let ps = state.lifecycle.process_state(&result.name).await;
+    let ps = state.lifecycle.process_state(&result.id).await;
     let status = crate::agent::process_status::derive_status(ps.as_ref());
     broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     Ok(Json(serde_json::json!({
@@ -432,16 +431,24 @@ pub(crate) async fn create_and_start_agent(
             "create_and_start_agent: bridge-hosted, skipping platform-side start"
         );
         None
-    } else if let Err(err) = state
-        .lifecycle
-        .start_agent(&name, None, intro_directive)
-        .await
-    {
-        let error_detail = format_anyhow_error(&err);
-        warn!(agent = %name, error = %error_detail, "agent created but failed to start");
-        Some(format!("{err}"))
     } else {
-        None
+        // Reload with env_vars hydrated — the runtime spec inside `start_agent`
+        // reads them off the record we hand in.
+        let agent = state
+            .store
+            .get_agent_by_id(&id, true)?
+            .ok_or_else(|| anyhow::anyhow!("agent vanished after create: {id}"))?;
+        if let Err(err) = state
+            .lifecycle
+            .start_agent(&agent, None, intro_directive)
+            .await
+        {
+            let error_detail = format_anyhow_error(&err);
+            warn!(agent = %name, error = %error_detail, "agent created but failed to start");
+            Some(format!("{err}"))
+        } else {
+            None
+        }
     };
     Ok(CreateAgentResult {
         name,
@@ -456,7 +463,7 @@ pub async fn handle_get_agent(
 ) -> ApiResult<AgentDetailResponse> {
     let agent = resolve_public_agent_with_env(&state, &id)?;
     let mut agent_info = AgentInfo::from(&agent);
-    let ps = state.lifecycle.process_state(&agent_info.name).await;
+    let ps = state.lifecycle.process_state(&agent_info.id).await;
     agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
     Ok(Json(AgentDetailResponse {
         agent: agent_info,
@@ -478,7 +485,8 @@ pub async fn handle_update_agent(
 ) -> ApiResult<serde_json::Value> {
     let existing = resolve_public_agent(&state, &id)?;
     let name = existing.name.clone();
-    let _transition = acquire_transition(&state, &name)?;
+    let agent_id = existing.id.clone();
+    let _transition = acquire_transition(&state, &agent_id)?;
 
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     let display_name = if req.display_name.trim().is_empty() {
@@ -519,7 +527,7 @@ pub async fn handle_update_agent(
         })
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
 
-    let ps = state.lifecycle.process_state(&name).await;
+    let ps = state.lifecycle.process_state(&agent_id).await;
     let was_running = crate::agent::process_status::derive_status(ps.as_ref())
         != crate::agent::process_status::Status::Asleep;
 
@@ -530,10 +538,13 @@ pub async fn handle_update_agent(
     if was_running && requires_restart && !bridge_hosted {
         state
             .lifecycle
-            .stop_agent(&name)
+            .stop_agent(&agent_id)
             .await
             .map_err(internal_err)?;
-        if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
+        // Reload after the update so spec changes (env_vars, model, runtime)
+        // take effect on the restart.
+        let refreshed = resolve_public_agent_with_env(&state, &existing.id)?;
+        if let Err(err) = state.lifecycle.start_agent(&refreshed, None, None).await {
             return Err(app_err!(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "agent updated but restart failed: {err}"
@@ -554,7 +565,7 @@ pub async fn handle_restart_agent(
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name.clone();
-    let _transition = acquire_transition(&state, &name)?;
+    let _transition = acquire_transition(&state, &agent.id)?;
     let agents_dir = state.agents_dir.clone();
     let workspace = AgentWorkspace::new(&agents_dir);
 
@@ -562,7 +573,7 @@ pub async fn handle_restart_agent(
     if !bridge_hosted {
         state
             .lifecycle
-            .stop_agent(&name)
+            .stop_agent(&agent.id)
             .await
             .map_err(internal_err)?;
     }
@@ -590,7 +601,10 @@ pub async fn handle_restart_agent(
     }
 
     if !bridge_hosted {
-        if let Err(err) = state.lifecycle.start_agent(&name, None, None).await {
+        // Reload after RestartMode::ResetSession / FullReset so the start
+        // sees post-clear state for env_vars/spec lookups.
+        let refreshed = resolve_public_agent_with_env(&state, &agent.id)?;
+        if let Err(err) = state.lifecycle.start_agent(&refreshed, None, None).await {
             return Err(app_err!(
                 AppErrorCode::AgentRestartFailed,
                 "restart failed: {err}"
@@ -613,8 +627,8 @@ pub async fn handle_delete_agent(
     Json(req): Json<DeleteAgentRequest>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let name = agent.name;
-    let _transition = acquire_transition(&state, &name)?;
+    let name = agent.name.clone();
+    let _transition = acquire_transition(&state, &agent.id)?;
 
     // Skip local stop for bridge-hosted agents: the bridge stops them when
     // the next `bridge.target` (broadcast below after the row delete) drops
@@ -623,7 +637,7 @@ pub async fn handle_delete_agent(
     if agent.machine_id.is_none() {
         state
             .lifecycle
-            .stop_agent(&name)
+            .stop_agent(&agent.id)
             .await
             .map_err(internal_err)?;
     }
@@ -656,23 +670,25 @@ pub async fn handle_agent_start(
     State(state): State<AppState>,
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
-    let agent = resolve_public_agent(&state, &id)?;
-    let name = agent.name;
-    let _transition = acquire_transition(&state, &name)?;
+    // Hydrate env_vars: start_agent now reads the spec directly off the
+    // record we pass in, so the lookup happens here rather than inside
+    // the manager.
+    let agent = resolve_public_agent_with_env(&state, &id)?;
+    let _transition = acquire_transition(&state, &agent.id)?;
     if agent.machine_id.is_some() {
         // Bridge-hosted: the bridge already keeps the runtime alive per
         // target. Re-broadcast so any reconnected bridge picks it up.
-        info!(agent = %name, "agent is bridge-hosted; refreshing target");
+        info!(agent = %agent.name, "agent is bridge-hosted; refreshing target");
         broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
         return Ok(Json(serde_json::json!({ "ok": true })));
     }
-    info!(agent = %name, "starting agent");
+    info!(agent = %agent.name, "starting agent");
     state
         .lifecycle
-        .start_agent(&name, None, None)
+        .start_agent(&agent, None, None)
         .await
         .map_err(internal_err)?;
-    info!(agent = %name, "agent started");
+    info!(agent = %agent.name, "agent started");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -681,8 +697,8 @@ pub async fn handle_agent_stop(
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
-    let name = agent.name;
-    let _transition = acquire_transition(&state, &name)?;
+    let name = agent.name.clone();
+    let _transition = acquire_transition(&state, &agent.id)?;
     if agent.machine_id.is_some() {
         // Bridge-hosted: platform doesn't own the runtime. There's no
         // explicit "stop a single bridge-hosted agent" frame yet, so this
@@ -695,13 +711,13 @@ pub async fn handle_agent_stop(
             "note": "agent is bridge-hosted; the platform does not own the runtime"
         })));
     }
-    info!(agent = %name, "stopping agent");
+    info!(agent = %name, id = %agent.id, "stopping agent");
     state
         .lifecycle
-        .stop_agent(&name)
+        .stop_agent(&agent.id)
         .await
         .map_err(internal_err)?;
-    info!(agent = %name, "agent stopped");
+    info!(agent = %name, id = %agent.id, "agent stopped");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -714,7 +730,7 @@ pub async fn handle_agent_activity(
     let limit = params.limit.unwrap_or(50).min(200);
     let messages = state
         .store
-        .get_agent_activity(&agent.name, limit)
+        .get_agent_activity(&agent.id, limit)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
@@ -727,6 +743,6 @@ pub async fn handle_agent_activity_log(
     let agent = resolve_public_agent(&state, &id)?;
     let resp = state
         .lifecycle
-        .get_activity_log_data(&agent.name, params.after);
+        .get_activity_log_data(&agent.id, params.after);
     Ok(Json(resp))
 }

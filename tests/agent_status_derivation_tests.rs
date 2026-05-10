@@ -33,39 +33,40 @@ struct MockLifecycle {
 impl AgentLifecycle for MockLifecycle {
     fn start_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent: &'a chorus::store::agents::Agent,
         _wake_message: Option<ReceivedMessage>,
         _init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
+        let id = agent.id.clone();
         Box::pin(async move {
-            self.running.lock().unwrap().insert(agent_name.to_string());
+            self.running.lock().unwrap().insert(id);
             Ok(())
         })
     }
 
     fn notify_agent<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async { Ok(()) })
     }
 
     fn stop_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async move {
-            self.running.lock().unwrap().remove(agent_name);
+            self.running.lock().unwrap().remove(agent_id);
             Ok(())
         })
     }
 
     fn process_state<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Option<chorus::agent::drivers::ProcessState>> + Send + 'a>>
     {
-        let is_running = self.running.lock().unwrap().contains(agent_name);
+        let is_running = self.running.lock().unwrap().contains(agent_id);
         Box::pin(async move {
             if is_running {
                 Some(chorus::agent::drivers::ProcessState::Active {
@@ -176,14 +177,13 @@ async fn list_agents_returns_ready_for_running_agent() {
             env_vars: &[],
         })
         .unwrap();
+    let agent_id = store.get_agent("bot-running").unwrap().unwrap().id;
 
     // Manually insert into the running set (simulates start_agent having been
-    // called, and the process reaching the Active/idle state).
-    lifecycle
-        .running
-        .lock()
-        .unwrap()
-        .insert("bot-running".to_string());
+    // called, and the process reaching the Active/idle state). The handler
+    // looks up `process_state` by `agent.id`, so the mock's running set must
+    // be keyed by id to mirror production semantics post-#142.
+    lifecycle.running.lock().unwrap().insert(agent_id);
 
     let resp = app
         .oneshot(

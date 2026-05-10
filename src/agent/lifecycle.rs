@@ -4,10 +4,15 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::agent::activity_log::ActivityLogResponse;
+use crate::store::agents::Agent;
 use crate::store::messages::ReceivedMessage;
 
 pub trait AgentLifecycle: Send + Sync {
-    /// Start (or wake) an agent process.
+    /// Start (or wake) an agent process. Takes `&Agent` so the caller is
+    /// forced to hold the full record — this prevents "pass name where id
+    /// was expected" bugs at compile time, and consolidates the previous
+    /// dual entry points (`start_agent(name)` and `start_agent_from_record`)
+    /// into one signature.
     ///
     /// `wake_message` carries the unread message that triggered this start, if
     /// any. `init_directive`, when `Some`, is delivered as the first prompt
@@ -17,45 +22,51 @@ pub trait AgentLifecycle: Send + Sync {
     /// paths so existing behavior is unchanged.
     fn start_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent: &'a Agent,
         wake_message: Option<ReceivedMessage>,
         init_directive: Option<String>,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+    /// Deliver a wakeup notification keyed by `agent_id`.
     fn notify_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
+    /// Stop a managed agent process keyed by `agent_id`.
     fn stop_agent<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>>;
 
-    /// Returns the runtime `ProcessState` for `agent_name` if a managed
+    /// Returns the runtime `ProcessState` for `agent_id` if a managed
     /// process exists, else `None`. Single source of truth for runtime
     /// liveness; replaces every read of the persisted `agents.status`
     /// column from this phase onward.
     fn process_state<'a>(
         &'a self,
-        agent_name: &'a str,
+        agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Option<crate::agent::drivers::ProcessState>> + Send + 'a>>;
 
-    fn get_activity_log_data(
-        &self,
-        agent_name: &str,
-        after_seq: Option<u64>,
-    ) -> ActivityLogResponse;
+    /// Activity log read for one agent. Keyed by `agent_id` end-to-end:
+    /// the underlying `activity_log` store keys by id, and so does the
+    /// trace store. The wire `TraceEvent.agent_id` field is consumed by
+    /// the UI's traceStore as the per-agent map key; display names come
+    /// from the agent record loaded separately.
+    fn get_activity_log_data(&self, agent_id: &str, after_seq: Option<u64>) -> ActivityLogResponse;
 
+    /// Snapshot of all agents' current activity states. Returns
+    /// `(agent_id, activity, detail)` tuples — first column is the id,
+    /// not the name, after #142's observability flip.
     fn get_all_agent_activity_states(&self) -> Vec<(String, String, String)>;
 
     /// Get the active trace run id for an agent, if any.
-    fn active_run_id(&self, _agent_name: &str) -> Option<String> {
+    fn active_run_id(&self, _agent_id: &str) -> Option<String> {
         None
     }
 
     /// Associate a channel with the agent's current or next trace run.
-    fn set_run_channel(&self, _agent_name: &str, _channel_id: &str) {}
+    fn set_run_channel(&self, _agent_id: &str, _channel_id: &str) {}
 
     /// Return the channel id of the agent's most recent or in-flight run,
     /// if known. Used by the decision-inbox handler to infer which channel
@@ -63,7 +74,7 @@ pub trait AgentLifecycle: Send + Sync {
     /// pass a channel — channel context is implicit in the active run).
     fn run_channel_id<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Option<String>> + Send + 'a>> {
         Box::pin(async { None })
     }
@@ -79,7 +90,7 @@ pub trait AgentLifecycle: Send + Sync {
     /// continues its work without needing to re-read history.
     fn resume_with_prompt<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent_id: &'a str,
         _envelope: String,
     ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
         Box::pin(async {

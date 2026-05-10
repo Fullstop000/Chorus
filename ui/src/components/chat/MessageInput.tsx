@@ -42,7 +42,7 @@ export function MessageInput({
   hideCreateTaskCheckbox = false,
   placeholder: placeholderOverride,
 }: Props) {
-  const { currentUser, currentChannel } = useStore();
+  const { currentUser, currentUserId, currentChannel } = useStore();
   const pushToast = useStore((s) => s.pushToast);
   const agents = useAgents();
   const teams = useTeams();
@@ -124,6 +124,7 @@ export function MessageInput({
         id: sendAck.messageId,
         seq: sendAck.seq,
         content: trimmedContent,
+        senderId: currentUserId,
         senderName: currentUser,
         senderType: "human",
         senderDeleted: false,

@@ -151,7 +151,7 @@ async fn forward_trace_event(
         Some(ref ch_id) => store.channel_member_exists(ch_id, viewer).unwrap_or(false),
         // No channel context yet — fall back to checking all agent channels.
         None => {
-            let agent_channels = store.agent_channel_ids(&event.agent_name)?;
+            let agent_channels = store.agent_channel_ids(&event.agent_id)?;
             agent_channels
                 .iter()
                 .any(|ch_id| store.channel_member_exists(ch_id, viewer).unwrap_or(false))
@@ -205,7 +205,7 @@ async fn forward_trace_event(
             "event": {
                 "eventType": "agent.trace",
                 "runId": event.run_id,
-                "agentName": event.agent_name,
+                "agentId": event.agent_id,
                 "channelId": event.channel_id,
                 "seq": event.seq,
                 "timestampMs": event.timestamp_ms,

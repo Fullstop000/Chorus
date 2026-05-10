@@ -60,10 +60,10 @@ async fn stop_agent_preserves_session_id() {
             session_id: seeded_session.to_string(),
         });
     manager
-        .inject_session_for_test(name, Box::new(handle))
+        .inject_session_for_test(agent_id.clone(), name, Box::new(handle))
         .await;
 
-    manager.stop_agent(name).await.unwrap();
+    manager.stop_agent(&agent_id).await.unwrap();
 
     let after = store.get_active_session(&agent_id).unwrap();
     assert_eq!(
@@ -92,10 +92,10 @@ async fn sleep_agent_preserves_session_id() {
             session_id: seeded_session.to_string(),
         });
     manager
-        .inject_session_for_test(name, Box::new(handle))
+        .inject_session_for_test(agent_id.clone(), name, Box::new(handle))
         .await;
 
-    manager.sleep_agent(name).await.unwrap();
+    manager.sleep_agent(&agent_id).await.unwrap();
 
     let after = store.get_active_session(&agent_id).unwrap();
     assert_eq!(

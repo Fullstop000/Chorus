@@ -9,6 +9,7 @@ export function normalizeEvent(event: StreamEvent): HistoryMessage | null {
     id: p.messageId,
     seq: p.seq ?? event.latestSeq,
     content: p.content,
+    senderId: p.sender.id ?? '',
     senderName: p.sender.name,
     senderType: p.sender.type ?? 'human',
     senderDeleted: p.senderDeleted ?? false,

@@ -42,16 +42,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_agent_activity(&self, agent_name: &str, limit: i64) -> Result<Vec<ActivityMessage>> {
+    pub fn get_agent_activity(&self, agent_id: &str, limit: i64) -> Result<Vec<ActivityMessage>> {
         let conn = self.conn.lock().unwrap();
         let rows = conn
             .prepare(
                 "SELECT m.id, m.seq, m.content, c.name, m.created_at
                  FROM messages m JOIN channels c ON c.id = m.channel_id
-                  JOIN agents a ON a.id = m.sender_id
-                  WHERE a.name = ?1 ORDER BY m.created_at DESC LIMIT ?2",
+                  WHERE m.sender_id = ?1 ORDER BY m.created_at DESC LIMIT ?2",
             )?
-            .query_map(params![agent_name, limit], |row| {
+            .query_map(params![agent_id, limit], |row| {
                 Ok(ActivityMessage {
                     id: row.get(0)?,
                     seq: row.get(1)?,

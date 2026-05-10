@@ -72,7 +72,7 @@ pub async fn handle_create_decision(
     // than silently picking #all.
     let channel_id = state
         .lifecycle
-        .run_channel_id(&agent_name)
+        .run_channel_id(&agent.id)
         .await
         .ok_or_else(|| {
             app_err!(
@@ -312,12 +312,13 @@ pub async fn handle_resolve_decision(
 
     if let Err(e) = state
         .lifecycle
-        .resume_with_prompt(&agent.name, envelope)
+        .resume_with_prompt(&agent.id, envelope)
         .await
     {
         // Roll back the resolve so the human's pick isn't silently lost.
         warn!(
             agent = %agent.name,
+            agent_id = %agent.id,
             decision_id = %decision_id,
             error = %e,
             "resume_with_prompt failed; reverting decision to open"

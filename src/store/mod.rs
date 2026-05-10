@@ -94,6 +94,8 @@ impl Store {
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
+        // The schema below uses `CREATE TABLE IF NOT EXISTS` so this is a
+        // no-op on existing DBs; column-shape migrations run after.
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
         // Idempotent `machine_id` migration: SQLite has no
@@ -102,14 +104,12 @@ impl Store {
         // anything else (locked DB, syntax errors, real schema drift)
         // so first-run failures aren't silent.
         match conn.execute("ALTER TABLE agents ADD COLUMN machine_id TEXT", []) {
-            Ok(_) => Ok(()),
+            Ok(_) => {}
             Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") =>
-            {
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(e.into()),
         }
+        Ok(())
     }
 
     fn validate_supported_identity_schema(conn: &Connection) -> Result<()> {

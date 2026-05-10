@@ -96,21 +96,21 @@ impl AppState {
 }
 
 pub(super) struct TransitionGuard {
-    agent_name: String,
+    agent_id: String,
     transitioning_agents: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Drop for TransitionGuard {
     fn drop(&mut self) {
         if let Ok(mut transitioning) = self.transitioning_agents.lock() {
-            transitioning.remove(&self.agent_name);
+            transitioning.remove(&self.agent_id);
         }
     }
 }
 
 pub(super) fn acquire_transition(
     state: &AppState,
-    agent_name: &str,
+    agent_id: &str,
 ) -> Result<TransitionGuard, (StatusCode, Json<ErrorResponse>)> {
     let mut transitioning = state.transitioning_agents.lock().map_err(|_| {
         app_err!(
@@ -118,14 +118,14 @@ pub(super) fn acquire_transition(
             "failed to lock transition state",
         )
     })?;
-    if !transitioning.insert(agent_name.to_string()) {
+    if !transitioning.insert(agent_id.to_string()) {
         return Err(app_err!(
             StatusCode::CONFLICT,
             "agent lifecycle operation already in progress; retry when the current action completes",
         ));
     }
     Ok(TransitionGuard {
-        agent_name: agent_name.to_string(),
+        agent_id: agent_id.to_string(),
         transitioning_agents: state.transitioning_agents.clone(),
     })
 }
@@ -160,7 +160,7 @@ pub async fn handle_server_info(
     )
     .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     for agent_info in &mut info.agents {
-        let ps = state.lifecycle.process_state(&agent_info.name).await;
+        let ps = state.lifecycle.process_state(&agent_info.id).await;
         agent_info.status = crate::agent::process_status::derive_status(ps.as_ref());
     }
     Ok(Json(info))

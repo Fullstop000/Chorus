@@ -107,7 +107,7 @@ struct NoopLifecycle;
 impl AgentLifecycle for NoopLifecycle {
     fn start_agent<'a>(
         &'a self,
-        _agent_name: &'a str,
+        _agent: &'a chorus::store::agents::Agent,
         _wake_message: Option<ReceivedMessage>,
         _init_directive: Option<String>,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {

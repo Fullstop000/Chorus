@@ -37,6 +37,9 @@ export interface HistoryMessage {
   id: string
   seq: number
   content: string
+  /** Stable sender id (humans.id or agents.id). Use this to correlate
+   *  messages with id-keyed state (traces, agent records). */
+  senderId: string
   senderName: string
   senderType: 'human' | 'agent' | 'system'
   senderDeleted: boolean
@@ -55,6 +58,8 @@ export interface HistoryResponse {
 }
 
 export interface MessageSenderInfo {
+  /** Stable sender id (humans.id or agents.id). */
+  id: string
   name: string
   type: 'human' | 'agent' | 'system'
 }
