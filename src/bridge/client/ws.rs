@@ -141,6 +141,11 @@ struct SessionCtx {
     pending_chats: PendingChats,
     targets: Arc<Mutex<TargetCache>>,
     state_tx: tokio::sync::mpsc::Sender<String>,
+    /// Per-agent last-applied `restart_seq`. The bridge consumes a
+    /// restart when the platform-supplied value climbs above what's
+    /// here. Lives on the session so it survives reconnects without
+    /// re-launching every agent on every hello.
+    restart_seen: Arc<Mutex<std::collections::HashMap<String, i64>>>,
 }
 
 // ── Outbound frame helpers ────────────────────────────────────────────────
@@ -231,6 +236,7 @@ pub async fn run_ws_client_loop(
     let counter = Arc::new(InstanceCounter::default());
     let pending_chats: PendingChats = Arc::new(Mutex::new(HashMap::new()));
     let targets = Arc::new(Mutex::new(TargetCache::default()));
+    let restart_seen = Arc::new(Mutex::new(HashMap::<String, i64>::new()));
 
     let mut backoff_ms: u64 = INITIAL_BACKOFF_MS;
     loop {
@@ -252,6 +258,7 @@ pub async fn run_ws_client_loop(
             counter.clone(),
             pending_chats.clone(),
             targets.clone(),
+            restart_seen.clone(),
             shutdown.clone(),
         )
         .await
@@ -278,6 +285,7 @@ async fn run_one_session(
     counter: Arc<InstanceCounter>,
     pending_chats: PendingChats,
     targets: Arc<Mutex<TargetCache>>,
+    restart_seen: Arc<Mutex<std::collections::HashMap<String, i64>>>,
     shutdown: CancellationToken,
 ) -> anyhow::Result<()> {
     // The session-level state (counter, pending_chats, targets) is owned by
@@ -326,6 +334,7 @@ async fn run_one_session(
         pending_chats,
         targets,
         state_tx,
+        restart_seen,
     };
 
     // 3. Spawn the agent.state pusher task.
@@ -453,7 +462,15 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
     let known_platform_ids: Vec<String> =
         target_agents.iter().map(|a| a.agent_id.clone()).collect();
     let outcome =
-        match reconcile::apply(&ctx.store, &ctx.manager, &ctx.targets, target_agents).await {
+        match reconcile::apply(
+            &ctx.store,
+            &ctx.manager,
+            &ctx.targets,
+            &ctx.restart_seen,
+            target_agents,
+        )
+        .await
+        {
             Ok(o) => o,
             Err(e) => {
                 tracing::error!(err = %e, "bridge: reconcile failed");

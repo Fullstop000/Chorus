@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use super::AppState;
 use crate::server::error::{app_err, ApiResult};
+use crate::server::transport::bridge_ws::broadcast_target_update;
 use crate::store::{DecisionRow, DecisionStatus};
 
 // ── Internal: agent emits a decision ──────────────────────────────────────
@@ -310,38 +311,59 @@ pub async fn handle_resolve_decision(
 
     let envelope = build_resume_envelope(&payload, picked, body.note.as_deref());
 
+    // Persist the envelope as `pending_init_directive` and bump
+    // `restart_seq`. The owning bridge — in-proc for `chorus serve`,
+    // remote for `chorus bridge` — picks both up on the next target
+    // frame, stops the runtime, and starts it with the envelope as the
+    // init prompt. Replaces the synchronous
+    // `lifecycle.resume_with_prompt` call.
+    //
+    // Loss of the synchronous "delivered to agent" guarantee is the
+    // tradeoff for collapsing the dual runtime path (#149). The
+    // platform now confirms persistence; the bridge client confirms
+    // delivery via its own start_agent path. If a future sync-style
+    // confirmation is needed, an `agent.directive_consumed` ack frame
+    // can be added without changing this handler.
     if let Err(e) = state
-        .lifecycle
-        .resume_with_prompt(&agent.id, envelope)
-        .await
+        .store
+        .set_pending_init_directive(&agent.id, Some(&envelope))
     {
-        // Roll back the resolve so the human's pick isn't silently lost.
         warn!(
             agent = %agent.name,
             agent_id = %agent.id,
             decision_id = %decision_id,
             error = %e,
-            "resume_with_prompt failed; reverting decision to open"
+            "set_pending_init_directive failed; reverting decision to open"
         );
         if let Err(revert_err) = state.store.revert_decision_to_open(&decision_id) {
             warn!(
                 decision_id = %decision_id,
                 error = %revert_err,
-                "failed to revert decision after resume failure"
+                "failed to revert decision after directive persistence failure"
             );
         }
         return Err(app_err!(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to deliver pick to agent: {e}"
+            "failed to queue pick for agent: {e}"
         ));
     }
+    if let Err(e) = state.store.bump_restart_seq(&agent.id) {
+        warn!(
+            agent = %agent.name,
+            agent_id = %agent.id,
+            decision_id = %decision_id,
+            error = %e,
+            "bump_restart_seq failed after queueing directive; agent may not pick up the envelope"
+        );
+    }
+    broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
 
     info!(
         target: "chorus_decision",
         decision_id = %decision_id,
         agent = %agent.name,
         picked = %body.picked_key,
-        "decision resolved + envelope delivered"
+        "decision resolved + envelope queued for bridge delivery"
     );
 
     Ok(Json(ResolveDecisionResponse {

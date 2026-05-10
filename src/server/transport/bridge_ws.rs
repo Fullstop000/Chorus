@@ -61,9 +61,13 @@ fn agent_to_target(a: Agent) -> AgentTarget {
                 value: e.value,
             })
             .collect(),
-        init_directive: None,
+        // Propagate the persisted decision-resume envelope as the
+        // bridge-protocol init_directive. Bridge consumes it on the
+        // restart-seq-driven re-launch.
+        init_directive: a.pending_init_directive,
         pending_prompt: None,
         paused: a.paused,
+        restart_seq: a.restart_seq,
     }
 }
 
