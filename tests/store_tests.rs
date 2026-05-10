@@ -127,16 +127,35 @@ fn test_open_old_db_without_machine_id_fails_loudly() {
         .unwrap();
     }
 
-    let err = match Store::open(db_path.to_str().unwrap()) {
+    let path_str = db_path.to_str().unwrap().to_string();
+    let err = match Store::open(&path_str) {
         Ok(_) => panic!("opening pre-id-flip DB should fail"),
         Err(err) => err,
     };
     let message = err.to_string();
     assert!(
-        message.contains("missing `agents.machine_id`")
-            && message.contains("fresh data directory"),
-        "expected fresh-data-dir hint, got: {message}"
+        message.contains("`agents.machine_id` is missing")
+            && message.contains("Delete this file")
+            && message.contains(&path_str),
+        "expected delete-this-file hint pointing at {path_str}, got: {message}"
     );
+}
+
+/// A completely empty DB file (no tables) must NOT trip the validator
+/// — that's the fresh-install path. `init_schema` creates the
+/// canonical shape. Without the empty-DB bypass, every fresh install
+/// would fail with "missing agents.machine_id" because `agents` doesn't
+/// exist yet.
+#[test]
+fn test_open_fresh_empty_db_passes_validator() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("fresh.db");
+    {
+        // Just touch the file via Connection::open; create no tables.
+        let _conn = Connection::open(&db_path).unwrap();
+    }
+
+    Store::open(db_path.to_str().unwrap()).expect("fresh empty DB must open clean");
 }
 
 #[test]

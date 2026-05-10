@@ -49,8 +49,12 @@ impl Store {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        // Validate BEFORE init_schema so the validator inspects the
+        // user's actual on-disk shape — not a freshly-minted shape that
+        // `CREATE TABLE IF NOT EXISTS` would write into a half-empty
+        // legacy DB and then trivially pass.
+        Self::validate_schema_shape(&conn, path)?;
         Self::init_schema(&conn)?;
-        Self::validate_schema_shape(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -64,8 +68,8 @@ impl Store {
     pub fn open_for_bridge(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=OFF;")?;
+        Self::validate_schema_shape(&conn, path)?;
         Self::init_schema(&conn)?;
-        Self::validate_schema_shape(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -105,8 +109,25 @@ impl Store {
     /// NOT EXISTS` is a no-op on existing tables, so opening an old DB
     /// would otherwise succeed here and surface a cryptic SQLite error
     /// later when the first INSERT trips `NOT NULL`. Fail loudly with a
-    /// "fresh data dir" hint instead.
-    fn validate_schema_shape(conn: &Connection) -> Result<()> {
+    /// "delete this file" hint instead.
+    ///
+    /// Runs BEFORE `init_schema` so the check inspects the user's
+    /// on-disk shape, not a freshly-minted-by-CREATE-IF-NOT-EXISTS one.
+    /// A completely fresh DB (no tables yet) passes through to
+    /// `init_schema`; only DBs that already have an `agents` table get
+    /// the shape check.
+    fn validate_schema_shape(conn: &Connection, path: &str) -> Result<()> {
+        // No tables yet → fresh install. Skip and let init_schema
+        // create the canonical shape.
+        let table_count: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_count == 0 {
+            return Ok(());
+        }
+
         // Only check `agents.machine_id`: it's the marker column for
         // every recent schema phase (added in #150, made NOT NULL in
         // this cleanup). Older shapes are caught by either the column
@@ -124,15 +145,15 @@ impl Store {
         }
         match machine_id_notnull {
             None => anyhow::bail!(
-                "local database is missing `agents.machine_id` — this DB \
-                 pre-dates #150. Run with a fresh data directory (or wipe \
-                 the existing one) and restart."
+                "incompatible database schema at {path}: \
+                 `agents.machine_id` is missing. Delete this file and \
+                 restart to recreate it from scratch."
             ),
             Some(0) => anyhow::bail!(
-                "local database has nullable `agents.machine_id` — this DB \
-                 pre-dates the cleanup that flipped the column to NOT NULL. \
-                 Run with a fresh data directory (or wipe the existing one) \
-                 and restart."
+                "incompatible database schema at {path}: \
+                 `agents.machine_id` is nullable but the current schema \
+                 declares it NOT NULL. Delete this file and restart to \
+                 recreate it from scratch."
             ),
             Some(_) => Ok(()),
         }
