@@ -99,13 +99,45 @@ fn make_store() -> (Store, tempfile::TempDir) {
     (store, dir)
 }
 
-// `test_open_old_identity_schema_fails_loudly` was deleted with the
-// migration cleanup. The validator it covered
-// (`validate_supported_identity_schema`) is gone — we no longer carry
-// compatibility shims for pre-id-flip DBs. If a legacy DB is opened,
-// SQLite itself surfaces the schema error on the first query against
-// a missing column. "Wipe your data dir" is the documented upgrade
-// path, same as for the dropped ALTER migrations.
+/// `Store::open` on a pre-id-flip DB (no `agents.machine_id`) must
+/// abort with the "fresh data dir" hint, not silently succeed and then
+/// fail mid-query later. `validate_schema_shape` is the single
+/// remaining check the migration-cleanup PR kept around.
+#[test]
+fn test_open_old_db_without_machine_id_fails_loudly() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("legacy.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        // Old shape: agents table with no machine_id column. A fresh
+        // CREATE TABLE IF NOT EXISTS won't add the column to an
+        // existing table, so this is exactly the upgrade landmine the
+        // validator catches.
+        conn.execute_batch(
+            "CREATE TABLE agents (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                name TEXT UNIQUE NOT NULL,
+                display_name TEXT NOT NULL,
+                runtime TEXT NOT NULL,
+                model TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+             );",
+        )
+        .unwrap();
+    }
+
+    let err = match Store::open(db_path.to_str().unwrap()) {
+        Ok(_) => panic!("opening pre-id-flip DB should fail"),
+        Err(err) => err,
+    };
+    let message = err.to_string();
+    assert!(
+        message.contains("missing `agents.machine_id`")
+            && message.contains("fresh data directory"),
+        "expected fresh-data-dir hint, got: {message}"
+    );
+}
 
 #[test]
 fn test_create_local_workspace_sets_owner_and_active_context() {

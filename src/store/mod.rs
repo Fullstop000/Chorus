@@ -50,6 +50,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
         Self::init_schema(&conn)?;
+        Self::validate_schema_shape(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -64,6 +65,7 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=OFF;")?;
         Self::init_schema(&conn)?;
+        Self::validate_schema_shape(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -95,6 +97,45 @@ impl Store {
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
         Ok(())
+    }
+
+    /// Catch DBs that pre-date the always-set-machine_id invariant. The
+    /// runtime ALTER shims that used to fix these in place were dropped
+    /// once every code path stopped writing NULL — but `CREATE TABLE IF
+    /// NOT EXISTS` is a no-op on existing tables, so opening an old DB
+    /// would otherwise succeed here and surface a cryptic SQLite error
+    /// later when the first INSERT trips `NOT NULL`. Fail loudly with a
+    /// "fresh data dir" hint instead.
+    fn validate_schema_shape(conn: &Connection) -> Result<()> {
+        // Only check `agents.machine_id`: it's the marker column for
+        // every recent schema phase (added in #150, made NOT NULL in
+        // this cleanup). Older shapes are caught by either the column
+        // being absent or by `notnull = 0`.
+        let mut stmt = conn.prepare("PRAGMA table_info(agents)")?;
+        let mut machine_id_notnull: Option<i64> = None;
+        for row in stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+        })? {
+            let (name, notnull) = row?;
+            if name == "machine_id" {
+                machine_id_notnull = Some(notnull);
+                break;
+            }
+        }
+        match machine_id_notnull {
+            None => anyhow::bail!(
+                "local database is missing `agents.machine_id` — this DB \
+                 pre-dates #150. Run with a fresh data directory (or wipe \
+                 the existing one) and restart."
+            ),
+            Some(0) => anyhow::bail!(
+                "local database has nullable `agents.machine_id` — this DB \
+                 pre-dates the cleanup that flipped the column to NOT NULL. \
+                 Run with a fresh data directory (or wipe the existing one) \
+                 and restart."
+            ),
+            Some(_) => Ok(()),
+        }
     }
 
     /// Look up the channel_id for a given run_id (from the first message in that run).
