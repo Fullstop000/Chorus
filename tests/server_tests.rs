@@ -187,7 +187,6 @@ impl MockLifecycle {
             .unwrap()
             .insert(agent_name.to_string(), channel_id.to_string());
     }
-
 }
 
 impl AgentLifecycle for MockLifecycle {
@@ -228,7 +227,6 @@ impl AgentLifecycle for MockLifecycle {
         let id = self.run_channels.lock().unwrap().get(agent_name).cloned();
         Box::pin(async move { id })
     }
-
 }
 
 impl AgentLifecycle for FailStartLifecycle {
