@@ -29,9 +29,11 @@ use axum::response::IntoResponse;
 use tracing::{debug, info, warn};
 
 use crate::bridge::protocol::{
-    AgentState as AgentStatePayload, AgentTarget, BridgeTarget, ChatAck as ChatAckPayload, EnvVar,
-    Hello as BridgeHello, WireFrame, FRAME_AGENT_STATE, FRAME_BRIDGE_HELLO, FRAME_BRIDGE_TARGET,
-    FRAME_CHAT_ACK, FRAME_CHAT_MESSAGE_RECEIVED,
+    AgentDecisionDelivered, AgentRestart, AgentStart, AgentState as AgentStatePayload, AgentStop,
+    AgentTarget, BridgeTarget, ChatAck as ChatAckPayload, DecisionResume, EnvVar,
+    Hello as BridgeHello, WireFrame, FRAME_AGENT_DECISION_DELIVERED, FRAME_AGENT_RESTART,
+    FRAME_AGENT_START, FRAME_AGENT_STATE, FRAME_AGENT_STOP, FRAME_BRIDGE_HELLO,
+    FRAME_BRIDGE_TARGET, FRAME_CHAT_ACK, FRAME_CHAT_MESSAGE_RECEIVED,
 };
 use crate::server::bridge_auth::AuthOutcome;
 use crate::server::bridge_registry::BridgeRegistry;
@@ -61,8 +63,6 @@ fn agent_to_target(a: Agent) -> AgentTarget {
                 value: e.value,
             })
             .collect(),
-        init_directive: None,
-        pending_prompt: None,
     }
 }
 
@@ -136,6 +136,17 @@ async fn bridge_session(
         return;
     }
 
+    // Reconnect replay: agents owned by this bridge that have a pending
+    // wake reason (unread inbox messages OR an undelivered resolved
+    // decision) need a `agent.start` so the bridge launches them. This
+    // is what makes the platform a real source of truth for "should be
+    // running": the agent's row carries no `paused` / `restart_seq` /
+    // `pending_init_directive` flags — instead we derive intent from
+    // unread + decision state every time a bridge connects.
+    if let Err(err) = replay_pending_starts(&mut socket, store.as_ref(), &machine_id).await {
+        warn!(machine_id = %machine_id, error = %err, "bridge_ws: reconnect replay failed; bridge will only wake on chat");
+    }
+
     // Session loop: forward outbound frames pushed by the platform
     // (push-on-change `bridge.target` etc.) and process inbound frames
     // from the bridge (`agent.state`, future `chat.ack`).
@@ -158,7 +169,7 @@ async fn bridge_session(
                 match incoming {
                     Some(Ok(Message::Text(text))) => {
                         if let Err(err) =
-                            handle_inbound_frame(&machine_id, text.as_str(), registry.as_ref()).await
+                            handle_inbound_frame(&machine_id, text.as_str(), registry.as_ref(), store.as_ref()).await
                         {
                             warn!(machine_id = %machine_id, error = %err, "bridge_ws: dropping malformed inbound frame");
                             // Don't disconnect on a single bad frame —
@@ -220,10 +231,58 @@ async fn send_initial_target(
     Ok(())
 }
 
+/// After the initial `bridge.target` snapshot, walk the agents owned by
+/// this bridge and emit `agent.start` for any that have a pending wake:
+/// unread messages, or a resolved-not-delivered decision (whose envelope
+/// becomes `init_directive`). This restores "agent resumes when the
+/// bridge comes back" without keeping a `paused` flag — the wake is
+/// derived from persistent inbox + decision state every reconnect.
+async fn replay_pending_starts(
+    socket: &mut WebSocket,
+    store: &Store,
+    machine_id: &str,
+) -> anyhow::Result<()> {
+    let owned: Vec<Agent> = store
+        .get_agents()?
+        .into_iter()
+        .filter(|a| a.machine_id == machine_id)
+        .collect();
+    for agent in owned {
+        let resume = match store.latest_undelivered_resolved_for_agent(&agent.id)? {
+            Some(row) => crate::server::handlers::decisions::build_resume_envelope_from_row(&row)
+                .map(|prompt| DecisionResume {
+                    decision_id: row.id.clone(),
+                    prompt,
+                }),
+            None => None,
+        };
+        let has_unread = !store.get_unread_summary(&agent.id)?.is_empty();
+        if resume.is_none() && !has_unread {
+            continue;
+        }
+        let had_resume = resume.is_some();
+        let payload = AgentStart {
+            agent_id: agent.id.clone(),
+            decision_resume: resume,
+        };
+        let text = build_lifecycle_frame_text(FRAME_AGENT_START, serde_json::to_value(&payload)?)?;
+        socket.send(Message::Text(text.into())).await?;
+        debug!(
+            machine_id = %machine_id,
+            agent_id = %agent.id,
+            had_resume,
+            has_unread,
+            "bridge_ws: replayed agent.start on hello"
+        );
+    }
+    Ok(())
+}
+
 async fn handle_inbound_frame(
     machine_id: &str,
     text: &str,
     registry: &BridgeRegistry,
+    store: &Store,
 ) -> anyhow::Result<()> {
     let envelope: WireFrame = serde_json::from_str(text)
         .map_err(|e| anyhow::anyhow!("failed to parse inbound envelope: {e}"))?;
@@ -277,6 +336,31 @@ async fn handle_inbound_frame(
             );
             Ok(())
         }
+        FRAME_AGENT_DECISION_DELIVERED => {
+            let payload: AgentDecisionDelivered = serde_json::from_value(envelope.data)
+                .map_err(|e| anyhow::anyhow!("failed to parse agent.decision_delivered: {e}"))?;
+            // Mark exactly the named directive as delivered. The bridge
+            // echoes the `directive_id` from the start/restart frame, so
+            // a rapid re-emit of a different directive can't be falsely
+            // marked delivered by an earlier ack.
+            match store.mark_decision_delivered(&payload.decision_id) {
+                Ok(n) => debug!(
+                    machine_id = %machine_id,
+                    agent_id = %payload.agent_id,
+                    directive_id = %payload.decision_id,
+                    delivered = n,
+                    "bridge_ws: marked decision delivered after directive_consumed"
+                ),
+                Err(err) => warn!(
+                    machine_id = %machine_id,
+                    agent_id = %payload.agent_id,
+                    directive_id = %payload.decision_id,
+                    error = %err,
+                    "bridge_ws: failed to mark decision delivered"
+                ),
+            }
+            Ok(())
+        }
         // Bridge re-sending hello is allowed for self-correction. Treat
         // as a no-op today; a future change can trigger a fresh target
         // push in response.
@@ -292,12 +376,10 @@ async fn handle_inbound_frame(
 
 /// Build a serialized `bridge.target` frame from the current set of
 /// agents in the store, scoped to a specific bridge `machine_id`. Only
-/// agents explicitly bound to this bridge are included; agents with
-/// NULL `machine_id` are platform-local and never sent to any bridge.
+/// agents whose `machine_id` matches are included.
 ///
-/// Every agent has exactly one owner (the platform itself, or one named
-/// bridge). Fanning NULL agents to all bridges would cause dual-runtime
-/// contention as soon as a second bridge connects.
+/// Every agent has exactly one owner; fanning agents to bridges that
+/// don't own them would cause dual-runtime contention.
 pub fn build_target_frame_text_for_machine(
     store: &Store,
     machine_id: &str,
@@ -305,7 +387,7 @@ pub fn build_target_frame_text_for_machine(
     let agents: Vec<Agent> = store
         .get_agents()?
         .into_iter()
-        .filter(|a| a.machine_id.as_deref() == Some(machine_id))
+        .filter(|a| a.machine_id == machine_id)
         .collect();
     let target = BridgeTarget {
         target_agents: agents.into_iter().map(agent_to_target).collect(),
@@ -316,6 +398,81 @@ pub fn build_target_frame_text_for_machine(
         data: serde_json::to_value(&target)?,
     };
     Ok(serde_json::to_string(&envelope)?)
+}
+
+/// Build a serialized lifecycle RPC frame (`agent.start`, `agent.stop`,
+/// `agent.restart`).
+fn build_lifecycle_frame_text(
+    frame_type: &str,
+    data: serde_json::Value,
+) -> anyhow::Result<String> {
+    let envelope = WireFrame {
+        v: 1,
+        frame_type: frame_type.to_string(),
+        data,
+    };
+    Ok(serde_json::to_string(&envelope)?)
+}
+
+/// Find the bridge that owns this agent and send an `agent.start` frame.
+/// Returns `Ok(true)` if the owning bridge is connected and the frame was
+/// queued; `Ok(false)` if the bridge is offline (the platform's persisted
+/// state — unread messages, undelivered decisions — covers reconnect
+/// replay so this is not an error).
+pub fn dispatch_agent_start(
+    store: &Store,
+    registry: &BridgeRegistry,
+    agent_id: &str,
+    decision_resume: Option<DecisionResume>,
+) -> anyhow::Result<bool> {
+    let owner = match resolve_owner(store, agent_id)? {
+        Some(o) => o,
+        None => return Ok(false),
+    };
+    let payload = AgentStart {
+        agent_id: agent_id.to_string(),
+        decision_resume,
+    };
+    let text = build_lifecycle_frame_text(FRAME_AGENT_START, serde_json::to_value(&payload)?)?;
+    Ok(registry.send_to(&owner, &text) > 0)
+}
+
+pub fn dispatch_agent_stop(
+    store: &Store,
+    registry: &BridgeRegistry,
+    agent_id: &str,
+) -> anyhow::Result<bool> {
+    let owner = match resolve_owner(store, agent_id)? {
+        Some(o) => o,
+        None => return Ok(false),
+    };
+    let payload = AgentStop {
+        agent_id: agent_id.to_string(),
+    };
+    let text = build_lifecycle_frame_text(FRAME_AGENT_STOP, serde_json::to_value(&payload)?)?;
+    Ok(registry.send_to(&owner, &text) > 0)
+}
+
+pub fn dispatch_agent_restart(
+    store: &Store,
+    registry: &BridgeRegistry,
+    agent_id: &str,
+    decision_resume: Option<DecisionResume>,
+) -> anyhow::Result<bool> {
+    let owner = match resolve_owner(store, agent_id)? {
+        Some(o) => o,
+        None => return Ok(false),
+    };
+    let payload = AgentRestart {
+        agent_id: agent_id.to_string(),
+        decision_resume,
+    };
+    let text = build_lifecycle_frame_text(FRAME_AGENT_RESTART, serde_json::to_value(&payload)?)?;
+    Ok(registry.send_to(&owner, &text) > 0)
+}
+
+fn resolve_owner(store: &Store, agent_id: &str) -> anyhow::Result<Option<String>> {
+    Ok(store.get_agent_by_id(agent_id, false)?.map(|a| a.machine_id))
 }
 
 /// Push a fresh `bridge.target` to every connected bridge, scoped to
@@ -345,13 +502,12 @@ pub fn broadcast_target_update(store: &Store, registry: &BridgeRegistry) {
 }
 
 /// Forward a chat-message stream event to the bridge that owns each
-/// recipient agent. Called wherever a `message.created` `StreamEvent`
-/// is published. Routes by the agent's `machine_id`; platform-local
-/// agents (NULL `machine_id`) are skipped — they're delivered by the
-/// platform's own `AgentManager` in `deliver_message_to_agents`.
-///
-/// The bridge is responsible for matching the inner `agent_id` to its
-/// own running runtime and updating that mailbox.
+/// recipient agent. Called from the event-bus subscriber spawned in
+/// `build_router_with_services_and_auth`, fired on every `message.created`
+/// event. Routes by the agent's `machine_id`; for `chorus serve` that
+/// includes the in-process bridge client (registered under
+/// `local_machine_id`). This is the only agent-delivery path — there
+/// is no platform-local fallback.
 pub fn forward_chat_event_to_bridges(
     store: &Store,
     registry: &BridgeRegistry,
@@ -380,14 +536,15 @@ pub fn forward_chat_event_to_bridges(
         return;
     }
     for agent_id in agent_recipients {
-        // Route only to the bridge that owns this agent. Platform-local
-        // agents (machine_id NULL) are delivered by the platform's own
-        // AgentManager via deliver_message_to_agents — they have no
-        // bridge to push to.
-        let agent_record = store.get_agent_by_id(agent_id, false).ok().flatten();
-        let Some(owner_machine_id) = agent_record.and_then(|a| a.machine_id) else {
+        // Route to the bridge that owns this agent. The bridge that
+        // registered with the matching `machine_id` — possibly the
+        // in-process one inside `chorus serve` — receives the frame.
+        // A missing record (deleted between channel-member lookup and
+        // here) silently skips this recipient.
+        let Some(agent) = store.get_agent_by_id(agent_id, false).ok().flatten() else {
             continue;
         };
+        let owner_machine_id = agent.machine_id;
         let frame = match build_chat_message_frame_text(agent_id, event) {
             Ok(t) => t,
             Err(err) => {

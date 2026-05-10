@@ -1,11 +1,13 @@
-//! Reconcile a `bridge.target` frame against the locally-running agent set.
+//! Reconcile a `bridge.target` frame against the locally-cached spec view.
 //!
-//! Each pass populates the in-memory [`super::ws::TargetCache`] (the
-//! authoritative spec/identity cache on the bridge), starts any newly
-//! desired agents, stops any that vanished. The bridge's local store
-//! holds only `agent_sessions` rows; agent records live in the cache.
-//! `forget_sessions_for_agent` is called on stop to drop resume cursors
-//! since FK cascade no longer fires (the bridge runs with FK off, #145).
+//! `bridge.target` carries identity + spec only; lifecycle intent flows
+//! through `agent.start` / `agent.stop` / `agent.restart` RPCs. Each pass:
+//!
+//!   1. Refreshes [`super::ws::TargetCache`] with the new spec snapshot.
+//!   2. Stops any locally-running agent whose `agent_id` left the desired set
+//!      (orphan sweep — without this a deleted agent's process would linger).
+//!   3. Drops session rows for agents not in the desired set, since the
+//!      bridge runs with `foreign_keys=OFF` and there's no cascade.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,15 +21,13 @@ use crate::store::Store;
 use super::local_store::forget_sessions_for_agent;
 use super::ws::{AgentTargetIn, TargetCache};
 
-/// Per-pass transition record. After #142 the bridge keys runtimes by
-/// `agent_id` directly (the platform's UUID), so a transition is just
-/// the id.
+/// Per-pass transition record. Runtimes are keyed by `agent_id`
+/// (the platform's UUID), so a transition is just the id.
 pub struct AgentTransition {
     pub agent_id: String,
 }
 
 pub struct ReconcileOutcome {
-    pub started: Vec<AgentTransition>,
     pub stopped: Vec<AgentTransition>,
 }
 
@@ -47,7 +47,11 @@ pub(super) fn target_to_agent(target: &AgentTargetIn) -> Agent {
         runtime: target.runtime.clone(),
         model: target.model.clone(),
         reasoning_effort: target.reasoning_effort.clone(),
-        machine_id: None,
+        // Bridge-side stub: the manager doesn't read `machine_id` (the
+        // bridge IS the machine), so an empty string is fine. Filling
+        // it with the bridge's own id would also be correct but adds a
+        // dependency on cfg threading.
+        machine_id: String::new(),
         env_vars: target
             .env_vars
             .iter()
@@ -69,8 +73,6 @@ pub async fn apply(
     targets: Vec<AgentTargetIn>,
 ) -> anyhow::Result<ReconcileOutcome> {
     let mut desired: HashSet<String> = HashSet::new();
-
-    let mut started = Vec::new();
     let mut stopped = Vec::new();
 
     // 1. Bulk-prune session rows whose agent_id isn't in this target.
@@ -96,36 +98,13 @@ pub async fn apply(
         }
     }
 
+    // 3. Stop any locally-running agent that is no longer in the desired
+    //    set (row deleted on the platform). Leaving a runtime alive
+    //    because the cache entry vanished would orphan an OS process.
+    //    Lifecycle intent (start / stop / restart of agents that DO
+    //    remain in the set) flows through `agent.start` / `agent.stop`
+    //    / `agent.restart` frames, not through reconcile.
     let running = manager.get_running_agent_ids().await;
-    let running_set: HashSet<String> = running.iter().cloned().collect();
-
-    // 3. Start every desired agent that isn't already running. The spec
-    //    is materialised from the wire target, not re-read from the store.
-    for target in &targets {
-        if running_set.contains(&target.agent_id) {
-            continue;
-        }
-        let agent = target_to_agent(target);
-        match manager
-            .start_agent(&agent, None, target.init_directive.clone())
-            .await
-        {
-            Ok(()) => {
-                started.push(AgentTransition {
-                    agent_id: target.agent_id.clone(),
-                });
-            }
-            Err(e) => {
-                tracing::error!(agent = %target.name, agent_id = %target.agent_id, err = %e, "start_agent failed during reconcile");
-            }
-        }
-    }
-
-    // 4. Stop any locally-running agent that is no longer desired. The
-    //    manager-side stop runs unconditionally — leaving a runtime alive
-    //    because the cache entry vanished would orphan an OS process. The
-    //    upstream `agent.state{stopped}` frame still goes out even if the
-    //    cache entry is missing, since we have the id directly.
     for agent_id in running.iter() {
         if desired.contains(agent_id) {
             continue;
@@ -135,7 +114,7 @@ pub async fn apply(
             cache.forget(agent_id);
         }
         if let Err(e) = manager.stop_agent(agent_id).await {
-            tracing::warn!(agent_id = %agent_id, err = %e, "stop_agent failed during reconcile");
+            tracing::warn!(agent_id = %agent_id, err = %e, "stop_agent failed during orphan sweep");
         }
         if let Err(e) = forget_sessions_for_agent(store, agent_id) {
             tracing::warn!(
@@ -149,5 +128,5 @@ pub async fn apply(
         });
     }
 
-    Ok(ReconcileOutcome { started, stopped })
+    Ok(ReconcileOutcome { stopped })
 }

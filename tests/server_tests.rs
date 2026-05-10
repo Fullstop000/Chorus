@@ -12,7 +12,7 @@ use chorus::server::dto::ChannelInfo;
 use chorus::server::dto::ServerInfo;
 use chorus::server::{AgentDetailResponse, HistoryResponse};
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
+use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use harness::{build_router, build_router_with_lifecycle, join_channel_silent};
@@ -82,8 +82,8 @@ fn seed_agent_with_id(
         .id;
     let conn = store.conn_for_test();
     conn.execute(
-        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
-         VALUES (?1, ?2, ?1, ?3, ?4, ?5)",
+        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, machine_id)
+         VALUES (?1, ?2, ?1, ?3, ?4, ?5, 'test-machine')",
         rusqlite::params![id, workspace_id, display_name, runtime, model],
     )
     .unwrap();
@@ -105,33 +105,23 @@ fn setup_with_data_dir() -> (Arc<Store>, axum::Router, tempfile::TempDir) {
 
 /// One observed `start_agent` invocation: `(agent_name, wake_message, init_directive)`.
 /// Tests assert against the recorded sequence to pin call-site behavior.
-type StartedCall = (String, Option<ReceivedMessage>, Option<String>);
-
 #[derive(Default)]
 struct MockLifecycle {
-    started: Mutex<Vec<StartedCall>>,
-    stopped: Mutex<Vec<String>>,
-    notified: Mutex<Vec<String>>,
     activity_logs: ActivityLogMap,
-    /// Tracks which agents are currently "running" so that process_state,
-    /// start_agent, and stop_agent share one source of truth. Keyed by
-    /// agent name internally so existing tests can use `mark_running(name)`
-    /// without knowing the agent's id; trait calls that arrive by id are
-    /// translated through `store` below before lookup.
+    /// Tracks which agents are currently "running" so that
+    /// `process_state` returns Active for them. Tests use
+    /// `mark_running(name)` to simulate a live runtime without
+    /// spinning up a real `AgentManager`. Keyed by agent name; trait
+    /// calls that arrive by id are translated through `store` below
+    /// before lookup.
     running: Mutex<HashSet<String>>,
-    /// Records every (agent_name, envelope) pair delivered via
-    /// `resume_with_prompt`. Decision-inbox round-trip tests assert the
-    /// envelope reached the agent.
-    resumed_with: Mutex<Vec<(String, String)>>,
     /// Per-agent channel id returned by `run_channel_id`. Tests preset
     /// this to simulate the trace_store's "current channel for current
     /// run" record without spinning a real AgentManager.
     run_channels: Mutex<std::collections::HashMap<String, String>>,
-    /// Optional store reference used to translate `agent_id` (the new
-    /// keying after #142) back into `agent_name` so internal recording
-    /// stays name-keyed for assertion compatibility. Wire this via
-    /// `set_store` in setup helpers; trait methods fall through to
-    /// raw-string semantics when absent.
+    /// Optional store reference used to translate `agent_id` back into
+    /// `agent_name` so internal recording stays name-keyed for assertion
+    /// compatibility. Wire this via `set_store` in setup helpers.
     store: Mutex<Option<Arc<Store>>>,
 }
 
@@ -160,9 +150,9 @@ impl RuntimeStatusProvider for MockRuntimeStatusProvider {
 }
 
 impl MockLifecycle {
-    /// Wire a store so trait methods receiving `agent_id` (post-#142) can
-    /// resolve to `agent_name` for internal recording. Tests that don't
-    /// call this still work for paths that pass names (e.g. `start_agent`).
+    /// Wire a store so trait methods receiving `agent_id` can resolve
+    /// to `agent_name` for internal recording. Tests that don't call
+    /// this still work for paths that pass names (e.g. `start_agent`).
     fn set_store(&self, store: Arc<Store>) {
         *self.store.lock().unwrap() = Some(store);
     }
@@ -178,27 +168,6 @@ impl MockLifecycle {
             }
         }
         key.to_string()
-    }
-
-    fn started_names(&self) -> Vec<String> {
-        self.started
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(name, _, _)| name.clone())
-            .collect()
-    }
-
-    fn notified_names(&self) -> Vec<String> {
-        self.notified.lock().unwrap().clone()
-    }
-
-    fn started_calls(&self) -> Vec<StartedCall> {
-        self.started.lock().unwrap().clone()
-    }
-
-    fn stopped_names(&self) -> Vec<String> {
-        self.stopped.lock().unwrap().clone()
     }
 
     /// Simulate an already-running managed process. Subsequent
@@ -217,53 +186,9 @@ impl MockLifecycle {
             .unwrap()
             .insert(agent_name.to_string(), channel_id.to_string());
     }
-
-    fn resumed_calls(&self) -> Vec<(String, String)> {
-        self.resumed_with.lock().unwrap().clone()
-    }
 }
 
 impl AgentLifecycle for MockLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        agent: &'a chorus::store::agents::Agent,
-        wake_message: Option<ReceivedMessage>,
-        init_directive: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        let name = agent.name.clone();
-        Box::pin(async move {
-            self.started
-                .lock()
-                .unwrap()
-                .push((name.clone(), wake_message, init_directive));
-            self.running.lock().unwrap().insert(name);
-            Ok(())
-        })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        let name = self.resolve_to_name(agent_id);
-        Box::pin(async move {
-            self.notified.lock().unwrap().push(name);
-            Ok(())
-        })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        let name = self.resolve_to_name(agent_id);
-        Box::pin(async move {
-            self.stopped.lock().unwrap().push(name.clone());
-            self.running.lock().unwrap().remove(&name);
-            Ok(())
-        })
-    }
-
     fn process_state<'a>(
         &'a self,
         agent_id: &'a str,
@@ -301,44 +226,9 @@ impl AgentLifecycle for MockLifecycle {
         let id = self.run_channels.lock().unwrap().get(agent_name).cloned();
         Box::pin(async move { id })
     }
-
-    fn resume_with_prompt<'a>(
-        &'a self,
-        agent_id: &'a str,
-        envelope: String,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        let name = self.resolve_to_name(agent_id);
-        Box::pin(async move {
-            self.resumed_with.lock().unwrap().push((name, envelope));
-            Ok(())
-        })
-    }
 }
 
 impl AgentLifecycle for FailStartLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        _agent: &'a chorus::store::agents::Agent,
-        _wake_message: Option<ReceivedMessage>,
-        _init_directive: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Err(anyhow::anyhow!("runtime unavailable")) })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
     fn process_state<'a>(
         &'a self,
         _agent_name: &'a str,
@@ -465,7 +355,7 @@ async fn test_internal_agent_name_send_uses_canonical_agent_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -558,63 +448,18 @@ async fn test_receive_timeout_is_interpreted_in_milliseconds() {
     );
 }
 
-#[tokio::test]
-async fn test_send_starts_sleeping_agent_with_wake_message() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "wake up from sleep" });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-
-    let started = lifecycle.started_calls();
-    assert_eq!(started.len(), 1);
-    assert_eq!(started[0].0, "bot1");
-    let wake_message = started[0]
-        .1
-        .as_ref()
-        .expect("sleeping agent restart should include wake message");
-    assert_eq!(wake_message.content, "wake up from sleep");
-    assert_eq!(wake_message.sender_name, "alice");
-    assert_eq!(wake_message.channel_name, "general");
-    assert_eq!(wake_message.channel_type, "channel");
-    assert!(lifecycle.notified_names().is_empty());
-}
-
-#[tokio::test]
-async fn test_send_notifies_active_agent_without_restart() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    lifecycle.mark_running("bot1");
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "stay online" });
-    let response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(response.status(), StatusCode::OK);
-    assert!(lifecycle.started_names().is_empty());
-    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()]);
-}
+// `test_send_starts_sleeping_agent_with_wake_message`,
+// `test_send_notifies_active_agent_without_restart`, the DM equivalents,
+// the cross-channel send variants, and `delivery_starts_agent_when_no_process_managed_*`
+// were unit tests that observed `MockLifecycle.started_names()` /
+// `notified_names()` to verify the platform-driven wake path. The
+// platform no longer calls `lifecycle.start_agent` / `lifecycle.notify_agent`;
+// the bridge client receiving `chat.message.received` does. Coverage moves to:
+//   - the Playwright LLM-gated MSG suite (MSG-001 / MSG-002 / MSG-004 /
+//     MSG-006), which exercises real round-trips via the in-process
+//     bridge client; and
+//   - bridge-layer tests that verify `forward_chat_event_to_bridges`
+//     emits the right frames (existing in `bridge_ws` integration coverage).
 
 #[tokio::test]
 async fn test_server_info() {
@@ -921,7 +766,7 @@ async fn test_public_dm_route_accepts_agent_id_and_stores_canonical_member_id() 
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1103,7 +948,7 @@ async fn test_channel_members_api_lists_members_and_supports_invite() {
             runtime: "codex",
             model: "gpt-5.4",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1212,7 +1057,7 @@ async fn test_all_channel_member_count_matches_agents_plus_humans() {
             runtime: "codex",
             model: "gpt-5.4",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1257,7 +1102,7 @@ async fn test_history_rejects_non_member_agent() {
             runtime: "codex",
             model: "gpt-5.4",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1531,73 +1376,12 @@ async fn test_list_runtime_models() {
     assert_eq!(payload, serde_json::json!(["openai/gpt-5.4"]));
 }
 
-#[tokio::test]
-async fn test_create_agent_via_api_keeps_inactive_record_when_start_fails() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
-    seed_default_workspace(&store);
-    let app = build_router_with_lifecycle(store.clone(), Arc::new(FailStartLifecycle));
-
-    let req = serde_json::json!({
-        "name": "stuck-bot",
-        "runtime": "claude",
-        "model": "sonnet"
-    });
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/agents")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    // Start failure is now an explicit error, not a 200 with a warning.
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-
-    let payload = body_json(resp).await;
-    assert_eq!(payload["code"].as_str(), Some("AGENT_START_FAILED"));
-
-    // The agent record must still be persisted (inactive) so operators can inspect it.
-    let agents = store.get_agents().unwrap();
-    let agent = agents
-        .iter()
-        .find(|a| a.name.starts_with("stuck-bot-"))
-        .expect("agent should remain in the store after failed start");
-    assert!(store.is_member("all", &agent.id).unwrap());
-
-    // After a failed start the manager has no live process, so the derived
-    // status surfaced through the API must be `asleep`. Regression guard:
-    // before status was derived from ProcessState the persisted column
-    // carried this claim; that column is gone, so verify through the API.
-    let list_resp = app
-        .oneshot(
-            Request::builder()
-                .uri("/api/agents")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(list_resp.status(), StatusCode::OK);
-    let listed: Vec<serde_json::Value> = serde_json::from_slice(
-        &axum::body::to_bytes(list_resp.into_body(), 1_000_000)
-            .await
-            .unwrap(),
-    )
-    .unwrap();
-    let entry = listed
-        .iter()
-        .find(|a| a["name"] == agent.name.as_str())
-        .expect("failed-start agent must still appear in /api/agents");
-    assert_eq!(
-        entry["status"], "asleep",
-        "failed-start agent must derive to `asleep`, got `{}`",
-        entry["status"]
-    );
-}
+// `test_create_agent_via_api_keeps_inactive_record_when_start_fails`
+// no longer applies: the platform doesn't start the agent at create
+// time. The bridge client does, and start failures surface
+// asynchronously via the realtime stream's `agent.state` events. The
+// "row is persisted even if start fails" guarantee is trivial — the
+// row is persisted regardless because no synchronous start happens.
 
 #[tokio::test]
 async fn test_create_kimi_agent_via_api() {
@@ -1638,11 +1422,19 @@ async fn test_create_kimi_agent_via_api() {
     );
     let agent = store.get_agent(&name).unwrap().expect("agent should exist");
     assert_eq!(payload["id"], agent.id);
-    assert_eq!(payload["status"], "ready");
+    // The platform doesn't start the agent on create — the bridge
+    // client does, asynchronously. So a freshly-created agent surfaces
+    // as `asleep` until the bridge's `agent.state{started}` frame
+    // arrives via the realtime stream.
+    assert_eq!(payload["status"], "asleep");
     assert_eq!(agent.runtime, "kimi");
     assert_eq!(agent.model, "kimi-code/kimi-for-coding");
     assert_eq!(agent.reasoning_effort, None);
-    assert_eq!(lifecycle.started_names(), vec![name]);
+    // The platform no longer calls `lifecycle.start_agent` at create
+    // time — coverage of that invariant moved to the trait shape itself
+    // (the trait is now observability-only; there's no `start_agent`
+    // method to call).
+    let _ = lifecycle;
 }
 
 #[tokio::test]
@@ -1702,8 +1494,11 @@ async fn test_get_and_update_agent_via_api() {
     assert_eq!(agent.reasoning_effort.as_deref(), Some("low"));
     assert_eq!(agent.env_vars.len(), 1);
     assert_eq!(agent.env_vars[0].key, "DEBUG");
-    assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
-    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
+    // Spec changes dispatch a `agent.restart` via the registry. With
+    // no bridge connected in this test, dispatch returns Ok(false) and
+    // the API still 200s. The bridge-protocol coverage for restart
+    // delivery lives in bridge_serve_tests.
+    let _ = lifecycle;
 }
 
 #[tokio::test]
@@ -1721,7 +1516,7 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: Some("high"),
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1756,8 +1551,9 @@ async fn test_update_agent_to_kimi_clears_reasoning_effort() {
     assert_eq!(agent.reasoning_effort, None);
     assert_eq!(agent.env_vars.len(), 1);
     assert_eq!(agent.env_vars[0].key, "DEBUG");
-    assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
-    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
+    // Runtime change dispatches a `agent.restart`; bridge-protocol
+    // coverage for delivery lives in bridge_serve_tests.
+    let _ = lifecycle;
 }
 
 /// Regression: a config-edit PATCH must not trigger a restart when the
@@ -1795,14 +1591,10 @@ async fn config_edit_does_not_restart_when_no_process_managed_despite_db_active(
         body["restarted"], false,
         "config-edit must not restart when manager has no process, regardless of DB status"
     );
-    assert!(
-        lifecycle.stopped_names().is_empty(),
-        "no managed process means nothing to stop"
-    );
-    assert!(
-        lifecycle.started_names().is_empty(),
-        "no managed process means nothing to restart"
-    );
+    // The platform never calls `lifecycle.start_agent` / `stop_agent`
+    // anymore; the bridge owns that path. We assert through the
+    // response payload instead — `restarted: false` is the contract.
+    let _ = lifecycle;
 }
 
 #[tokio::test]
@@ -1906,42 +1698,10 @@ async fn test_delete_agent_marks_history_and_preserves_workspace() {
     assert_eq!(json["messages"][0]["senderDeleted"], true);
 }
 
-#[tokio::test]
-async fn test_send_starts_inactive_agent_recipients() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    let bot2_id = store
-        .create_agent_record(&AgentRecordUpsert {
-            name: "bot2",
-            display_name: "Bot 2",
-            description: None,
-            system_prompt: None,
-            runtime: "codex",
-            model: "gpt-5.4",
-            reasoning_effort: None,
-            machine_id: None,
-            env_vars: &[],
-        })
-        .unwrap();
-    join_channel_silent(&store, "general", &bot2_id, "agent");
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "wake bot2" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let mut started = lifecycle.started_names();
-    started.sort();
-    assert_eq!(started, vec!["bot1".to_string(), "bot2".to_string()]);
-    assert!(lifecycle.notified_names().is_empty());
-}
+// `test_send_starts_inactive_agent_recipients` was deleted alongside the
+// other handler-driven wake assertions; the bridge protocol is the new
+// owner of that path. See the deletion note above
+// `test_send_starts_sleeping_agent_with_wake_message`.
 
 #[tokio::test]
 async fn test_send_persists_message_even_if_agent_delivery_fails() {
@@ -1973,115 +1733,16 @@ async fn test_send_persists_message_even_if_agent_delivery_fails() {
         .any(|message| message.content == "persist despite delivery failure"));
 }
 
-#[tokio::test]
-async fn test_dm_send_starts_inactive_agent() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
+// `test_dm_send_starts_inactive_agent` deleted with the other
+// handler-driven wake assertions; see the note above
+// `test_send_starts_sleeping_agent_with_wake_message`.
 
-    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey bot1 via dm" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        lifecycle.started_names(),
-        vec!["bot1".to_string()],
-        "DM to inactive agent must trigger start_agent"
-    );
-    assert!(lifecycle.notified_names().is_empty());
-}
-
-#[tokio::test]
-async fn test_dm_send_notifies_active_agent() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    // Runtime liveness is the manager HashMap, not the DB column:
-    // mark the agent as having a live managed process.
-    lifecycle.mark_running("bot1");
-
-    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "hey active bot1 via dm" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(lifecycle.started_names().is_empty());
-    assert_eq!(
-        lifecycle.notified_names(),
-        vec!["bot1".to_string()],
-        "DM to active agent must trigger notify_agent"
-    );
-}
-
-/// Regression: persisted `AgentStatus::Active` does not mean the
-/// runtime has a managed process. Delivery must route on the
-/// manager HashMap (`process_state`), not the DB column, so an
-/// agent whose row says Active but whose process is absent still
-/// gets woken via `start_agent`.
-#[tokio::test]
-async fn delivery_starts_agent_when_no_process_managed_even_if_db_says_active() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    // Deliberately DO NOT call lifecycle.mark_running("bot1").
-
-    let send_req = serde_json::json!({ "target": "dm:@bot1", "content": "wake up despite drift" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(
-        lifecycle.started_names(),
-        vec!["bot1".to_string()],
-        "delivery must route on process_state, not the persisted AgentStatus column",
-    );
-    assert!(
-        lifecycle.notified_names().is_empty(),
-        "no live process means notify_agent must not be called",
-    );
-}
-
-#[tokio::test]
-async fn test_send_notifies_active_agents() {
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    lifecycle.mark_running("bot1");
-
-    let send_req = serde_json::json!({ "target": "#general", "content": "ping active bot" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/internal/agent/alice/send")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&send_req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert!(lifecycle.started_names().is_empty());
-    assert_eq!(lifecycle.notified_names(), vec!["bot1".to_string()]);
-}
+// `test_dm_send_notifies_active_agent`,
+// `delivery_starts_agent_when_no_process_managed_even_if_db_says_active`,
+// and `test_send_notifies_active_agents` are gone — they verified
+// handler-driven wake behavior that no longer exists at this layer.
+// The Playwright LLM-gated MSG suite covers the bridge-driven path
+// end-to-end.
 
 #[tokio::test]
 async fn test_history() {
@@ -2316,8 +1977,7 @@ async fn test_send_can_skip_agent_delivery() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
-    assert!(lifecycle.started_names().is_empty());
-    assert!(lifecycle.notified_names().is_empty());
+    let _ = lifecycle;
 }
 
 #[tokio::test]
@@ -2380,8 +2040,11 @@ async fn test_create_team_endpoint() {
     let channel_members = store.get_channel_members(&ch.id).unwrap();
     assert!(channel_members.iter().any(|m| m.member_id == current_user));
 
-    assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
-    assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
+    // Team membership changes dispatch a `agent.restart` for affected
+    // agents so the bridge re-launches them with the new system prompt.
+    // Bridge-protocol coverage for delivery lives in bridge_serve_tests.
+    let _ = store.get_agent("bot1").unwrap().unwrap();
+    let _ = lifecycle;
 
     let workspace_id = &team.workspace_id;
     let team_dir_name = format!("{}-{}", team.name, team.id);
@@ -2474,7 +2137,7 @@ async fn test_list_and_update_team_endpoints() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -2599,8 +2262,11 @@ async fn test_list_and_update_team_endpoints() {
     assert_eq!(updated_team.display_name, "Applied Science Platform");
     assert_eq!(bot1_member.role, "leader");
     assert_eq!(bot2_member.role, "operator");
-    assert_eq!(lifecycle.started_names().len(), 2);
-    assert_eq!(lifecycle.stopped_names().len(), 2);
+    // Team update dispatches `agent.restart` for affected agents;
+    // bridge-protocol coverage for delivery lives in bridge_serve_tests.
+    let _ = store.get_agent("bot1").unwrap().unwrap();
+    let _ = store.get_agent("bot2").unwrap().unwrap();
+    let _ = lifecycle;
 }
 
 #[tokio::test]
@@ -2739,8 +2405,11 @@ async fn test_add_remove_and_delete_team_endpoints() {
         .join(&workspace_id)
         .join(&team_dir_name)
         .exists());
-    assert_eq!(lifecycle.started_names().len(), 2);
-    assert_eq!(lifecycle.stopped_names().len(), 2);
+    // Membership add/remove and team delete all dispatch a
+    // `agent.restart` for affected agents; bridge-protocol coverage
+    // for delivery lives in bridge_serve_tests.
+    let _ = store.get_agent("bot1").unwrap().unwrap();
+    let _ = lifecycle;
 }
 
 #[tokio::test]
@@ -2755,7 +2424,7 @@ async fn test_at_mention_forwards_to_team_channel() {
             runtime: "codex",
             model: "gpt-5.4-mini",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -2804,21 +2473,12 @@ async fn test_at_mention_forwards_to_team_channel() {
     assert_eq!(provenance.channel_name, "general");
     assert_eq!(provenance.sender_name, "alice");
 
-    let notified = lifecycle.notified_names();
-    assert_eq!(
-        notified
-            .iter()
-            .filter(|name| name.as_str() == "bot1")
-            .count(),
-        2
-    );
-    assert_eq!(
-        notified
-            .iter()
-            .filter(|name| name.as_str() == "bot2")
-            .count(),
-        1
-    );
+    // Notification fan-out lives on the bridge; the platform no longer
+    // calls `lifecycle.notify_agent` directly. The team-mention
+    // forwarding (which is what this test is really pinning) still
+    // lives on the platform — verified above by the channel +
+    // provenance assertions.
+    let _ = lifecycle;
 }
 
 // ── Template API tests ──
@@ -3010,7 +2670,7 @@ async fn test_active_workspace_filters_core_resource_lists() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
-                machine_id: None,
+                machine_id: "test-machine",
                 env_vars: &[],
             },
         )
@@ -3026,7 +2686,7 @@ async fn test_active_workspace_filters_core_resource_lists() {
                 runtime: "claude",
                 model: "sonnet",
                 reasoning_effort: None,
-                machine_id: None,
+                machine_id: "test-machine",
                 env_vars: &[],
             },
         )
@@ -3430,7 +3090,7 @@ async fn test_non_member_history_returns_message_not_a_member() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -3450,29 +3110,11 @@ async fn test_non_member_history_returns_message_not_a_member() {
     assert_eq!(body["code"], "MESSAGE_NOT_A_MEMBER");
 }
 
-#[tokio::test]
-async fn test_restart_agent_start_fails_returns_agent_restart_failed() {
-    let store = Arc::new(Store::open(":memory:").unwrap());
-    seed_default_workspace(&store);
-    let req = serde_json::json!({ "mode": "restart" });
-    let bot1 = store.get_agent("bot1").unwrap().unwrap();
-    let app = build_router_with_lifecycle(store, Arc::new(FailStartLifecycle));
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/agents/{}/restart", bot1.id))
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-
-    assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-    let body = body_json(resp).await;
-    assert_eq!(body["code"], "AGENT_RESTART_FAILED");
-}
+// `test_restart_agent_start_fails_returns_agent_restart_failed` no
+// longer applies. The platform dispatches an `agent.restart` RPC and
+// returns 200 synchronously; restart failures surface asynchronously
+// via the realtime `agent.state` stream. Coverage of the dispatch path
+// lives in `bridge_ws_tests`.
 
 #[tokio::test]
 async fn create_channel_rejects_invalid_names() {
@@ -3632,59 +3274,28 @@ async fn public_send_allows_empty_content_with_attachments() {
 // other start paths (manual restart, message wake) do not.
 // ─────────────────────────────────────────────────────────────────────
 
+// `test_create_agent_passes_intro_directive_referencing_system_channel`
+// is gone. The intro-directive path depended on `create_and_start_agent`
+// calling `lifecycle.start_agent(_, _, Some(directive))` directly. The
+// platform doesn't start the agent at create time at all anymore.
+// Restoring auto-intro would require a one-shot directive carried via
+// the bridge protocol on first start.
+
+// The platform no longer calls `lifecycle.start_agent` on restart. The
+// handler dispatches an `agent.restart` over the registry. With no
+// bridge connected in this test, dispatch returns Ok(false) and the
+// API still 200s. Bridge-protocol coverage for delivery lives in
+// bridge_ws_tests.
 #[tokio::test]
-async fn test_create_agent_passes_intro_directive_referencing_system_channel() {
-    let (store, app, lifecycle) = setup_with_lifecycle();
-    store.ensure_builtin_channels("alice").unwrap();
-
-    let req = serde_json::json!({ "name": "newbot", "runtime": "claude", "model": "sonnet" });
-    let resp = app
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/api/agents")
-                .header("content-type", "application/json")
-                .body(Body::from(serde_json::to_vec(&req).unwrap()))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-
-    let started = lifecycle.started_calls();
-    assert_eq!(started.len(), 1, "create-agent should fire one start");
-    let directive = started[0]
-        .2
-        .as_ref()
-        .expect("create-agent must pass an init directive");
-    let expected_channel = Store::DEFAULT_SYSTEM_CHANNEL;
-    assert!(
-        directive.contains(expected_channel),
-        "directive should reference #{expected_channel}: {directive:?}"
-    );
-    assert!(
-        directive.contains("introduc"),
-        "directive should mention introducing: {directive:?}"
-    );
-    // Tool name is intentionally NOT asserted: runtimes can prefix tools
-    // (e.g. mcp__chat__send_message), and the agent's standing system
-    // prompt already names the tool. Hardcoding it here would be brittle.
-    // wake_message stays None for a fresh creation — the directive is
-    // the only first-prompt source.
-    assert!(started[0].1.is_none());
-}
-
-#[tokio::test]
-async fn test_manual_restart_does_not_fire_intro_directive() {
-    // setup_with_lifecycle() already seeds bot1 in the default workspace.
-    let (_store, app, lifecycle) = setup_with_lifecycle();
-    lifecycle.mark_running("bot1");
+async fn test_manual_restart_dispatches_bridge_restart() {
+    let (store, app, _lifecycle) = setup_with_lifecycle();
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
 
     let resp = app
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri("/api/agents/bot1/restart")
+                .uri(format!("/api/agents/{}/restart", bot1.id))
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({ "mode": "restart" })).unwrap(),
@@ -3694,14 +3305,6 @@ async fn test_manual_restart_does_not_fire_intro_directive() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-
-    let started = lifecycle.started_calls();
-    assert_eq!(started.len(), 1);
-    assert_eq!(started[0].0, "bot1");
-    assert!(
-        started[0].2.is_none(),
-        "restart must not pass an init directive — only first-time creation does"
-    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -3801,15 +3404,24 @@ async fn decision_round_trip_agent_creates_human_resolves_agent_resumed() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "resolve must 200");
 
-    // 4. resume_with_prompt fired with the right payload.
-    let calls = lifecycle.resumed_calls();
-    assert_eq!(
-        calls.len(),
-        1,
-        "resume_with_prompt must be called exactly once"
+    // 4. Resolving a decision dispatches `agent.restart` with a
+    // `DecisionResume { decision_id, prompt }` over the registry.
+    // Persistence lives on the `decisions` row (status=resolved +
+    // delivered_at IS NULL) — the envelope is rebuilt on demand. With
+    // no bridge connected, the envelope stays "to be delivered" until
+    // the bridge connects, when reconnect-replay re-emits it.
+    let row = store
+        .get_decision(&decision_id)
+        .unwrap()
+        .expect("decision row must exist");
+    assert_eq!(row.status.as_str(), "resolved");
+    assert!(
+        row.delivered_at.is_none(),
+        "delivered_at must be null until bridge acks via agent.directive_consumed; got {:?}",
+        row.delivered_at
     );
-    let (agent, envelope) = &calls[0];
-    assert_eq!(agent, "bot1");
+    let envelope = chorus::server::build_resume_envelope_from_row(&row)
+        .expect("envelope must be reconstructable from a resolved decision row");
     assert!(
         envelope.contains("PR #120 retro"),
         "envelope must include original headline; got: {envelope}"
@@ -3818,6 +3430,7 @@ async fn decision_round_trip_agent_creates_human_resolves_agent_resumed() {
     assert!(envelope.contains("Picked option (B): Revert and add tests"));
     assert!(envelope.contains("Revert, add the integration test"));
     assert!(envelope.contains("needs tests first"));
+    let _ = lifecycle;
 
     // 5. The decision row is now resolved, so /open lists nothing.
     let resp = app

@@ -71,8 +71,8 @@ impl Store {
 
     /// Drop every `agent_sessions` row for the given agent. Called from
     /// the bridge's reconcile when an agent leaves the desired set —
-    /// the bridge runs with FK enforcement off so cascade no longer
-    /// fires automatically (#145).
+    /// the bridge runs with FK enforcement off so cascade does not fire
+    /// automatically.
     pub fn delete_sessions_for_agent(&self, agent_id: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -125,8 +125,8 @@ mod tests {
             .lock()
             .unwrap()
             .execute(
-                "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
-             VALUES ('a1', ?1, 'a', 'A', 'fake', 'fake')",
+                "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, machine_id)
+             VALUES ('a1', ?1, 'a', 'A', 'fake', 'fake', 'test-machine')",
                 params![workspace.id],
             )
             .unwrap();
@@ -215,7 +215,7 @@ mod tests {
     /// The bridge opens its store with `foreign_keys=OFF` so it can
     /// write resume cursors without a corresponding `agents` row. Pin
     /// that contract so a future regression flipping the PRAGMA back
-    /// gets caught here. See #145.
+    /// gets caught here.
     #[test]
     fn bridge_store_writes_session_without_agent_row() {
         let dir = TempDir::new().unwrap();

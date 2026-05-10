@@ -101,10 +101,10 @@ async fn sync_team_roles_and_agents(
 
 /// Restart an agent so its system prompt is rebuilt from the latest team state.
 ///
-/// For bridge-hosted agents (`agents.machine_id` set), the platform does not
-/// own the runtime; it broadcasts a fresh `bridge.target` instead so the
-/// remote bridge can stop/start the local process. Calling `start_agent`
-/// here would cause dual-runtime contention.
+/// Pushes the new spec to the owning bridge as a fresh `bridge.target`
+/// snapshot, then dispatches a `agent.restart` so the runtime
+/// re-launches with the new system prompt. The platform never touches
+/// the runtime process directly.
 async fn restart_agent_member(
     state: &AppState,
     agent_name: &str,
@@ -113,27 +113,23 @@ async fn restart_agent_member(
         Some(a) => a,
         None => return Ok(()),
     };
-    let bridge_hosted = agent
-        .machine_id
-        .as_deref()
-        .is_some_and(|m| m != state.local_machine_id.as_str());
-    if bridge_hosted {
-        crate::server::transport::bridge_ws::broadcast_target_update(
-            state.store.as_ref(),
-            state.bridge_registry.as_ref(),
+    crate::server::transport::bridge_ws::broadcast_target_update(
+        state.store.as_ref(),
+        state.bridge_registry.as_ref(),
+    );
+    if let Err(e) = crate::server::transport::bridge_ws::dispatch_agent_restart(
+        state.store.as_ref(),
+        state.bridge_registry.as_ref(),
+        &agent.id,
+        None,
+    ) {
+        tracing::warn!(
+            agent = %agent_name,
+            agent_id = %agent.id,
+            error = %e,
+            "team membership restart: agent.restart dispatch failed"
         );
-        return Ok(());
     }
-    state
-        .lifecycle
-        .stop_agent(&agent.id)
-        .await
-        .map_err(internal_err)?;
-    state
-        .lifecycle
-        .start_agent(&agent, None, None)
-        .await
-        .map_err(internal_err)?;
     Ok(())
 }
 

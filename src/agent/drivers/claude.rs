@@ -5,7 +5,7 @@
 //! Claude's `claude -p --output-format stream-json` is a per-invocation
 //! command — each child process exits after its turn completes and cannot
 //! multiplex multiple sessions like Codex's `thread/start` or Kimi/OpenCode's
-//! `session/new` do. Phase 0.9 Stage 2 therefore runs **one `tokio::process::Child`
+//! `session/new` do. This driver therefore runs **one `tokio::process::Child`
 //! per [`Session`]**.
 //!
 //! What's shared across an agent's sessions:

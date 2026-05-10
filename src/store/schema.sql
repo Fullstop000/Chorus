@@ -105,7 +105,7 @@ CREATE TABLE IF NOT EXISTS agents (
     runtime TEXT NOT NULL, -- The runtime driver used (e.g., 'claude', 'codex')
     model TEXT NOT NULL, -- The specific LLM model used
     reasoning_effort TEXT, -- The reasoning effort configuration
-    machine_id TEXT, -- Owner. Some(machine_id) = bound to that bridge; NULL = platform-local. Every agent has one owner.
+    machine_id TEXT NOT NULL, -- Owner. The bridge that runs this agent's runtime; for `chorus serve` agents created without an explicit machine_id, this is the installation's `local_machine_id` from `config.toml`.
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the agent was created
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_workspace_name
@@ -278,7 +278,13 @@ CREATE TABLE IF NOT EXISTS decisions (
     payload_json TEXT NOT NULL,
     picked_key TEXT,
     picked_note TEXT,
-    resolved_at TEXT
+    resolved_at TEXT,
+    -- When the resume envelope built from this decision was confirmed
+    -- consumed by the agent (via `agent.directive_consumed`). Until set,
+    -- the platform re-emits the envelope as `init_directive` on every
+    -- bridge hello, so a `resolved` pick eventually reaches the agent
+    -- even if the bridge was offline at resolve time.
+    delivered_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_workspace_status
     ON decisions(workspace_id, status, created_at DESC);

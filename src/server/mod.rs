@@ -3,6 +3,9 @@ pub mod bridge_auth;
 pub mod bridge_registry;
 pub mod event_bus;
 mod handlers;
+/// Re-export so tests + reconnect-replay can rebuild the resume directive
+/// from a `DecisionRow` without exposing the full handler surface area.
+pub use handlers::decisions::build_resume_envelope_from_row;
 pub mod transport;
 
 use std::sync::Arc;
@@ -116,14 +119,6 @@ pub fn build_router_with_services_and_auth(
     let (local_human_id, local_human_name) =
         resolve_local_human_identity(store.as_ref(), &data_dir);
     let local_machine_id = resolve_local_machine_id(&data_dir);
-
-    // Backfill rows that pre-date the always-set-machine_id invariant.
-    // After this UPDATE every agent owned by `chorus serve` has a non-NULL
-    // `machine_id` equal to `local_machine_id`. Rows already pinned to a
-    // remote bridge keep their value; only NULLs are touched.
-    if let Err(err) = store.backfill_null_machine_ids(&local_machine_id) {
-        tracing::warn!(err = %err, "backfill_null_machine_ids failed; agent rows may have NULL machine_id");
-    }
 
     // Built-in channels (`#all`) and the local human's membership are seeded
     // here, after identity resolution: the legacy CLI bootstrap used the OS
@@ -370,6 +365,13 @@ fn resolve_local_human_identity(store: &Store, data_dir: &std::path::Path) -> (S
             panic!("unable to resolve persisted local human identity: {err}");
         }
     }
+}
+
+/// Public re-export of `resolve_local_machine_id` so `cli/serve.rs` can
+/// read the same id (from disk) it embeds into `AppState`. The function
+/// is idempotent — both calls land on the same UUID.
+pub fn resolve_local_machine_id_for_serve(data_dir: &std::path::Path) -> String {
+    resolve_local_machine_id(data_dir)
 }
 
 /// Resolve the local installation's `machine_id`, generating and persisting

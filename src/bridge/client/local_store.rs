@@ -3,7 +3,7 @@
 //! Agent records are not written here — they live in-memory in
 //! `bridge::client::ws::TargetCache`, populated from `bridge.target`.
 //! The bridge opens its store with `foreign_keys=OFF` so session writes
-//! work without a corresponding `agents` row. See #145.
+//! work without a corresponding `agents` row.
 
 use crate::store::Store;
 

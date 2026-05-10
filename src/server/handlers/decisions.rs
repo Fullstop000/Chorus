@@ -310,30 +310,31 @@ pub async fn handle_resolve_decision(
 
     let envelope = build_resume_envelope(&payload, picked, body.note.as_deref());
 
-    if let Err(e) = state
-        .lifecycle
-        .resume_with_prompt(&agent.id, envelope)
-        .await
-    {
-        // Roll back the resolve so the human's pick isn't silently lost.
+    // Push the envelope to the owning bridge as an `agent.restart`. The
+    // wire `DecisionResume { id, body }` pairs the prompt with the source
+    // decision id so the bridge's `agent.decision_delivered` ack maps
+    // back to exactly this row — no ambiguity with concurrent decisions
+    // on the same agent. Persistence lives on the `decisions` row
+    // (status=resolved + delivered_at IS NULL); if the bridge is
+    // offline, the next `bridge.hello` reconnect-replays.
+    let resume = crate::bridge::protocol::DecisionResume {
+        decision_id: decision_id.clone(),
+        prompt: envelope,
+    };
+    let dispatched = crate::server::transport::bridge_ws::dispatch_agent_restart(
+        state.store.as_ref(),
+        state.bridge_registry.as_ref(),
+        &agent.id,
+        Some(resume),
+    );
+    if let Err(e) = dispatched {
         warn!(
             agent = %agent.name,
             agent_id = %agent.id,
             decision_id = %decision_id,
             error = %e,
-            "resume_with_prompt failed; reverting decision to open"
+            "agent.restart dispatch failed; envelope will replay on next bridge hello"
         );
-        if let Err(revert_err) = state.store.revert_decision_to_open(&decision_id) {
-            warn!(
-                decision_id = %decision_id,
-                error = %revert_err,
-                "failed to revert decision after resume failure"
-            );
-        }
-        return Err(app_err!(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to deliver pick to agent: {e}"
-        ));
     }
 
     info!(
@@ -341,7 +342,7 @@ pub async fn handle_resolve_decision(
         decision_id = %decision_id,
         agent = %agent.name,
         picked = %body.picked_key,
-        "decision resolved + envelope delivered"
+        "decision resolved + agent.restart dispatched"
     );
 
     Ok(Json(ResolveDecisionResponse {
@@ -350,7 +351,29 @@ pub async fn handle_resolve_decision(
     }))
 }
 
-fn build_resume_envelope(payload: &Value, picked: &Value, note: Option<&str>) -> String {
+/// Construct the resume envelope (the agent's first-turn prompt after a
+/// human picks) from a stored `DecisionRow`. Returns `None` if the row
+/// hasn't been resolved yet, or if the row's payload is malformed.
+/// Called from both the resolve handler (live emit) and the bridge
+/// reconnect-replay path (offline-bridge re-emit).
+pub fn build_resume_envelope_from_row(
+    row: &crate::store::decisions::DecisionRow,
+) -> Option<String> {
+    let payload: Value = serde_json::from_str(&row.payload_json).ok()?;
+    let picked_key = row.picked_key.as_deref()?;
+    let picked = payload
+        .get("options")?
+        .as_array()?
+        .iter()
+        .find(|o| o.get("key").and_then(|k| k.as_str()) == Some(picked_key))?;
+    Some(build_resume_envelope(
+        &payload,
+        picked,
+        row.picked_note.as_deref(),
+    ))
+}
+
+pub(crate) fn build_resume_envelope(payload: &Value, picked: &Value, note: Option<&str>) -> String {
     let headline = payload
         .get("headline")
         .and_then(|v| v.as_str())

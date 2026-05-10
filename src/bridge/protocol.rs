@@ -34,6 +34,28 @@ pub const FRAME_CHAT_MESSAGE_RECEIVED: &str = "chat.message.received";
 /// batch was buffered for the local runtime.
 pub const FRAME_CHAT_ACK: &str = "chat.ack";
 
+/// Platform → Bridge: start an agent's runtime. Idempotent — if the
+/// agent is already running, the bridge no-ops. Carries an optional
+/// `init_directive` (e.g., a decision-resume envelope) that becomes the
+/// agent's first turn prompt.
+pub const FRAME_AGENT_START: &str = "agent.start";
+
+/// Platform → Bridge: stop an agent's runtime. Idempotent — if no
+/// process exists, the bridge no-ops. The agent stays in `bridge.target`
+/// (still owned by this bridge), it just isn't running.
+pub const FRAME_AGENT_STOP: &str = "agent.stop";
+
+/// Platform → Bridge: stop+start the agent's runtime to pick up a spec
+/// change or deliver a one-shot `init_directive`. Equivalent to a stop
+/// followed by a start, but carried as one frame so the bridge can
+/// guarantee the directive lands on the new instance.
+pub const FRAME_AGENT_RESTART: &str = "agent.restart";
+
+/// Bridge → Platform: confirms the bridge delivered a decision-resume
+/// prompt to the agent on its next start. The platform marks exactly
+/// that decision as delivered, so reconnect-replay won't re-emit it.
+pub const FRAME_AGENT_DECISION_DELIVERED: &str = "agent.decision_delivered";
+
 // ── Envelope ─────────────────────────────────────────────────────────────
 
 /// JSON envelope wrapping every WS frame in either direction.
@@ -110,7 +132,10 @@ pub struct BridgeTarget {
     pub target_agents: Vec<AgentTarget>,
 }
 
-/// One agent's full runtime config inside a `bridge.target`.
+/// One agent's full runtime config inside a `bridge.target`. `bridge.target`
+/// carries identity + spec only; lifecycle intent (start / stop / restart)
+/// flows as discrete `FRAME_AGENT_START` / `FRAME_AGENT_STOP` /
+/// `FRAME_AGENT_RESTART` frames.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentTarget {
@@ -127,13 +152,6 @@ pub struct AgentTarget {
     pub reasoning_effort: Option<String>,
     #[serde(default)]
     pub env_vars: Vec<EnvVar>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub init_directive: Option<String>,
-    /// Reserved for a future slice that funnels a queued user prompt
-    /// through `bridge.target` so the bridge can deliver it on first
-    /// turn. Currently unused.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_prompt: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -156,4 +174,60 @@ pub struct ChatMessageReceived {
     /// inspect this field, only forwards it via the agent's mailbox.
     #[serde(default)]
     pub messages: Value,
+}
+
+/// A decision-resume prompt the bridge delivers as the agent's first
+/// turn after a human resolves a decision in the inbox. `decision_id`
+/// is the resolved decision's row id; the bridge echoes it back via
+/// `agent.decision_delivered` so the platform marks exactly that row as
+/// delivered (not "all undelivered decisions for this agent", which
+/// races with rapid re-resolves).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct DecisionResume {
+    pub decision_id: String,
+    pub prompt: String,
+}
+
+/// `agent.start` payload — platform asks the bridge to launch this
+/// agent's runtime. If the agent is already running, the bridge no-ops.
+/// `decision_resume`, when present, supplies the agent's first turn
+/// prompt and the `decision_id` the bridge must echo back via
+/// `agent.decision_delivered`.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentStart {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_resume: Option<DecisionResume>,
+}
+
+/// `agent.stop` payload — platform asks the bridge to terminate this
+/// agent's runtime. If no process exists, the bridge no-ops.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentStop {
+    pub agent_id: String,
+}
+
+/// `agent.restart` payload — stop+start the agent's runtime to pick up
+/// a spec change or deliver a queued decision resume. Equivalent to a
+/// stop followed by a start, but issued as one frame so the resume
+/// lands on the new instance.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentRestart {
+    pub agent_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_resume: Option<DecisionResume>,
+}
+
+/// `agent.decision_delivered` payload — bridge confirms it delivered a
+/// specific decision-resume prompt to the agent on its next start. The
+/// platform marks exactly the named decision as delivered.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+pub struct AgentDecisionDelivered {
+    pub agent_id: String,
+    pub decision_id: String,
 }

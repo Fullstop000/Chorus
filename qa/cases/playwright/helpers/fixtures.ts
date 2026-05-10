@@ -12,7 +12,7 @@
  */
 import { test as base } from '@playwright/test'
 import { spawn, type ChildProcess } from 'child_process'
-import { mkdtempSync, rmSync } from 'fs'
+import { createWriteStream, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import path from 'path'
 
@@ -58,6 +58,15 @@ export const test = base.extend<Record<string, never>, WorkerFixtures>({
         ['serve', '--port', String(port), '--bridge-port', String(bridgePort), '--data-dir', dataDir],
         { cwd: REPO_ROOT, stdio: 'pipe' }
       )
+      // Optional log capture: set CHORUS_QA_LOG_DIR=/path/to/dir to dump
+      // per-worker stdout+stderr there. Cheap diagnostic for parallel
+      // flakes where the failing worker's logs would otherwise be lost.
+      if (process.env.CHORUS_QA_LOG_DIR) {
+        const logFile = path.join(process.env.CHORUS_QA_LOG_DIR, `worker-${workerInfo.workerIndex}.log`)
+        const logStream = createWriteStream(logFile, { flags: 'a' })
+        proc.stdout?.pipe(logStream)
+        proc.stderr?.pipe(logStream)
+      }
 
       const serverUrl = `http://localhost:${port}`
       try {

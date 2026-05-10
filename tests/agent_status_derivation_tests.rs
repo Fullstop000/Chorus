@@ -10,7 +10,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use chorus::agent::AgentLifecycle;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{ReceivedMessage, SenderType};
+use chorus::store::messages::SenderType;
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
 use harness::build_router_with_lifecycle;
@@ -31,36 +31,6 @@ struct MockLifecycle {
 }
 
 impl AgentLifecycle for MockLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        agent: &'a chorus::store::agents::Agent,
-        _wake_message: Option<ReceivedMessage>,
-        _init_directive: Option<String>,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        let id = agent.id.clone();
-        Box::pin(async move {
-            self.running.lock().unwrap().insert(id);
-            Ok(())
-        })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        agent_id: &'a str,
-    ) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async move {
-            self.running.lock().unwrap().remove(agent_id);
-            Ok(())
-        })
-    }
-
     fn process_state<'a>(
         &'a self,
         agent_id: &'a str,
@@ -127,7 +97,7 @@ async fn list_agents_returns_asleep_for_unmanaged_agent() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -173,7 +143,7 @@ async fn list_agents_returns_ready_for_running_agent() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -182,7 +152,7 @@ async fn list_agents_returns_ready_for_running_agent() {
     // Manually insert into the running set (simulates start_agent having been
     // called, and the process reaching the Active/idle state). The handler
     // looks up `process_state` by `agent.id`, so the mock's running set must
-    // be keyed by id to mirror production semantics post-#142.
+    // be keyed by id to mirror production semantics.
     lifecycle.running.lock().unwrap().insert(agent_id);
 
     let resp = app
@@ -225,7 +195,7 @@ async fn get_agent_returns_asleep_for_unmanaged_agent() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();

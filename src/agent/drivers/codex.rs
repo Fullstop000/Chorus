@@ -828,7 +828,7 @@ impl CodexHandle {
         // or the start compat shim. Before passing to the runtime, verify
         // codex still has a rollout file for the thread id — otherwise
         // `thread/resume` lands on a dead thread and produces a silent
-        // no-op turn. Mirrors the claude session-file guard from PR #131.
+        // no-op turn. Mirrors the claude session-file guard.
         let resume_id = self.resume_session_id.take();
         let resume_id = match resume_id {
             Some(tid) if liveness_check_enabled() => {

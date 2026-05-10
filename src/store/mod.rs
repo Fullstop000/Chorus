@@ -49,7 +49,11 @@ impl Store {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        Self::validate_supported_identity_schema(&conn)?;
+        // Validate BEFORE init_schema so the validator inspects the
+        // user's actual on-disk shape — not a freshly-minted shape that
+        // `CREATE TABLE IF NOT EXISTS` would write into a half-empty
+        // legacy DB and then trivially pass.
+        Self::validate_schema_shape(&conn, path)?;
         Self::init_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -60,11 +64,11 @@ impl Store {
     /// bridge can write `agent_sessions` rows without a corresponding
     /// `agents` row. The bridge's local DB is a runtime-state cache, not
     /// a normalized model — agent records live in-memory in the
-    /// reconcile loop's `TargetCache`. See #145 for the design.
+    /// reconcile loop's `TargetCache`.
     pub fn open_for_bridge(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=OFF;")?;
-        Self::validate_supported_identity_schema(&conn)?;
+        Self::validate_schema_shape(&conn, path)?;
         Self::init_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
@@ -94,99 +98,65 @@ impl Store {
     }
 
     fn init_schema(conn: &Connection) -> Result<()> {
-        // The schema below uses `CREATE TABLE IF NOT EXISTS` so this is a
-        // no-op on existing DBs; column-shape migrations run after.
         let schema = include_str!("schema.sql");
         conn.execute_batch(schema)?;
-        // Idempotent `machine_id` migration: SQLite has no
-        // `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. Attempt the ALTER
-        // and ignore *only* the "duplicate column name" error; surface
-        // anything else (locked DB, syntax errors, real schema drift)
-        // so first-run failures aren't silent.
-        match conn.execute("ALTER TABLE agents ADD COLUMN machine_id TEXT", []) {
-            Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
-                if msg.contains("duplicate column name") => {}
-            Err(e) => return Err(e.into()),
-        }
         Ok(())
     }
 
-    fn validate_supported_identity_schema(conn: &Connection) -> Result<()> {
-        for (table, column) in [
-            ("humans", "display_name"),
-            ("workspaces", "created_by_human"),
-            ("workspace_members", "human_name"),
-            ("channel_members", "member_name"),
-            ("inbox_read_state", "member_name"),
-            ("messages", "sender_name"),
-            ("tasks", "created_by"),
-            ("tasks", "claimed_by"),
-            ("team_members", "member_name"),
-        ] {
-            if Self::schema_column_exists(conn, table, column)? {
-                anyhow::bail!(Self::old_identity_schema_message(table, column));
-            }
+    /// Catch DBs that pre-date the always-set-machine_id invariant. The
+    /// runtime ALTER shims that used to fix these in place were dropped
+    /// once every code path stopped writing NULL — but `CREATE TABLE IF
+    /// NOT EXISTS` is a no-op on existing tables, so opening an old DB
+    /// would otherwise succeed here and surface a cryptic SQLite error
+    /// later when the first INSERT trips `NOT NULL`. Fail loudly with a
+    /// "delete this file" hint instead.
+    ///
+    /// Runs BEFORE `init_schema` so the check inspects the user's
+    /// on-disk shape, not a freshly-minted-by-CREATE-IF-NOT-EXISTS one.
+    /// A completely fresh DB (no tables yet) passes through to
+    /// `init_schema`; only DBs that already have an `agents` table get
+    /// the shape check.
+    fn validate_schema_shape(conn: &Connection, path: &str) -> Result<()> {
+        // No tables yet → fresh install. Skip and let init_schema
+        // create the canonical shape.
+        let table_count: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
+            [],
+            |row| row.get(0),
+        )?;
+        if table_count == 0 {
+            return Ok(());
         }
 
-        for (table, columns) in [
-            ("humans", &["id", "name"][..]),
-            ("workspaces", &["created_by_human_id"][..]),
-            ("workspace_members", &["human_id"][..]),
-            ("channel_members", &["member_id", "member_type"][..]),
-            ("inbox_read_state", &["member_id", "member_type"][..]),
-            ("messages", &["sender_id", "sender_type"][..]),
-            (
-                "tasks",
-                &[
-                    "created_by_id",
-                    "created_by_type",
-                    "claimed_by_id",
-                    "claimed_by_type",
-                ][..],
+        // Only check `agents.machine_id`: it's the marker column for
+        // every recent schema phase (added in #150, made NOT NULL in
+        // this cleanup). Older shapes are caught by either the column
+        // being absent or by `notnull = 0`.
+        let mut stmt = conn.prepare("PRAGMA table_info(agents)")?;
+        let mut machine_id_notnull: Option<i64> = None;
+        for row in stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(1)?, row.get::<_, i64>(3)?))
+        })? {
+            let (name, notnull) = row?;
+            if name == "machine_id" {
+                machine_id_notnull = Some(notnull);
+                break;
+            }
+        }
+        match machine_id_notnull {
+            None => anyhow::bail!(
+                "incompatible database schema at {path}: \
+                 `agents.machine_id` is missing. Delete this file and \
+                 restart to recreate it from scratch."
             ),
-            ("team_members", &["member_id", "member_type"][..]),
-        ] {
-            if !Self::schema_table_exists(conn, table)? {
-                continue;
-            }
-            for column in columns {
-                if !Self::schema_column_exists(conn, table, column)? {
-                    anyhow::bail!(Self::old_identity_schema_message(table, column));
-                }
-            }
+            Some(0) => anyhow::bail!(
+                "incompatible database schema at {path}: \
+                 `agents.machine_id` is nullable but the current schema \
+                 declares it NOT NULL. Delete this file and restart to \
+                 recreate it from scratch."
+            ),
+            Some(_) => Ok(()),
         }
-
-        Ok(())
-    }
-
-    fn old_identity_schema_message(table: &str, column: &str) -> String {
-        format!(
-            "local database uses an old identity schema ({table}.{column}); run with a fresh data directory or reset local data"
-        )
-    }
-
-    fn schema_table_exists(conn: &Connection, table: &str) -> Result<bool> {
-        Ok(conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
-                params![table],
-                |_| Ok(()),
-            )
-            .optional()?
-            .is_some())
-    }
-
-    fn schema_column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
-        if !Self::schema_table_exists(conn, table)? {
-            return Ok(false);
-        }
-        let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-        let exists = stmt
-            .query_map([], |row| row.get::<_, String>(1))?
-            .filter_map(Result::ok)
-            .any(|name| name == column);
-        Ok(exists)
     }
 
     /// Look up the channel_id for a given run_id (from the first message in that run).

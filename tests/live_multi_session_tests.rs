@@ -89,7 +89,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
 
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::ReceivedMessage;
+// removed: ReceivedMessage no longer needed after AgentLifecycle trait shrink
 use chorus::store::{AgentRecordUpsert, Store};
 use tokio::sync::mpsc::Receiver;
 use tokio::time::timeout;
@@ -105,29 +105,6 @@ use tokio::time::timeout;
 struct NoopLifecycle;
 
 impl AgentLifecycle for NoopLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        _agent: &'a chorus::store::agents::Agent,
-        _wake_message: Option<ReceivedMessage>,
-        _init_directive: Option<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
     fn get_activity_log_data(
         &self,
         _agent_name: &str,
@@ -254,7 +231,7 @@ fn seed_agent(
         runtime,
         model,
         reasoning_effort: None,
-        machine_id: None,
+        machine_id: "test-machine",
         env_vars: &[],
     })?;
     join_channel_silent(store, "general", agent_key, "agent");

@@ -82,7 +82,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("test-machine-001"),
+            machine_id: "test-machine-001",
             env_vars: &[],
         })
         .unwrap();
@@ -95,7 +95,7 @@ async fn bridge_ws_hello_returns_target_with_agent_records() {
             runtime: "codex",
             model: "gpt-5",
             reasoning_effort: Some("medium"),
-            machine_id: Some("test-machine-001"),
+            machine_id: "test-machine-001",
             env_vars: &[],
         })
         .unwrap();
@@ -672,7 +672,7 @@ async fn bridge_ws_pushes_chat_message_received_when_agent_member_gets_message()
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("chat-machine"),
+            machine_id: "chat-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -743,7 +743,7 @@ async fn bridge_ws_two_machines_chat_isolation() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-a"),
+            machine_id: "machine-a",
             env_vars: &[],
         })
         .unwrap();
@@ -756,7 +756,7 @@ async fn bridge_ws_two_machines_chat_isolation() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-b"),
+            machine_id: "machine-b",
             env_vars: &[],
         })
         .unwrap();
@@ -929,7 +929,7 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -943,7 +943,7 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-a"),
+            machine_id: "machine-a",
             env_vars: &[],
         })
         .unwrap();
@@ -957,7 +957,7 @@ async fn bridge_ws_target_scoped_by_agent_machine_id() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-b"),
+            machine_id: "machine-b",
             env_vars: &[],
         })
         .unwrap();
@@ -1026,7 +1026,7 @@ async fn internal_agent_endpoints_pass_through_when_auth_disabled() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1060,7 +1060,7 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-x"),
+            machine_id: "machine-x",
             env_vars: &[],
         })
         .unwrap();
@@ -1129,7 +1129,7 @@ async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: Some("machine-y"),
+            machine_id: "machine-y",
             env_vars: &[],
         })
         .unwrap();
@@ -1183,7 +1183,7 @@ async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
             runtime: "claude",
             model: "sonnet",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();
@@ -1198,4 +1198,378 @@ async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
         403,
         "bridge token must not be allowed to act on platform-local agents"
     );
+}
+
+// ── event-driven lifecycle: agent.start / agent.stop / agent.restart ──
+
+/// Drain frames until one matching `predicate` arrives, or panic on timeout.
+async fn read_until<F>(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+    predicate: F,
+    label: &str,
+) -> Value
+where
+    F: Fn(&Value) -> bool,
+{
+    for _ in 0..16 {
+        let frame = match timeout(Duration::from_millis(800), read_json_frame(socket)).await {
+            Ok(f) => f,
+            Err(_) => break,
+        };
+        if predicate(&frame) {
+            return frame;
+        }
+    }
+    panic!("never observed expected frame ({label})");
+}
+
+#[tokio::test]
+async fn http_agent_start_dispatches_bridge_start_frame() {
+    let (ws_url, http_url, store) = start_test_server().await;
+
+    // Seed an agent owned by this bridge's machine_id.
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "lifecycle-bot",
+            display_name: "Lifecycle Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: "ev-machine",
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .unwrap();
+    send_hello(&mut socket, "ev-machine").await;
+    let initial = read_json_frame(&mut socket).await;
+    assert_eq!(initial["type"], "bridge.target");
+
+    // POST /api/agents/{id}/start → platform must push a `agent.start`.
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{http_url}/api/agents/{agent_id}/start"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let frame = read_until(
+        &mut socket,
+        |f| f["type"] == "agent.start",
+        "agent.start after /start",
+    )
+    .await;
+    assert_eq!(frame["data"]["agent_id"], agent_id);
+    assert!(
+        frame["data"]["decision_resume"].is_null(),
+        "manual start must not carry a directive"
+    );
+}
+
+#[tokio::test]
+async fn http_agent_stop_dispatches_bridge_stop_frame() {
+    let (ws_url, http_url, store) = start_test_server().await;
+
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "stoppable-bot",
+            display_name: "Stoppable Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: "ev-machine",
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .unwrap();
+    send_hello(&mut socket, "ev-machine").await;
+    let _ = read_json_frame(&mut socket).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{http_url}/api/agents/{agent_id}/stop"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let frame = read_until(
+        &mut socket,
+        |f| f["type"] == "agent.stop",
+        "agent.stop after /stop",
+    )
+    .await;
+    assert_eq!(frame["data"]["agent_id"], agent_id);
+}
+
+#[tokio::test]
+async fn http_agent_restart_dispatches_bridge_restart_frame() {
+    let (ws_url, http_url, store) = start_test_server().await;
+
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "restartable-bot",
+            display_name: "Restartable Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: "ev-machine",
+            env_vars: &[],
+        })
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .unwrap();
+    send_hello(&mut socket, "ev-machine").await;
+    let _ = read_json_frame(&mut socket).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{http_url}/api/agents/{agent_id}/restart"))
+        .json(&json!({"mode": "restart"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let frame = read_until(
+        &mut socket,
+        |f| f["type"] == "agent.restart",
+        "agent.restart after /restart",
+    )
+    .await;
+    assert_eq!(frame["data"]["agent_id"], agent_id);
+    assert!(
+        frame["data"]["decision_resume"].is_null(),
+        "manual restart must not carry a directive"
+    );
+}
+
+#[tokio::test]
+async fn reconnect_replay_emits_bridge_start_for_agent_with_unread() {
+    // Agent has unread messages when the bridge connects → platform
+    // must follow `bridge.target` with a `agent.start` for that agent.
+    let (ws_url, store, event_bus, alice_id) = start_test_server_with_event_bus_handle().await;
+
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "wakeable-bot",
+            display_name: "Wakeable",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: "wake-machine",
+            env_vars: &[],
+        })
+        .unwrap();
+    harness::join_channel_silent(&store, "general", &agent_id, "agent");
+
+    // Land an unread message before the bridge connects.
+    let (_msg_id, _ev) = store
+        .create_message(chorus::store::messages::CreateMessage {
+            channel_name: "general",
+            sender_id: &alice_id,
+            sender_type: chorus::store::messages::SenderType::Human,
+            content: "wake up please",
+            attachment_ids: &[],
+            suppress_event: false,
+            run_id: None,
+        })
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .unwrap();
+    send_hello(&mut socket, "wake-machine").await;
+    let _ = read_json_frame(&mut socket).await;
+    let frame = read_until(
+        &mut socket,
+        |f| f["type"] == "agent.start" && f["data"]["agent_id"] == json!(agent_id),
+        "reconnect-replay agent.start",
+    )
+    .await;
+    assert_eq!(frame["data"]["agent_id"], agent_id);
+    let _ = event_bus;
+}
+
+#[tokio::test]
+async fn decision_resolve_dispatches_bridge_restart_with_directive() {
+    let (ws_url, http_url, store) = start_test_server().await;
+
+    // Seed agent + active session row so the decision handler can locate it.
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "decider-bot",
+            display_name: "Decider",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: "dec-machine",
+            env_vars: &[],
+        })
+        .unwrap();
+    let workspace_id = store.get_active_workspace().unwrap().unwrap().id;
+    // Create the decision directly so we don't need a live agent run.
+    let payload = json!({
+        "headline": "Ship this PR?",
+        "question": "Merge or revert?",
+        "options": [
+            {"key": "A", "label": "Merge", "body": "Merge it now."},
+            {"key": "B", "label": "Revert", "body": "Revert and add tests."},
+        ],
+    });
+    let channel_id = store
+        .create_channel("decisions-room", None, ChannelType::Channel, None)
+        .unwrap();
+    let decision_id = "dec-1".to_string();
+    store
+        .create_decision(
+            &decision_id,
+            &workspace_id,
+            &channel_id,
+            &agent_id,
+            "session-1",
+            &payload.to_string(),
+        )
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .unwrap();
+    send_hello(&mut socket, "dec-machine").await;
+    let _ = read_json_frame(&mut socket).await;
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(format!("{http_url}/api/decisions/{decision_id}/resolve"))
+        .json(&json!({"picked_key": "B", "note": "needs tests"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let frame = read_until(
+        &mut socket,
+        |f| f["type"] == "agent.restart",
+        "agent.restart from decision resolve",
+    )
+    .await;
+    assert_eq!(frame["data"]["agent_id"], agent_id);
+    assert_eq!(
+        frame["data"]["decision_resume"]["decision_id"], decision_id,
+        "decision_id must be on the wire so the ack maps back to this row"
+    );
+    let prompt = frame["data"]["decision_resume"]["prompt"]
+        .as_str()
+        .expect("prompt must be present on a decision-driven restart");
+    assert!(prompt.contains("Ship this PR?"));
+    assert!(prompt.contains("Picked option (B): Revert"));
+    assert!(prompt.contains("needs tests"));
+}
+
+#[tokio::test]
+async fn agent_directive_consumed_marks_decision_delivered() {
+    let (ws_url, http_url, store) = start_test_server().await;
+
+    let agent_id = store
+        .create_agent_record(&AgentRecordUpsert {
+            name: "ack-bot",
+            display_name: "Ack Bot",
+            description: None,
+            system_prompt: None,
+            runtime: "claude",
+            model: "sonnet",
+            reasoning_effort: None,
+            machine_id: "ack-machine",
+            env_vars: &[],
+        })
+        .unwrap();
+    let workspace_id = store.get_active_workspace().unwrap().unwrap().id;
+    let channel_id = store
+        .create_channel("ack-room", None, ChannelType::Channel, None)
+        .unwrap();
+    let decision_id = "dec-ack".to_string();
+    let payload = json!({
+        "headline": "h",
+        "question": "q",
+        "options": [
+            {"key": "A", "label": "L", "body": "B"},
+        ],
+    });
+    store
+        .create_decision(
+            &decision_id,
+            &workspace_id,
+            &channel_id,
+            &agent_id,
+            "session-1",
+            &payload.to_string(),
+        )
+        .unwrap();
+
+    let (mut socket, _) = connect_async(format!("{ws_url}/api/bridge/ws"))
+        .await
+        .unwrap();
+    send_hello(&mut socket, "ack-machine").await;
+    let _ = read_json_frame(&mut socket).await;
+
+    // Resolve so the row is `resolved` + `delivered_at IS NULL`.
+    let client = reqwest::Client::new();
+    client
+        .post(format!("{http_url}/api/decisions/{decision_id}/resolve"))
+        .json(&json!({"picked_key": "A"}))
+        .send()
+        .await
+        .unwrap();
+    let _ = read_until(
+        &mut socket,
+        |f| f["type"] == "agent.restart",
+        "agent.restart pre-ack",
+    )
+    .await;
+    let pre = store.get_decision(&decision_id).unwrap().unwrap();
+    assert!(pre.delivered_at.is_none());
+
+    // Bridge sends `agent.decision_delivered` upstream → row gets marked.
+    // The ack carries the `decision_id` from the original frame so the
+    // platform marks exactly that row (not "all undelivered for agent",
+    // which races with rapid re-resolves).
+    let ack = json!({
+        "v": 1,
+        "type": "agent.decision_delivered",
+        "data": {"agent_id": agent_id, "decision_id": decision_id},
+    });
+    socket
+        .send(Message::Text(ack.to_string().into()))
+        .await
+        .unwrap();
+
+    // Wait for the platform to process (the inbound handler is async).
+    for _ in 0..20 {
+        let row = store.get_decision(&decision_id).unwrap().unwrap();
+        if row.delivered_at.is_some() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("delivered_at was never set after agent.decision_delivered");
 }

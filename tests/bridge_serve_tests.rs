@@ -4,7 +4,7 @@ use std::sync::Arc;
 use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::ReceivedMessage;
+// removed: ReceivedMessage no longer needed after AgentLifecycle trait shrink
 use chorus::store::Store;
 use harness::join_channel_silent;
 
@@ -28,8 +28,8 @@ fn seed_agent_with_id(
         .id;
     let conn = store.conn_for_test();
     conn.execute(
-        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
-         VALUES (?1, ?2, ?1, ?3, ?4, ?5)",
+        "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, machine_id)
+         VALUES (?1, ?2, ?1, ?3, ?4, ?5, 'test-machine')",
         rusqlite::params![id, workspace_id, display_name, runtime, model],
     )
     .unwrap();
@@ -72,29 +72,6 @@ async fn start_bridge_with_server(
 struct NoopLifecycle;
 
 impl AgentLifecycle for NoopLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        _agent: &'a chorus::store::agents::Agent,
-        _wake_message: Option<ReceivedMessage>,
-        _init_directive: Option<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
     fn get_activity_log_data(
         &self,
         _agent_name: &str,

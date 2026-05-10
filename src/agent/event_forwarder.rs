@@ -116,9 +116,9 @@ fn flush_text(
 /// `site` is a short tag ("attach" / "completed") distinguishing the caller.
 ///
 /// `agent_id` and `runtime` are passed by the caller rather than re-read
-/// from the store: on the bridge the `agents` table is empty (#145), so
-/// a name-based lookup would always fail. The forwarder captures both
-/// at spawn time from the agent record that drove `start_agent_inner`.
+/// from the store: on the bridge the `agents` table is empty, so a
+/// name-based lookup would always fail. The forwarder captures both at
+/// spawn time from the agent record that drove `start_agent_inner`.
 fn persist_session(store: &Store, agent_id: &str, runtime: &str, session_id: &str, site: &str) {
     if let Err(err) = store.record_session(agent_id, session_id, runtime) {
         warn!(
@@ -137,7 +137,7 @@ fn persist_session(store: &Store, agent_id: &str, runtime: &str, session_id: &st
 ///
 /// `agent_id` and `runtime` are captured here so `persist_session` can
 /// write `agent_sessions` rows directly without re-reading the store
-/// (which is empty on the bridge, #145).
+/// (which is empty on the bridge).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn spawn_event_forwarder(
     mut event_rx: tokio::sync::mpsc::Receiver<DriverEvent>,
@@ -151,16 +151,16 @@ pub(super) fn spawn_event_forwarder(
     agents: Arc<Mutex<HashMap<String, ManagedAgent>>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        // Pending buffers are keyed by `session_id` because Stage 2 drivers can
-        // multiplex multiple concurrent sessions onto one forwarder (Phase 0.9
-        // Stage 2). Before this change the buffers were per-forwarder scalars,
-        // which cross-contaminated: session A's Thinking text could flush when
-        // session B emitted a Text event, or a ToolResult from B could be
-        // attributed to A's most recent ToolCall. Keying by `session_id`
-        // isolates each session's in-flight stream; entries are removed in the
-        // `Completed`/`Failed` branches so the maps don't leak across runs.
+        // Pending buffers are keyed by `session_id` because drivers can
+        // multiplex multiple concurrent sessions onto one forwarder. Per-
+        // forwarder scalars would cross-contaminate: session A's Thinking
+        // text could flush when session B emitted a Text event, or a
+        // ToolResult from B could be attributed to A's most recent
+        // ToolCall. Keying by `session_id` isolates each session's
+        // in-flight stream; entries are removed in the `Completed` /
+        // `Failed` branches so the maps don't leak across runs.
         //
-        // `trace_store` and `activity_logs` remain per-agent for Stage 2: the
+        // `trace_store` and `activity_logs` remain per-agent: the
         // AgentManager still exposes one-handle-per-agent and concurrent
         // multi-session events are uncommon in production. `AgentTraceStore`
         // treats a duplicate `end_run` as a no-op (see `AgentRunState::end_run`)

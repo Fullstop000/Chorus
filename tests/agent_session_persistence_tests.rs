@@ -1,5 +1,5 @@
-//! Phase 4 Task 4.1 regression: stopping or sleeping an agent must NOT clear
-//! the persisted `session_id`. Session lifetime is independent of process
+//! Regression: stopping or sleeping an agent must NOT clear the
+//! persisted `session_id`. Session lifetime is independent of process
 //! lifetime — the next `start_agent` must be able to resume the prior
 //! conversation. Clearing the session only happens via the explicit
 //! `reset_session` / `full_reset` restart modes on the agents handler.
@@ -25,12 +25,12 @@ fn seed_agent_with_session(store: &Store, name: &str, session_id: &str) -> Strin
         .create_agent_record(&AgentRecordUpsert {
             name,
             display_name: "Session Persistence Bot",
-            description: Some("Phase 4 session-persistence regression"),
+            description: Some("session-persistence regression"),
             system_prompt: None,
             runtime: "codex",
             model: "gpt-fake",
             reasoning_effort: None,
-            machine_id: None,
+            machine_id: "test-machine",
             env_vars: &[],
         })
         .unwrap();

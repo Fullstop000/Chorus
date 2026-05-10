@@ -1,6 +1,6 @@
 //! Live runtime integration tests for the shared MCP bridge.
 //!
-//! These tests exercise the full Phase 1+2 stack end-to-end against a **real**
+//! These tests exercise the full stack end-to-end against a **real**
 //! runtime binary (not a mock or in-process MCP client). They prove that:
 //!
 //!   1. A driver, given `AgentSpec.bridge_endpoint = Some(url)`, pairs with
@@ -82,7 +82,7 @@ use chorus::agent::AgentLifecycle;
 use chorus::bridge::serve::build_bridge_router;
 
 use chorus::store::channels::ChannelType;
-use chorus::store::messages::{CreateMessage, ReceivedMessage, SenderType};
+use chorus::store::messages::{CreateMessage, SenderType};
 use chorus::store::{AgentRecordUpsert, Store};
 
 // ---------------------------------------------------------------------------
@@ -95,29 +95,6 @@ use chorus::store::{AgentRecordUpsert, Store};
 struct NoopLifecycle;
 
 impl AgentLifecycle for NoopLifecycle {
-    fn start_agent<'a>(
-        &'a self,
-        _agent: &'a chorus::store::agents::Agent,
-        _wake_message: Option<ReceivedMessage>,
-        _init_directive: Option<String>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn notify_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    fn stop_agent<'a>(
-        &'a self,
-        _agent_name: &'a str,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>> + Send + 'a>> {
-        Box::pin(async { Ok(()) })
-    }
-
     fn get_activity_log_data(
         &self,
         _agent_name: &str,
@@ -474,7 +451,7 @@ async fn opencode_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "opencode",
         model: &model,
         reasoning_effort: None,
-        machine_id: None,
+        machine_id: "test-machine",
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -612,7 +589,7 @@ async fn claude_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "claude",
         model: &model,
         reasoning_effort: None,
-        machine_id: None,
+        machine_id: "test-machine",
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -749,7 +726,7 @@ async fn codex_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "codex",
         model: &model,
         reasoning_effort: None,
-        machine_id: None,
+        machine_id: "test-machine",
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -887,7 +864,7 @@ async fn gemini_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "gemini",
         model: &model,
         reasoning_effort: None,
-        machine_id: None,
+        machine_id: "test-machine",
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");
@@ -1011,7 +988,7 @@ async fn kimi_agent_replies_through_shared_bridge() -> anyhow::Result<()> {
         runtime: "kimi",
         model: &model,
         reasoning_effort: None,
-        machine_id: None,
+        machine_id: "test-machine",
         env_vars: &[],
     })?;
     join_channel_silent(&store, "general", &agent_id, "agent");

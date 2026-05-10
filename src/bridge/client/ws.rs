@@ -22,8 +22,9 @@ use tokio_util::sync::CancellationToken;
 use crate::agent::drivers::ProcessState;
 use crate::agent::manager::AgentManager;
 use crate::bridge::protocol::{
-    WireFrame, FRAME_AGENT_STATE, FRAME_BRIDGE_HELLO, FRAME_BRIDGE_TARGET, FRAME_CHAT_ACK,
-    FRAME_CHAT_MESSAGE_RECEIVED,
+    AgentRestart, AgentStart, AgentStop, WireFrame, FRAME_AGENT_DECISION_DELIVERED,
+    FRAME_AGENT_STATE, FRAME_BRIDGE_HELLO, FRAME_AGENT_RESTART, FRAME_AGENT_START,
+    FRAME_AGENT_STOP, FRAME_BRIDGE_TARGET, FRAME_CHAT_ACK, FRAME_CHAT_MESSAGE_RECEIVED,
 };
 
 use super::reconcile;
@@ -66,7 +67,13 @@ impl InstanceCounter {
     }
 }
 
-const SUPPORTED_FRAMES: &[&str] = &[FRAME_BRIDGE_TARGET, FRAME_CHAT_MESSAGE_RECEIVED];
+const SUPPORTED_FRAMES: &[&str] = &[
+    FRAME_BRIDGE_TARGET,
+    FRAME_AGENT_START,
+    FRAME_AGENT_STOP,
+    FRAME_AGENT_RESTART,
+    FRAME_CHAT_MESSAGE_RECEIVED,
+];
 const BRIDGE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Initial reconnect delay after a WS session ends. Doubles up to
@@ -104,7 +111,7 @@ type PendingChats = Arc<Mutex<HashMap<String, VecDeque<ChatMessageReceived>>>>;
 /// by `agent_id`. The authoritative spec/identity view on the bridge side:
 /// `start_agent` reads the spec from here, not SQLite. Renames update the
 /// cached `name` field in place; the id key is stable. The bridge's
-/// `agents` table is empty — see #145 for the design.
+/// `agents` table is empty by design — agent rows live only on the platform.
 #[derive(Default)]
 pub(super) struct TargetCache {
     by_agent_id: HashMap<String, AgentTargetIn>,
@@ -184,6 +191,25 @@ async fn send_chat_ack(
             "last_seq": last_seq,
             "ts": chrono::Utc::now().to_rfc3339(),
         }),
+    )
+    .await;
+}
+
+/// Send `agent.decision_delivered` upstream after an `agent.start` /
+/// `agent.restart` frame's directive was passed into a fresh runtime
+/// instance. The platform marks exactly the named directive as delivered;
+/// echoing `directive_id` (not just `agent_id`) avoids the race where a
+/// rapid re-emit of a different directive would be falsely marked
+/// delivered by an earlier ack.
+async fn send_decision_delivered(
+    state_tx: &tokio::sync::mpsc::Sender<String>,
+    platform_id: &str,
+    directive_id: &str,
+) {
+    queue_frame(
+        state_tx,
+        FRAME_AGENT_DECISION_DELIVERED,
+        json!({ "agent_id": platform_id, "directive_id": directive_id }),
     )
     .await;
 }
@@ -394,6 +420,45 @@ async fn run_one_session(
                                     handle_chat(&ctx, payload).await;
                                 }));
                             }
+                            FRAME_AGENT_START => {
+                                let payload: AgentStart = match serde_json::from_value(frame.data) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::warn!(err = %e, "bridge: bad agent.start");
+                                        continue;
+                                    }
+                                };
+                                let ctx = ctx.clone();
+                                handler_tasks.push(tokio::spawn(async move {
+                                    handle_agent_start_frame(&ctx, payload).await;
+                                }));
+                            }
+                            FRAME_AGENT_STOP => {
+                                let payload: AgentStop = match serde_json::from_value(frame.data) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::warn!(err = %e, "bridge: bad agent.stop");
+                                        continue;
+                                    }
+                                };
+                                let ctx = ctx.clone();
+                                handler_tasks.push(tokio::spawn(async move {
+                                    handle_agent_stop_frame(&ctx, payload).await;
+                                }));
+                            }
+                            FRAME_AGENT_RESTART => {
+                                let payload: AgentRestart = match serde_json::from_value(frame.data) {
+                                    Ok(p) => p,
+                                    Err(e) => {
+                                        tracing::warn!(err = %e, "bridge: bad agent.restart");
+                                        continue;
+                                    }
+                                };
+                                let ctx = ctx.clone();
+                                handler_tasks.push(tokio::spawn(async move {
+                                    handle_agent_restart_frame(&ctx, payload).await;
+                                }));
+                            }
                             other => {
                                 tracing::debug!(kind = %other, "bridge: ignoring unknown frame");
                             }
@@ -448,14 +513,20 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
     let target_agents = target.target_agents;
     let known_platform_ids: Vec<String> =
         target_agents.iter().map(|a| a.agent_id.clone()).collect();
-    let outcome =
-        match reconcile::apply(&ctx.store, &ctx.manager, &ctx.targets, target_agents).await {
-            Ok(o) => o,
-            Err(e) => {
-                tracing::error!(err = %e, "bridge: reconcile failed");
-                return;
-            }
-        };
+    let outcome = match reconcile::apply(
+        &ctx.store,
+        &ctx.manager,
+        &ctx.targets,
+        target_agents,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            tracing::error!(err = %e, "bridge: reconcile failed");
+            return;
+        }
+    };
 
     // Replay any chats that arrived before this reconcile populated the
     // targets cache. We only drain entries for platform_ids that are now
@@ -479,14 +550,105 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
         });
     }
 
-    for transition in outcome.started {
-        let pid = ctx.counter.allocate(&transition.agent_id).await;
-        send_agent_state(&ctx.state_tx, &transition.agent_id, "started", pid).await;
-    }
+    // Reconcile only stops orphans (agents removed from the desired set).
+    // Agent starts come via discrete `agent.start` / `agent.restart`
+    // frames or chat-driven wakes — never from a target snapshot.
     for transition in outcome.stopped {
         let pid = ctx.counter.current(&transition.agent_id).await;
         ctx.counter.forget(&transition.agent_id).await;
         send_agent_state(&ctx.state_tx, &transition.agent_id, "stopped", pid).await;
+    }
+}
+
+/// Resolve the agent spec from the target cache, returning a runnable
+/// `Agent` shape. `None` means the bridge has no record of this agent_id
+/// — the caller should warn and skip; the next `bridge.target` will
+/// either include it (then a follow-up RPC re-applies) or confirm the
+/// platform never knew about it.
+async fn lookup_target(ctx: &SessionCtx, agent_id: &str) -> Option<crate::store::agents::Agent> {
+    let cache = ctx.targets.lock().await;
+    cache.get(agent_id).map(reconcile::target_to_agent)
+}
+
+async fn handle_agent_start_frame(ctx: &SessionCtx, payload: AgentStart) {
+    let agent_id = payload.agent_id.as_str();
+    let Some(agent) = lookup_target(ctx, agent_id).await else {
+        tracing::warn!(
+            agent_id = %agent_id,
+            "agent.start: no spec in target cache; skipping"
+        );
+        return;
+    };
+    // Idempotent: if the runtime is already up, do nothing.
+    if matches!(
+        ctx.manager.process_state(agent_id).await,
+        Some(ProcessState::Active { .. }) | Some(ProcessState::PromptInFlight { .. })
+    ) {
+        tracing::debug!(agent_id = %agent_id, "agent.start: agent already running; no-op");
+        return;
+    }
+    let directive = payload.decision_resume.clone();
+    if let Err(e) = ctx
+        .manager
+        .start_agent(&agent, None, directive.as_ref().map(|d| d.prompt.clone()))
+        .await
+    {
+        tracing::warn!(agent_id = %agent_id, err = %e, "agent.start: start_agent failed");
+        return;
+    }
+    let pid = ctx.counter.allocate(agent_id).await;
+    send_agent_state(&ctx.state_tx, agent_id, "started", pid).await;
+    if let Some(d) = directive {
+        send_decision_delivered(&ctx.state_tx, agent_id, &d.decision_id).await;
+    }
+}
+
+async fn handle_agent_stop_frame(ctx: &SessionCtx, payload: AgentStop) {
+    let agent_id = payload.agent_id.as_str();
+    if let Err(e) = ctx.manager.stop_agent(agent_id).await {
+        tracing::warn!(agent_id = %agent_id, err = %e, "agent.stop: stop_agent failed");
+        return;
+    }
+    let pid = ctx.counter.current(agent_id).await;
+    ctx.counter.forget(agent_id).await;
+    send_agent_state(&ctx.state_tx, agent_id, "stopped", pid).await;
+}
+
+async fn handle_agent_restart_frame(ctx: &SessionCtx, payload: AgentRestart) {
+    let agent_id = payload.agent_id.as_str();
+    let Some(agent) = lookup_target(ctx, agent_id).await else {
+        tracing::warn!(
+            agent_id = %agent_id,
+            "agent.restart: no spec in target cache; skipping"
+        );
+        return;
+    };
+    // Stop first so the directive lands on the new instance, not the old one.
+    if matches!(
+        ctx.manager.process_state(agent_id).await,
+        Some(ProcessState::Active { .. }) | Some(ProcessState::PromptInFlight { .. })
+    ) {
+        if let Err(e) = ctx.manager.stop_agent(agent_id).await {
+            tracing::warn!(agent_id = %agent_id, err = %e, "agent.restart: stop_agent failed");
+            return;
+        }
+        let prev_pid = ctx.counter.current(agent_id).await;
+        ctx.counter.forget(agent_id).await;
+        send_agent_state(&ctx.state_tx, agent_id, "stopped", prev_pid).await;
+    }
+    let directive = payload.decision_resume.clone();
+    if let Err(e) = ctx
+        .manager
+        .start_agent(&agent, None, directive.as_ref().map(|d| d.prompt.clone()))
+        .await
+    {
+        tracing::warn!(agent_id = %agent_id, err = %e, "agent.restart: start_agent failed");
+        return;
+    }
+    let pid = ctx.counter.allocate(agent_id).await;
+    send_agent_state(&ctx.state_tx, agent_id, "started", pid).await;
+    if let Some(d) = directive {
+        send_decision_delivered(&ctx.state_tx, agent_id, &d.decision_id).await;
     }
 }
 
@@ -532,8 +694,19 @@ async fn handle_chat(ctx: &SessionCtx, payload: ChatMessageReceived) {
         _ => {
             // Wake the agent. The cached target was captured above so the
             // manager doesn't need to re-read the store.
+            //
+            // Pull the unread message that triggered this wake so the
+            // agent's first prompt has the message context. Without this,
+            // the agent boots, runs `check_messages` as a tool call, then
+            // replies — costing an extra LLM round-trip on every cold
+            // start. With it, the message is the init prompt directly.
+            let wake_message = ctx
+                .store
+                .get_messages_for_agent_id(agent_id, false)
+                .ok()
+                .and_then(|msgs| msgs.into_iter().next());
             let agent = super::reconcile::target_to_agent(&target_clone);
-            let r = ctx.manager.start_agent(&agent, None, None).await;
+            let r = ctx.manager.start_agent(&agent, wake_message, None).await;
             if r.is_ok() {
                 let pid = ctx.counter.allocate(agent_id).await;
                 send_agent_state(&ctx.state_tx, agent_id, "started", pid).await;

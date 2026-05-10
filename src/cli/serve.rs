@@ -71,9 +71,9 @@ pub async fn run(
     let bridge_local_addr = bridge_listener.local_addr().map_err(|e| {
         anyhow::anyhow!("shared bridge: failed to read local address for {bridge_listen}: {e}")
     })?;
-    // Phase 1 bridge only supports loopback — guard in case the resolved
-    // address is somehow non-loopback (shouldn't happen with 127.0.0.1, but
-    // be defensive).
+    // The bridge only supports loopback — guard in case the resolved
+    // address is somehow non-loopback (shouldn't happen with 127.0.0.1,
+    // but be defensive).
     if !bridge_local_addr.ip().is_loopback() {
         anyhow::bail!(
             "shared bridge: refusing non-loopback bind {bridge_local_addr}; bridge will not start"
@@ -151,9 +151,8 @@ pub async fn run(
     });
 
     // No boot autorestart: agents lazy-start on first incoming message
-    // (see deliver_message_to_agents). The active agent_sessions row
-    // (added in Phase 5) will ensure resume continuity when the next
-    // start happens.
+    // (see deliver_message_to_agents). The active `agent_sessions` row
+    // ensures resume continuity when the next start happens.
 
     // Load agent templates from the configured directory.
     let template_path = chorus::agent::templates::expand_tilde(&template_dir_raw);
@@ -183,6 +182,34 @@ pub async fn run(
         db_path.to_str().unwrap().to_string(),
         event_bus.subscribe_traces(),
     );
+
+    // In-process bridge client: every agent owned by `chorus serve`
+    // flows through the same bridge protocol a remote `chorus bridge`
+    // uses. The client dials our own `/api/bridge/ws` over loopback and
+    // shares the AgentManager and MCP bridge endpoint we already
+    // constructed above — there is no second runtime owner. Spawned
+    // before the listener accepts external traffic so the first agent
+    // CRUD broadcasts to a live receiver. The dial loop's own backoff
+    // covers the brief gap between this spawn and `axum::serve`
+    // accepting on the listener.
+    let in_proc_machine_id = chorus::server::resolve_local_machine_id_for_serve(&data_dir);
+    let in_proc_ws_url = format!("ws://127.0.0.1:{port}/api/bridge/ws");
+    let in_proc_shutdown = shutdown_token.clone();
+    let in_proc_manager = manager.clone();
+    let in_proc_store = store.clone();
+    tokio::spawn(async move {
+        if let Err(err) = chorus::bridge::client::run_in_process_bridge_client(
+            in_proc_ws_url,
+            in_proc_machine_id,
+            in_proc_manager,
+            in_proc_store,
+            in_proc_shutdown,
+        )
+        .await
+        {
+            tracing::error!(err = %err, "in-process bridge client exited with error");
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port}")).await?;
     tracing::info!("Chorus running at {server_url}");

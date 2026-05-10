@@ -48,6 +48,11 @@ pub struct DecisionRow {
     pub picked_key: Option<String>,
     pub picked_note: Option<String>,
     pub resolved_at: Option<String>,
+    /// Null until the agent acks consumption of the resume envelope built
+    /// from this decision (`agent.directive_consumed` over the bridge
+    /// protocol). Reconnect-replay re-emits the envelope as
+    /// `agent.start.init_directive` while this is null.
+    pub delivered_at: Option<String>,
 }
 
 impl Store {
@@ -82,7 +87,7 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT id, workspace_id, channel_id, agent_id, session_id,
-                    created_at, status, payload_json, picked_key, picked_note, resolved_at
+                    created_at, status, payload_json, picked_key, picked_note, resolved_at, delivered_at
              FROM decisions WHERE id = ?1",
         )?;
         let row = stmt.query_row(params![id], row_to_decision).optional()?;
@@ -100,7 +105,7 @@ impl Store {
         let rows: Vec<DecisionRow> = if let Some(s) = status {
             let mut stmt = conn.prepare(
                 "SELECT id, workspace_id, channel_id, agent_id, session_id,
-                        created_at, status, payload_json, picked_key, picked_note, resolved_at
+                        created_at, status, payload_json, picked_key, picked_note, resolved_at, delivered_at
                  FROM decisions WHERE workspace_id = ?1 AND status = ?2
                  ORDER BY created_at DESC",
             )?;
@@ -111,7 +116,7 @@ impl Store {
         } else {
             let mut stmt = conn.prepare(
                 "SELECT id, workspace_id, channel_id, agent_id, session_id,
-                        created_at, status, payload_json, picked_key, picked_note, resolved_at
+                        created_at, status, payload_json, picked_key, picked_note, resolved_at, delivered_at
                  FROM decisions WHERE workspace_id = ?1
                  ORDER BY created_at DESC",
             )?;
@@ -155,11 +160,54 @@ impl Store {
              SET status = 'open',
                  picked_key = NULL,
                  picked_note = NULL,
-                 resolved_at = NULL
+                 resolved_at = NULL,
+                 delivered_at = NULL
              WHERE id = ?1 AND status = 'resolved'",
             params![id],
         )?;
         Ok(())
+    }
+
+    /// The most recent `resolved`-but-not-yet-`delivered_at` decision for
+    /// an agent. Used by reconnect-replay on `bridge.hello`: if the bridge
+    /// was offline when the user resolved a decision, the platform
+    /// rebuilds the envelope from this row and re-emits it as
+    /// `agent.start.init_directive`. Returns `None` once every resolved
+    /// decision for the agent has been delivered.
+    pub fn latest_undelivered_resolved_for_agent(
+        &self,
+        agent_id: &str,
+    ) -> Result<Option<DecisionRow>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, workspace_id, channel_id, agent_id, session_id,
+                    created_at, status, payload_json, picked_key, picked_note, resolved_at, delivered_at
+             FROM decisions
+             WHERE agent_id = ?1 AND status = 'resolved' AND delivered_at IS NULL
+             ORDER BY resolved_at DESC
+             LIMIT 1",
+        )?;
+        let row = stmt
+            .query_row(params![agent_id], row_to_decision)
+            .optional()?;
+        Ok(row)
+    }
+
+    /// Mark exactly one decision as delivered, by its row id. Called
+    /// when the bridge sends `agent.directive_consumed` echoing the
+    /// `directive_id` it received on the matching `agent.start` /
+    /// `agent.restart`. Idempotent — re-acking an already-delivered row
+    /// touches 0 rows, no error. Returns the number of rows touched
+    /// (0 or 1).
+    pub fn mark_decision_delivered(&self, decision_id: &str) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn.execute(
+            "UPDATE decisions
+             SET delivered_at = datetime('now')
+             WHERE id = ?1 AND status = 'resolved' AND delivered_at IS NULL",
+            params![decision_id],
+        )?;
+        Ok(n)
     }
 }
 
@@ -184,6 +232,7 @@ fn row_to_decision(row: &rusqlite::Row) -> rusqlite::Result<DecisionRow> {
         picked_key: row.get(8)?,
         picked_note: row.get(9)?,
         resolved_at: row.get(10)?,
+        delivered_at: row.get(11)?,
     })
 }
 
@@ -211,8 +260,8 @@ mod tests {
         .unwrap();
         let agent_id = "agent-1".to_string();
         conn.execute(
-            "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model)
-             VALUES (?1, ?2, 'bot', 'Bot', 'claude', 'sonnet')",
+            "INSERT INTO agents (id, workspace_id, name, display_name, runtime, model, machine_id)
+             VALUES (?1, ?2, 'bot', 'Bot', 'claude', 'sonnet', 'test-machine')",
             params![agent_id, workspace_id],
         )
         .unwrap();
