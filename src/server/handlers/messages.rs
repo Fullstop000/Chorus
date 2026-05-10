@@ -853,7 +853,7 @@ pub(crate) async fn deliver_message_to_agents(
             | crate::agent::process_status::Status::Failed => {
                 let wake_message = state
                     .store
-                    .get_received_message_for_agent_name(&recipient_name, message_id)?;
+                    .get_received_message_for_agent_id(&agent.id, message_id)?;
                 state
                     .lifecycle
                     .start_agent(&agent, wake_message, None)

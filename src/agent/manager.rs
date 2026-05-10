@@ -287,7 +287,7 @@ impl AgentManager {
         let handle = attach_result.session;
         let events = attach_result.events;
         let event_rx = events.subscribe(); // subscribe BEFORE run
-        let unread_summary = self.store.get_unread_summary(agent_name)?;
+        let unread_summary = self.store.get_unread_summary(agent_id)?;
         let has_wake_message = wake_message.is_some();
         let init_prompt_text = build_start_prompt(
             &agent.display_name,

@@ -486,7 +486,7 @@ pub async fn handle_update_agent(
     let existing = resolve_public_agent(&state, &id)?;
     let name = existing.name.clone();
     let agent_id = existing.id.clone();
-    let _transition = acquire_transition(&state, &name)?;
+    let _transition = acquire_transition(&state, &agent_id)?;
 
     let env_vars = normalize_agent_env_vars(&req.env_vars)?;
     let display_name = if req.display_name.trim().is_empty() {
@@ -565,7 +565,7 @@ pub async fn handle_restart_agent(
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name.clone();
-    let _transition = acquire_transition(&state, &name)?;
+    let _transition = acquire_transition(&state, &agent.id)?;
     let agents_dir = state.agents_dir.clone();
     let workspace = AgentWorkspace::new(&agents_dir);
 
@@ -628,7 +628,7 @@ pub async fn handle_delete_agent(
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name.clone();
-    let _transition = acquire_transition(&state, &name)?;
+    let _transition = acquire_transition(&state, &agent.id)?;
 
     // Skip local stop for bridge-hosted agents: the bridge stops them when
     // the next `bridge.target` (broadcast below after the row delete) drops
@@ -674,7 +674,7 @@ pub async fn handle_agent_start(
     // record we pass in, so the lookup happens here rather than inside
     // the manager.
     let agent = resolve_public_agent_with_env(&state, &id)?;
-    let _transition = acquire_transition(&state, &agent.name)?;
+    let _transition = acquire_transition(&state, &agent.id)?;
     if agent.machine_id.is_some() {
         // Bridge-hosted: the bridge already keeps the runtime alive per
         // target. Re-broadcast so any reconnected bridge picks it up.
@@ -698,7 +698,7 @@ pub async fn handle_agent_stop(
 ) -> ApiResult<serde_json::Value> {
     let agent = resolve_public_agent(&state, &id)?;
     let name = agent.name.clone();
-    let _transition = acquire_transition(&state, &name)?;
+    let _transition = acquire_transition(&state, &agent.id)?;
     if agent.machine_id.is_some() {
         // Bridge-hosted: platform doesn't own the runtime. There's no
         // explicit "stop a single bridge-hosted agent" frame yet, so this
@@ -730,7 +730,7 @@ pub async fn handle_agent_activity(
     let limit = params.limit.unwrap_or(50).min(200);
     let messages = state
         .store
-        .get_agent_activity(&agent.name, limit)
+        .get_agent_activity(&agent.id, limit)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(serde_json::json!({ "messages": messages })))
 }
