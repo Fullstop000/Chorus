@@ -13,8 +13,16 @@ function:
   WS protocol-level ping/pong is the heartbeat. No SSE, no separate
   POSTs for bridge state.
 
-**Status:** Design — not yet implemented. Reviewers: please push back
-on the frame catalog and the four Open Decisions at the bottom.
+**Status:** Implemented via [#149](https://github.com/Fullstop000/Chorus/issues/149)
+(PRs [#150](https://github.com/Fullstop000/Chorus/pull/150) /
+[#152](https://github.com/Fullstop000/Chorus/pull/152) /
+[#153](https://github.com/Fullstop000/Chorus/pull/153)). The wire shape
+described below matches what shipped, with two additions made during
+implementation: `AgentTarget.paused` (soft-stop), and
+`AgentTarget.restart_seq` (monotonic counter the bridge uses to
+re-launch the runtime on spec change / manual restart / decision
+resume). `AgentTarget.init_directive` is sourced from the persisted
+`agents.pending_init_directive` column, set by the decision handler.
 
 ---
 
