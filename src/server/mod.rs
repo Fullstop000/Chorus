@@ -372,6 +372,13 @@ fn resolve_local_human_identity(store: &Store, data_dir: &std::path::Path) -> (S
     }
 }
 
+/// Public re-export of `resolve_local_machine_id` so `cli/serve.rs` can
+/// read the same id (from disk) it embeds into `AppState`. The function
+/// is idempotent — both calls land on the same UUID.
+pub fn resolve_local_machine_id_for_serve(data_dir: &std::path::Path) -> String {
+    resolve_local_machine_id(data_dir)
+}
+
 /// Resolve the local installation's `machine_id`, generating and persisting
 /// one to `config.toml` on first call. Every agent created on this server
 /// inherits this id when the request omits `machine_id`, so the bridge

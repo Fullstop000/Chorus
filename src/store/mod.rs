@@ -109,6 +109,40 @@ impl Store {
                 if msg.contains("duplicate column name") => {}
             Err(e) => return Err(e.into()),
         }
+        // Same idempotent ALTER for the `paused` flag introduced when the
+        // platform stopped owning runtime state. NOT NULL DEFAULT 0 so
+        // existing rows backfill to "running" automatically.
+        match conn.execute(
+            "ALTER TABLE agents ADD COLUMN paused INTEGER NOT NULL DEFAULT 0",
+            [],
+        ) {
+            Ok(_) => {}
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg)))
+                if msg.contains("duplicate column name") => {}
+            Err(e) => return Err(e.into()),
+        }
+        // Migrate agent_env_vars from agent_name FK to agent_id FK.
+        // SQLite has no ALTER TABLE DROP COLUMN, so we recreate the table.
+        if Self::schema_column_exists(conn, "agent_env_vars", "agent_name")? {
+            conn.execute_batch(
+                "BEGIN;
+                 CREATE TABLE agent_env_vars_new (
+                     agent_id TEXT NOT NULL,
+                     key TEXT NOT NULL,
+                     value TEXT NOT NULL,
+                     position INTEGER NOT NULL,
+                     PRIMARY KEY (agent_id, key),
+                     FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE
+                 );
+                 INSERT INTO agent_env_vars_new (agent_id, key, value, position)
+                     SELECT a.id, e.key, e.value, e.position
+                     FROM agent_env_vars e
+                     JOIN agents a ON a.name = e.agent_name;
+                 DROP TABLE agent_env_vars;
+                 ALTER TABLE agent_env_vars_new RENAME TO agent_env_vars;
+                 COMMIT;",
+            )?;
+        }
         Ok(())
     }
 

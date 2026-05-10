@@ -34,6 +34,13 @@ pub struct Agent {
     /// in `chorus serve`'s own `AgentManager` and is never sent to any
     /// bridge. Every agent has exactly one owner.
     pub machine_id: Option<String>,
+    /// Soft stop. When `true`, the bridge client treats this agent as
+    /// "in the desired set but should not be running". Set by the
+    /// stop handler; cleared by the start handler. Survives platform
+    /// restarts so a stopped agent doesn't auto-revive on the next
+    /// reconcile.
+    #[serde(default)]
+    pub paused: bool,
     /// Injected environment variables (ordered by `position`).
     pub env_vars: Vec<AgentEnvVar>,
     /// Row creation time.
@@ -191,6 +198,20 @@ impl Store {
         Ok(())
     }
 
+    /// Toggle the `paused` flag for one agent (keyed by id). Called by
+    /// the start/stop handlers so the bridge client's reconcile can
+    /// honor the soft-stop without removing the row from the desired
+    /// set. Returns the number of rows touched (0 if the id isn't
+    /// known, 1 on success).
+    pub fn set_agent_paused(&self, agent_id: &str, paused: bool) -> Result<usize> {
+        let conn = self.conn.lock().unwrap();
+        let updated = conn.execute(
+            "UPDATE agents SET paused = ?1 WHERE id = ?2",
+            params![paused as i64, agent_id],
+        )?;
+        Ok(updated)
+    }
+
     /// Set every NULL `machine_id` to `local_machine_id`. Called once at
     /// startup so rows that pre-date the always-set-machine_id invariant
     /// get owned by the local installation. Idempotent: rows already
@@ -246,7 +267,7 @@ impl Store {
                 None => return Ok(Vec::new()),
             },
         };
-        let sql = "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, created_at
+        let sql = "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, created_at
                    FROM agents WHERE workspace_id = ?1 ORDER BY name";
         let rows = conn
             .prepare(sql)?
@@ -259,7 +280,7 @@ impl Store {
     pub fn get_agent(&self, name: &str) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, created_at FROM agents WHERE name = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, created_at FROM agents WHERE name = ?1",
         )?;
         let mut rows = stmt.query_map(params![name], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -272,7 +293,7 @@ impl Store {
     pub fn get_agent_by_id(&self, id: &str, hydrate_env: bool) -> Result<Option<Agent>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, created_at FROM agents WHERE id = ?1",
+            "SELECT id, workspace_id, name, display_name, description, system_prompt, runtime, model, reasoning_effort, machine_id, paused, created_at FROM agents WHERE id = ?1",
         )?;
         let mut rows = stmt.query_map(params![id], Self::agent_from_row)?;
         let mut agent = rows.next().transpose()?;
@@ -340,7 +361,8 @@ impl Store {
     }
 
     fn agent_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Agent> {
-        let created_at = row.get::<_, String>(10)?;
+        let created_at = row.get::<_, String>(11)?;
+        let paused: i64 = row.get(10)?;
         Ok(Agent {
             id: row.get(0)?,
             workspace_id: row.get(1)?,
@@ -352,6 +374,7 @@ impl Store {
             model: row.get(7)?,
             reasoning_effort: row.get(8)?,
             machine_id: row.get(9)?,
+            paused: paused != 0,
             env_vars: Vec::new(),
             created_at: parse_datetime(&created_at),
         })
