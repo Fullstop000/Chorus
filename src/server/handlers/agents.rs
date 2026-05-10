@@ -591,12 +591,14 @@ pub async fn handle_restart_agent(
                 .store
                 .clear_active_session(&agent.id)
                 .map_err(internal_err)?;
-            workspace.delete_if_exists(&name).map_err(|e| {
-                app_err!(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "failed to delete workspace: {e}"
-                )
-            })?;
+            workspace
+                .delete_if_exists(&agent.workspace_id, &name, &agent.id)
+                .map_err(|e| {
+                    app_err!(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "failed to delete workspace: {e}"
+                    )
+                })?;
         }
     }
 
@@ -655,7 +657,7 @@ pub async fn handle_delete_agent(
     if matches!(req.mode, DeleteMode::DeleteWorkspace) {
         let agents_dir = state.agents_dir.clone();
         let workspace = AgentWorkspace::new(&agents_dir);
-        if let Err(e) = workspace.delete_if_exists(&name) {
+        if let Err(e) = workspace.delete_if_exists(&agent.workspace_id, &name, &agent.id) {
             return Ok(Json(serde_json::json!({
                 "ok": true,
                 "warning": format!("agent deleted but workspace cleanup failed: {e}"),

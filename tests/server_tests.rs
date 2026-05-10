@@ -5,6 +5,7 @@ use axum::http::{Request, StatusCode};
 use chorus::agent::activity_log::ActivityLogResponse;
 use chorus::agent::drivers::ProbeAuth;
 use chorus::agent::runtime_status::{RuntimeCatalogEntry, RuntimeStatusProvider};
+use chorus::agent::workspace::{AgentWorkspace, TeamWorkspace};
 use chorus::agent::AgentLifecycle;
 use chorus::agent::AgentRuntime;
 use chorus::server::dto::ChannelInfo;
@@ -1811,7 +1812,13 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
     store
         .record_session(&bot1.id, "thread-123", &bot1.runtime)
         .unwrap();
-    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    let workspace_id = store.get_active_workspace().unwrap().unwrap().id;
+    let workspace_dir = dir
+        .path()
+        .join("agents")
+        .join(&workspace_id)
+        .join(format!("{}-{}", bot1.name, bot1.id))
+        .join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
 
@@ -1841,7 +1848,13 @@ async fn test_restart_agent_reset_session_preserves_workspace() {
 async fn test_delete_agent_marks_history_and_preserves_workspace() {
     let (store, _app, dir) = setup_with_data_dir();
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
-    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    let workspace_id = store.get_active_workspace().unwrap().unwrap().id;
+    let workspace_dir = dir
+        .path()
+        .join("agents")
+        .join(&workspace_id)
+        .join(format!("{}-{}", bot1.name, bot1.id))
+        .join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "hello").unwrap();
     store
@@ -2201,7 +2214,13 @@ async fn test_upload_uses_configured_data_dir() {
 async fn test_workspace_lists_files_from_configured_data_dir() {
     let (store, app, dir) = setup_with_data_dir();
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
-    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    let workspace_id = store.get_active_workspace().unwrap().unwrap().id;
+    let workspace_dir = dir
+        .path()
+        .join("agents")
+        .join(&workspace_id)
+        .join(format!("{}-{}", bot1.name, bot1.id))
+        .join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "# test\n").unwrap();
 
@@ -2225,7 +2244,8 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
         Some(
             dir.path()
                 .join("agents")
-                .join("bot1")
+                .join(&workspace_id)
+                .join(format!("{}-{}", bot1.name, bot1.id))
                 .to_string_lossy()
                 .as_ref()
         )
@@ -2239,7 +2259,13 @@ async fn test_workspace_lists_files_from_configured_data_dir() {
 async fn test_workspace_file_returns_content_from_configured_data_dir() {
     let (store, app, dir) = setup_with_data_dir();
     let bot1 = store.get_agent("bot1").unwrap().unwrap();
-    let workspace_dir = dir.path().join("agents").join("bot1").join("notes");
+    let workspace_id = store.get_active_workspace().unwrap().unwrap().id;
+    let workspace_dir = dir
+        .path()
+        .join("agents")
+        .join(&workspace_id)
+        .join(format!("{}-{}", bot1.name, bot1.id))
+        .join("notes");
     std::fs::create_dir_all(&workspace_dir).unwrap();
     std::fs::write(workspace_dir.join("plan.md"), "# plan\nship it\n").unwrap();
 
@@ -2357,16 +2383,26 @@ async fn test_create_team_endpoint() {
     assert_eq!(lifecycle.stopped_names(), vec!["bot1".to_string()]);
     assert_eq!(lifecycle.started_names(), vec!["bot1".to_string()]);
 
-    let teams_root = dir.path().join("data").join("teams").join("eng-team");
+    let workspace_id = &team.workspace_id;
+    let team_dir_name = format!("{}-{}", team.name, team.id);
+    let agent_dir_name = format!("{}-{}", bot_member.member_name, bot_member.member_id);
+
+    let teams_root = dir
+        .path()
+        .join("data")
+        .join("teams")
+        .join(workspace_id)
+        .join(&team_dir_name);
     assert!(teams_root.join("TEAM.md").exists());
-    assert!(teams_root.join("members").join("bot1").exists());
+    assert!(teams_root.join("members").join(&agent_dir_name).exists());
 
     let role_md = dir
         .path()
         .join("agents")
-        .join("bot1")
+        .join(workspace_id)
+        .join(&agent_dir_name)
         .join("teams")
-        .join("eng-team")
+        .join(&team_dir_name)
         .join("ROLE.md");
     assert!(role_md.exists());
 }
@@ -2643,12 +2679,18 @@ async fn test_add_remove_and_delete_team_endpoints() {
         store.get_teams_by_agent_id("bot1").unwrap()[0].team_name,
         "eng-team"
     );
+
+    let team = store.get_team("eng-team").unwrap().unwrap();
+    let workspace_id = &team.workspace_id;
+    let team_dir_name = format!("{}-{}", team.name, team.id);
+    let agent_dir_name = format!("{}-{}", bot1.name, bot1.id);
     assert!(dir
         .path()
         .join("agents")
-        .join("bot1")
+        .join(workspace_id)
+        .join(&agent_dir_name)
         .join("teams")
-        .join("eng-team")
+        .join(&team_dir_name)
         .join("ROLE.md")
         .exists());
 
@@ -2673,6 +2715,10 @@ async fn test_add_remove_and_delete_team_endpoints() {
         "Query returned no rows"
     );
 
+    let team = store.get_team("eng-team").unwrap().unwrap();
+    let workspace_id = team.workspace_id.clone();
+    let team_dir_name = format!("{}-{}", team.name, team.id);
+
     let delete_resp = app
         .oneshot(
             Request::builder()
@@ -2687,7 +2733,12 @@ async fn test_add_remove_and_delete_team_endpoints() {
     assert!(store.get_team_by_id(&team_id).unwrap().is_none());
     let listed = store.get_channels().unwrap();
     assert!(listed.iter().all(|channel| channel.name != "eng-team"));
-    assert!(!dir.path().join("teams").join("eng-team").exists());
+    assert!(!dir
+        .path()
+        .join("teams")
+        .join(&workspace_id)
+        .join(&team_dir_name)
+        .exists());
     assert_eq!(lifecycle.started_names().len(), 2);
     assert_eq!(lifecycle.stopped_names().len(), 2);
 }
@@ -3948,4 +3999,94 @@ async fn decision_resolve_unknown_picked_key_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_delete_workspace_does_not_remove_same_named_team_in_other_workspace() {
+    let (store, app, _lifecycle, dir) = setup_with_lifecycle_and_data_dir();
+    let human_id = store.get_human_by_name("alice").unwrap().unwrap().id;
+
+    // Create two workspaces
+    let (alpha, _) = store.create_local_workspace("Alpha", &human_id).unwrap();
+    let (beta, _) = store.create_local_workspace("Beta", &human_id).unwrap();
+
+    let bot1 = store.get_agent("bot1").unwrap().unwrap();
+
+    // Create team "ops" in Alpha
+    store.set_active_workspace(&alpha.id).unwrap();
+    let alpha_team_id = store
+        .create_team("ops", "Ops Team", "leader_operators", None)
+        .unwrap();
+    store
+        .create_channel("ops", None, ChannelType::Team, None)
+        .unwrap();
+    store
+        .create_team_member(&alpha_team_id, &bot1.id, "agent", "operator")
+        .unwrap();
+
+    // Create team "ops" in Beta
+    store.set_active_workspace(&beta.id).unwrap();
+    let beta_team_id = store
+        .create_team("ops", "Ops Team", "leader_operators", None)
+        .unwrap();
+    store
+        .create_channel("ops", None, ChannelType::Team, None)
+        .unwrap();
+    store
+        .create_team_member(&beta_team_id, &bot1.id, "agent", "operator")
+        .unwrap();
+
+    // Manually init filesystem directories (normally done via HTTP handler)
+    let agents_dir = dir.path().join("agents");
+    let teams_dir = dir.path().join("data").join("teams");
+    let agent_workspace = AgentWorkspace::new(&agents_dir);
+    let team_workspace = TeamWorkspace::new(teams_dir.clone());
+
+    team_workspace
+        .init_team(&alpha.id, "ops", &alpha_team_id, &[("bot1", &bot1.id)])
+        .unwrap();
+    team_workspace
+        .init_team(&beta.id, "ops", &beta_team_id, &[("bot1", &bot1.id)])
+        .unwrap();
+    agent_workspace
+        .init_team_memory(&alpha.id, "bot1", &bot1.id, "ops", &alpha_team_id, "operator")
+        .unwrap();
+    agent_workspace
+        .init_team_memory(&beta.id, "bot1", &bot1.id, "ops", &beta_team_id, "operator")
+        .unwrap();
+
+    let alpha_team_dir = teams_dir
+        .join(&alpha.id)
+        .join(format!("ops-{}", alpha_team_id));
+    let beta_team_dir = teams_dir
+        .join(&beta.id)
+        .join(format!("ops-{}", beta_team_id));
+
+    assert!(alpha_team_dir.exists(), "alpha team dir should exist");
+    assert!(beta_team_dir.exists(), "beta team dir should exist");
+
+    // Delete Alpha workspace via API
+    let delete_resp = app
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/workspaces/{}", alpha.id))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(delete_resp.status(), StatusCode::OK);
+
+    // Alpha's scoped runtime directories should be gone
+    assert!(
+        !alpha_team_dir.exists(),
+        "alpha team dir should be removed after workspace deletion"
+    );
+
+    // Beta's team directory should still exist
+    assert!(
+        beta_team_dir.exists(),
+        "beta team dir should survive alpha workspace deletion"
+    );
 }

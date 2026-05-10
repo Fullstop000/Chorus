@@ -194,11 +194,8 @@ goals.
   to that workspace, and add the workspace owner as its first member.
 - Deleting a workspace is destructive: workspace-scoped channels, messages,
   tasks, agents, teams, memberships, trace events, attachment links, orphaned
-  attachment rows, and orphaned attachment files are removed.
-- Deleting a workspace does not yet remove per-agent or per-team runtime
-  workspace directories. Team filesystem paths are still keyed by team name, so
-  wiping them during workspace deletion would be unsafe until those paths become
-  workspace-scoped.
+  attachment rows, orphaned attachment files, and workspace-scoped runtime
+  directories (agents and teams) are removed.
 - The CLI requires a running Chorus server and must call the API instead of
   opening SQLite directly.
 - Agent names are not fully workspace-scoped yet.
