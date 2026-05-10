@@ -1,5 +1,13 @@
 # Collapse the dual runtime path — every agent bridge-owned
 
+> **Status:** done. Phases 1, 2+3, and 4 shipped on `main` via
+> [#150](https://github.com/Fullstop000/Chorus/pull/150),
+> [#152](https://github.com/Fullstop000/Chorus/pull/152), and
+> [#153](https://github.com/Fullstop000/Chorus/pull/153). The remaining
+> "phase 5" cleanup (this doc, the `bridge-hosted` comments and dead
+> branches that survived) lands as housekeeping. The original goal — no
+> more `if machine_id.is_some()` runtime branches in handlers — is met.
+
 Tracking issue: [#149](https://github.com/Fullstop000/Chorus/issues/149).
 Built on: [#147](https://github.com/Fullstop000/Chorus/pull/147) (id-keyed AgentManager).
 

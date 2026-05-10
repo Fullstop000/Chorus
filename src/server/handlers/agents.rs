@@ -512,7 +512,6 @@ pub async fn handle_update_agent(
     let ps = state.lifecycle.process_state(&agent_id).await;
     let was_running = crate::agent::process_status::derive_status(ps.as_ref())
         != crate::agent::process_status::Status::Asleep;
-    let _ = machine_id_resolved;
 
     // Spec-affecting updates need the runtime to relaunch with the new
     // values. Bumping `restart_seq` signals the owning bridge — in-proc
