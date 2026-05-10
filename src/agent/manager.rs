@@ -233,15 +233,6 @@ impl AgentManager {
             .join(&agent.workspace_id)
             .join(format!("{}-{}", agent.name, agent.id));
 
-        // Lazy migration from old flat layout
-        let old_agent_data_dir = self.data_dir.join(agent_name);
-        if old_agent_data_dir.exists() && !agent_data_dir.exists() {
-            if let Some(parent) = agent_data_dir.parent() {
-                tokio::fs::create_dir_all(parent).await.ok();
-            }
-            tokio::fs::rename(&old_agent_data_dir, &agent_data_dir).await.ok();
-        }
-
         tokio::fs::create_dir_all(&agent_data_dir).await?;
 
         let memory_md_path = agent_data_dir.join("MEMORY.md");

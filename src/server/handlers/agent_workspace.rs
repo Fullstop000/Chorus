@@ -83,25 +83,14 @@ pub async fn handle_agent_workspace(
     let agent = resolve_public_agent(&state, &id)?;
     let agent_workspace = AgentWorkspace::new(&state.agents_dir);
     let workspace_dir = agent_workspace.path_for(&agent.workspace_id, &agent.name, &agent.id);
-    // Fallback to legacy flat layout during transition
-    let effective_dir = if workspace_dir.exists() {
-        workspace_dir.clone()
-    } else {
-        let legacy = state.agents_dir.join(&agent.name);
-        if legacy.exists() {
-            legacy
-        } else {
-            workspace_dir.clone()
-        }
-    };
-    if !effective_dir.exists() {
+    if !workspace_dir.exists() {
         return Ok(Json(serde_json::json!({
             "path": workspace_dir.to_string_lossy(),
             "files": []
         })));
     }
     let mut files: Vec<String> = Vec::new();
-    collect_workspace_files(&effective_dir, &effective_dir, &mut files, 0);
+    collect_workspace_files(&workspace_dir, &workspace_dir, &mut files, 0);
     Ok(Json(serde_json::json!({
         "path": workspace_dir.to_string_lossy(),
         "files": files
@@ -116,19 +105,8 @@ pub async fn handle_agent_workspace_file(
     let agent = resolve_public_agent(&state, &id)?;
     let agent_workspace = AgentWorkspace::new(&state.agents_dir);
     let workspace_dir = agent_workspace.path_for(&agent.workspace_id, &agent.name, &agent.id);
-    // Fallback to legacy flat layout during transition
-    let effective_dir = if workspace_dir.exists() {
-        workspace_dir.clone()
-    } else {
-        let legacy = state.agents_dir.join(&agent.name);
-        if legacy.exists() {
-            legacy
-        } else {
-            workspace_dir.clone()
-        }
-    };
     let relative = sanitize_workspace_path(&params.path)?;
-    let file_path = effective_dir.join(&relative);
+    let file_path = workspace_dir.join(&relative);
 
     if !file_path.is_file() {
         return Err(app_err!(

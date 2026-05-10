@@ -277,7 +277,9 @@ async fn test_workspace_e2e_lists_and_reads_markdown_file() {
     // creates from the same TempDir we received.
     let agents_dir = data_dir.path().join("agents");
     let workspace_id = store.get_active_workspace().unwrap().unwrap().id;
-    let workspace_dir = agents_dir.join(&workspace_id).join(format!("{}-{}", bot1.name, bot1.id));
+    let workspace_dir = agents_dir
+        .join(&workspace_id)
+        .join(format!("{}-{}", bot1.name, bot1.id));
     let notes_dir = workspace_dir.join("notes");
     std::fs::create_dir_all(&notes_dir).unwrap();
     std::fs::write(

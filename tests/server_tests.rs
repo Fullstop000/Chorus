@@ -4049,7 +4049,14 @@ async fn test_delete_workspace_does_not_remove_same_named_team_in_other_workspac
         .init_team(&beta.id, "ops", &beta_team_id, &[("bot1", &bot1.id)])
         .unwrap();
     agent_workspace
-        .init_team_memory(&alpha.id, "bot1", &bot1.id, "ops", &alpha_team_id, "operator")
+        .init_team_memory(
+            &alpha.id,
+            "bot1",
+            &bot1.id,
+            "ops",
+            &alpha_team_id,
+            "operator",
+        )
         .unwrap();
     agent_workspace
         .init_team_memory(&beta.id, "bot1", &bot1.id, "ops", &beta_team_id, "operator")

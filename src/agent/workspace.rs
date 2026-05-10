@@ -17,28 +17,6 @@ impl<'a> AgentWorkspace<'a> {
             .join(format!("{}-{}", agent_name, agent_id))
     }
 
-    /// Migrate an agent directory from the old flat layout to the new
-    /// workspace-scoped layout if needed. Returns the path that should be used.
-    fn maybe_migrate_agent_dir(
-        &self,
-        workspace_id: &str,
-        agent_name: &str,
-        agent_id: &str,
-    ) -> std::io::Result<PathBuf> {
-        let new_path = self.path_for(workspace_id, agent_name, agent_id);
-        if new_path.exists() {
-            return Ok(new_path);
-        }
-        let old_path = self.agents_dir.join(agent_name);
-        if old_path.exists() {
-            if let Some(parent) = new_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::rename(&old_path, &new_path)?;
-        }
-        Ok(new_path)
-    }
-
     /// Remove the workspace directory if it exists.
     pub fn delete_if_exists(
         &self,
@@ -49,11 +27,6 @@ impl<'a> AgentWorkspace<'a> {
         let path = self.path_for(workspace_id, agent_name, agent_id);
         if path.exists() {
             std::fs::remove_dir_all(path)?;
-        }
-        // Also clean up legacy flat layout
-        let old_path = self.agents_dir.join(agent_name);
-        if old_path.exists() {
-            std::fs::remove_dir_all(old_path)?;
         }
         Ok(())
     }
@@ -73,25 +46,6 @@ impl<'a> AgentWorkspace<'a> {
             .join(format!("{}-{}", team_name, team_id))
     }
 
-    /// Migrate a team memory directory from the old name-only layout to the
-    /// new id-suffixed layout inside the agent directory.
-    fn maybe_migrate_team_memory(
-        &self,
-        agent_dir: &Path,
-        team_name: &str,
-        team_id: &str,
-    ) -> std::io::Result<PathBuf> {
-        let new_path = agent_dir.join("teams").join(format!("{}-{}", team_name, team_id));
-        if new_path.exists() {
-            return Ok(new_path);
-        }
-        let old_path = agent_dir.join("teams").join(team_name);
-        if old_path.exists() {
-            std::fs::rename(&old_path, &new_path)?;
-        }
-        Ok(new_path)
-    }
-
     /// Create per-team memory dir + ROLE.md stub for an agent.
     pub fn init_team_memory(
         &self,
@@ -102,8 +56,7 @@ impl<'a> AgentWorkspace<'a> {
         team_id: &str,
         role: &str,
     ) -> std::io::Result<()> {
-        let agent_dir = self.maybe_migrate_agent_dir(workspace_id, agent_name, agent_id)?;
-        let dir = self.maybe_migrate_team_memory(&agent_dir, team_name, team_id)?;
+        let dir = self.team_memory_path(workspace_id, agent_name, agent_id, team_name, team_id);
         std::fs::create_dir_all(&dir)?;
         let role_md = dir.join("ROLE.md");
         if !role_md.exists() {
@@ -127,12 +80,18 @@ impl<'a> AgentWorkspace<'a> {
         team_id: &str,
         role: &str,
     ) -> std::io::Result<()> {
-        let agent_dir = self.maybe_migrate_agent_dir(workspace_id, agent_name, agent_id)?;
-        let dir = self.maybe_migrate_team_memory(&agent_dir, team_name, team_id)?;
+        let dir = self.team_memory_path(workspace_id, agent_name, agent_id, team_name, team_id);
         std::fs::create_dir_all(&dir)?;
         let role_md = dir.join("ROLE.md");
         if !role_md.exists() {
-            return self.init_team_memory(workspace_id, agent_name, agent_id, team_name, team_id, role);
+            return self.init_team_memory(
+                workspace_id,
+                agent_name,
+                agent_id,
+                team_name,
+                team_id,
+                role,
+            );
         }
 
         let current = std::fs::read_to_string(&role_md)?;
@@ -168,20 +127,10 @@ impl<'a> AgentWorkspace<'a> {
         team_name: &str,
         team_id: &str,
     ) -> std::io::Result<()> {
-        let new_path = self.team_memory_path(workspace_id, agent_name, agent_id, team_name, team_id);
+        let new_path =
+            self.team_memory_path(workspace_id, agent_name, agent_id, team_name, team_id);
         if new_path.exists() {
             std::fs::remove_dir_all(new_path)?;
-        }
-        // Legacy paths (best-effort)
-        let legacy_agent_dir = self.agents_dir.join(agent_name);
-        let legacy_path = legacy_agent_dir.join("teams").join(team_name);
-        if legacy_path.exists() {
-            std::fs::remove_dir_all(legacy_path)?;
-        }
-        let migrated_agent_dir = self.path_for(workspace_id, agent_name, agent_id);
-        let legacy_path2 = migrated_agent_dir.join("teams").join(team_name);
-        if legacy_path2.exists() {
-            std::fs::remove_dir_all(legacy_path2)?;
         }
         Ok(())
     }
@@ -216,28 +165,6 @@ impl TeamWorkspace {
             .join(format!("{}-{}", agent_name, agent_id))
     }
 
-    /// Migrate a team directory from the old flat layout to the new
-    /// workspace-scoped layout if needed. Returns the path that should be used.
-    fn maybe_migrate_team_dir(
-        &self,
-        workspace_id: &str,
-        team_name: &str,
-        team_id: &str,
-    ) -> std::io::Result<PathBuf> {
-        let new_path = self.team_path(workspace_id, team_name, team_id);
-        if new_path.exists() {
-            return Ok(new_path);
-        }
-        let old_path = self.teams_dir.join(team_name);
-        if old_path.exists() {
-            if let Some(parent) = new_path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::rename(&old_path, &new_path)?;
-        }
-        Ok(new_path)
-    }
-
     /// Create team workspace skeleton with TEAM.md stub.
     pub fn init_team(
         &self,
@@ -246,10 +173,16 @@ impl TeamWorkspace {
         team_id: &str,
         members: &[(&str, &str)],
     ) -> std::io::Result<()> {
-        let team_dir = self.maybe_migrate_team_dir(workspace_id, team_name, team_id)?;
+        let team_dir = self.team_path(workspace_id, team_name, team_id);
         std::fs::create_dir_all(team_dir.join("shared"))?;
         for (agent_name, agent_id) in members {
-            std::fs::create_dir_all(self.member_path(workspace_id, team_name, team_id, agent_name, agent_id))?;
+            std::fs::create_dir_all(self.member_path(
+                workspace_id,
+                team_name,
+                team_id,
+                agent_name,
+                agent_id,
+            ))?;
         }
         let team_md = team_dir.join("TEAM.md");
         if !team_md.exists() {
@@ -274,7 +207,13 @@ impl TeamWorkspace {
         agent_name: &str,
         agent_id: &str,
     ) -> std::io::Result<()> {
-        std::fs::create_dir_all(self.member_path(workspace_id, team_name, team_id, agent_name, agent_id))
+        std::fs::create_dir_all(self.member_path(
+            workspace_id,
+            team_name,
+            team_id,
+            agent_name,
+            agent_id,
+        ))
     }
 
     /// Remove the entire team workspace directory.
@@ -287,10 +226,6 @@ impl TeamWorkspace {
         let path = self.team_path(workspace_id, team_name, team_id);
         if path.exists() {
             std::fs::remove_dir_all(path)?;
-        }
-        let old_path = self.teams_dir.join(team_name);
-        if old_path.exists() {
-            std::fs::remove_dir_all(old_path)?;
         }
         Ok(())
     }
