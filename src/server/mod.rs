@@ -1,4 +1,5 @@
 pub use crate::utils::error;
+pub mod auth;
 pub mod bridge_auth;
 pub mod bridge_registry;
 pub mod event_bus;
@@ -324,6 +325,16 @@ pub fn build_router_with_services_and_auth(
         .route("/bridge/ws", get(handle_bridge_ws))
         .route("/traces/{run_id}", get(handle_trace_events))
         .route("/agents/{id}/runs", get(handle_agent_runs));
+
+    // Permissive auth on `/api/*`. The middleware injects an `Actor` into
+    // `req.extensions()` when valid credentials are present; otherwise it
+    // falls through. This lets the layer ship in commit 2 while handlers
+    // still read identity from `state.local_human_id` — they get migrated
+    // in a later commit, at which point the layer flips to `require_auth`.
+    let api_router = api_router.route_layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        auth::permissive_auth,
+    ));
 
     Router::new()
         .route("/health", get(health))
