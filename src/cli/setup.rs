@@ -518,6 +518,10 @@ fn ensure_setup_workspace(
 ///    an established database).
 /// 4. Insert a new `humans` row using `default_name` (the OS username is
 ///    only a label suggestion here; identity is the freshly minted id).
+// Superseded by `Store::ensure_local_identity`. Kept (and tested) for one
+// commit so the migration story is reviewable in isolation; deleted in
+// the commit that drops `LocalHumanConfig` and the duplicate resolvers.
+#[allow(dead_code)]
 fn ensure_setup_local_human(
     store: &Store,
     cfg: &mut ChorusConfig,
@@ -788,15 +792,32 @@ pub async fn run(
     let db_path = data_subdir.join("chorus.db");
     let store = Store::open(db_path.to_str().unwrap())?;
     let mut cfg = ChorusConfig::load(&data_dir)?.unwrap_or_default();
-    // `whoami::username()` here is a *label* suggestion for a brand-new local
-    // human, not identity. The returned `LocalHumanIdentity.id` is the
-    // canonical id we persist in config and use for workspace ownership.
-    let local_human = ensure_setup_local_human(&store, &mut cfg, &whoami::username())?;
+    // `whoami::username()` is a *display* hint only — identity is the
+    // freshly minted `usr_<uuid>`. The new identity model creates a
+    // `users` row, a local `accounts` row, and (until the legacy table
+    // is dropped) a mirroring `humans` row sharing the same id.
+    let (local_user, local_account) =
+        store.ensure_local_identity(&whoami::username())?;
+
+    // If credentials.toml is missing, mint a fresh CLI token now and
+    // write it. If it already exists, leave it alone — the user is
+    // already logged in and we don't want to silently invalidate the
+    // current token by replacing it. (Run `chorus logout` first to
+    // explicitly re-mint.)
+    if super::credentials::load(&data_dir)?.is_none() {
+        let minted = store.mint_token(&local_account.id, "local", Some("Local CLI"))?;
+        let creds = super::credentials::Credentials {
+            token: minted.raw,
+            server: super::credentials::default_local_server(),
+        };
+        super::credentials::save(&data_dir, &creds)?;
+    }
+
     let workspace = if let Some(workspace) = store.get_active_workspace()? {
         workspace
     } else {
         let workspace_name = prompt_workspace_name(interactive);
-        ensure_setup_workspace(&store, &workspace_name, &local_human.id)?
+        ensure_setup_workspace(&store, &workspace_name, &local_user.id)?
     };
 
     // Persist config — machine_id (stable across re-runs) + template_dir,
