@@ -9,6 +9,9 @@ mod agent;
 mod bridge;
 mod channel;
 mod check;
+pub(crate) mod credentials;
+mod login;
+mod logout;
 mod send;
 mod serve;
 mod setup;
@@ -145,6 +148,25 @@ enum Commands {
     },
     /// Read-only environment diagnostic
     Check {
+        #[arg(long)]
+        data_dir: Option<String>,
+    },
+    /// Mint a fresh CLI bearer token. Local mode only — talks directly to
+    /// the on-disk Chorus DB.
+    Login {
+        /// Use the singleton local Account. Required (cloud providers
+        /// will land later).
+        #[arg(long)]
+        local: bool,
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Human-readable label stored on the token row for `chorus tokens
+        /// list` / future audit.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Revoke the current CLI token and delete the local credentials file.
+    Logout {
         #[arg(long)]
         data_dir: Option<String>,
     },
@@ -438,6 +460,22 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::Agent { cmd }) => agent::run(cmd).await,
 
         Some(Commands::Check { data_dir }) => check::run(data_dir).await,
+
+        Some(Commands::Login {
+            local,
+            data_dir,
+            label,
+        }) => {
+            if !local {
+                return Err(UserError(
+                    "only `chorus login --local` is supported today; cloud providers land in a later release".into(),
+                )
+                .into());
+            }
+            login::run(data_dir, label).await
+        }
+
+        Some(Commands::Logout { data_dir }) => logout::run(data_dir).await,
 
         Some(Commands::Serve {
             port,
