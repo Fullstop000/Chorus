@@ -14,6 +14,9 @@
 //!   in subsequent commits. Removed once every handler reads from the
 //!   request extension.
 
+pub mod local_session;
+pub use local_session::handle_local_session;
+
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode};

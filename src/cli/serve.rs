@@ -224,8 +224,16 @@ pub async fn run(
         tracing::info!("\nShutting down...");
         shutdown_token_ctrlc.cancel();
     };
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    // `into_make_service_with_connect_info::<SocketAddr>()` so the
+    // `/api/auth/local-session` handler can verify the TCP peer is on a
+    // loopback address before minting a browser session cookie. Without
+    // this wrapping, `ConnectInfo<SocketAddr>` would not be available to
+    // extract from inside the handler.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await?;
     Ok(())
 }

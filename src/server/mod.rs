@@ -221,6 +221,14 @@ pub fn build_router_with_services_and_auth(
             post(handle_resolve_decision),
         )
         .route("/whoami", get(handle_whoami))
+        // Loopback-only: mints a `chorus_sid` cookie bound to the singleton
+        // local Account. Registered BEFORE the permissive_auth route_layer
+        // since the layer would still let it through, but conceptually this
+        // endpoint pre-dates the cookie it's about to set.
+        .route(
+            "/auth/local-session",
+            post(auth::handle_local_session),
+        )
         .route("/humans", get(handle_list_humans))
         .route("/humans/{id}", patch(handle_update_human))
         .route("/inbox", get(handle_public_inbox))
