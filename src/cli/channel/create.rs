@@ -12,7 +12,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
     if !chorus::store::channels::is_valid_channel_name(&normalized) {
-        return Err(crate::cli::UserError(format!(
+        return Err(crate::cli::CliError(format!(
             "{}: {normalized}",
             chorus::store::channels::INVALID_CHANNEL_NAME_MSG
         ))

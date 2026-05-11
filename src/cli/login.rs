@@ -11,7 +11,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use super::{credentials, default_data_dir, UserError};
+use super::{credentials, default_data_dir, CliError};
 use chorus::store::Store;
 
 const DATA_SUBDIR: &str = "data";
@@ -21,7 +21,7 @@ pub async fn run(data_dir: Option<String>, label: Option<String>) -> Result<()> 
     let data_dir = Path::new(&data_dir_str);
 
     if credentials::load(data_dir)?.is_some() {
-        return Err(UserError(format!(
+        return Err(CliError(format!(
             "credentials already present at {}; run `chorus logout` first if you want a fresh token",
             credentials::path_for(data_dir).display()
         ))
@@ -30,7 +30,7 @@ pub async fn run(data_dir: Option<String>, label: Option<String>) -> Result<()> 
 
     let db_path = data_dir.join(DATA_SUBDIR).join("chorus.db");
     if !db_path.exists() {
-        return Err(UserError(format!(
+        return Err(CliError(format!(
             "no Chorus database at {}; run `chorus setup` first",
             db_path.display()
         ))
@@ -43,9 +43,9 @@ pub async fn run(data_dir: Option<String>, label: Option<String>) -> Result<()> 
 
     let account = store
         .get_local_account()?
-        .ok_or_else(|| UserError("no local account; run `chorus setup` first".into()))?;
+        .ok_or_else(|| CliError("no local account; run `chorus setup` first".into()))?;
     if account.disabled_at.is_some() {
-        return Err(UserError("local account is disabled".into()).into());
+        return Err(CliError("local account is disabled".into()).into());
     }
 
     let minted = store.mint_token(

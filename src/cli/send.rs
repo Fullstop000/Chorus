@@ -24,7 +24,7 @@ pub async fn run(target: String, content: String, server_url: String) -> anyhow:
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;
     let data: serde_json::Value = res.json().await?;
     if let Some(err) = data.get("error").and_then(|e| e.as_str()) {
-        return Err(crate::cli::UserError(err.to_string()).into());
+        return Err(crate::cli::CliError(err.to_string()).into());
     }
     let msg_id = data
         .get("messageId")

@@ -28,15 +28,15 @@ use chorus::config::ChorusConfig;
 /// The Chorus CLI enables `RUST_BACKTRACE=1` by default, so `anyhow::bail!`
 /// would emit a full backtrace for mundane mistakes like forgetting `--yes`.
 #[derive(Debug)]
-pub struct UserError(pub String);
+pub struct CliError(pub String);
 
-impl std::fmt::Display for UserError {
+impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl std::error::Error for UserError {}
+impl std::error::Error for CliError {}
 
 #[derive(Parser)]
 #[command(name = "chorus", about = "Local AI agent collaboration platform")]
@@ -298,7 +298,7 @@ pub(crate) struct AuthedUser {
 ///   1. `CHORUS_TOKEN` env var (used by integration tests + scripts).
 ///   2. `~/.chorus/credentials.toml`.
 ///
-/// Returns `Err(UserError)` with setup guidance if neither is present.
+/// Returns `Err(CliError)` with setup guidance if neither is present.
 pub(crate) fn resolve_cli_token() -> anyhow::Result<String> {
     if let Ok(env_token) = std::env::var("CHORUS_TOKEN") {
         if !env_token.trim().is_empty() {
@@ -308,7 +308,7 @@ pub(crate) fn resolve_cli_token() -> anyhow::Result<String> {
     let data_dir_str = default_data_dir();
     let data_dir = std::path::Path::new(&data_dir_str);
     let creds = credentials::load(data_dir)?.ok_or_else(|| {
-        UserError(format!(
+        CliError(format!(
             "no credentials at {} (and CHORUS_TOKEN unset); run `chorus setup` or `chorus login --local`",
             credentials::path_for(data_dir).display()
         ))
@@ -340,7 +340,7 @@ pub(crate) async fn fetch_authed_user(
     let status = res.status();
     let body = res.text().await.unwrap_or_default();
     if status == reqwest::StatusCode::UNAUTHORIZED {
-        return Err(UserError(
+        return Err(CliError(
             "authentication failed; the token may be revoked. Run `chorus login --local`".into(),
         )
         .into());
@@ -354,13 +354,13 @@ pub(crate) async fn fetch_authed_user(
         .get("id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| UserError("server returned empty user id".into()))?
+        .ok_or_else(|| CliError("server returned empty user id".into()))?
         .to_string();
     let name = value
         .get("name")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| UserError("server returned empty user name".into()))?
+        .ok_or_else(|| CliError("server returned empty user name".into()))?
         .to_string();
     Ok(AuthedUser { id, name })
 }
@@ -485,7 +485,7 @@ pub async fn run() -> anyhow::Result<()> {
             label,
         }) => {
             if !local {
-                return Err(UserError(
+                return Err(CliError(
                     "only `chorus login --local` is supported today; cloud providers land in a later release".into(),
                 )
                 .into());
