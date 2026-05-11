@@ -9,7 +9,7 @@ use anyhow::Context;
 
 pub async fn run(target: String, content: String, server_url: String) -> anyhow::Result<()> {
     let client = chorus::utils::http::client();
-    let me = crate::cli::fetch_local_human_identity(&client, &server_url).await?;
+    let me = crate::cli::fetch_authed_user(&client, &server_url).await?;
 
     // The historical `/internal/agent/{actor_id}/send` route is keyed on
     // sender id and works for either humans or agents — `handle_send`

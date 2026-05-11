@@ -507,83 +507,6 @@ fn ensure_setup_workspace(
         .map(|(w, _)| w)
 }
 
-/// Resolve (or seed) the local human row and write `(id, name)` back to
-/// config so subsequent CLI/server boots use the same identity.
-///
-/// Order of preference, top to bottom:
-/// 1. Configured `(id, name)` whose row still exists in the database.
-/// 2. Configured `name` (no id yet) — adopt the existing human row by name
-///    and persist its id, or create a new row if no match exists.
-/// 3. Existing first human row in the store (covers a fresh CLI run against
-///    an established database).
-/// 4. Insert a new `humans` row using `default_name` (the OS username is
-///    only a label suggestion here; identity is the freshly minted id).
-// Superseded by `Store::ensure_local_identity`. Kept (and tested) for one
-// commit so the migration story is reviewable in isolation; deleted in
-// the commit that drops `LocalHumanConfig` and the duplicate resolvers.
-#[allow(dead_code)]
-fn ensure_setup_local_human(
-    store: &Store,
-    cfg: &mut ChorusConfig,
-    default_name: &str,
-) -> anyhow::Result<crate::cli::LocalHumanIdentity> {
-    let configured_id = cfg.local_human.id.clone().filter(|s| !s.trim().is_empty());
-    let configured_name = cfg
-        .local_human
-        .name
-        .clone()
-        .filter(|s| !s.trim().is_empty());
-
-    if let (Some(id), Some(name)) = (configured_id.as_ref(), configured_name.as_ref()) {
-        if let Some(human) = store.get_human_by_id(id)? {
-            cfg.local_human.id = Some(human.id.clone());
-            cfg.local_human.name = Some(human.name.clone());
-            return Ok(crate::cli::LocalHumanIdentity {
-                id: human.id,
-                name: human.name,
-            });
-        }
-        // Stale id (db was reset). Fall through to recreate from the configured name.
-        let _ = id;
-        let _ = name;
-    }
-
-    if let Some(name) = configured_name.as_ref() {
-        if let Some(human) = store.get_human_by_name(name)? {
-            cfg.local_human.id = Some(human.id.clone());
-            cfg.local_human.name = Some(human.name.clone());
-            return Ok(crate::cli::LocalHumanIdentity {
-                id: human.id,
-                name: human.name,
-            });
-        }
-        let human = store.create_local_human(name)?;
-        cfg.local_human.id = Some(human.id.clone());
-        cfg.local_human.name = Some(human.name.clone());
-        return Ok(crate::cli::LocalHumanIdentity {
-            id: human.id,
-            name: human.name,
-        });
-    }
-
-    if let Some(human) = store.get_humans()?.into_iter().next() {
-        cfg.local_human.id = Some(human.id.clone());
-        cfg.local_human.name = Some(human.name.clone());
-        return Ok(crate::cli::LocalHumanIdentity {
-            id: human.id,
-            name: human.name,
-        });
-    }
-
-    let human = store.create_local_human(default_name)?;
-    cfg.local_human.id = Some(human.id.clone());
-    cfg.local_human.name = Some(human.name.clone());
-    Ok(crate::cli::LocalHumanIdentity {
-        id: human.id,
-        name: human.name,
-    })
-}
-
 fn existing_setup_has_active_workspace(data_dir: &Path) -> anyhow::Result<bool> {
     let db_path = data_dir.join(DATA_SUBDIR).join("chorus.db");
     if !db_path.exists() {
@@ -972,37 +895,6 @@ mod tests {
         assert_eq!(store.list_workspaces_for_human(&bob.id).unwrap().len(), 0);
     }
 
-    #[test]
-    fn ensure_setup_local_human_adopts_existing_row_by_name() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join("chorus.db");
-        let store = Store::open(db_path.to_str().unwrap()).unwrap();
-        let alice = store.create_local_human("alice").unwrap();
-        let mut cfg = ChorusConfig::default();
-        cfg.local_human.name = Some("alice".to_string());
-
-        let human = ensure_setup_local_human(&store, &mut cfg, "bob").unwrap();
-
-        assert_eq!(human.id, alice.id);
-        assert_eq!(human.name, "alice");
-        assert_eq!(cfg.local_human.id.as_deref(), Some(alice.id.as_str()));
-        assert_eq!(cfg.local_human.name.as_deref(), Some("alice"));
-    }
-
-    #[test]
-    fn ensure_setup_local_human_persists_default_identity() {
-        let tmp = tempfile::tempdir().unwrap();
-        let db_path = tmp.path().join("chorus.db");
-        let store = Store::open(db_path.to_str().unwrap()).unwrap();
-        let mut cfg = ChorusConfig::default();
-
-        let human = ensure_setup_local_human(&store, &mut cfg, "bob").unwrap();
-
-        assert_eq!(human.name, "bob");
-        assert!(cfg.local_human.id.is_some());
-        assert_eq!(cfg.local_human.name.as_deref(), Some("bob"));
-        assert_eq!(cfg.local_human.id, Some(human.id));
-    }
 
     #[test]
     fn existing_setup_without_database_still_needs_workspace() {

@@ -337,6 +337,24 @@ identity-and-auth redesign from landing.
 A note in `src/server/bridge_auth.rs` documents the deferral inline so
 any future change-author sees it.
 
+## 8b. Schema rename — DEFERRED
+
+`humans` → `users` (table), `sender_type='human'` → `'user'` (data + wire),
+`Human` struct → `User`: deferred to a follow-up. Reasons:
+
+  - The `humans` table is a passive mirror in this PR: production handlers
+    never read from it (they go through `accounts.user_id → users.id`). The
+    workspace tables still FK-reference `humans(id)`, but every row written
+    has matching ids in both tables.
+  - The rename is a coordinated change across ~20 files plus a backfill
+    `UPDATE` for existing data and a frontend sweep for `sender_type ===
+    "human"`. None of it changes behaviour; it's purely cosmetic.
+  - The PR is already large. Per "one PR per goal", the goal is the new
+    auth model; the rename is a separate goal.
+
+A `DEPRECATED` comment lives on the `humans` table in `schema.sql`
+pointing at this section.
+
 ## 9. What this kills
 
 | Today | After |

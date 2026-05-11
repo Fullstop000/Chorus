@@ -9,7 +9,7 @@ use anyhow::Context;
 
 pub async fn run(name: String, server_url: &str) -> anyhow::Result<()> {
     let client = super::http::client();
-    let me = crate::cli::fetch_local_human_identity(&client, server_url).await?;
+    let me = crate::cli::fetch_authed_user(&client, server_url).await?;
     let normalized = super::normalize_channel_name(&name);
     let channel_id = super::resolve_channel_id(&client, server_url, &normalized).await?;
 

@@ -117,18 +117,25 @@ pub fn build_router_with_services_and_auth(
         .ok()
         .flatten()
         .map(|workspace| workspace.id);
-    let (local_human_id, local_human_name) =
-        resolve_local_human_identity(store.as_ref(), &data_dir);
     let local_machine_id = resolve_local_machine_id(&data_dir);
 
-    // Built-in channels (`#all`) and the local human's membership are seeded
-    // here, after identity resolution: the legacy CLI bootstrap used the OS
-    // username as both the human row PK and the `#all` member key, which is
-    // incompatible with the ID-first model. Failing here would leave the API
-    // running against a database with no `#all` channel, so we log and
-    // continue; the server is still useful for diagnostics.
-    if let Err(err) = store.ensure_builtin_channels(&local_human_id) {
-        tracing::error!(err = %err, "failed to ensure built-in channels for local human");
+    // Built-in channels (`#all`) need a local owner. Look up the local
+    // Account → User from the new identity model. If the install hasn't
+    // run `chorus setup` yet, log and continue — the server still serves
+    // the (empty) UI; the user must complete setup before things work.
+    if let Some(local_user_id) = store
+        .get_local_account()
+        .ok()
+        .flatten()
+        .map(|account| account.user_id)
+    {
+        if let Err(err) = store.ensure_builtin_channels(&local_user_id) {
+            tracing::error!(err = %err, "failed to ensure built-in channels for local user");
+        }
+    } else {
+        tracing::warn!(
+            "no local account found at startup; run `chorus setup` to initialize identity"
+        );
     }
 
     let state = AppState {
@@ -137,8 +144,6 @@ pub fn build_router_with_services_and_auth(
         data_dir,
         agents_dir,
         active_workspace_id: Arc::new(RwLock::new(active_workspace_id)),
-        local_human_id,
-        local_human_name,
         local_machine_id,
         lifecycle,
         runtime_status_provider,
@@ -363,36 +368,6 @@ pub fn build_router_with_services_and_auth(
         // return 405/404 rather than silently serving index.html.
         .fallback_service(get(serve_ui))
         .with_state(state)
-}
-
-fn resolve_local_human_identity(store: &Store, data_dir: &std::path::Path) -> (String, String) {
-    let config_root = data_dir;
-    let configured = ChorusConfig::load(config_root)
-        .ok()
-        .flatten()
-        .map(|cfg| cfg.local_human);
-    if let Some(local_human) = configured.as_ref() {
-        if let (Some(id), Some(name)) = (&local_human.id, &local_human.name) {
-            if !id.trim().is_empty() && !name.trim().is_empty() {
-                return (id.clone(), name.clone());
-            }
-        }
-    }
-    if let Ok(Some(human)) = store.get_humans().map(|mut humans| humans.pop()) {
-        return (human.id, human.name);
-    }
-    let name = configured
-        .and_then(|local_human| local_human.name)
-        .filter(|name| !name.trim().is_empty())
-        // This is only a fresh local label suggestion; it is not identity.
-        .unwrap_or_else(whoami::username);
-    match store.create_local_human(&name) {
-        Ok(human) => (human.id, human.name),
-        Err(err) => {
-            tracing::error!(err = %err, "failed to create local human identity; refusing to start with an unbacked id");
-            panic!("unable to resolve persisted local human identity: {err}");
-        }
-    }
 }
 
 /// Public re-export of `resolve_local_machine_id` so `cli/serve.rs` can

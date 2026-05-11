@@ -285,40 +285,68 @@ pub(crate) fn default_data_dir() -> String {
     format!("{home}/.chorus")
 }
 
-/// Local human identity as reported by `GET /api/whoami`. The CLI used to use
-/// `whoami::username()` as identity, which conflated the OS user running the
-/// CLI process with the Chorus human row. The server is now the source of
-/// truth: it resolves identity from `ChorusConfig::local_human` (or seeds a
-/// fresh `humans.id` on first run), and the CLI reads it back over HTTP.
+/// Authenticated user as reported by `GET /api/whoami`. Composed from
+/// the server's view of the actor for the request — that's the User the
+/// credentials in `~/.chorus/credentials.toml` resolve to.
 #[derive(Debug, Clone)]
-pub(crate) struct LocalHumanIdentity {
+pub(crate) struct AuthedUser {
     pub id: String,
     pub name: String,
 }
 
-/// Fetch the local human's `(id, name)` from a running server.
+/// Resolve the CLI's bearer token. Precedence:
+///   1. `CHORUS_TOKEN` env var (used by integration tests + scripts).
+///   2. `~/.chorus/credentials.toml`.
 ///
-/// Fails with setup guidance when the server returns a malformed or empty
-/// response — the plan requires CLI human actions to refuse to fall back to
-/// the OS username, so we surface a clear error instead of silently using a
-/// wrong identity.
-pub(crate) async fn fetch_local_human_identity(
+/// Returns `Err(UserError)` with setup guidance if neither is present.
+pub(crate) fn resolve_cli_token() -> anyhow::Result<String> {
+    if let Ok(env_token) = std::env::var("CHORUS_TOKEN") {
+        if !env_token.trim().is_empty() {
+            return Ok(env_token);
+        }
+    }
+    let data_dir_str = default_data_dir();
+    let data_dir = std::path::Path::new(&data_dir_str);
+    let creds = credentials::load(data_dir)?.ok_or_else(|| {
+        UserError(format!(
+            "no credentials at {} (and CHORUS_TOKEN unset); run `chorus setup` or `chorus login --local`",
+            credentials::path_for(data_dir).display()
+        ))
+    })?;
+    Ok(creds.token)
+}
+
+/// Fetch the current user's `(id, name)` from a running server, sending
+/// the bearer token resolved by `resolve_cli_token`.
+///
+/// Fails with setup guidance when:
+///   - no token available (env or file) → tell user to run `chorus setup`
+///     (or `chorus login --local` to mint a token against an existing
+///     install)
+///   - the server returns 401 → token revoked or stale; same recovery.
+pub(crate) async fn fetch_authed_user(
     client: &reqwest::Client,
     server_url: &str,
-) -> anyhow::Result<LocalHumanIdentity> {
+) -> anyhow::Result<AuthedUser> {
     use anyhow::Context;
+    let token = resolve_cli_token()?;
     let url = format!("{server_url}/api/whoami");
     let res = client
         .get(&url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;
     let status = res.status();
     let body = res.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(UserError(
+            "authentication failed; the token may be revoked. Run `chorus login --local`".into(),
+        )
+        .into());
+    }
     if !status.is_success() {
-        return Err(anyhow::anyhow!(
-            "{status} from {url}: {body}; run `chorus setup` to initialize local identity"
-        ));
+        return Err(anyhow::anyhow!("{status} from {url}: {body}"));
     }
     let value: serde_json::Value = serde_json::from_str(&body)
         .with_context(|| format!("unexpected /api/whoami response from {server_url}"))?;
@@ -326,25 +354,15 @@ pub(crate) async fn fetch_local_human_identity(
         .get("id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            UserError(
-                "server has no local human id; run `chorus setup` to initialize local identity"
-                    .into(),
-            )
-        })?
+        .ok_or_else(|| UserError("server returned empty user id".into()))?
         .to_string();
     let name = value
         .get("name")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            UserError(
-                "server has no local human name; run `chorus setup` to initialize local identity"
-                    .into(),
-            )
-        })?
+        .ok_or_else(|| UserError("server returned empty user name".into()))?
         .to_string();
-    Ok(LocalHumanIdentity { id, name })
+    Ok(AuthedUser { id, name })
 }
 
 pub(crate) fn default_model_for_runtime(runtime: &str) -> &str {

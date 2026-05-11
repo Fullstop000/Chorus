@@ -6,7 +6,7 @@
 
 pub async fn run(server_url: String) -> anyhow::Result<()> {
     let client = chorus::utils::http::client();
-    let me = crate::cli::fetch_local_human_identity(&client, &server_url).await?;
+    let me = crate::cli::fetch_authed_user(&client, &server_url).await?;
     let res = client
         .get(format!("{server_url}/internal/agent/{}/server", me.id))
         .send()

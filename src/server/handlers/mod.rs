@@ -54,8 +54,6 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub agents_dir: PathBuf,
     pub active_workspace_id: Arc<RwLock<Option<String>>>,
-    pub local_human_id: String,
-    pub local_human_name: String,
     /// Stable identifier for this installation. Every agent created on
     /// `chorus serve` without an explicit `machine_id` defaults to this
     /// value, so the in-process bridge client claims them.
