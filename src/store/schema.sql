@@ -123,6 +123,10 @@ CREATE TABLE IF NOT EXISTS agent_env_vars (
 );
 
 -- Human users.
+--
+-- DEPRECATED: superseded by `users` + `accounts` below. Kept temporarily
+-- through the identity-and-auth-redesign commit sequence so the existing
+-- handlers keep compiling. Removed in the final commit of the redesign.
 CREATE TABLE IF NOT EXISTS humans (
     id TEXT PRIMARY KEY, -- Stable human identity
     name TEXT NOT NULL UNIQUE, -- Unique user-facing name
@@ -131,6 +135,58 @@ CREATE TABLE IF NOT EXISTS humans (
     disabled_at TEXT, -- Future account disable timestamp
     created_at TEXT NOT NULL DEFAULT (datetime('now')) -- When the user was created
 );
+
+-- ─── Identity & auth (new model) ──────────────────────────────────────
+-- These four tables form the production-shaped auth model that works the
+-- same way in local and cloud deployments. See
+-- docs/plan/identity-and-auth-redesign.md.
+
+-- Users are the identity layer. Every actor reference uses users.id.
+CREATE TABLE IF NOT EXISTS users (
+    id          TEXT PRIMARY KEY,                       -- usr_<uuid>
+    name        TEXT NOT NULL,                          -- display name; NOT UNIQUE (cloud collaborators may share)
+    created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Accounts are the auth layer. 1..N per User. auth_provider distinguishes
+-- 'local' (single per install) from cloud providers ('google', 'github').
+CREATE TABLE IF NOT EXISTS accounts (
+    id              TEXT PRIMARY KEY,                   -- acc_<uuid>
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    auth_provider   TEXT NOT NULL,                      -- 'local' | 'google' | ...
+    email           TEXT,
+    disabled_at     TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(auth_provider, email)
+);
+CREATE INDEX IF NOT EXISTS idx_accounts_user_id ON accounts(user_id);
+-- Exactly one local account per install. Indexed unique on the partial
+-- where email IS NULL — that's where the local row lives.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_local_unique
+    ON accounts(auth_provider) WHERE auth_provider = 'local' AND email IS NULL;
+
+-- Browser session cookies. One row per active browser session.
+CREATE TABLE IF NOT EXISTS sessions (
+    id              TEXT PRIMARY KEY,                   -- ses_<uuid>; opaque cookie value
+    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    last_seen_at    TEXT NOT NULL DEFAULT (datetime('now')),
+    expires_at      TEXT,                               -- NULL = no expiry (D1=A; local mode)
+    revoked_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);
+
+-- CLI / bridge bearer tokens. D5=B: one shape, no kind discriminator;
+-- label distinguishes usage for the user.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    token_hash      TEXT PRIMARY KEY,                   -- SHA-256(raw_token); raw never stored
+    account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    label           TEXT,                               -- 'Local CLI', 'Laptop bridge', 'CI'
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    last_used_at    TEXT,
+    revoked_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_account_id ON api_tokens(account_id);
 
 -- Tasks tracked within channels.
 CREATE TABLE IF NOT EXISTS tasks (

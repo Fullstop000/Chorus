@@ -1,5 +1,6 @@
 pub mod agents;
 pub mod attachments;
+pub mod auth;
 pub mod channels;
 pub mod decisions;
 pub mod humans;
@@ -22,6 +23,7 @@ use crate::utils::parse_datetime;
 pub use agents::AgentRecordUpsert;
 pub use agents::{Agent, AgentEnvVar};
 pub use attachments::Attachment;
+pub use auth::{Account, ApiToken, MintedToken, Session, User};
 pub use channels::{Channel, ChannelListParams, ChannelMember, ChannelMemberProfile, ChannelType};
 pub use decisions::{DecisionRow, DecisionStatus};
 pub use humans::Human;
