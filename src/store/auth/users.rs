@@ -35,6 +35,20 @@ impl Store {
             .ok_or_else(|| anyhow::anyhow!("user not found after insert: {id}"))
     }
 
+    /// Create a User with a caller-supplied id. Used by tests + fixtures
+    /// that need a stable, predictable identity to assert against. The
+    /// production path is `create_user` (auto-generates).
+    pub fn ensure_user_with_id(&self, id: &str, name: &str) -> Result<User> {
+        let conn = self.lock_conn();
+        conn.execute(
+            "INSERT INTO users (id, name) VALUES (?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET name = excluded.name",
+            params![id, name],
+        )?;
+        Self::get_user_by_id_inner(&conn, id)?
+            .ok_or_else(|| anyhow::anyhow!("user not found after ensure: {id}"))
+    }
+
     pub fn get_user_by_id(&self, id: &str) -> Result<Option<User>> {
         let conn = self.lock_conn();
         Self::get_user_by_id_inner(&conn, id)

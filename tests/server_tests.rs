@@ -287,6 +287,7 @@ fn setup_with_runtime_statuses(
         runtime_status_provider,
         vec![],
     );
+    let router = harness::wrap_with_test_auth(router, &store);
     (store, router, lifecycle)
 }
 
@@ -2527,7 +2528,7 @@ async fn test_get_templates_returns_grouped_categories() {
     let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&agents_dir).ok();
     let router = chorus::server::build_router_with_services(
-        store,
+        store.clone(),
         Arc::new(chorus::server::event_bus::EventBus::new()),
         data_dir,
         agents_dir,
@@ -2535,6 +2536,7 @@ async fn test_get_templates_returns_grouped_categories() {
         runtime_status_provider,
         templates,
     );
+    let router = harness::wrap_with_test_auth(router, &store);
 
     let response = router
         .oneshot(

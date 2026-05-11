@@ -1,6 +1,6 @@
 use std::sync::LazyLock;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use regex::Regex;
@@ -10,6 +10,7 @@ use tracing::{debug, info};
 use super::dto::ChannelInfo;
 use super::path_params::{resolve_public_agent, PublicResourceIdPath};
 use super::{app_err, ApiResult, AppState};
+use crate::server::auth::Actor;
 use crate::store::channels::Channel;
 use crate::store::inbox::InboxConversationNotificationView;
 use crate::store::messages::{CreateMessage, ForwardedFrom, ReceivedMessage, SenderType};
@@ -656,8 +657,11 @@ pub async fn handle_resolve_channel(
     Ok(Json(ResolveChannelResponse { channel_id }))
 }
 
-pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<InboxResponse> {
-    let actor_id = state.local_human_id.clone();
+pub async fn handle_public_inbox(
+    State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
+) -> ApiResult<InboxResponse> {
+    let actor_id = actor.user_id.clone();
     if state
         .store
         .lookup_sender_type(&actor_id)
@@ -683,9 +687,10 @@ pub async fn handle_public_inbox(State(state): State<AppState>) -> ApiResult<Inb
 
 pub async fn handle_public_conversation_inbox_notification(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
 ) -> ApiResult<ConversationInboxRefreshResponse> {
-    let actor_id = state.local_human_id.clone();
+    let actor_id = actor.user_id.clone();
     if state
         .store
         .lookup_sender_type(&actor_id)
@@ -730,9 +735,10 @@ pub async fn handle_public_conversation_inbox_notification(
 
 pub async fn handle_public_ensure_dm(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(peer_id): Path<String>,
 ) -> ApiResult<ChannelInfo> {
-    let actor_id = state.local_human_id.clone();
+    let actor_id = actor.user_id.clone();
     state
         .store
         .lookup_sender_type(&peer_id)
@@ -767,10 +773,11 @@ pub async fn handle_public_ensure_dm(
 
 pub async fn handle_public_history(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
     Query(params): Query<PublicConversationMessagesParams>,
 ) -> ApiResult<HistoryResponse> {
-    let actor_id = state.local_human_id.clone();
+    let actor_id = actor.user_id.clone();
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     history_for_channel(
         &state,
@@ -786,10 +793,11 @@ pub async fn handle_public_history(
 
 pub async fn handle_public_send(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
     Json(req): Json<PublicConversationSendRequest>,
 ) -> ApiResult<SendResponse> {
-    let actor_id = state.local_human_id.clone();
+    let actor_id = actor.user_id.clone();
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     send_message_to_channel(
         &state,
@@ -805,10 +813,11 @@ pub async fn handle_public_send(
 
 pub async fn handle_public_update_read_cursor(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
     Json(req): Json<PublicConversationReadCursorRequest>,
 ) -> ApiResult<ReadCursorResponse> {
-    let actor_id = state.local_human_id.clone();
+    let actor_id = actor.user_id.clone();
     let channel = load_channel_by_id(&state.store, &conversation_id)?;
     update_read_cursor_for_channel(
         &state,
@@ -837,9 +846,10 @@ pub struct TraceEventsResponse {
 
 pub async fn handle_trace_events(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(run_id): Path<String>,
 ) -> ApiResult<TraceEventsResponse> {
-    let viewer = state.local_human_id.clone();
+    let viewer = actor.user_id.clone();
     // Check that the viewer is a member of the channel this run belongs to.
     let run_channel_id = state
         .store
@@ -879,10 +889,11 @@ pub struct AgentRunsResponse {
 
 pub async fn handle_agent_runs(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(PublicResourceIdPath { id }): Path<PublicResourceIdPath>,
 ) -> ApiResult<AgentRunsResponse> {
     let agent = resolve_public_agent(&state, &id)?;
-    let viewer = state.local_human_id.clone();
+    let viewer = actor.user_id.clone();
     let runs = state
         .store
         .get_agent_runs(&agent.id, &viewer, "human", 20)

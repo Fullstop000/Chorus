@@ -221,14 +221,6 @@ pub fn build_router_with_services_and_auth(
             post(handle_resolve_decision),
         )
         .route("/whoami", get(handle_whoami))
-        // Loopback-only: mints a `chorus_sid` cookie bound to the singleton
-        // local Account. Registered BEFORE the permissive_auth route_layer
-        // since the layer would still let it through, but conceptually this
-        // endpoint pre-dates the cookie it's about to set.
-        .route(
-            "/auth/local-session",
-            post(auth::handle_local_session),
-        )
         .route("/humans", get(handle_list_humans))
         .route("/humans/{id}", patch(handle_update_human))
         .route("/inbox", get(handle_public_inbox))
@@ -329,25 +321,42 @@ pub fn build_router_with_services_and_auth(
         .route("/server-info", get(handle_ui_server_info))
         .route("/system-info", get(handle_system_info))
         .route("/logs", get(handle_logs))
-        .route("/events/ws", get(handle_events_ws))
-        .route("/bridge/ws", get(handle_bridge_ws))
         .route("/traces/{run_id}", get(handle_trace_events))
         .route("/agents/{id}/runs", get(handle_agent_runs));
 
-    // Permissive auth on `/api/*`. The middleware injects an `Actor` into
-    // `req.extensions()` when valid credentials are present; otherwise it
-    // falls through. This lets the layer ship in commit 2 while handlers
-    // still read identity from `state.local_human_id` — they get migrated
-    // in a later commit, at which point the layer flips to `require_auth`.
+    // Strict auth on `/api/*`. Every handler reads its actor from the
+    // request extension; no fallback to a server-cached identity exists
+    // any more. Routes that need to be reachable WITHOUT credentials
+    // (the local-session bootstrap, future cloud login callback) are
+    // registered as siblings to `/api`, outside this layer.
     let api_router = api_router.route_layer(axum::middleware::from_fn_with_state(
         state.clone(),
-        auth::permissive_auth,
+        auth::require_auth,
     ));
+
+    // Open endpoints: no auth required for the new auth layer. Each has
+    // its own gatekeeper:
+    //   /api/auth/local-session — loopback-gated
+    //   /api/bridge/ws          — bridge_auth bearer token (its own
+    //                             middleware further down the chain)
+    //   /api/events/ws          — currently open; revisit when realtime
+    //                             grows real client surface
+    //
+    // These are siblings of `api_router`; they bypass `require_auth`
+    // entirely. The handlers (or their dedicated middleware) decide
+    // what to accept.
+    let api_open_router = Router::new()
+        .route(
+            "/auth/local-session",
+            post(auth::handle_local_session),
+        )
+        .route("/bridge/ws", get(handle_bridge_ws))
+        .route("/events/ws", get(handle_events_ws));
 
     Router::new()
         .route("/health", get(health))
         .nest("/internal", internal_router)
-        .nest("/api", api_router)
+        .nest("/api", api_open_router.merge(api_router))
         .layer(cors)
         // Only GET falls through to the embedded UI — non-GET requests to
         // unmatched paths (e.g. removed `/internal/.../remember`) should

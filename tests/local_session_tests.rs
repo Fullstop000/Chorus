@@ -22,7 +22,10 @@ fn mem_store() -> Arc<Store> {
 }
 
 fn build_app_with_peer(store: Arc<Store>, peer: SocketAddr) -> axum::Router {
-    let router = harness::build_router(store);
+    // Use the raw router (no auto-bootstrapped identity, no header
+    // injection) so the test fully controls what the server's DB and
+    // request look like.
+    let router = harness::build_router_raw(store);
     router.layer(MockConnectInfo(peer))
 }
 

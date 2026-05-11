@@ -136,10 +136,12 @@ pub(super) fn acquire_transition(
 
 // ── Whoami ──
 
-pub async fn handle_whoami(State(state): State<AppState>) -> Json<serde_json::Value> {
+pub async fn handle_whoami(
+    axum::extract::Extension(actor): axum::extract::Extension<crate::server::auth::Actor>,
+) -> Json<serde_json::Value> {
     Json(serde_json::json!({
-        "id": state.local_human_id,
-        "name": state.local_human_name,
+        "id": actor.user_id,
+        "name": actor.user_name,
     }))
 }
 
@@ -182,7 +184,10 @@ pub async fn handle_ui_server_info(State(state): State<AppState>) -> ApiResult<s
     Ok(Json(serde_json::to_value(info).unwrap()))
 }
 
-pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto::SystemInfo> {
+pub async fn handle_system_info(
+    State(state): State<AppState>,
+    axum::extract::Extension(actor): axum::extract::Extension<crate::server::auth::Actor>,
+) -> ApiResult<dto::SystemInfo> {
     let data_dir = state.data_dir.to_string_lossy().into_owned();
     let data_dir_path = state.data_dir.clone();
     let db_size_bytes = std::fs::metadata(state.db_path()).map(|m| m.len()).ok();
@@ -210,12 +215,14 @@ pub async fn handle_system_info(State(state): State<AppState>) -> ApiResult<dto:
             }
             dto::ConfigInfo {
                 machine_id: cfg.machine_id,
-                local_human: cfg
-                    .local_human
-                    .id
-                    .zip(cfg.local_human.name)
-                    .filter(|(id, name)| !id.trim().is_empty() && !name.trim().is_empty())
-                    .map(|(id, name)| dto::LocalHumanInfo { id, name }),
+                // local_human now reflects the *authenticated* actor, not a
+                // cached cfg field. The cfg field is removed in a follow-on
+                // commit; this handler now sources identity from the same
+                // request extension every other handler reads.
+                local_human: Some(dto::LocalHumanInfo {
+                    id: actor.user_id.clone(),
+                    name: actor.user_name.clone(),
+                }),
                 agent_template: dto::AgentTemplateInfo {
                     dir: cfg.agent_template.dir,
                     default: cfg.agent_template.default,

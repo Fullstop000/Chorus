@@ -1,4 +1,4 @@
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::path_params::{PublicResourceIdPath, TeamMemberPath};
 use super::{app_err, internal_err, ApiResult, AppState};
 use crate::agent::workspace::{AgentWorkspace, TeamWorkspace};
+use crate::server::auth::Actor;
 use crate::server::error::AppErrorCode;
 use crate::store::channels::normalize_channel_name;
 use crate::store::messages::SenderType;
@@ -135,6 +136,7 @@ async fn restart_agent_member(
 
 pub async fn handle_create_team(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Json(req): Json<CreateTeamRequest>,
 ) -> ApiResult<TeamResponse> {
     let name = normalize_channel_name(&req.name);
@@ -154,7 +156,7 @@ pub async fn handle_create_team(
     // member_id)).
     // TODO: This handler is not atomic — late-stage failures (e.g. agent
     // restart) leave DB records behind without rolling back FS state.
-    let local_human_id = state.local_human_id.clone();
+    let local_human_id = actor.user_id.clone();
     let mut seen_member_keys = std::collections::HashSet::new();
     let mut creator_in_members = false;
     for member in &req.members {

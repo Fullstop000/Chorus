@@ -1,9 +1,10 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
 use super::{app_err, ApiResult, AppState};
+use crate::server::auth::Actor;
 use crate::server::error::AppErrorCode;
 use crate::store::channels::{
     is_valid_channel_name, normalize_channel_name, Channel, ChannelMemberProfile, ChannelType,
@@ -105,9 +106,10 @@ fn channel_member_info(profile: ChannelMemberProfile) -> ChannelMemberInfo {
 
 pub async fn handle_list_channels(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Query(query): Query<ListChannelsQuery>,
 ) -> ApiResult<Vec<ChannelInfo>> {
-    let member = query.member.unwrap_or_else(|| state.local_human_id.clone());
+    let member = query.member.unwrap_or_else(|| actor.user_id.clone());
     let active_workspace_id = state.active_workspace_id().await;
     let channels = channel_infos_for(
         state.store.as_ref(),
@@ -127,6 +129,7 @@ pub async fn handle_list_channels(
 
 pub async fn handle_create_channel(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Json(req): Json<CreateChannelRequest>,
 ) -> ApiResult<serde_json::Value> {
     let name = normalize_channel_name(&req.name);
@@ -170,7 +173,7 @@ pub async fn handle_create_channel(
     })?;
     let (_, events) = state
         .store
-        .join_channel_by_id(&channel_id, &state.local_human_id, SenderType::Human)
+        .join_channel_by_id(&channel_id, &actor.user_id, SenderType::Human)
         .unwrap_or_default();
     for event in events {
         state.event_bus.publish_stream(event);
