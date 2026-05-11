@@ -315,20 +315,27 @@ Bridge in cloud mode: user generates a bridge token via the web UI
 (`POST /api/tokens` with `kind='bridge'`), pastes it into the bridge's env.
 Same `api_tokens` table.
 
-## 8. Bridge auth — subsume into `api_tokens`
+## 8. Bridge auth — DEFERRED to a follow-up PR
 
-Today: `src/server/mod.rs:147` wires `bridge_auth: Arc<bridge_auth::BridgeAuth>`
-as its own auth registry.
+Originally scoped here as "subsume bridge_auth into api_tokens." On
+closer reading the subsumption is invasive: bridge tokens bind to a
+`machine_id` (the bridge instance), while CLI tokens bind only to an
+Account. A clean unification needs:
 
-After: bridges authenticate with `Authorization: Bearer chrs_bridge_…`
-just like CLI clients. The token row has `kind = 'bridge'`. The
-`bridge_auth` module becomes a thin wrapper that:
-- Mints tokens with `kind='bridge'`.
-- Validates that the auth layer's resulting `Actor` has
-  `AuthKind::ApiToken(TokenKind::Bridge)` for bridge-only endpoints
-  (`/internal/bridge/ws`, etc.).
+  - `machine_id` column on `api_tokens` (NULL for CLI, set for bridge)
+  - A `mint_bridge_token(account_id, machine_id, label)` issuance path
+  - A migration for existing `CHORUS_BRIDGE_TOKENS` env-driven bridges
+  - Rewiring `bridge_auth::require_bridge_auth` to look up via
+    `api_tokens` instead of its in-memory `HashMap`
 
-One auth registry. No drift surface between two parallel auth systems.
+`bridge_auth` and the new `require_auth` layer don't conflict today:
+they cover disjoint route prefixes. `/api/bridge/ws` lives in the open
+router (its own auth layer downstream); `/internal/*` keeps using
+`bridge_auth`. Unifying them is a real follow-up but doesn't block the
+identity-and-auth redesign from landing.
+
+A note in `src/server/bridge_auth.rs` documents the deferral inline so
+any future change-author sees it.
 
 ## 9. What this kills
 

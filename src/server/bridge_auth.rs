@@ -182,6 +182,14 @@ impl BridgeAuth {
 /// `machine_id` — preventing one bridge's token from acting on another
 /// bridge's agents. When tokens are unset (loopback default), the
 /// request passes through unchanged.
+///
+/// FUTURE: `bridge_auth` is a parallel auth registry to the new
+/// `api_tokens` table introduced by the identity-and-auth redesign.
+/// Both work today (the new layer covers `/api/*`, this layer covers
+/// `/internal/*` + `/api/bridge/ws`). Unifying them requires adding a
+/// `machine_id` column to `api_tokens` and a token-issuance story for
+/// bridge instances — out of scope for the current redesign, tracked
+/// as a follow-up in docs/plan/identity-and-auth-redesign.md.
 pub async fn require_bridge_auth(
     State(state): State<AppState>,
     headers: HeaderMap,
