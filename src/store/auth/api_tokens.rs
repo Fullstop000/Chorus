@@ -86,10 +86,10 @@ impl Store {
         Ok(MintedToken { raw, row })
     }
 
-    /// Look up an active token by the raw value the caller sent.
-    /// Updates `last_used_at` on every successful lookup so it's safe to
-    /// call directly from middleware. Returns `Ok(None)` if the token is
-    /// unknown or revoked.
+    /// Look up an active token by the raw value the caller sent. Returns
+    /// `Ok(None)` if the token is unknown or revoked. Bumps
+    /// `last_used_at` at most once per minute per token so middleware
+    /// doesn't acquire a write lock on every authenticated request.
     pub fn touch_active_token(&self, raw: &str) -> Result<Option<ApiToken>> {
         let conn = self.lock_conn();
         let token_hash = hash_token(raw);
@@ -100,11 +100,18 @@ impl Store {
         if row.revoked_at.is_some() {
             return Ok(None);
         }
-        conn.execute(
-            "UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?1",
-            params![token_hash],
-        )?;
-        Self::get_token_by_hash_inner(&conn, &token_hash)
+        let now = Utc::now();
+        let stale = row
+            .last_used_at
+            .map(|t| (now - t).num_seconds() >= 60)
+            .unwrap_or(true);
+        if stale {
+            conn.execute(
+                "UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?1",
+                params![token_hash],
+            )?;
+        }
+        Ok(Some(row))
     }
 
     /// Revoke a token by its raw value (for `chorus logout`). Returns true
@@ -227,14 +234,63 @@ mod tests {
     }
 
     #[test]
-    fn touch_active_token_validates_and_updates_last_used() {
+    fn touch_active_token_validates_and_writes_last_used_lazily() {
+        // First touch on a never-used token records a write (last_used_at
+        // was None, so the debounce considers it stale).
         let s = store();
         let acct = make_account(&s);
         let minted = s.mint_token(&acct.id, "local", Some("CLI")).unwrap();
         assert!(minted.row.last_used_at.is_none());
 
-        let active = s.touch_active_token(&minted.raw).unwrap().unwrap();
-        assert!(active.last_used_at.is_some());
+        // First call writes; the returned row predates the write (we
+        // return the row we already fetched rather than round-tripping).
+        let _ = s.touch_active_token(&minted.raw).unwrap().unwrap();
+
+        // Read back: last_used_at is now set in the DB.
+        let row = s
+            .list_tokens_for_account(&acct.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert!(
+            row.last_used_at.is_some(),
+            "first touch should populate last_used_at"
+        );
+    }
+
+    #[test]
+    fn touch_active_token_debounces_within_60s() {
+        // Two rapid touches in succession: only the first writes; the
+        // second sees the field set and skips the write.
+        let s = store();
+        let acct = make_account(&s);
+        let minted = s.mint_token(&acct.id, "local", None).unwrap();
+
+        let _ = s.touch_active_token(&minted.raw).unwrap();
+        let first_seen = s
+            .list_tokens_for_account(&acct.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .last_used_at;
+
+        // Second touch — should not advance the timestamp because <60s
+        // elapsed.
+        let _ = s.touch_active_token(&minted.raw).unwrap();
+        let second_seen = s
+            .list_tokens_for_account(&acct.id)
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .last_used_at;
+
+        assert_eq!(
+            first_seen, second_seen,
+            "second touch within 60s should not have rewritten last_used_at"
+        );
     }
 
     #[test]

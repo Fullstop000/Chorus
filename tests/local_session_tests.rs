@@ -95,6 +95,45 @@ async fn loopback_with_no_local_account_returns_conflict() {
 }
 
 #[tokio::test]
+async fn loopback_with_non_local_origin_is_rejected() {
+    // Defense-in-depth: if a reverse proxy on loopback forwards a remote
+    // request, the TCP peer looks loopback even though the browser is
+    // not. Send a non-local Origin header to simulate that scenario;
+    // the server must refuse to mint a session.
+    let store = mem_store();
+    let user = store.create_user("alice").unwrap();
+    let _acct = store.create_local_account(&user.id).unwrap();
+
+    let app = build_app_with_peer(store, LOOPBACK);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/local-session")
+        .header("Origin", "https://evil.example")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn loopback_with_local_origin_is_allowed() {
+    // The legitimate browser path: Origin is the loopback dev server.
+    let store = mem_store();
+    let user = store.create_user("alice").unwrap();
+    let _acct = store.create_local_account(&user.id).unwrap();
+
+    let app = build_app_with_peer(store, LOOPBACK);
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/auth/local-session")
+        .header("Origin", "http://127.0.0.1:3001")
+        .body(Body::empty())
+        .unwrap();
+    let res = app.oneshot(req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+}
+
+#[tokio::test]
 async fn loopback_with_disabled_account_returns_forbidden() {
     let store = mem_store();
     let user = store.create_user("alice").unwrap();

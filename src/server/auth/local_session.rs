@@ -22,6 +22,38 @@ use tracing::warn;
 use crate::server::auth::SESSION_COOKIE_NAME;
 use crate::server::handlers::AppState;
 
+/// Returns `true` when the request looks browser-originated from this
+/// machine. Defense-in-depth: even if a reverse proxy on loopback could
+/// spoof the peer address as `127.0.0.1`, the browser's `Origin` header
+/// is set by the user-agent itself for cross-origin POSTs and would
+/// reveal the actual originating site. We accept:
+///   - no Origin header (e.g. a same-origin curl from the user's
+///     terminal — useful for diagnostics)
+///   - `Origin: null` (sandboxed iframes / file://)
+///   - Origin with a loopback host
+fn origin_is_local(headers: &HeaderMap) -> bool {
+    let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
+        return true;
+    };
+    if origin == "null" {
+        return true;
+    }
+    // Parse the host out of `scheme://host[:port]`. Cheap manual parse —
+    // good enough for the loopback check.
+    let after_scheme = match origin.split_once("://") {
+        Some((_, rest)) => rest,
+        None => return false,
+    };
+    let host = after_scheme
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("");
+    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "::1")
+}
+
 #[derive(Debug, Serialize)]
 pub struct LocalSessionResponse {
     pub user: LocalSessionUser,
@@ -41,10 +73,23 @@ pub struct LocalSessionUser {
 pub async fn handle_local_session(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Response {
     if !peer.ip().is_loopback() {
         warn!(peer = %peer, "local-session: rejecting non-loopback peer");
         return StatusCode::NOT_FOUND.into_response();
+    }
+    // Defense-in-depth: if a reverse proxy on loopback forwards a remote
+    // request, the TCP peer is loopback even though the originating
+    // browser is not. The Origin header (set by the user-agent, not the
+    // proxy) reveals the real source. Reject when it's non-local.
+    if !origin_is_local(&headers) {
+        warn!(
+            origin = ?headers.get(header::ORIGIN),
+            peer = %peer,
+            "local-session: loopback peer but non-local Origin header — possible proxy bypass"
+        );
+        return StatusCode::FORBIDDEN.into_response();
     }
 
     let store = state.store.as_ref();

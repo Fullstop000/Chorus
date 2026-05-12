@@ -51,7 +51,18 @@ pub fn save(data_dir: &Path, creds: &Credentials) -> Result<PathBuf> {
     std::fs::create_dir_all(data_dir)
         .with_context(|| format!("failed to create {}", data_dir.display()))?;
     let path = path_for(data_dir);
-    let tmp = path.with_extension("toml.tmp");
+    // PID + ns-since-epoch in the temp filename so two concurrent
+    // `chorus login` invocations don't fight over the same `.tmp` and
+    // produce corrupted credentials.
+    let suffix = format!(
+        "tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp = path.with_extension(suffix);
 
     let body = format!(
         "# Chorus CLI credentials — written by `chorus login` / `chorus setup`.\n\

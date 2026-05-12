@@ -49,34 +49,43 @@ pub enum AuthKind {
     ApiToken,
 }
 
-/// Try to resolve an Actor from either credential. Returns `None` when
-/// no credential is present OR the credential is invalid/revoked. Logs
-/// the failure case at warn level so operators see invalid attempts.
+/// Try to resolve an Actor from either credential.
+///
+/// Returns `None` only when NO credential is present. If a credential
+/// IS present but invalid (stale cookie, revoked token, …), returns
+/// `None` AND does NOT silently fall through to the other type — the
+/// caller should treat that as a hard 401. No silent fallbacks.
+///
+/// Precedence when both credentials are present: cookie wins (standard
+/// browser fallback semantics; an explicit cookie generally indicates
+/// an active session UI session, while a leftover Authorization header
+/// in a browser context is unusual).
 pub fn resolve_actor(store: &Store, headers: &HeaderMap) -> Option<Actor> {
-    // Cookie first — when both are present, the browser session wins.
-    if let Some(sid) = extract_session_cookie(headers) {
-        match resolve_session(store, &sid) {
-            Some(actor) => return Some(actor),
+    let cookie = extract_session_cookie(headers);
+    let bearer = extract_bearer_token(headers);
+    match (cookie, bearer) {
+        (Some(sid), _) => match resolve_session(store, &sid) {
+            Some(actor) => Some(actor),
             None => {
                 warn!(
                     cookie = %redact(&sid),
-                    "auth: session cookie did not resolve to an active session"
+                    "auth: session cookie did not resolve; rejecting without trying bearer"
                 );
+                None
             }
-        }
-    }
-    if let Some(raw) = extract_bearer_token(headers) {
-        match resolve_token(store, &raw) {
-            Some(actor) => return Some(actor),
+        },
+        (None, Some(raw)) => match resolve_token(store, &raw) {
+            Some(actor) => Some(actor),
             None => {
                 warn!(
                     token = %redact(&raw),
                     "auth: bearer token did not resolve to an active token"
                 );
+                None
             }
-        }
+        },
+        (None, None) => None,
     }
-    None
 }
 
 /// Strict middleware: rejects with 401 if no Actor resolves.
@@ -123,12 +132,18 @@ fn unauthorized() -> Response {
 }
 
 fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
+    // RFC 7235: auth scheme is case-insensitive. We split on the first
+    // whitespace and compare the scheme literal that way.
     let raw = headers
         .get(axum::http::header::AUTHORIZATION)?
         .to_str()
         .ok()?
         .trim();
-    let token = raw.strip_prefix("Bearer ").or_else(|| raw.strip_prefix("bearer "))?.trim();
+    let (scheme, rest) = raw.split_once(char::is_whitespace)?;
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return None;
+    }
+    let token = rest.trim();
     if token.is_empty() {
         None
     } else {
@@ -137,13 +152,19 @@ fn extract_bearer_token(headers: &HeaderMap) -> Option<String> {
 }
 
 fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get(axum::http::header::COOKIE)?.to_str().ok()?;
-    for piece in raw.split(';') {
-        let piece = piece.trim();
-        if let Some(val) = piece.strip_prefix(&format!("{SESSION_COOKIE_NAME}=")) {
-            let val = val.trim();
-            if !val.is_empty() {
-                return Some(val.to_string());
+    // HTTP/2 allows the client to split the cookie set across multiple
+    // Cookie headers. Iterate over all of them so the second-or-later
+    // header isn't silently dropped.
+    let prefix = format!("{SESSION_COOKIE_NAME}=");
+    for hv in headers.get_all(axum::http::header::COOKIE) {
+        let Ok(raw) = hv.to_str() else { continue };
+        for piece in raw.split(';') {
+            let piece = piece.trim();
+            if let Some(val) = piece.strip_prefix(prefix.as_str()) {
+                let val = val.trim();
+                if !val.is_empty() {
+                    return Some(val.to_string());
+                }
             }
         }
     }
@@ -275,6 +296,55 @@ mod tests {
         ]);
         let actor = resolve_actor(&store, &h).expect("should resolve");
         assert_eq!(actor.auth, AuthKind::Session);
+    }
+
+    #[test]
+    fn invalid_cookie_does_not_fall_through_to_bearer() {
+        // If the client sends BOTH a stale/revoked cookie AND a valid
+        // bearer token, the auth layer must NOT silently authenticate
+        // them via the bearer — a present-but-invalid credential is a
+        // hard failure, not a fallback signal.
+        let (store, acct) = store_with_local_account();
+        let session = store.create_session(&acct.id, None).unwrap();
+        assert!(store.revoke_session(&session.id).unwrap());
+        let minted = store.mint_token(&acct.id, "local", None).unwrap();
+        let h = make_headers(&[
+            ("Cookie", &format!("chorus_sid={}", session.id)),
+            ("Authorization", &format!("Bearer {}", minted.raw)),
+        ]);
+        assert!(resolve_actor(&store, &h).is_none());
+    }
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive() {
+        let (store, acct) = store_with_local_account();
+        let minted = store.mint_token(&acct.id, "local", None).unwrap();
+        for variant in ["Bearer", "bearer", "BEARER", "BeArEr"] {
+            let h = make_headers(&[("Authorization", &format!("{variant} {}", minted.raw))]);
+            assert!(
+                resolve_actor(&store, &h).is_some(),
+                "scheme `{variant}` should resolve"
+            );
+        }
+    }
+
+    #[test]
+    fn cookie_extraction_handles_multiple_cookie_headers() {
+        let (store, acct) = store_with_local_account();
+        let session = store.create_session(&acct.id, None).unwrap();
+        // HTTP/2 split: two Cookie headers, the target one is in the
+        // second header. The naive single-header parser would miss it.
+        let mut h = HeaderMap::new();
+        h.append(
+            axum::http::header::COOKIE,
+            HeaderValue::from_static("theme=dark; other=1"),
+        );
+        h.append(
+            axum::http::header::COOKIE,
+            HeaderValue::from_str(&format!("chorus_sid={}", session.id)).unwrap(),
+        );
+        let actor = resolve_actor(&store, &h).expect("should resolve");
+        assert_eq!(actor.account_id, acct.id);
     }
 
     #[test]

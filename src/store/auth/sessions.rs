@@ -51,7 +51,10 @@ impl Store {
     }
 
     /// Look up a session by cookie value. Returns `Ok(None)` if the session
-    /// is missing, revoked, or expired. Updates `last_seen_at` on every hit.
+    /// is missing, revoked, or expired. Bumps `last_seen_at` no more often
+    /// than once per minute per session to avoid a SQLite write on every
+    /// authenticated request (which would serialize all reads behind a
+    /// write lock under load).
     pub fn touch_active_session(&self, id: &str) -> Result<Option<Session>> {
         let conn = self.lock_conn();
         let session = match Self::get_session_by_id_inner(&conn, id)? {
@@ -66,11 +69,15 @@ impl Store {
                 return Ok(None);
             }
         }
-        conn.execute(
-            "UPDATE sessions SET last_seen_at = datetime('now') WHERE id = ?1",
-            params![id],
-        )?;
-        Self::get_session_by_id_inner(&conn, id)
+        // Debounce: only write last_seen_at if the stored value is stale.
+        let now = Utc::now();
+        if (now - session.last_seen_at).num_seconds() >= 60 {
+            conn.execute(
+                "UPDATE sessions SET last_seen_at = datetime('now') WHERE id = ?1",
+                params![id],
+            )?;
+        }
+        Ok(Some(session))
     }
 
     pub fn revoke_session(&self, id: &str) -> Result<bool> {
