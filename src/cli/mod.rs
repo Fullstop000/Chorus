@@ -133,7 +133,12 @@ enum Commands {
         /// Platform HTTP base URL (e.g. http://platform.host:3001) for MCP proxy.
         #[arg(long)]
         platform_http: String,
-        /// Bearer token for the WS upgrade (matches platform's CHORUS_BRIDGE_TOKENS).
+        /// Bearer token for the WS upgrade. Must match a row in the
+        /// platform's `api_tokens` table with `machine_id` set to this
+        /// bridge's `--machine-id`. Mint one on the platform host with
+        /// `chorus tokens mint --bridge --machine-id <id>` (or use the
+        /// `bridge-credentials.toml` written by `chorus setup` for the
+        /// local install).
         #[arg(long, env = "CHORUS_BRIDGE_TOKEN")]
         token: Option<String>,
         /// Stable identifier for this bridge instance.

@@ -15,7 +15,7 @@
 //! otherwise silently mark the live new instance dead.
 //!
 //! Auth: when the platform has tokens configured (via
-//! `CHORUS_BRIDGE_TOKENS` env var or explicit `BridgeAuth`), the request
+//! `api_tokens` rows minted via `mint_bridge_token`), the request
 //! must include `Authorization: Bearer <token>` and the
 //! `bridge.hello.machine_id` must match the token's bound `machine_id`.
 //! With no tokens configured, auth is disabled (loopback default).
