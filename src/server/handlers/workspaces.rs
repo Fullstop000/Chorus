@@ -1,10 +1,11 @@
 //! Public platform workspace API.
 
-use axum::extract::{Path, State};
+use axum::extract::{Extension, Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
+use crate::server::auth::Actor;
 use crate::server::error::{app_err, internal_err, ApiResult, ErrorResponse};
 use crate::server::handlers::AppState;
 use crate::store::{Workspace, WorkspaceCounts, WorkspaceMode};
@@ -117,6 +118,7 @@ pub async fn handle_list_workspaces(
 
 pub async fn handle_create_workspace(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Json(req): Json<CreateWorkspaceRequest>,
 ) -> ApiResult<WorkspaceResponse> {
     let name = req.name.trim();
@@ -128,7 +130,7 @@ pub async fn handle_create_workspace(
     }
     let (workspace, event) = state
         .store
-        .create_local_workspace_without_activation(name, &state.local_human_id)
+        .create_local_workspace_without_activation(name, &actor.user_id)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     state.event_bus.publish_stream(event);
     let active_workspace_id = state.active_workspace_id().await;

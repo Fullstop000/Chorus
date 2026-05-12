@@ -9,6 +9,9 @@ mod agent;
 mod bridge;
 mod channel;
 mod check;
+pub(crate) mod credentials;
+mod login;
+mod logout;
 mod send;
 mod serve;
 mod setup;
@@ -25,15 +28,15 @@ use chorus::config::ChorusConfig;
 /// The Chorus CLI enables `RUST_BACKTRACE=1` by default, so `anyhow::bail!`
 /// would emit a full backtrace for mundane mistakes like forgetting `--yes`.
 #[derive(Debug)]
-pub struct UserError(pub String);
+pub struct CliError(pub String);
 
-impl std::fmt::Display for UserError {
+impl std::fmt::Display for CliError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
 }
 
-impl std::error::Error for UserError {}
+impl std::error::Error for CliError {}
 
 #[derive(Parser)]
 #[command(name = "chorus", about = "Local AI agent collaboration platform")]
@@ -130,7 +133,12 @@ enum Commands {
         /// Platform HTTP base URL (e.g. http://platform.host:3001) for MCP proxy.
         #[arg(long)]
         platform_http: String,
-        /// Bearer token for the WS upgrade (matches platform's CHORUS_BRIDGE_TOKENS).
+        /// Bearer token for the WS upgrade. Must match a row in the
+        /// platform's `api_tokens` table with `machine_id` set to this
+        /// bridge's `--machine-id`. Mint one on the platform host with
+        /// `chorus tokens mint --bridge --machine-id <id>` (or use the
+        /// `bridge-credentials.toml` written by `chorus setup` for the
+        /// local install).
         #[arg(long, env = "CHORUS_BRIDGE_TOKEN")]
         token: Option<String>,
         /// Stable identifier for this bridge instance.
@@ -145,6 +153,25 @@ enum Commands {
     },
     /// Read-only environment diagnostic
     Check {
+        #[arg(long)]
+        data_dir: Option<String>,
+    },
+    /// Mint a fresh CLI bearer token. Local mode only — talks directly to
+    /// the on-disk Chorus DB.
+    Login {
+        /// Use the singleton local Account. Required (cloud providers
+        /// will land later).
+        #[arg(long)]
+        local: bool,
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Human-readable label stored on the token row for `chorus tokens
+        /// list` / future audit.
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// Revoke the current CLI token and delete the local credentials file.
+    Logout {
         #[arg(long)]
         data_dir: Option<String>,
     },
@@ -263,40 +290,71 @@ pub(crate) fn default_data_dir() -> String {
     format!("{home}/.chorus")
 }
 
-/// Local human identity as reported by `GET /api/whoami`. The CLI used to use
-/// `whoami::username()` as identity, which conflated the OS user running the
-/// CLI process with the Chorus human row. The server is now the source of
-/// truth: it resolves identity from `ChorusConfig::local_human` (or seeds a
-/// fresh `humans.id` on first run), and the CLI reads it back over HTTP.
+/// Authenticated user as reported by `GET /api/whoami`. Composed from
+/// the server's view of the actor for the request — that's the User the
+/// credentials in `~/.chorus/credentials.toml` resolve to.
 #[derive(Debug, Clone)]
-pub(crate) struct LocalHumanIdentity {
+pub(crate) struct AuthedUser {
     pub id: String,
     pub name: String,
 }
 
-/// Fetch the local human's `(id, name)` from a running server.
+/// Resolve the CLI's bearer token. Precedence:
+///   1. `CHORUS_TOKEN` env var (used by integration tests + scripts).
+///   2. `~/.chorus/credentials.toml`.
 ///
-/// Fails with setup guidance when the server returns a malformed or empty
-/// response — the plan requires CLI human actions to refuse to fall back to
-/// the OS username, so we surface a clear error instead of silently using a
-/// wrong identity.
-pub(crate) async fn fetch_local_human_identity(
+/// Returns `Err(CliError)` with setup guidance if neither is present.
+pub(crate) fn resolve_cli_token() -> anyhow::Result<String> {
+    if let Ok(env_token) = std::env::var("CHORUS_TOKEN") {
+        if !env_token.trim().is_empty() {
+            return Ok(env_token);
+        }
+    }
+    let data_dir_str = default_data_dir();
+    let data_dir = std::path::Path::new(&data_dir_str);
+    let creds = credentials::load(data_dir)?.ok_or_else(|| {
+        CliError(format!(
+            "no credentials at {} (and CHORUS_TOKEN unset); run `chorus setup` or `chorus login --local`",
+            credentials::path_for(data_dir).display()
+        ))
+    })?;
+    Ok(creds.token)
+}
+
+/// Fetch the current user's `(id, name)` from a running server, sending
+/// the bearer token resolved by `resolve_cli_token`. Also returns the
+/// token so callers can attach `.bearer_auth(&token)` to follow-up
+/// HTTP calls — the platform requires every `/internal/*` and `/api/*`
+/// request to carry credentials.
+///
+/// Fails with setup guidance when:
+///   - no token available (env or file) → tell user to run `chorus setup`
+///     (or `chorus login --local` to mint a token against an existing
+///     install)
+///   - the server returns 401 → token revoked or stale; same recovery.
+pub(crate) async fn fetch_authed_user_with_token(
     client: &reqwest::Client,
     server_url: &str,
-) -> anyhow::Result<LocalHumanIdentity> {
+) -> anyhow::Result<(AuthedUser, String)> {
     use anyhow::Context;
+    let token = resolve_cli_token()?;
     let url = format!("{server_url}/api/whoami");
     let res = client
         .get(&url)
+        .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;
     let status = res.status();
     let body = res.text().await.unwrap_or_default();
+    if status == reqwest::StatusCode::UNAUTHORIZED {
+        return Err(CliError(
+            "authentication failed; the token may be revoked. Run `chorus login --local`".into(),
+        )
+        .into());
+    }
     if !status.is_success() {
-        return Err(anyhow::anyhow!(
-            "{status} from {url}: {body}; run `chorus setup` to initialize local identity"
-        ));
+        return Err(anyhow::anyhow!("{status} from {url}: {body}"));
     }
     let value: serde_json::Value = serde_json::from_str(&body)
         .with_context(|| format!("unexpected /api/whoami response from {server_url}"))?;
@@ -304,25 +362,28 @@ pub(crate) async fn fetch_local_human_identity(
         .get("id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            UserError(
-                "server has no local human id; run `chorus setup` to initialize local identity"
-                    .into(),
-            )
-        })?
+        .ok_or_else(|| CliError("server returned empty user id".into()))?
         .to_string();
     let name = value
         .get("name")
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            UserError(
-                "server has no local human name; run `chorus setup` to initialize local identity"
-                    .into(),
-            )
-        })?
+        .ok_or_else(|| CliError("server returned empty user name".into()))?
         .to_string();
-    Ok(LocalHumanIdentity { id, name })
+    Ok((AuthedUser { id, name }, token))
+}
+
+/// Back-compat shim for callers that only need the user identity. New
+/// code should prefer `fetch_authed_user_with_token` so it can attach
+/// the bearer to follow-up requests.
+#[allow(dead_code)]
+pub(crate) async fn fetch_authed_user(
+    client: &reqwest::Client,
+    server_url: &str,
+) -> anyhow::Result<AuthedUser> {
+    fetch_authed_user_with_token(client, server_url)
+        .await
+        .map(|(u, _)| u)
 }
 
 pub(crate) fn default_model_for_runtime(runtime: &str) -> &str {
@@ -438,6 +499,22 @@ pub async fn run() -> anyhow::Result<()> {
         Some(Commands::Agent { cmd }) => agent::run(cmd).await,
 
         Some(Commands::Check { data_dir }) => check::run(data_dir).await,
+
+        Some(Commands::Login {
+            local,
+            data_dir,
+            label,
+        }) => {
+            if !local {
+                return Err(CliError(
+                    "only `chorus login --local` is supported today; cloud providers land in a later release".into(),
+                )
+                .into());
+            }
+            login::run(data_dir, label).await
+        }
+
+        Some(Commands::Logout { data_dir }) => logout::run(data_dir).await,
 
         Some(Commands::Serve {
             port,

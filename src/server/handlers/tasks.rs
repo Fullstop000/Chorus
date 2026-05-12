@@ -1,9 +1,10 @@
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use serde::Deserialize;
 
 use super::{app_err, ApiResult, AppState};
+use crate::server::auth::Actor;
 use crate::store::channels::Channel;
 use crate::store::messages::SenderType;
 use crate::store::tasks::{TaskInfo, TaskStatus};
@@ -190,6 +191,7 @@ pub async fn handle_public_list_tasks(
 
 pub async fn handle_public_create_tasks(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
     Json(req): Json<CreateTasksRequest>,
 ) -> ApiResult<serde_json::Value> {
@@ -197,12 +199,7 @@ pub async fn handle_public_create_tasks(
     let titles: Vec<&str> = req.tasks.iter().map(|t| t.title.as_str()).collect();
     let (tasks, events) = state
         .store
-        .create_tasks(
-            &channel.name,
-            &state.local_human_id,
-            SenderType::Human,
-            &titles,
-        )
+        .create_tasks(&channel.name, &actor.user_id, SenderType::Human, &titles)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     for event in events {
         state.event_bus.publish_stream(event);
@@ -212,6 +209,7 @@ pub async fn handle_public_create_tasks(
 
 pub async fn handle_public_claim_tasks(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
     Json(req): Json<ClaimTasksRequest>,
 ) -> ApiResult<serde_json::Value> {
@@ -220,7 +218,7 @@ pub async fn handle_public_claim_tasks(
         .store
         .update_tasks_claim(
             &channel.name,
-            &state.local_human_id,
+            &actor.user_id,
             SenderType::Human,
             &req.task_numbers,
         )
@@ -233,6 +231,7 @@ pub async fn handle_public_claim_tasks(
 
 pub async fn handle_public_unclaim_task(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
     Json(req): Json<UnclaimTaskRequest>,
 ) -> ApiResult<serde_json::Value> {
@@ -241,7 +240,7 @@ pub async fn handle_public_unclaim_task(
         .store
         .update_task_unclaim(
             &channel.name,
-            &state.local_human_id,
+            &actor.user_id,
             SenderType::Human,
             req.task_number,
         )
@@ -271,6 +270,7 @@ pub async fn handle_get_task_detail(
 
 pub async fn handle_public_update_task_status(
     State(state): State<AppState>,
+    Extension(actor): Extension<Actor>,
     Path(conversation_id): Path<String>,
     Json(req): Json<UpdateTaskStatusRequest>,
 ) -> ApiResult<serde_json::Value> {
@@ -282,7 +282,7 @@ pub async fn handle_public_update_task_status(
         .update_task_status(
             &channel.name,
             req.task_number,
-            &state.local_human_id,
+            &actor.user_id,
             SenderType::Human,
             new_status,
         )

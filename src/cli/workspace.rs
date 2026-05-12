@@ -145,7 +145,9 @@ async fn request<T: serde::de::DeserializeOwned>(
     path: &str,
 ) -> anyhow::Result<T> {
     let url = format!("{server_url}{path}");
+    let token = crate::cli::resolve_cli_token()?;
     let res = builder
+        .bearer_auth(&token)
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;

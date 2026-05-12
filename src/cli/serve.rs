@@ -125,7 +125,16 @@ pub async fn run(
 
     tracing::info!(port = actual_bridge_port, "shared bridge listening");
 
-    let (bridge_app, bridge_ct) = chorus::bridge::serve::build_bridge_router(&server_url);
+    // The in-process bridge sends every agent HTTP call through this
+    // MCP listener. Load `bridge-credentials.toml` so those calls carry
+    // the bridge's bearer token; when absent (fresh install or test
+    // harness), pass `None` and rely on the platform's passthrough.
+    let bridge_token = super::credentials::bridge_load(&data_dir)
+        .ok()
+        .flatten()
+        .map(|c| c.token);
+    let (bridge_app, bridge_ct) =
+        chorus::bridge::serve::build_bridge_router(&server_url, bridge_token.clone());
     // Cascade the shared shutdown token into the bridge's internal CT so any
     // in-flight MCP sessions (child tokens spawned per request) drain when
     // Ctrl-C fires. Without this, axum stops accepting connections but active
@@ -158,11 +167,7 @@ pub async fn run(
     let template_path = chorus::agent::templates::expand_tilde(&template_dir_raw);
     let templates = chorus::agent::templates::load_templates(&template_path);
 
-    let bridge_auth = chorus::server::bridge_auth::BridgeAuth::from_env();
-    if bridge_auth.is_enabled() {
-        tracing::info!("Bridge auth enabled (CHORUS_BRIDGE_TOKENS configured)");
-    }
-    let router = chorus::server::build_router_with_services_and_auth(
+    let router = chorus::server::build_router_with_services(
         store.clone(),
         event_bus.clone(),
         data_dir.clone(),
@@ -174,7 +179,6 @@ pub async fn run(
             ),
         ) as chorus::agent::runtime_status::SharedRuntimeStatusProvider,
         templates,
-        bridge_auth,
     );
 
     // Spawn background trace writer for Telescope persistence.
@@ -194,6 +198,9 @@ pub async fn run(
     // accepting on the listener.
     let in_proc_machine_id = chorus::server::resolve_local_machine_id_for_serve(&data_dir);
     let in_proc_ws_url = format!("ws://127.0.0.1:{port}/api/bridge/ws");
+    // Reuse the bridge token loaded above so the WS upgrade passes the
+    // platform's `require_bridge_auth` check.
+    let in_proc_bearer = bridge_token.clone();
     let in_proc_shutdown = shutdown_token.clone();
     let in_proc_manager = manager.clone();
     let in_proc_store = store.clone();
@@ -201,6 +208,7 @@ pub async fn run(
         if let Err(err) = chorus::bridge::client::run_in_process_bridge_client(
             in_proc_ws_url,
             in_proc_machine_id,
+            in_proc_bearer,
             in_proc_manager,
             in_proc_store,
             in_proc_shutdown,
@@ -224,8 +232,16 @@ pub async fn run(
         tracing::info!("\nShutting down...");
         shutdown_token_ctrlc.cancel();
     };
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await?;
+    // `into_make_service_with_connect_info::<SocketAddr>()` so the
+    // `/api/auth/local-session` handler can verify the TCP peer is on a
+    // loopback address before minting a browser session cookie. Without
+    // this wrapping, `ConnectInfo<SocketAddr>` would not be available to
+    // extract from inside the handler.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await?;
     Ok(())
 }

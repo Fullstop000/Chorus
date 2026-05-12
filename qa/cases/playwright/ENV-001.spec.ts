@@ -24,7 +24,15 @@ test.describe('ENV-001', () => {
   test('App Startup And Identity @case ENV-001', async ({ page, request }) => {
     const errors: string[] = []
     page.on('console', (msg) => {
-      if (msg.type() === 'error') errors.push(msg.text())
+      if (msg.type() !== 'error') return
+      const text = msg.text()
+      // The local-mode session bootstrap (channels.ts → mintLocalSession)
+      // produces an expected 401 on the very first /api/whoami before the
+      // cookie is minted. The browser reports it as a "Failed to load
+      // resource" console error; filter that single noise message out so
+      // we still catch real app errors.
+      if (text.includes('Failed to load resource: the server responded with a status of 401')) return
+      errors.push(text)
     })
 
     await test.step('Step 1: Open the app root URL', async () => {

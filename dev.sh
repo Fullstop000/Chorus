@@ -137,7 +137,7 @@ CHORUS_PID=$!
 
 # ── Wait for server to be ready ──
 for i in $(seq 1 20); do
-  if curl -sf "http://localhost:$API_PORT/api/whoami" > /dev/null 2>&1; then
+  if curl -sf "http://localhost:$API_PORT/health" > /dev/null 2>&1; then
     break
   fi
   sleep 0.2

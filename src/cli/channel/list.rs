@@ -8,7 +8,7 @@ use anyhow::Context;
 
 pub async fn run(all: bool, server_url: &str) -> anyhow::Result<()> {
     let client = super::http::client();
-    let me = crate::cli::fetch_local_human_identity(&client, server_url).await?;
+    let (me, token) = crate::cli::fetch_authed_user_with_token(&client, server_url).await?;
     // Always request system channels so the default path can surface rooms
     // like `#all` that every human is auto-joined to. The client-side filter
     // below drops rows with `joined=false` when `!all`, which keeps the
@@ -19,6 +19,7 @@ pub async fn run(all: bool, server_url: &str) -> anyhow::Result<()> {
     );
     let res = client
         .get(&url)
+        .bearer_auth(&token)
         .send()
         .await
         .with_context(|| format!("is the Chorus server running at {server_url}?"))?;

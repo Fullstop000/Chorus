@@ -1,4 +1,3 @@
-import type { APIRequestContext } from '@playwright/test'
 import { test, expect } from './helpers/fixtures'
 import {
   createAgentApi,
@@ -6,21 +5,9 @@ import {
   getWhoami,
   inviteChannelMemberApi,
   listAgents,
+  sendAsUser,
 } from './helpers/api'
 import { clickSidebarChannel } from './helpers/ui'
-
-async function postMessage(
-  request: APIRequestContext,
-  actor: string,
-  target: string,
-  content: string
-): Promise<{ messageId: string; seq: number }> {
-  const response = await request.post(`/internal/agent/${encodeURIComponent(actor)}/send`, {
-    data: { target, content },
-  })
-  expect(response.ok(), await response.text()).toBeTruthy()
-  return response.json()
-}
 
 test.describe('MSG-008', () => {
   test('conversation read cursor advances after visible top-level messages render @case MSG-008', async ({
@@ -48,7 +35,7 @@ test.describe('MSG-008', () => {
     await inviteChannelMemberApi(request, channel.id, agentName)
 
     const token = `conversation-read-${Date.now()}`
-    const seeded = await postMessage(request, agentName, `#${channelName}`, token)
+    const seeded = await sendAsUser(request, agentName, `#${channelName}`, token)
 
     const readCursorPosts: Array<{ lastReadSeq?: number }> = []
     page.on('request', (req) => {

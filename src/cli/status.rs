@@ -6,9 +6,10 @@
 
 pub async fn run(server_url: String) -> anyhow::Result<()> {
     let client = chorus::utils::http::client();
-    let me = crate::cli::fetch_local_human_identity(&client, &server_url).await?;
+    let (me, token) = crate::cli::fetch_authed_user_with_token(&client, &server_url).await?;
     let res = client
         .get(format!("{server_url}/internal/agent/{}/server", me.id))
+        .bearer_auth(&token)
         .send()
         .await?;
     let data: serde_json::Value = res.json().await?;

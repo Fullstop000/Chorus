@@ -15,7 +15,7 @@
 //! otherwise silently mark the live new instance dead.
 //!
 //! Auth: when the platform has tokens configured (via
-//! `CHORUS_BRIDGE_TOKENS` env var or explicit `BridgeAuth`), the request
+//! `api_tokens` rows minted via `mint_bridge_token`), the request
 //! must include `Authorization: Bearer <token>` and the
 //! `bridge.hello.machine_id` must match the token's bound `machine_id`.
 //! With no tokens configured, auth is disabled (loopback default).
@@ -71,16 +71,29 @@ pub async fn handle_bridge_ws(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let expected_machine_id = match state.bridge_auth.check(&headers) {
-        AuthOutcome::Disabled => None,
-        AuthOutcome::Allowed {
-            expected_machine_id,
-        } => Some(expected_machine_id),
-        AuthOutcome::Rejected => {
-            warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
-            return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response();
-        }
-    };
+    let expected_machine_id =
+        match crate::server::bridge_auth::check(state.store.as_ref(), &headers) {
+            AuthOutcome::Disabled => None,
+            AuthOutcome::Allowed {
+                expected_machine_id,
+            } => Some(expected_machine_id),
+            AuthOutcome::CliAllowed { .. } => {
+                // CLI tokens are not allowed to open a bridge WS session
+                // — they're for `chorus send` and friends, not for
+                // bridges hosting agents.
+                warn!("bridge_ws: rejecting upgrade — CLI token cannot open bridge session");
+                return (
+                    StatusCode::FORBIDDEN,
+                    "CLI token not allowed on bridge upgrade",
+                )
+                    .into_response();
+            }
+            AuthOutcome::Rejected => {
+                warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
+                return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token")
+                    .into_response();
+            }
+        };
     ws.on_upgrade(move |socket| {
         bridge_session(
             socket,
@@ -402,10 +415,7 @@ pub fn build_target_frame_text_for_machine(
 
 /// Build a serialized lifecycle RPC frame (`agent.start`, `agent.stop`,
 /// `agent.restart`).
-fn build_lifecycle_frame_text(
-    frame_type: &str,
-    data: serde_json::Value,
-) -> anyhow::Result<String> {
+fn build_lifecycle_frame_text(frame_type: &str, data: serde_json::Value) -> anyhow::Result<String> {
     let envelope = WireFrame {
         v: 1,
         frame_type: frame_type.to_string(),
@@ -472,7 +482,9 @@ pub fn dispatch_agent_restart(
 }
 
 fn resolve_owner(store: &Store, agent_id: &str) -> anyhow::Result<Option<String>> {
-    Ok(store.get_agent_by_id(agent_id, false)?.map(|a| a.machine_id))
+    Ok(store
+        .get_agent_by_id(agent_id, false)?
+        .map(|a| a.machine_id))
 }
 
 /// Push a fresh `bridge.target` to every connected bridge, scoped to

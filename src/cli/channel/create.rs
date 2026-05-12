@@ -12,7 +12,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let normalized = super::normalize_channel_name(&name);
     if !chorus::store::channels::is_valid_channel_name(&normalized) {
-        return Err(crate::cli::UserError(format!(
+        return Err(crate::cli::CliError(format!(
             "{}: {normalized}",
             chorus::store::channels::INVALID_CHANNEL_NAME_MSG
         ))
@@ -20,9 +20,11 @@ pub async fn run(
     }
     let description = description.unwrap_or_default();
     let client = super::http::client();
+    let token = crate::cli::resolve_cli_token()?;
     let url = format!("{server_url}/api/channels");
     let res = client
         .post(&url)
+        .bearer_auth(&token)
         .json(&serde_json::json!({
             "name": normalized,
             "description": description,

@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.10.0] - 2026-05-13
+
+### Added
+- **Identity & auth redesign (#157).** `users` + `accounts` + `sessions` + `api_tokens` replaces the `humans`-keyed identity. CLI uses bearer tokens via `credentials.toml`; browser bootstraps a `chorus_sid` cookie via loopback-only `POST /api/auth/local-session`; bridges share `api_tokens` with machine-bound rows in `bridge-credentials.toml`.
+- `chorus login --local` and `chorus logout` for token rotation.
+
+### Changed (breaking)
+- CLI commands that hit the server now require credentials. `chorus setup` writes them; automation can set `CHORUS_TOKEN`.
+- `CHORUS_BRIDGE_TOKENS` env path replaced by `bridge-credentials.toml` (or `CHORUS_BRIDGE_TOKEN`).
+- Local-mode UI is loopback-only — remote browsers can no longer hit a local install.
+
+### Migration
+- Existing data dirs from <0.0.10.0 cannot upgrade in place. Wipe `~/.chorus` and re-run `chorus setup`.
+
 ## [0.0.9.0] - 2026-05-07
 
 ### Added

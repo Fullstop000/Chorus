@@ -159,7 +159,7 @@ async fn start_chorus_server() -> anyhow::Result<(String, Arc<Store>)> {
 async fn start_bridge_with_server(
     server_url: &str,
 ) -> anyhow::Result<(String, tokio_util::sync::CancellationToken)> {
-    let (app, ct) = build_bridge_router(server_url);
+    let (app, ct) = build_bridge_router(server_url, None);
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let port = listener.local_addr()?.port();

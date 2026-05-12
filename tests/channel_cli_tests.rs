@@ -44,6 +44,10 @@ async fn start_fixture() -> String {
 /// `RUST_LOG=chorus=info` matches the CLI's default filter so the
 /// `tracing::info!` success lines end up on stdout in the captured output.
 ///
+/// `CHORUS_TOKEN` carries the harness's default bearer credential so the
+/// CLI authenticates against the fixture's auth layer without writing
+/// a credentials.toml on disk.
+///
 /// Runs inside `spawn_blocking` because `Command::output()` blocks the
 /// current thread — on the default `#[tokio::test]` current-thread runtime
 /// that would starve the in-process fixture's axum server and hang.
@@ -54,6 +58,7 @@ async fn run_channel(args: &[&str]) -> std::process::Output {
             .arg("channel")
             .args(&args)
             .env("RUST_LOG", "chorus=info")
+            .env("CHORUS_TOKEN", harness::TEST_AUTH_TOKEN)
             .output()
             .expect("failed to run chorus binary")
     })
@@ -266,6 +271,10 @@ async fn channel_list_server_unreachable() {
             .arg("channel")
             .args(&args)
             .env("RUST_LOG", "chorus=info")
+            // Pass a credential so the CLI reaches the network step;
+            // otherwise it short-circuits with a "no credentials" error
+            // and we never test the connection-refused path.
+            .env("CHORUS_TOKEN", harness::TEST_AUTH_TOKEN)
             .env_remove("HTTP_PROXY")
             .env_remove("HTTPS_PROXY")
             .env_remove("http_proxy")

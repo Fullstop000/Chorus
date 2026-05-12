@@ -29,9 +29,9 @@ fn resolve_agent_id(agents: &[serde_json::Value], name: &str) -> anyhow::Result<
         .collect();
 
     match display_matches.len() {
-        0 => Err(crate::cli::UserError(format!("agent not found: {name}")).into()),
+        0 => Err(crate::cli::CliError(format!("agent not found: {name}")).into()),
         1 => Ok(display_matches.into_iter().next().unwrap()),
-        _ => Err(crate::cli::UserError(format!(
+        _ => Err(crate::cli::CliError(format!(
             "ambiguous name: '{name}' matches {} agents by display_name. Use the canonical name (e.g., testbot-2a00).",
             display_matches.len()
         )).into()),
@@ -73,7 +73,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             } else {
                 model
             };
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let mut payload = serde_json::json!({
                 "display_name": name,
                 "runtime": runtime,
@@ -103,7 +104,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         }
         AgentCommands::Stop { name, server_url } => {
             tracing::info!("Stopping agent @{name}...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -127,7 +129,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             // username into `/internal/agent/{agent_id}/server`, which only
             // worked when the OS user happened to share a name with an
             // agent and conflated identity types.
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             if agents.is_empty() {
                 tracing::info!("No agents.");
@@ -142,7 +145,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             Ok(())
         }
         AgentCommands::Get { name, server_url } => {
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -184,7 +188,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         }
         AgentCommands::Start { name, server_url } => {
             tracing::info!("Starting agent @{name}...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -208,7 +213,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             server_url,
         } => {
             tracing::info!("Restarting agent @{name} (mode: {mode})...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -246,13 +252,13 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 let mut locked = stdin.lock();
                 let mut line = String::new();
                 if !is_tty {
-                    return Err(crate::cli::UserError(format!(
+                    return Err(crate::cli::CliError(format!(
                         "refusing to delete @{name} without --yes on non-interactive stdin"
                     ))
                     .into());
                 }
                 if locked.read_line(&mut line).is_err() {
-                    return Err(crate::cli::UserError("Abort.".into()).into());
+                    return Err(crate::cli::CliError("Abort.".into()).into());
                 }
                 let trimmed = line.trim();
                 if !matches!(trimmed, "y" | "Y") {
@@ -262,7 +268,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             }
 
             tracing::info!("Deleting agent @{name}...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let mode = if wipe {
@@ -287,7 +294,7 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
                 .with_context(|| format!("unexpected delete response from {server_url}"))?;
             if let Some(warning) = data.get("warning").and_then(|v| v.as_str()) {
                 if wipe {
-                    return Err(crate::cli::UserError(format!(
+                    return Err(crate::cli::CliError(format!(
                         "Agent deleted but workspace cleanup failed: {warning}"
                     ))
                     .into());

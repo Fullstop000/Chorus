@@ -23,8 +23,8 @@ use crate::agent::drivers::ProcessState;
 use crate::agent::manager::AgentManager;
 use crate::bridge::protocol::{
     AgentRestart, AgentStart, AgentStop, WireFrame, FRAME_AGENT_DECISION_DELIVERED,
-    FRAME_AGENT_STATE, FRAME_BRIDGE_HELLO, FRAME_AGENT_RESTART, FRAME_AGENT_START,
-    FRAME_AGENT_STOP, FRAME_BRIDGE_TARGET, FRAME_CHAT_ACK, FRAME_CHAT_MESSAGE_RECEIVED,
+    FRAME_AGENT_RESTART, FRAME_AGENT_START, FRAME_AGENT_STATE, FRAME_AGENT_STOP,
+    FRAME_BRIDGE_HELLO, FRAME_BRIDGE_TARGET, FRAME_CHAT_ACK, FRAME_CHAT_MESSAGE_RECEIVED,
 };
 
 use super::reconcile;
@@ -513,20 +513,14 @@ async fn handle_target(ctx: &SessionCtx, target: BridgeTargetIn) {
     let target_agents = target.target_agents;
     let known_platform_ids: Vec<String> =
         target_agents.iter().map(|a| a.agent_id.clone()).collect();
-    let outcome = match reconcile::apply(
-        &ctx.store,
-        &ctx.manager,
-        &ctx.targets,
-        target_agents,
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::error!(err = %e, "bridge: reconcile failed");
-            return;
-        }
-    };
+    let outcome =
+        match reconcile::apply(&ctx.store, &ctx.manager, &ctx.targets, target_agents).await {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::error!(err = %e, "bridge: reconcile failed");
+                return;
+            }
+        };
 
     // Replay any chats that arrived before this reconcile populated the
     // targets cache. We only drain entries for platform_ids that are now

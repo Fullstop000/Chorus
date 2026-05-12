@@ -1,5 +1,6 @@
 import type { APIRequestContext } from '@playwright/test'
 import { expect } from '@playwright/test'
+import { getCurrentWorkerBridgeToken } from './tokens'
 
 export interface AgentRow {
   id: string
@@ -166,6 +167,47 @@ async function resolveActorRouteValueToId(request: APIRequestContext, actorRoute
   return actorRouteValue
 }
 
+/**
+ * Resolve an actor route value AND decide which bearer the
+ * `/internal/agent/<X>/*` call must carry.
+ *
+ * After PR #157 unified bridge auth:
+ *  - `/internal/agent/<user.id>/*` → accepts the CLI token (CliAllowed
+ *    branch). The default `request` fixture already carries it.
+ *  - `/internal/agent/<agent.id>/*` → requires the bridge token tied to
+ *    the agent's `machine_id`. The CLI token is rejected as
+ *    "CLI token not authorized for this actor".
+ *
+ * Returns the per-request headers to merge so each helper call uses the
+ * right credential. Returns an empty headers object for the human path
+ * (the default fixture auth is already correct).
+ */
+async function resolveInternalAgentTarget(
+  request: APIRequestContext,
+  actorRouteValue: string,
+): Promise<{ actorId: string; headers: Record<string, string> }> {
+  const agents = await listAgents(request)
+  const agentMatch = agents.find(
+    (entry) => entry.id === actorRouteValue || entry.name === actorRouteValue,
+  )
+  if (agentMatch) {
+    const bridgeToken = getCurrentWorkerBridgeToken()
+    if (!bridgeToken) {
+      throw new Error(
+        `internal-agent call targets agent "${actorRouteValue}" but no bridge token is registered for this worker`,
+      )
+    }
+    return {
+      actorId: agentMatch.id,
+      headers: { Authorization: `Bearer ${bridgeToken}` },
+    }
+  }
+  // Either a human or already a canonical id — fall through to the
+  // standard resolver and rely on the default fixture auth (CLI token).
+  const actorId = await resolveActorRouteValueToId(request, actorRouteValue)
+  return { actorId, headers: {} }
+}
+
 /** Like requireAgentId but matches by name prefix (handles server-added suffixes). */
 export async function requireAgentByPrefix(
   request: APIRequestContext,
@@ -322,17 +364,33 @@ export async function deleteAgentApi(
   expect(res.ok(), await res.text()).toBeTruthy()
 }
 
+export interface SendAsUserOptions {
+  suppressAgentDelivery?: boolean
+}
+
+export interface SendAsUserResult {
+  messageId: string
+  seq: number
+}
+
 export async function sendAsUser(
   request: APIRequestContext,
   username: string,
   target: string,
-  content: string
-): Promise<void> {
-  const actorId = await resolveActorRouteValueToId(request, username)
+  content: string,
+  options?: SendAsUserOptions,
+): Promise<SendAsUserResult> {
+  const { actorId, headers } = await resolveInternalAgentTarget(request, username)
   const res = await request.post(`/internal/agent/${encodeURIComponent(actorId)}/send`, {
-    data: { target, content },
+    data: {
+      target,
+      content,
+      suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
+    },
+    headers,
   })
   expect(res.ok(), await res.text()).toBeTruthy()
+  return res.json() as Promise<SendAsUserResult>
 }
 
 export interface HistoryMessage {
@@ -374,10 +432,11 @@ export async function historyForUser(
   channel: string,
   limit = 80
 ): Promise<HistoryMessage[]> {
-  const actorId = await resolveActorRouteValueToId(request, username)
+  const { actorId, headers } = await resolveInternalAgentTarget(request, username)
   const q = new URLSearchParams({ channel, limit: String(limit) })
   const res = await request.get(
-    `/internal/agent/${encodeURIComponent(actorId)}/history?${q.toString()}`
+    `/internal/agent/${encodeURIComponent(actorId)}/history?${q.toString()}`,
+    { headers }
   )
   expect(res.ok(), await res.text()).toBeTruthy()
   const j = await res.json()

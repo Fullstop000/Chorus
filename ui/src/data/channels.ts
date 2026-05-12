@@ -1,4 +1,4 @@
-import { get, post, patch, del } from './client'
+import { get, post, patch, del, ApiError } from './client'
 import { queryString } from './common'
 import { queryOptions } from '@tanstack/react-query'
 import type {
@@ -172,8 +172,42 @@ export function getServerInfo(): Promise<ServerInfo> {
   return get('/api/server-info')
 }
 
-export function getWhoami(): Promise<WhoamiResponse> {
-  return get('/api/whoami')
+/**
+ * Resolve the current user. On a fresh browser (no `chorus_sid` cookie
+ * yet), `/api/whoami` returns 401; we then mint a cookie via the
+ * loopback-only `/api/auth/local-session` endpoint and retry once.
+ *
+ * Done lazily here rather than eagerly on every page load so repeat
+ * visits don't create a new session row per refresh.
+ */
+export async function getWhoami(): Promise<WhoamiResponse> {
+  try {
+    return await get<WhoamiResponse>('/api/whoami')
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) {
+      await mintLocalSession()
+      return await get<WhoamiResponse>('/api/whoami')
+    }
+    throw err
+  }
+}
+
+/**
+ * Local-mode bootstrap: POST /api/auth/local-session to mint a session
+ * cookie. The endpoint is loopback-gated; cloud builds will replace this
+ * with a real auth flow.
+ */
+async function mintLocalSession(): Promise<void> {
+  const res = await fetch('/api/auth/local-session', {
+    method: 'POST',
+    credentials: 'same-origin',
+  })
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      `failed to bootstrap local session (status ${res.status}); run \`chorus setup\` if you haven't already`
+    )
+  }
 }
 
 export function resolveChannel(username: string, target: string): Promise<ResolveChannelResponse> {
