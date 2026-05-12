@@ -1,6 +1,6 @@
 //! Identity & auth tables: users, accounts, sessions, api_tokens.
 //!
-//! See `docs/plan/identity-and-auth-redesign.md` for the model. In short:
+//! The model in short:
 //! - `User` = the person. Stable identity, referenced everywhere as actor.
 //! - `Account` = how a User authenticates. 1..N per User; `auth_provider`
 //!   distinguishes local from cloud.

@@ -125,8 +125,9 @@ CREATE TABLE IF NOT EXISTS agent_env_vars (
 -- Human users.
 --
 -- DEPRECATED: superseded by `users` + `accounts` below. Kept temporarily
--- through the identity-and-auth-redesign commit sequence so the existing
--- handlers keep compiling. Removed in the final commit of the redesign.
+-- as a passive mirror so existing tables and handlers that reference
+-- `humans.id` keep working. Removed when the schema-rename follow-up
+-- (humans→users, sender_type 'human'→'user') lands.
 CREATE TABLE IF NOT EXISTS humans (
     id TEXT PRIMARY KEY, -- Stable human identity
     name TEXT NOT NULL UNIQUE, -- Unique user-facing name
@@ -138,8 +139,7 @@ CREATE TABLE IF NOT EXISTS humans (
 
 -- ─── Identity & auth (new model) ──────────────────────────────────────
 -- These four tables form the production-shaped auth model that works the
--- same way in local and cloud deployments. See
--- docs/plan/identity-and-auth-redesign.md.
+-- same way in local and cloud deployments.
 
 -- Users are the identity layer. Every actor reference uses users.id.
 CREATE TABLE IF NOT EXISTS users (
