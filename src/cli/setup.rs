@@ -722,18 +722,15 @@ pub async fn run(
     let (local_user, local_account) =
         store.ensure_local_identity(&whoami::username())?;
 
-    // If credentials.toml is missing, mint a fresh CLI token now and
-    // write it. If it already exists, leave it alone — the user is
-    // already logged in and we don't want to silently invalidate the
-    // current token by replacing it. (Run `chorus logout` first to
-    // explicitly re-mint.)
+    // Setup defers the actual token mint + credentials write to the
+    // login module — keeps "how do I get a token?" defined in exactly
+    // one place. If credentials.toml is already present the call is a
+    // no-op (returns Err with a "run logout first" message; we ignore
+    // it here because re-running setup against a logged-in install
+    // shouldn't punish the user — the existing token still works).
+    let _ = local_account; // touched above; the helper re-reads via get_local_account.
     if super::credentials::load(&data_dir)?.is_none() {
-        let minted = store.mint_token(&local_account.id, "local", Some("Local CLI"))?;
-        let creds = super::credentials::Credentials {
-            token: minted.raw,
-            server: super::credentials::default_local_server(),
-        };
-        super::credentials::save(&data_dir, &creds)?;
+        super::login::mint_local_credentials(&store, &data_dir, "Local CLI")?;
     }
 
     let workspace = if let Some(workspace) = store.get_active_workspace()? {
