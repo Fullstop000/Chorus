@@ -1,31 +1,14 @@
 import { test, expect } from './helpers/fixtures'
-import type { APIRequestContext, Locator } from '@playwright/test'
+import type { Locator } from '@playwright/test'
 import {
   createAgentApi,
   getWhoami,
   inviteChannelMemberApi,
   listAgents,
   listChannelsApi,
+  sendAsUser,
 } from './helpers/api'
 import { createUserChannelViaUi } from './helpers/ui'
-
-async function postMessage(
-  request: APIRequestContext,
-  actor: string,
-  target: string,
-  content: string,
-  options?: { suppressAgentDelivery?: boolean }
-): Promise<{ messageId: string; seq: number }> {
-  const response = await request.post(`/internal/agent/${encodeURIComponent(actor)}/send`, {
-    data: {
-      target,
-      content,
-      suppressAgentDelivery: options?.suppressAgentDelivery ?? false,
-    },
-  })
-  expect(response.ok(), await response.text()).toBeTruthy()
-  return response.json()
-}
 
 async function readUnreadCount(locator: Locator): Promise<number> {
   if (await locator.count() === 0) return 0
@@ -80,7 +63,7 @@ test.describe('MSG-010', () => {
     const baselineTokens = Array.from({ length: 3 }, (_, index) => `baseline-${Date.now()}-${index + 1}`)
     let baselineLastSeq = 0
     for (const token of baselineTokens) {
-      const ack = await postMessage(request, agentName, `#${channelName}`, token, {
+      const ack = await sendAsUser(request, agentName, `#${channelName}`, token, {
         suppressAgentDelivery: true,
       })
       baselineLastSeq = ack.seq
@@ -105,7 +88,7 @@ test.describe('MSG-010', () => {
       (_, index) => `inactive-unread-${index + 1}-${Date.now()}`
     )
     for (const token of unreadTokens) {
-      await postMessage(request, agentName, `#${channelName}`, token, {
+      await sendAsUser(request, agentName, `#${channelName}`, token, {
         suppressAgentDelivery: true,
       })
     }

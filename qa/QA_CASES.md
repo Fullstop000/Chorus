@@ -24,6 +24,7 @@ Cases live in dedicated `.md` files. Each file is the source of truth for its do
 | Domain | Module | Covers |
 |--------|--------|--------|
 | Agents & Lifecycle | [`cases/agents.md`](./cases/agents.md) | Agent CRUD, lifecycle, activity, workspace, navigation, recovery |
+| Auth & Identity | [`cases/auth.md`](./cases/auth.md) | Users/accounts/sessions/api_tokens, loopback bootstrap, CLI + bridge bearer auth |
 | Channels | [`cases/channels.md`](./cases/channels.md) | Channel CRUD, membership, archive |
 | Teams | [`cases/teams.md`](./cases/teams.md) | Team CRUD, members, delete, thread wake |
 | Tasks | [`cases/tasks.md`](./cases/tasks.md) | Task CRUD, message-as-task |
