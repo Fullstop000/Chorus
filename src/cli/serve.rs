@@ -167,11 +167,7 @@ pub async fn run(
     let template_path = chorus::agent::templates::expand_tilde(&template_dir_raw);
     let templates = chorus::agent::templates::load_templates(&template_path);
 
-    let bridge_auth = chorus::server::bridge_auth::BridgeAuth::from_env();
-    if bridge_auth.is_enabled() {
-        tracing::info!("Bridge auth enabled (CHORUS_BRIDGE_TOKENS configured)");
-    }
-    let router = chorus::server::build_router_with_services_and_auth(
+    let router = chorus::server::build_router_with_services(
         store.clone(),
         event_bus.clone(),
         data_dir.clone(),
@@ -183,7 +179,6 @@ pub async fn run(
             ),
         ) as chorus::agent::runtime_status::SharedRuntimeStatusProvider,
         templates,
-        bridge_auth,
     );
 
     // Spawn background trace writer for Telescope persistence.

@@ -4,40 +4,27 @@
 //!
 //! 1. **Bearer token required on WS upgrade.** Anyone reaching
 //!    `/api/bridge/ws` with no `Authorization` header gets `401`.
-//! 2. **`machine_id` is pinned to a token.** The platform looks up the
-//!    token to find its bound `machine_id`; the bridge can no longer
-//!    claim an arbitrary `machine_id` in `bridge.hello`. If the hello
-//!    payload's `machine_id` doesn't match the token's binding, the
-//!    connection is closed.
+//! 2. **`machine_id` is pinned to a token.** The token row in
+//!    `api_tokens` carries the `machine_id` it's bound to; the bridge
+//!    can't claim an arbitrary id in `bridge.hello`. If the hello
+//!    payload's `machine_id` doesn't match, the connection is closed.
 //! 3. **`/internal/agent/<id>/*` is scoped to the token's `machine_id`.**
 //!    A valid token alone is not enough — the agent named in the URL
 //!    must be owned by the same `machine_id` the token is bound to.
 //!    Prevents one bridge's token from acting on another bridge's agents.
 //!
-//! Tokens are configured via the `CHORUS_BRIDGE_TOKENS` env var:
+//! Tokens live in `api_tokens` (with `machine_id` set; CLI tokens have
+//! `machine_id IS NULL` and are rejected here). Setup mints the initial
+//! local bridge token via `chorus::cli::login::mint_local_bridge_credentials`.
+//! Future tokens come from a `chorus tokens mint --bridge --machine-id`
+//! admin command (not yet implemented).
 //!
-//! ```text
-//! CHORUS_BRIDGE_TOKENS="dev-token-1:machine-alpha,dev-token-2:machine-beta"
-//! ```
-//!
-//! Comma-separates entries; each is `token:machine_id`. Whitespace is
-//! trimmed. Empty values, malformed pairs, and duplicate tokens are
-//! logged as warnings and ignored — startup never fails for a bad
-//! token-list, the operator just sees an empty (= disabled) auth state.
-//!
-//! When the parsed map is empty (env unset or unparseable),
-//! authentication is **disabled** entirely — the WS endpoint accepts
-//! any client and trusts the `bridge.hello.machine_id` it sees. This
-//! matches the loopback default and keeps existing tests working
-//! without env-var fiddling.
-//!
-//! Deliberately out of scope:
-//!   - Token rotation/revocation. Tokens are static for the process
-//!     lifetime; restart `chorus serve` to roll them.
-//!   - Anomaly detection (IP flapping, rate-limiting).
-
-use std::collections::HashMap;
-use std::sync::Arc;
+//! Passthrough mode: when the `api_tokens` table contains **zero** rows
+//! with a non-null `machine_id`, the middleware passes every request
+//! through unauthenticated. This keeps test harnesses and pre-setup
+//! installs working without forcing every consumer to mint a bridge
+//! token. Once any bridge token exists in the DB the middleware switches
+//! to "all bridge requests require a valid token."
 
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -46,155 +33,94 @@ use axum::response::{IntoResponse, Response};
 use tracing::warn;
 
 use super::handlers::AppState;
+use crate::store::auth::api_tokens::hash_token;
+use crate::store::Store;
 
-/// Outcome of validating an incoming `Authorization` header.
+/// Outcome of validating an incoming `Authorization` header against the
+/// `api_tokens` table.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthOutcome {
-    /// Auth is disabled (empty token map). The bridge may declare any
-    /// `machine_id` in its hello frame.
+    /// No bridge tokens exist in the DB yet. Passes through.
     Disabled,
-    /// Auth is enabled and the header matched a known token. The
-    /// bridge's `bridge.hello.machine_id` MUST equal `expected_machine_id`.
+    /// Bearer matched a row whose `machine_id` is set; this is the value
+    /// the bridge's hello (and any `/internal/agent/{id}/*` path) must
+    /// be consistent with.
     Allowed { expected_machine_id: String },
-    /// Auth is enabled and the request must be rejected (missing or
-    /// malformed `Authorization` header, or unknown token).
+    /// Missing/malformed header, unknown token, revoked, or CLI token
+    /// (one without a `machine_id`).
     Rejected,
 }
 
-/// Token map for the bridge endpoint. Cheap to clone; held inside an
-/// `Arc` on `AppState`.
-#[derive(Debug, Default)]
-pub struct BridgeAuth {
-    /// `token → machine_id`. Empty when auth is disabled.
-    tokens: HashMap<String, String>,
-}
-
-impl BridgeAuth {
-    pub fn empty() -> Arc<Self> {
-        Arc::new(Self::default())
-    }
-
-    /// Construct directly from a `(token, machine_id)` iterator. Useful
-    /// for tests that want to inject specific tokens without touching
-    /// the process environment.
-    pub fn from_pairs<I, S1, S2>(pairs: I) -> Arc<Self>
-    where
-        I: IntoIterator<Item = (S1, S2)>,
-        S1: Into<String>,
-        S2: Into<String>,
-    {
-        let tokens: HashMap<String, String> = pairs
-            .into_iter()
-            .map(|(t, m)| (t.into(), m.into()))
-            .collect();
-        Arc::new(Self { tokens })
-    }
-
-    /// Read `CHORUS_BRIDGE_TOKENS` from the process environment. Always
-    /// returns `Some(Arc<Self>)` — the inner map may be empty if the
-    /// variable is unset or unparseable, which means auth is disabled.
-    pub fn from_env() -> Arc<Self> {
-        let raw = match std::env::var("CHORUS_BRIDGE_TOKENS") {
-            Ok(v) if !v.trim().is_empty() => v,
-            _ => return Self::empty(),
-        };
-        let mut tokens: HashMap<String, String> = HashMap::new();
-        for entry in raw.split(',') {
-            let entry = entry.trim();
-            if entry.is_empty() {
-                continue;
-            }
-            let Some((token, machine)) = entry.split_once(':') else {
-                warn!(
-                    entry = %entry,
-                    "bridge_auth: ignoring malformed CHORUS_BRIDGE_TOKENS entry (expected token:machine_id)"
-                );
-                continue;
-            };
-            let token = token.trim();
-            let machine = machine.trim();
-            if token.is_empty() || machine.is_empty() {
-                warn!(
-                    entry = %entry,
-                    "bridge_auth: ignoring CHORUS_BRIDGE_TOKENS entry with empty token or machine_id"
-                );
-                continue;
-            }
-            if tokens
-                .insert(token.to_string(), machine.to_string())
-                .is_some()
-            {
-                warn!(
-                    token_prefix = %&token[..token.len().min(6)],
-                    "bridge_auth: duplicate token in CHORUS_BRIDGE_TOKENS — last wins"
-                );
-            }
-        }
-        Arc::new(Self { tokens })
-    }
-
-    /// Whether any tokens are configured. `false` means auth is disabled.
-    pub fn is_enabled(&self) -> bool {
-        !self.tokens.is_empty()
-    }
-
-    /// Look up a token's bound `machine_id` directly. Returns `None`
-    /// when auth is disabled or the token is unknown.
-    #[cfg(test)]
-    pub fn machine_id_for_token(&self, token: &str) -> Option<&str> {
-        self.tokens.get(token).map(|s| s.as_str())
-    }
-
-    /// Inspect the request's `Authorization` header against the
-    /// configured token map.
-    pub fn check(&self, headers: &HeaderMap) -> AuthOutcome {
-        if !self.is_enabled() {
-            return AuthOutcome::Disabled;
-        }
-        let Some(value) = headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-        else {
-            return AuthOutcome::Rejected;
-        };
-        // Standard "Bearer <token>" parse. Tolerate extra whitespace.
-        let token = match value.trim().strip_prefix("Bearer ") {
-            Some(rest) => rest.trim(),
-            None => return AuthOutcome::Rejected,
-        };
-        if token.is_empty() {
+/// Look up the bearer token in `api_tokens` and decide.
+///
+/// `headers`: incoming request headers.
+/// `store`: the canonical token table.
+pub fn check(store: &Store, headers: &HeaderMap) -> AuthOutcome {
+    let any_bridge_token = match store.has_any_bridge_token() {
+        Ok(b) => b,
+        Err(err) => {
+            warn!(err = %err, "bridge_auth: store lookup failed; failing closed");
             return AuthOutcome::Rejected;
         }
-        match self.tokens.get(token) {
-            Some(machine_id) => AuthOutcome::Allowed {
-                expected_machine_id: machine_id.clone(),
-            },
-            None => AuthOutcome::Rejected,
+    };
+    if !any_bridge_token {
+        return AuthOutcome::Disabled;
+    }
+    let Some(value) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+    else {
+        return AuthOutcome::Rejected;
+    };
+    let (scheme, rest) = match value.trim().split_once(char::is_whitespace) {
+        Some(pair) => pair,
+        None => return AuthOutcome::Rejected,
+    };
+    if !scheme.eq_ignore_ascii_case("Bearer") {
+        return AuthOutcome::Rejected;
+    }
+    let raw = rest.trim();
+    if raw.is_empty() {
+        return AuthOutcome::Rejected;
+    }
+    let token_hash = hash_token(raw);
+    let row = match store.get_token_by_hash(&token_hash) {
+        Ok(Some(r)) => r,
+        Ok(None) => return AuthOutcome::Rejected,
+        Err(err) => {
+            warn!(err = %err, "bridge_auth: token lookup failed");
+            return AuthOutcome::Rejected;
+        }
+    };
+    if row.revoked_at.is_some() {
+        return AuthOutcome::Rejected;
+    }
+    match row.machine_id {
+        Some(m) if !m.trim().is_empty() => AuthOutcome::Allowed {
+            expected_machine_id: m,
+        },
+        _ => {
+            // A CLI token (machine_id NULL) is valid for /api/* but not
+            // for /internal/*. Reject explicitly so the operator sees
+            // that the token they pasted is the wrong kind.
+            AuthOutcome::Rejected
         }
     }
 }
 
 /// Axum middleware that protects `/internal/agent/*` (and any other
-/// route it's applied to) the same way as `handle_bridge_ws`: when
-/// tokens are configured, require a valid `Authorization: Bearer <t>`
-/// header. With a valid token, the middleware additionally verifies
-/// that the `agent_id` in the URL is owned by the token's bound
-/// `machine_id` — preventing one bridge's token from acting on another
-/// bridge's agents. When tokens are unset (loopback default), the
-/// request passes through unchanged.
-///
-/// FUTURE: `bridge_auth` is a parallel auth registry to the new
-/// `api_tokens` table. Both work today (the new layer covers `/api/*`,
-/// this layer covers `/internal/*` + `/api/bridge/ws`). Unifying them
-/// requires adding a `machine_id` column to `api_tokens` and a
-/// token-issuance story for bridge instances — deferred to a follow-up.
+/// route it's applied to). When passthrough is active (no bridge tokens
+/// in DB), the request flows through unchanged. Otherwise a valid
+/// `Authorization: Bearer <token>` is required, the token must be a
+/// bridge token (non-null `machine_id`), and the `agent_id` in the URL
+/// must be owned by that machine.
 pub async fn require_bridge_auth(
     State(state): State<AppState>,
     headers: HeaderMap,
     req: Request,
     next: Next,
 ) -> Response {
-    match state.bridge_auth.check(&headers) {
+    match check(state.store.as_ref(), &headers) {
         AuthOutcome::Disabled => next.run(req).await,
         AuthOutcome::Allowed {
             expected_machine_id,
@@ -263,11 +189,11 @@ pub async fn require_bridge_auth(
 /// input.
 fn agent_id_from_internal_path(path: &str) -> Option<&str> {
     let after = path.split_once("/agent/")?.1;
-    let segment = after.split('/').next()?;
-    if segment.is_empty() {
+    let id = after.split('/').next()?;
+    if id.is_empty() {
         None
     } else {
-        Some(segment)
+        Some(id)
     }
 }
 
@@ -276,76 +202,107 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
 
-    fn headers_with_auth(value: &str) -> HeaderMap {
+    fn mk_headers(pairs: &[(&str, &str)]) -> HeaderMap {
         let mut h = HeaderMap::new();
-        h.insert(
-            axum::http::header::AUTHORIZATION,
-            HeaderValue::from_str(value).unwrap(),
-        );
+        for (k, v) in pairs {
+            h.insert(
+                axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(),
+                HeaderValue::from_str(v).unwrap(),
+            );
+        }
         h
     }
 
-    #[test]
-    fn disabled_when_empty() {
-        let auth = BridgeAuth::empty();
-        assert!(!auth.is_enabled());
-        assert_eq!(auth.check(&HeaderMap::new()), AuthOutcome::Disabled);
-        assert_eq!(
-            auth.check(&headers_with_auth("Bearer anything")),
-            AuthOutcome::Disabled
-        );
+    fn mk_store_with_bridge_token() -> (Store, String, String) {
+        let s = Store::open(":memory:").unwrap();
+        let user = s.create_user("alice").unwrap();
+        let acct = s.create_local_account(&user.id).unwrap();
+        let machine_id = "machine-x".to_string();
+        let minted = s
+            .mint_bridge_token(&acct.id, &machine_id, Some("test"))
+            .unwrap();
+        (s, minted.raw, machine_id)
     }
 
     #[test]
-    fn allowed_with_valid_bearer() {
-        let auth = BridgeAuth::from_pairs([("tok-1", "machine-alpha")]);
-        let h = headers_with_auth("Bearer tok-1");
-        assert_eq!(
-            auth.check(&h),
+    fn passthrough_when_no_bridge_tokens_in_db() {
+        let s = Store::open(":memory:").unwrap();
+        // No bridge tokens minted.
+        let outcome = check(&s, &HeaderMap::new());
+        assert_eq!(outcome, AuthOutcome::Disabled);
+    }
+
+    #[test]
+    fn rejects_missing_auth_when_bridge_tokens_exist() {
+        let (s, _raw, _m) = mk_store_with_bridge_token();
+        assert_eq!(check(&s, &HeaderMap::new()), AuthOutcome::Rejected);
+    }
+
+    #[test]
+    fn rejects_unknown_token() {
+        let (s, _raw, _m) = mk_store_with_bridge_token();
+        let h = mk_headers(&[("Authorization", "Bearer chrs_bridge_unknown")]);
+        assert_eq!(check(&s, &h), AuthOutcome::Rejected);
+    }
+
+    #[test]
+    fn allows_valid_bridge_token_and_returns_machine_id() {
+        let (s, raw, machine_id) = mk_store_with_bridge_token();
+        let h = mk_headers(&[("Authorization", &format!("Bearer {raw}"))]);
+        match check(&s, &h) {
             AuthOutcome::Allowed {
-                expected_machine_id: "machine-alpha".to_string()
-            }
-        );
-    }
-
-    #[test]
-    fn rejected_when_header_missing() {
-        let auth = BridgeAuth::from_pairs([("tok-1", "m")]);
-        assert_eq!(auth.check(&HeaderMap::new()), AuthOutcome::Rejected);
-    }
-
-    #[test]
-    fn rejected_when_token_unknown() {
-        let auth = BridgeAuth::from_pairs([("tok-1", "m")]);
-        let h = headers_with_auth("Bearer not-the-token");
-        assert_eq!(auth.check(&h), AuthOutcome::Rejected);
-    }
-
-    #[test]
-    fn rejected_when_scheme_not_bearer() {
-        let auth = BridgeAuth::from_pairs([("tok-1", "m")]);
-        let h = headers_with_auth("Basic tok-1");
-        assert_eq!(auth.check(&h), AuthOutcome::Rejected);
-    }
-
-    #[test]
-    fn rejected_when_bearer_value_empty() {
-        let auth = BridgeAuth::from_pairs([("tok-1", "m")]);
-        let h = headers_with_auth("Bearer ");
-        assert_eq!(auth.check(&h), AuthOutcome::Rejected);
-    }
-
-    // `CHORUS_BRIDGE_TOKENS` is process-wide. Serialize on `bridge_env` so this
-    // test doesn't race a future parallel test that sets the same var.
-    #[test]
-    #[serial_test::serial(bridge_env)]
-    fn from_env_handles_empty_var() {
-        // SAFETY: env mutation is serialized by the `#[serial(bridge_env)]`
-        // attribute above; no other test in this group runs concurrently.
-        unsafe {
-            std::env::remove_var("CHORUS_BRIDGE_TOKENS");
+                expected_machine_id,
+            } => assert_eq!(expected_machine_id, machine_id),
+            other => panic!("expected Allowed, got {other:?}"),
         }
-        let auth = BridgeAuth::from_env();
-        assert!(!auth.is_enabled());
+    }
+
+    #[test]
+    fn rejects_cli_token_at_bridge_endpoint() {
+        // CLI tokens have machine_id = NULL → invalid for /internal/*.
+        let s = Store::open(":memory:").unwrap();
+        let user = s.create_user("alice").unwrap();
+        let acct = s.create_local_account(&user.id).unwrap();
+        // Also mint a bridge token so passthrough doesn't kick in.
+        let _ = s
+            .mint_bridge_token(&acct.id, "machine-x", Some("bridge"))
+            .unwrap();
+        let cli = s.mint_token(&acct.id, "local", Some("CLI")).unwrap();
+        let h = mk_headers(&[("Authorization", &format!("Bearer {}", cli.raw))]);
+        assert_eq!(check(&s, &h), AuthOutcome::Rejected);
+    }
+
+    #[test]
+    fn rejects_revoked_bridge_token() {
+        let (s, raw, _) = mk_store_with_bridge_token();
+        assert!(s.revoke_token_by_raw(&raw).unwrap());
+        let h = mk_headers(&[("Authorization", &format!("Bearer {raw}"))]);
+        assert_eq!(check(&s, &h), AuthOutcome::Rejected);
+    }
+
+    #[test]
+    fn case_insensitive_bearer_scheme() {
+        let (s, raw, machine_id) = mk_store_with_bridge_token();
+        let h = mk_headers(&[("Authorization", &format!("bearer {raw}"))]);
+        match check(&s, &h) {
+            AuthOutcome::Allowed {
+                expected_machine_id,
+            } => assert_eq!(expected_machine_id, machine_id),
+            other => panic!("expected Allowed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_id_extraction() {
+        assert_eq!(
+            agent_id_from_internal_path("/internal/agent/alice/send"),
+            Some("alice")
+        );
+        assert_eq!(
+            agent_id_from_internal_path("/internal/agent/alice"),
+            Some("alice")
+        );
+        assert!(agent_id_from_internal_path("/internal/foo/bar").is_none());
+        assert!(agent_id_from_internal_path("/internal/agent/").is_none());
     }
 }

@@ -71,16 +71,18 @@ pub async fn handle_bridge_ws(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> axum::response::Response {
-    let expected_machine_id = match state.bridge_auth.check(&headers) {
-        AuthOutcome::Disabled => None,
-        AuthOutcome::Allowed {
-            expected_machine_id,
-        } => Some(expected_machine_id),
-        AuthOutcome::Rejected => {
-            warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
-            return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token").into_response();
-        }
-    };
+    let expected_machine_id =
+        match crate::server::bridge_auth::check(state.store.as_ref(), &headers) {
+            AuthOutcome::Disabled => None,
+            AuthOutcome::Allowed {
+                expected_machine_id,
+            } => Some(expected_machine_id),
+            AuthOutcome::Rejected => {
+                warn!("bridge_ws: rejecting upgrade — invalid or missing bearer token");
+                return (StatusCode::UNAUTHORIZED, "missing or invalid bearer token")
+                    .into_response();
+            }
+        };
     ws.on_upgrade(move |socket| {
         bridge_session(
             socket,

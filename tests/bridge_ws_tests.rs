@@ -11,7 +11,6 @@ mod harness;
 use std::sync::Arc;
 
 use anyhow::Context;
-use chorus::server::bridge_auth::BridgeAuth;
 use chorus::store::channels::ChannelType;
 use chorus::store::AgentRecordUpsert;
 use chorus::store::Store;
@@ -522,7 +521,9 @@ async fn bridge_ws_pushes_to_multiple_connected_bridges() {
 
 // ── bearer auth on WS upgrade ──────────────────────────────────────────
 
-async fn start_test_server_with_auth(auth: Arc<BridgeAuth>) -> (String, String) {
+async fn start_test_server_with_auth(
+    pairs: Vec<(&'static str, &'static str)>,
+) -> (String, String) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
         .create_channel(
@@ -535,7 +536,7 @@ async fn start_test_server_with_auth(auth: Arc<BridgeAuth>) -> (String, String) 
     store
         .create_channel("general", Some("General"), ChannelType::Channel, None)
         .unwrap();
-    let router = harness::build_router_with_bridge_auth(store.clone(), auth);
+    let router = harness::build_router_with_bridge_tokens(store.clone(), pairs);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let ws_url = format!("ws://{addr}");
@@ -547,8 +548,8 @@ async fn start_test_server_with_auth(auth: Arc<BridgeAuth>) -> (String, String) 
 
 #[tokio::test]
 async fn bridge_ws_rejects_upgrade_when_token_missing() {
-    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
-    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+    let pairs = vec![("good-token", "machine-alpha")];
+    let (ws_url, _http_url) = start_test_server_with_auth(pairs).await;
 
     // No Authorization header at all → 401, no upgrade.
     let result = connect_async(format!("{ws_url}/api/bridge/ws")).await;
@@ -563,8 +564,8 @@ async fn bridge_ws_rejects_upgrade_when_token_missing() {
 
 #[tokio::test]
 async fn bridge_ws_rejects_upgrade_when_token_unknown() {
-    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
-    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+    let pairs = vec![("good-token", "machine-alpha")];
+    let (ws_url, _http_url) = start_test_server_with_auth(pairs).await;
 
     let mut req = format!("{ws_url}/api/bridge/ws")
         .into_client_request()
@@ -583,8 +584,8 @@ async fn bridge_ws_rejects_upgrade_when_token_unknown() {
 
 #[tokio::test]
 async fn bridge_ws_accepts_valid_token_and_matches_machine_id() {
-    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
-    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+    let pairs = vec![("good-token", "machine-alpha")];
+    let (ws_url, _http_url) = start_test_server_with_auth(pairs).await;
 
     let mut req = format!("{ws_url}/api/bridge/ws")
         .into_client_request()
@@ -601,8 +602,8 @@ async fn bridge_ws_accepts_valid_token_and_matches_machine_id() {
 
 #[tokio::test]
 async fn bridge_ws_drops_session_on_machine_id_spoof() {
-    let auth = BridgeAuth::from_pairs([("good-token", "machine-alpha")]);
-    let (ws_url, _http_url) = start_test_server_with_auth(auth).await;
+    let pairs = vec![("good-token", "machine-alpha")];
+    let (ws_url, _http_url) = start_test_server_with_auth(pairs).await;
 
     let mut req = format!("{ws_url}/api/bridge/ws")
         .into_client_request()
@@ -1064,8 +1065,8 @@ async fn internal_agent_endpoints_require_bearer_when_auth_enabled() {
             env_vars: &[],
         })
         .unwrap();
-    let auth = BridgeAuth::from_pairs([("internal-tok", "machine-x")]);
-    let router = harness::build_router_with_bridge_auth(store.clone(), auth);
+    let pairs = vec![("internal-tok", "machine-x")];
+    let router = harness::build_router_with_bridge_tokens(store.clone(), pairs);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let http_url = format!("http://{addr}");
@@ -1134,8 +1135,8 @@ async fn internal_agent_endpoints_reject_cross_bridge_tampering() {
         })
         .unwrap();
     // Tokens: one bound to machine-x, one to machine-y.
-    let auth = BridgeAuth::from_pairs([("x-tok", "machine-x"), ("y-tok", "machine-y")]);
-    let router = harness::build_router_with_bridge_auth(store.clone(), auth);
+    let pairs = vec![("x-tok", "machine-x"), ("y-tok", "machine-y")];
+    let router = harness::build_router_with_bridge_tokens(store.clone(), pairs);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let http_url = format!("http://{addr}");

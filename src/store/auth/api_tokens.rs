@@ -148,6 +148,28 @@ impl Store {
         Ok(affected > 0)
     }
 
+    /// Public lookup by SHA-256 hash. Returns the row without any
+    /// validity checks (caller decides what's acceptable).
+    pub fn get_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {
+        let conn = self.lock_conn();
+        Self::get_token_by_hash_inner(&conn, token_hash)
+    }
+
+    /// Cheap "has any bridge token ever been minted on this install?"
+    /// probe. Used by `bridge_auth` to flip between passthrough mode
+    /// (no tokens ever) and enforcing mode (tokens exist — possibly all
+    /// revoked, which is a deliberate lock-down rather than an invite
+    /// for unauthenticated access).
+    pub fn has_any_bridge_token(&self) -> Result<bool> {
+        let conn = self.lock_conn();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM api_tokens WHERE machine_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn list_tokens_for_account(&self, account_id: &str) -> Result<Vec<ApiToken>> {
         let conn = self.lock_conn();
         let rows = conn
