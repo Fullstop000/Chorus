@@ -16,10 +16,15 @@ use sha2::{Digest, Sha256};
 use crate::store::{parse_datetime, Store};
 
 /// Row in `api_tokens`. Never carries the raw token.
+///
+/// `machine_id == None` ⇒ CLI token (acts as its `account_id`'s User).
+/// `machine_id == Some(_)` ⇒ bridge token (additionally restricted to
+/// agents whose `agents.machine_id` matches).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiToken {
     pub token_hash: String,
     pub account_id: String,
+    pub machine_id: Option<String>,
     pub label: Option<String>,
     pub created_at: DateTime<Utc>,
     pub last_used_at: Option<DateTime<Utc>>,
@@ -54,8 +59,9 @@ pub fn generate_raw_token(provider: &str) -> String {
 }
 
 impl Store {
-    /// Mint a token bound to an Account. Returns the raw token (caller
-    /// must persist it — we don't keep it) plus the persisted row.
+    /// Mint a CLI token bound to an Account (`machine_id = NULL`).
+    /// Returns the raw token (caller must persist it — we don't keep it)
+    /// plus the persisted row.
     pub fn mint_token(
         &self,
         account_id: &str,
@@ -63,13 +69,27 @@ impl Store {
         label: Option<&str>,
     ) -> Result<MintedToken> {
         let conn = self.lock_conn();
-        Self::mint_token_inner(&conn, account_id, provider, label)
+        Self::mint_token_inner(&conn, account_id, provider, None, label)
+    }
+
+    /// Mint a bridge token bound to an Account *and* a `machine_id`.
+    /// The auth layer additionally enforces that the token only acts on
+    /// agents whose `agents.machine_id` matches.
+    pub fn mint_bridge_token(
+        &self,
+        account_id: &str,
+        machine_id: &str,
+        label: Option<&str>,
+    ) -> Result<MintedToken> {
+        let conn = self.lock_conn();
+        Self::mint_token_inner(&conn, account_id, "bridge", Some(machine_id), label)
     }
 
     pub(crate) fn mint_token_inner(
         conn: &Connection,
         account_id: &str,
         provider: &str,
+        machine_id: Option<&str>,
         label: Option<&str>,
     ) -> Result<MintedToken> {
         if Self::get_account_by_id_inner(conn, account_id)?.is_none() {
@@ -78,8 +98,9 @@ impl Store {
         let raw = generate_raw_token(provider);
         let token_hash = hash_token(&raw);
         conn.execute(
-            "INSERT INTO api_tokens (token_hash, account_id, label) VALUES (?1, ?2, ?3)",
-            params![token_hash, account_id, label],
+            "INSERT INTO api_tokens (token_hash, account_id, machine_id, label)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![token_hash, account_id, machine_id, label],
         )?;
         let row = Self::get_token_by_hash_inner(conn, &token_hash)?
             .ok_or_else(|| anyhow::anyhow!("token not found after insert"))?;
@@ -127,11 +148,33 @@ impl Store {
         Ok(affected > 0)
     }
 
+    /// Public lookup by SHA-256 hash. Returns the row without any
+    /// validity checks (caller decides what's acceptable).
+    pub fn get_token_by_hash(&self, token_hash: &str) -> Result<Option<ApiToken>> {
+        let conn = self.lock_conn();
+        Self::get_token_by_hash_inner(&conn, token_hash)
+    }
+
+    /// Cheap "has any bridge token ever been minted on this install?"
+    /// probe. Used by `bridge_auth` to flip between passthrough mode
+    /// (no tokens ever) and enforcing mode (tokens exist — possibly all
+    /// revoked, which is a deliberate lock-down rather than an invite
+    /// for unauthenticated access).
+    pub fn has_any_bridge_token(&self) -> Result<bool> {
+        let conn = self.lock_conn();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM api_tokens WHERE machine_id IS NOT NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(count > 0)
+    }
+
     pub fn list_tokens_for_account(&self, account_id: &str) -> Result<Vec<ApiToken>> {
         let conn = self.lock_conn();
         let rows = conn
             .prepare(
-                "SELECT token_hash, account_id, label, created_at, last_used_at, revoked_at
+                "SELECT token_hash, account_id, machine_id, label, created_at, last_used_at, revoked_at
                  FROM api_tokens WHERE account_id = ?1 ORDER BY created_at",
             )?
             .query_map(params![account_id], Self::token_from_row)?
@@ -145,7 +188,7 @@ impl Store {
         token_hash: &str,
     ) -> Result<Option<ApiToken>> {
         conn.query_row(
-            "SELECT token_hash, account_id, label, created_at, last_used_at, revoked_at
+            "SELECT token_hash, account_id, machine_id, label, created_at, last_used_at, revoked_at
              FROM api_tokens WHERE token_hash = ?1",
             params![token_hash],
             Self::token_from_row,
@@ -155,13 +198,14 @@ impl Store {
     }
 
     fn token_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApiToken> {
-        let last_used_raw: Option<String> = row.get(4)?;
-        let revoked_raw: Option<String> = row.get(5)?;
+        let last_used_raw: Option<String> = row.get(5)?;
+        let revoked_raw: Option<String> = row.get(6)?;
         Ok(ApiToken {
             token_hash: row.get(0)?,
             account_id: row.get(1)?,
-            label: row.get(2)?,
-            created_at: parse_datetime(&row.get::<_, String>(3)?),
+            machine_id: row.get(2)?,
+            label: row.get(3)?,
+            created_at: parse_datetime(&row.get::<_, String>(4)?),
             last_used_at: last_used_raw.as_deref().map(parse_datetime),
             revoked_at: revoked_raw.as_deref().map(parse_datetime),
         })
@@ -333,5 +377,42 @@ mod tests {
         let _m2 = s.mint_token(&acct.id, "local", Some("Bridge")).unwrap();
         let tokens = s.list_tokens_for_account(&acct.id).unwrap();
         assert_eq!(tokens.len(), 2);
+    }
+
+    #[test]
+    fn cli_token_has_no_machine_id() {
+        let s = store();
+        let acct = make_account(&s);
+        let minted = s.mint_token(&acct.id, "local", Some("CLI")).unwrap();
+        assert!(minted.row.machine_id.is_none());
+    }
+
+    #[test]
+    fn bridge_token_is_bound_to_machine_id() {
+        let s = store();
+        let acct = make_account(&s);
+        let minted = s
+            .mint_bridge_token(&acct.id, "machine-abc", Some("Local bridge"))
+            .unwrap();
+        assert_eq!(minted.row.machine_id.as_deref(), Some("machine-abc"));
+        // Round-trip the hash → row lookup to confirm machine_id persists.
+        let row = s.touch_active_token(&minted.raw).unwrap().unwrap();
+        assert_eq!(row.machine_id.as_deref(), Some("machine-abc"));
+    }
+
+    #[test]
+    fn bridge_and_cli_tokens_coexist_on_one_account() {
+        let s = store();
+        let acct = make_account(&s);
+        let cli = s.mint_token(&acct.id, "local", Some("CLI")).unwrap();
+        let bridge = s
+            .mint_bridge_token(&acct.id, "machine-xyz", Some("Local bridge"))
+            .unwrap();
+        assert_ne!(cli.raw, bridge.raw);
+        let tokens = s.list_tokens_for_account(&acct.id).unwrap();
+        assert_eq!(tokens.len(), 2);
+        let machine_ids: Vec<_> = tokens.iter().map(|t| t.machine_id.clone()).collect();
+        assert!(machine_ids.contains(&None));
+        assert!(machine_ids.contains(&Some("machine-xyz".to_string())));
     }
 }

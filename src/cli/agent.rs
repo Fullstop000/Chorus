@@ -73,7 +73,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             } else {
                 model
             };
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let mut payload = serde_json::json!({
                 "display_name": name,
                 "runtime": runtime,
@@ -103,7 +104,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         }
         AgentCommands::Stop { name, server_url } => {
             tracing::info!("Stopping agent @{name}...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -127,7 +129,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             // username into `/internal/agent/{agent_id}/server`, which only
             // worked when the OS user happened to share a name with an
             // agent and conflated identity types.
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             if agents.is_empty() {
                 tracing::info!("No agents.");
@@ -142,7 +145,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             Ok(())
         }
         AgentCommands::Get { name, server_url } => {
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -184,7 +188,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
         }
         AgentCommands::Start { name, server_url } => {
             tracing::info!("Starting agent @{name}...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -208,7 +213,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             server_url,
         } => {
             tracing::info!("Restarting agent @{name} (mode: {mode})...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let res = client
@@ -262,7 +268,8 @@ pub async fn run(cmd: AgentCommands) -> anyhow::Result<()> {
             }
 
             tracing::info!("Deleting agent @{name}...");
-            let client = chorus::utils::http::client();
+            let _cli_token = crate::cli::resolve_cli_token()?;
+            let client = chorus::utils::http::authed_client(&_cli_token);
             let agents = fetch_agent_list(&client, &server_url).await?;
             let agent_id = resolve_agent_id(&agents, &name)?;
             let mode = if wipe {

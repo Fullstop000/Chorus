@@ -69,40 +69,6 @@ pub fn build_router_with_services(
     runtime_status_provider: SharedRuntimeStatusProvider,
     templates: Vec<AgentTemplate>,
 ) -> Router {
-    build_router_with_services_and_auth(
-        store,
-        event_bus,
-        data_dir,
-        agents_dir,
-        lifecycle,
-        runtime_status_provider,
-        templates,
-        bridge_auth::BridgeAuth::empty(),
-    )
-}
-
-/// Same as `build_router_with_services`, but accepts a pre-built
-/// `BridgeAuth`. The CLI binary calls this with `BridgeAuth::from_env()`
-/// so the deployed `chorus serve` enforces tokens; tests inject explicit
-/// `BridgeAuth::from_pairs(...)` to exercise the auth path without
-/// touching process env vars.
-///
-/// `clippy::too_many_arguments` is silenced here because this signature
-/// is purely additive over `build_router_with_services` (which already
-/// hits the 7-arg limit). Folding the existing args into a config
-/// struct is the right long-term answer but would touch every test
-/// harness + CLI caller in one go — out of scope for this PR.
-#[allow(clippy::too_many_arguments)]
-pub fn build_router_with_services_and_auth(
-    store: Arc<Store>,
-    event_bus: Arc<EventBus>,
-    data_dir: std::path::PathBuf,
-    agents_dir: std::path::PathBuf,
-    lifecycle: Arc<dyn AgentLifecycle>,
-    runtime_status_provider: SharedRuntimeStatusProvider,
-    templates: Vec<AgentTemplate>,
-    bridge_auth: Arc<bridge_auth::BridgeAuth>,
-) -> Router {
     use handlers::*;
     use transport::bridge_ws::handle_bridge_ws;
     use transport::realtime::handle_events_ws;
@@ -150,7 +116,6 @@ pub fn build_router_with_services_and_auth(
         transitioning_agents: Arc::new(Mutex::new(HashSet::new())),
         templates: Arc::new(templates),
         bridge_registry: bridge_registry::BridgeRegistry::new(),
-        bridge_auth,
     };
 
     // Spawn a single forwarder task that subscribes once to the event

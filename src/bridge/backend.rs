@@ -126,16 +126,37 @@ pub trait Backend: Send + Sync {
 #[derive(Clone)]
 pub struct ChorusBackend {
     server_url: String,
+    /// Bearer token sent on every platform HTTP call. `None` skips the
+    /// `Authorization` header entirely — used during the env-driven
+    /// passthrough legacy path and in tests. After the api_tokens
+    /// unification, in-process bridges always set this from
+    /// `bridge-credentials.toml`.
+    bearer_token: Option<String>,
     client: reqwest::Client,
 }
 
 impl ChorusBackend {
     pub fn new(server_url: String) -> Self {
+        Self::with_token(server_url, None)
+    }
+
+    pub fn with_token(server_url: String, bearer_token: Option<String>) -> Self {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
             .expect("failed to build reqwest client");
-        Self { server_url, client }
+        Self {
+            server_url,
+            bearer_token,
+            client,
+        }
+    }
+
+    fn apply_auth(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.bearer_token {
+            Some(t) => req.bearer_auth(t),
+            None => req,
+        }
     }
 
     /// Build the per-agent base URL for internal agent endpoints.
@@ -150,13 +171,16 @@ impl ChorusBackend {
         )
     }
 
-    /// Send a request and handle common transport/server errors.
+    /// Send a request and handle common transport/server errors. Attaches
+    /// the bridge's bearer token (if configured) before sending, so
+    /// every call site automatically participates in the auth scheme.
     async fn send_request(
         &self,
         req: reqwest::RequestBuilder,
         url: &str,
     ) -> Result<reqwest::Response, BridgeError> {
-        let res = req
+        let res = self
+            .apply_auth(req)
             .send()
             .await
             .map_err(|e| BridgeError::PlatformUnreachable {

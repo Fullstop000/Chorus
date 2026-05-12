@@ -9,9 +9,9 @@ use anyhow::Context;
 
 pub async fn run(name: String, server_url: &str) -> anyhow::Result<()> {
     let client = super::http::client();
-    let me = crate::cli::fetch_authed_user(&client, server_url).await?;
+    let (me, token) = crate::cli::fetch_authed_user_with_token(&client, server_url).await?;
     let normalized = super::normalize_channel_name(&name);
-    let channel_id = super::resolve_channel_id(&client, server_url, &normalized).await?;
+    let channel_id = super::resolve_channel_id(&client, server_url, &normalized, &token).await?;
 
     // Piggybacks on the invite endpoint because there is no dedicated self-join
     // route; server-side self-invites are idempotent joins. The API field is
@@ -19,6 +19,7 @@ pub async fn run(name: String, server_url: &str) -> anyhow::Result<()> {
     let url = format!("{server_url}/api/channels/{channel_id}/members");
     let res = client
         .post(&url)
+        .bearer_auth(&token)
         .json(&serde_json::json!({ "memberName": me.name }))
         .send()
         .await

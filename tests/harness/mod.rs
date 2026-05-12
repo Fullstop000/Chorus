@@ -13,9 +13,8 @@ use axum::Router;
 use chorus::agent::activity_log::ActivityLogResponse;
 use chorus::agent::runtime_status::{SharedRuntimeStatusProvider, SystemRuntimeStatusProvider};
 use chorus::agent::AgentLifecycle;
-use chorus::server::bridge_auth::BridgeAuth;
 use chorus::server::event_bus::EventBus;
-use chorus::server::{build_router_with_services, build_router_with_services_and_auth};
+use chorus::server::build_router_with_services;
 use chorus::store::auth::api_tokens::hash_token;
 use chorus::store::Store;
 use rusqlite::params;
@@ -221,16 +220,45 @@ pub fn build_router_with_event_bus_and_dir(
     )
 }
 
-/// Build a router with an explicit `BridgeAuth` for tests that exercise
-/// the auth path. Unlike the env-driven default in `chorus serve`, this
-/// keeps token state out of process-global env vars so parallel tests
-/// don't interfere with one another.
-pub fn build_router_with_bridge_auth(store: Arc<Store>, bridge_auth: Arc<BridgeAuth>) -> Router {
+/// Build a router for tests that exercise the bridge auth path. Mints
+/// the supplied `(raw_token, machine_id)` pairs into the store's
+/// `api_tokens` table so the platform-side `bridge_auth::check` finds
+/// them. Returns the router. The caller passes the raw token in the
+/// `Authorization: Bearer` header on its bridge-auth-enforcing
+/// requests.
+///
+/// Does NOT layer the auto-inject auth middleware — bridge_auth tests
+/// need precise control over which credential each request carries
+/// (e.g. testing that a missing `Authorization` header → 401).
+///
+/// Mirrors the old `BridgeAuth::from_pairs` shape — bridges no longer
+/// have a separate registry; everything goes through `api_tokens`.
+pub fn build_router_with_bridge_tokens<I, S1, S2>(store: Arc<Store>, pairs: I) -> Router
+where
+    I: IntoIterator<Item = (S1, S2)>,
+    S1: AsRef<str>,
+    S2: AsRef<str>,
+{
     ensure_default_test_identity(&store);
+    // Mint each (token, machine_id) pair into api_tokens, bound to the
+    // default test account.
+    let account_id = format!("acc_{}", TEST_USER_ID);
+    {
+        let conn = store.conn_for_test();
+        for (raw, machine) in pairs {
+            let token_hash = hash_token(raw.as_ref());
+            conn.execute(
+                "INSERT OR IGNORE INTO api_tokens (token_hash, account_id, machine_id, label)
+                 VALUES (?1, ?2, ?3, 'test-bridge')",
+                params![token_hash, account_id, machine.as_ref()],
+            )
+            .ok();
+        }
+    }
     let data_dir = unique_test_data_dir();
     let agents_dir = data_dir.join("agents");
     std::fs::create_dir_all(&agents_dir).ok();
-    let router = build_router_with_services_and_auth(
+    build_router_with_services(
         store,
         Arc::new(EventBus::new()),
         data_dir,
@@ -240,9 +268,7 @@ pub fn build_router_with_bridge_auth(store: Arc<Store>, bridge_auth: Arc<BridgeA
             chorus::agent::manager::build_driver_registry(),
         )) as SharedRuntimeStatusProvider,
         vec![],
-        bridge_auth,
-    );
-    router.layer(axum::middleware::from_fn(inject_test_auth))
+    )
 }
 
 /// Per-call unique tempdir so parallel cargo tests don't collide on

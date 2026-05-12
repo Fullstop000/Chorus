@@ -38,18 +38,51 @@ pub fn mint_local_credentials(
         ))
         .into());
     }
-    let account = store
-        .get_local_account()?
-        .ok_or_else(|| CliError("no local account; run `chorus setup` first".into()))?;
-    if account.disabled_at.is_some() {
-        return Err(CliError("local account is disabled".into()).into());
-    }
+    let account = local_account(store)?;
     let minted = store.mint_token(&account.id, "local", Some(label))?;
     let creds = credentials::Credentials {
         token: minted.raw,
         server: credentials::default_local_server(),
     };
     credentials::save(data_dir, &creds)
+}
+
+/// Mint a bridge token bound to (local Account, machine_id) and write
+/// it to `bridge-credentials.toml`. Refuses if the file already exists.
+///
+/// Used by setup (to provision the in-process bridge) and by an
+/// eventual `chorus tokens mint --bridge` admin command.
+pub fn mint_local_bridge_credentials(
+    store: &Store,
+    data_dir: &Path,
+    machine_id: &str,
+    label: &str,
+) -> Result<PathBuf> {
+    if credentials::bridge_load(data_dir)?.is_some() {
+        return Err(CliError(format!(
+            "bridge credentials already present at {}; delete the file to roll",
+            credentials::bridge_path_for(data_dir).display()
+        ))
+        .into());
+    }
+    let account = local_account(store)?;
+    let minted = store.mint_bridge_token(&account.id, machine_id, Some(label))?;
+    let creds = credentials::BridgeCredentials {
+        token: minted.raw,
+        machine_id: machine_id.to_string(),
+        server: credentials::default_local_server(),
+    };
+    credentials::bridge_save(data_dir, &creds)
+}
+
+fn local_account(store: &Store) -> Result<chorus::store::auth::Account> {
+    let account = store
+        .get_local_account()?
+        .ok_or_else(|| CliError("no local account; run `chorus setup` first".into()))?;
+    if account.disabled_at.is_some() {
+        return Err(CliError("local account is disabled".into()).into());
+    }
+    Ok(account)
 }
 
 pub async fn run(data_dir: Option<String>, label: Option<String>) -> Result<()> {

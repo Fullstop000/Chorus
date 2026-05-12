@@ -722,15 +722,28 @@ pub async fn run(
     let (local_user, local_account) =
         store.ensure_local_identity(&whoami::username())?;
 
+    // Resolve machine_id before credential issuance so the bridge token
+    // can be bound to it in the same step.
+    let machine_id = cfg.ensure_machine_id().to_string();
+
     // Setup defers the actual token mint + credentials write to the
     // login module — keeps "how do I get a token?" defined in exactly
-    // one place. If credentials.toml is already present the call is a
-    // no-op (returns Err with a "run logout first" message; we ignore
-    // it here because re-running setup against a logged-in install
-    // shouldn't punish the user — the existing token still works).
+    // one place. Two files end up on disk:
+    //   credentials.toml         — CLI token (no machine_id)
+    //   bridge-credentials.toml  — bridge token bound to machine_id
+    // Each is skipped if already present so a re-run of setup against a
+    // logged-in install doesn't silently invalidate live credentials.
     let _ = local_account; // touched above; the helper re-reads via get_local_account.
     if super::credentials::load(&data_dir)?.is_none() {
         super::login::mint_local_credentials(&store, &data_dir, "Local CLI")?;
+    }
+    if super::credentials::bridge_load(&data_dir)?.is_none() {
+        super::login::mint_local_bridge_credentials(
+            &store,
+            &data_dir,
+            &machine_id,
+            "Local bridge",
+        )?;
     }
 
     let workspace = if let Some(workspace) = store.get_active_workspace()? {
@@ -740,10 +753,6 @@ pub async fn run(
         ensure_setup_workspace(&store, &workspace_name, &local_user.id)?
     };
 
-    // Persist config — machine_id (stable across re-runs) + template_dir,
-    // so `chorus start` can read the chosen paths without the user re-passing
-    // --template-dir every time.
-    let machine_id = cfg.ensure_machine_id().to_string();
     cfg.agent_template.dir = Some(template_dir_raw.clone());
 
     // Pin runtime binaries to the exact paths detected on this machine,

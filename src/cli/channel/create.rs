@@ -20,9 +20,11 @@ pub async fn run(
     }
     let description = description.unwrap_or_default();
     let client = super::http::client();
+    let token = crate::cli::resolve_cli_token()?;
     let url = format!("{server_url}/api/channels");
     let res = client
         .post(&url)
+        .bearer_auth(&token)
         .json(&serde_json::json!({
             "name": normalized,
             "description": description,

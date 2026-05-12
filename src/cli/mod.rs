@@ -133,7 +133,12 @@ enum Commands {
         /// Platform HTTP base URL (e.g. http://platform.host:3001) for MCP proxy.
         #[arg(long)]
         platform_http: String,
-        /// Bearer token for the WS upgrade (matches platform's CHORUS_BRIDGE_TOKENS).
+        /// Bearer token for the WS upgrade. Must match a row in the
+        /// platform's `api_tokens` table with `machine_id` set to this
+        /// bridge's `--machine-id`. Mint one on the platform host with
+        /// `chorus tokens mint --bridge --machine-id <id>` (or use the
+        /// `bridge-credentials.toml` written by `chorus setup` for the
+        /// local install).
         #[arg(long, env = "CHORUS_BRIDGE_TOKEN")]
         token: Option<String>,
         /// Stable identifier for this bridge instance.
@@ -317,17 +322,20 @@ pub(crate) fn resolve_cli_token() -> anyhow::Result<String> {
 }
 
 /// Fetch the current user's `(id, name)` from a running server, sending
-/// the bearer token resolved by `resolve_cli_token`.
+/// the bearer token resolved by `resolve_cli_token`. Also returns the
+/// token so callers can attach `.bearer_auth(&token)` to follow-up
+/// HTTP calls — the platform requires every `/internal/*` and `/api/*`
+/// request to carry credentials.
 ///
 /// Fails with setup guidance when:
 ///   - no token available (env or file) → tell user to run `chorus setup`
 ///     (or `chorus login --local` to mint a token against an existing
 ///     install)
 ///   - the server returns 401 → token revoked or stale; same recovery.
-pub(crate) async fn fetch_authed_user(
+pub(crate) async fn fetch_authed_user_with_token(
     client: &reqwest::Client,
     server_url: &str,
-) -> anyhow::Result<AuthedUser> {
+) -> anyhow::Result<(AuthedUser, String)> {
     use anyhow::Context;
     let token = resolve_cli_token()?;
     let url = format!("{server_url}/api/whoami");
@@ -362,7 +370,20 @@ pub(crate) async fn fetch_authed_user(
         .filter(|s| !s.trim().is_empty())
         .ok_or_else(|| CliError("server returned empty user name".into()))?
         .to_string();
-    Ok(AuthedUser { id, name })
+    Ok((AuthedUser { id, name }, token))
+}
+
+/// Back-compat shim for callers that only need the user identity. New
+/// code should prefer `fetch_authed_user_with_token` so it can attach
+/// the bearer to follow-up requests.
+#[allow(dead_code)]
+pub(crate) async fn fetch_authed_user(
+    client: &reqwest::Client,
+    server_url: &str,
+) -> anyhow::Result<AuthedUser> {
+    fetch_authed_user_with_token(client, server_url)
+        .await
+        .map(|(u, _)| u)
 }
 
 pub(crate) fn default_model_for_runtime(runtime: &str) -> &str {
