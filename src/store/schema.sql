@@ -176,17 +176,27 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_account_id ON sessions(account_id);
 
--- CLI / bridge bearer tokens. D5=B: one shape, no kind discriminator;
--- label distinguishes usage for the user.
+-- CLI / bridge bearer tokens.
+--
+-- `machine_id` distinguishes a bridge token from a CLI token:
+--   NULL    → CLI token. Acts as the User in all `/api/*` calls.
+--   SET     → bridge token bound to that machine. The auth layer (in
+--             bridge_auth.rs) restricts the bearer to operating on
+--             agents whose `agents.machine_id` matches this value.
+--
+-- One shape, two semantics — the label string carries the human-readable
+-- distinction ("Local CLI" / "Local bridge" / "Laptop bridge" / "CI").
 CREATE TABLE IF NOT EXISTS api_tokens (
     token_hash      TEXT PRIMARY KEY,                   -- SHA-256(raw_token); raw never stored
     account_id      TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
-    label           TEXT,                               -- 'Local CLI', 'Laptop bridge', 'CI'
+    machine_id      TEXT,                               -- NULL = CLI; set = bridge
+    label           TEXT,
     created_at      TEXT NOT NULL DEFAULT (datetime('now')),
     last_used_at    TEXT,
     revoked_at      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_api_tokens_account_id ON api_tokens(account_id);
+CREATE INDEX IF NOT EXISTS idx_api_tokens_machine_id ON api_tokens(machine_id);
 
 -- Tasks tracked within channels.
 CREATE TABLE IF NOT EXISTS tasks (
