@@ -26,11 +26,7 @@ const DATA_SUBDIR: &str = "data";
 /// they know the file is absent (`setup` after a fresh identity).
 ///
 /// Returns the credentials-file path on success.
-pub fn mint_local_credentials(
-    store: &Store,
-    data_dir: &Path,
-    label: &str,
-) -> Result<PathBuf> {
+pub fn mint_local_credentials(store: &Store, data_dir: &Path, label: &str) -> Result<PathBuf> {
     if credentials::load(data_dir)?.is_some() {
         return Err(CliError(format!(
             "credentials already present at {}; run `chorus logout` first if you want a fresh token",
@@ -103,6 +99,9 @@ pub async fn run(data_dir: Option<String>, label: Option<String>) -> Result<()> 
     let store = Store::open(db_path_str)?;
 
     let path = mint_local_credentials(&store, data_dir, label.as_deref().unwrap_or("Local CLI"))?;
-    println!("Logged in. Credentials written to {} (mode 0600).", path.display());
+    println!(
+        "Logged in. Credentials written to {} (mode 0600).",
+        path.display()
+    );
     Ok(())
 }

@@ -118,7 +118,10 @@ pub async fn handle_local_session(
                 user_id = %account.user_id,
                 "local-session: account points to non-existent user"
             );
-            return (StatusCode::INTERNAL_SERVER_ERROR, "user not found for local account")
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "user not found for local account",
+            )
                 .into_response();
         }
         Err(err) => {

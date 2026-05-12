@@ -179,14 +179,14 @@ impl ChorusBackend {
         req: reqwest::RequestBuilder,
         url: &str,
     ) -> Result<reqwest::Response, BridgeError> {
-        let res = self
-            .apply_auth(req)
-            .send()
-            .await
-            .map_err(|e| BridgeError::PlatformUnreachable {
-                url: url.to_string(),
-                cause: e.to_string(),
-            })?;
+        let res =
+            self.apply_auth(req)
+                .send()
+                .await
+                .map_err(|e| BridgeError::PlatformUnreachable {
+                    url: url.to_string(),
+                    cause: e.to_string(),
+                })?;
         if !res.status().is_success() {
             let status = res.status().as_u16();
             let body = res.text().await.unwrap_or_default();

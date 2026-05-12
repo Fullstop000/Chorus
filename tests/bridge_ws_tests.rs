@@ -521,9 +521,7 @@ async fn bridge_ws_pushes_to_multiple_connected_bridges() {
 
 // ── bearer auth on WS upgrade ──────────────────────────────────────────
 
-async fn start_test_server_with_auth(
-    pairs: Vec<(&'static str, &'static str)>,
-) -> (String, String) {
+async fn start_test_server_with_auth(pairs: Vec<(&'static str, &'static str)>) -> (String, String) {
     let store = Arc::new(Store::open(":memory:").unwrap());
     store
         .create_channel(

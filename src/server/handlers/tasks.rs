@@ -199,12 +199,7 @@ pub async fn handle_public_create_tasks(
     let titles: Vec<&str> = req.tasks.iter().map(|t| t.title.as_str()).collect();
     let (tasks, events) = state
         .store
-        .create_tasks(
-            &channel.name,
-            &actor.user_id,
-            SenderType::Human,
-            &titles,
-        )
+        .create_tasks(&channel.name, &actor.user_id, SenderType::Human, &titles)
         .map_err(|e| app_err!(StatusCode::BAD_REQUEST, e.to_string()))?;
     for event in events {
         state.event_bus.publish_stream(event);

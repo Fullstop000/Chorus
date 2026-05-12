@@ -124,9 +124,7 @@ fn unauthorized() -> Response {
     let mut r = (StatusCode::UNAUTHORIZED, "authentication required").into_response();
     r.headers_mut().insert(
         axum::http::header::WWW_AUTHENTICATE,
-        axum::http::HeaderValue::from_static(
-            r#"Bearer realm="chorus", Cookie realm="chorus""#,
-        ),
+        axum::http::HeaderValue::from_static(r#"Bearer realm="chorus", Cookie realm="chorus""#),
     );
     r
 }
@@ -173,7 +171,10 @@ fn extract_session_cookie(headers: &HeaderMap) -> Option<String> {
 
 fn resolve_session(store: &Store, sid: &str) -> Option<Actor> {
     let session: Session = store.touch_active_session(sid).ok().flatten()?;
-    let account: Account = store.get_account_by_id(&session.account_id).ok().flatten()?;
+    let account: Account = store
+        .get_account_by_id(&session.account_id)
+        .ok()
+        .flatten()?;
     if account.disabled_at.is_some() {
         return None;
     }

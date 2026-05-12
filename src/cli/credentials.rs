@@ -59,8 +59,8 @@ pub fn load(data_dir: &Path) -> Result<Option<Credentials>> {
     }
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let creds: Credentials = toml::from_str(&raw)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let creds: Credentials =
+        toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(Some(creds))
 }
 
@@ -124,9 +124,7 @@ pub fn delete(data_dir: &Path) -> Result<()> {
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => {
-            Err(err).with_context(|| format!("failed to remove {}", path.display()))
-        }
+        Err(err) => Err(err).with_context(|| format!("failed to remove {}", path.display())),
     }
 }
 
@@ -148,8 +146,8 @@ pub fn bridge_load(data_dir: &Path) -> Result<Option<BridgeCredentials>> {
     }
     let raw = std::fs::read_to_string(&path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let creds: BridgeCredentials = toml::from_str(&raw)
-        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let creds: BridgeCredentials =
+        toml::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(Some(creds))
 }
 

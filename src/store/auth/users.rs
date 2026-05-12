@@ -109,7 +109,11 @@ mod tests {
     fn create_user_assigns_prefixed_id() {
         let s = store();
         let user = s.create_user("alice").unwrap();
-        assert!(user.id.starts_with("usr_"), "expected usr_ prefix, got {}", user.id);
+        assert!(
+            user.id.starts_with("usr_"),
+            "expected usr_ prefix, got {}",
+            user.id
+        );
         assert_eq!(user.name, "alice");
     }
 
@@ -134,7 +138,12 @@ mod tests {
         s.create_user("charlie").unwrap();
         s.create_user("alice").unwrap();
         s.create_user("bob").unwrap();
-        let names: Vec<_> = s.list_users().unwrap().into_iter().map(|u| u.name).collect();
+        let names: Vec<_> = s
+            .list_users()
+            .unwrap()
+            .into_iter()
+            .map(|u| u.name)
+            .collect();
         assert_eq!(names, vec!["alice", "bob", "charlie"]);
     }
 

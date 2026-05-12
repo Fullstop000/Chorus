@@ -513,9 +513,12 @@ pub async fn handle_update_agent(
     // `agent.restart` so the runtime re-launches with the new values.
     broadcast_target_update(state.store.as_ref(), state.bridge_registry.as_ref());
     if requires_restart {
-        if let Err(e) =
-            dispatch_agent_restart(state.store.as_ref(), state.bridge_registry.as_ref(), &agent_id, None)
-        {
+        if let Err(e) = dispatch_agent_restart(
+            state.store.as_ref(),
+            state.bridge_registry.as_ref(),
+            &agent_id,
+            None,
+        ) {
             warn!(agent_id = %agent_id, error = %e, "agent.restart dispatch failed; bridge will stay on old spec until next start");
         }
     }
@@ -563,9 +566,12 @@ pub async fn handle_restart_agent(
     // Tell the owning bridge to stop+start the runtime. Reconcile only
     // sweeps orphans, so a dedicated `agent.restart` is the only way to
     // recycle a process for a manual restart.
-    if let Err(e) =
-        dispatch_agent_restart(state.store.as_ref(), state.bridge_registry.as_ref(), &agent.id, None)
-    {
+    if let Err(e) = dispatch_agent_restart(
+        state.store.as_ref(),
+        state.bridge_registry.as_ref(),
+        &agent.id,
+        None,
+    ) {
         warn!(agent_id = %agent.id, error = %e, "agent.restart dispatch failed");
     }
     Ok(Json(serde_json::json!({
@@ -620,9 +626,12 @@ pub async fn handle_agent_start(
     let agent = resolve_public_agent(&state, &id)?;
     let _transition = acquire_transition(&state, &agent.id)?;
     info!(agent = %agent.name, agent_id = %agent.id, "dispatching agent.start");
-    if let Err(e) =
-        dispatch_agent_start(state.store.as_ref(), state.bridge_registry.as_ref(), &agent.id, None)
-    {
+    if let Err(e) = dispatch_agent_start(
+        state.store.as_ref(),
+        state.bridge_registry.as_ref(),
+        &agent.id,
+        None,
+    ) {
         warn!(agent_id = %agent.id, error = %e, "agent.start dispatch failed");
         return Err(internal_err(e));
     }
@@ -636,9 +645,11 @@ pub async fn handle_agent_stop(
     let agent = resolve_public_agent(&state, &id)?;
     let _transition = acquire_transition(&state, &agent.id)?;
     info!(agent = %agent.name, agent_id = %agent.id, "dispatching agent.stop");
-    if let Err(e) =
-        dispatch_agent_stop(state.store.as_ref(), state.bridge_registry.as_ref(), &agent.id)
-    {
+    if let Err(e) = dispatch_agent_stop(
+        state.store.as_ref(),
+        state.bridge_registry.as_ref(),
+        &agent.id,
+    ) {
         warn!(agent_id = %agent.id, error = %e, "agent.stop dispatch failed");
         return Err(internal_err(e));
     }

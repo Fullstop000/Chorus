@@ -40,12 +40,13 @@ impl Store {
 
         // Already set up? Return existing rows without touching anything.
         if let Some(account) = Self::get_local_account_inner(&tx)? {
-            let user = Self::get_user_by_id_inner(&tx, &account.user_id)?
-                .ok_or_else(|| anyhow::anyhow!(
+            let user = Self::get_user_by_id_inner(&tx, &account.user_id)?.ok_or_else(|| {
+                anyhow::anyhow!(
                     "local account {} points at missing user {}",
                     account.id,
                     account.user_id
-                ))?;
+                )
+            })?;
             tx.commit()?;
             return Ok((user, account));
         }

@@ -315,9 +315,7 @@ mod tests {
         let cli = s.mint_token(&acct.id, "local", Some("CLI")).unwrap();
         let h = mk_headers(&[("Authorization", &format!("Bearer {}", cli.raw))]);
         match check(&s, &h) {
-            AuthOutcome::CliAllowed {
-                user_id: resolved,
-            } => assert_eq!(resolved, user.id),
+            AuthOutcome::CliAllowed { user_id: resolved } => assert_eq!(resolved, user.id),
             other => panic!("expected CliAllowed, got {other:?}"),
         }
     }

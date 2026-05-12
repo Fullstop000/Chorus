@@ -72,10 +72,7 @@ impl Store {
         Self::get_account_by_id_inner(&conn, id)
     }
 
-    pub(crate) fn get_account_by_id_inner(
-        conn: &Connection,
-        id: &str,
-    ) -> Result<Option<Account>> {
+    pub(crate) fn get_account_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Account>> {
         conn.query_row(
             "SELECT id, user_id, auth_provider, email, disabled_at, created_at
              FROM accounts WHERE id = ?1",
@@ -194,7 +191,10 @@ mod tests {
         let err = s
             .create_account(&user.id, "local", Some("a@b.com"))
             .unwrap_err();
-        assert!(err.to_string().contains("create_local_account"), "got: {err}");
+        assert!(
+            err.to_string().contains("create_local_account"),
+            "got: {err}"
+        );
     }
 
     #[test]

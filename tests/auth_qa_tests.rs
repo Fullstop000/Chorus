@@ -68,8 +68,12 @@ async fn setup_to_serve_identity_continuity() {
 async fn lost_credentials_recovery_via_fresh_token() {
     let store = mem_store();
     let (_user, account) = store.ensure_local_identity("alice").unwrap();
-    let _first = store.mint_token(&account.id, "local", Some("CLI #1")).unwrap();
-    let second = store.mint_token(&account.id, "local", Some("CLI #2")).unwrap();
+    let _first = store
+        .mint_token(&account.id, "local", Some("CLI #1"))
+        .unwrap();
+    let second = store
+        .mint_token(&account.id, "local", Some("CLI #2"))
+        .unwrap();
     assert_ne!(_first.raw, second.raw);
 
     let app = build_app(store);
@@ -127,7 +131,10 @@ fn legacy_config_with_local_human_still_parses() {
     // Confirm save → load roundtrips without the section.
     loaded.save(tmp.path()).unwrap();
     let raw = std::fs::read_to_string(tmp.path().join("config.toml")).unwrap();
-    assert!(!raw.contains("[local_human]"), "expected dropped, got:\n{raw}");
+    assert!(
+        !raw.contains("[local_human]"),
+        "expected dropped, got:\n{raw}"
+    );
 }
 
 /// Token revoke takes effect immediately on the next request. Critical

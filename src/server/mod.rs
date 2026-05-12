@@ -316,10 +316,7 @@ pub fn build_router_with_services(
     // entirely. The handlers (or their dedicated middleware) decide
     // what to accept.
     let api_open_router = Router::new()
-        .route(
-            "/auth/local-session",
-            post(auth::handle_local_session),
-        )
+        .route("/auth/local-session", post(auth::handle_local_session))
         .route("/bridge/ws", get(handle_bridge_ws))
         .route("/events/ws", get(handle_events_ws));
 

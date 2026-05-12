@@ -719,8 +719,7 @@ pub async fn run(
     // freshly minted `usr_<uuid>`. The new identity model creates a
     // `users` row, a local `accounts` row, and (until the legacy table
     // is dropped) a mirroring `humans` row sharing the same id.
-    let (local_user, local_account) =
-        store.ensure_local_identity(&whoami::username())?;
+    let (local_user, local_account) = store.ensure_local_identity(&whoami::username())?;
 
     // Resolve machine_id before credential issuance so the bridge token
     // can be bound to it in the same step.
@@ -900,7 +899,6 @@ mod tests {
         assert_eq!(workspace.name, "Existing Workspace");
         assert_eq!(store.list_workspaces_for_human(&bob.id).unwrap().len(), 0);
     }
-
 
     #[test]
     fn existing_setup_without_database_still_needs_workspace() {

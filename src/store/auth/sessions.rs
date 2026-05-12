@@ -90,10 +90,7 @@ impl Store {
         Ok(affected > 0)
     }
 
-    pub(crate) fn get_session_by_id_inner(
-        conn: &Connection,
-        id: &str,
-    ) -> Result<Option<Session>> {
+    pub(crate) fn get_session_by_id_inner(conn: &Connection, id: &str) -> Result<Option<Session>> {
         conn.query_row(
             "SELECT id, account_id, created_at, last_seen_at, expires_at, revoked_at
              FROM sessions WHERE id = ?1",

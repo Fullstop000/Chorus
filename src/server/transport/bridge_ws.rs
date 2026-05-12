@@ -82,7 +82,10 @@ pub async fn handle_bridge_ws(
                 // — they're for `chorus send` and friends, not for
                 // bridges hosting agents.
                 warn!("bridge_ws: rejecting upgrade — CLI token cannot open bridge session");
-                return (StatusCode::FORBIDDEN, "CLI token not allowed on bridge upgrade")
+                return (
+                    StatusCode::FORBIDDEN,
+                    "CLI token not allowed on bridge upgrade",
+                )
                     .into_response();
             }
             AuthOutcome::Rejected => {
@@ -412,10 +415,7 @@ pub fn build_target_frame_text_for_machine(
 
 /// Build a serialized lifecycle RPC frame (`agent.start`, `agent.stop`,
 /// `agent.restart`).
-fn build_lifecycle_frame_text(
-    frame_type: &str,
-    data: serde_json::Value,
-) -> anyhow::Result<String> {
+fn build_lifecycle_frame_text(frame_type: &str, data: serde_json::Value) -> anyhow::Result<String> {
     let envelope = WireFrame {
         v: 1,
         frame_type: frame_type.to_string(),
@@ -482,7 +482,9 @@ pub fn dispatch_agent_restart(
 }
 
 fn resolve_owner(store: &Store, agent_id: &str) -> anyhow::Result<Option<String>> {
-    Ok(store.get_agent_by_id(agent_id, false)?.map(|a| a.machine_id))
+    Ok(store
+        .get_agent_by_id(agent_id, false)?
+        .map(|a| a.machine_id))
 }
 
 /// Push a fresh `bridge.target` to every connected bridge, scoped to
